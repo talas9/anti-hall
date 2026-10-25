@@ -1614,6 +1614,7 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 | `resourceWatch.cpuWindowSeconds` adv | `120` | `ANTIHALL_RESOURCE_WATCH_CPU_WINDOW` | Seconds the CPU reading must hold. |
 | `resourceWatch.memoryMb` | `4096` | `ANTIHALL_RESOURCE_WATCH_MEM` | Memory in MB (resident set on Linux, physical footprint on macOS) at which a process of a live session is named. |
 | `resourceWatch.swapMb` adv | `8192` | `ANTIHALL_RESOURCE_WATCH_SWAP` | System swap in use, MB, that triggers a warning; 0 = off. |
+| `resourceWatch.freeRamOkPercent` adv | `20` | `ANTIHALL_RESOURCE_WATCH_FREE_RAM_OK` | Free RAM percent at or above which swap in use is not an alarm; 0 = swap alone decides. |
 | `resourceWatch.pressurePercent` adv | `25` | `ANTIHALL_RESOURCE_WATCH_PSI` | Linux memory pressure (PSI some avg10, percent) that triggers a warning; 0 = off. |
 | `resourceWatch.macPressureLevel` adv | `2` | `ANTIHALL_RESOURCE_WATCH_MAC_PRESSURE` | macOS memory pressure level (2 warn, 4 critical) that triggers a warning; 0 = off. |
 | `resourceWatch.cooldownSeconds` adv | `900` | `ANTIHALL_RESOURCE_WATCH_COOLDOWN` | Least seconds before the same process (or system warning) is named again. |

@@ -48,6 +48,11 @@ pub struct MemInfo {
     pub swap_used: u64,
     /// Memory pressure.
     pub pressure: Pressure,
+    /// Physical memory, bytes (0 = not known).
+    pub ram_total: u64,
+    /// Memory free or reclaimable without swapping (macOS: the share the kernel reports as free; Linux: `MemAvailable`), bytes
+    /// (0 with `ram_total` 0 = not known).
+    pub ram_free: u64,
 }
 
 /// Free space on one volume.
@@ -189,7 +194,8 @@ impl Host for RealHost {
     }
 
     fn mem(&mut self) -> MemInfo {
-        MemInfo { swap_used: self.table.swap_used(), pressure: pressure() }
+        let (ram_total, ram_free) = self.table.ram();
+        MemInfo { swap_used: self.table.swap_used(), pressure: pressure(), ram_total, ram_free }
     }
 
     fn space(&self, path: &Path) -> Option<Space> {

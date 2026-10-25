@@ -313,7 +313,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - statusline: base=—, noEmail=false, usage=true
 - codexNudge: enabled | min
 - procwatch: enabled, devServerMode=report, testRunnerMode=report, stuckMinutes=20 | buildDaemonMode, mcpServerMode, shellTaskMode, otherMode
-- resourceWatch: enabled, cpuPercent=90, memoryMb=4096, renice=false | cpuWindowSeconds, swapMb, pressurePercent, macPressureLevel, cooldownSeconds
+- resourceWatch: enabled, cpuPercent=90, memoryMb=4096, renice=false | cpuWindowSeconds, swapMb, freeRamOkPercent, pressurePercent, macPressureLevel, cooldownSeconds
 - diskWatch: enabled, warnGb=20, criticalGb=5, blockAtCritical=false | warnPercent, criticalPercent, cooldownSeconds
 - engine: bootstrap, autoUpdate=off
 - defects: defaultProj=—

@@ -115,6 +115,11 @@ impl Table {
         sys::cwd(pid)
     }
 
+    /// Physical memory and the free part of it, bytes ((0, 0) when unknown).
+    pub fn ram(&self) -> (u64, u64) {
+        sys::ram()
+    }
+
     /// Swap in use, bytes (0 when unknown).
     pub fn swap_used(&self) -> u64 {
         sys::swap_used()
@@ -174,6 +179,15 @@ pub fn parse_swap_used(text: &str) -> u64 {
     match (kb("SwapTotal"), kb("SwapFree")) {
         (Some(t), Some(f)) => t.saturating_sub(f).saturating_mul(1024),
         _ => 0,
+    }
+}
+
+/// `/proc/meminfo`: (`MemTotal`, `MemAvailable`) in bytes; (0, 0) when either is missing.
+pub fn parse_ram(text: &str) -> (u64, u64) {
+    let kb = |key: &str| text.lines().find_map(|l| l.strip_prefix(key)?.trim_start_matches(':').split_whitespace().next()?.parse::<u64>().ok());
+    match (kb("MemTotal"), kb("MemAvailable")) {
+        (Some(t), Some(a)) => (t.saturating_mul(1024), a.min(t).saturating_mul(1024)),
+        _ => (0, 0),
     }
 }
 
@@ -314,6 +328,32 @@ mod sys {
         encrypted: u8,
     }
 
+    fn sysctl_u64(name: &str) -> Option<u64> {
+        let name = std::ffi::CString::new(name).ok()?;
+        let (mut v, mut len) = (0u64, std::mem::size_of::<u64>());
+        // SAFETY: the name is NUL-terminated; `v` and `len` are live locals sized for one u64; no new value is set (null, 0).
+        let rc = unsafe { libc::sysctlbyname(name.as_ptr(), (&mut v as *mut u64).cast(), &mut len, std::ptr::null_mut(), 0) };
+        (rc == 0).then_some(v)
+    }
+
+    fn sysctl_i32(name: &str) -> Option<i32> {
+        let name = std::ffi::CString::new(name).ok()?;
+        let (mut v, mut len) = (0i32, std::mem::size_of::<i32>());
+        // SAFETY: the name is NUL-terminated; `v` and `len` are live locals sized for one i32; no new value is set (null, 0).
+        let rc = unsafe { libc::sysctlbyname(name.as_ptr(), (&mut v as *mut i32).cast(), &mut len, std::ptr::null_mut(), 0) };
+        (rc == 0).then_some(v)
+    }
+
+    /// (physical memory, free share of it) in bytes: the free percentage is the kernel's own `memory_pressure` figure.
+    pub fn ram() -> (u64, u64) {
+        let total = sysctl_u64(defaults::text("resource_watch.mac_ram_total_sysctl")).unwrap_or(0);
+        let pct = sysctl_i32(defaults::text("resource_watch.mac_free_pct_sysctl")).filter(|p| (0..=100).contains(p));
+        match (total, pct) {
+            (t, Some(p)) if t > 0 => (t, t / 100 * p as u64),
+            _ => (0, 0),
+        }
+    }
+
     pub fn swap_used() -> u64 {
         let Ok(name) = std::ffi::CString::new(defaults::text("resource_watch.mac_swap_sysctl")) else { return 0 };
         let mut s = Swap { total: 0, avail: 0, used: 0, pagesize: 0, encrypted: 0 };
@@ -382,6 +422,10 @@ mod sys {
         std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
     }
 
+    pub fn ram() -> (u64, u64) {
+        std::fs::read_to_string(defaults::text("resource_watch.meminfo_path")).map(|t| super::parse_ram(&t)).unwrap_or((0, 0))
+    }
+
     pub fn swap_used() -> u64 {
         std::fs::read_to_string(defaults::text("resource_watch.meminfo_path")).map(|t| parse_swap_used(&t)).unwrap_or(0)
     }
@@ -427,6 +471,13 @@ mod tests {
         assert_eq!(parse_proc_stat(line), Some(("my (odd) name".to_string(), 17, 33, 44, 98765, 321)));
         assert_eq!(parse_proc_stat("garbage"), None);
         assert_eq!(parse_proc_stat("1 (x) S 1 2"), None);
+    }
+
+    #[test]
+    fn ram_is_total_and_available_in_bytes() {
+        let t = "MemTotal: 65536 kB\nMemFree: 100 kB\nMemAvailable: 49152 kB\n";
+        assert_eq!(parse_ram(t), (65536 * 1024, 49152 * 1024));
+        assert_eq!(parse_ram("MemTotal: 1 kB\n"), (0, 0), "no MemAvailable: not known");
     }
 
     #[test]
