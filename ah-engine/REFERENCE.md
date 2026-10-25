@@ -5668,6 +5668,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.daemons_many` | `{n} engine daemons are running; the extra ones (pids {pids}) do not serve {so...` |  |  | DMN-10. Placeholders: {n}, {pids}, {sock}. |
 | `doctor_msg.db_bad` | `{file} is not a SQLite database (bad header) - Fix: mv {file} {file}.bad (the...` |  |  | ST-09. Placeholder: {file}. |
 | `doctor_msg.deferred` | `{check}: the engine does not decide this self-test, so it was not exercised here` |  |  | A live self-test the engine does not decide: the check defers this payload. Placeholder: {check}. |
+| `doctor_msg.delivery_shed` | `{n} answer(s) of essential reminders were shed under load; see `ah-engine sta...` |  |  | Finding: answers of checks that must never be shed (diagnostics.shed_never) were shed. Placeholder: {n}. |
 | `doctor_msg.ds_cgate_bad` | `devswarm-child-gate did NOT force a child heartbeat at Stop` |  |  | The child-gate hook failed. |
 | `doctor_msg.ds_cgate_ok` | `devswarm-child-gate forces a child to self-report to its parent before stopping` |  |  | The child-gate hook still works. |
 | `doctor_msg.ds_cron_found` | `cron ticks that found mail while a watcher was armed: {n} (cron-found-mail.js...` |  |  | Cron ticks that found mail while a watcher was armed. Placeholder: {n}. |
@@ -12458,6 +12459,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `answer_drop.kind_guard` | `guard` |  |  | Label of a dropped answer that belongs to a guard event (answers_dropped metric kind, status answers_dropped.this_daemon). |
 | `answer_drop.kind_optional` | `optional` |  |  | Label of a dropped answer that belongs to an event that cannot block. |
 
+### diagnostics.toml / delivery
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `delivery.pending_per_session_max` | `16` |  |  | Armed checks held per session. |
+| `delivery.pending_sessions_max` | `256` |  |  | Sessions whose armed checks the compliance tracker holds; a new session past it makes room by dropping the one armed longest ago (its open windows are not counted). |
+| `delivery.react` | `5 entries` |  |  | Per check, the tool names whose use within the window counts as the agent reacting to the check's delivered answer (`complied`). Only a check with a row here has a compliance figure; a reaction that is not a tool call (answering in text, changing a plan) cannot be seen, so those checks show null. Tool names are the host's. verify-first: a verification lookup. task-tracker and tasklist-guard: a task-list change. devswarm-parent-inbox and devswarm-child-gate: a message or a mail read. |
+| `delivery.react_event` | `PreToolUse` |  |  | The hook event whose tool calls are watched for an agent's reaction to a delivered answer (one call of it is one step of the window). |
+| `delivery.react_window_calls` | `8` |  |  | Tool calls of the session after a delivered answer within which a reaction counts. 0 turns compliance tracking off (decided, delivered and lost are still counted). |
+| `delivery.react_window_ms` | `600000` |  | ms | Longest wait for a reaction after a delivered answer; a window older than this ends as `ignored` at the next tool call. |
+| `delivery.reason_shed` | `shed` |  |  | The answers_dropped reason that status delivery reports as `shed` (the others are reported as `lost`). Must equal the reason budget::note_dropped is given when the CPU hard limit sheds a check. |
+| `delivery.reason_undelivered` | `undelivered` |  |  | Reason label (metric delivery_lost) of an answer the check made but the reply carrying it was not written in time or not at all. |
+| `delivery.stage_complied` | `complied` |  |  | Stage label: the agent made one of the check's `delivery.react` tool calls within the window after a delivered answer. |
+| `delivery.stage_decided` | `decided` |  |  | Stage label (status delivery, metric delivery_stage): a check answered with a message or a block. |
+| `delivery.stage_delivered` | `delivered` |  |  | Stage label: the reply carrying the answer was written to the hook client in time. |
+| `delivery.stage_ignored` | `ignored` |  |  | Stage label: the window after a delivered answer ended without one of the check's `delivery.react` tool calls. |
+
 ### diagnostics.toml / diagnostics
 
 | Key | Default | Env override | Unit | What it is |
@@ -12481,6 +12499,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `diagnostics.counters_max_bytes` | `262144` |  | bytes | Size at which the counter journal is folded into one line per counter (atomically, under the journal lock), so it never grows without bound. |
 | `diagnostics.counters_other_key` | `other` |  |  | The key under which counters past diagnostics.counters_hard_keys are folded. |
 | `diagnostics.counters_soft_keys` | `512` |  |  | Soft limit on distinct counters (kind, key and outcome) the journal fold keeps; past it each new counter adds one to `counters_soft_hits`. |
+| `diagnostics.deadline_grace_cap_ms` | `500` |  | ms | Upper bound of any diagnostics.deadline_grace_ms row. The hard deadline plus this must stay inside what the client waits for a late reply (client.slow_fallback_max_ms less client.slow_wait_margin_ms), or the grace would only produce a reply nobody reads. |
+| `diagnostics.deadline_grace_ms` | `7 entries` |  |  | Per check, how many milliseconds PAST the hard request deadline (daemon.request_hard_ms) the check may still start, so a slow request does not drop an essential reminder that is cheap to run (#312: 56 non-guard and 16 guard answers were dropped to shedding or the deadline in the audit window). A check without a row has no grace. Capped by diagnostics.deadline_grace_cap_ms. A scripted check already running is still interrupted at the deadline (script.cut_at_request_deadline). |
 | `diagnostics.debug_flag` | `--debug` |  |  | The command-line flag that turns debug mode on for one `serve` or `hook` process. |
 | `diagnostics.debug_log_max_bytes` | `8388608` |  | bytes | Size at which the debug log is rotated (the old file is kept once, as <name>.1, replacing the previous one), so it never holds more than twice this. |
 | `diagnostics.debug_mem_snapshot_ms` | `30000` |  | ms | In debug mode, how often the watchdog writes a memory line (resident set, footprint, allocator and component sizes) to the debug log; in normal mode memory is only snapshotted when the resident-set cap trips. |
@@ -12520,7 +12540,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `diagnostics.profile_on_mode` | `full` |  |  | Mode `ctl profile on` switches to when none is named: sample or full. |
 | `diagnostics.profile_sample_every` | `10` |  |  | In `sample` mode one check call in this many is recorded. |
 | `diagnostics.shed_checks` | `1` |  |  | 1 (shipped) = past the HARD CPU limit (diagnostics.budget_cpu_hard_pct) the PURE-ADVICE checks of events that cannot block are not run (their answers are dropped, counted as answers_dropped reason `shed`). Checks listed in diagnostics.shed_never always run, and so do all checks of guard events. 0 = nothing is shed. |
-| `diagnostics.shed_never` | `21 entries` |  |  | Checks that are never shed past the HARD CPU limit, with the reason for each: bookkeeping, recorders and deliveries that later guards or the user's agents depend on (shedding them loses state or messages). Any check of a non-guard event not listed here is pure advice and is shed. |
+| `diagnostics.shed_never` | `29 entries` |  |  | Checks that are never shed past the HARD CPU limit, with the reason for each: bookkeeping, recorders and deliveries that later guards or the user's agents depend on (shedding them loses state or messages). Any check of a non-guard event not listed here is pure advice and is shed. #312: the essential reminders (task tracker, task list, workspace inbox and child gate, verify-first) are listed; `status` delivery.essential_shed counts how many answers of the checks listed here were shed anyway (it must stay 0). |
 | `diagnostics.summary_read_bytes` | `8388608` |  | bytes | Most of the memory log (newest part) `status --memory` reads to build its summary. |
 | `diagnostics.summary_top` | `10` |  |  | Rows shown per ranking (events, checks) in the memory summary of `ah-engine status --memory`. |
 | `diagnostics.tally_hard_keys` | `256` |  |  | Hard limit on the labelled work counters (and on exited-thread names): a new key past it is dropped and counted in `tally_dropped`; the existing keys keep counting. |
@@ -13788,6 +13808,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `db_hot_wal_bytes` | gauge | bytes |  | Size of hot.db's write-ahead log. |
 | `db_writes` | gauge | writes |  | Writes carried by those transactions since the daemon started. |
 | `deadline_soft` | counter | requests |  | Requests answered after the client's fail-fast wait (client.deadline_ms) but inside the hard deadline; only warned about. |
+| `delivery_lost` | counter | answers | check, reason | Per check and reason, answers that did not reach the agent: shed (CPU hard limit), hard_deadline, cpu_budget, client_gone, check_deferred (the reasons of answers_dropped) and undelivered (the reply was not written in time). Lifetime. |
+| `delivery_stage` | counter | answers | check, stage | Per check, how many of its answers reached each stage (#312): decided (it said something), delivered (the reply carrying it was written in time), complied (the agent made a reaction tool call within the window, `delivery.react`), ignored (the window ended without one). Lifetime; `status` delivery shows it with the lost and shed counts. |
 | `dispatch_checks` | counter | entries | event, check, answer | Built-in check entries the dispatcher sent to the daemon, by event, check and answer (decided, or defer = its Node hook ran instead) (D58). |
 | `dispatch_entries` | counter | entries | event, entry, outcome, cfg | What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry, outcome and the hash of the non-default hook configuration the plan was made under (`default` when none). |
 | `dispatch_overhead_us` | histogram | us | event | Wall time of a dispatched hook request that no built-in check accounts for (request wall minus the sum of the checks), by hook event: parsing, plan, locks, waits and queueing inside the daemon. |

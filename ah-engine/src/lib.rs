@@ -31,6 +31,7 @@ pub mod devswarm_rt;
 #[cfg(feature = "diag")]
 pub mod diag;
 pub mod discard;
+pub mod delivery;
 pub mod dispatch;
 pub mod docs;
 pub mod doctor;

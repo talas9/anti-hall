@@ -102,6 +102,13 @@ pub(crate) fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
     }
 }
 
+/// How long past the hard request deadline `check` may still start (`diagnostics.deadline_grace_ms`, capped by
+/// `diagnostics.deadline_grace_cap_ms` so the reply stays inside the time the client waits for a late one). 0 for a check without a row.
+fn deadline_grace_ms(check: &str) -> u64 {
+    let grace = crate::defaults::raw("diagnostics.deadline_grace_ms").get(check).and_then(|v| v.as_integer()).unwrap_or(0).max(0) as u64;
+    grace.min(crate::defaults::num("diagnostics.deadline_grace_cap_ms"))
+}
+
 /// Every matching entry with a built-in check, answered; entries without one are not listed.
 ///
 /// `over_cpu` is asked, after a check ran, whether the thread CPU that ONE check used (microseconds) crossed the hard budget: only that
@@ -148,7 +155,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             // live19: 478 replies in 1000 s hit a closed pipe after their work was done.
             crate::budget::note_dropped(guard_event, check, &meta.event, "client_gone");
             Answer::Defer
-        } else if !crate::deadline::in_time() && crate::script::cut_at_deadline(check, &meta.event) {
+        } else if !crate::deadline::in_time() && crate::script::cut_at_deadline(check, &meta.event) && crate::deadline::past_hard_ms() > deadline_grace_ms(check) {
             crate::script::cut(check, &meta.event);
             crate::budget::note_dropped(guard_event, check, &meta.event, "hard_deadline");
             Answer::Defer
