@@ -1519,3 +1519,74 @@ fn every_end_signal_ends_a_silent_running_agent() {
         assert_eq!(signals::state_of(agent(&st, "ax-1")), "done", "end signal {case} must end the agent");
     }
 }
+
+// ---- nudge loop: snoozes, delivery count (GH #333) --------------------------------------------------------------
+
+/// A nudge-on environment (the shared `env()` turns the loop off); `extra` are settings overrides.
+fn nudge_env(h: &Path, now: u64, extra: &[(&str, &str)]) -> Env {
+    let mut e = env(h, now);
+    e.settings.env.clear();
+    for (k, v) in extra {
+        e.settings.env.insert((*k).into(), (*v).into());
+    }
+    e
+}
+
+/// Renew the parent's wake stamp as of the env's clock (a live `agents wake-watch` renews it every few seconds).
+fn arm_wake(e: &Env, session: &str) {
+    let stamp = sinks::WakeFeed::stamp(e, session);
+    std::fs::create_dir_all(stamp.parent().unwrap()).unwrap();
+    std::fs::write(&stamp, "{}").unwrap();
+    std::fs::OpenOptions::new().write(true).open(&stamp).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(e.now_ms)).unwrap();
+}
+
+/// Append the verb's row: `agents nudge <child> snooze <min>`.
+fn answer_snooze(e: &Env, child: &str, min: u64) {
+    let row = json!({"ts": e.now_ms, "child": child, "answer": "snooze", "text": "", "min": min});
+    sinks::append(&e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers")), &row).unwrap();
+}
+
+/// The scripted session of the issue: a live, wake-armed parent, one subagent that spends 700k tokens per cycle with no outcome until
+/// a commit clears the flag, and an owner that snoozes every nudge that shows up. Returns (nudges opened, delivery rows written for the
+/// nudge signal over the queue and the wake feed, distinct reminder ids among them, snooze answers sent).
+fn snooze_scenario(tag: &str, extra: &[(&str, &str)], cycles: u64, snooze_min: u64) -> (usize, usize, usize, u64) {
+    let h = home(tag);
+    let n = now0();
+    register(&h, std::process::id(), "parent", "busy", n);
+    write(&sess(&h, "parent"), &[prompt(n - 30 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
+    let child = h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl");
+    write(&child, &[prompt(n - 5 * MIN, "/w"), asst(n - 4 * MIN, "c0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    std::fs::write(child.with_file_name("agent-abc.meta.json"), r#"{"description":"Research the billing export"}"#).unwrap();
+    let mut st = State::default();
+    let mut answers = 0;
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, extra);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+        e
+    };
+    for k in 0..cycles {
+        let b = n + k * 45 * MIN;
+        append(&child, &[tool(b, &format!("k{k}"), 10, &format!("g{k}"), "Bash", json!({"command": "git commit -m step"})), result(b + 1000, &format!("g{k}"), "ok", false)]);
+        tick_at(&mut st, b + MIN);
+        append(&child, &[asst(b + 2 * MIN, &format!("w{k}"), 700_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+        let e = tick_at(&mut st, b + 18 * MIN);
+        if st.nudges.get("abc").is_some_and(|n| n.snoozes == 0 && n.answer_class.is_empty() && n.snooze_until <= e.now_ms) {
+            answer_snooze(&e, "abc", snooze_min);
+            answers += 1;
+        }
+        tick_at(&mut st, b + 19 * MIN);
+    }
+    let sig = defaults::raw("agent_nudge.words").str_field("signal");
+    let rows: Vec<Value> = queue(&h, "parent").into_iter().chain(wake_rows(&h, "parent")).filter(|r| r["signal"] == sig).collect();
+    let ids: std::collections::BTreeSet<String> = rows.iter().map(|r| r["id"].as_str().unwrap_or("").to_string()).collect();
+    let opened = st.nudges.len() + st.nudge_log.iter().filter(|n| n.trigger != "dead").count();
+    println!("MEASURE {tag}: nudges_opened={opened} delivery_rows={} distinct_reminders={} snooze_answers={answers}", rows.len(), ids.len());
+    (opened, rows.len(), ids.len(), answers)
+}
+
+#[test]
+fn nudge_measure_four_snoozes() {
+    let (opened, rows, _, answers) = snooze_scenario("nudge-measure", &[], 4, 240);
+    assert!(opened >= 1 && rows >= 1 && answers >= 1, "the scenario raised nothing: opened={opened} rows={rows} answers={answers}");
+}
