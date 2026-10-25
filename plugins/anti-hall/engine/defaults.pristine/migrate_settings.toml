@@ -102,6 +102,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"compactDeclarationGuard\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_compact_declaration_guard\"}",
   "{\"section\":\"guards\",\"key\":\"stopHookVersionDowngrade\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE\"}",
   "{\"section\":\"guards\",\"key\":\"stopAck\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_STOP_ACK\"}",
+  "{\"section\":\"guards\",\"key\":\"failOpenNonSafety\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_FAIL_OPEN_NON_SAFETY\"}",
   "{\"section\":\"safety\",\"key\":\"gitGuard\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_GIT_GUARD\",\"pluginOption\":\"safety_git_guard\",\"headline\":true,\"locked\":true,\"safetyDirection\":\"off\"}",
   "{\"section\":\"safety\",\"key\":\"commandGuard\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_COMMAND_GUARD\",\"pluginOption\":\"safety_command_guard\",\"headline\":true,\"locked\":true,\"safetyDirection\":\"off\"}",
   "{\"section\":\"safety\",\"key\":\"editGuard\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_EDIT_GUARD\",\"pluginOption\":\"safety_edit_guard\",\"headline\":true,\"locked\":true,\"safetyDirection\":\"off\"}",

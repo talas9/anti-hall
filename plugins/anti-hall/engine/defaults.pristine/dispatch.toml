@@ -254,6 +254,22 @@ min = 1
 max = 255
 
 
+[dispatch.fail_open_setting]
+doc = "guards.failOpenNonSafety (default on): a guard event's entry whose check gave no answer (a late or missing daemon reply, a spent event budget) and that is not a safety guard (script.failure_mode_by_check lists the safety guards as `closed`: git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) is let through instead of blocking the tool call or holding the Stop. The pass is counted per check (status: advisory.fail_open) and told to the user once per session (script.msg_guard_down). Off = every unanswered guard entry blocks, as before."
+value = { section = "guards", key = "failOpenNonSafety", env = "ANTIHALL_FAIL_OPEN_NON_SAFETY", aliases = [], option = "", default = true }
+
+[dispatch.fail_open_counter]
+doc = "The status counter group (status.advisory.<group>.<check>) that counts the unanswered guard entries let through under guards.failOpenNonSafety."
+value = "fail_open"
+
+[dispatch.fail_open_notice_tag]
+doc = "The once-per-session stamp tag of the notice told when a non-safety guard entry was let through unanswered."
+value = "dispatch-fail-open"
+
+[dispatch.msg_fail_open_log]
+doc = "Event-log detail of an unanswered non-safety guard entry that was let through. Placeholders: {check}, {event}."
+value = "{check} ({event}): no answer, not a safety guard: let through"
+
 [dispatch.msg_fail_closed]
 doc = "Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}."
 value = "anti-hall: the engine could not run the guards for {event} ({why}). The call is blocked rather than allowed unguarded; repair the install (`doctor --repair`) or retry."
