@@ -13401,12 +13401,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `upfront.setting` | `6 entries` |  |  | Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call. |
 | `upfront.summary` | `Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only disp...` |  |  | One-line description of the switch-notice check in the generated reference. |
 
-### task_guards.toml / task_guard
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `task_guard.prune_advisory` | `[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory...` |  |  | The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit. |
-
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
