@@ -346,7 +346,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `compact-declaration-guard` | Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks. |
 | `command` | command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook. |
 | `model-routing` | Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches. |
-| `failure-root-cause-nudge` | Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals and repeats within a turn. |
+| `failure-root-cause-nudge` | Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals, a shell glob/echo artefact beside output that printed fine, and repeats within a turn. |
 | `git-audit` | Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer. |
 | `verify-first-subagent` | SubagentStart context: injects the verify-first protocol (compact, or full when context.protocolLevel is full) into every spawned subagent. |
 | `verify-first-full` | SessionStart context: injects the verify-first protocol and discipline index for the session, Claude or Codex text. |
@@ -1394,7 +1394,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.script_not_a_run_flag` | `4 entries` |  |  | Per interpreter family, the flag pattern that means the command is not a script-file run: inline code, module, syntax check or stdin. |
 | `command.script_shells` | `sh, bash, zsh, dash` |  |  | Shells whose script run counts as work. |
 | `command.script_value_flags` | `12 items` |  |  | Interpreter options whose next word is their value, not the script. |
-| `command.setting_allow_bg_scratch` | `7 entries` |  |  | guards.allowBackgroundScratchScripts: the background scratch script allowance (default on). |
+| `command.setting_allow_bg_scratch` | `7 entries` |  |  | Allowance for background scratch scripts (default on). |
 | `command.setting_allow_gcloud_reads` | `7 entries` |  |  | guards.allowGcloudReads: the narrow read-only Google Cloud access (default on). |
 | `command.setting_allow_plain_push` | `7 entries` |  |  | guards.allowPlainPush: the plain git push chain allowance (default on). |
 | `command.setting_allow_read_only_verify` | `7 entries` |  |  | guards.allowReadOnlyVerify: the bounded single-target verification allowance (default on). |
@@ -2026,15 +2026,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `failure_nudge.artifact_line` | `^(?:-?(?:zsh\|bash\|sh\|ksh\|dash)):\s*(?:\d+:\s*)?(?:no matches found\|no match)\b` |  |  | Regex source (JavaScript syntax) of a line that is only the shell's complaint about a glob that matched nothing (zsh `no matches found`, `no match`), not a failure of the command itself. A failure whose error text holds such a line, other non-empty output and no error_marker word printed fine. |
 | `failure_nudge.cmd_close` | ``)` |  |  | Text after the shown command in the advisory headline. |
 | `failure_nudge.cmd_open` | ` (`` |  |  | Text before the shown command in the advisory headline. |
 | `failure_nudge.ellipsis` | `…` |  |  | Text appended to a cut command. |
+| `failure_nudge.error_marker` | `\b(?:error\|errors\|fatal\|failed\|failure\|traceback\|exception\|panic\|panicked\|den...` |  |  | Regex source (JavaScript syntax, case-insensitive) of the words that make a line of output an error: a failure whose other output holds one is not harmless and is nudged. |
 | `failure_nudge.event` | `PostToolUseFailure` |  |  | The hook event name in the advisory's output. |
 | `failure_nudge.filter_setting` | `6 entries` |  |  | Where the noise-filter switch is read from (guards.failureNudgeFilter, default on). |
 | `failure_nudge.gate_key` | `failure-root-cause-nudge` |  |  | The turn-gate key under which the once-per-turn state of this advisory is kept. |
 | `failure_nudge.guard_name` | `failure-root-cause-nudge` |  |  | The skip.json key that silences this hook. |
+| `failure_nudge.harmless_setting` | `6 entries` |  |  | Where the harmless-failure switch is read from (guards.failureNudgeHarmless, default on): stay silent when the only error text is a shell glob or echo artefact and the call's real output printed fine. |
 | `failure_nudge.max_cmd_len` | `80` |  |  | Longest command text, in UTF-16 units, shown in the advisory before it is cut. |
 | `failure_nudge.message_guard` | `root-cause` |  |  | The guard label shown in the advisory. |
+| `failure_nudge.min_output_lines` | `1` |  |  | Non-empty lines of output, besides the glob complaint, a failure must have printed to count as harmless. |
 | `failure_nudge.msg_instead` | `trace the failure before retrying or patching.` |  |  | Advisory advice. |
 | `failure_nudge.msg_what` | `this command failed{cmd}.` |  |  | Advisory headline; {cmd} is the shown command part or empty. |
 | `failure_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.failureRootCauseNudge, default on). |
@@ -2365,6 +2369,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `orch_state.auto_mode` | `spawn` |  |  | What context.orchFullOn = auto means: `spawn` (the default) sends the compact orchestration text at the start and the full rules once, on the coordinator's first spawn, per context epoch; `session` sends the full rules (about 7.6k characters) at every start, resume and compaction. A session that cannot be proven to run under Claude Code (no spawn marker possible) always gets `session`. |
 | `orch_state.codex_orch_full_on_setting` | `7 entries` |  |  | Codex delivery mode of the full rules. Where the Codex delivery mode of the full orchestration rules is read from (context.codexOrchFullOn). |
 | `orch_state.decisions` | `pending, none` |  |  | The decisions a marker may hold: the first is the one meaning the full text is still owed to the first spawn. |
 | `orch_state.dir` | `orch-full` |  |  | Directory of the orchestration markers and claims, relative to the state root. |
@@ -2548,7 +2553,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `judge.anthropic_env_optin` | `6 entries` |  |  | The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no env, no plugin option). |
+| `judge.anthropic_env_optin` | `6 entries` |  |  | Home-only switch that lets ANTHROPIC_API_KEY count as a key. |
 | `judge.anthropic_key_env` | `CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY` |  |  | The plugin option that holds the Anthropic API key. Only its presence is read here. |
 | `judge.anthropic_legacy_env` | `ANTHROPIC_API_KEY` |  |  | The legacy key variable, which counts only when guards.allowAnthropicEnvKey is on in the home settings file. Only its presence is read here. |
 | `judge.arg_model` | `{model}` |  |  | The argv element replaced by the model alias. |
@@ -2782,6 +2787,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.default_timeout_s` | `600` |  | s | The timeout of a Node hook whose hooks.json entry has none (0 in the table): the host's own default for a command hook (600 s on Claude per docs/KB-claude-code-hooks.md; Codex's default is not verified here, so the same bound is used). Never zero: a zero timeout would kill the hook at its first poll. |
 | `dispatch.defer_exit` | `75` |  |  | Exit code with which the dispatcher asks its wrapper to run the event's Node hooks one by one, as the host does (the joined output could not be delivered faithfully). EX_TEMPFAIL; the host reads it as a non-blocking hook error and shows stderr, so without a wrapper the deferral is visible, never silent. |
 | `dispatch.exact_chars` | `_- ,\|` |  |  | Besides letters and digits, the characters a Claude matcher may contain and still be an exact name or list. |
+| `dispatch.fail_open_counter` | `fail_open` |  |  | The status counter group (status.advisory.<group>.<check>) that counts the unanswered guard entries let through under guards.failOpenNonSafety. |
+| `dispatch.fail_open_notice_tag` | `dispatch-fail-open` |  |  | The once-per-session stamp tag of the notice told when a non-safety guard entry was let through unanswered. |
+| `dispatch.fail_open_setting` | `6 entries` |  |  | Non-safety guards pass when unanswered. Setting guards.failOpenNonSafety (default on): a guard event's entry whose check gave no answer (a late or missing daemon reply, a spent event budget) and that is not a safety guard (script.failure_mode_by_check lists the safety guards as `closed`: git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) is let through instead of blocking the tool call or holding the Stop. The pass is counted per check (status: advisory.fail_open) and told to the user once per session (script.msg_guard_down). Off = every unanswered guard entry blocks, as before. |
 | `dispatch.failure_mode` | `3 entries` |  |  | What a GUARD event does when the engine cannot decide, per path: `budget` (the event's budget_ms passed before every hook could start), `infra` (an unreadable payload or map, an entry whose check gave no answer, a lost table row, no engine answer) and `panic` (the dispatcher hit an internal error). `closed` blocks (exit 2, dispatch.msg_fail_closed, bounded on Stop events by dispatch.stop_block_cap), `open` lets the call through with a loud stderr line (dispatch.msg_no_node_open). A panic is `open` because a bug of the engine's own must not lock the user out of every tool. |
 | `dispatch.fallback_lists` | `2 entries` |  |  | Per host, the wrapper's fallback list relative to the plugin root (the same files as dispatch.generated_files): a defaults load is rejected when a list runs hooks for an event the table has no row for, and the dispatcher answers an event without a row with the neutral no-op only when this list marks it as a thin trigger. |
 | `dispatch.gen_default_kind` | `hooks` |  |  | The file `gen-hooks` prints when `--kind` is not given. |
@@ -2829,6 +2837,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_disabled_event` | `dispatcher switched off: {event} not dispatched` |  |  | Event-log detail for an event let through by a switched-off dispatcher. Placeholder: {event}. |
 | `dispatch.msg_fail_closed` | `anti-hall: the engine could not run the guards for {event} ({why}). The call ...` |  |  | Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}. |
 | `dispatch.msg_fail_closed_stop` | `anti-hall: the engine could not run the guards for {event} ({why}). The agent...` |  |  | Printed on stderr (exit 2) when a Stop or SubagentStop cannot run its guards and the block is still within dispatch.stop_block_cap. Placeholders: {event}, {why}. |
+| `dispatch.msg_fail_open_log` | `{check} ({event}): no answer, not a safety guard: let through` |  |  | Event-log detail of an unanswered non-safety guard entry that was let through. Placeholders: {check}, {event}. |
 | `dispatch.msg_hook_died` | `the hook was killed by a signal or could not be waited for` |  |  | Event-log detail when a Node hook was killed by a signal or could not be waited for. |
 | `dispatch.msg_hook_not_launched` | `no hook command is launched; the built-in check did not answer` |  |  | The reason a hook entry ends as one that could not run: the dispatcher launches no hook command; only a built-in check decides. |
 | `dispatch.msg_hook_spawn` | `the hook's command could not be started: {errno} {err}` |  |  | Event-log detail when a Node hook's command could not be started (the event code is the hook id). Placeholders: {errno} (os<n>, the OS error number), {err} (its text). |
@@ -2959,14 +2968,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.codex_transcript_patterns` | `(^\\|[\\/])rollout-[^\\/]*\.jsonl$, [\\/]\.codex[\\/]` |  |  | Regexes (JavaScript syntax) over transcript_path that mark a Codex payload: a rollout file name, or a .codex directory. |
 | `verify_first.compact_session` | `ANTI-HALL VERIFY-FIRST (re-sent at session start and after compaction). Full ...` |  |  | The compact SessionStart protocol; each <abs> is replaced by the plugin root directory (coreCompactSession). |
 | `verify_first.compact_subagent` | `ANTI-HALL VERIFY-FIRST. Full protocol: <abs>/PROTOCOL.md - Read it when a rul...` |  |  | The compact subagent protocol before the WORKER line; each <abs> is replaced by the plugin root directory (coreCompactSubagent). |
+| `verify_first.delivery_dir` | `vf-delivery` |  |  | Directory of the per-session protocol delivery records, under script.write_root. |
+| `verify_first.delivery_prefix` | `vf` |  |  | File-name prefix of a delivery record. |
+| `verify_first.fresh_sources` | `startup, clear, ` |  |  | SessionStart sources (the payload's `source`) that begin with an empty context: the whole compact text is sent. |
 | `verify_first.full_claude` | `VERIFY-FIRST + ROOT-CAUSE PROTOCOL (re-stated so it survives context growth a...` |  |  | The verify-first protocol a Claude session receives at SessionStart when context.protocolLevel is full (verify-first-core.js CORE_FULL then DISCIPLINES_INDEX, joined by newlines, byte for byte). |
 | `verify_first.full_codex` | `VERIFY-FIRST + ROOT-CAUSE PROTOCOL (re-stated so it survives context growth a...` |  |  | The same full text for a Codex session (DISCIPLINES_INDEX_CODEX in place of DISCIPLINES_INDEX). |
 | `verify_first.guard_subagent` | `verify-first-subagent` |  |  | The guard id verify-first-subagent answers to in skip.json. |
 | `verify_first.judge_child_env` | `2 entries` |  |  | Environment variable that marks the headless judge child; a hook that runs in it prints nothing. |
 | `verify_first.mn_line` | `M/N. Workers do not re-delegate; read-only research -> Explore; 3+ parallel/n...` |  |  | The model-routing and no-re-delegation line the compact SessionStart text gains when the orchestration hook is switched off (Claude). |
 | `verify_first.mn_line_codex` | `M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent;...` |  |  | The same line for a Codex session. |
+| `verify_first.repeat_session` | `ANTI-HALL VERIFY-FIRST: already delivered earlier this session. No speculatio...` |  |  | The one line sent when the session was already served the protocol and this start is neither fresh nor a compaction or resume; each <abs> is replaced by the plugin root directory. |
+| `verify_first.resend_session` | `ANTI-HALL VERIFY-FIRST (re-sent after compaction or resume; the full text was...` |  |  | The short protocol digest sent after a compaction or resume; each <abs> is replaced by the plugin root directory. |
+| `verify_first.resend_sources` | `compact, resume` |  |  | SessionStart sources after which the earlier text is gone or buried (the session was compacted or resumed): the short digest is sent. Any other source of an already-served session gets the one-line repeat. |
 | `verify_first.root_probe` | `hooks/install.sh` |  |  | File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file. |
 | `verify_first.setting_level` | `5 entries` |  |  | Where the protocol size is read from (context.protocolLevel: compact or full, default compact). |
+| `verify_first.setting_once` | `6 entries` |  |  | Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start. |
 | `verify_first.setting_orchestration` | `6 entries` |  |  | Orchestration rules switch. Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself. |
 | `verify_first.setting_session` | `6 entries` |  |  | Where the on/off switch of verify-first-full is read from (context.verifyFirstSession, default on). |
 | `verify_first.setting_subagent` | `6 entries` |  |  | Verify-first-subagent switch. Where the on/off switch of verify-first-subagent is read from (context.verifyFirstSubagent, default on). |
@@ -3336,6 +3352,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inject_gate.task_long_prefix` | `💡 anti-hall · task-tracker: capture EVERY user request` |  |  | How the long task-tracker directive starts (it is always passed on and restarts the short reminder's turn count). |
 | `inject_gate.task_short` | `💡 anti-hall · task-tracker: capture every request as a priority-sorted task; ...` |  |  | The exact short task-tracker reminder the task-tracker hook prints on a turn that is not the long form (a test keeps it equal to the Node text). |
 | `inject_gate.ups_event` | `UserPromptSubmit` |  |  | The event whose dispatch counts as one turn of the session. |
+
+### context_size.toml / context_size
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `context_size.ellipsis` | `…` |  |  | Appended to a summary that was cut. |
+| `context_size.events` | `SessionStart` |  |  | The hook events whose contexts are capped: the ones that fire at every start, resume and compaction. |
+| `context_size.file` | `{event}-full-{ts}-{pid}-{seq}.txt` |  |  | File name of the full texts of one event (in dispatch.spill_dir, mode 0600, swept like the other spill files). Placeholders: {event}, {ts} (milliseconds), {pid}, {seq} (a per-process counter: the daemon dispatches on several threads). |
+| `context_size.hook_caps` | `1 entries` |  |  | Per hook entry id, the inline cap in characters that replaces context_size.num_hook_cap (0 = no per-hook cap for that hook). The DevSwarm comms manual is reference text that the full mesh help also prints. |
+| `context_size.msg_ref` | `{summary}\n[anti-hall: full text, {chars} characters, in {path} - Read it bef...` |  |  | What a shrunk context becomes. Placeholders: {summary} the first line, {chars} the size of the full text, {path} the file that holds it. |
+| `context_size.msg_shrunk` | `{hooks} hook context(s) shrunk: {before} characters became {after} inline, th...` |  |  | Event-log detail after contexts were replaced by summaries. Placeholders: {hooks}, {before}, {after} (characters), {path}. |
+| `context_size.never` | `verify-first-full, verify-first-orch, handover-resume, engine-role-note` |  |  | Dispatch entry ids (a variant suffix is ignored) whose context is never shrunk: behavioural blocks that size themselves (the verify-first protocol and orchestration rules, delivered once per session or on the first spawn) and the handover resume steps, which are the task. |
+| `context_size.num_event_cap` | `6 entries` |  |  | Characters all hooks of one event may inline together (0 = no total). Over it, the largest shrinkable contexts become a summary line plus a file until the event fits. The host's own inline cap is dispatch.context_cap; this is the lower, token-oriented budget. |
+| `context_size.num_hook_cap` | `6 entries` |  |  | Characters one hook's context may take inline at the events in context_size.events before it becomes a summary line plus a file (context.inlineHookChars; 0 = no per-hook cap, only the event total applies). context_size.hook_caps overrides it per hook entry. |
+| `context_size.path_reserve` | `150` |  |  | Characters reserved for the file path in the size estimate of a shrunk context. |
+| `context_size.section_head` | `== {id} ==\n` |  |  | Heading before each hook's full text in that file. Placeholder: {id}. |
+| `context_size.summary_chars` | `280` |  |  | Longest summary line a shrunk context keeps inline: its first line, cut at a word end. |
+| `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
 
 ### session.toml / session
 
@@ -3849,7 +3883,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nested_spawn.msg_instead` | `report back to the coordinator if more agents are needed.` |  |  | What to do instead of a nested spawn. |
 | `nested_spawn.msg_what` | `this agent is a worker and can't start agents of its own.` |  |  | What the block says. |
 | `nested_spawn.msg_why` | `Nested agents hide their cost from the coordinator (one burned about 2.5M tok...` |  |  | Why nested spawns are blocked. |
-| `nested_spawn.setting` | `6 entries` |  |  | Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of its own; off blocks the Agent and Task call when its caller is not the main session. |
+| `nested_spawn.setting` | `6 entries` |  |  | On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them. |
 | `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): b...` |  |  | One-line description of the nested-spawn check in the generated reference. |
 
 ### spawn_guards.toml / spawn_ceiling
@@ -4394,7 +4428,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.prompt_id_key` | `prompt_id` |  |  | The Stop payload field that names the prompt. |
 | `task_guard.proven_only_setting` | `5 entries` |  |  | Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on). |
 | `task_guard.prune_advisory` | `[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory...` |  |  | The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit. |
-| `task_guard.prune_setting` | `6 entries` |  |  | How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter). |
+| `task_guard.prune_setting` | `6 entries` |  |  | Completed or cancelled tasks kept before the Stop advisory suggests pruning. |
 | `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
 | `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
 | `task_guard.state_blocks_key` | `blocks` |  |  | The loop state file's field for the number of blocks made in the current cap_scope window. |
@@ -4962,7 +4996,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `lane_test.sw` | `6 entries` |  |  | Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands. |
 | `lane_test.sw_allow_suites` | `6 entries` |  |  | Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside). |
 | `lane_test.sw_policy` | `7 entries` |  |  | Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run. |
-| `lane_test.sw_policy_main` | `6 entries` |  |  | Switch guards.testPolicyMainThread (default off): on makes testPolicy none apply to the main session as well, not only to subagents. |
+| `lane_test.sw_policy_main` | `6 entries` |  |  | On makes testPolicy none apply to the main session too (default off). |
 
 ### lane_waste.toml / lane_waste
 
@@ -5016,7 +5050,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wide_search.msg_what` | ``{cmd}` was stopped: it would scan all of `{root}`.` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches. |
 | `wide_search.msg_why` | `Scanning a whole disk or home folder takes minutes and can overload this Mac.` |  |  | Why whole-disk searches are blocked. |
 | `wide_search.summary` | `PreToolUse on Bash, every agent (subagents and the main thread): blocks a who...` |  |  | One-line description of the wide-search-guard check in the generated reference. |
-| `wide_search.sw_allow` | `6 entries` |  |  | Switch guards.allowWideSearch (default off): on lets every agent run whole-disk searches (the wide-search-guard stands aside). |
+| `wide_search.sw_allow` | `6 entries` |  |  | On lets every agent run whole-disk searches (default off). |
 | `wide_search.unresolvable_re` | `[*?\[\]{}$`]` |  |  | A path word the guard cannot resolve (a glob or a variable): it is not judged. Regular expression (Rust syntax). |
 | `wide_search.whole_disk` | `/` |  |  | The root a Spotlight search (mdfind) without a scope flag covers. |
 
@@ -5122,7 +5156,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `uncommitted.state_dir` | `.anti-hall/uncommitted` |  |  | Where the per-directory counts are cached, relative to the user home. |
 | `uncommitted.state_ext` | `.json` |  |  | Extension of a cache file. |
 | `uncommitted.summary` | `PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents...` |  |  | One-line description of the uncommitted-guard check in the generated reference. |
-| `uncommitted.sw` | `5 entries` |  |  | Switch guards.uncommittedWork (default on): off lets a subagent leave any amount of work uncommitted. |
+| `uncommitted.sw` | `5 entries` |  |  | Off lets a subagent leave work uncommitted (default on). |
 | `uncommitted.untracked_read_max` | `200000` |  |  | Largest untracked file read to count its lines; a larger one counts as uncommitted_lines_per_unread_file lines. |
 
 ### devswarm_gates.toml / devswarm_gates
@@ -5353,7 +5387,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `370 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `378 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7597,10 +7631,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_rt.probe_cache_racy_ms` | `2000` |  | ms | A heartbeat, plan or descriptor file modified more recently than this when it is read is read again by the next reconcile, even if its size and modification time look unchanged (a rewrite inside the clock's granularity could otherwise be missed). Older files are parsed once and kept until their inode, modification time or size changes. |
 | `devswarm_rt.reconcile_ms` | `60000` |  | ms | How often the whole state is re-read from its sources and diffed (the safety net under the event layer); every change it finds that events missed counts in `rt_reconcile_repairs`. |
 | `devswarm_rt.restart_grace_ms` | `120000` |  | ms | Changes found by the start-up diff (flagged while_down) are not notified before this long after start, and only if the condition still holds then. |
-| `devswarm_rt.set_line_enabled` | `6 entries` |  |  | Show the DevSwarm workspace dashboard segment in the statusline (on by default; it shows nothing when DevSwarm is absent or no workspace is active). |
+| `devswarm_rt.set_line_enabled` | `6 entries` |  |  | Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle). |
 | `devswarm_rt.set_line_format` | `6 entries` |  |  | The segment text. `{parts}` is replaced by the non-empty counts (see devswarm_rt.line_parts), in the order of devswarm_rt.line_order. |
 | `devswarm_rt.set_line_max_chars` | `8 entries` |  |  | The segment is cut to this many characters (an ellipsis marks the cut). |
-| `devswarm_rt.set_line_stale_ms` | `8 entries` |  |  | A snapshot (or one workspace's activity) observed longer ago than this is shown as `?` instead of a guess. |
+| `devswarm_rt.set_line_stale_ms` | `8 entries` |  |  | Data older than this shows as `?`, not a guess. |
 | `devswarm_rt.shadow_file` | `rt-shadow.ndjson` |  |  | The NDJSON file (in the engine state directory) the engine-versus-witness comparison appends to. |
 | `devswarm_rt.shadow_key_active` | `active` |  |  | The witness app-state field listing the active workspaces. |
 | `devswarm_rt.shadow_key_archived` | `archived` |  |  | The count field (inside the counts object) holding the archived total. |
@@ -7766,7 +7800,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `370 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `378 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8914,10 +8948,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `resource_watch.cooldown_s` | `7 entries` |  |  | Least time before the same process (or the same system warning) is named again (resourceWatch.cooldownSeconds). |
 | `resource_watch.cpu_pct` | `7 entries` |  |  | Warn when a process of a live session averages at least this much CPU (per-core percent, 100 = one core) over the whole window (resourceWatch.cpuPercent). |
 | `resource_watch.cpu_window_s` | `7 entries` |  |  | The window a CPU reading must hold for, in seconds (resourceWatch.cpuWindowSeconds); the sampling interval is schedule.procwatch_ms. |
+| `resource_watch.free_ram_ok_pct` | `7 entries` |  |  | Free RAM, in percent of physical memory, at or above which swap in use is NOT an alarm (resourceWatch.freeRamOkPercent; 0 = swap alone decides, the old behaviour). The OS parks idle pages in swap long before it is short of memory, so a large swap figure beside plenty of free RAM is normal. Free RAM is the macOS kernel's own free percentage (the figure `memory_pressure` prints) and Linux MemAvailable; where it is not known the swap threshold alone decides. |
 | `resource_watch.impact_kind` | `resource_warning` |  |  | Impact kind recorded for every resource warning. |
 | `resource_watch.keep_s` | `3600` |  | s | A warning stays in the report this long, so a session that starts or prompts later still sees it once. |
+| `resource_watch.mac_free_pct_sysctl` | `kern.memorystatus_level` |  |  | The macOS sysctl name of the free memory percentage (the figure `memory_pressure` prints as the system-wide memory free percentage). |
 | `resource_watch.mac_pressure_level` | `7 entries` |  |  | Warn when the macOS memory pressure level is at least this (2 warn, 4 critical; resourceWatch.macPressureLevel; 0 turns it off). |
 | `resource_watch.mac_pressure_sysctl` | `kern.memorystatus_vm_pressure_level` |  |  | The macOS sysctl name of the memory pressure level. |
+| `resource_watch.mac_ram_total_sysctl` | `hw.memsize` |  |  | The macOS sysctl name of the physical memory size, in bytes. |
 | `resource_watch.mac_swap_sysctl` | `vm.swapusage` |  |  | The macOS sysctl name of the swap usage record. |
 | `resource_watch.max_tracked` | `256` |  |  | The most processes whose CPU history is kept (the busiest first); the rest are not tracked. |
 | `resource_watch.mem_mb` | `7 entries` |  |  | Warn when a process of a live session holds at least this much memory, in MB (resourceWatch.memoryMb). |
@@ -8927,9 +8964,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `resource_watch.msg_instead` | `check whether the resource use is expected.` |  |  | What to do. |
 | `resource_watch.msg_mem_limit` | `{mb} MB` |  |  | Memory threshold text; {mb} MB. |
 | `resource_watch.msg_mem_usage` | `{mb} MB memory` |  |  | Memory usage text; {mb} MB. |
-| `resource_watch.msg_pressure` | `system memory pressure is {value} (threshold {limit})` |  |  | System memory pressure line; {value} the reading, {limit} the threshold. |
+| `resource_watch.msg_pressure` | `system memory pressure is {value} (threshold {limit}){ram}` |  |  | System memory pressure line; {value} the reading, {limit} the threshold, {ram} the free-RAM text (resource_watch.msg_ram; empty when not known). |
 | `resource_watch.msg_proc_what` | `pid {pid} ({name}, session {session}) is using {usage}; threshold {limit}` |  |  | Process warning line; {name} the command, {pid}, {session} the session pid, {usage} what it uses, {limit} the threshold. |
-| `resource_watch.msg_swap` | `system swap in use is {used} MB (threshold {limit} MB)` |  |  | System swap line; {used} MB in use, {limit} MB threshold. |
+| `resource_watch.msg_ram` | `; free RAM {free_mb} MB of {total_mb} MB ({free_pct}%)` |  |  | The free-RAM figure appended to a system line; {free_mb} MB free of {total_mb} MB, {free_pct} percent. |
+| `resource_watch.msg_swap` | `system swap in use is {used} MB (threshold {limit} MB){ram}` |  |  | System swap line; {used} MB in use, {limit} MB threshold, {ram} the free-RAM text (resource_watch.msg_ram; empty when not known). |
 | `resource_watch.msg_what` | `Resource use is high: {list}.` |  |  | Advisory first line; {list} the findings joined. |
 | `resource_watch.msg_why` | `A runaway process slows every session on this machine and can push it into swap.` |  |  | Why it matters. |
 | `resource_watch.percent_base` | `100` |  |  | The whole in a percentage. |
@@ -9037,8 +9075,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.tools` | `10 entries` |  |  | Tool names by role: edit (change a file), shell (run a command), agent (launch a subagent), todo (a task list rewrite), task_create (a new task-list item), task_update (a single task update), monitor / cron / wakeup (arm a wake path), read (look at a file or search: their targets count as recent work for the drift check, a read of the step's files is on-step). |
 | `agent_tracker.transcript` | `46 entries` |  |  | Field and value names of the Claude Code transcript lines the tracker reads (the host's own format). |
 | `agent_tracker.wake` | `4 entries` |  |  | How long each kind of wake path keeps the session reachable, in milliseconds: monitor (a Monitor without persistent: true, which ends at its own cap), persistent (a persistent Monitor), cron (a CronCreate job), wakeup_slack (added to a ScheduleWakeup's own delay). |
+| `agent_tracker.wake_coalesce_setting` | `8 entries` |  |  | Wake rows merge into one line per window. Setting agents.wakeCoalesceSeconds (seconds, default 20, 0 = off: every wake row prints at once): wake rows that arrive within this window of the first unprinted one are printed as ONE line that counts rows per agent (msg.agent_wake_merged), so a burst of completions costs one host notification instead of one each. A single row in the window prints unchanged, up to the window late. The rows are also in the coordinator's reminder queue, so nothing is lost by merging the line. |
 | `agent_tracker.wake_command` | `exec "$HOME/.anti-hall/ah-engine/bin/ah-engine" devswarm wake-watch --auto` |  |  | The Monitor command that arms the DevSwarm wake-watch. It names the stable engine path and no plugin root: the engine finds the plugin itself, and a root pinned to one cached version goes stale at the next update. |
 | `agent_tracker.wake_flag_auto` | `--auto` |  |  | The option the plugin's monitor entry passes: the harness started the watcher at session start, so the expected refusals (switched off, no session id, already armed) print nothing. |
+| `agent_tracker.wake_merge` | `2 entries` |  |  | Separators of a coalesced wake line: item_sep between agents, signal_sep between one agent's signals. |
 | `agent_tracker.wake_poll_ms` | `1000` |  | ms | How often the wake-watch looks at its session's wake feed (a size check of one file), in milliseconds. A quiet session costs no tokens. |
 | `agent_tracker.wake_prefix` | `anti-hall wake:` |  |  | The first words of the prompt `workspace reactivate-child` queues. DevSwarm stores that prompt as a direct mesh row from the parent, so the engine recognises a wake row by this prefix and never counts it as mail: not in a workspace's unread count, not in the direct total the wake-watch edge-triggers on. The wake prompt is built from it (`msg.native_wake_prompt`). |
 | `agent_tracker.wake_session_env` | `CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, ANTIHALL_SESSION_ID` |  |  | The variables that name the session the wake-watch belongs to, in order; the first non-empty one is the key of its wake feed. |
@@ -9799,8 +9839,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_sup.rt_why_fold_off` | `held: the journal fold removes raw files and is owner-gated (devswarm_sup.rt_...` |  |  | Why the journal fold is held: removing the raw journal needs devswarm_sup.rt_fold_alone, which is off. |
 | `devswarm_sup.set_app_sync` | `5 entries` |  |  | Sync the DevSwarm desktop app's state (archived flags, titles, message gaps) into anti-hall every tick. Node: devswarm.appSync. |
 | `devswarm_sup.set_child_gate_days` | `5 entries` |  |  | Days a per-session child-gate state file is kept before the housekeeping sweep removes it. Node: devswarm.childGateRetentionDays. A value that is not a positive number reads as the default. |
-| `devswarm_sup.set_dry_run_retention` | `5 entries` |  |  | Dry run of the native retention: it plans and compares with Node's planner, logs what it would tombstone and writes nothing (no archive, no tombstone, no state). |
-| `devswarm_sup.set_dry_run_verdicts` | `5 entries` |  |  | Dry run of the native liveness sweep: it computes every verdict and reports what it would write, but writes nothing and starts no Node work. Use it to look at the engine's decisions before it acts. |
+| `devswarm_sup.set_dry_run_retention` | `5 entries` |  |  | Dry run of retention: plans and logs what it would tombstone, writes nothing. |
+| `devswarm_sup.set_dry_run_verdicts` | `5 entries` |  |  | Dry run of the liveness sweep: computes verdicts, reports them, writes nothing. Use it to preview the engine's decisions. |
 | `devswarm_sup.set_grace_sec` | `{ type = "number", section = "devswarm", key = "graceSec", env = "ANTIHALL_DE...` |  |  | How long after SIGTERM the engine waits before it checks whether the process is still there. Node: devswarm.graceSec. |
 | `devswarm_sup.set_housekeeping_mode` | `6 entries` |  |  | Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep. |
 | `devswarm_sup.set_housekeeping_sec` | `7 entries` |  |  | Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300). |
@@ -12505,12 +12545,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `edit_guard.nudge_default_threshold` | `5` |  |  | The threshold used when the setting holds nothing usable. |
 | `edit_guard.nudge_note` | `💡 coordinator workload: pending work needs a workspace.\nDo instead: hand the...` |  |  | The once-per-session note to a DevSwarm Primary that keeps editing inline while actionable tasks are pending and no workspace is live. |
 | `edit_guard.nudge_prune_prefix` | `inline-work` |  |  | The writer prefix of the stale-file sweep of the counter files. |
-| `edit_guard.nudge_setting` | `6 entries` |  |  | Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on). |
+| `edit_guard.nudge_setting` | `6 entries` |  |  | Where the inline-work advisory's switch is read from. |
 | `edit_guard.nudge_sid_max` | `128` |  |  | The longest session id kept in the counter file name. |
 | `edit_guard.nudge_sid_unsafe` | `[^A-Za-z0-9_.-]` |  |  | Characters of the session id replaced by an underscore in the counter file name (a regular expression, JavaScript syntax). |
 | `edit_guard.nudge_state_ext` | `.json` |  |  | The extension of the inline-work counter file. |
 | `edit_guard.nudge_state_prefix` | `inline-work-` |  |  | The state file name of the inline-work counter before the session id (under the state directory). |
-| `edit_guard.nudge_threshold_setting` | `7 entries` |  |  | Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold, default 5, at least 1). |
+| `edit_guard.nudge_threshold_setting` | `7 entries` |  |  | Where the inline-work advisory's call threshold is read from. |
 | `edit_guard.repos_dir` | `.devswarm, repos` |  |  | DevSwarm's worktree root under the home directory, as its parts: a working directory below it belongs to a child workspace. |
 | `edit_guard.session_id_unsafe` | `[^A-Za-z0-9._-]` |  |  | Characters of a session id replaced by an underscore in the handover path (a regular expression, JavaScript syntax). |
 
@@ -13337,8 +13377,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `standdown.pre_event` | `PreToolUse` |  |  | The hook event name the stand-down note rides on (the delegate-only guards run on PreToolUse). |
 | `standdown.reasons` | `6 entries` |  |  | Reasons can_spawn returns: only model-independent routing bans count; rejecting one model is not a spawn stop. |
 | `standdown.redirect_re` | `(^\|[^0-9&>])>>?\s*(?!/dev/null)[^\s&>\|]` |  |  | A stdout redirect to a file (not /dev/null) in a command segment, JavaScript syntax: the output of that command is bounded. Stderr-only redirects (2>) and fd merges (2>&1) do not count. |
-| `standdown.setting` | `6 entries` |  |  | Switch guards.delegateStandDown (default on): while no agent can be spawned the delegate-only guards (standdown.guards) allow the main thread to do the work inline; off keeps them blocking. |
-| `standdown.spawn_setting` | `7 entries` |  |  | Host spawn capability: auto uses the request's advertised tools, otherwise standdown.hosts defaults; on/off is an explicit capability override. Codex hooks do not advertise native agent tools, so auto stands down unless the host supplies its tools. Claude defaults to Agent/Task availability. Applies to Claude and Codex. |
+| `standdown.setting` | `6 entries` |  |  | Default on: while no agent can be spawned the delegate-only guards (standdown.guards) allow the main thread to do the work inline; off keeps them blocking. |
+| `standdown.spawn_setting` | `7 entries` |  |  | Host spawn capability: auto uses the request's tools or standdown.hosts; on/off is an explicit capability override. Codex hooks do not advertise native agent tools, so auto stands down unless the host supplies its tools. Claude defaults to Agent/Task availability. Applies to Claude and Codex. |
 | `standdown.tool_fields` | `available_tools, tools` |  |  | Optional request/payload tool-inventory fields; an empty array explicitly means no tools. Entries may be names or objects with a name. |
 
 ### session_switches.toml / upfront
@@ -13851,6 +13891,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.agent_token_waste` | Advisory: an agent spends tokens with no progress. Placeholders: {agent}, {kind}, {tokens}, {window}. |
 | `msg.agent_usage` | Usage line of `ah-engine agents`. |
 | `msg.agent_wake_line` | The stdout line the wake-watch prints for one wake row; this is what the host delivers to the idle session. Placeholder: {text}. |
+| `msg.agent_wake_merged` | The one stdout line the wake-watch prints for several wake rows coalesced in a window. Placeholders: {n} (rows), {secs} (span from the first to the last row, rounded up), {items} (msg.agent_wake_merged_item per agent, joined by agent_tracker.wake_merge.item_sep). |
+| `msg.agent_wake_merged_item` | One agent of a coalesced wake line. Placeholders: {agent}, {n} (its rows), {signals} (its distinct signals joined by agent_tracker.wake_merge.signal_sep). |
 | `msg.agent_wake_reason_held` | Why the wake-watch did not arm: another live watcher already covers this session. |
 | `msg.agent_wake_reason_no_session` | Why the wake-watch did not arm: no session id in the environment. |
 | `msg.agent_wake_reason_off` | Why the wake-watch did not arm: a switch is off (agents.tracker or agents.wakeWatch). |

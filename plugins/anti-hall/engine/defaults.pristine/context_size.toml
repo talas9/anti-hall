@@ -12,7 +12,7 @@ doc = "Characters one hook's context may take inline at the events in context_si
 value = { section = "context", key = "inlineHookChars", env = "ANTIHALL_CONTEXT_INLINE_HOOK", option = "", default = 1500, min = 0 }
 
 [context_size.num_event_cap]
-doc = "Characters all hooks of one event may take inline together (context.inlineEventChars; 0 = no total). Over it, the largest shrinkable contexts become a summary line plus a file until the event fits. The host's own inline cap is dispatch.context_cap; this is the lower, token-oriented budget."
+doc = "Characters all hooks of one event may inline together (0 = no total). Over it, the largest shrinkable contexts become a summary line plus a file until the event fits. The host's own inline cap is dispatch.context_cap; this is the lower, token-oriented budget."
 value = { section = "context", key = "inlineEventChars", env = "ANTIHALL_CONTEXT_INLINE_EVENT", option = "", default = 6000, min = 0 }
 
 [context_size.events]

@@ -571,7 +571,7 @@ value = "use cheaper models for routine work."
 # ---- nested spawns (a subagent or teammate starting agents of its own) ----------------------------------------
 
 [nested_spawn.setting]
-doc = "Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of its own; off blocks the Agent and Task call when its caller is not the main session."
+doc = "On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them."
 value = { section = "guards", key = "allowNestedSpawns", type = "boolean", env = "ANTIHALL_ALLOW_NESTED_SPAWNS", option = "", default = false }
 
 [nested_spawn.guard_name]

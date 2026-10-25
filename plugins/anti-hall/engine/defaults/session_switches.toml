@@ -6,7 +6,7 @@
 # UserPromptSubmit and PreToolUse), ah-engine/src/learn.rs (the repeat learner, run on every blocking answer).
 
 [standdown.setting]
-doc = "Switch guards.delegateStandDown (default on): while no agent can be spawned the delegate-only guards (standdown.guards) allow the main thread to do the work inline; off keeps them blocking."
+doc = "Default on: while no agent can be spawned the delegate-only guards (standdown.guards) allow the main thread to do the work inline; off keeps them blocking."
 value = { section = "guards", key = "delegateStandDown", type = "boolean", env = "ANTIHALL_DELEGATE_STAND_DOWN", option = "", default = true }
 
 [standdown.guard_name]
@@ -143,7 +143,7 @@ doc = "One-line description of the switch-notice check in the generated referenc
 value = "Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice."
 
 [standdown.spawn_setting]
-doc = "Host spawn capability: auto uses the request's advertised tools, otherwise standdown.hosts defaults; on/off is an explicit capability override. Codex hooks do not advertise native agent tools, so auto stands down unless the host supplies its tools. Claude defaults to Agent/Task availability. Applies to Claude and Codex."
+doc = "Host spawn capability: auto uses the request's tools or standdown.hosts; on/off is an explicit capability override. Codex hooks do not advertise native agent tools, so auto stands down unless the host supplies its tools. Claude defaults to Agent/Task availability. Applies to Claude and Codex."
 value = { section = "guards", key = "agentSpawnAvailable", type = "enum", values = ["auto", "on", "off"], env = "ANTIHALL_AGENT_SPAWN_AVAILABLE", option = "", default = "auto" }
 
 [standdown.hosts]

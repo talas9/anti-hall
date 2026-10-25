@@ -4,7 +4,7 @@
 # every number, argument, pattern and text is here (D88).
 
 [uncommitted.sw]
-doc = "Switch guards.uncommittedWork (default on): off lets a subagent leave any amount of work uncommitted."
+doc = "Off lets a subagent leave work uncommitted (default on)."
 value = { section = "guards", key = "uncommittedWork", env = "ANTIHALL_UNCOMMITTED_GUARD", option = "", default = true }
 
 [uncommitted.guard_name]

@@ -270,7 +270,7 @@ doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
 value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
 
 [task_guard.prune_setting]
-doc = "How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)."
+doc = "Completed or cancelled tasks kept before the Stop advisory suggests pruning."
 value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
 
 [task_guard.state_prefix]

@@ -95,7 +95,7 @@ doc = "The legacy key variable, which counts only when guards.allowAnthropicEnvK
 value = "ANTHROPIC_API_KEY"
 
 [judge.anthropic_env_optin]
-doc = "The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no env, no plugin option)."
+doc = "Home-only switch that lets ANTHROPIC_API_KEY count as a key."
 value = { section = "guards", key = "allowAnthropicEnvKey", env = "", aliases = [], option = "", default = false }
 
 [judge.telemetry_log]
