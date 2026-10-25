@@ -153,6 +153,7 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | [`KB-handover-research.md`](./KB-handover-research.md) | 2026-09-24 sourced handover research: compaction loss, context rot, trigger points, Claude Code + Codex compaction/hook facts, receiver read-back; the gap review behind the 0.108 handover changes. |
 | [`CONTEXT-PRESERVATION-KB.md`](./CONTEXT-PRESERVATION-KB.md) | Slowing main-agent context growth — caching, sub-agent isolation, compaction, JIT retrieval. |
 | [`CODEX-KB-MIGRATION-MAP.md`](./CODEX-KB-MIGRATION-MAP.md) | Cross-reference between Claude-side and Codex-side KB docs. |
+| [`KB-account-hotswap-gates.md`](./KB-account-hotswap-gates.md) | Account hot-swap gate assessment: ToS compliance, OS Keychain safety, and live session boundaries (#268). |
 
 ## Reference / design
 
