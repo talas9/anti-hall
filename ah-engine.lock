@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "version": "0.2.0",
-  "tag": "ah-engine-v0.2.0",
-  "fingerprint": "55f9a59c47165a1756c971a24f4c81bf5baf0b4953067405c91c563470a8b707",
-  "prepare_run": 40149263716,
+  "version": "0.2.1",
+  "tag": "ah-engine-v0.2.1",
+  "fingerprint": "b818a070eb81a8f3a3011cc1f85666f7c2dc1dbe50bbe83372970851ebb662bc",
+  "prepare_run": 40181394499,
   "assets": {
-    "ah-engine-v0.2.0-aarch64-apple-darwin.tar.gz": "623f45beda47ad66b69be5a80f3c758b97c635265e8464d494bcdc5cb4f68316",
-    "ah-engine-v0.2.0-aarch64-unknown-linux-gnu.tar.gz": "5272e1962f45fbe005495695dc12d36e1d23feb642a708a4f6953e68f83aca74",
-    "ah-engine-v0.2.0-aarch64-unknown-linux-musl.tar.gz": "e3d0478c41c5c9b0d8733d952cd399b4a06e94cf4f7f7d03f6c92d48131b635f",
-    "ah-engine-v0.2.0-src.tar.gz": "144fad1c4a691a3834390c9e23f43d39a7303149730d3c2a3a3c0ed0bdfa52c6",
-    "ah-engine-v0.2.0-x86_64-apple-darwin.tar.gz": "862ed4ab986ff5c837153be5b994f058fe196572d9c62d8f88f07d24952600b4",
-    "ah-engine-v0.2.0-x86_64-unknown-linux-gnu.tar.gz": "a1d4afb43a82e5ed05627a2265aecd1f1570f173b5ddb63503a1e00612363f8b",
-    "ah-engine-v0.2.0-x86_64-unknown-linux-musl.tar.gz": "41f8286b068bc70617ba368628056d9d83231c5a75d1680ea68b5819ae7d2054"
+    "ah-engine-v0.2.1-aarch64-apple-darwin.tar.gz": "ff7af118cb9fc47f47ca380fa2dffdfcd4db319a3bb35c453b1844be68a6f804",
+    "ah-engine-v0.2.1-aarch64-unknown-linux-gnu.tar.gz": "c3cfa784ffd234d67b8f21f6e0c751d2ef1b6dca756800663a6dcbf26ba05620",
+    "ah-engine-v0.2.1-aarch64-unknown-linux-musl.tar.gz": "ae8232e018e9438328c8d89b3a2641d0841bdfe3edd71062f75a5111094885bd",
+    "ah-engine-v0.2.1-src.tar.gz": "885dca1105aa7df4290c77621d76990a79fb5da57efea2ddf30f97d1a87d27be",
+    "ah-engine-v0.2.1-x86_64-apple-darwin.tar.gz": "82218fb55f08432e47fcbbcd35b3e17ecba36245148754aa1a39f5c475b53ec6",
+    "ah-engine-v0.2.1-x86_64-unknown-linux-gnu.tar.gz": "b9f13a91fc7fc01dbbe8aef1ca4197f7c35ec7c6a0aaf88d4b3b48b4034fddd1",
+    "ah-engine-v0.2.1-x86_64-unknown-linux-musl.tar.gz": "84a0d1ad3ed7eb2569f22af93d79a8785fdad363e7f10a4f7188428d005c15c2"
   }
 }
