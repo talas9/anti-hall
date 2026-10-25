@@ -165,7 +165,7 @@ function tgReadState(path) {
   if (r.unsure) { ah.unable('task-guard:state_unsure'); return { hash: '', blocks: 0 }; }
   if (!r.invalid && r.v !== null && typeof r.v === 'object') {
     var h = r.v[ah.cfg('task_guard.state_hash_key')], b = r.v[ah.cfg('task_guard.state_blocks_key')];
-    return { hash: typeof h === 'string' ? h : '', blocks: typeof b === 'number' && isFinite(b) ? b : 0 };
+    return Object.assign({}, r.v, { hash: typeof h === 'string' ? h : '', blocks: typeof b === 'number' && isFinite(b) ? b : 0 });
   }
   return { hash: raw, blocks: 0 };
 }
@@ -411,6 +411,8 @@ function decide(p) {
   var sep = ah.cfg('task_guard.hash_sep');
   var hash = idle ? ah.sha1(ah.cfg('task_guard.idle_hash_tags').join(sep) + sep + tgIds(demand.dispatch)) : ah.sha1(tgIds(nudge));
   var prior = tgReadState(home + '/' + stateRel);
+  var cap = blockCap.open(prior, transcript, 'task_guard.cap_scope', home, stateRel);
+  prior = cap.state;
   if (hash === prior.hash || prior.blocks >= ah.cfgNum('task_guard.max_blocks')) return tgQuiet(out, tasks, home, sessionId);
   var cwd = typeof p.cwd === 'string' ? p.cwd : null;
   var sid = p.session_id ? String(p.session_id) : null;
@@ -427,8 +429,9 @@ function decide(p) {
   if (guard.status === 'ok' && idle) metrics = tgMetrics(guard);
   var plan = tk.unknownNote(tasks, home, sessionId, ah.cfg('task_guard.unknown_tag'));
   if (budget.spent) return tgExact(out);
+  if (!cap.backup()) return tgExact(out);
   if (budget.rel !== undefined && !ah.state.op(guard.home, 'after_reply', budget.rel, budget.body)) return tgExact(out);
-  var state = {}; state[ah.cfg('task_guard.state_hash_key')] = hash; state[ah.cfg('task_guard.state_blocks_key')] = prior.blocks + 1;
+  var state = cap.blocked(); state[ah.cfg('task_guard.state_hash_key')] = hash; state[ah.cfg('task_guard.state_blocks_key')] = prior.blocks + 1;
   if (!ah.state.op(home, 'after_reply', stateRel, JSON.stringify(state))) return tgExact(out);
   if (metrics !== null) { try { ah.state.writeAtomic(metrics.rel, metrics.body); } catch (e) { /* fail-open, as Node's writeMetrics */ } }
   var note = plan.write();

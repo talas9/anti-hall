@@ -301,9 +301,13 @@ value = "ANTIHALL_JUDGE_CHILD"
 # -- task-guard: the open-task decision (sharp idle-neglect block, generic block, loop state)
 
 [task_guard.max_blocks]
-doc = "Most Stop blocks task-guard makes in one session (both kinds counted); after that every Stop is let through."
+doc = "Most Stop blocks task-guard makes per cap_scope window (both kinds counted); a new real owner turn resets the default owner_turn window. Same-set dedupe remains independent."
 value = 5
 min = 1
+
+[task_guard.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [task_guard.hash_sep]
 doc = "The separator between the task ids hashed into the loop state (a NUL character)."
@@ -318,7 +322,7 @@ doc = "The loop state file's field for the hash of the last blocked set."
 value = "hash"
 
 [task_guard.state_blocks_key]
-doc = "The loop state file's field for the number of blocks made this session."
+doc = "The loop state file's field for the number of blocks made in the current cap_scope window."
 value = "blocks"
 
 [task_guard.pending_status]
@@ -860,9 +864,13 @@ min = 1
 # ---- tasklist-guard: the block path (the Stop that nudges) ---------------------------------------------------------------
 
 [tasklist_guard.max_blocks]
-doc = "How many blocks one session gets at most (MAX_BLOCKS); a session at the cap stops quietly."
+doc = "Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-signal dedupe remains independent; the separate once-per-session reduced-nag budget is unchanged."
 value = 3
 min = 1
+
+[tasklist_guard.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [tasklist_guard.work_bucket_max]
 doc = "Highest work bucket in the dedupe signal (the work count divided by the threshold, floored, capped here)."

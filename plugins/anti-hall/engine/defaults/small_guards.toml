@@ -1044,6 +1044,40 @@ value = "agent:"
 doc = "The slot label used for the main thread."
 value = "main"
 
+# ---- shared Stop block-cap windows (Claude transcripts and Codex rollouts) -----------
+
+[block_cap.owner_turn_scope]
+doc = "The cap_scope value that re-arms a guard after a real owner turn; session is the alternative, retaining the session-wide cap."
+value = "owner_turn"
+
+[block_cap.record_types]
+doc = "Transcript record and content types used to identify real owner turns on both hosts; Codex response_item duplicates are not owner-turn boundaries. The read window is turn_gate.tail_bytes."
+value = { claude_user = "user", codex_event = "event_msg", codex_user = "user_message", text = "text", tool_result = "tool_result" }
+
+[block_cap.non_owner_flags]
+doc = "Truthy record or message flags that mark injected, sidechain or compacted content rather than a real owner turn."
+value = ["isMeta", "isSidechain", "isCompactSummary"]
+
+[block_cap.owner_origins]
+doc = "Allowed origin kinds on an owner record or message when origin is present; absent origin is accepted on native user records."
+value = ["human", "user"]
+
+[block_cap.injected_re]
+doc = "Case-insensitive JavaScript regex identifying non-owner text: task notifications, reminders, command and hook output, teammate messages and cross-session mail on either host. These never reopen a block-cap window."
+value = '^\s*(<(?:task-notification|system-reminder|command-name|command-message|local-command[^\s>]*|user-prompt-submit-hook|cross-session-message|teammate-message|bash-std(?:out|err))\b|Stop hook feedback:|Message Type:\s*(?:MESSAGE|FINAL_ANSWER)\b)|Another (?:Claude|Codex) session sent a message|<cross-session-message\b'
+
+[block_cap.leading_reminders_re]
+doc = "Case-insensitive JavaScript regex removing leading system reminders before classifying the remaining owner text; reminders alone do not start a turn."
+value = '^(?:\s*<system-reminder>[\s\S]*?</system-reminder>)+'
+
+[block_cap.owner_id_fields]
+doc = "Record fields tried in order for a stable owner-turn identity (Claude uuid, then Codex timestamp); a record with neither falls back to its line hash. Unknown or unreadable turns retain the current window. The last block time is saved too, so rediscovering an older prompt does not reopen an unidentified window."
+value = ["uuid", "timestamp"]
+
+[block_cap.backup_suffix]
+doc = "Suffix appended to a guard state path for its pre-window-migration byte-for-byte backup. Created exclusively and read back before rewriting state; existing backups are never overwritten. An unreadable, incomplete or conflicting backup leaves state intact and the guard fails open."
+value = ".pre-owner-turn.bak"
+
 # ---- expected-failure classifier -------------------------------------------
 
 [expected_failure.predicate_verbs]
