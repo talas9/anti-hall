@@ -37,7 +37,7 @@ function sjPrior(path) {
   if (r.unsure) return null;
   if (r.invalid) return { hash: '', blocks: 0 };
   var v = r.v;
-  return { hash: v && typeof v.hash === 'string' ? v.hash : '', blocks: jx.isObj(v) && typeof v.blocks === 'number' && Number.isFinite(v.blocks) ? v.blocks : 0 };
+  return Object.assign({}, jx.isObj(v) ? v : {}, { hash: v && typeof v.hash === 'string' ? v.hash : '', blocks: jx.isObj(v) && typeof v.blocks === 'number' && Number.isFinite(v.blocks) ? v.blocks : 0 });
 }
 
 // The judge's echoed claim is model-produced and reflected into the block reason: control characters become spaces, bidi controls go,
@@ -99,6 +99,8 @@ function decide(p) {
   var hash = ah.sha1(last + ah.cfg('speculation_judge.hash_suffix'));
   var prior = sjPrior(home + '/' + stateRel);
   if (prior === null) { ah.unable('speculation-judge:state_unreadable'); prior = { hash: '', blocks: 0 }; }
+  var cap = blockCap.open(prior, tpOpen, 'speculation_judge.cap_scope', home, stateRel);
+  prior = cap.state;
   if (hash === prior.hash || prior.blocks >= ah.cfgNum('speculation_judge.max_blocks')) return 'allow';
   // The model call takes seconds: the resident daemon cannot wait for it (its exchange deadline and watchdog), so it hands the check to the
   // one-shot dispatcher process (judge.dispatch_blocking_checks), which runs this same script where the call may be made.
@@ -108,7 +110,8 @@ function decide(p) {
   var d = call.decision;
   // fail-open: no answer, a non-object, a missing decision field or "allow"
   if (d === null || typeof d !== 'object' || d.decision !== ah.cfg('speculation_judge.decision_block')) return 'allow';
-  if (!ah.state.writeAtomic(stateRel, JSON.stringify({ hash: hash, blocks: prior.blocks + 1 }))) return 'allow';
+  if (!cap.backup()) return 'allow';
+  if (!ah.state.writeAtomic(stateRel, JSON.stringify(Object.assign({}, cap.blocked(), { hash: hash, blocks: prior.blocks + 1 })))) return 'allow';
   var guard = ah.cfg('speculation_judge.guard_name');
   var what = text.render(ah.cfg('speculation_judge.msg_what'), { claim: sjClaim(typeof d.claim === 'string' && d.claim ? d.claim : null) });
   var reason = text.message('block', guard, { what: what, why: ah.cfg('speculation_judge.msg_why'), instead: ah.cfg('speculation_judge.msg_instead') });

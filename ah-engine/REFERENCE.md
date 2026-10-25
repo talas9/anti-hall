@@ -1774,6 +1774,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `api_guard.tool_shell` | `Bash` |  |  | Tool whose command can write a code file. |
 | `api_guard.tool_write` | `Write` |  |  | Tool whose code is `tool_input.content`. |
 
+### small_guards.toml / block_cap
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `block_cap.backup_suffix` | `.pre-owner-turn.bak` |  |  | Suffix appended to a guard state path for its pre-window-migration byte-for-byte backup. Created exclusively and read back before rewriting state; existing backups are never overwritten. An unreadable, incomplete or conflicting backup leaves state intact and the guard fails open. |
+| `block_cap.injected_re` | `^\s*(<(?:task-notification\|system-reminder\|command-name\|command-message\|local...` |  |  | Case-insensitive JavaScript regex identifying non-owner text: task notifications, reminders, command and hook output, teammate messages and cross-session mail on either host. These never reopen a block-cap window. |
+| `block_cap.leading_reminders_re` | `^(?:\s*<system-reminder>[\s\S]*?</system-reminder>)+` |  |  | Case-insensitive JavaScript regex removing leading system reminders before classifying the remaining owner text; reminders alone do not start a turn. |
+| `block_cap.non_owner_flags` | `isMeta, isSidechain, isCompactSummary` |  |  | Truthy record or message flags that mark injected, sidechain or compacted content rather than a real owner turn. |
+| `block_cap.owner_id_fields` | `uuid, timestamp` |  |  | Record fields tried in order for a stable owner-turn identity (Claude uuid, then Codex timestamp); a record with neither falls back to its line hash. Unknown or unreadable turns retain the current window. The last block time is saved too, so rediscovering an older prompt does not reopen an unidentified window. |
+| `block_cap.owner_origins` | `human, user` |  |  | Allowed origin kinds on an owner record or message when origin is present; absent origin is accepted on native user records. |
+| `block_cap.owner_turn_scope` | `owner_turn` |  |  | The cap_scope value that re-arms a guard after a real owner turn; session is the alternative, retaining the session-wide cap. |
+| `block_cap.record_types` | `5 entries` |  |  | Transcript record and content types used to identify real owner turns on both hosts; Codex response_item duplicates are not owner-turn boundaries. The read window is turn_gate.tail_bytes. |
+
 ### small_guards.toml / compact_decl
 
 | Key | Default | Env override | Unit | What it is |
@@ -2582,6 +2595,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `speculation_judge.backend_jev` | `jev` |  |  | The speculationBackend value that leaves the speculation question to Jev alone. |
 | `speculation_judge.backend_setting` | `7 entries` |  |  | Which backend answers the speculation question when the semantic judge is on: haiku (default, today's behaviour: the judge asks the model, except while Jev's own speculation integration is on) jev (the judge never asks the model; speculation-guard's Jev path is the only semantic check) or cascade (as jev, with the Jev-first cascade switched on for the speculation integration: a Jev answer under the escalation threshold is re-judged by the model in the background and applies from the next turn). Setting jev.speculationBackend, env ANTIHALL_JEV_SPECULATION_BACKEND. |
+| `speculation_judge.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
 | `speculation_judge.claim_bidi_re` | `[‪-‮⁦-⁩]` |  |  | Bidi overrides and isolates removed from the judge's claim (U+202A-U+202E, U+2066-U+2069). |
 | `speculation_judge.claim_controls_re` | `[\x00-\x1F\x7F-\x9F]` |  |  | Control characters replaced by a space in the judge's claim (Node: /[\x00-\x1F\x7F-\x9F]/g). |
 | `speculation_judge.claim_default` | `an unverified factual claim` |  |  | The claim named in the block when the judge gave none (Node: sanitizeClaim fallback). |
@@ -2599,7 +2613,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_judge.input_no_request` | `(not available)` |  |  | Shown when there is no user request. |
 | `speculation_judge.input_request` | `USER REQUEST:\n` |  |  | Heading of the user request in the judge input. |
 | `speculation_judge.jev_id` | `speculation` |  |  | The Jev integration whose mode on makes the judge stand down (Node: getMode('speculation') === 'on'). |
-| `speculation_judge.max_blocks` | `3` |  |  | Blocks per session after which the judge stays quiet (Node: MAX_BLOCKS). |
+| `speculation_judge.max_blocks` | `3` |  |  | Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-text dedupe remains independent. |
 | `speculation_judge.max_chunk` | `1500` |  |  | UTF-16 units one evidence chunk may contribute (Node: Math.min(1500, ...)). |
 | `speculation_judge.max_evidence` | `6000` |  |  | UTF-16 units of tool evidence the judge sees, newest chunks first (Node: MAX_EVIDENCE). |
 | `speculation_judge.max_message` | `8000` |  |  | UTF-16 units of the reply the judge sees (Node: MAX_MESSAGE). |
@@ -3489,6 +3503,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.ack_ci` | `13 items` |  |  | Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block. |
 | `speculation_guard.ack_cs` | `\b\w+\.\w+:\d+\b` |  |  | Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42. |
 | `speculation_guard.backtick_re` | ``[^`\n]+`` |  |  | Regex source of an inline code span. |
+| `speculation_guard.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
 | `speculation_guard.cite_min_hits` | `2` |  |  | How many distinct specifics of the reply must appear in the tool output of the same turn for the hedge to count as evidenced (tool results since the last human prompt are the citation). |
 | `speculation_guard.cite_min_len` | `6` |  | chars | The shortest word that can count as a cited specific. |
 | `speculation_guard.cite_output_max_chars` | `200000` |  | chars | The most tool-output text of the current turn searched for cited specifics, newest first. |
@@ -3517,7 +3532,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.judge_log` | `logs/jev-judge.ndjson` |  |  | The speculation guard's own Jev decision log, relative to the anti-hall home directory (Node: logs/jev-judge.ndjson); holds no message text and no key. |
 | `speculation_guard.judge_log_max_bytes` | `1048576` |  | bytes | The judge log is emptied before an append once it is larger than this (Node: JEV_LOG_MAX_BYTES). |
 | `speculation_guard.markers` | `15 items` |  |  | Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried. |
-| `speculation_guard.max_blocks` | `3` |  |  | Most blocks per session: after this many the guard stays quiet whatever the reply says (the text changes as the model reworks it, which defeats the per-text dedupe). |
+| `speculation_guard.max_blocks` | `3` |  |  | Most blocks per cap_scope window; retries with changing text share this budget. A new real owner turn resets it in owner_turn scope; same-text dedupe remains independent. |
 | `speculation_guard.modal_markers` | `must be, should be` |  |  | Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own. |
 | `speculation_guard.msg_instead` | `verify the claim or label it unverified.` |  |  | Block advice. |
 | `speculation_guard.msg_what` | `your reply makes an unverified claim ("{marker}").` |  |  | Block headline; {marker} is the hedge found. |
@@ -4241,6 +4256,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.cap_floor` | `1` |  |  | The lowest CPU-based parallel cap. |
 | `task_guard.cap_formula` | `~min(16, cores-2)` |  |  | The parallel cap as the idle-neglect block names it when no number was computed (the legacy rule). |
 | `task_guard.cap_reserve` | `2` |  |  | CPUs kept free when the parallel cap is derived from the CPU count. |
+| `task_guard.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
 | `task_guard.codex_patch_tool` | `apply_patch` |  |  | The Codex tool name that marks a Codex payload on its own. |
 | `task_guard.coordinator_owner_re` | `^(main\|orchestrator\|coordinator)$` |  |  | JavaScript regex source (case-insensitive) of an owner that is the orchestrator itself; such a task still counts as unowned. |
 | `task_guard.devswarm_hint` | ` If a DevSwarm workspace has it, set the owner ({upd} owner) to that workspac...` |  |  | The DevSwarm sentence added to the idle-neglect block's do-instead line while the app database shows a live workspace; `{upd}` is the task update tool. |
@@ -4264,7 +4280,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.label_sep` | `, ` |  |  | The separator between the tasks of the idle-neglect list. |
 | `task_guard.list_max` | `5` |  |  | Most tasks the generic block names. |
 | `task_guard.list_sep` | `; ` |  |  | The separator between the tasks of the generic block's list. |
-| `task_guard.max_blocks` | `5` |  |  | Most Stop blocks task-guard makes in one session (both kinds counted); after that every Stop is let through. |
+| `task_guard.max_blocks` | `5` |  |  | Most Stop blocks task-guard makes per cap_scope window (both kinds counted); a new real owner turn resets the default owner_turn window. Same-set dedupe remains independent. |
 | `task_guard.max_parallel_setting` | `6 entries` |  |  | A fixed cap on running background agents (guards.maxParallelDispatch); 0 uses the CPU-based cap. |
 | `task_guard.metrics_counters` | `demandsShown, demandsFollowed, demandsIgnored, idleNeglectBlocks` |  |  | The counters of the metrics file, each reset to 0 when it is not a finite number of at least 0, in this order. |
 | `task_guard.metrics_file` | `dispatch-demand-metrics.json` |  |  | The dispatch-demand metrics file inside the anti-hall directory (the idle-neglect block counts itself there). |
@@ -4305,7 +4321,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.prune_setting` | `6 entries` |  |  | How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter). |
 | `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
 | `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
-| `task_guard.state_blocks_key` | `blocks` |  |  | The loop state file's field for the number of blocks made this session. |
+| `task_guard.state_blocks_key` | `blocks` |  |  | The loop state file's field for the number of blocks made in the current cap_scope window. |
 | `task_guard.state_hash_key` | `hash` |  |  | The loop state file's field for the hash of the last blocked set. |
 | `task_guard.state_prefix` | `last-stop-taskset-` |  |  | Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`). |
 | `task_guard.status_max` | `24` |  |  | Longest task status in the generic block's list, in UTF-16 units. |
@@ -4370,6 +4386,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.append_claude` | `append with the Edit tool or a one-line `>>`, never the Write tool` |  |  | How to append to the history file (Claude wording). |
 | `tasklist_guard.append_codex` | `append with a one-line `>>`, never overwrite it` |  |  | How to append to the history file (Codex wording). |
 | `tasklist_guard.budget_setting` | `6 entries` |  |  | guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off). |
+| `tasklist_guard.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
 | `tasklist_guard.codex_fields` | `turn_id, model` |  |  | Payload fields that, all non-empty strings, mark a Codex payload (isCodexPayload). |
 | `tasklist_guard.codex_tool` | `apply_patch` |  |  | A tool name only Codex payloads carry (isCodexPayload). |
 | `tasklist_guard.details_dir` | `block-details` |  |  | Directory of the tasklist-guard details file under the anti-hall state directory. |
@@ -4407,7 +4424,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.jev_state` | `workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgre...` |  |  | The session summary Jev judges; the fields are the work count, threshold, the three sub-causes and the open task count. |
 | `tasklist_guard.jev_true` | `genuinely non-trivial — multi-part, benefits from task tracking` |  |  | What a true answer means. |
 | `tasklist_guard.low_priorities` | `p2, low, deferred` |  |  | Priorities (lowercase) below the actionable floor for the stalled-in-progress count. |
-| `tasklist_guard.max_blocks` | `3` |  |  | How many blocks one session gets at most (MAX_BLOCKS); a session at the cap stops quietly. |
+| `tasklist_guard.max_blocks` | `3` |  |  | Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-signal dedupe remains independent; the separate once-per-session reduced-nag budget is unchanged. |
 | `tasklist_guard.no_task_tools_setting` | `8 entries` |  |  | The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip). |
 | `tasklist_guard.omc_fresh_ms` | `7200000` |  |  | How recent a loop state's timestamp must be for the loop to count as active. |
 | `tasklist_guard.omc_kill_env` | `DISABLE_OMC` |  |  | Environment variable that disables oh-my-claudecode (value 1). |
@@ -5056,7 +5073,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_kind_inbox` | `inbox` |  |  | The stop-policy kind of known unread parent mail. |
 | `devswarm_gates.cg_kind_report` | `heartbeat-report` |  |  | The stop-policy kind of the heartbeat report the child owes. |
 | `devswarm_gates.cg_kind_unknown` | `inbox-unknown` |  |  | The stop-policy kind of an unread count the gate cannot prove empty. |
-| `devswarm_gates.cg_max_blocks` | `2` |  |  | Blocks per stable kind and session before the child gate yields (MAX_BLOCKS); a kind re-opens only when its condition is observed cleared. |
+| `devswarm_gates.cg_max_blocks` | `2` |  |  | Intentional per-stable-kind, per-session budget before the child gate yields (MAX_BLOCKS), rather than an owner-turn cap: a kind re-opens only when its condition is observed cleared. New owner turns alone must not re-arm an unresolved mailbox or heartbeat condition. |
 | `devswarm_gates.cg_nonce_prefix_len` | `12` |  |  | Characters of a reader nonce shown in the attempt-mismatch notice. |
 | `devswarm_gates.cg_path_env` | `PATH` |  |  | The environment variable the native probe program is looked up in. |
 | `devswarm_gates.cg_policy_dir` | `stop-policy` |  |  | Directory of the shared stop-policy budget files, under the DevSwarm state directory. |

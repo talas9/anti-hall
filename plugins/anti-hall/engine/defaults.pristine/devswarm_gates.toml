@@ -132,7 +132,7 @@ doc = "Hex characters of the SHA-1 of the transcript path that key a session wit
 value = 16
 
 [devswarm_gates.cg_max_blocks]
-doc = "Blocks per stable kind and session before the child gate yields (MAX_BLOCKS); a kind re-opens only when its condition is observed cleared."
+doc = "Intentional per-stable-kind, per-session budget before the child gate yields (MAX_BLOCKS), rather than an owner-turn cap: a kind re-opens only when its condition is observed cleared. New owner turns alone must not re-arm an unresolved mailbox or heartbeat condition."
 value = 2
 
 [devswarm_gates.cg_reset_ms]

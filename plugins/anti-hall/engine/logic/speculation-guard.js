@@ -1,7 +1,7 @@
 // check = "speculation-guard" (Stop; mirrors hooks/speculation-guard.js). Takes the reply being stopped (the payload's
 // last_assistant_message, else the transcript's last assistant text), looks for hedge words that assert without evidence ("probably",
 // "should be", "I suspect"), and blocks once when it finds one and the reply holds no acknowledgment that would make the hedge
-// honest. A reply is blocked once per distinct text and at most a few times per session, so the guard can never wedge a session.
+// honest. A reply is blocked once per distinct text and at most a few times per configured window, so retries cannot wedge a turn.
 // While the Jev master switch is on the reply is also asked about on the Jev lane (add-block trust: a confident "speculative" adds a
 // block; a hedge under a plan or expectation heading is asked once more with relax-block trust), every decision is written to the
 // guard's own jev-judge.ndjson, and the Stop after a block reports that block's outcome to the Jev decision log. Anything this
@@ -123,7 +123,7 @@ function sgPrior(path) {
   if (v && typeof v === 'object') {
     var pending = null;
     if (jx.isObj(v.pending) && typeof v.pending.h === 'string' && typeof v.pending.source === 'string') pending = { h: v.pending.h, source: v.pending.source };
-    return { hash: typeof v.hash === 'string' ? v.hash : '', blocks: typeof v.blocks === 'number' && Number.isFinite(v.blocks) ? v.blocks : 0, pending: pending };
+    return Object.assign({}, v, { hash: typeof v.hash === 'string' ? v.hash : '', blocks: typeof v.blocks === 'number' && Number.isFinite(v.blocks) ? v.blocks : 0, pending: pending });
   }
   // a legacy file holding just a hash (or any other JSON scalar): the whole text is the blocked hash
   return { hash: t, blocks: 0, pending: null };
@@ -210,6 +210,8 @@ function decide(p) {
   if (!markerText.trim()) markerText = lastText;
   var msgHash = ah.sha1(lastText);
   var prior = sgPrior(home + '/' + stateRel);
+  var cap = blockCap.open(prior, transcript, 'speculation_guard.cap_scope', home, stateRel);
+  prior = cap.state;
   var guard = ah.cfg('speculation_guard.guard_name');
   var skipped = ah.settings.skipped(guard);
   var jevOn = ah.jev.enabled();
@@ -239,7 +241,8 @@ function decide(p) {
     else if (sgHasAck(lastText)) outcome = ah.cfg('speculation_guard.outcome_evidence');
     else if (sgHit(markerText) !== null) outcome = ah.cfg('speculation_guard.outcome_repeat');
     if (outcome !== null) ah.jev.recordOutcome(jevId, prior.pending.h, outcome, prior.pending.source, typeof p.cwd === 'string' ? p.cwd : null);
-    ah.state.writeAtomic(stateRel, JSON.stringify({ hash: prior.hash, blocks: prior.blocks, pending: null }));
+    if (!cap.backup()) return 'allow';
+    ah.state.writeAtomic(stateRel, JSON.stringify(Object.assign({}, prior, { pending: null })));
   }
   if (skipped) return 'allow';
 
@@ -306,7 +309,8 @@ function decide(p) {
 
   var pendingH = jevBlock ? (jevHash || msgHash) : msgHash;
   var source = jevBlock ? ah.cfg('speculation_guard.source_jev') : (inference !== null ? ah.cfg('inference.source') : ah.cfg('speculation_guard.source_regex'));
-  var body = JSON.stringify({ hash: msgHash, blocks: prior.blocks + 1, pending: { h: pendingH, source: source } });
+  var body = JSON.stringify(Object.assign({}, cap.blocked(), { hash: msgHash, blocks: prior.blocks + 1, pending: { h: pendingH, source: source } }));
+  if (!cap.backup()) return finish('allow', 'allow');
   if (!ah.state.writeAtomic(stateRel, body)) return finish('allow', 'allow');
   ah.state.prune(ah.cfg('speculation_guard.prune_prefix'), stateName);
   var what = jevBlock ? ah.cfg('speculation_guard.msg_what_jev')
