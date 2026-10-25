@@ -6,7 +6,7 @@ Every behavioral or shipped-content change bumps the version and follows this ch
 
 - Day-to-day work is committed and pushed to `dev`. Pushes to `dev` run no CI, so `cargo check` and a release build of what changed before pushing.
 - `main` changes only through a pull request from `dev`. A repository ruleset blocks direct pushes, force pushes and deletion of `main`.
-- A pull request to `main` runs the engine workflow (`ah-engine.yml`, job `rust`) and the retired-suite placeholder `test.yml` and `.github/workflows/pr-source.yml`. Two checks are required to merge: `dev-only` (from `pr-source.yml`), which fails unless the source branch is this repository's `dev`, and `tests-passed` (a placeholder job in `test.yml` now; the rulesets should require `rust (ubuntu-latest)` instead).
+- A pull request to `main` runs the engine workflow (`ah-engine.yml`: the full pack, jobs `rust`, `no-node`, `ah-hook`, `doc-check`, `supply-chain`) and `.github/workflows/pr-source.yml`. Required to merge: `dev-only` (from `pr-source.yml`), which fails unless the source branch is this repository's `dev`, `privacy-scan`, and `tests-passed`, the always-running aggregator job of `ah-engine.yml`, which fails unless every job of the full pack succeeded.
 - `main` is what users and the plugin directory install from, so every merge to `main` is a release-quality event.
 
 ## Checklist (in order)
