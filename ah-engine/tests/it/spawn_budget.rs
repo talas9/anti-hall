@@ -38,6 +38,29 @@ fn usage(five: f64, weekly: f64) -> String {
     .to_string()
 }
 
+/// The tracker's proof that the first `n` agents of `running(n)` are live: a fresh, readable subagent transcript each and a retained
+/// tracker row for it. `spawn_ceiling.ignore_unknown_liveness` (default true) counts a transcript row only on such proof, so a bare
+/// transcript row no longer fills a spawn slot.
+fn tracked(home: &Path, n: usize) {
+    let mut st = ah_engine::agents::State::default();
+    for i in 0..n {
+        let id = format!("a{i:015x}");
+        let rel = format!(".claude/projects/p/s/subagents/agent-{id}.jsonl");
+        put(home, &rel, &format!("{}\n", json!({"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}})));
+        let a = ah_engine::agents::Agent {
+            id: id.clone(),
+            kind: "subagent".into(),
+            parent: "s".into(),
+            name: format!("lane {i}"),
+            cwd: home.to_string_lossy().into_owned(),
+            path: home.join(rel).to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        st.agents.insert(id, a);
+    }
+    put(home, ".anti-hall/agent-tracker/state.json", &serde_json::to_string(&st).unwrap());
+}
+
 const CACHE: &str = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json";
 
 /// One spawn through the check: (exit code, stdout).
@@ -68,6 +91,7 @@ fn spawn(home: &Path) -> (i32, String) {
 fn ceiling_blocks_at_twelve_running_and_names_them() {
     let h = scratch("ceil");
     put(&h, "t.jsonl", &running(12));
+    tracked(&h, 12);
     let (code, out) = spawn(&h);
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("spawn ceiling") && out.contains("12 agents") && out.contains("limit 12"), "{out}");
@@ -79,6 +103,7 @@ fn ceiling_blocks_at_twelve_running_and_names_them() {
 fn ceiling_shrinks_near_the_limit() {
     let h = scratch("shrink");
     put(&h, "t.jsonl", &running(6));
+    tracked(&h, 6);
     put(&h, CACHE, &usage(10.0, 86.0)); // step 85 -> ceiling 12 - 6 = 6
     let (code, out) = spawn(&h);
     assert_eq!(code, 2, "{out}");
