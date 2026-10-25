@@ -171,7 +171,7 @@ pub(crate) fn tokens_since_outcome(a: &Agent, now: u64) -> u64 {
 /// The burn breaker: tokens spent since the last outcome reached the soft band (`burn_soft`: warn) or the hard line (`burn_hard`:
 /// the agent's tool calls are blocked by the `burn-breaker` check except commit, push, status and its report).
 fn burn(env: &Env, a: &Agent, now: u64, soft: bool) -> Option<Raised> {
-    if !running(a) || a.kind == kind_name("heartbeat") || !env.switch("burn.sw") || (soft && owner_active(env, a, now)) {
+    if !running(a) || a.kind == kind_name("heartbeat") || !env.switch("burn.sw") {
         return None;
     }
     let (lo, hi) = (defaults::num("burn.soft_tokens_no_outcome"), defaults::num("burn.hard_tokens_no_outcome"));

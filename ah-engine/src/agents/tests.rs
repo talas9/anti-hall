@@ -1565,7 +1565,10 @@ fn nudge_home(tag: &str) -> (PathBuf, u64, PathBuf) {
 fn spend_cycle(child: &Path, k: u64, b: u64) -> (Vec<String>, Vec<String>) {
     let _ = child;
     (
-        vec![tool(b, &format!("k{k}"), 10, &format!("g{k}"), "Bash", json!({"command": "git commit -m step"})), result(b + 1000, &format!("g{k}"), "ok", false)],
+        vec![
+            tool(b, &format!("k{k}"), 10, &format!("g{k}"), "Bash", json!({"command": "git commit -m step"})),
+            result(b + 1000, &format!("g{k}"), "ok", false),
+        ],
         vec![asst(b + 2 * MIN, &format!("w{k}"), 700_000, 10, json!([{"type": "text", "text": "reading"}]), None)],
     )
 }
@@ -1598,7 +1601,11 @@ fn snooze_scenario(tag: &str, extra: &[(&str, &str)], cycles: u64, snooze_min: u
     let ids: std::collections::BTreeSet<String> = rows.iter().map(|r| r["id"].as_str().unwrap_or("").to_string()).collect();
     let opened = st.nudges.len() + st.nudge_log.iter().filter(|n| n.trigger != "dead").count();
     let most = st.nudges.values().chain(st.nudge_log.iter()).map(|n| n.snoozes).max().unwrap_or(0);
-    println!("MEASURE {tag}: nudges_opened={opened} delivery_rows={} distinct_reminders={} snooze_answers={answers} snoozes_counted={most}", rows.len(), ids.len());
+    println!(
+        "MEASURE {tag}: nudges_opened={opened} delivery_rows={} distinct_reminders={} snooze_answers={answers} snoozes_counted={most}",
+        rows.len(),
+        ids.len()
+    );
     (opened, rows.len(), ids.len(), answers, most)
 }
 
@@ -1678,7 +1685,8 @@ fn a_session_registered_on_the_primary_checkout_is_exempt_whatever_id_the_app_ga
     std::fs::create_dir_all(&checkout).unwrap();
     let checkout = checkout.canonicalize().unwrap();
     assert!(std::process::Command::new("git").args(["init", "-q"]).arg(&checkout).status().unwrap().success());
-    std::fs::write(h.join(".anti-hall/devswarm/workspaces/ws1.json"), json!({"id":"ws-main-7","sessionId":"sessW","worktreePath":checkout}).to_string()).unwrap();
+    std::fs::write(h.join(".anti-hall/devswarm/workspaces/ws1.json"), json!({"id":"ws-main-7","sessionId":"sessW","worktreePath":checkout}).to_string())
+        .unwrap();
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     let a = agent(&st, "sessW");

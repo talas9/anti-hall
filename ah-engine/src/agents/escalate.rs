@@ -30,7 +30,8 @@ pub(super) fn word(k: &str) -> &'static str {
 /// registered as a DevSwarm workspace is a Primary when its descriptor id says so or when its checkout is the project's Primary
 /// checkout (the app may register that checkout under a non-primary id, and its session then has kind `workspace`, not `main`).
 pub(super) fn primary(a: &Agent) -> bool {
-    list("exempt_kinds").contains(&a.kind.as_str()) || a.ws.as_ref().is_some_and(|w| w.primary || w.id.starts_with(defaults::text("agent_tracker.primary_prefix")))
+    list("exempt_kinds").contains(&a.kind.as_str())
+        || a.ws.as_ref().is_some_and(|w| w.primary || w.id.starts_with(defaults::text("agent_tracker.primary_prefix")))
 }
 
 /// The processes that hold `path` open, with their command lines.

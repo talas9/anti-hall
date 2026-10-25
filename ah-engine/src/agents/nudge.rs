@@ -433,7 +433,13 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             s.held += 1;
             if s.held == 1 {
                 let (child, trig) = k.split_once('|').unwrap_or((&k, ""));
-                rec(env, word("class"), word("ev_snooze_held"), Outcome::Advise, Fields::new().tok("agent", child).tok("trigger", trig).num("snoozes", s.snoozes).num("snooze_min", s.min));
+                rec(
+                    env,
+                    word("class"),
+                    word("ev_snooze_held"),
+                    Outcome::Advise,
+                    Fields::new().tok("agent", child).tok("trigger", trig).num("snoozes", s.snoozes).num("snooze_min", s.min),
+                );
             }
         }
     }
@@ -598,7 +604,13 @@ fn follow(env: &Env, st: &mut State) {
             && now.saturating_sub(n.last_sent) >= lim("wake_fallback_ms")
             && live(st, &n.parent)
         {
-            let r = Reminder { id: format!("{}-{}-q", n.id, n.reminders), ts: now, signal: word("signal").into(), agent: n.child.clone(), text: n.last_text.clone() };
+            let r = Reminder {
+                id: format!("{}-{}-q", n.id, n.reminders),
+                ts: now,
+                signal: word("signal").into(),
+                agent: n.child.clone(),
+                text: n.last_text.clone(),
+            };
             if SessionQueue.deliver(env, &n.parent, &r).is_ok() {
                 n.fallback_at = now;
                 n.path = [n.path.as_str(), word("path_queue")].join(word("path_join"));
@@ -1117,7 +1129,16 @@ pub fn run_answer(p: &Parsed) -> i32 {
     match sinks::append(&env.dir().join(defaults::raw("agent_nudge.paths").str_field("answers")), &row) {
         Ok(()) => {
             let said = defaults::render("msg.agent_nudge_recorded", &[("child", child), ("answer", &answer)]);
-            println!("{}", if p.json { row.to_string() } else if note.is_empty() { said } else { format!("{said}\n{note}") });
+            println!(
+                "{}",
+                if p.json {
+                    row.to_string()
+                } else if note.is_empty() {
+                    said
+                } else {
+                    format!("{said}\n{note}")
+                }
+            );
             0
         }
         Err(e) => {
