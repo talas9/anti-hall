@@ -1316,8 +1316,8 @@ doc = "The context gauge line. Placeholders: bar col pct reset dim tokens."
 value = "{bar} {col}{pct}%{reset} {dim}context{reset}{tokens}"
 
 [statusline.activity_template]
-doc = "The swarm activity line. Placeholders: cells cyan reset dim blue count plural."
-value = "[{cells}] {cyan}orchestrating{reset} {dim}·{reset} {blue}{count} agent{plural}{reset} {dim}active{reset}"
+doc = "The swarm activity line. Placeholders: cells cyan reset dim blue count plural ctx (the context gauge, empty when unknown)."
+value = "[{cells}] {cyan}orchestrating{reset} {dim}·{reset} {blue}{count} agent{plural}{reset} {dim}active{reset}{ctx}"
 
 [statusline.git_name_args]
 doc = "The git question for the user name."
@@ -1391,17 +1391,27 @@ value = "wk:"
 doc = "Before the 5-hour usage percentage."
 value = "5h:"
 
-[statusline.usage_ctx_gap]
-doc = "Between the usage segment and the context percentage that follows it."
-value = " "
-
 [statusline.version_key]
 doc = "The setting that shows the version chip."
 value = "version"
 
-[statusline.usage_sep]
-doc = "Between the weekly and the 5-hour usage percentages."
-value = " | "
+[statusline.sep_pad]
+doc = "Spaces on each side of every separator on the rich line (the usage chip uses the same separator)."
+value = 1
+min = 0
+max = 4
+
+[statusline.activity_marker]
+doc = "The moving marker of the swarm activity bar (never the fill glyph of the context bar)."
+value = "◆"
+
+[statusline.duration_min_unit]
+doc = "After the minutes of the duration."
+value = "m"
+
+[statusline.duration_sec_unit]
+doc = "After the seconds of the duration."
+value = "s"
 
 [statusline.no_color_env]
 doc = "The variable that turns colors off."
@@ -1630,10 +1640,6 @@ value = "🤖 "
 [statusline.clock_icon]
 doc = "Before the duration."
 value = "⏱ "
-
-[statusline.ctx_mark]
-doc = "Before the context percentage."
-value = "● "
 
 [statusline.email_icon]
 doc = "Before the account email."

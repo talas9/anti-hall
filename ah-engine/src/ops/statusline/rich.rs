@@ -267,6 +267,18 @@ fn engine_version() -> Option<String> {
     v.chars().next().is_some_and(|ch| ch.is_ascii_digit()).then_some(v)
 }
 
+/// The one separator of the rich line: the configured glyph with `statusline.sep_pad` spaces on each side.
+fn sep_str(c: &Colors) -> String {
+    let pad = " ".repeat(defaults::num("statusline.sep_pad") as usize);
+    format!("{pad}{}{}{}{pad}", c.c("dim"), defaults::text("statusline.sep"), c.c("reset"))
+}
+
+/// Minutes and seconds with the configured unit suffixes (seconds alone under a minute).
+fn format_duration(mins: f64, secs: f64) -> String {
+    let (mu, su) = (defaults::text("statusline.duration_min_unit"), defaults::text("statusline.duration_sec_unit"));
+    if mins > 0.0 { format!("{}{mu}{}{su}", n(mins), n(secs)) } else { format!("{}{su}", n(secs)) }
+}
+
 fn ah_chip(cx: &Ctx, root: &str, c: &Colors) -> String {
     if !crate::ops::settings::effective_bool(defaults::text("statusline.section"), defaults::text("statusline.version_key")) {
         return String::new();
@@ -294,7 +306,7 @@ fn ah_chip(cx: &Ctx, root: &str, c: &Colors) -> String {
     let unknown = defaults::text("statusline.chip_unknown");
     let label =
         defaults::render("statusline.chip_fmt", &[("plugin", &version.as_deref().unwrap_or(unknown)), ("engine", &engine.as_deref().unwrap_or(unknown))]);
-    format!("  {}{}{}  {col}{prefix}{label}{}", c.c("dim"), defaults::text("statusline.sep"), c.c("reset"), c.c("reset"))
+    format!("{}{col}{prefix}{label}{}", sep_str(c), c.c("reset"))
 }
 
 fn effort(data: &Option<J>) -> Option<String> {
@@ -385,8 +397,7 @@ fn usage_chip(data: &Option<J>, c: &Colors) -> String {
     if parts.is_empty() {
         return String::new();
     }
-    let joiner = format!("{}{}{}", c.c("dim"), defaults::text("statusline.usage_sep"), c.c("reset"));
-    parts.join(&joiner)
+    parts.join(&sep_str(c))
 }
 
 /// `generateStatusline()` for the stdin text `input_raw` and the process working directory `cwd`.
@@ -436,7 +447,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         let ms = if truthy(cost.get("total_duration_ms")) { j_number(cost.get("total_duration_ms").unwrap_or(&J::Null)) } else { 0.0 };
         let mins = (ms / 60000.0).floor();
         let secs = ((ms % 60000.0) / 1000.0).floor();
-        duration = if mins > 0.0 { format!("{}m{}s", n(mins), n(secs)) } else { format!("{}s", n(secs)) };
+        duration = format_duration(mins, secs);
         let usd = cost.get("total_cost_usd").filter(|v| truthy(Some(v)));
         match usd {
             Some(J::Num(x)) => cost_usd = *x,
@@ -460,7 +471,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         let s = safe_label(&basename(&project_root));
         if s.is_empty() { defaults::text("statusline.default_project").to_string() } else { s }
     };
-    let sep = format!("  {}{}{}  ", c.c("dim"), defaults::text("statusline.sep"), c.c("reset"));
+    let sep = sep_str(&c);
     let mut h = format!("{}{}{}{project_name}{}", c.c("bold"), c.c("brightPurple"), defaults::text("statusline.header_mark"), c.c("reset"));
     if let Some(sm) = &submodule {
         h.push_str(&format!("{}/{}{}{}{}{}", c.c("dim"), c.c("reset"), c.c("bold"), c.c("brightPurple"), safe_label(sm), c.c("reset")));
@@ -514,12 +525,9 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     }
     // the usage chip sits right before the context percentage (one segment, a gap between), each colored by its own level
     let usage = usage_chip(&data, &c);
-    let ctx = used_pct
-        .filter(|p| *p > 0.0)
-        .map(|p| format!("{}{}{}% ctx{}", level_color(p, &c), defaults::text("statusline.ctx_mark"), n(p), c.c("reset")))
-        .unwrap_or_default();
+    let ctx = used_pct.filter(|p| *p > 0.0).map(|p| format!("{}{}% ctx{}", level_color(p, &c), n(p), c.c("reset"))).unwrap_or_default();
     if !usage.is_empty() || !ctx.is_empty() {
-        let gap = if usage.is_empty() || ctx.is_empty() { "" } else { defaults::text("statusline.usage_ctx_gap") };
+        let gap = if usage.is_empty() || ctx.is_empty() { String::new() } else { sep.clone() };
         h.push_str(&format!("{sep}{usage}{gap}{ctx}"));
     }
     if cost_usd > 0.0 {
@@ -570,4 +578,31 @@ fn session_duration(cwd: &str, cx: &Ctx) -> Option<String> {
 fn time_clip(x: f64) -> f64 {
     let max = defaults::text("statusline.date_max_ms").parse::<f64>().unwrap_or(f64::NAN);
     if !x.is_finite() || x.abs() > max { f64::NAN } else { x.trunc() + 0.0 }
+}
+
+#[cfg(test)]
+mod consistency_tests {
+    use super::*;
+
+    #[test]
+    fn one_separator_same_padding_both_sides() {
+        let s = sep_str(&Colors { on: false });
+        assert_eq!(s, " │ ");
+        assert!(s.starts_with(' ') && s.ends_with(' ') && !s.starts_with("  ") && !s.ends_with("  "));
+    }
+
+    #[test]
+    fn duration_uses_unit_suffixes() {
+        assert_eq!(format_duration(1530.0, 38.0), "1530m38s");
+        assert_eq!(format_duration(0.0, 7.0), "7s");
+    }
+
+    #[test]
+    fn no_mark_before_context_and_no_duplicate_separators() {
+        let toml = include_str!("../../../../plugins/anti-hall/engine/defaults/operator.toml");
+        for k in ["ctx_mark", "usage_sep", "usage_ctx_gap"] {
+            assert!(!toml.contains(&format!("[statusline.{k}]")), "{k} must be gone");
+        }
+        assert_ne!(defaults::text("statusline.activity_marker"), defaults::text("statusline.bar_fill"));
+    }
 }
