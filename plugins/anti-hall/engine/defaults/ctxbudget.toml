@@ -281,7 +281,7 @@ doc = "The handover.taskListEnforce setting: what happens when a created task su
 value = { section = "handover", key = "taskListEnforce", kind = "enum", values = ["off", "advisory", "block"], env = "", aliases = [], option = "", manifest_default = "advisory", default = "advisory" }
 
 [ctxbudget.set_h_task_done_note]
-doc = "The handover.taskDoneNote setting: when a task is marked completed, tell the agent once, in one line, to record the outcome in the history ledger and delete the task from the session list."
+doc = "The handover.taskDoneNote setting: when a task is marked completed, tell the agent once, in one line, that the session's task entries are not user data: record the outcome in the named history ledger path (.anti-hall/history/<date>/<session>.md), then delete the task from the session list."
 value = { section = "handover", key = "taskDoneNote", kind = "bool", env = "", aliases = [], option = "", manifest_default = "true", default = true }
 
 [ctxbudget.set_h_mem_lines]
