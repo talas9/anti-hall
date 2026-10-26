@@ -1271,7 +1271,7 @@ value = "verify the handover and record the result."
 
 [tasklist_hygiene.summary]
 doc = "One-line description of the tasklist-hygiene check in the generated reference."
-value = "Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line to log the outcome to the history ledger and delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
+value = "Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
 
 [tasklist_hygiene.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -1291,11 +1291,11 @@ value = ["completed"]
 
 [tasklist_hygiene.msg_done]
 doc = "What the done line says; {id} is the task id."
-value = "task {id} done: log its outcome to the history ledger, then delete it."
+value = "task {id} done: task-list entries of this session are not user data; log its outcome in .anti-hall/history/<date>/<session>.md, then delete it."
 
 [tasklist_hygiene.instead_done]
 doc = "What to do, in the done line."
-value = "TaskUpdate status=deleted; the list holds open tasks only."
+value = "TaskUpdate status=deleted once logged there; the list holds open tasks only. Nothing else is exempt from the never-delete rule."
 
 [tasklist_hygiene.msg_subject]
 doc = "The subject breach; {n} is the subject length and {max} handover.taskSubjectMax."

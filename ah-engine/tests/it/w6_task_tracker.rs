@@ -130,6 +130,10 @@ fn the_prune_advisory_reaches_the_model_on_the_prompt_once_per_list_change() {
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
     assert!(first.contains("2 completed/cancelled tasks (> 1)"), "the prune advisory must be model-visible context on the prompt: {first}");
     assert!(!second.contains("completed/cancelled tasks ("), "an unchanged list must not repeat it: {second}");
+    let line = first.lines().find(|l| l.contains("completed/cancelled tasks (> 1)")).expect("the prune line");
+    assert!(line.contains("not user data"), "the prune line must say task entries are not user data: {line}");
+    assert!(line.contains(".anti-hall/history/<date>/<session>.md"), "the prune line must name the ledger path: {line}");
+    assert!(line.chars().count() < 150, "the first line of the prune advisory must stay under the 150-char digest cut: {} chars: {line}", line.chars().count());
 }
 
 /// A long session: Claude Code's own task store (`~/.claude/tasks/session-<first 8 of the id>/N.json`) holds 11 completed tasks, one pending and one

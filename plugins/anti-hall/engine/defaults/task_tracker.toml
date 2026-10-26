@@ -55,8 +55,8 @@ doc = "The protocol level at which the directive keeps the non-blocking clause (
 value = "full"
 
 [task_tracker.prune_line]
-doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model. It leads the tracker's text on a line of its own and stays under digest_line_chars, because the prompt digest shows only the first line of an advisory inline."
-value = "[task-guard] {n} completed/cancelled tasks (> {limit}): log them in the history ledger, then prune with TaskUpdate status=deleted."
+doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model. It leads the tracker's text on a line of its own and its first line stays under digest_line_chars, because the prompt digest shows only the first line of an advisory inline. It says plainly that these entries are not user data and names the ledger path (the relative form: the tracker has no cheap bounded way to render the absolute one) so a session that follows a never-delete rule still acts."
+value = "[task-guard] {n} completed/cancelled tasks (> {limit}): not user data; log in .anti-hall/history/<date>/<session>.md, then TaskUpdate status=deleted.\nOnly this session's own task-list entries may be deleted, once logged there; nothing else is exempt from the never-delete rule."
 
 [task_tracker.event]
 doc = "The hook event name in the output."
