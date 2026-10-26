@@ -530,14 +530,31 @@ fn over_cap_guard_with_unrunnable_node_hooks_fails_closed() {
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
 }
 
+/// An over-cap Stop cannot be sent to the engine, so its guards give no answer. Under the default `guards.failOpenNonSafety` (e1851674)
+/// no Stop guard is a safety guard (script.failure_mode_by_check lists none; a test holds that), so each unanswered entry is let through
+/// (exit 0, never holding the agent), on record as `dispatch_fail_open`.
 #[test]
-fn over_cap_stop_active_fails_closed_up_to_the_cap_then_lets_the_agent_go() {
+fn over_cap_stop_active_fails_open_by_default_and_is_logged() {
     let e = Env::new("stdin-stop-active");
-    // a Stop payload over the stdin cap cannot be sent to the engine, so its hooks cannot run: the engine's own fail-closed block is
-    // bounded by the stop-loop cap (the agent is held `dispatch.stop_block_cap` times, then let go), never an endless loop
     let payload = stop_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
     let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
     let codes: Vec<i32> = (0..cap + 2).map(|_| e.run(&["hook", "--event", "Stop"], true, &payload, true).0).collect();
+    assert_eq!(codes, vec![0; cap + 2], "an over-cap Stop is never held while the setting is on");
+    let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("dispatch_fail_open"), "the pass is on record: {log}");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+/// With `guards.failOpenNonSafety` off the old contract holds: the engine's own fail-closed block is bounded by the stop-loop cap (the
+/// agent is held `dispatch.stop_block_cap` times, then let go), never an endless loop. No Stop guard is a safety guard, so this is the
+/// only way an unanswered Stop guard blocks.
+#[test]
+fn over_cap_stop_active_fails_closed_up_to_the_cap_when_fail_open_is_off() {
+    let e = Env::new("stdin-stop-active-off");
+    let payload = stop_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
+    let off = [("ANTIHALL_FAIL_OPEN_NON_SAFETY", "0")];
+    let codes: Vec<i32> = (0..cap + 2).map(|_| e.run_with(&["hook", "--event", "Stop"], true, &payload, true, &off).0).collect();
     let want: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
     assert_eq!(codes, want, "an over-cap Stop is held up to the cap, then let go");
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
