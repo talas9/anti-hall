@@ -8175,8 +8175,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `statusline.active_ms` | `60000` |  |  | How recently a task output must have changed to count as active, in milliseconds. |
+| `statusline.activity_marker` | `◆` |  |  | The moving marker of the swarm activity bar (never the fill glyph of the context bar). |
 | `statusline.activity_ms` | `120000` |  |  | How recent a spawn must be to count as active, in milliseconds. |
-| `statusline.activity_template` | `[{cells}] {cyan}orchestrating{reset} {dim}·{reset} {blue}{count} agent{plural...` |  |  | The swarm activity line. Placeholders: cells cyan reset dim blue count plural. |
+| `statusline.activity_template` | `[{cells}] {cyan}orchestrating{reset} {dim}·{reset} {blue}{count} agent{plural...` |  |  | The swarm activity line. Placeholders: cells cyan reset dim blue count plural ctx (the context gauge, empty when unknown). |
 | `statusline.agent_icon` | `🤖 ` |  |  | Before the subagent count. |
 | `statusline.agent_infix` | `-agent-` |  |  | Marks a todo file of an agent. |
 | `statusline.agent_many` | ` agents` |  |  | The word after several agents. |
@@ -8206,7 +8207,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.consolidated_file` | `consolidated-base.json` |  |  | The consolidated base configuration, in the base directory. |
 | `statusline.consolidated_timeout_ms` | `3000` |  |  | Longest a consolidated base command may run, in milliseconds. |
 | `statusline.context_template` | `{bar} {col}{pct}%{reset} {dim}context{reset}{tokens}` |  |  | The context gauge line. Placeholders: bar col pct reset dim tokens. |
-| `statusline.ctx_mark` | `● ` |  |  | Before the context percentage. |
 | `statusline.cut_grace_ms` | `100` |  |  | How long past the overall deadline the run waits for a step that is finishing, before it prints what it has. |
 | `statusline.cwd_tag_prefix` | `cwd-` |  |  | Prefix of a session tag made from a directory. |
 | `statusline.default_model` | `Claude Code` |  |  | The model shown when nothing names one. |
@@ -8217,6 +8217,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.dir` | `../anti-hall-node/statusline` |  |  | The status line renderer directory, relative to the plugin root. The renderers are Node and live in the Node backup tree (nodeback.node_dir), outside the published plugin. |
 | `statusline.dir_icon` | `📂 ` |  |  | Before the sub-directory. |
 | `statusline.down` | `↓` |  |  | Commits behind. |
+| `statusline.duration_min_unit` | `m` |  |  | After the minutes of the duration. |
+| `statusline.duration_sec_unit` | `s` |  |  | After the seconds of the duration. |
 | `statusline.ellipsis` | `...` |  |  | Ends a cut label. |
 | `statusline.email_icon` | `✉ ` |  |  | Before the account email. |
 | `statusline.git_bin` | `git` |  |  | The git program. |
@@ -8268,6 +8270,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.safe_osc` | `\x1b\][^\x07\x1b]*(?:\x07\|\x1b\\)?` |  |  | Operating-system command sequences removed from labels. |
 | `statusline.section` | `statusline` |  |  | The settings section of the status line. |
 | `statusline.sep` | `│` |  |  | Between the segments of the rich line. |
+| `statusline.sep_pad` | `1` |  |  | Spaces on each side of every separator on the rich line (the usage chip uses the same separator). |
 | `statusline.session_file` | `session.json` |  |  | The local session file. |
 | `statusline.settings_file` | `settings.json` |  |  | The project settings file. |
 | `statusline.settings_local_file` | `settings.local.json` |  |  | The local project settings file. |
@@ -8296,9 +8299,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.update_star` | `★ ` |  |  | Marks an available update. |
 | `statusline.usage_5h_label` | `5h:` |  |  | Before the 5-hour usage percentage. |
 | `statusline.usage_5h_window` | `five_hour` |  |  | The rate_limits entry of the 5-hour window in the statusline input. |
-| `statusline.usage_ctx_gap` | ` ` |  |  | Between the usage segment and the context percentage that follows it. |
 | `statusline.usage_key` | `usage` |  |  | The setting that shows the weekly and 5-hour usage segment. |
-| `statusline.usage_sep` | ` \| ` |  |  | Between the weekly and the 5-hour usage percentages. |
 | `statusline.usage_week_label` | `wk:` |  |  | Before the weekly usage percentage. |
 | `statusline.usage_week_window` | `seven_day` |  |  | The rate_limits entry of the weekly window in the statusline input. |
 | `statusline.used_keys` | `used_tokens, tokens` |  |  | The context_window fields that carry the used tokens. |
