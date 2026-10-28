@@ -1,15 +1,16 @@
-//! `ah-engine install-statusline` and `ah-engine uninstall-statusline`: put the anti-hall status line into the host's
-//! `statusLine` setting and take it out again. Port of `statusline/install-statusline.js` and `uninstall-statusline.js`.
+//! `ah-engine install-statusline` and `ah-engine uninstall-statusline`: the installer is retired as a no-op, while the
+//! uninstaller still removes older anti-hall `statusLine` settings. Port of `statusline/install-statusline.js` and
+//! `uninstall-statusline.js`.
 //!
-//! They edit the user's own settings file, so every safety of the Node scripts is kept: the file is backed up once and the
-//! backup is never overwritten, other keys are merged and never clobbered, a statusLine that is not ours is wrapped as line 1
-//! (installer) or left alone (uninstaller), a re-run changes nothing, and the dispatcher path is refused when it holds shell
-//! metacharacters. The write itself is atomic and keeps the file's mode and link. The text and exit code are the scripts' own.
+//! Cleanup edits the user's own settings file, so every uninstaller safety of the Node scripts is kept: the file is backed up
+//! once and the backup is never overwritten, other keys are merged and never clobbered, a statusLine that is not ours is left
+//! alone, and the write itself is atomic and keeps the file's mode and link. The text and exit code are the scripts' own.
 //!
 //! A file it cannot read or parse is reported the way the scripts report it (the same lines and exit codes; Node's words for an
-//! operating-system error, the engine's own for a parse error) and nothing is written. The installer writes the engine's own
-//! status line command (`"<engine>" statusline`, no launcher and no Node script); `slcfg.node_only_env` gives the Node
-//! installer's command instead (the parity tests set it).
+//! operating-system error, the engine's own for a parse error) and nothing is written. The one write left is the persisted-shape
+//! migration of an existing statusLine that runs the retired shell wrapper: it becomes the thin client's command (update and
+//! `doctor --repair`; backup kept, nothing deleted). Nothing installs a new statusLine.
+#![allow(dead_code)] // install-statusline is retired as a no-op; uninstall still uses the cleanup half of this port.
 use super::jsio::{self, join};
 use super::{env_snapshot, home, plugin_root};
 use crate::checks::guardkit::text::js_trim;
@@ -185,33 +186,19 @@ fn shown_command(sl: &J) -> String {
 }
 
 fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Result<i32, String> {
+    if !t("slcfg.install_retired").is_empty() {
+        let _ = args;
+        log.out(t("slcfg.install_retired"));
+        return Ok(0);
+    }
+
     let pa = paths(env)?;
-    let node_only = node_only(env);
-    // what the command will run: the engine itself, or (Node-only form) the dispatcher script
-    let target = if node_only {
-        let stable = join(&pa.home, &format!("{}/{}", t("slcfg.stable_dir"), t("slcfg.dispatcher_file")));
-        let override_var = env.get(defaults::env_name("dispatcher_override"));
-        let dispatcher = match override_var {
-            Some(o) => o.clone(),
-            None if exists(&stable) => stable.clone(),
-            None => join(&pa.script_dir, t("slcfg.dispatcher_file")),
-        };
-        if override_var.is_none_or(String::is_empty) && !exists(&dispatcher) {
-            log.err(fill("slcfg.inst_not_found_1", &[("path", &dispatcher)]));
-            log.err(t("slcfg.inst_not_found_2"));
-            return Ok(1);
-        }
-        let note = if dispatcher == stable { t("slcfg.dispatcher_stable") } else { t("slcfg.dispatcher_dev") };
-        log.out(fill("slcfg.dispatcher_line", &[("path", &dispatcher), ("note", &note)]));
-        dispatcher
-    } else {
-        let Some(engine) = engine_path(&pa.home) else {
-            log.err(fill("slcfg.engine_not_found", &[("path", &engine_home_path(&pa.home))]));
-            return Ok(1);
-        };
-        log.out(fill("slcfg.engine_line", &[("path", &engine)]));
-        engine
+    // what the command will run: the engine itself
+    let Some(target) = engine_path(&pa.home) else {
+        log.err(fill("slcfg.engine_not_found", &[("path", &engine_home_path(&pa.home))]));
+        return Ok(1);
     };
+    log.out(fill("slcfg.engine_line", &[("path", &target)]));
 
     let project = args.iter().any(|a| a == t("slcfg.flag_project"));
     let consolidate = args.iter().any(|a| a == t("slcfg.flag_consolidate"));
@@ -258,7 +245,7 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
             || (cmd.contains(t("slcfg.installed_marker")) && (cmd.contains(t("slcfg.installed_dir_install")) || cmd.contains(&pa.script_dir)))
     });
     if let Some(cmd) = ours {
-        log.out(t(if node_only { "slcfg.already_1" } else { "slcfg.already_engine" }));
+        log.out(t("slcfg.already_engine"));
         log.out(fill("slcfg.indent_line", &[("text", &cmd)]));
         let same = |sl: &Option<J>| command_of(sl.as_ref()).is_some_and(|c| !c.is_empty() && c == cmd);
         log.out(if same(&sl_local) {
@@ -276,7 +263,7 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
         }
         // an older anti-hall form (Node-only or launcher) is moved to the engine's command, in place, by the same migration
         // `update` runs
-        let upgraded = if node_only || is_engine_command(cmd) { Vec::new() } else { upgrade_commands(&pa.home, &pa.cwd, env, false) };
+        let upgraded = if is_engine_command(cmd) { Vec::new() } else { upgrade_commands(&pa.home, &pa.cwd, env, false) };
         if upgraded.is_empty() {
             log.out(t("slcfg.no_changes"));
         }
@@ -418,13 +405,13 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
     log.out("");
 
     if !shell_safe(&target) {
-        log.err(t(if node_only { "slcfg.unsafe_1" } else { "slcfg.engine_unsafe_1" }));
+        log.err(t("slcfg.engine_unsafe_1"));
         log.err(fill("slcfg.unsafe_2", &[("path", &target)]));
         log.err(fill("slcfg.unsafe_3", &[("path", &settings_path)]));
-        log.err(t(if node_only { "slcfg.unsafe_4" } else { "slcfg.engine_unsafe_4" }));
+        log.err(t("slcfg.engine_unsafe_4"));
         return Ok(1);
     }
-    let command = if node_only { node_command(&target) } else { engine_command(&target) };
+    let command = engine_command(&target);
     let new_line = J::Obj(vec![
         ("type".into(), J::Str(t("slcfg.type_command").into())),
         ("command".into(), J::Str(command)),
@@ -432,14 +419,11 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
         ("refreshInterval".into(), J::Num(defaults::num("slcfg.refresh_interval") as f64)),
     ]);
     settings.set("statusLine", new_line.clone());
-    let uninstall_js = join(&pa.script_dir, t("slcfg.uninstall_file"));
-    let hint = |node_key: &str| {
-        if node_only { fill(node_key, &[("path", &uninstall_js)]) } else { fill("slcfg.engine_uninstall_hint", &[("engine", &target)]) }
-    };
+    let hint = || fill("slcfg.engine_uninstall_hint", &[("engine", &target)]);
     if let Err(msg) = jsio::write_file(&settings_path, (pretty(&settings) + "\n").as_bytes()) {
         log.err(fill("slcfg.write_failed_1", &[("path", &settings_path), ("msg", &msg)]));
         log.err(t("slcfg.write_failed_2"));
-        log.err(hint("slcfg.write_failed_3"));
+        log.err(hint());
         return Ok(1);
     }
     log.out(t("slcfg.new_statusline"));
@@ -457,7 +441,7 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
     log.out(t("slcfg.scope_phase_2"));
     log.out("");
     log.out(t("slcfg.to_uninstall"));
-    log.out(hint("slcfg.uninstall_hint"));
+    log.out(hint());
     Ok(0)
 }
 
@@ -497,11 +481,6 @@ fn launcher_for(dispatcher: &str) -> String {
     crate::meshw::ident::resolve_abs(&Path::new(&dir).join(t("slcfg.launcher_rel")).to_string_lossy())
 }
 
-/// The Node-only form: `node "<dispatcher>"`.
-fn node_command(dispatcher: &str) -> String {
-    format!("{}{dispatcher}{}", t("slcfg.command_prefix"), t("slcfg.command_suffix"))
-}
-
 /// The engine's own form: `"<engine>" statusline`.
 fn engine_command(engine: &str) -> String {
     fill("slcfg.command_engine", &[("engine", &engine)])
@@ -510,11 +489,6 @@ fn engine_command(engine: &str) -> String {
 /// A statusLine command in the engine's own form.
 fn is_engine_command(cmd: &str) -> bool {
     crate::checks::guardkit::jsre::compile(t("slcfg.engine_command_re"), false).is_match(cmd)
-}
-
-/// The Node installer's command is wanted (`slcfg.node_only_env`; the parity tests set it).
-fn node_only(env: &BTreeMap<String, String>) -> bool {
-    env.get(defaults::env_name("statusline_node_only")).is_some_and(|v| !v.is_empty())
 }
 
 /// Where the hook wrappers look for the engine first: `<home>/<paths.base_dir>/<paths.state_dir>/<slcfg.engine_bin_rel>`.
@@ -560,22 +534,36 @@ fn legacy_form(cmd: &str) -> bool {
     })
 }
 
-/// The persisted-shape migration of an existing install: a statusLine an earlier anti-hall installer wrote (Node-only or
-/// launcher form) becomes the engine's own command. Idempotent (the new form is not an old one), fail-open (anything unclear
-/// is left exactly as it is), and it only ever changes that one string, in place in the file's own text, after the one-time
-/// backup the installer keeps. `None`: nothing to do.
+/// A statusLine command the retired shell wrapper runs (`sh "<…/scripts/ah-run.sh>" --stdin statusline [-- "<dispatcher>"]`): the command
+/// starts with `sh ` and holds every text of `hooks_form.statusline_old_form`.
+fn retired_wrapper_form(cmd: &str) -> bool {
+    let parts = defaults::list("hooks_form.statusline_old_form");
+    !parts.is_empty() && cmd.starts_with(t("hooks_form.statusline_old_prefix")) && parts.iter().all(|p| cmd.contains(p))
+}
+
+/// The thin client (`<home>/<paths.base_dir>/<paths.state_dir>/<slcfg.client_bin_rel>`) when it is installed and executable.
+fn client_path(home: &str) -> Option<String> {
+    let p = join(home, &format!("{}/{}/{}", t("paths.base_dir"), t("paths.state_dir"), t("slcfg.client_bin_rel")));
+    (crate::checks::jsport::fsx::is_file(&p) && crate::checks::jsport::fsx::is_executable(&p)).then_some(p)
+}
+
+/// The persisted-shape migration of an existing install: a statusLine that still runs the retired shell wrapper
+/// (`sh …/scripts/ah-run.sh --stdin statusline`; the Node-only form is left alone) becomes the thin
+/// client's command (`hooks_form.statusline_template`). Idempotent (the new form is not an old one), fail-open (anything unclear is
+/// left exactly as it is), it only ever changes that one string, in place in the file's own text, after the one-time backup, and it
+/// deletes nothing. `None`: nothing to do.
 fn upgrade_file(path: &str, home: &str, env: &BTreeMap<String, String>, cwd: &str, dry_run: bool) -> Option<Upgrade> {
-    if node_only(env) || jsio::config_write_refused(path, env, cwd) {
+    if jsio::config_write_refused(path, env, cwd) {
         return None;
     }
     let text = read_text(path)?;
     let settings = parse(&text).ok()?;
     let old = command_of(settings.get("statusLine"))?.to_string();
-    if !legacy_form(&old) {
+    if !retired_wrapper_form(&old) {
         return None;
     }
-    let engine = engine_path(home).filter(|e| shell_safe(e))?;
-    let new = engine_command(&engine);
+    let client = client_path(home).filter(|c| shell_safe(c))?;
+    let new = fill("hooks_form.statusline_template", &[("client", &client)]);
     if new == old {
         return None;
     }
@@ -780,31 +768,27 @@ fn uninstall(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> 
 // ---- the commands -----------------------------------------------------------------------------------------------------
 
 /// `Err` is a start-up failure (no working directory, no plugin root): said on stderr, exit 1, nothing written.
-fn finish(plan: Option<super::shadow::Plan>, result: Result<i32, String>, log: Log) -> i32 {
+fn finish(result: Result<i32, String>, log: Log) -> i32 {
     log.flush();
-    let code = match result {
+    match result {
         Ok(c) => c,
         Err(msg) => {
             super::err(&(fill("slcfg.start_failed", &[("msg", &msg)]) + "\n"));
             1
         }
-    };
-    super::shadow::end(plan, code);
-    code
+    }
 }
 
 /// `install-statusline [--user|--project] [--consolidate]`
 pub fn run_install(p: &Parsed) -> i32 {
-    let plan = super::shadow::begin_install(t("ops.verb_install"), t("ops.script_install"), &p.raw);
     let mut log = Log::default();
     let result = install(&env_snapshot(), &p.raw, &mut log);
-    finish(plan, result, log)
+    finish(result, log)
 }
 
 /// `uninstall-statusline [--user|--project] [--purge-base]`
 pub fn run_uninstall(p: &Parsed) -> i32 {
-    let plan = super::shadow::begin_install(t("ops.verb_uninstall"), t("ops.script_uninstall"), &p.raw);
     let mut log = Log::default();
     let result = uninstall(&env_snapshot(), &p.raw, &mut log);
-    finish(plan, result, log)
+    finish(result, log)
 }

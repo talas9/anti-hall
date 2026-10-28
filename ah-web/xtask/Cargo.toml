@@ -1,0 +1,17 @@
+[package]
+name = "ah-web-xtask"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Builds the Command Center page for both tiers (cargo build for wasm32 + wasm-bindgen in-process). Dev tool, not shipped."
+publish = false
+
+[dependencies]
+wasm-bindgen-cli-support = "=0.2.129"
+serde_json = "1"
+
+# Its own workspace, like ui/: another target and profile than the server.
+[workspace]
+
+[profile.release]
+opt-level = 1

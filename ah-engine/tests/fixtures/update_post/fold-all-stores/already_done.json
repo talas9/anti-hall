@@ -1,0 +1,105 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "fold-all-stores: already completed for 0.1.0 — skipped (one-time per-version migration)",
+    "errors": 0,
+    "folded": 0,
+    "forwarded": 0,
+    "retired": 0,
+    "skippedAlreadyDone": true,
+    "stores": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/update-sweep-state.json": "644 {\"foldAllStores\":{\"completedVersion\":\"0.1.0\"}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "proj-a1b2c3-m0",
+          "workspace_id": "w-ph"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "w-ph",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "w-ph",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        }
+      ],
+      "registry": [
+        {
+          "id": "w-live",
+          "session_id": "s1",
+          "worktree_path": "{REPO}"
+        },
+        {
+          "id": "w-ph",
+          "session_id": null,
+          "worktree_path": "{REPO}"
+        }
+      ]
+    },
+    "{REPOKEY}": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "{REPOKEY}-m0",
+          "workspace_id": "w-ph"
+        },
+        {
+          "hash": "{REPOKEY}-m1",
+          "workspace_id": "w-ph"
+        },
+        {
+          "hash": "{REPOKEY}-m2",
+          "workspace_id": "w-ph"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "w-ph",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "w-ph",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        }
+      ],
+      "registry": [
+        {
+          "id": "w-live",
+          "session_id": "s1",
+          "worktree_path": "{REPO}"
+        },
+        {
+          "id": "w-ph",
+          "session_id": null,
+          "worktree_path": "{REPO}"
+        }
+      ]
+    }
+  }
+}

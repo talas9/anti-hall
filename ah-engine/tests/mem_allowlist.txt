@@ -1,0 +1,117 @@
+# Long-lived collections outside src/mem that the guard (tests/it/mem_guard.rs) accepts. Format:
+#   path under src | symbol | bound | reason
+# The bound says what stops the growth. "registry follow-up" marks a holder that is bounded today by its own cap but should move
+# onto the memory registry (mem::BoundedCache / mem::Budget) so `status --memory` shows it. Verified against the code on 2026-10-10.
+
+# ---- bounded by a cap read from config, own eviction (registry follow-ups) -------------------------------------------------
+daemon.rs | Shared.queue | accept queue cap (daemon.queue): a full queue answers busy | the connection queue; bounded by the cap, not a cache
+db.rs | Mem.kv | registered as mem.db_kv_* and also constrained by tier.budget_kb in Tiered | active key-value items; SQLite remains the source of truth
+gitcache/mod.rs | GitCache.repos | gitcache.max_repos, idle entries expire after gitcache idle_ttl | memoised git state per repository
+hookcfg/session.rs | SessionCore.slots | registered as mem.hook_sessions_*; expired counters are pruned even without SessionEnd | per-session hook condition counters
+limits.rs | BucketCore.map | registered through aggregate mem.buckets_* holder | daemon session/project rate buckets
+limits.rs | BucketOwners.buckets | weak references to live registered bucket maps, stale entries removed on access | aggregate owner list for mem.buckets_*
+load.rs | Load.minutes | newest load.minutes_kept buckets, each bucket capped | per-minute request load
+tier.rs | Bus.subs | max_channels channels and a bounded queue per subscriber | pub/sub channels
+transcript/registry.rs | Indexes.slots | `max` slots, entries expire after ttl_ms (cfg) | transcript index slots; registry follow-up (transcript caches belong to another job)
+checks/guardkit/settings.rs | SEEN | at most guardkit.settings_seen_max + 1 entries; when len is already over the configured max, the next new-key insert clears first (max 0 still permits one) | unreadable settings-file verdict cache keyed by file metadata
+meshw/ident.rs | SUPER_CACHE | at most mesh_write.super_cache_max entries; a full map drops its expired entries (mesh_write.super_cache_ttl_ms), then everything | the superproject answers git gave per nested checkout (identity.js superCache); registry follow-up
+devswarm_rt/reconcile.rs | Hold.edges | registered as mem.devswarm_rt_* and cfg.edge_cap also limits retained edges | recent realtime edges are recoverable and evicted first
+devswarm_rt/reconcile.rs | Hold.generations | registered as mem.devswarm_rt_* and stale weak snapshots are pruned while accounting | old Arc-held snapshots stay charged until callers drop them
+dssup/ingest/mod.rs | Ledger.slots | registered as mem.devswarm_ingest_* and mem.devswarm_ingest_max_threads caps total resident ingest threads (manager plus project workers) | bounded resident ingest project slots; value 1 permits manager-only/no project workers
+ops/statusline/rich.rs | CACHE | one slot (Option of a single manifest path, mtime and version), replaced whole when the path or mtime changes; never more than one entry | the last plugin.json read for the status line version chip
+script/host_spawn.rs | SET | one entry per probe a worker is running now, removed when it ends (host_spawn.timeout_max_ms ceiling, host_spawn.max_calls per request) | in-flight spawn-probe keys, so one probe is never started twice
+schedule.rs | Scheduler.state | one entry per configured job (schedules.toml), fixed at load | job state
+schedule.rs | Scheduler.last | one entry per configured job | last-run state
+ghrt/repos.rs | NOTED | entries older than ttl dropped once past cap (arguments of note()) | recently noted working directories
+watch/mod.rs | Shared.polled | one entry per watched directory that falls back to polling; the watch set is bounded by the callers' own lists | realtime watch fallback
+watch/notify.rs | Events.dirs | one entry per watched directory | realtime watch translation table
+dsact/events.rs | Dirty.set | one entry per workspace marked dirty; drained once quiet for the debounce | DevSwarm auto-archive debounce
+dsact/events.rs | IN_FLIGHT | one id per in-flight workspace trigger, removed on drop | in-flight lock set
+jev/shared.rs | LANES | registered as mem.jev_lanes_* with mem.jev_lanes_max_entries and idle TTL | Jev lanes; idle entries stop and externally held lanes remain charged
+jev/assist.rs | JevStats.calls | keyed by (backend, mode) labels from code | drained by the periodic flush
+jev/assist.rs | JevStats.verdicts | keyed by (integration id, verdict) | drained by the periodic flush
+jev/assist.rs | JevStats.latencies_us | one u64 per ask between flushes | drained by the periodic flush
+devswarm_rt/sources.rs | FsProbe.plans | one entry per workspace plan file; the probe lives for one reconcile | built once per probe
+meshw/mod.rs | WRITTEN | one command's write list, consumed by take_written() after the background witness reads it | per-command mesh write witness scratch
+
+# ---- fixed by the code or the shipped config -------------------------------------------------------------------------------
+daemon.rs | Shared.own | one string set at start | the engine version
+daemon.rs | Shared.rlimit | one string set at start | the rlimit report
+daemon.rs | Shared.storage | one short status word | the storage state
+daemon.rs | Shared.busy_since | one slot per worker (daemon.workers), fixed at start | per-worker busy marker
+defaults/load.rs | Lazy.memo | at most one entry per shipped config key, in the short-lived client | client-side parse memo
+discard.rs | LAST | one entry per call-site label (a &'static str written in the source) | rate limit of the discard log
+meshw/tick.rs | NONCE | one string, set once | the process nonce
+migrate/settings.rs | ALL | built once from the shipped migrate table | static table
+ops/settings.rs | ALL | built once from the shipped settings table (two statics of this name) | static tables
+ops/statusline/mod.rs | PARTIAL | one string for the segment being rendered | statusline scratch
+proc.rs | RUNNING | one pid per helper process running now, removed on exit | helper pid list for kill_all
+jev/testkit.rs | Fake.script | test double: filled by the test that builds it | not used by the daemon
+jev/testkit.rs | Fake.seen | test double | not used by the daemon
+jev/testkit.rs | Fake.timeouts | test double | not used by the daemon
+
+# ---- scoped to one request or one call on a worker thread ------------------------------------------------------------------
+deadline.rs | STAGED | staged writes of the request in progress, taken and flushed or dropped when it ends | per-request
+load.rs | REQUEST | one (event, session) pair, replaced per request | per-request
+load.rs | NOTES | at most load.notes_cap counted events per check, handed to the metrics and cleared when the check finishes and at the start of the next request | per-check counted events (a kept-walk hit or the reason it missed)
+memdiag.rs | REPORTS | one report per worker, cleared at each snapshot | per-snapshot
+script/host.rs | CACHE | one cfgLive cache entry for the current defaults generation and one or two config file stamps | replaced when generation or config metadata changes
+script/host.rs | HELD | held handles of the script call in progress, capped by the host's script.lock_max_held, taken at the end of the call | per-call
+script/host_b3.rs | HEREDOC | one scratch parse state, replaced per call | per-call
+script/host_mesh.rs | OWED | cache writes owed by the call in progress, cleared at the start of each call | per-call
+script/host_proc.rs | SEEN | pids seen by the call in progress, cleared at the start of each call | per-call
+script/host_proc.rs | TERMED | pids terminated by the call in progress, cleared at the start | per-call
+telemetry/emit.rs | BATCH | events of the request in progress, taken at its end | per-request
+telemetry/mod.rs | STAGE | events staged by one request, taken or dropped at its end | per-request
+
+# ---- captured child output ------------------------------------------------------------------------------------------------
+dispatch/node.rs | Capture.buf | cut at mem.proc_output_max_bytes (mem.proc_output_marker appended) | output of the Node fallback child
+dsact/runner.rs | Drained.buf | cut at the cap passed to drain() (devswarm_act config), the rest is read and dropped | output of a DevSwarm action child
+daemon.rs | Shared.test_alloc | only reachable through the test-hook verb `alloc` (AH_ENGINE_TEST_HOOKS=1, never set in production); each call pushes one caller-sized buffer and the daemon process is short-lived in tests | test-only allocation probe for the memory watchdog tests
+
+# ---- added when the live19 train merged the dswire redesign, the Jev breaker and the request deadline work ----------------------
+deadline.rs | EVENT | one event name per thread, cleared when the request ends | the hook event of the request in progress
+devswarm_rt/sources.rs | ReadCache.json | entries the last reconcile did not use are dropped at its end (epoch), so at most the files one reconcile read | stat-keyed cache of parsed probe files
+devswarm_rt/sources.rs | ReadCache.descs | entries the last reconcile did not use are dropped at its end (epoch), so at most one per workspace descriptor | stat-keyed cache of parsed workspace descriptors
+devswarm_rt/sources.rs | FsProbe.descs | one entry per workspace descriptor; the probe lives for one reconcile | built once per probe
+dswire/consume.rs | JevQueue.ids | cut at devswarm_wire.jev_dirty_cap on every queue call | the in-memory per-child Jev dirty queue
+jev/breaker.rs | Breakers.state | one entry per vendor (two), keys are vendor names | the Jev circuit-breaker state
+
+# ---- added by the live20 train (config layers #195, fail-open accounting #201, CPU lane E, Stop-Jev gate) ----------------------
+defaults.rs | OVERLAY | one table per DISTINCT effective config content, reused when a content comes back (OVERLAY_W pool); leak noted with mem::note_leak | the owner's layered settings read by every defaults accessor; a few hundred bytes per applied edit
+dssup/liveness.rs | ACTIVITY | at most devswarm_sup.lv_git_cache_max_entries entries; the map is cleared when full and entries expire after lv_git_cache_max_ms | per-worktree git-activity cache so a sweep does not re-run git for an unchanged HEAD
+failopen.rs | PENDING | capped at fail_open.pending_max; drained into the telemetry counters at every request end | fail-open counts not yet added to telemetry
+failopen.rs | REQUEST | at most one entry per daemon worker thread; removed at that thread's next request begin or take | the first fail-open of the request in progress on a thread
+jev/assist.rs | JevStats.gate | one row per (integration id, gate kind): integration ids are the shipped set times three kinds; reset at every metrics drain | Stop-gate counters per integration
+dssup/gate.rs | LAST | key is (home, duty) and a value is stored only for a duty named in devswarm_sup.gate_duties (signature() is None otherwise): at most one entry per configured gated duty for the daemon's single home; 16 bytes of value each | the input-gate memory of the last run of each gated supervisor duty
+schedule.rs | Scheduler.forced | holds only names of configured jobs (run_now() inserts after finding the job in the configured list, idle() removes it): at most one entry per configured job | jobs `schedule run` asked for, until their next window
+script/host_childturn.rs | PLANNED | thread-local, reset at the start of every script call and holding at most the one plan the call made (assigned, then popped): at most 1 entry | the registration plan of the current child-turn script call
+dswire/facts.rs | GIT_CACHE | devswarm_wire.git_cache_max_entries: when the map is at the cap the next insert clears it first (checked in the insert path) | remembered git answers per worktree, signature and age; stale entries are re-run, never trusted
+dssup/ingest/mod.rs | DROPPED | devswarm_ingest.drop_log_max_paths: when the map is at the cap the next insert of a new path clears it first (checked in note_drop) | the last drop reason logged per path, so a drop is logged once per (path, reason)
+metrics.rs | PENDING | telemetry.max_series: bump() adds no new series once that many wait, and every metrics read or snapshot empties the map | counter bumps from code that holds no Metrics, until the next drain
+threads.rs | EXITED | diagnostics.tally_hard_keys: a new thread name past it is not kept | CPU of ended threads by thread name (status --threads exited_by_name)
+threads.rs | TALLY | diagnostics.tally_hard_keys: a new key past it is dropped and counted in tally_dropped | labelled work counters (site x cause) for status --threads
+nodeback/shadow.rs | CAPTURE | the checks of the call being shadowed, taken at its end | per-request
+devswarm_rt/linefile.rs | LAST | a single entry: the rows text (one short row per workspace, so bounded by the workspace count) and the time of the last write | what the last write of the line copy contained, so an unchanged reconcile does not rewrite the file
+obs/counters.rs | LOGGED | emptied at diagnostics.abandoned_log_keys_max entries; one entry per abandoned site and reason | when an abandoned site last logged and how many were counted since, to throttle the event log
+script/mod.rs | SESSIONS | at most script.notice_max entries (one per serving thread); cleared when full | the session of the request each serving thread is answering, so a guard that is not guarding is told once per session
+script/mod.rs | SEEN | at most script.notice_max (session, check) pairs; cleared when full: at worst one notice repeats | the pairs already told that a guard is not guarding
+
+# Current daemon diagnostics, request scratch and dashboard holders.
+budget.rs | DROPPED | answer_drop.dropped_keys_max entries | per-daemon dropped-answer counters
+budget.rs | DROPPED_LOGGED | diagnostics.abandoned_log_keys_max entries; clears at cap | dropped-answer log cadence
+budget.rs | LAST_DROP | one reason, consumed after the check | per-worker check scratch
+daemon.rs | Shared.hook_version | one string, replaced by the latest bounded request environment | last client version
+daemon.rs | Shared.hook_engine_min | one string, replaced by the latest bounded request environment | last client's minimum engine version
+daemon.rs | Shared.plugin_version | one cached manifest version string | replaced on manifest refresh
+dispatch/table.rs | CACHE | one commands map per host at the process's loaded plugin root | fallback command tables
+jev/assist.rs | ASKING_CHECK | one current check name per worker | replaced before each check
+script/host_mesh.rs | IDENT | cleared at each script call | request-local mesh identities
+script/host_parentinbox.rs | CACHE | devswarm_parent.drift_cache_keys_max; clears at cap | transcript session listings
+script/host_parentinbox.rs | CWDS | devswarm_parent.drift_cache_keys_max times drift_cache_cwd_factor; clears at cap | transcript head working directories
+script/mod.rs | CACHE | one library fingerprint snapshot for the current directory pair | replaced when home/root or TTL changes
+web/decisions.rs | RING | decisions.ring rows; drops oldest at cap | dashboard check decisions
+web/io.rs | Reg.names | io.max_clients slots, io.client_name_max characters each | dashboard client registry
+web/pulse.rs | SHA | web.build_sha_bytes rendered as hex, computed once | executable identity
+delivery.rs | DECIDED | thread-local; emptied by delivery::settle at the end of every request, so it holds only the answers of the request in flight | (session, check) of each message or block one request produced
+delivery.rs | PENDING | delivery.pending_sessions_max sessions (the oldest is evicted at the cap) times delivery.pending_per_session_max armed checks; an entry leaves on reaction, window or age (delivery.react_window_calls / react_window_ms) | armed checks waiting for the agent's reaction

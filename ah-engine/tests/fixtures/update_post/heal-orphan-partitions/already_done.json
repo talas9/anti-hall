@@ -1,0 +1,50 @@
+{
+  "answer": {
+    "adopted": 0,
+    "attempted": true,
+    "detail": "heal-orphan-partitions: already completed for 0.1.0 — skipped (one-time per-version migration)",
+    "errors": 0,
+    "forwarded": 0,
+    "skipped": 0,
+    "skippedAlreadyDone": true,
+    "stores": 0,
+    "unhealable": 0,
+    "unhealableSample": []
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/o1.json": "644 {\"id\":\"o1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"so1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/update-sweep-state.json": "644 {\"healOrphanPartitions\":{\"completedVersion\":\"0.1.0\"}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "other",
+          "session_id": null,
+          "worktree_path": null
+        }
+      ]
+    },
+    "{REPOKEY}": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "o1-a",
+          "workspace_id": "o1"
+        },
+        {
+          "hash": "o1-b",
+          "workspace_id": "o1"
+        }
+      ],
+      "reader_cursors": [],
+      "registry": []
+    }
+  }
+}

@@ -80,7 +80,7 @@ doc = "What an unchanged limit-conservation directive becomes on its keepalive t
 value = "⚠️ anti-hall · limit-conserve: still active (directive unchanged since it was injected earlier this session). Route heavy work to Codex or cheaper Claude models; defer non-urgent heavy work until the usage reset."
 
 [inject_gate.task_short]
-doc = "The exact short task-tracker reminder hooks/task-tracker.js prints on a turn that is not the long form (a test keeps it equal to the Node text)."
+doc = "The exact short task-tracker reminder the task-tracker hook prints on a turn that is not the long form (a test keeps it equal to the Node text)."
 value = "💡 anti-hall · task-tracker: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
 
 [inject_gate.task_long_prefix]
@@ -167,3 +167,43 @@ value = "s"
 [inject_gate.reply_keepalive]
 doc = "Reply word: pass the block's short keepalive form instead."
 value = "k"
+
+# ---- the prompt digest (#338 item 2): several advisories of one prompt become at most N lines ---------------------
+
+[inject_gate.sw_digest]
+doc = "Prompt digest switch. Switch of the prompt digest (context.promptDigest, default on): when several digestible advisories speak on one prompt, they are replaced by one digest of at most digest_lines lines; the full text goes to a private file the last line names. Blocks, decisions and the hooks not listed in digest_hooks are never touched."
+value = { section = "context", key = "promptDigest", env = "ANTIHALL_PROMPT_DIGEST", option = "", default = true }
+
+[inject_gate.num_digest_lines]
+doc = "Max lines of the prompt digest. The most lines the prompt digest has (context.promptDigestLines)."
+value = { section = "context", key = "promptDigestLines", env = "ANTIHALL_PROMPT_DIGEST_LINES", option = "", default = 3, min = 2 }
+
+[inject_gate.num_digest_min]
+doc = "Min advisories before the digest applies. The fewest digestible advisories on one prompt at which the digest replaces them (context.promptDigestMin)."
+value = { section = "context", key = "promptDigestMin", env = "ANTIHALL_PROMPT_DIGEST_MIN", option = "", default = 3, min = 2 }
+
+[inject_gate.digest_events]
+doc = "The events whose advisories are digested."
+value = ["UserPromptSubmit"]
+
+[inject_gate.digest_hooks]
+doc = "Dispatch entry ids whose context may be digested, most important first (the order is the line order). Entries not listed (handover, DevSwarm, repair) keep their text whole."
+value = ["agent-reminders", "task-tracker", "limit-conserve-inject", "procwatch-advisory", "gh-rt-advisory", "switch-notice", "idle-agent-sweep", "verify-first"]
+
+[inject_gate.digest_line_chars]
+doc = "The most characters of one signal's headline in the digest."
+value = 150
+min = 40
+unit = "chars"
+
+[inject_gate.digest_line_sep]
+doc = "What joins the headlines that share the last digest line."
+value = " | "
+
+[inject_gate.digest_pointer]
+doc = "What ends the digest when any text was shortened. {path} is the private file with the full text of every digested advisory."
+value = " (full text: {path})"
+
+[inject_gate.digest_file]
+doc = "File name of one digest's full text, in the dispatch.spill_dir folder. Placeholders: {ts} (milliseconds), {pid}."
+value = "digest-{ts}-{pid}.txt"

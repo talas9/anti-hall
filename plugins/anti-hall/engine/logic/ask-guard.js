@@ -3,7 +3,7 @@
 // the use is appended to the marker log). Independent of that mode, guards.questionAgentsNote adds one line naming the
 // background agents the transcript proves are still in flight. In a DevSwarm child workspace the advice and the block point at
 // the parent. A relative transcript path is read from the hook process's directory (lib/78-hook-proc.js); a transcript line the
-// host cannot read exactly as JavaScript would defers the whole call to Node; a home that is not an absolute path leaves the
+// host cannot read exactly as JavaScript would leaves the agents note out (counted); a home that is not an absolute path leaves the
 // marker line unwritten (logged), which does not change the decision.
 // Mirrors hooks/ask-guard.js. Keys and texts: agent_controls.toml (ask_guard.*).
 'use strict';
@@ -23,14 +23,14 @@ function askMarkerOf(ti) {
   return null;
 }
 
-// One line naming the running agents; '' when none is provably in flight; null when the transcript cannot be read exactly as JavaScript would (Node decides).
+// One line naming the running agents; '' when none is provably in flight; '' (counted) when the transcript cannot be read exactly as JavaScript would.
 function askAgentsNote(p) {
   if (!ah.settings.bool('ask_guard.note_setting')) return '';
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return '';
   var found = ah.transcript.agents(hookProc.open(p, tp));
   if (found === null) return '';
-  if (found.unsure) return null;
+  if (found.unsure) { ah.unable('ask-guard:agents_note_unsure'); return ''; }
   var agents = found.rows;
   if (agents.length === 0) return '';
   var max = ah.cfgNum('ask_guard.note_max_listed'), control = new RegExp(ah.cfg('ask_guard.note_control_re'), 'g');
@@ -59,17 +59,16 @@ function decide(p) {
     if (marker === null) {
       var reason = text.message('block', guard, {
         what: ah.cfg('ask_guard.block_what'), why: ah.cfg('ask_guard.block_why'),
-        instead: ah.cfg('ask_guard.block_instead'), allowed: ah.cfg('ask_guard.block_allowed'),
-      }) + suffix;
+        instead: ah.cfg('ask_guard.block_instead'), allowed: ah.cfg('ask_guard.block_allowed'), extra: [suffix],
+      });
       return { exact: { code: 2, out: text.blockJson(reason), err: '' } };
     }
   }
   var parts = [];
   if (mode === 'advise') {
-    parts.push(text.message('tip', guard, { what: ah.cfg('ask_guard.advise_what'), instead: ah.cfg('ask_guard.advise_instead') }) + suffix);
+    parts.push(text.message('tip', guard, { what: ah.cfg('ask_guard.advise_what'), instead: ah.cfg('ask_guard.advise_instead'), extra: [suffix] }));
   }
   var note = askAgentsNote(p);
-  if (note === null) return 'defer';
   if (note !== '') parts.push(note);
   if (marker !== null && home === null) ah.log('ask_guard_marker_no_home', marker);
   else if (marker !== null) {

@@ -1,0 +1,4 @@
+/* Cost per agent: a project's header row, and the row of a name with its tree guides (the guides themselves are in app.css). */
+.ops-table tr.cost-group td { font-weight: 600; border-top: 1px solid var(--line); }
+.ops-table .tree-cell { display: flex; align-items: center; min-height: 28px; }
+.ops-table .tree-name { min-width: 0; }

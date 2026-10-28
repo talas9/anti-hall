@@ -1,0 +1,17 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "wake-monitor shipped + LIVE — a watcher already holds the lock for child ws-wake (pid 1)",
+    "live": true,
+    "shipped": true,
+    "stateDirEnsured": true
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/wake/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/ws-wake.json": "644 {\"id\":\"ws-wake\",\"worktreePath\":\"{ROOT}/home\",\"sessionId\":\"s-wake\"}"
+  },
+  "stores": {}
+}

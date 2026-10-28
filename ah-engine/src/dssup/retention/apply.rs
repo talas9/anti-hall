@@ -15,7 +15,7 @@
 use super::plan::{self, Cand, Plan};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::ident::{Defer, R, defer};
+use crate::meshw::ident::{Defer, R};
 use crate::meshw::idlock::devswarm_root;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, params};
@@ -153,7 +153,7 @@ pub fn store_bytes(home: &Path, hash: &str) -> u64 {
     size(&db) + size(Path::new(&wal))
 }
 
-fn archive_root(home: &Path) -> PathBuf {
+pub(super) fn archive_root(home: &Path) -> PathBuf {
     devswarm_root(home).join(defaults::text("devswarm_sup.rt_archive_dir"))
 }
 
@@ -191,18 +191,14 @@ struct Row {
     body_bytes: i64,
 }
 
+/// A column as `JSON.stringify` prints it: a blob is a `Uint8Array`, which prints as an object keyed by index.
 fn value_of(v: ValueRef<'_>) -> R<OVal> {
     Ok(match v {
         ValueRef::Null => OVal::Null,
-        ValueRef::Integer(i) => {
-            if i.unsigned_abs() > defaults::num("mesh.js_safe_int") {
-                return defer("integer-range");
-            }
-            OVal::Num(i as f64)
-        }
+        ValueRef::Integer(i) => OVal::Num(plan::safe_int(i)? as f64),
         ValueRef::Real(f) => OVal::Num(f),
         ValueRef::Text(t) => OVal::Str(String::from_utf8_lossy(t).into_owned()),
-        ValueRef::Blob(_) => return defer("blob-value"),
+        ValueRef::Blob(b) => OVal::Obj(b.iter().enumerate().map(|(i, x)| (i.to_string(), OVal::Num(f64::from(*x)))).collect()),
     })
 }
 
@@ -210,20 +206,24 @@ fn value_of(v: ValueRef<'_>) -> R<OVal> {
 fn full_rows(c: &Connection, ids: &[i64]) -> R<Vec<Row>> {
     let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!("{}{ph}{}", crate::sql::RT_FULL_OPEN, crate::sql::RT_FULL_CLOSE);
-    let mut st = c.prepare(&sql).map_err(|e| Defer(format!("full-rows:{e}")))?;
-    let mut rows = st.query(rusqlite::params_from_iter(ids.iter())).map_err(|e| Defer(format!("full-rows:{e}")))?;
+    let mut st = c.prepare(&sql).map_err(|e| crate::dssup::failure(format!("full-rows:{e}")))?;
+    let mut rows = st.query(rusqlite::params_from_iter(ids.iter())).map_err(|e| crate::dssup::failure(format!("full-rows:{e}")))?;
     let names = defaults::list("devswarm_sup.rt_row_cols");
     let mut out = Vec::new();
-    while let Some(r) = rows.next().map_err(|e| Defer(format!("full-rows:{e}")))? {
+    while let Some(r) = rows.next().map_err(|e| crate::dssup::failure(format!("full-rows:{e}")))? {
         let mut cols = Vec::new();
         let (mut id, mut ts, mut body_bytes) = (0i64, 0f64, 0i64);
         for (i, n) in names.iter().enumerate() {
-            let v = value_of(r.get_ref(i).map_err(|e| Defer(format!("full-rows:{e}")))?)?;
+            let raw = r.get_ref(i).map_err(|e| crate::dssup::failure(format!("full-rows:{e}")))?;
+            let v = value_of(raw)?;
             match (i, &v) {
                 (0, OVal::Num(x)) => id = *x as i64,
                 (2, OVal::Num(x)) => ts = *x,
-                (4, OVal::Str(s)) => body_bytes = s.len() as i64,
                 _ => {}
+            }
+            if i == 4 {
+                // `Buffer.byteLength(String(r.body))`
+                body_bytes = plan::js_text(raw)?.map_or(0, |s| s.len() as i64);
             }
             cols.push(((*n).to_string(), v));
         }
@@ -235,7 +235,7 @@ fn full_rows(c: &Connection, ids: &[i64]) -> R<Vec<Row>> {
 /// `appendArchive(home, hash, rows, now)`: one gzip member per month, verified, appended and fsynced.
 fn append_archive(home: &Path, hash: &str, rows: &[Row], now: f64) -> R<Vec<(String, usize)>> {
     let dir = archive_root(home).join(hash);
-    std::fs::create_dir_all(&dir).map_err(|e| Defer(format!("archive-dir:{e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| crate::dssup::failure(format!("archive-dir:{e}")))?;
     let mut order: Vec<String> = Vec::new();
     let mut by_month: HashMap<String, Vec<&Row>> = HashMap::new();
     for r in rows {
@@ -258,8 +258,8 @@ fn append_archive(home: &Path, hash: &str, rows: &[Row], now: f64) -> R<Vec<(Str
             text.push('\n');
         }
         let gz = super::gz::compress_verified(text.as_bytes())?;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file).map_err(|e| Defer(format!("archive-open:{e}")))?;
-        f.write_all(&gz).and_then(|()| f.sync_all()).map_err(|e| Defer(format!("archive-write:{e}")))?;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file).map_err(|e| crate::dssup::failure(format!("archive-open:{e}")))?;
+        f.write_all(&gz).and_then(|()| f.sync_all()).map_err(|e| crate::dssup::failure(format!("archive-write:{e}")))?;
         if created {
             fsync_dir(&dir);
         }
@@ -330,9 +330,9 @@ pub struct Run<'a> {
 }
 
 /// Open the store for writing (never creating it).
-fn open_rw(home: &Path, hash: &str) -> R<Connection> {
+pub(super) fn open_rw(home: &Path, hash: &str) -> R<Connection> {
     let c = Connection::open_with_flags(plan::db_path(home, hash), OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(|e| Defer(format!("store-open:{e}")))?;
+        .map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?;
     crate::discard::harmless(c.busy_timeout(defaults::millis("devswarm_sup.rt_busy_ms"))); // keep: the default timeout only fails sooner
     Ok(c)
 }
@@ -425,7 +425,7 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
         // the tombstoning transaction
         let (mut pruned, mut pruned_bytes) = (0i64, 0i64);
         let mut done: Vec<i64> = Vec::new();
-        c.execute_batch(crate::sql::RT_BEGIN).map_err(|e| Defer(format!("begin:{e}")))?;
+        c.execute_batch(crate::sql::RT_BEGIN).map_err(|e| crate::dssup::failure(format!("begin:{e}")))?;
         let body = (|| -> R<()> {
             let mut bound_cache: HashMap<String, Option<f64>> = HashMap::new();
             let min_bc = min_broadcast_cursor(c);
@@ -459,7 +459,7 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
                 {
                     continue;
                 }
-                let n = c.execute(crate::sql::RT_TOMBSTONE, params![r.id]).map_err(|e| Defer(format!("tombstone:{e}")))?;
+                let n = c.execute(crate::sql::RT_TOMBSTONE, params![r.id]).map_err(|e| crate::dssup::failure(format!("tombstone:{e}")))?;
                 if n > 0 {
                     pruned += 1;
                     pruned_bytes += r.body_bytes;
@@ -469,7 +469,7 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
             Ok(())
         })();
         match body {
-            Ok(()) => c.execute_batch(crate::sql::RT_COMMIT).map_err(|e| Defer(format!("commit:{e}")))?,
+            Ok(()) => c.execute_batch(crate::sql::RT_COMMIT).map_err(|e| crate::dssup::failure(format!("commit:{e}")))?,
             Err(e) => {
                 crate::discard::harmless(c.execute_batch(crate::sql::RT_ROLLBACK)); // keep: the original error is what is reported
                 return Err(e);
@@ -481,13 +481,14 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
         res.archived.extend(written.iter().cloned());
         if let Some(&last) = done.last() {
             let key = run.hash.to_string();
-            let entry = obj_mut(obj_mut(run.state, defaults::text("devswarm_sup.rt_state_stores")), &key);
-            let prev = match entry.get(defaults::text("devswarm_sup.rt_state_max_archived")) {
-                Some(OVal::Num(n)) if n.is_finite() => *n,
-                Some(OVal::Str(s)) => crate::checks::guardkit::text::js_number_of_str(s),
-                _ => 0.0,
-            };
-            entry.set(defaults::text("devswarm_sup.rt_state_max_archived"), OVal::Num(prev.max(last as f64)));
+            if let Some(entry) = obj_mut(run.state, defaults::text("devswarm_sup.rt_state_stores")).and_then(|stores| obj_mut(stores, &key)) {
+                let prev = match entry.get(defaults::text("devswarm_sup.rt_state_max_archived")) {
+                    Some(OVal::Num(n)) if n.is_finite() => *n,
+                    Some(OVal::Str(s)) => crate::checks::guardkit::text::js_number_of_str(s),
+                    _ => 0.0,
+                };
+                entry.set(defaults::text("devswarm_sup.rt_state_max_archived"), OVal::Num(prev.max(last as f64)));
+            }
         }
         let archived = if run.settings.archive {
             OVal::Arr(written.iter().map(|(f, n)| OVal::Obj(vec![("file".into(), OVal::Str(f.clone())), ("rows".into(), OVal::Num(*n as f64))])).collect())
@@ -511,22 +512,25 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
 }
 
 /// `state[key]` as a mutable object, created (empty) when missing or not an object.
-pub fn obj_mut<'a>(o: &'a mut OVal, key: &str) -> &'a mut OVal {
-    if o.get(key).is_none_or(|v| !matches!(v, OVal::Obj(_))) {
-        o.set(key, OVal::Obj(Vec::new()));
+pub fn obj_mut<'a>(o: &'a mut OVal, key: &str) -> Option<&'a mut OVal> {
+    if !matches!(o, OVal::Obj(_)) {
+        *o = OVal::Obj(Vec::new());
     }
-    match o {
-        OVal::Obj(v) => v.iter_mut().find(|(k, _)| k == key).map(|(_, x)| x).unwrap_or_else(|| unreachable!()),
-        _ => unreachable!(),
+    let OVal::Obj(v) = o else { return None };
+    if !v.iter().any(|(k, _)| k == key) {
+        v.push((key.to_string(), OVal::Obj(Vec::new())));
     }
+    let slot = v.iter_mut().find(|(k, _)| k == key).map(|(_, x)| x)?;
+    if !matches!(slot, OVal::Obj(_)) {
+        *slot = OVal::Obj(Vec::new());
+    }
+    Some(slot)
 }
 
-/// The write half of `pruneStore` for rows chosen from an agreed plan. `Err` only before or between batches, never inside the
-/// tombstoning transaction (which is rolled back first): the rows already committed stay committed and Node's own sweep
-/// resumes the rest, as it would after its own crash.
-pub fn prune(run: &mut Run, plan: &Plan, mut chosen: Chosen, size_added: usize, age_n: usize, bytes_before: u64, over_limit: bool) -> R<Pruned> {
-    let t0 = Instant::now();
-    let max_bytes = run.settings.max_bytes();
+/// The write half of `pruneStore` for rows chosen from an agreed plan. A failure before or between batches (never inside the
+/// tombstoning transaction, which is rolled back first) ends the store the way Node's `catch` does: `ok: false`, the error text
+/// and a `prune-error` log line; the rows already committed stay committed and the next sweep resumes the rest.
+pub fn prune(run: &mut Run, plan: &Plan, chosen: Chosen, size_added: usize, age_n: usize, bytes_before: u64, over_limit: bool) -> Pruned {
     let mut res = Pruned {
         hash: run.hash.to_string(),
         ok: true,
@@ -537,11 +541,28 @@ pub fn prune(run: &mut Run, plan: &Plan, mut chosen: Chosen, size_added: usize, 
         candidate_bytes: chosen.bytes(),
         ..Pruned::default()
     };
+    if let Err(Defer(why)) = prune_into(run, plan, chosen, &mut res) {
+        res.ok = false;
+        res.error = Some(why.clone());
+        log_event(
+            run.home,
+            &[("event", OVal::Str(defaults::text("devswarm_sup.rt_ev_prune_error").into())), ("store", OVal::Str(run.hash.into())), ("error", OVal::Str(why))],
+        );
+    }
+    if res.bytes_after == 0 {
+        res.bytes_after = store_bytes(run.home, run.hash);
+    }
+    res
+}
+
+fn prune_into(run: &mut Run, plan: &Plan, mut chosen: Chosen, res: &mut Pruned) -> R<()> {
+    let t0 = Instant::now();
+    let max_bytes = run.settings.max_bytes();
     let c = open_rw(run.home, run.hash)?;
     let cutoff = run.now - run.settings.days * defaults::num("devswarm_sup.rt_day_ms") as f64;
     let mut ordered = chosen.list.clone();
     ordered.sort_by_key(|x| x.id);
-    let mut finished = do_batches(&c, run, cutoff, &ordered, &t0, &mut res)?;
+    let mut finished = do_batches(&c, run, cutoff, &ordered, &t0, res)?;
     res.vacuum = maybe_vacuum(&c, res.tombstoned_bytes, res.bytes_before, res.over_limit);
     res.bytes_after = store_bytes(run.home, run.hash);
     // size rounds: the body-bytes estimate can undershoot the real reclaim
@@ -557,7 +578,7 @@ pub fn prune(run: &mut Run, plan: &Plan, mut chosen: Chosen, size_added: usize, 
             break;
         }
         res.size_candidates += extra.len();
-        finished = do_batches(&c, run, cutoff, &extra, &t0, &mut res)?;
+        finished = do_batches(&c, run, cutoff, &extra, &t0, res)?;
         if let Some(v) = maybe_vacuum(&c, res.tombstoned_bytes - pruned_so_far, res.bytes_after, true) {
             res.vacuum = Some(v);
         }
@@ -577,5 +598,5 @@ pub fn prune(run: &mut Run, plan: &Plan, mut chosen: Chosen, size_added: usize, 
             ],
         );
     }
-    Ok(res)
+    Ok(())
 }

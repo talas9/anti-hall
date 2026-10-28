@@ -87,7 +87,7 @@ and `TaskGet` read back. Designed for long, multi-session, multi-subagent work.
   heartbeat no longer suppresses it (any session's spawn refreshed it). Toggle:
   `guards.dispatchDemand` (default on). Metrics (`demandsShown`, `demandsFollowed`,
   `demandsIgnored`, compliance rate, `idleNeglectBlocks`):
-  `node plugins/anti-hall/scripts/dispatch-report.js` and one `doctor` line.
+  `~/.anti-hall/ah-engine/bin/ah-engine dispatch-report` and one `doctor` line.
 - **Persistence:** written to disk immediately under
   `~/.claude/tasks/<TASK_LIST_ID>/` (`index.json` + `task-*.json`). Survives
   compaction, restart, and multi-day gaps. `CLAUDE_CODE_TASK_LIST_ID` selects
@@ -271,7 +271,7 @@ treated as a feature launch.
 
 `coordinator-work-guard` counts the main thread's state-changing Bash calls (WORK) in a time window. See the "Coordinator work window" section of `docs/GUIDE.md` for what counts.
 
-**Report.** `node plugins/anti-hall/scripts/dispatch-report.js` (and `doctor`) print one block:
+**Report.** `~/.anti-hall/ah-engine/bin/ah-engine dispatch-report` (and `doctor`) print one block:
 
 - shown nudges, blocks, mean and max blocks per session, and the skipped-would-block counter (a would-be block passed by an explicit skip; it is not part of any share);
 - per plugin version: sessions, the posted share `work / calls`, and the attempted share `(work + blocks) / (calls + blocks)`;
@@ -281,7 +281,7 @@ treated as a feature launch.
 
 **Baseline.** To get a "before" number for sessions that ran without the guard, run
 
-    node plugins/anti-hall/scripts/coordinator-work-baseline.js ~/.claude/projects/<slug>/<session>.jsonl --json
+    ~/.anti-hall/ah-engine/bin/ah-engine coordinator-work-baseline ~/.claude/projects/<slug>/<session>.jsonl --json
 
 on pre-release sessions. It prints `{calls, work, share, attemptedShare, wouldNudge, wouldBlock}`. `share` is as recorded (no enforcement): every logged call is counted. `attemptedShare` is with enforcement: a call the window would have blocked is not posted. Compare `share` against the per-version shares in the dispatch-report. The baseline resolves `$VAR` script paths from its own environment, not the original session's, cannot count direct-exec scripts that no longer exist on disk, and judges freshness against current file mtimes.
 

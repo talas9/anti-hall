@@ -52,14 +52,22 @@ pub struct Meta {
 pub enum Answer {
     /// The check decided; this is what the Node hook would have produced.
     Decided(HookResult, Vec<checks::RouteMeta>),
-    /// The Node hook must decide (the check deferred, panicked, or does not apply).
+    /// The check gave no answer (it deferred, panicked, does not apply, or was dropped under load): the call goes on without it.
     Defer,
 }
 
 /// Run `entry`'s built-in check on the payload. The Node guard blocks with exit 2 and the reason plus a newline on
 /// stderr, and prints an advisory as one JSON line; the verdict is turned into exactly those bytes.
 pub fn run_entry(entry: &Entry, meta: &Meta, p: &Value) -> Answer {
-    let Some(check) = entry.check.as_deref().and_then(checks::get) else { return Answer::Defer };
+    match entry.check.as_deref() {
+        Some(name) => run_check(name, &entry.id, meta, p),
+        None => Answer::Defer,
+    }
+}
+
+/// Run the built-in check `name` for the answer of `id` (an entry of the table, or an internal step of the dispatcher).
+pub(crate) fn run_check(name: &str, id: &str, meta: &Meta, p: &Value) -> Answer {
+    let Some(check) = checks::get(name) else { return Answer::Defer };
     let null = Value::Null;
     let subject = Subject {
         event: &meta.event,
@@ -69,15 +77,18 @@ pub fn run_entry(entry: &Entry, meta: &Meta, p: &Value) -> Answer {
         prompt: p.get("prompt").and_then(Value::as_str),
     };
     let opts = json!({ "plugin_root": meta.root, "payload_sha1": meta.payload_sha1, "host": meta.host });
-    let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| checks::run_env_guarded(check, &subject, p, &opts, &meta.env)));
+    let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _boundary = crate::crash::enter("check", "D", &meta.event, id, "");
+        checks::run_env_guarded(check, &subject, p, &opts, &meta.env)
+    }));
     match verdict {
-        Ok(v) => answer_of(&entry.id, v),
+        Ok(v) => answer_of(id, v),
         Err(_) => Answer::Defer,
     }
 }
 
 /// The bytes the Node hook `id` would have produced for a check's verdict.
-fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
+pub(crate) fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
     match verdict {
         Some(Verdict::Routed(inner, routes)) => match answer_of(id, Some(*inner)) {
             Answer::Decided(r, _) => Answer::Decided(r, routes),
@@ -91,40 +102,111 @@ fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
     }
 }
 
+/// How long past the hard request deadline `check` may still start (`diagnostics.deadline_grace_ms`, capped by
+/// `diagnostics.deadline_grace_cap_ms` so the reply stays inside the time the client waits for a late one). 0 for a check without a row.
+fn deadline_grace_ms(check: &str) -> u64 {
+    let grace = crate::defaults::raw("diagnostics.deadline_grace_ms").get(check).and_then(|v| v.as_integer()).unwrap_or(0).max(0) as u64;
+    grace.min(crate::defaults::num("diagnostics.deadline_grace_cap_ms"))
+}
+
 /// Every matching entry with a built-in check, answered; entries without one are not listed.
-pub fn evaluate(meta: &Meta, p: &Value, observe: &dyn Fn(&Entry, &Answer, u64)) -> Vec<(String, Answer)> {
+///
+/// `over_cpu` is asked, after a check ran, whether the thread CPU that ONE check used (microseconds) crossed the hard budget: only that
+/// check's answer is dropped (a runaway), the checks after it still run and answer. A cumulative request budget made one slow check
+/// sink every later check's answer (live 2026-10-23); the request as a whole is bounded by the hard deadline instead.
+pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe: &dyn Fn(&Entry, &Answer, u64)) -> Vec<(String, Answer)> {
     // one dispatch of the prompt event is one turn of the session, which is what the injection gate counts keepalives in
     if meta.event == crate::defaults::text("inject_gate.ups_event")
         && let Some(sid) = p.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty())
     {
         crate::gate::global().turn(sid);
     }
-    table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
+    let guard_event = crate::defaults::list("dispatch.guard_events").contains(&meta.event.as_str());
+    let shed_checks = crate::defaults::num("diagnostics.shed_checks") == 1;
+    let mut out = Vec::new();
+    for e in table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
         .into_iter()
         .filter(|e| e.check.is_some() && meta.only.as_ref().is_none_or(|ids| ids.contains(&e.id)))
-        .map(|e| {
-            let started = std::time::Instant::now();
-            crate::deadline::beat();
-            let check = e.check.as_deref().unwrap_or("");
-            // past the client's deadline nobody reads this reply's answer for the entry: it is not started, and its own Node hook
-            // answers it (the entries answered in time still count), so a slow machine costs single checks, never the event
-            let a = if !crate::deadline::in_time() && crate::script::cut_at_deadline(check, &meta.event) {
-                crate::script::cut(check, &meta.event);
+    {
+        let started = std::time::Instant::now();
+        crate::deadline::beat();
+        let check = e.check.as_deref().unwrap_or("");
+        crate::jev::assist::set_asking_check(check);
+        if crate::deadline::note_soft_overrun() {
+            // the client's fail-fast wait was over before any check of this request started (it waited in the queue): this and the later
+            // checks still run (up to the hard deadline), the Node hook is not needed
+            let elapsed = crate::deadline::elapsed_ms().unwrap_or(0);
+            crate::health::log_event(
+                "deadline_soft",
+                check,
+                &crate::defaults::render("msg.log_deadline_soft_queued", &[("check", &check), ("event", &meta.event), ("elapsed_ms", &elapsed)]),
+            );
+        }
+        // a check that gets no answer takes its failure policy in the dispatcher (the entries answered in time still count), so a slow
+        // machine costs single checks, never the event; every dropped answer is recorded with its reason (`budget::note_dropped`)
+        let cpu_before = crate::limits::thread_cpu_us();
+        let a = if shed_checks && !guard_event && crate::budget::shedding() && crate::defaults::raw("diagnostics.shed_never").get(check).is_none() {
+            // past the HARD CPU limit (diagnostics.budget_cpu_hard_pct), when `diagnostics.shed_checks` is on, the pure-advice checks of events that cannot block wait (`diagnostics.shed_never` lists the ones that never do)
+            crate::budget::note_shed_skipped();
+            crate::budget::note_dropped(guard_event, check, &meta.event, "shed");
+            Answer::Defer
+        } else if crate::deadline::client_gone() {
+            // the client closed its connection: nobody reads this reply, so the check is not worth running.
+            // live19: 478 replies in 1000 s hit a closed pipe after their work was done.
+            crate::budget::note_dropped(guard_event, check, &meta.event, "client_gone");
+            Answer::Defer
+        } else if !crate::deadline::in_time()
+            && crate::script::cut_at_deadline(check, &meta.event)
+            && crate::deadline::past_hard_ms() > deadline_grace_ms(check)
+        {
+            crate::script::cut(check, &meta.event);
+            crate::budget::note_dropped(guard_event, check, &meta.event, "hard_deadline");
+            Answer::Defer
+        } else {
+            let mark = crate::deadline::staged_mark();
+            let a = if check == crate::defaults::text("upfront.check") {
+                // It has a real table row (and honors --only); emit after all blocking guards are known.
+                Answer::Decided(HookResult::quiet(&e.id), Vec::new())
+            } else {
+                run_entry(&e, meta, p)
+            };
+            let used = crate::limits::thread_cpu_us().saturating_sub(cpu_before);
+            if matches!(a, Answer::Defer) {
+                crate::deadline::discard_staged_since(mark);
+                crate::budget::note_dropped(guard_event, check, &meta.event, "check_deferred");
+                Answer::Defer
+            } else if over_cpu(used) {
+                // this check ran and crossed the budget alone: what it staged must not land for a decision nobody received
+                crate::health::log_event(
+                    "budget",
+                    check,
+                    &crate::defaults::render("msg.log_budget_crossed", &[("check", &check), ("cpu_us", &used), ("wall_us", &started.elapsed().as_micros())]),
+                );
+                crate::deadline::discard_staged_since(mark);
+                crate::budget::note_dropped(guard_event, check, &meta.event, "cpu_budget");
                 Answer::Defer
             } else {
-                let mark = crate::deadline::staged_mark();
-                let a = run_entry(&e, meta, p);
-                if matches!(a, Answer::Defer) {
-                    // the Node hook decides this entry: what the check staged must not land for a decision nobody received
-                    crate::deadline::discard_staged_since(mark);
-                }
-                a
-            };
-            crate::deadline::beat();
-            observe(&e, &a, started.elapsed().as_micros() as u64);
-            (e.id, a)
-        })
-        .collect()
+                // a block that keeps coming back from the same guard tells what is allowed and asks for a different approach
+                crate::learn::annotate(meta, p, check, a)
+            }
+        };
+        crate::deadline::beat();
+        if crate::deadline::note_soft_overrun() {
+            // the client's fail-fast wait ended while THIS check was running: it is the one the line names, with how long it ran
+            // (the line used to name the next check to start: ship-it-guard, 0.7 ms mean over 49,811 live calls, was blamed for time earlier checks spent)
+            let (elapsed, ran) = (crate::deadline::elapsed_ms().unwrap_or(0), started.elapsed().as_millis());
+            crate::health::log_event(
+                "deadline_soft",
+                check,
+                &crate::defaults::render("msg.log_deadline_soft", &[("check", &check), ("event", &meta.event), ("elapsed_ms", &elapsed), ("ran_ms", &ran)]),
+            );
+        }
+        crate::load::note_check_cpu(crate::limits::thread_cpu_us().saturating_sub(cpu_before));
+        observe(&e, &a, started.elapsed().as_micros() as u64);
+        out.push((e.id, a));
+    }
+    crate::learn::upfront_notice(meta, p, &mut out);
+    out
 }
 
 /// The daemon's reply body: `[[id, "defer"], [id, code, stdout, stderr], ...]`.
@@ -177,7 +259,7 @@ mod tests {
     #[test]
     fn the_git_check_answers_its_entry_with_the_node_guards_bytes() {
         let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        let got = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
         let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(
             ids,
@@ -193,7 +275,12 @@ mod tests {
                 "ship-it-guard",
                 "procwatch-advisory",
                 "engine-role-guard",
-                "broad-kill-guard"
+                "broad-kill-guard",
+                "burn-breaker",
+                "queued-wait-guard",
+                "lane-test-guard",
+                "wide-search-guard",
+                "switch-notice"
             ],
             "the Bash entries a built-in check answers, in hooks.json order"
         );
@@ -208,19 +295,80 @@ mod tests {
         }
     }
 
-    /// Load: past the client's deadline no entry is started, each defers to its own Node hook (a loaded machine costs single
-    /// entries, never the whole event's reply).
+    /// Load: past the client's deadline no entry is started and each gives no answer (the dispatcher then applies the check's failure
+    /// policy: a loaded machine costs single entries, never the whole event's reply). A check that fails closed on a guard event keeps
+    /// only its own limit, so it still decides.
     #[test]
-    fn past_the_clients_deadline_every_entry_defers_without_running() {
+    fn past_the_clients_deadline_every_open_entry_gives_no_answer_without_running() {
         let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
         crate::deadline::begin(std::time::Instant::now());
         crate::deadline::client_deadline(0);
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        let got = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
         crate::deadline::end();
         assert!(!got.is_empty());
-        assert!(got.iter().all(|(_, a)| matches!(a, Answer::Defer)), "{:?}", got.iter().map(|(id, _)| id).collect::<Vec<_>>());
-        let again = evaluate(&meta(), &p, &|_, _, _| {});
+        assert!(got.iter().any(|(_, a)| matches!(a, Answer::Defer)), "{:?}", got.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        for (id, a) in &got {
+            let closed = crate::script::failure_mode(&entry_check(id)) == crate::defaults::text("script.failure_mode_closed");
+            assert_eq!(matches!(a, Answer::Defer), !closed, "{id}: only an open check is cut at the deadline");
+        }
+        let again = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
         assert!(again.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))), "in time it decides");
+    }
+
+    /// A client that closed its connection (an ack-mode client gave up) has no use for the rest of the checks: none is started.
+    #[test]
+    fn once_the_client_has_gone_the_remaining_entries_are_not_run() {
+        use std::os::fd::AsRawFd;
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        crate::deadline::begin(std::time::Instant::now());
+        crate::deadline::watch_peer(ours.as_raw_fd());
+        let started = std::cell::Cell::new(0usize);
+        let alive = evaluate(&meta(), &p, &|_| false, &|_, _, _| started.set(started.get() + 1));
+        assert!(alive.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))), "a client that waits is answered");
+        assert_eq!(crate::deadline::take_client_gone_skips(), 0);
+        drop(theirs);
+        let gone = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
+        crate::deadline::end();
+        assert!(!gone.is_empty() && gone.iter().all(|(_, a)| matches!(a, Answer::Defer)), "no entry is run for a client that has gone");
+        assert_eq!(crate::deadline::take_client_gone_skips(), gone.len() as u64, "each skipped entry is counted");
+        assert!(!crate::deadline::client_gone(), "outside a request nothing is watched");
+    }
+
+    /// Past the client's fail-fast wait (the SOFT deadline) every entry still runs and decides; only the hard deadline cuts.
+    #[test]
+    fn past_the_soft_deadline_the_entries_still_run_and_decide() {
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
+        crate::deadline::begin(std::time::Instant::now());
+        crate::deadline::client_window(0); // the fail-fast wait is over, the hard deadline is not
+        let got = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
+        crate::deadline::end();
+        assert!(got.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))), "the guard still decides");
+    }
+
+    /// A check that alone crossed the CPU budget loses its own answer; the checks after it still run and answer (one slow check must
+    /// never sink the others' answers).
+    #[test]
+    fn a_check_over_the_cpu_budget_loses_only_its_own_answer() {
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
+        let polls = std::cell::Cell::new(0usize);
+        let got = evaluate(
+            &meta(),
+            &p,
+            &|_| {
+                let n = polls.get();
+                polls.set(n + 1);
+                n == 0 // only the first check that decides crosses the budget
+            },
+            &|_, _, _| {},
+        );
+        assert!(got.len() > 2);
+        let dropped: Vec<&str> = got.iter().filter(|(_, a)| matches!(a, Answer::Defer)).map(|(id, _)| id.as_str()).collect();
+        assert_eq!(dropped.len(), 1, "exactly the check that crossed the budget lost its answer: {dropped:?}");
+        assert!(
+            got.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))) || dropped == ["git-guard"],
+            "the git guard either decided or is the one that crossed"
+        );
     }
 
     /// A payload each of the five stateless checks settles as "nothing to say".
@@ -258,7 +406,7 @@ mod tests {
         m.env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string())]);
         for name in ["compact-declaration-guard", "coordinator-work-guard", "merge-side-pick", "scan-throttle", "ship-it-guard"] {
             let p = quiet_payload(name);
-            let got = evaluate(&m, &p, &|_, _, _| {});
+            let got = evaluate(&m, &p, &|_| false, &|_, _, _| {});
             let (_, a) = got.iter().find(|(id, _)| id == name).unwrap_or_else(|| panic!("{name} entry missing"));
             if a != &Answer::Decided(HookResult::quiet(name), Vec::new()) {
                 deferred.push(name);
@@ -267,31 +415,41 @@ mod tests {
         assert!(deferred.is_empty(), "these checks must answer natively, not defer: {deferred:?}");
     }
 
-    /// The other side of the fix: where a check cannot prove Node is silent it still defers (D74). A relative payload cwd
-    /// resolves against the Node hook's own working directory, which the daemon cannot know: git-guard defers.
+    /// A relative payload cwd resolves against the Node hook's own working directory, which no longer exists: git-guard answers
+    /// natively (quiet for a command that blocks nothing, as Node is) and never defers to a hook that cannot run.
     #[test]
-    fn a_check_that_cannot_prove_silence_still_defers() {
+    fn a_relative_cwd_is_answered_natively_not_deferred() {
         let p = json!({"session_id": "s", "cwd": "sub", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git status"}});
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
-        assert_eq!(got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Defer);
+        let got = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
+        assert_eq!(got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Decided(HookResult::quiet("git-guard"), Vec::new()));
+    }
+
+    /// The check name of the table entry `id` (PreToolUse, Claude).
+    fn entry_check(id: &str) -> String {
+        crate::dispatch::table::entries("claude", "PreToolUse").into_iter().find(|e| e.id == id).and_then(|e| e.check).unwrap_or_else(|| id.to_string())
     }
 
     /// Review P1: an incomplete request environment (dropped over the cap, absent, no HOME) must not be evaluated: with
-    /// it the ship-it gate reads as off and the engine would allow an Edit Node blocks. Every env-reading check defers.
+    /// it the ship-it gate reads as off and the engine would allow an Edit Node blocks. No check is evaluated: each takes its
+    /// failure policy, and a blocking guard (ship-it-guard) fails closed.
     #[test]
-    fn an_incomplete_environment_defers_every_check() {
+    fn an_incomplete_environment_applies_the_failure_policy_to_every_check() {
         let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "migrations/a.sql"}});
         let mut m = meta();
         m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1"), ("HOME", "/h")]);
-        let whole = evaluate(&m, &p, &|_, _, _| {});
+        let whole = evaluate(&m, &p, &|_| false, &|_, _, _| {});
         let ship = |got: &[(String, Answer)]| got.iter().find(|(id, _)| id == "ship-it-guard").unwrap().1.clone();
         assert!(matches!(ship(&whole), Answer::Decided(ref r, _) if r.code == Some(2)), "control: the gate is on, so it blocks");
         m.env = crate::reqenv::RequestEnv::incomplete();
-        let got = evaluate(&m, &p, &|_, _, _| {});
-        assert!(!got.is_empty() && got.iter().all(|(_, a)| *a == Answer::Defer), "every check defers: {got:?}");
+        let got = evaluate(&m, &p, &|_| false, &|_, _, _| {});
+        assert!(!got.is_empty() && got.iter().all(|(_, a)| !matches!(a, Answer::Defer)), "every check is decided by its policy: {got:?}");
+        assert!(matches!(ship(&got), Answer::Decided(ref r, _) if r.code == Some(2) && r.err.contains("request environment incomplete")), "{got:?}");
         let big = "x".repeat(crate::defaults::num("request_env.max_bytes") as usize);
         m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1".to_string()), ("ANTIHALL_X", big)]);
-        assert_eq!(ship(&evaluate(&m, &p, &|_, _, _| {})), Answer::Defer, "an environment dropped over the cap defers too");
+        assert!(
+            matches!(ship(&evaluate(&m, &p, &|_| false, &|_, _, _| {})), Answer::Decided(ref r, _) if r.code == Some(2)),
+            "an environment dropped over the cap takes the same policy"
+        );
     }
 
     /// Replay payload L3 (a force push): Node's command-guard blocks it as a state-changing remote command in the main thread. The
@@ -304,11 +462,10 @@ mod tests {
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let mut m = meta();
         m.env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string()), ("CLAUDE_CODE_ENTRYPOINT", "cli".to_string())]);
-        let got = evaluate(&m, &p, &|_, _, _| {});
-        // the plugin root of this test does not exist, so the block message cannot name the CLI: the script defers rather than guess
-        let cg = &got.iter().find(|(id, _)| id == "command-guard").unwrap().1;
-        assert!(matches!(cg, Answer::Defer) || matches!(cg, Answer::Decided(r, _) if r.code == Some(2)), "never an allow: {got:?}");
-        assert!(matches!(&got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Defer | Answer::Decided(..)));
+        let got = evaluate(&m, &p, &|_| false, &|_, _, _| {});
+        // Command delegation allows this lightweight command; git safety owns force-push blocking.
+        assert!(matches!(&got.iter().find(|(id, _)| id == "command-guard").unwrap().1, Answer::Decided(r, _) if r.code == Some(0)));
+        assert!(matches!(&got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Decided(r, _) if r.code == Some(2)));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
     }
 
@@ -317,7 +474,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("ah-native-vf-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(d.join("plugin/hooks")).unwrap();
-        std::fs::write(d.join("plugin/hooks/verify-first-core.js"), "").unwrap();
+        std::fs::write(d.join("plugin/hooks/install.sh"), "").unwrap();
         std::fs::create_dir_all(d.join("home")).unwrap();
         let root = std::fs::canonicalize(d.join("plugin")).unwrap().to_string_lossy().to_string();
         let env = crate::reqenv::RequestEnv::from_pairs([("HOME", d.join("home").to_string_lossy().to_string())]);
@@ -341,7 +498,7 @@ mod tests {
             };
             // the other batches' checks of the same event answer here too (their own tests pin their bytes): only the verify-first
             // family and fable-availability are looked at
-            let got: Vec<_> = evaluate(&meta, &p, &|_, _, _| {}).into_iter().filter(|(id, _)| ids.contains(&id.as_str())).collect();
+            let got: Vec<_> = evaluate(&meta, &p, &|_| false, &|_, _, _| {}).into_iter().filter(|(id, _)| ids.contains(&id.as_str())).collect();
             assert_eq!(got.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ids, "{host} {event}");
             for (id, a) in &got {
                 let Answer::Decided(r, _) = a else { panic!("{id} deferred") };
@@ -359,7 +516,7 @@ mod tests {
                 }
             }
         }
-        // the root is a host fact: with none, the compact text cannot be built and the Node hook answers
+        // With no request root, the loaded plugin root supplies the protocol path.
         let meta = Meta {
             host: "claude".into(),
             event: "SubagentStart".into(),
@@ -372,10 +529,12 @@ mod tests {
             payload_sha1: None,
             deadline_ms: None,
         };
-        assert_eq!(
-            evaluate(&meta, &p, &|_, _, _| {}).into_iter().filter(|(id, _)| id == "verify-first-subagent").map(|(_, a)| a).collect::<Vec<_>>(),
-            vec![Answer::Defer]
-        );
+        let answers = evaluate(&meta, &p, &|_| false, &|_, _, _| {});
+        let (_, answer) = answers.iter().find(|(id, _)| id == "verify-first-subagent").unwrap();
+        let Answer::Decided(result, _) = answer else { panic!("loaded root must answer: {answer:?}") };
+        // The protocol helper resolves its probe with realpath; Cargo's root may still contain `..`.
+        let root = crate::defaults::root().unwrap().canonicalize().unwrap();
+        assert!(result.out.contains(&format!("{}/PROTOCOL.md", root.display())), "{}", result.out);
     }
 
     #[test]

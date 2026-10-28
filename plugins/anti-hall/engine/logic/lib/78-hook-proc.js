@@ -33,6 +33,42 @@ var hookProc = {
     if (h === null || h === '') return null;
     return ah.path.isAbsolute(h) ? h : hookProc.resolve(p, h);
   },
+  // The payload's cwd when it is an absolute path (the directory the host runs the hook in), else null.
+  absCwd: function (p) { var c = p !== null && typeof p === 'object' ? p.cwd : undefined; return typeof c === 'string' && ah.path.isAbsolute(c) ? c : null; },
+  // The path a Node hook would open, where that is known exactly: an absolute `q` as it is, a relative one joined to an absolute payload
+  // cwd; null when only the hook process's own directory (not in the payload) could resolve it.
+  openKnown: function (p, q) { if (ah.path.isAbsolute(q)) return q; var c = hookProc.absCwd(p); return c === null ? null : c + '/' + q; },
+  // Node's `os.homedir()` for the hook process: HOME when set (even empty or relative: libuv takes it as it is), else the passwd
+  // entry. {home, passwd} (absolute; `passwd` true when it came from the passwd entry, so the call must adopt it with ah.useHome),
+  // {relative: true} (HOME set but relative or empty: Node resolves every path on it against its own directory, which the engine
+  // cannot see) or {none: true} (neither gives a home).
+  nodeHome: function () {
+    var h = ah.env.get(ah.cfg('env.home')), passwd = h === null;
+    if (passwd) h = ah.env.passwdHome();
+    if (h === null) return { none: true };
+    if (!ah.path.isAbsolute(h)) return { relative: true };
+    return { home: h, passwd: passwd };
+  },
+  // companion/lib/test-home-guard.js `resolveHome`: true when a test marker (spawn_ctx.test_markers) is set without the opt-out and
+  // `h` is the real (passwd) home, which the Node hooks refuse to use under a test.
+  testGuarded: function (h) {
+    var set = function (k) { var v = ah.env.get(k); return v !== null && v !== ''; };
+    if (set(ah.cfg('spawn_ctx.real_home_optout_env')) || !ah.cfg('spawn_ctx.test_markers').some(set)) return false;
+    var real = ah.env.passwdHome();
+    return real !== null && real !== '' && ah.path.resolveAbs(h) === ah.path.resolveAbs(real);
+  },
+  // The home a Node hook would use, made the call's home: null when the call may go on, else why the engine cannot use it as Node
+  // does (relative_home, no_home, test_guard: the passwd home is the real one under a test marker, never touched); the caller defers.
+  adoptHome: function () {
+    var nh = hookProc.nodeHome();
+    if (nh.relative) return 'relative_home';
+    if (nh.none) return 'no_home';
+    if (nh.passwd) {
+      if (hookProc.testGuarded(nh.home)) return 'test_guard';
+      ah.useHome(nh.home);
+    }
+    return null;
+  },
   // `t` with every lone surrogate (which a Node string may hold and a host call cannot take) replaced by U+FFFD: the same length in
   // UTF-16 units, so offsets the host returns index the original text.
   usv: function (t) { return t.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd'); },

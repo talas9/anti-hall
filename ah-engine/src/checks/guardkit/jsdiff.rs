@@ -23,6 +23,111 @@ pub fn js_reads_differently_str(txt: &str) -> bool {
     }
 }
 
+/// Parse `txt` as `JSON.parse` does where `serde_json` cannot: a lone surrogate escape becomes U+FFFD, a number outside the f64 range
+/// becomes the largest finite one of its sign (JavaScript's Infinity cannot be held in a [`Value`]), nesting past serde's 128 levels
+/// is read to `taskstate.js_parse_max_depth`. The shape (keys, types, array lengths) is what JavaScript sees; only those three values differ.
+/// `None`: not one of those classes, or past that depth: the caller decides what an unreadable line means.
+pub fn parse_as_js(txt: &str) -> Option<Value> {
+    if let Ok(v) = serde_json::from_str::<Value>(txt) {
+        return Some(v);
+    }
+    if !js_reads_differently_str(txt) {
+        return None;
+    }
+    let fixed = repair_for_serde(txt)?;
+    let mut de = serde_json::Deserializer::from_str(&fixed);
+    de.disable_recursion_limit();
+    let v = <Value as serde::Deserialize>::deserialize(&mut de).ok()?;
+    de.end().ok()?;
+    Some(v)
+}
+
+/// `txt` with each lone surrogate escape and each out-of-range number replaced (see [`parse_as_js`]); `None` past `taskstate.js_parse_max_depth`.
+fn repair_for_serde(txt: &str) -> Option<String> {
+    let max_depth = crate::defaults::num("taskstate.js_parse_max_depth") as usize;
+    let b = txt.as_bytes();
+    let (mut out, mut i, mut depth) = (String::with_capacity(txt.len()), 0usize, 0usize);
+    let hex4 = |at: usize| -> Option<u32> { b.get(at..at + 4).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u32::from_str_radix(h, 16).ok()) };
+    let mut in_str = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            match c {
+                b'"' => {
+                    in_str = false;
+                    out.push('"');
+                    i += 1;
+                }
+                b'\\' if b.get(i + 1) == Some(&b'u') => match hex4(i + 2) {
+                    Some(hi @ 0xD800..=0xDBFF)
+                        if b.get(i + 6) == Some(&b'\\') && b.get(i + 7) == Some(&b'u') && matches!(hex4(i + 8), Some(0xDC00..=0xDFFF)) =>
+                    {
+                        out.push_str(&txt[i..i + 12]);
+                        let _ = hi;
+                        i += 12;
+                    }
+                    Some(0xD800..=0xDFFF) => {
+                        out.push_str("\\ufffd");
+                        i += 6;
+                    }
+                    _ => {
+                        out.push_str(&txt[i..(i + 2).min(txt.len())]);
+                        i += 2;
+                    }
+                },
+                b'\\' => {
+                    let end = (i + 2).min(b.len());
+                    out.push_str(txt.get(i..end).unwrap_or("\\"));
+                    i = end;
+                }
+                _ => {
+                    let ch = txt[i..].chars().next()?;
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+            }
+            continue;
+        }
+        match c {
+            b'"' => {
+                in_str = true;
+                out.push('"');
+                i += 1;
+            }
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > max_depth {
+                    return None;
+                }
+                out.push(c as char);
+                i += 1;
+            }
+            b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                out.push(c as char);
+                i += 1;
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = i;
+                while i < b.len() && matches!(b[i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+                    i += 1;
+                }
+                let tok = &txt[start..i];
+                match tok.parse::<f64>() {
+                    Ok(f) if f.is_infinite() => out.push_str(if f < 0.0 { "-1.7976931348623157e308" } else { "1.7976931348623157e308" }),
+                    _ => out.push_str(tok),
+                }
+            }
+            _ => {
+                let ch = txt[i..].chars().next()?;
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    Some(out)
+}
+
 /// [`js_reads_differently_str`] on file bytes, decoded as Node decodes them (UTF-8, bad bytes replaced).
 pub fn js_reads_differently(bytes: &[u8]) -> bool {
     js_reads_differently_str(&String::from_utf8_lossy(bytes))

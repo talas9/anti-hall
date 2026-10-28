@@ -72,6 +72,15 @@ fn a_later_message_a_stop_or_another_reason_means_not_finished() {
 }
 
 #[test]
+fn a_stop_that_errored_because_the_task_is_gone_still_ended_the_agent() {
+    let mut l = spawn("live31", T0 - 3_000_000.0);
+    l.push(report("live31", T0 - 2_000_000.0, "available"));
+    l.push(json!({"type":"assistant","timestamp":iso(T0 - 1_000_000.0),"message":{"content":[{"type":"tool_use","id":"ts9","name":"TaskStop","input":{"task_id":"live31"}}]}}).to_string());
+    l.push(json!({"type":"user","timestamp":iso(T0 - 900_000.0),"message":{"content":[{"type":"tool_result","tool_use_id":"ts9","is_error":true,"content":"No task found with ID: live31"}]}}).to_string());
+    assert_eq!(scan::finished_teammates(&l), Ok(vec![]), "gone agent must drop out");
+}
+
+#[test]
 fn a_teammate_named_like_a_background_agent_is_not_listed() {
     let mut l = vec![json!({"type":"user","timestamp":iso(T0 - 4_000_000.0),"message":{"content":"<task-notification>\n<task-id>abcdef12</task-id>\n<status>completed</status>\n</task-notification>"}}).to_string()];
     l.extend(spawn("abcdef12", T0 - 3_000_000.0));

@@ -9,36 +9,35 @@
 // the Bash edit parity and this guard cannot drift apart. Mirrors hooks/edit-guard.js `main`, hooks/lib/devswarm-role.js
 // `isChildWorker` and hooks/lib/inline-work-nudge.js. Keys and texts: small_guards.toml (edit_guard.*), guards_l12.toml, command.toml.
 //
-// Never weaker than Node: anything only the Node hook process can see (its own working directory or home, a layout the file system
-// primitives do not classify) defers the whole call with nothing written. One advisory stays with Node: the DevSwarm Primary
-// inline-work note, which needs the transcript's task list and the live-child probe; the call that could say it defers BEFORE the
-// counter is written (every earlier call of the session is counted here, byte for byte as Node counts it).
+// Never weaker than Node: what only the Node hook process could see (its own working directory or home, a layout the file system
+// primitives do not classify) is decided natively and counted (native_unable): a relative path resolves against the stand-in
+// directory, a home it cannot find protects nothing extra. The DevSwarm Primary inline-work note is decided here too, from the
+// transcript's open tasks and the app database's live workspaces (silent whenever the liveness is unknown).
 'use strict';
 
 function egIsObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
 
-// `value || ''` for a path-like field: the falsy values are '', an array or object is rendered the JavaScript way by Node (deferred),
-// anything else is its string form.
+// `value || ''` for a path-like field: the falsy values are '', anything else is its string form (an array or object renders as in JavaScript).
 function egStr(v) {
   if (v === undefined || v === null || v === false || v === 0 || v === '' || (typeof v === 'number' && v !== v)) return '';
-  if (typeof v === 'object') unsure();
+  if (typeof v === 'object') ah.unable('edit-guard:object_path');
   return String(v);
 }
 
 function egSlashes(p) { return p.split('\\').join('/'); }
 function egInside(real, dir) { return real === dir || (real.indexOf(dir) === 0 && real.slice(dir.length).charAt(0) === '/'); }
 
-// hooks/edit-guard.js resolvesIntoLauncherBinDir: true / false; the hook's own working directory or home are unsure().
+// hooks/edit-guard.js resolvesIntoLauncherBinDir: true / false; a home or directory the request lacks comes from the passwd entry or the stand-in directory (counted).
 function egIntoLauncher(file, cwd) {
   if (file === '') return false;
   var home = ah.env.get(ah.cfg('env.home'));
-  if (home === null) unsure();
+  if (home === null) { ah.unable('edit-guard:launcher_no_home'); home = ah.env.passwdHome(); if (home === null) return false; }
   if (home === '') return false;
-  if (!ah.path.isAbsolute(home)) unsure();
+  if (!ah.path.isAbsolute(home)) { ah.unable('edit-guard:launcher_relative_home'); home = ah.path.resolveAbs(hookProc.base() + '/' + home); }
   var abs;
   if (ah.path.isAbsolute(file)) abs = ah.path.resolveAbs(file);
   else if (ah.path.isAbsolute(cwd)) abs = ah.path.resolve(cwd, file);
-  else unsure();
+  else { ah.unable('edit-guard:launcher_relative_cwd'); abs = ah.path.resolveAbs((cwd === '' ? hookProc.base() : hookProc.base() + '/' + cwd) + '/' + file); }
   var binDir = ah.cfg('edit_guard.launcher_dir').reduce(function (acc, part) { return ah.path.resolve(acc, part); }, ah.path.resolveAbs(home));
   var normBin = egSlashes(binDir).replace(/\/+$/, '');
   if (egInside(egSlashes(abs), normBin)) return true;
@@ -51,36 +50,8 @@ function egIntoLauncher(file, cwd) {
   return egInside(egSlashes(realAbs), realBin);
 }
 
-// hooks/lib/devswarm-role.js isChildWorker: a DevSwarm child workspace corroborated on disk (a registered descriptor, or a working
-// directory below DevSwarm's worktree root) on a live DevSwarm install. Fail-closed (false) on any doubt in Node; an error the
-// file system primitives cannot tell from Node's own is deferred here.
-function egChildWorker(cwd) {
-  if (!LIB['./lib/devswarm-detect.js'].isDevswarmActive()) return false;
-  if (!LIB['./lib/devswarm-role.js'].isChildWorkspace()) return false;
-  var h = os.homedir();
-  var id = ah.env.get(ah.cfg('edit_guard.builder_id_env'));
-  if (typeof id === 'string' && id.trim() !== '' && id.indexOf('..') < 0 && new RegExp(ah.cfg('edit_guard.builder_id_pattern')).test(id)) {
-    var parts = ah.cfg('edit_guard.descriptor_dir').concat([id + ah.cfg('edit_guard.descriptor_ext')]);
-    var desc = parts.reduce(function (acc, part) { return path.join(acc, part); }, h);
-    try {
-      if (fs.statSync(desc).isFile()) return true;
-    } catch (e) {
-      if (!e || e.code !== 'ENOENT') unsure(); // EACCES counts as corroborated in Node; the other errors are its own
-    }
-  }
-  var c = cwd ? String(cwd) : process.cwd();
-  var isDir = false;
-  try { isDir = fs.statSync(c).isDirectory(); } catch (e) {
-    if (!e || e.code !== 'ENOENT') unsure();
-    isDir = false;
-  }
-  if (!isDir) return false;
-  var rootRaw = ah.cfg('edit_guard.repos_dir').reduce(function (acc, part) { return path.join(acc, part); }, h);
-  var rootReal, cwdReal;
-  try { rootReal = fs.realpathSync(rootRaw); } catch (e) { if (e && e.unsure) throw e; rootReal = path.resolve(rootRaw); }
-  try { cwdReal = fs.realpathSync(c); } catch (e) { if (e && e.unsure) throw e; cwdReal = path.resolve(c); }
-  return (cwdReal + '/').indexOf(rootReal + '/') === 0;
-}
+// hooks/lib/devswarm-role.js isChildWorker (cmdChildWorker in command.js): a DevSwarm child workspace corroborated on disk.
+function egChildWorker(cwd) { return cmdChildWorker(cwd); }
 
 // hooks/lib/handover-find.js sessionProjectRoot: the outermost checkout unless that is the real home.
 function egProjectRoot(cwd) {
@@ -101,7 +72,7 @@ function egHandoverPath(cwd, p) {
   var spec = ah.cfg('edit_guard.handover_parts');
   var sid = String((p && p.session_id) || spec.placeholder).replace(new RegExp(ah.cfg('edit_guard.session_id_unsafe'), 'g'), '_');
   var date = ho.localDate();
-  if (date === null) unsure(); // the request names a zone other than the engine's own
+  if (date === null) { ah.unable('edit-guard:local_date'); date = new Date(ah.clock.now()).toISOString().slice(0, 10); } // a request zone other than the engine's own: the UTC date
   return path.join.apply(null, [root].concat(spec.dir, [date, sid, spec.file]));
 }
 
@@ -119,26 +90,27 @@ function egDelegation(tool, cwd, p) {
     var childWorkspace = LIB['./lib/devswarm-role.js'].isChildWorkspace();
     var tierText = false;
     try { tierText = !childWorkspace && LIB['./lib/primary-tier.js'].primaryTierTextOn(null, cwd); } catch (e) { if (cmdFatal(e)) throw e; tierText = false; }
-    return text.message('block', guard, {
+    return text.detailsMessage('block', guard, {
       what: what, why: ah.cfg('command.msg_edit_why_orch'),
       instead: text.render(ah.cfg(tierText ? 'command.msg_edit_instead_tier' : 'command.msg_edit_instead'), { sub: SUB }),
       allowed: notes, override: override,
-    });
+    }, p && p.session_id);
   }
-  return text.message('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override });
+  return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, p && p.session_id);
 }
 
 function egBlock(reason, codexPatch) { return { exact: { code: 2, out: text.blockJson(reason), err: codexPatch ? reason + '\n' : '' } }; }
 
-// hooks/lib/inline-work-nudge.js evaluate, up to the point where the note could be said. Returns the write to make once the verdict
-// is known (the counter of this session), or null when Node writes nothing. A call that could carry the note defers (unsure).
+// hooks/lib/inline-work-nudge.js evaluate. Returns null when Node writes nothing, else {st, rel, dir, prune, note}: the counter of this
+// session to write once the verdict is known and the note to say (once per session, when it is past the threshold, an open task is
+// pending and the app database proves no live workspace; any doubt stays silent).
 function egNudge(p, tool, cwd) {
   if (ah.cfg('edit_guard.edit_tools').indexOf(tool) < 0 || !p.session_id) return null;
   if (!ah.settings.bool('edit_guard.nudge_setting')) return null;
   if (!LIB['./lib/devswarm-detect.js'].isDevswarmActive() || LIB['./lib/devswarm-role.js'].isChildWorkspace()) return null;
   if (noWorkspaceRepo(p.cwd || process.cwd())) return null;
   var sh = spawn.stateHome();
-  if (sh.unknown) unsure();
+  if (sh.unknown) { ah.unable('edit-guard:nudge_no_home'); return null; }
   if (sh.guarded) return null; // resolveHome throws under a test run on the real home: Node's evaluate gives up
   var safe = String(p.session_id).replace(new RegExp(ah.cfg('edit_guard.nudge_sid_unsafe'), 'g'), '_').slice(0, ah.cfgNum('edit_guard.nudge_sid_max'));
   var dir = ah.cfg('spawn_ctx.state_root');
@@ -146,10 +118,10 @@ function egNudge(p, tool, cwd) {
   var abs = sh.ok + '/' + rel;
   var st = { count: 0, nudged: false };
   var size = ah.fs.size(abs);
-  if (size !== null && size > ah.cfgNum('script.read_max_bytes')) unsure();
+  if (size !== null && size > ah.cfgNum('script.read_max_bytes')) { ah.unable('edit-guard:nudge_state_big'); return null; }
   var raw = size === null ? null : ah.fs.readText(abs);
   if (raw !== null) {
-    if (raw.indexOf('�') >= 0) unsure(); // not valid UTF-8: Node decodes differently
+    if (raw.indexOf('\ufffd') >= 0) ah.unable('edit-guard:nudge_state_utf8'); // not valid UTF-8: decoded as the host does
     try {
       var parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') st = { count: Number(parsed.count) || 0, nudged: !!parsed.nudged };
@@ -159,19 +131,19 @@ function egNudge(p, tool, cwd) {
   st.count += 1;
   var t = Number(ah.settings.numStrict('edit_guard.nudge_threshold_setting'));
   var threshold = isFinite(t) && t >= 1 ? t : ah.cfgNum('edit_guard.nudge_default_threshold');
+  var note = null;
   if (st.count > threshold) {
-    // past the threshold the note depends on the transcript's task list and the live children: only a session without a readable
-    // transcript is certain to stay silent
     var tp = p.transcript_path;
-    if (tp && typeof tp === 'string' && ah.fs.kind(tp) !== null) unsure();
+    if (tp && typeof tp === 'string' && ah.fs.kind(tp) !== null) {
+      var open = tk.tasks(tp).filter(function (x) { return tk.isOpen(x) && tk.blockedOnText(x) === ''; });
+      // positive proof of zero live workspaces: the app database is present and readable and lists none that is not archived
+      var proven = tk.appDbPresent(ah.home()) && tk.appBuilders() !== null && !tk.anyLiveChildren();
+      if (open.length > 0 && proven) note = ah.cfg('edit_guard.nudge_note');
+    }
   }
-  if (gk.pruneMeetsLink(dir, ah.cfg('edit_guard.nudge_prune_prefix'))) unsure();
-  return function () {
-    try {
-      ah.state.writeAtomic(rel, JSON.stringify(st));
-      gk.pruneStale(dir, ah.cfg('edit_guard.nudge_prune_prefix'));
-    } catch (e) { /* best effort, as in Node */ }
-  };
+  var prune = !gk.pruneMeetsLink(dir, ah.cfg('edit_guard.nudge_prune_prefix'));
+  if (!prune) ah.unable('edit-guard:nudge_prune_link'); // a link in the state directory: nothing is pruned
+  return { st: st, rel: rel, dir: dir, prune: prune, note: note };
 }
 
 function egMain(p) {
@@ -225,8 +197,8 @@ function egMain(p) {
     verdict = LIB['./edit-guard.js'].editVerdict(paths[i], cwd, p);
     at = paths[i];
   }
-  var write = egNudge(p, tool, cwd);
-  var reason = null;
+  var nudge = egNudge(p, tool, cwd);
+  var reason = null, standNote = '';
   if (verdict === 'block-self-edit') {
     reason = text.message('block', guard, {
       what: text.render(ah.cfg('edit_guard.msg_self_edit_what'), { tool: tool }), why: ah.cfg('edit_guard.msg_self_edit_why'),
@@ -245,15 +217,28 @@ function egMain(p) {
       override: text.render(ah.cfg('edit_guard.msg_new_override'), { skip: LIB['./lib/skip-cmd.js'].skipCommand(ah.cfg('command.edit_guard_name')) }),
     });
   } else if (verdict !== 'allow') {
-    reason = egDelegation(tool, cwd, p);
+    // while spawning is stopped there is nobody to delegate to: the edit is allowed inline, with a one-time note
+    var stop = sd.applies(p, guard);
+    if (stop === null) reason = egDelegation(tool, cwd, p);
+    else standNote = sd.note(p, stop);
   }
-  if (write !== null) { ah.commit(); write(); }
-  return reason === null ? 'allow' : egBlock(reason, codexPatch);
+  var say = null;
+  if (nudge !== null) {
+    if (reason === null && nudge.note !== null) { nudge.st.nudged = true; say = nudge.note; } // a blocked call never uses up the once-per-session note
+    ah.commit();
+    try {
+      ah.state.writeAtomic(nudge.rel, JSON.stringify(nudge.st));
+      if (nudge.prune) gk.pruneStale(nudge.dir, ah.cfg('edit_guard.nudge_prune_prefix'));
+    } catch (e) { /* best effort, as in Node */ }
+  }
+  if (reason !== null) return egBlock(reason, codexPatch);
+  if (standNote !== '') say = say === null ? standNote : say + '\n' + standNote;
+  return say === null ? 'allow' : { advisory: text.advisoryJson('PreToolUse', say) };
 }
 
 function decide(p, opts, event) {
   cmdBegin(opts);
   var v;
-  try { v = egMain(p); } catch (e) { if (!cmdFatal(e)) throw e; S.unsure = true; v = null; }
-  return cmdEnd() || v === null ? 'defer' : v;
+  try { v = egMain(p); } finally { cmdEnd(); } // a fatal exception (stack, memory, time) reaches the engine's own failure policy
+  return v === null || v === undefined ? 'allow' : v;
 }

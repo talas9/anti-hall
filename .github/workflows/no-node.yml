@@ -8,9 +8,9 @@ name: no-node
 on:
   push:
     branches: [engine-proto]
-    paths: ['ah-engine/**', 'plugins/anti-hall/**', '.github/workflows/no-node.yml']
+    paths: ['ah-engine/**', 'ah-launcher/**', 'plugins/anti-hall/**', '.github/workflows/no-node.yml']
   pull_request:
-    paths: ['ah-engine/**', 'plugins/anti-hall/**', '.github/workflows/no-node.yml']
+    paths: ['ah-engine/**', 'ah-launcher/**', 'plugins/anti-hall/**', '.github/workflows/no-node.yml']
   workflow_dispatch:
 
 permissions:
@@ -33,12 +33,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: ah-engine
-      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+          workspaces: |
+            ah-engine
+            ah-launcher
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest
+      # Every hook command of both hosts is the thin client (ah-hook); the harness finds it at ah-launcher/target/release.
+      - name: Build the thin client (ah-hook)
+        working-directory: ah-launcher
+        run: cargo build --release --locked
       - name: No-Node harness
         run: cargo nextest run --profile ci --test no_node
         env:

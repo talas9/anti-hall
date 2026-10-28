@@ -171,7 +171,7 @@ fn run_in(call: &CliCall<'_>, dir: &Path, started: Instant) -> Result<String, Cl
                 match stdout.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     // Node: if (out.length < 1e6) out += d -- a chunk is kept whole while the total is under the cap
-                    Ok(n) if out.len() < cap => out.extend_from_slice(&buf[..n]),
+                    Ok(n) if out.len() < cap => out.extend_from_slice(buf.get(..n).unwrap_or_default()),
                     Ok(_) => {}
                 }
             }

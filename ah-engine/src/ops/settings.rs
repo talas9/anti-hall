@@ -1,6 +1,6 @@
 //! `ah-engine settings`: show, read, change and reset any anti-hall setting. Port of `scripts/settings.js`.
 //!
-//! The values are read and written through the same chain the Node store defines (`hooks/lib/settings.js`), which the
+//! The values are read and written through the same chain the Node store defines, which the
 //! migration module already implements for the forward migrations ([`crate::migrate::settings`]): environment, then
 //! `~/.anti-hall/settings.json`, then the plugin option, then the legacy file, then the schema default. The registry that
 //! says which settings exist, their labels and descriptions is the plugin's generated `engine/defaults/settings_cli.toml`
@@ -714,12 +714,7 @@ pub(crate) fn effective_bool(section: &str, key: &str) -> bool {
 
 /// `settings <verb> [args] [--json]`
 pub fn run(p: &Parsed) -> i32 {
-    // `tunables` and a `get` of an engine key have no Node twin (settings.js knows only its own schema): nothing to compare
-    let engine_only = p.raw.first().map(String::as_str) == Some(defaults::text("ops.tunable_verb"));
-    let plan = if engine_only { None } else { super::shadow::begin(defaults::text("ops.verb_settings"), defaults::text("ops.script_settings"), &p.raw, None) };
-    let code = run_inner(p);
-    super::shadow::end(plan, code);
-    code
+    run_inner(p)
 }
 
 fn run_inner(p: &Parsed) -> i32 {
@@ -743,4 +738,54 @@ fn run_inner(p: &Parsed) -> i32 {
         crate::discard::note("ops_settings_read", &n);
     }
     run.code
+}
+
+// ---- the web API's read side ------------------------------------------------------------------------------------------
+
+/// The context a write through the settings store needs (home, plugin root, environment), built as the command builds it.
+pub(crate) fn store_ctx() -> Ctx {
+    Run::new().ctx
+}
+
+/// Every registry setting as the dashboard shows it: section and its label (the category), type, allowed values and bounds,
+/// default, current value, where the value comes from, and the flags that mark it advanced or locked.
+pub(crate) fn registry_value() -> serde_json::Value {
+    use crate::web::j_to_value as val;
+    let run = Run::new();
+    let labels: BTreeMap<&str, &str> = sections().iter().map(|s| (s.key.as_str(), s.label.as_str())).collect();
+    serde_json::Value::Array(
+        items()
+            .iter()
+            .map(|i| {
+                let e = run.entry(i);
+                serde_json::json!({
+                    "id": format!("{}.{}", i.section, i.key), "section": i.section, "category": labels.get(i.section.as_str()).copied().unwrap_or(""),
+                    "key": i.key, "type": e.map(|e| e.ty.clone()), "values": e.map(|e| e.values.clone()).unwrap_or_default(),
+                    "min": e.and_then(|e| e.min), "max": e.and_then(|e| e.max),
+                    "default": i.default.as_ref().map(val), "value": run.value(i).as_ref().map(val), "source": run.source(i),
+                    "env": e.and_then(|e| e.env.clone()), "advanced": i.advanced, "locked": i.locked,
+                    "safety_note": i.safety_note, "description": i.description,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The Jev integrations with their effective mode and where it is configured.
+pub(crate) fn integrations_value() -> serde_json::Value {
+    use crate::web::j_to_value as val;
+    let run = Run::new();
+    serde_json::Value::Array(
+        integrations(&run)
+            .iter()
+            .map(|r| serde_json::json!({"id": r.id, "mode": r.effective, "configured": r.configured.as_ref().map(val), "source": r.source, "logs": r.logs}))
+            .collect(),
+    )
+}
+
+/// The registry setting `section.key`, when there is one: its schema entry and the note a risky change shows.
+pub(crate) fn registry_entry(dotted: &str) -> Option<(&'static Entry, &'static str)> {
+    let (section, key) = split_key(Some(&dotted.to_string()))?;
+    let item = find_item(&section, &key)?;
+    store::find(&section, &key).map(|e| (e, item.safety_note.as_str()))
 }

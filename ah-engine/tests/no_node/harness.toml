@@ -29,6 +29,8 @@ ANTIHALL_PROCWATCH = "0"
 AH_ENGINE_PROCWATCH_MS = "0"
 ANTIHALL_SESSION_END_REAPER = "0"
 ANTIHALL_INGEST_DRY_RUN = "1"
+# This healthy-daemon fixture verifies native evaluation without Node; production deadline cutting is covered elsewhere.
+AH_ENGINE_SCRIPT_CUT_AT_DEADLINE = "0"
 LANG = "C"
 LC_ALL = "C"
 
@@ -54,10 +56,10 @@ settle_ms = 2000
 daemon_ready_s = 90
 
 [hooks]
-# Events whose call fell back to the wrapper's Node path because the engine did not answer in time (a loaded machine) are
-# timing, not backlog: they are reported, left out of the expected-failure comparison, and capped per host. More than this
-# fails the run as inconclusive. 0 on a quiet machine.
-max_fallback_cases = 3
+# Events whose call the wrapper passed through because the engine did not answer in time (a loaded machine) are reported and
+# capped per host. There is no Node to fall back to, so the allowance is 0: any such case fails the run (rerun on a quieter
+# machine).
+max_fallback_cases = 0
 
 [callsites]
 # Directories (relative to the plugin root) whose Markdown files are scanned for command lines: both skill trees and agents.
@@ -87,3 +89,12 @@ session = '{"session_id":"no-node","cwd":"{cwd}","workspace":{"current_dir":"{cw
 [units]
 # Where launchd and systemd user units land under HOME; any file there that runs node is a Node path.
 dirs = ["Library/LaunchAgents", ".config/systemd/user"]
+
+[sup]
+# The supervisor tick (tests/no_node/sup.rs): the scheduler job it runs, the duties it must report (devswarm_sup.duties), and
+# the minimal DevSwarm fixture (a workspace descriptor under the DevSwarm state directory, relative to HOME).
+job = "devswarm_supervisor"
+duties = ["log_rotate", "verdicts", "reconcile", "deferred", "app_sync", "retention", "housekeeping"]
+workspaces_dir = ".anti-hall/devswarm/workspaces"
+workspace_id = "ws-nonode"
+descriptor = '{"id":"{id}","title":"no-node fixture","worktree":"{cwd}","cwd":"{cwd}","role":"child"}'

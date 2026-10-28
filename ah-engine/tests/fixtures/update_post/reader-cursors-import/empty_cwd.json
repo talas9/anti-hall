@@ -1,0 +1,60 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "reader-cursors import: imported 1 of 1 partition(s) across 1 store(s)",
+    "errors": 0,
+    "imported": 1,
+    "partitions": 1,
+    "stores": 1
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/cursors/": "755",
+    ".anti-hall/devswarm/cursors/w1.json": "644 2",
+    ".anti-hall/update-sweep-state.json": "644 {\"readerCursorsImport\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [
+        {
+          "value": 2,
+          "workspace_id": "w1"
+        }
+      ],
+      "messages": [
+        {
+          "hash": "a1",
+          "workspace_id": "w1"
+        },
+        {
+          "hash": "a2",
+          "workspace_id": "w1"
+        },
+        {
+          "hash": "a3",
+          "workspace_id": "w1"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "w1",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": "<now>",
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "w1",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": "<now>",
+          "value": 2
+        }
+      ],
+      "registry": []
+    }
+  }
+}

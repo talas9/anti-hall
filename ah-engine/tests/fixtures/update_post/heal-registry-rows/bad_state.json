@@ -1,0 +1,55 @@
+{
+  "answer": {
+    "attempted": true,
+    "budgetExhausted": false,
+    "checked": 2,
+    "detail": "healed 1 + rehomed 0 of 2 registry row(s) across 2 store(s)",
+    "errors": 0,
+    "healed": 1,
+    "pending": 0,
+    "rehomed": 0,
+    "stores": [
+      {
+        "repoKey": "{REPOKEY}",
+        "rows": [
+          "w1"
+        ]
+      }
+    ]
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/summaries/": "755",
+    ".anti-hall/devswarm/summaries/{REPOKEY}.json": "644 {\"generatedAt\":0,\"requiredGates\":[\"done\",\"merged\",\"tests_passed\"],\"workspaces\":{\"w1\":{\"id\":\"w1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"total\":0,\"cursor\":0,\"unread\":0,\"directTotalFromOthers\":0,\"directUnread\":0,\"oldestDirectUnreadTs\":null,\"oldestDirectUnreadSender\":null,\"broadcastUnread\":0,\"broadcastUnreadFromOthers\":0,\"urgencyMax\":null,\"broadcastUrgencyMax\":null,\"working_on\":null,\"gates\":{},\"archive_ready\":false,\"archive_requested\":false,\"archive_request_only_unread\":false,\"pendingQuestions\":[]}},\"recent\":[],\"archivedRegistryRows\":[]}",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/w1.json": "644 {\"id\":\"w1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"ownerKey\":\"{REPOKEY}\",\"repoKey\":\"{REPOKEY}\"}",
+    ".anti-hall/update-sweep-state.json": "644 {\"healRegistry\":{\"completedVersion\":\"0.1.0\",\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null,\"completedTs\":0}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "w9",
+          "session_id": null,
+          "worktree_path": null
+        }
+      ]
+    },
+    "{REPOKEY}": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "w1",
+          "session_id": "s1",
+          "worktree_path": "{REPO}"
+        }
+      ]
+    }
+  }
+}

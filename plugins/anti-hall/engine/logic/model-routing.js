@@ -64,11 +64,6 @@ function mrDeployShaped(corpus) {
   return count >= ah.cfgNum('model_routing.deploy_weak_threshold');
 }
 
-function mrRunsUpdate(corpus) {
-  return mrT('model_routing.update_skill_path_re', corpus) || mrT('model_routing.update_slash_re', corpus) ||
-    (mrT('model_routing.update_node_re', corpus) && corpus.toLowerCase().indexOf(ah.cfg('model_routing.update_qualifier')) >= 0);
-}
-
 // The tier an omitted model inherits: the payload's parent model, else the newest assistant entry of the transcript tail whose
 // model names a known family (session_model_families, first match). null when unknown.
 function mrFamily(id) {
@@ -232,7 +227,7 @@ function decide(p) {
   var prompt = inp !== null && typeof inp.prompt === 'string' ? inp.prompt : '';
   var corpus = jx.sliceUnits(description + '\n' + prompt, ah.cfgNum('model_routing.scan_limit'));
 
-  if (ah.settings.bool('model_routing.update_setting') && mrRunsUpdate(corpus)) {
+  if (mrSpawnBan(p)) {
     return mrRouted(mrBlock(mrBlockMsg(ah.cfg('model_routing.msg_update_what'), ah.cfg('model_routing.msg_update_why'), ah.cfg('model_routing.msg_update_instead'), '')),
       p, input, 'update', tierMain, 'exempt');
   }
@@ -253,7 +248,7 @@ function decide(p) {
 
   var suppressHaiku = false;
   var floorName = ah.settings.enum('model_routing.deploy_floor_setting');
-  if (floorName !== ah.cfg('model_routing.deploy_floor_off') && mrDeployShaped(corpus)) {
+  if (floorName !== ah.cfg('model_routing.deploy_floor_off') && mrDeployShaped(corpus.replace(jx.re('model_routing.quoted_text_re', 'g'), '$1 '))) {
     var floor = mrRank(floorName) !== null ? floorName : ah.cfg('model_routing.deploy_floor_default');
     // an omitted model inherits the session's: at or above the floor it is no cheap model (only an unknown or lower tier is advised)
     var inherited = omitted ? mrInheritedTier(p) : null;
@@ -313,7 +308,9 @@ function decide(p) {
   var writeShaped = mrT('model_routing.write_phrase_re', corpus) || mrT('model_routing.commit_phrase_re', corpus.replace(jx.re('model_routing.negated_commit_re', 'gi'), ' ')) ||
     mrT('model_routing.strong_write_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) ||
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
-  if (generic && mrT('model_routing.research_re', corpus) && !writeShaped) {
+  // a brief that writes a file or report or runs a script or shell commands needs a type that can: no Explore hint (it has no Write/Edit)
+  var execShaped = ah.settings.bool('model_routing.explore_exec_setting') && mrT('model_routing.exec_report_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' '));
+  if (generic && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped) {
     return mrRouted(mrTip(ah.cfg('model_routing.msg_row6_what'), ah.cfg('model_routing.msg_row6_instead'), ah.cfg('model_routing.msg_row6_why')), p, input, 'research', ah.cfg('model_routing.explore_type'), 'exempt');
   }
   return mrRouted('allow', p, input, 'unknown', omitted ? ah.cfg('model_routing.tier_inherit') : model, 'allow');

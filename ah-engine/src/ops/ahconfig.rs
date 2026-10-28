@@ -1,6 +1,6 @@
 //! `ah-engine auto-handover-config`: get and set the auto-handover trigger's persisted settings (section `autoHandover` of
 //! `~/.anti-hall/settings.json`). Port of `scripts/auto-handover-config.js`. The command reads the settings the way the store
-//! answers them (environment, file, plugin option, default) and asks the rules script (`rules/operator-cli.js`, `ahConfigRun`)
+//! answers them (environment, file, plugin option, default) and asks the rules script
 //! what to print and which settings changed; the settings store (the one the `settings` verb writes) applies the changes, one
 //! key at a time, atomically.
 use super::{env_snapshot, err, home, opcli_call, opcli_cfg, out, plugin_root};

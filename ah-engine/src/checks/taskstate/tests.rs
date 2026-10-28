@@ -88,13 +88,32 @@ fn title_only() {
 
 #[test]
 fn a_line_that_is_json_null_is_not_understood() {
-    assert!(reconstruct(&["null"], Variant::Guard).is_err(), "Node throws on `entry.type` and the hook exits quietly");
+    let valid = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"kept","name":"TaskCreate","input":{"subject":"kept"}}]}}).to_string();
+    let facts = reconstruct(&[valid.as_str(), "null"], Variant::Guard).unwrap();
+    assert!(facts.unsure, "an unreadable record marks partial facts unsure (#237)");
+    assert_eq!(facts.tasks.get("kept").unwrap().status.as_deref(), Some("pending"));
 }
 
 #[test]
 fn a_non_string_truthy_status_is_not_understood() {
     let line = json!({"type": "assistant", "message": {"id": "m", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": 5}}]}}).to_string();
-    assert!(reconstruct(&[line.as_str()], Variant::Guard).is_err());
+    assert!(reconstruct(&[line.as_str()], Variant::Guard).unwrap().unsure);
+}
+
+/// `inp.status || 'pending'` keeps a number as it is and Node only throws where it lowercases the status of a task still in the
+/// final map: a record a later create replaces (here a numbering restart drops it) is read, not turned into "no tasks" (#248).
+#[test]
+fn a_non_string_status_a_later_create_replaces_is_read() {
+    let tu = |m: &str, id: &str, input: Value| json!({"type": "assistant", "message": {"id": m, "content": [{"type": "tool_use", "id": id, "name": "TaskCreate", "input": input}]}});
+    let res =
+        |id: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "Task #1 created successfully: x"}]}});
+    let lines = [tu("m1", "t1", json!({"subject": "x", "status": 7})), res("t1"), tu("m2", "t2", json!({"subject": "x"})), res("t2")];
+    check("nonStringStatusReplaced", &lines, &[("1", Some("pending"), "x", false, "", "", "<undef>")]);
+    // the same record left in the map is still not understood: Node's `.toLowerCase()` on it throws
+    let kept = [tu("m1", "t1", json!({"subject": "x", "status": 7})), res("t1")];
+    let text = lines_of(&kept);
+    let refs: Vec<&str> = text.iter().map(String::as_str).collect();
+    assert!(reconstruct(&refs, Variant::Guard).unwrap().unsure);
 }
 
 #[test]
@@ -104,10 +123,11 @@ fn the_session_key_and_hash_follow_node() {
     assert_eq!(sha1_hex(b"/x/y.jsonl"), "95af2b5c45318efd81ab1ea4c5d50b6fd1d9d641");
 }
 
-/// Review 3 P2: a transcript line serde rejects that `JSON.parse` reads (a 309+ digit integer is Infinity, 1e400, a lone surrogate
-/// escape, nesting past 128) is not a skippable bad line: Node counts it, so the reconstruction must say "unsure" (defer).
+/// A transcript line serde rejects that `JSON.parse` reads (a 309+ digit integer is Infinity, 1e400, a lone surrogate escape, nesting
+/// past 128) is not a skippable bad line and no longer a hand-back to Node (there is none): Node counts it, so the reconstruction
+/// reads it too (#237) and the task it carries is kept, never turned into "no tasks".
 #[test]
-fn a_line_only_javascript_can_parse_is_unsure_not_skipped() {
+fn a_line_only_javascript_can_parse_is_read_not_skipped() {
     let base = json!({"type": "assistant", "message": {"id": "m", "content": [{"type": "tool_use", "id": "t1", "name": "TaskCreate", "input": {"subject": "a", "x": 1}}]}}).to_string();
     let deep = format!("{}{}", "[".repeat(150), "]".repeat(150));
     for (name, repl) in [
@@ -120,10 +140,202 @@ fn a_line_only_javascript_can_parse_is_unsure_not_skipped() {
         let line = base.replace("\"x\":1", &format!("\"x\":{repl}"));
         assert!(serde_json::from_str::<Value>(&line).is_err(), "{name}: the fixture must be one serde rejects");
         assert!(super::parse::maybe_valid_for_js(&line), "{name}");
-        assert!(reconstruct(&[line.as_str()], Variant::Guard).is_err(), "{name}: guard variant");
-        assert!(reconstruct(&[line.as_str()], Variant::State).is_err(), "{name}: state variant");
+        for variant in [Variant::Guard, Variant::State] {
+            let facts = reconstruct(&[line.as_str()], variant).unwrap_or_else(|_| panic!("{name}: {variant:?} left unsure"));
+            assert_eq!(facts.tasks.len(), 1, "{name}: {variant:?} lost the task the line creates");
+        }
     }
+    // an unrelated line with a lone surrogate beside a task that stays open
+    let other = "{\"type\":\"assistant\",\"message\":{\"id\":\"o\",\"content\":[{\"type\":\"text\",\"text\":\"cut \\ud83d here\"}]}}";
+    assert!(serde_json::from_str::<Value>(other).is_err());
+    let plain = base.replace("\"x\":1", "\"x\":2");
+    let facts = reconstruct(&[plain.as_str(), other], Variant::Guard).unwrap_or_else(|_| panic!("unrelated line left unsure"));
+    assert_eq!(facts.tasks.len(), 1);
     // a line both parsers reject is skipped
     assert!(!super::parse::maybe_valid_for_js("{\"x\": 1,"));
     assert!(reconstruct(&["{\"x\": 1,"], Variant::Guard).is_ok());
+}
+
+/// #244: a TaskCreate Node still counts although its shape is off: a numeric tool_use id (the Map key is the number, so no tool_result
+/// ever matches it and the task lives under `String(5)`) and a non-string subject (rendered with `String()`). The reconstruction must
+/// keep both, never answer "unsure" (which the Stop guards read as no task) or drop them.
+#[test]
+fn a_task_create_with_a_numeric_id_or_an_object_subject_is_still_a_task() {
+    let create = |id: Value, subject: Value| {
+        json!({"type": "assistant", "message": {"id": "m", "content": [{"type": "tool_use", "id": id, "name": "TaskCreate", "input": {"subject": subject}}]}})
+            .to_string()
+    };
+    for (name, id, subject, want_id, want_content) in [
+        ("numeric id", json!(5), json!("x"), "5", "x"),
+        ("fractional id", json!(1.5), json!("x"), "1.5", "x"),
+        ("true id", json!(true), json!("x"), "true", "x"),
+        ("object subject", json!("tu_1"), json!({"a": 1}), "tu_1", "[object Object]"),
+        ("array subject", json!("tu_2"), json!(["a", ["b", 2], null]), "tu_2", "a,b,2,"),
+    ] {
+        let line = create(id, subject);
+        for variant in [Variant::Guard, Variant::State] {
+            let facts = reconstruct(&[line.as_str()], variant).unwrap_or_else(|_| panic!("{name}: {variant:?} left unsure"));
+            let t =
+                facts.tasks.get(want_id).unwrap_or_else(|| panic!("{name}: {variant:?} has no task {want_id}: {:?}", facts.tasks.values().collect::<Vec<_>>()));
+            assert_eq!((t.content.as_str(), t.status.as_deref()), (want_content, Some("pending")), "{name}: {variant:?}");
+        }
+    }
+    // a numeric id and a string id of the same digits are two creates that land on one task
+    let both = [create(json!(7), json!("first")), create(json!("7"), json!("second"))];
+    let refs: Vec<&str> = both.iter().map(String::as_str).collect();
+    let facts = reconstruct(&refs, Variant::Guard).unwrap();
+    assert_eq!(facts.tasks.len(), 1);
+    // an object subject that carries its own toString has no String(): Node throws there, so this stays unsure
+    let weird = create(json!("tu_3"), json!({"toString": "x"}));
+    assert!(reconstruct(&[weird.as_str()], Variant::Guard).unwrap().unsure);
+}
+
+/// The tasklist-guard pass (`scanview`) applies a rename the way the reconstruction does (#177 follow-up): a subject an update set
+/// is kept when the create's result is folded in, and the status and priority the pass counts are unchanged by it. The pass reports
+/// ids and counts only, so the rename itself is not visible in its answer; this holds the counts.
+#[test]
+fn the_scan_counts_a_renamed_task_as_it_counts_an_unrenamed_one() {
+    use super::scanview::scan_tasks;
+    let call = |id: &str, name: &str, input: Value| {
+        json!({"type": "assistant", "message": {"id": "m", "role": "assistant",
+        "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
+    };
+    let result = |id: &str, text: &str| {
+        json!({"type": "user", "message": {"role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}})
+    };
+    for rename in [false, true] {
+        let mut update = json!({"taskId": "1", "status": "in_progress"});
+        if rename {
+            update["subject"] = json!("renamed after creation");
+        }
+        let lines = [
+            call("t1", "TaskCreate", json!({"subject": "created as", "priority": "P0"})),
+            result("t1", "Task #1 created successfully: created as"),
+            call("t2", "TaskUpdate", update),
+            result("t2", "Updated task #1"),
+        ];
+        let path = std::env::temp_dir().join(format!("ah-scanview-{}-{rename}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let scan = scan_tasks(&path.to_string_lossy(), 1 << 20, 1 << 20).unwrap().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!((scan.open_task_ids.clone(), scan.in_progress_count, scan.saw_task_activity), (vec!["1".to_string()], 1, true), "rename={rename}");
+    }
+}
+
+/// The tasklist-guard pass keeps a non-string status the way JavaScript keeps it (`status: todo.status || 'pending'`) and Node only
+/// throws where `isOpenTask` lowercases the status of a task still in the final map (#251 follow-up: four more give-up sites).
+mod non_string_status_in_the_scan {
+    use super::super::scanview::scan_tasks;
+    use serde_json::{Value, json};
+
+    fn call(id: &str, name: &str, input: Value) -> Value {
+        json!({"type": "assistant", "message": {"id": "m", "role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
+    }
+    fn result(id: &str, text: &str) -> Value {
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}})
+    }
+    /// `(open ids, in progress count)` of the scan, or `None` where the pass is not understood (an `Err`).
+    fn scan(tag: &str, lines: &[Value], window: u64) -> Option<(Vec<String>, u64, bool)> {
+        let path = std::env::temp_dir().join(format!("ah-nsstatus-{}-{tag}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let out = scan_tasks(&path.to_string_lossy(), window, window).ok().map(|s| {
+            let s = s.expect("a scan");
+            (s.open_task_ids, s.in_progress_count, s.unsure)
+        });
+        std::fs::remove_file(&path).unwrap();
+        out
+    }
+
+    #[test]
+    fn a_todo_write_status_a_later_update_replaces_is_read() {
+        let todo = call("t1", "TodoWrite", json!({"todos": [{"id": "a", "content": "x", "status": 7}]}));
+        let upd = call("t2", "TaskUpdate", json!({"taskId": "a", "status": "in_progress"}));
+        assert_eq!(scan("todo-upd", &[todo.clone(), upd], 1 << 20), Some((vec!["a".to_string()], 1, false)));
+        assert_eq!(scan("todo-kept", &[todo], 1 << 20), Some((vec![], 0, true)), "partial facts stay unsure");
+    }
+
+    #[test]
+    fn a_task_create_status_a_later_update_replaces_is_read() {
+        let lines = [
+            call("t1", "TaskCreate", json!({"subject": "x", "status": true})),
+            result("t1", "Task #1 created successfully: x"),
+            call("t2", "TaskUpdate", json!({"taskId": "1", "status": "in_progress"})),
+        ];
+        assert_eq!(scan("create-upd", &lines, 1 << 20), Some((vec!["1".to_string()], 1, false)));
+        assert_eq!(scan("create-kept", &lines[..2], 1 << 20), Some((vec![], 0, true)), "partial facts stay unsure");
+    }
+
+    #[test]
+    fn a_task_update_status_a_later_update_or_todo_write_replaces_is_read() {
+        let first = call("t1", "TaskUpdate", json!({"taskId": "5", "status": ["completed"]}));
+        let second = call("t2", "TaskUpdate", json!({"taskId": "5", "status": "pending"}));
+        assert_eq!(scan("upd-upd", &[first.clone(), second], 1 << 20), Some((vec!["5".to_string()], 0, false)));
+        let todo = call("t3", "TodoWrite", json!({"todos": [{"id": "b", "content": "y"}]}));
+        assert_eq!(scan("upd-todo", &[first.clone(), todo], 1 << 20), Some((vec!["b".to_string()], 0, false)));
+        assert_eq!(scan("upd-kept", &[first], 1 << 20), Some((vec![], 0, true)), "partial facts stay unsure");
+    }
+
+    /// The backfill reads a record from before the window. A non-string status it does not need (the window already carries the
+    /// task's status) is not read by Node's `applyRec`, so it is no reason to give up; one it applies to the task is.
+    #[test]
+    fn the_backfill_gives_up_only_on_a_non_string_status_it_applies() {
+        let filler = json!({"type": "assistant", "message": {"id": "f", "role": "assistant", "content": [{"type": "text", "text": "x".repeat(400)}]}});
+        let upd = call("t9", "TaskUpdate", json!({"taskId": "1", "status": "in_progress"}));
+        let upd_len = upd.to_string().len() as u64 + 1;
+        let bare = call("t8", "TaskUpdate", json!({"taskId": "1", "owner": "me"}));
+        let bare_len = bare.to_string().len() as u64 + 1;
+        let create = |status: Value| {
+            [call("t1", "TaskCreate", json!({"subject": "old subject", "status": status})), result("t1", "Task #1 created successfully: old subject")]
+        };
+        // create site, status not needed: the window update carries it
+        let mut lines = create(json!(7)).to_vec();
+        lines.extend([filler.clone(), upd.clone()]);
+        assert_eq!(scan("bf-create-unneeded", &lines, upd_len + 10), Some((vec!["1".to_string()], 1, false)));
+        // create site, status needed: Node applies it and throws
+        let mut lines = create(json!(7)).to_vec();
+        lines.extend([filler.clone(), bare.clone()]);
+        assert_eq!(scan("bf-create-needed", &lines, bare_len + 10), Some((vec![], 0, true)));
+        // update site, status not needed
+        let mut lines = create("pending".into()).to_vec();
+        lines.push(call("t0", "TaskUpdate", json!({"taskId": "1", "status": 7})));
+        lines.extend([filler.clone(), upd]);
+        assert_eq!(scan("bf-update-unneeded", &lines, upd_len + 10), Some((vec!["1".to_string()], 1, false)));
+        // update site, status needed
+        let mut lines = create("pending".into()).to_vec();
+        lines.push(call("t0", "TaskUpdate", json!({"taskId": "1", "status": 7})));
+        lines.extend([filler, bare]);
+        assert_eq!(scan("bf-update-needed", &lines, bare_len + 10), Some((vec![], 0, true)));
+    }
+
+    /// Prevention sweep: every transcript-status read site (TodoWrite, TaskCreate, TaskUpdate) with every bad shape. A truthy
+    /// non-string status a later update replaces is read; one a task keeps is unsure (never a silent allow); a falsy one is `pending`.
+    #[test]
+    fn every_status_read_site_decides_every_bad_shape_like_node() {
+        let truthy_shapes = [json!(7), json!(true), json!({"a": 1}), json!(["completed"]), json!(-1.5)];
+        let falsy_shapes = [json!(null), json!(0), json!(false)];
+        let replace = call("r", "TaskUpdate", json!({"taskId": "1", "status": "in_progress"}));
+        for (n, shape) in truthy_shapes.iter().chain(falsy_shapes.iter()).enumerate() {
+            let is_truthy = n < truthy_shapes.len();
+            let sites: [(&str, Vec<Value>); 3] = [
+                ("todo", vec![call("t", "TodoWrite", json!({"todos": [{"id": "1", "content": "x", "status": shape}]}))]),
+                ("create", vec![call("t", "TaskCreate", json!({"subject": "x", "status": shape})), result("t", "Task #1 created successfully: x")]),
+                ("update", vec![call("t", "TaskUpdate", json!({"taskId": "1", "status": shape}))]),
+            ];
+            for (site, lines) in sites {
+                let tag = format!("sweep-{site}-{n}");
+                let kept = scan(&tag, &lines, 1 << 20);
+                let mut replaced = lines.clone();
+                replaced.push(replace.clone());
+                let after = scan(&format!("{tag}-r"), &replaced, 1 << 20);
+                assert_eq!(after, Some((vec!["1".to_string()], 1, false)), "{site} {shape}: a later update replaces it");
+                if is_truthy {
+                    assert_eq!(kept, Some((vec![], 0, true)), "{site} {shape}: partial facts stay unsure");
+                } else if site != "update" {
+                    // a TaskUpdate of an unseen task with no status makes no pending task (Node: no record to lowercase)
+                    assert_eq!(kept, Some((vec!["1".to_string()], 0, false)), "{site} {shape}: a falsy status is pending");
+                }
+            }
+        }
+    }
 }

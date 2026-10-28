@@ -13,6 +13,7 @@
 //! Every daemon runs the real binary with a scratch HOME, a private state dir, a recording stand-in for hivecontrol and a
 //! minimal PATH; nothing here touches the real home or a real DevSwarm.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
 mod common;
 

@@ -24,15 +24,15 @@ function ppBlockquote(content) {
   return lines.map(function (line) { return q + line; }).join('\n') + '\n';
 }
 
-// null: defer; else the reminder text or ''.
+// The reminder text or ''. A probe that cannot run as Node runs it (scrubbed git variables set, or too slow) says nothing (counted).
 function ppGitignoreHint(ctx, home, now) {
   if (!ah.settings.bool('session.setting_gitignore_hint')) return '';
   var root = ctx.toplevel;
   if (!root || !ah.fs.isDir(root + '/' + ah.cfg('session.anti_hall_dir'))) return '';
   var scrub = ah.cfg('session.git_scrub_env');
-  for (var i = 0; i < scrub.length; i++) if (ah.env.get(scrub[i]) !== null) return null; // Node scrubs these; a script cannot
+  for (var i = 0; i < scrub.length; i++) if (ah.env.get(scrub[i]) !== null) { ah.unable('progress-prune:git_env_set'); return ''; } // Node scrubs these; a script cannot
   var r = ah.exec(ah.cfg('session.git_binary'), ['-C', root].concat(ah.cfg('session.check_ignore_args')), { timeoutMs: ah.cfgNum('session.gitignore_probe_ms') });
-  if (r === null) return null; // too slow (or not startable): Node's own probe has a longer limit
+  if (r === null) { ah.unable('progress-prune:gitignore_probe_slow'); return ''; } // too slow (or not startable)
   if (r.status !== 1) return '';
   var rel = ah.cfg('session.state_dir') + '/' + ah.cfg('session.gitignore_state_file'), state = ppState(rel);
   var last = typeof state[root] === 'number' && isFinite(state[root]) ? state[root] : 0, age = now - last;
@@ -81,18 +81,19 @@ function decide(p) {
   var cwd = p && typeof p.cwd === 'string' ? p.cwd : '';
   if (!cwd) return 'allow';
   var home = spawn.osHome();
-  if (home === null || !ah.path.isAbsolute(cwd)) return 'defer';
+  if (home === null) { ah.unable('progress-prune:no_home', 'abandoned'); return 'allow'; } // no absolute HOME: no state to keep
+  if (!ah.path.isAbsolute(cwd)) { ah.unable('progress-prune:relative_cwd'); cwd = hookProc.cwd(p); } // resolved against the stand-in directory
   var ctx = ho.context(cwd);
-  if (ctx.unsure) return 'defer';
+  if (ctx.unsure) { ah.unable('progress-prune:context_unsure'); ctx = { unsure: false, toplevel: null, root: null }; } // a checkout the host cannot classify is read as the directory itself
   var now = ah.clock.now(), stateRel = ah.cfg('session.state_dir') + '/' + ah.cfg('session.progress_state_file');
   var state = ppState(stateRel);
-  var progressDir = (function () { var top = ctx.toplevel, rh = ah.fs.realpath(home) || home; return top && top !== rh ? top : cwd; })();
+  var progressDir = (function () { var top = ctx.root || ctx.toplevel, rh = ah.fs.realpath(home) || home; return top && top !== rh ? top : cwd; })(); // the session's project: a submodule cwd keys on its superproject
   var listing = ah.fs.readdir(progressDir + '/' + ah.cfg('session.anti_hall_dir') + '/' + ah.cfg('session.progress_dir'));
-  if (listing === null && ah.fs.isDir(progressDir + '/' + ah.cfg('session.anti_hall_dir') + '/' + ah.cfg('session.progress_dir'))) return 'defer'; // too many entries to list exactly
+  var tooMany = listing === null && ah.fs.isDir(progressDir + '/' + ah.cfg('session.anti_hall_dir') + '/' + ah.cfg('session.progress_dir')); // too many entries to list exactly
+  if (tooMany) ah.unable('progress-prune:listing_too_big'); // this pass does not prune (the throttle mark stays unset)
   var hint = ppGitignoreHint(ctx, home, now);
-  if (hint === null) return 'defer';
   var out = function () { return hint === '' ? 'allow' : sess.advisory(hint); };
-  if (!ah.settings.bool('session.setting_progress_prune')) return out();
+  if (tooMany || !ah.settings.bool('session.setting_progress_prune')) return out();
   var key = ppCwdKey(cwd), ps = state[key] && typeof state[key] === 'object' ? state[key] : {};
   var lastPrunedAt = typeof ps.lastPrunedAt === 'number' && isFinite(ps.lastPrunedAt) ? ps.lastPrunedAt : 0, age = now - lastPrunedAt;
   if (age >= 0 && age < ah.cfgNum('session.prune_throttle_ms')) return out();

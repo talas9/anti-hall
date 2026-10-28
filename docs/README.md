@@ -32,7 +32,7 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | Doc | What it covers |
 |---|---|
 | [`GUIDE.md` install](./GUIDE.md#install-verify-and-uninstall) | Install for Claude Code and Codex, the `.anti-hall/` git-ignore line, how to check it worked, and uninstall (including companions). |
-| [`GUIDE.md` requirements](./GUIDE.md#requirements) | Node 22+ on `PATH`, and what `/config` needs. |
+| [`GUIDE.md` requirements](./GUIDE.md#requirements) | What the plugin needs, and what `/config` needs. |
 | [`GUIDE.md` capabilities](./GUIDE.md#capabilities-at-a-glance) | What each area of the plugin does, in one table. |
 | [Skills](#skills) | Every `/anti-hall:<name>` skill, one line each. |
 | [`GUIDE.md` troubleshooting](./GUIDE.md#troubleshooting--faq) | Hooks not firing, a guard blocking something legitimate, statusline, updates. |
@@ -50,6 +50,7 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | Doc | What it covers |
 |---|---|
 | [`KB-jev-classifier.md`](./KB-jev-classifier.md) | Jev (TypeSafe System One) opt-in classifier: [Enable Jev](./KB-jev-classifier.md#enable-jev) (full text and the measured result), every wired integration, metrics, cost and budget watch. |
+| [`ROADMAP.md`](./ROADMAP.md) | The ordered plan: engine back online, hardening, Node removal, features, 1.0, with each release's exit gate and the interrupt policy. |
 | [`AH-ENGINE.md`](./AH-ENGINE.md) | The core ah-engine: a small Rust program that answers hook calls without starting Node per call. Install (pinned sha256), go-live and rollback, config failover and self-heal, telemetry, what still runs on Node, pre-release measurements. |
 | [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Developer guide: prerequisites, building the plugin and the Rust engine, every test suite, local install, debugging, the porting workflow, branches and releases. Every command in it is run by `ah-engine/scripts/doc-check.sh`. |
 | [`HOOK-LATENCY.md`](./HOOK-LATENCY.md) | Measured hook latency: wall p50/p95 and CPU per hook, and the per-tool-call total for each event. |
@@ -69,6 +70,7 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | [`../SUPPORT.md`](../SUPPORT.md) | Where to ask a question, report a bug or get help. |
 | [`../RELEASING.md`](../RELEASING.md) | The release checklist and the `dev` → `main` branch flow. |
 | [`REPO-PIPELINES.md`](./REPO-PIPELINES.md) | Every GitHub workflow, its trigger and whether it gates, plus the repository's policy files and security settings. |
+| [`specs/2026-08-02-devswarm-parent-decide-gate.md`](./specs/2026-08-02-devswarm-parent-decide-gate.md) | Design spec of the DevSwarm parent decide-and-reply gate (kept outside the plugin folder). |
 | [`CONTRACT-1.0.md`](./CONTRACT-1.0.md) | What semver freezes at 1.0: settings keys, CLI verbs, hooks, state paths, Codex parity. |
 | [`../AGENTS.md`](../AGENTS.md) | The protocol for Codex and cross-tool agents. |
 | [`../plugins/anti-hall/README.md`](../plugins/anti-hall/README.md) | The plugin directory page (ships inside the plugin). |
@@ -82,7 +84,8 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | [`KB.md`](./KB.md) | Canonical knowledge-base index: current-plugin ground truth, topic → doc map, staleness ledger. Read this first. |
 | [`GUIDE.md`](./GUIDE.md) | Extended guide: hook reference, skills reference, statusline/config/troubleshooting, contributing. |
 | [`BENCHMARK-METHOD.md`](./BENCHMARK-METHOD.md) | Pre-registered with/without benchmark protocol: hypotheses, metrics, analysis, decision rule; suite in `evals/anti-hall/`. |
-| [`E2E-TESTING.md`](./E2E-TESTING.md) | How the zero-dependency `node:test` hook suite works; per-event I/O contract. |
+| [`EFFECTIVENESS-AUDIT-2026-10.md`](./EFFECTIVENESS-AUDIT-2026-10.md) | Effectiveness audit, Oct 2026: Node vs engine findings and the baseline. |
+| [`E2E-TESTING.md`](./E2E-TESTING.md) | How hooks are verified now (cargo check, build, deploy, live check); per-event I/O contract. |
 | [`TASK-WORK.md`](./TASK-WORK.md) | Task discipline design (`TaskCreate`/`TaskUpdate` vs legacy `TodoWrite`); basis for tasklist-guard. |
 | [`TASKLIST-GUARD.md`](./TASKLIST-GUARD.md) | Usage guide for the `tasklist-guard` Stop hook: progress/history file convention, env knobs, escape hatch. |
 
@@ -98,11 +101,11 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `deadly-loop` | before merging anything risky | parallel Reviewer + Auditor + Critic debate + fix-waves until convergence |
 | `deadly-loop-multi` | deeper review | double/triple/quadruple deadly-loop pass |
 | `ship-it` | any change, small fix to multi-phase feature | plan-in-plan-mode → deadly-loop harden → build → verify each phase |
-| `install-statusline` | "install the statusline" | installs the two-line statusline (global or per-repo), wraps any existing one, backup/restore |
+| `install-statusline` | "install the statusline" | retired no-op; use uninstall-statusline to clean up older installs |
 | `doctor` | "is anti-hall working?" | live self-tests on every guard; `--repair` for safe auto-fixes |
 | `system-briefing` | "brief me on anti-hall", "what does X mean" | operator guide (terms, rules, verbs, settings) + live inventory of every hook/skill shipped |
 | `update` | "update anti-hall" | pulls latest, shows changelog delta, prompts `/reload-plugins` (restart only if a hook or skill path still shows the old version) |
-| `activate` | first-time setup | one-shot idempotent install of statusline + model-routing state (statusline, model routing, sentinel) |
+| `activate` | first-time setup | one-shot idempotent setup of model-routing state and sentinel; statusline install is retired |
 | `simplify` | "simplify this" / "deslop" | behavior-preserving simplification with a measured `net: -N lines` score |
 | `debt` | tracking deliberate shortcuts | register + audit `// anti-hall: <ceiling>,<when>` debt markers for rot risk |
 | `devswarm` | tuning/recovering the DevSwarm mesh | explains + activates + tunes the optional DevSwarm integration |
@@ -150,6 +153,7 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | [`KB-handover-research.md`](./KB-handover-research.md) | 2026-09-24 sourced handover research: compaction loss, context rot, trigger points, Claude Code + Codex compaction/hook facts, receiver read-back; the gap review behind the 0.108 handover changes. |
 | [`CONTEXT-PRESERVATION-KB.md`](./CONTEXT-PRESERVATION-KB.md) | Slowing main-agent context growth — caching, sub-agent isolation, compaction, JIT retrieval. |
 | [`CODEX-KB-MIGRATION-MAP.md`](./CODEX-KB-MIGRATION-MAP.md) | Cross-reference between Claude-side and Codex-side KB docs. |
+| [`KB-account-hotswap-gates.md`](./KB-account-hotswap-gates.md) | Account hot-swap gate assessment: ToS compliance, OS Keychain safety, and live session boundaries (#268). |
 
 ## Reference / design
 

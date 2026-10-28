@@ -4,39 +4,16 @@
 // runtime-state claim made in a turn with no tool call. The record goes to ~/.anti-hall/claim-ledger/<session>.jsonl and the hash of
 // the last message to <session>.last, so one message is recorded once; every flag is then asked on the shared Jev lane without
 // waiting (the answer only reaches the Jev decision log). The transcript is read by ah.transcript.evidence (the records as plain
-// text, in order) and the numbers of the evidence come from ah.re.numbers (one native pass); the rest is decided here. A relative
-// transcript path or a line only JavaScript reads defers to Node. Mirrors hooks/claim-ledger.js. Keys and texts: response_guards.toml
+// text, in order) is walked by the engine (ah.transcript.evidenceWalk: the merge of one message's text, the payload skip, the join) and
+// stays there; this script asks it whether a token is in it (walkHas) and for its numbers (walkNumbers), so no megabyte string is
+// ever built in the interpreter; the rest is decided here. The home is Node's os.homedir() (hookProc.adoptHome: HOME unset adopts
+// the passwd home); a relative transcript path is opened from the absolute payload cwd. What the engine cannot reproduce exactly
+// records nothing (counted, native_unable): no home, the real home under a test marker, a transcript record only JavaScript reads
+// exactly (an unsure walk); a relative HOME or transcript path resolves against the stand-in directory (counted). Mirrors hooks/claim-ledger.js. Keys and texts: response_guards.toml
 // (claim_ledger.*).
 'use strict';
 
 function clCollapse(s) { return s.normalize('NFC').replace(/\s+/g, ' ').trim(); }
-
-function clWalk(items, payloadText) {
-  var allowNoReply = payloadText !== null, payloadNorm = allowNoReply ? clCollapse(payloadText) : null;
-  var ev = [], tools = 0, last = null, i;
-  var pushEv = function (text) {
-    if (payloadNorm !== null) { var n = clCollapse(text); if (n !== '' && payloadNorm.indexOf(n) >= 0) return; }
-    ev.push(text);
-  };
-  for (i = 0; i < items.length; i++) {
-    var it = items[i], kind = it[0];
-    if (kind === 'p') { tools = 0; ev.push(it[1]); }
-    else if (kind === 'r' || kind === 'a') ev.push(it[1]);
-    else if (kind === 'i') { tools++; ev.push(it[1]); }
-    else if (kind === 't') {
-      var id = it[2];
-      if (last && id !== null && last.id === id) { last.text += '\n' + it[1]; last.tools = tools; }
-      else { if (last) pushEv(last.text); last = { id: id, text: it[1], tools: tools }; }
-    }
-  }
-  if (!last) {
-    if (!allowNoReply) return null;
-    var j = ev.join('\n');
-    return { lastText: '', evidence: j, toolsThisTurn: tools, evidenceWithLast: j, toolsAtEnd: tools };
-  }
-  var evidence = ev.join('\n');
-  return { lastText: last.text, evidence: evidence, toolsThisTurn: last.tools, evidenceWithLast: evidence + '\n' + last.text, toolsAtEnd: tools };
-}
 
 function clDecimals(s) { var i = s.indexOf('.'); return i < 0 ? 0 : s.length - i - 1; }
 
@@ -56,23 +33,24 @@ function clContext(text, idx) {
   return text.slice(start, end).slice(0, ah.cfgNum('claim_ledger.context_chars'));
 }
 
-function clFlags(text, evidence, tools) {
+// `which` names the engine's kept text: 'evidence' (what the session produced before the last reply) or 'withLast' (and that reply).
+function clFlags(text, which, tools) {
   var flags = [], max = ah.cfgNum('claim_ledger.max_flags'), m, re;
   var push = function (cls, kind, token, idx) { if (flags.length < max) flags.push({ cls: cls, kind: kind, token: token, context: clContext(text, idx) }); };
   var nums = null;
   re = new RegExp(ah.cfg('claim_ledger.count_js_re'), 'gi');
   while ((m = re.exec(text)) !== null) {
-    if (nums === null) nums = ah.re.numbers(ah.cfg('claim_ledger.number_re'), '', evidence, ',');
+    if (nums === null) nums = ah.transcript.walkNumbers(which, ah.cfg('claim_ledger.number_re'), '', ',');
     if (!clNumberIn(m[1], nums)) push(ah.cfg('claim_ledger.cls_hard'), ah.cfg('claim_ledger.kind_count'), m[0], m.index);
   }
   re = new RegExp(ah.cfg('claim_ledger.sha_re'), 'g');
   while ((m = re.exec(text)) !== null) {
     if (/^\d+$/.test(m[0])) continue;
-    if (evidence.indexOf(m[0]) < 0) push(ah.cfg('claim_ledger.cls_hard'), ah.cfg('claim_ledger.kind_sha'), m[0], m.index);
+    if (!ah.transcript.walkHas(which, m[0])) push(ah.cfg('claim_ledger.cls_hard'), ah.cfg('claim_ledger.kind_sha'), m[0], m.index);
   }
   re = new RegExp(ah.cfg('claim_ledger.task_re'), 'gi');
   while ((m = re.exec(text)) !== null) {
-    if (evidence.indexOf(m[0]) < 0) push(ah.cfg('claim_ledger.cls_hard'), ah.cfg('claim_ledger.kind_task'), m[0], m.index);
+    if (!ah.transcript.walkHas(which, m[0])) push(ah.cfg('claim_ledger.cls_hard'), ah.cfg('claim_ledger.kind_task'), m[0], m.index);
   }
   if (tools === 0) {
     re = new RegExp(ah.cfg('claim_ledger.state_re'), 'gi');
@@ -97,22 +75,37 @@ function clAsk(flag, sessionId, projectFrom, transcript) {
   try { ah.jev.ask(spec); } catch (e) { /* shadow only */ }
 }
 
+// Node's os.homedir() for this call: false when there is none or it is the real home under a test marker (Node's own guard then writes nothing);
+// a relative HOME is resolved against the stand-in directory (counted).
+function clAdopt(p) {
+  var why = hookProc.adoptHome();
+  if (why === null) return true;
+  ah.unable('claim-ledger:' + why);
+  ah.log(ah.cfg('claim_ledger.unsure_log_kind'), why);
+  if (why !== 'relative_home') return false;
+  var h = hookProc.home(p);
+  if (h === null) return false;
+  ah.useHome(h);
+  return true;
+}
+
 function decide(p) {
   if (ah.env.get(ah.cfg('session.judge_child_env')) === ah.cfg('session.judge_child_on')) return 'allow';
-  if (spawn.osHome() === null) return 'defer';
+  if (!clAdopt(p)) return 'allow';
   if (!ah.settings.bool('claim_ledger.setting') || ah.settings.skipped(ah.cfg('claim_ledger.guard_name'))) return 'allow';
   var tp = p && p.transcript_path;
   if (!tp || typeof tp !== 'string') return 'allow';
-  var ev = ah.transcript.evidence(tp, ah.cfgNum('claim_ledger.window_bytes'));
-  if (ev === null) return 'allow';
-  if (ev.unsure) return 'defer';
+  var tpOpen = hookProc.open(p, tp); // a relative path opens against the stand-in directory; the session hash below keeps the payload's
+  if (hookProc.openKnown(p, tp) === null) ah.unable('claim-ledger:relative_transcript');
   var payloadText = typeof p.last_assistant_message === 'string' && p.last_assistant_message.trim() !== '' ? p.last_assistant_message : null;
-  var walked = clWalk(ev.items, payloadText);
-  if (!walked) return 'allow';
-  var reply = walked.lastText, evidence = walked.evidence, tools = walked.toolsThisTurn, fromPayload = false;
+  var ev = ah.transcript.evidenceWalk(tpOpen, ah.cfgNum('claim_ledger.window_bytes'), payloadText);
+  if (ev === null) return 'allow';
+  if (ev.unsure) { ah.unable('claim-ledger:transcript_unsure', 'abandoned'); return 'allow'; } // a transcript JavaScript reads differently: no ledger entry
+  if (!ev.walked) return 'allow';
+  var reply = ev.lastText, which = 'evidence', evidenceChars = ev.evidenceChars, tools = ev.toolsThisTurn, fromPayload = false;
   if (payloadText !== null) {
-    var nPay = clCollapse(payloadText), nLast = clCollapse(walked.lastText);
-    if (nLast === '' || nPay.indexOf(nLast) < 0) { reply = payloadText; evidence = walked.evidenceWithLast; tools = walked.toolsAtEnd; fromPayload = true; }
+    var nPay = clCollapse(payloadText), nLast = clCollapse(ev.lastText);
+    if (nLast === '' || nPay.indexOf(nLast) < 0) { reply = payloadText; which = 'withLast'; evidenceChars = ev.withLastChars; tools = ev.toolsAtEnd; fromPayload = true; }
     else if (nPay !== nLast) reply = payloadText;
   }
   var sid = (p.session_id && String(p.session_id)) || ah.sha1(tp).slice(0, 16);
@@ -120,17 +113,17 @@ function decide(p) {
   var dir = ah.cfg('replykit.state_dir') + '/' + ah.cfg('claim_ledger.dir'), lastRel = dir + '/' + safe + ah.cfg('claim_ledger.last_ext');
   var hash = ah.sha1(reply), prev = ah.state.readText(lastRel);
   if (prev !== null && prev.trim() === hash) return 'allow';
-  var flags = clFlags(reply, evidence, tools);
+  var flags = clFlags(reply, which, tools);
   try {
     ah.state.writeAtomic(lastRel, hash);
     if (flags.length) {
       ah.state.appendFile(dir + '/' + safe + ah.cfg('claim_ledger.ledger_ext'), JSON.stringify({
         ts: new Date(ah.clock.now()).toISOString(), session: safe, hash: hash, tools_this_turn: tools, msg_chars: reply.length,
-        evidence_chars: evidence.length, window_truncated: ev.truncated, flags: flags,
+        evidence_chars: evidenceChars, window_truncated: ev.truncated, flags: flags,
       }) + '\n');
     }
   } catch (e) { /* best effort, as Node: a lost record never changes the answer */ }
   var cwd = typeof p.cwd === 'string' ? p.cwd : null;
-  for (var i = 0; i < flags.length; i++) clAsk(flags[i], sid, cwd, fromPayload ? null : tp);
+  for (var i = 0; i < flags.length; i++) clAsk(flags[i], sid, cwd, fromPayload ? null : tpOpen);
   return 'allow';
 }

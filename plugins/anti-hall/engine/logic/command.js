@@ -10,9 +10,10 @@
 // settings questions from the engine's generic primitives (`ah.*`). Every table, pattern, limit and text is in command.toml (and
 // the shared messages); the engine supplies only the file system, the `git` process, the settings chain and the clock.
 //
-// Never weaker than Node: anything that needs what the daemon cannot see (the hook process's own working directory, a settings
-// file only JavaScript can read, a git layout the identity port does not classify) sets `S.unsure`, and the whole verdict defers
-// (the Node hook decides). A script failure (an exception, a stack overflow, the time limit) defers too.
+// Never weaker than Node: what needs what the daemon cannot see (the hook process's own working directory, a settings file only
+// JavaScript can read, a git layout the identity port does not classify) is decided natively and counted (native_unable), towards the
+// stricter verdict where it is evidence for a block. A script failure (an exception, a stack overflow, the time limit) reaches the
+// engine's own failure policy.
 'use strict';
 
 // Regular expressions used inside functions, compiled once (the interpreter compiles a literal each time it is evaluated).
@@ -163,14 +164,14 @@ var S = null;                // the state of the call in progress
 var T = null, TGEN = -1;     // the tables, rebuilt when the defaults generation changes
 var __dirname = '';          // the hooks directory of the plugin (set per call)
 
-// The answer depends on something only the Node hook process can see: remember it (a Node `catch` may swallow the throw) and defer.
-function unsure() {
-  var e = new Error('unsure');
-  if (S) { if (!S.unsure) ah.log('command_unsure', String(e.stack)); S.unsure = true; }
-  e.unsure = true;
-  throw e;
+// A relative path of the hook process resolves against the stand-in for its directory (counted, native_unable).
+function cmdAbs(p) {
+  p = String(p);
+  if (p.charCodeAt(0) === 47) return p;
+  ah.unable('command:relative_path');
+  return ah.path.resolveAbs(hookProc.base() + '/' + p);
 }
-// A stack overflow, memory or time-limit exception must reach the engine (it then defers), never be swallowed by a fail-open catch.
+// A stack overflow, memory or time-limit exception must reach the engine (its policy applies), never be swallowed by a fail-open catch.
 function cmdFatal(e) {
   return !!(e && (e.unsure || e instanceof RangeError || RX0.test(String(e.message || e))));
 }
@@ -190,7 +191,7 @@ var path = (function () {
     resolve: function () {
       var a = [];
       for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i]));
-      if (!a.some(isAbs)) unsure();
+      if (!a.some(isAbs)) { ah.unable('command:path_resolve_cwd'); a.unshift(hookProc.base()); }
       return posix.resolveIn('/', a);
     },
     join: function () { return posix.join.apply(null, Array.prototype.map.call(arguments, String)); },
@@ -202,7 +203,8 @@ var path = (function () {
     normalize: function (p) { return posix.normalize(String(p)); },
     relative: function (a, b) {
       a = String(a); b = String(b);
-      if (!isAbs(a) || !isAbs(b)) unsure();
+      if (!isAbs(a)) { ah.unable('command:path_relative'); a = cmdAbs(a); }
+      if (!isAbs(b)) { ah.unable('command:path_relative'); b = cmdAbs(b); }
       return ah.path.relative(a, b);
     },
   };
@@ -218,8 +220,7 @@ var fs = (function () {
     };
   }
   function lstatSync(p) {
-    p = String(p);
-    if (!path.isAbsolute(p)) unsure();
+    p = cmdAbs(p);
     var l = ah.fs.lstat(p);
     if (l === null) throw cmdErr('ENOENT', 'no such file or directory, lstat ' + p);
     if (l.kind === 'error') throw cmdErr('EIO', 'lstat ' + p + ' ' + l.code);
@@ -246,8 +247,7 @@ var fs = (function () {
     return current === '' ? '/' : current;
   }
   function real(p, native) {
-    p = String(p);
-    if (!path.isAbsolute(p)) unsure();
+    p = cmdAbs(p);
     if (!native) return jsRealpath(p);
     var r = ah.fs.realpathEx(p);
     if (r.error) throw cmdErr(r.error === 'NotFound' ? 'ENOENT' : 'EIO', 'realpath ' + p);
@@ -265,8 +265,7 @@ var fs = (function () {
     lstatSync: lstatSync, realpathSync: realpathSync, statSync: statSync,
     existsSync: function (p) { try { real(p, true); return true; } catch (e) { if (e && e.unsure) throw e; return false; } },
     readFileSync: function (p) {
-      p = String(p);
-      if (!path.isAbsolute(p)) unsure();
+      p = cmdAbs(p);
       var t = ah.fs.readText(p);
       if (t === null) throw cmdErr('ENOENT', 'no such file or directory, open ' + p);
       return t;
@@ -286,14 +285,14 @@ var os = {
   homedir: function () {
     var h = ah.env.get(ah.cfg('env.home'));
     if (h === null || h === '') h = ah.env.get(ah.cfg('env.home_alt'));
-    if (h === null || h === '') unsure();
+    if (h === null || h === '') { ah.unable('command:os_homedir'); h = ah.env.passwdHome() || ''; }
     return h;
   },
   userInfo: function () { return { homedir: ah.env.passwdHome() || '' }; },
 };
 
 var process = {
-  cwd: function () { unsure(); },
+  cwd: function () { ah.unable('command:process_cwd'); return hookProc.base(); },
   platform: 'linux',
   getuid: function () { return ah.uid(); },
   pid: 0,
@@ -305,7 +304,7 @@ function ahUndef(v) { return v === null ? undefined : v; }
 function gitSpawn(args, opts) {
   var cwdArg = opts && opts.cwd ? String(opts.cwd) : null;
   if (args[0] === '-C') { cwdArg = args[1]; args = args.slice(2); }
-  if (cwdArg !== null && !path.isAbsolute(cwdArg)) unsure();
+  if (cwdArg !== null && !path.isAbsolute(cwdArg)) cwdArg = cmdAbs(cwdArg);
   var env = opts && opts.env && opts.env.GIT_OPTIONAL_LOCKS !== undefined ? { GIT_OPTIONAL_LOCKS: opts.env.GIT_OPTIONAL_LOCKS } : undefined;
   var r = ah.exec('git', args, { cwd: cwdArg === null ? undefined : cwdArg, env: env, timeoutMs: (opts && opts.timeout) || ah.cfgNum('command.git_timeout_ms') });
   if (r === null) return { status: null, stdout: '', stderr: '', error: new Error('spawn git') };
@@ -333,6 +332,24 @@ function require(n) {
 // tables
 
 function cmdSet(k) { return new Set(ah.cfg(k)); }
+// remoteEntries(key) -> the parsed entries of a command.remote_* list: { bin, words, opts: [[option, value]] }
+function remoteEntries(k) {
+  if (S && S.remote && S.remote[k]) return S.remote[k];
+  var list;
+  var live = function (key) { try { return ah.cfgLive(key); } catch (_) { return ah.cfg(key); } }; // the owner's layers (config.toml), read per call
+  var keys = ['command.remote_allow_add', 'command.remote_allow_remove', 'command.remote_block_add', 'command.remote_block_remove'].filter(function (x) { return x.indexOf(k) === 0; });
+  var drop = live(keys[1]);
+  list = live(k).filter(function (x) { return drop.indexOf(x) < 0; }).concat(live(keys[0])); // shipped - remove + add
+  var out = list.map(function (line) {
+    var parts = String(line).trim().split(/\s+/).filter(Boolean), e = { bin: (parts[0] || '').toLowerCase(), words: [], opts: [] };
+    for (var i = 1; i < parts.length; i++) {
+      if (parts[i].charAt(0) === '-') { e.opts.push([parts[i].toLowerCase(), (parts[i + 1] || '').toLowerCase()]); i++; } else e.words.push(parts[i].toLowerCase());
+    }
+    return e;
+  }).filter(function (e) { return e.bin; });
+  if (S) { S.remote = S.remote || {}; S.remote[k] = out; }
+  return out;
+}
 function cmdRe(src, flags) {
   var f = flags || '';
   if (src.slice(0, 4) === '(?i)') { src = src.slice(4); f += 'i'; }
@@ -370,7 +387,7 @@ function cmdBuildTables() {
   t.niceValue = cmdSet('command.nice_value_flags'); t.taskpolicyValue = cmdSet('command.taskpolicy_value_flags');
   t.shellVerbs = cmdSet('command.shell_verbs'); t.testKeywords = cmdSet('command.test_keywords');
   t.nodeEvalFlags = cmdSet('command.node_eval_flags'); t.nodeEvalDeny = ah.cfg('command.node_eval_deny').map(function (s) { return cmdRe(s); });
-  t.nodeFsCall = new RegExp(ah.cfg('command.node_fs_method_call'), 'g'); t.nodeFsRead = cmdSet('command.node_fs_read_allowlist');
+  t.nodeSafeBracket = new RegExp(ah.cfg('command.node_eval_safe_bracket'), 'g'); t.nodeFsCall = new RegExp(ah.cfg('command.node_fs_method_call'), 'g'); t.nodeFsRead = cmdSet('command.node_fs_read_allowlist');
   t.fetchDangerous = cmdSet('command.git_fetch_dangerous_flags'); t.gitGlobalValue = cmdSet('command.git_global_value_opts'); t.gitGlobalFlag = cmdSet('command.git_global_flag_opts');
   t.gitHeavySubs = cmdSet('command.git_heavy_subs');
   t.sqliteDangerous = cmdRe(ah.cfg('command.sqlite_dangerous'));
@@ -384,7 +401,7 @@ function cmdBuildTables() {
   Object.keys(ah.cfg('command.gh_mutating_subcommands')).forEach(function (g) { t.ghMutating[g] = new Set(ah.cfg('command.gh_mutating_subcommands')[g]); });
   t.ghOneliner = {};
   Object.keys(ah.cfg('command.gh_oneliner_subcommands')).forEach(function (g) { t.ghOneliner[g] = new Set(ah.cfg('command.gh_oneliner_subcommands')[g]); });
-  t.ghOnelinerApi = cmdSet('command.gh_oneliner_api_methods'); t.ghOnelinerMax = ah.cfgNum('command.gh_oneliner_max_chars');
+  t.ghOnelinerMax = ah.cfgNum('command.gh_oneliner_max_chars');
   t.ghOnelinerRe = new RegExp(ah.cfg('command.gh_oneliner_deny_re'));
   t.scratchSyncSubs = cmdSet('command.scratch_clone_sync_subs');
   t.ghApiMethods = cmdSet('command.gh_api_mutating_methods'); t.ghGqlValue = cmdSet('command.gh_gql_value_flags'); t.ghGqlBool = cmdSet('command.gh_gql_bool_flags');
@@ -439,18 +456,18 @@ var settings = {
   },
   getRaw: function (section, key) {
     var k = T.settings[section + '.' + key];
-    if (k === undefined) unsure();
+    if (k === undefined) { ah.unable('command:settings_key'); return undefined; }
     var entry = ah.cfg(k);
     // a free-text setting has no type: its value is a string (the entry's default when unset)
     if (entry.type === undefined && typeof entry.default === 'string') return ah.settings.str(k);
     var r = ah.settings.get(k, undefined, S.pluginRoot);
-    if (r.status === 'undecidable') unsure();
+    if (r.status === 'undecidable') { ah.unable('command:setting_undecidable'); return undefined; } // the setting's default applies
     return r.status === 'value' ? r.value : undefined;
   },
   enabled: function (section, key) {
     return cmdMemo('enabled:' + section + '.' + key, function () {
       var k = T.settings[section + '.' + key];
-      if (k === undefined) unsure();
+      if (k === undefined) { ah.unable('command:settings_key'); return true; } // an unknown switch counts as on (the stricter side)
       return ah.settings.bool(k);
     });
   },
@@ -488,6 +505,56 @@ LIB['./lib/devswarm-detect.js'] = { isDevswarmActive: function () { return cmdMe
 LIB['./lib/devswarm-role.js'] = {
   isChildWorkspace: function () { var v = ah.env.get(ah.cfg('command.child_env')); return v !== null && v.trim() !== ''; },
 };
+
+// hooks/lib/devswarm-role.js isChildWorker: a DevSwarm child workspace corroborated on disk (a registered descriptor, or a working
+// directory below DevSwarm's worktree root) on a live DevSwarm install. False on any doubt (a Primary), as in Node; a descriptor the
+// file system refuses to show counts as corroborated, as in Node.
+function cmdChildWorker(cwd) {
+  if (!LIB['./lib/devswarm-detect.js'].isDevswarmActive()) return false;
+  if (!LIB['./lib/devswarm-role.js'].isChildWorkspace()) return false;
+  var h = os.homedir();
+  var id = ah.env.get(ah.cfg('edit_guard.builder_id_env'));
+  if (typeof id === 'string' && id.trim() !== '' && id.indexOf('..') < 0 && new RegExp(ah.cfg('edit_guard.builder_id_pattern')).test(id)) {
+    var parts = ah.cfg('edit_guard.descriptor_dir').concat([id + ah.cfg('edit_guard.descriptor_ext')]);
+    var desc = parts.reduce(function (acc, part) { return path.join(acc, part); }, h);
+    try {
+      if (fs.statSync(desc).isFile()) return true;
+    } catch (e) {
+      if (e && e.code === 'EACCES') return true;
+      if (!e || e.code !== 'ENOENT') ah.unable('command:child_descriptor_stat');
+    }
+  }
+  var c = cwd ? String(cwd) : process.cwd();
+  var isDir = false;
+  try { isDir = fs.statSync(c).isDirectory(); } catch (e) {
+    if (!e || e.code !== 'ENOENT') ah.unable('command:child_cwd_stat');
+    isDir = false;
+  }
+  if (!isDir) return false;
+  var rootRaw = ah.cfg('edit_guard.repos_dir').reduce(function (acc, part) { return path.join(acc, part); }, h);
+  var rootReal, cwdReal;
+  try { rootReal = fs.realpathSync(rootRaw); } catch (e) { rootReal = path.resolve(rootRaw); }
+  try { cwdReal = fs.realpathSync(c); } catch (e) { cwdReal = path.resolve(c); }
+  return (cwdReal + '/').indexOf(rootReal + '/') === 0;
+}
+
+// {head, rest} of a command over the parse cap (hooks/lib/shell-writes.js bigCommandParts): its leading heredoc header, or its first
+// shell_writes.head_len characters cut at a line end, and the text after the heredoc when it is short and no cd precedes it.
+function cmdBigParts(command) {
+  var headLen = ah.cfgNum('shell_writes.head_len'), bigLen = ah.cfgNum('shell_writes.big_len');
+  var nl = command.indexOf('\n');
+  var first = nl === -1 ? command : command.slice(0, nl);
+  var m = nl !== -1 && first.length <= headLen ? /<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(first) : null;
+  var cut = command.lastIndexOf('\n', headLen);
+  var prefix = { head: command.slice(0, cut > 0 ? cut : headLen), rest: '' };
+  if (!m) return prefix;
+  var delim = m[2];
+  var end = command.indexOf('\n' + delim + '\n', nl);
+  var bodyEnd = end !== -1 ? end : (command.endsWith('\n' + delim) ? command.length - delim.length - 1 : -1);
+  if (bodyEnd === -1) return prefix;
+  var rest = end !== -1 ? command.slice(end + delim.length + 2) : '';
+  return { head: first + '\n\n' + delim, rest: rest.trim() && rest.length <= bigLen && !/\bcd\b|\bpushd\b/.test(first) ? rest : '' };
+}
 
 // hooks/lib/scratchpad.js
 LIB['./lib/scratchpad.js'] = (function () {
@@ -549,10 +616,9 @@ LIB['./lib/scratchpad.js'] = (function () {
 // companion/lib/identity.js (`resolveContext` from the engine's identity port, and `rawGitInfo`)
 LIB['../companion/lib/identity.js'] = (function () {
   function resolveContext(cwd, opts) {
-    var d = cwd == null || cwd === '' ? process.cwd() : String(cwd);
-    if (!path.isAbsolute(d)) unsure();
+    var d = cwd == null || cwd === '' ? process.cwd() : cmdAbs(cwd);
     var c = ah.repo.context(d, !!(opts && opts.missingPath === 'ancestor'));
-    if (c.unsure) unsure();
+    if (c.unsure) { ah.unable('command:repo_context'); return { toplevel: null, worktreeRoot: null }; } // a checkout the host cannot classify
     return { toplevel: c.toplevel, worktreeRoot: c.root };
   }
   function gitdirOf(F, Tt) {
@@ -606,12 +672,8 @@ LIB['./lib/jev-assist.js'] = { scrubSecrets: function (t) { return ah.scrub(t); 
 
 LIB['./lib/skip-cmd.js'] = {
   skipCommand: function (key) {
-    // the plugin's own devswarm CLI, quoted; the plugin root must be known to name it
-    if (!S.pluginRoot) unsure();
-    var real = ah.fs.realpath(S.pluginRoot);
-    if (real === null) unsure();
-    var cli = path.join(real, ah.cfg('command.devswarm_cli_rel'));
-    return text.render(ah.cfg('command.msg_edit_skip_cmd').replace('edit-guard', key), { cli: "'" + cli.replace(/'/g, "'\\''") + "'" });
+    // the native thin client records the consent; no plugin path is involved
+    return text.render(ah.cfg('command.msg_edit_skip_cmd').replace('edit-guard', key), {});
   },
 };
 
@@ -634,7 +696,7 @@ function noWorkspaceRepo(cwd) {
     for (var k = 0; k < files.length; k++) {
       var f = path.join(dir, files[k]), txt = ah.fs.readText(f);
       if (txt === null) continue;
-      if (txt.indexOf('�') >= 0) unsure(); // not valid UTF-8: Node decodes differently
+      if (txt.indexOf('�') >= 0) ah.unable('command:tier_doc_utf8'); // not valid UTF-8: decoded as the host does
       if (re.test(txt)) return true;
     }
     if (root && dir === root) break;
@@ -670,7 +732,7 @@ LIB['./lib/devswarm-inbox-paths.js'] = {
     if (seg === ah.cfg('command.devswarm_inbox_dir')) return 'deny-inbox';
     if (seg === ah.cfg('command.devswarm_store_dir')) {
       var rest = rel.slice(seg.length + 1);
-      if (ah.cfg('command.store_deny_patterns').some(function (p) { return new RegExp(p).test(rest); })) unsure();
+      if (ah.cfg('command.store_deny_patterns').some(function (p) { return new RegExp(p).test(rest); })) { ah.unable('command:store_file_denied'); return 'deny-inbox'; } // the installed store module is present: denied
     }
     return 'allow';
   },
@@ -744,7 +806,7 @@ LIB['./lib/command-allow.js'] = (function () {
     if (!fst.isFile()) return { state: 'unreadable' };
     var hash = ah.fs.sha256File(cfgPath), txt = ah.fs.readText(cfgPath);
     if (hash === null || txt === null) return { state: 'unreadable' };
-    if (txt.indexOf('�') >= 0) unsure(); // not valid UTF-8: Node decodes differently
+    if (txt.indexOf('�') >= 0) ah.unable('command:cfg_utf8'); // not valid UTF-8: decoded as the host does
     var parsed;
     try { parsed = JSON.parse(txt); } catch (e) { return { state: 'invalid-json' }; }
     var patterns = parsed && Array.isArray(parsed[spec.listKey]) ? parsed[spec.listKey] : [];
@@ -754,7 +816,7 @@ LIB['./lib/command-allow.js'] = (function () {
     try {
       var t = ah.fs.readText(path.join(home, KINDS(kind).trustFile));
       if (t === null) return {};
-      if (t.indexOf('�') >= 0) unsure();
+      if (t.indexOf('�') >= 0) ah.unable('command:trust_utf8');
       var obj = JSON.parse(t);
       return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
     } catch (e) { if (cmdFatal(e)) throw e; return {}; }
@@ -971,7 +1033,7 @@ LIB['./edit-guard.js'] = (function () {
       if (segs.some(function (seg) { return deny.indexOf(seg) >= 0; })) return false;
       if (segs[segs.length - 1] === ah.cfg('command.eg_hooks_file')) return false;
       var sh = spawn.stateHome();
-      if (sh.unknown) unsure();
+      if (sh.unknown) { ah.unable('command:eg_no_home'); return false; } // no home: fail closed, as for a guarded home
       if (sh.guarded) return false; // resolveHome throws under a test run on the real home: fail closed
       var home = sh.ok;
       var claudeHome = realpathOrSelf(path.join(home, ah.cfg('command.eg_claude_dir')));
@@ -1027,13 +1089,13 @@ LIB['./edit-guard.js'] = (function () {
     if (devswarmActive) {
       var childWorkspace = LIB['./lib/devswarm-role.js'].isChildWorkspace();
       var tierText = !childWorkspace && LIB['./lib/primary-tier.js'].primaryTierTextOn(null, cwd);
-      return text.message('block', guard, {
+      return text.detailsMessage('block', guard, {
         what: what, why: ah.cfg('command.msg_edit_why_orch'),
         instead: text.render(ah.cfg(tierText ? 'command.msg_edit_instead_tier' : 'command.msg_edit_instead'), { sub: SUB }),
         allowed: NOTES, override: override,
-      });
+      }, payload && payload.session_id);
     }
-    return text.message('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override });
+    return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, payload && payload.session_id);
   }
   return { isNotesTarget: isNotesTarget, editVerdict: editVerdict, delegationReason: delegationReason };
 })();
@@ -1046,7 +1108,9 @@ var parseHeredocAt = shellScan.parseHeredocAt;
 function tokenizeQuoted(segment) {
   return cmdMemo('tok:' + segment, function () { return tokenizeQuotedRaw(segment); });
 }
-function tokenizeQuotedRaw(segment) {
+// The native scanner (ahHost.shellTokenize) answers; the walk below is the reference it is tested against (scannersReference).
+function tokenizeQuotedRaw(segment) { return ahHost.shellTokenize(segment); }
+function tokenizeQuotedJs(segment) {
   const tokens = [];
   let cur = ''; let q = ''; let any = false;
   const str = segment.trim();
@@ -1068,7 +1132,8 @@ function dequoteSegment(segment) {
 function extractSubstitutions(s) {
   return cmdMemo('sub:' + s, function () { return extractSubstitutionsRaw(s); });
 }
-function extractSubstitutionsRaw(s) {
+function extractSubstitutionsRaw(s) { return ahHost.shellSubstitutions(s); }
+function extractSubstitutionsJs(s) {
   const found = [];
   let i = 0;
   const n = s.length;
@@ -1562,7 +1627,6 @@ function detectProtectedFileRead(command, home, cwd, depth) {
 // the append-only inbox). NEVER echoes the path (injection hygiene).
 function buildRawFileReadReason(kind) {
   // a raw store file needs the store module's presence check, which the engine does not make (classifyDevswarmPath defers it)
-  if (kind !== 'deny-inbox') unsure();
   return bm().blockMessage({
     guard: ah.cfg('command.msg_rawread_inbox_guard'),
     what: ah.cfg('command.msg_rawread_inbox_what'),
@@ -1640,6 +1704,11 @@ function splitSegmentsDetailed(cmd) {
   return cmdMemo('split:' + cmd, function () { return splitSegmentsDetailedRaw(cmd); });
 }
 function splitSegmentsDetailedRaw(cmd) {
+  const r = ahHost.shellSplit(cmd);
+  return { segments: r[0], delims: r[1] };
+}
+// The reference walk: scannersReference runs it next to the native splitter on the same input.
+function splitSegmentsDetailedJs(cmd) {
   const segments = [];
   const delims = [];
   let cur = '';
@@ -1780,6 +1849,20 @@ function splitSegments(cmd) {
   return splitSegmentsDetailed(cmd).segments;
 }
 
+// The differential entries of the native shell scanners (ah-engine/src/script/host_shell.rs): for each command, its split, the words
+// of every segment and the substitutions of the command and of every substitution found, once through the reference walks above
+// (scannersReference) and once through the host functions (scannersNative). The engine tests require the two to be identical.
+function scannersWith(cmds, fns) {
+  return cmds.map(function (cmd) {
+    const sp = fns.split(cmd);
+    const subs = []; const queue = [cmd];
+    for (let k = 0; k < queue.length && k < 64; k++) { const f = fns.subs(queue[k]); subs.push(f); for (const x of f) queue.push(x); }
+    return { segments: sp.segments, delims: sp.delims, tokens: sp.segments.map(fns.tok), subs: subs };
+  });
+}
+function scannersReference(args) { return scannersWith(args.cmds, { split: splitSegmentsDetailedJs, subs: extractSubstitutionsJs, tok: tokenizeQuotedJs }); }
+function scannersNative(args) { return scannersWith(args.cmds, { split: splitSegmentsDetailedRaw, subs: extractSubstitutionsRaw, tok: tokenizeQuotedRaw }); }
+
 // basename() is imported from ./lib/shell-scan.js (shared with git-guard.js).
 
 // Find the effective command verb of one segment: skip leading VAR=value
@@ -1914,7 +1997,9 @@ function blankPatternArgument(text, verb) {
 
 function isSafeNodeEvalPayload(payload) {
   if (!payload) return false;
-  for (const re of T.nodeEvalDeny) if (re.test(payload)) return false;
+  // a quoted key with a character no method name has (`j["git-guard"]`) cannot reach an fs or process API: it is data access
+  const scanned = payload.replace(T.nodeSafeBracket, '[]');
+  for (const re of T.nodeEvalDeny) if (re.test(scanned)) return false;
   T.nodeFsCall.lastIndex = 0;
   let m;
   while ((m = T.nodeFsCall.exec(payload))) {
@@ -1999,7 +2084,7 @@ function isSafeGitFetch(segment) {
 // between `git` and the subcommand cannot hide it) of push/pull/clone
 // (always heavy) or fetch without isSafeGitFetch's safety. This is the fix
 // for the P1 bypass above: the plain-substring git HEAVY_PATTERN
-// (`\bgit\s+(?:push|pull|fetch|clone)\b`) only matches when the subcommand
+// (`\bgit\s+(?:pull|fetch|clone)\b`) only matches when the subcommand
 // is textually ADJACENT to `git`, so it never even sees a global-option-
 // prefixed invocation — this check runs the same tokenized, option-aware
 // parse used by isSafeGitFetch, so the two can never disagree about where
@@ -2016,7 +2101,7 @@ function isHeavyGitSegment(segment) {
   const subIdx = gitSubcommandIndex(tokens, gitIdx);
   if (subIdx === -1) return false;
   const sub = tokens[subIdx].toLowerCase();
-  if (sub === 'push' || sub === 'pull' || sub === 'clone') return true;
+  if (sub === 'pull' || sub === 'clone') return true;
   if (sub === 'fetch') return !isSafeGitFetch(segment);
   return false;
 }
@@ -2323,6 +2408,70 @@ function isReadOnlyGhGraphql(tokens, ghIdx) {
   return queries === 1;
 }
 
+// remoteWords(tokens, binIdx) -> the leading subcommand words after the binary, lowercased, global flags skipped (-R/--repo
+// take a value, so `gh -R o/r issue create` is still issue create).
+function remoteWords(tokens, binIdx) {
+  const words = [];
+  for (let i = binIdx + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === '-R' || t === '--repo') { i++; continue; }
+    if (t.startsWith('-')) continue;
+    words.push(t.toLowerCase());
+  }
+  return words;
+}
+
+// remoteMatch(segment, entries) -> true when the segment starts (after global flags) with an entry's binary and subcommand words
+// and carries each of its options with the value (`-X POST`, `-X=POST`, `-XPOST`).
+function remoteMatch(segment, key) {
+  const entries = remoteEntries(key);
+  if (!entries.length) return false;
+  const verb = effectiveVerb(segment);
+  const hit = entries.filter((e) => e.bin === verb);
+  if (!hit.length) return false;
+  const tokens = tokenizeQuoted(segment);
+  const binIdx = tokens.findIndex((t) => basename(t).toLowerCase() === verb);
+  if (binIdx === -1) return false;
+  const words = remoteWords(tokens, binIdx);
+  const low = tokens.slice(binIdx + 1).map((t) => t.toLowerCase());
+  return hit.some((e) => e.words.every((w, i) => words[i] === w) && e.opts.every((o) => low.some((t, i) => (t === o[0] && low[i + 1] === o[1]) || t === o[0] + '=' + o[1] || t === o[0] + o[1])));
+}
+
+// Only the configured argv prefixes bypass the heavy rule. The outer shell walk
+// still checks every chained command and substitution independently.
+function isConfiguredReadOnlyRemote(segment) {
+  const verb = effectiveVerb(segment), allowed = ah.cfg('command.read_only_subcommands')[verb];
+  if (!allowed) return false;
+  const tokens = tokenizeQuoted(segment);
+  const bin = tokens.findIndex((t) => basename(t).toLowerCase() === verb);
+  if (bin < 0) return false;
+  let sub = bin + 1;
+  if (verb === 'git') sub = gitSubcommandIndex(tokens, bin);
+  else {
+    const flags = ah.cfg('command.read_only_global_value_flags');
+    while (sub < tokens.length && tokens[sub].startsWith('-')) {
+      const flag = tokens[sub].split('=')[0];
+      if (flags.indexOf(flag) < 0) return false;
+      sub += tokens[sub].includes('=') ? 1 : 2;
+    }
+  }
+  if (sub < 0) return false;
+  if (allowed.some((prefix) => prefix.split(' ').every((word, i) => tokens[sub + i] === word))) return true;
+  const api = ah.cfg('command.read_only_api');
+  if (verb !== api.bin || tokens[sub] !== api.subcommand) return false;
+  const body = cmdRe(api.body_flags_re), attached = cmdRe(api.method_attached_re);
+  for (let i = sub + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (api.denied_endpoints.indexOf(t) >= 0 || body.test(t)) return false;
+    let method = null;
+    if (api.method_flags.indexOf(t) >= 0) method = tokens[++i] || '';
+    else { const m = attached.exec(t); if (m) method = m[1] === undefined ? m[2] : m[1]; }
+    if (method !== null) { if (api.methods.indexOf(method.toUpperCase()) < 0) return false; continue; }
+    if (ah.cfg('command.gh_gql_value_flags').indexOf(t) >= 0) i++;
+  }
+  return api.methods.indexOf(api.default_method) >= 0;
+}
+
 // isHeavyGhSegment(segment) -> true iff this is a `gh` invocation of a
 // mutating subcommand: pr merge/close/edit/create/review, issue
 // create/close/delete/edit, release create/delete/edit/upload, repo
@@ -2337,8 +2486,9 @@ function isHeavyGhSegment(segment, command, strict) {
   const tokens = tokenizeQuoted(segment);
   const ghIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'gh');
   if (ghIdx === -1) return false;
-  const group = (tokens[ghIdx + 1] || '').toLowerCase();
-  const sub = (tokens[ghIdx + 2] || '').toLowerCase();
+  const path = remoteWords(tokens, ghIdx);
+  const group = path[0] || '';
+  const sub = path[1] || '';
   if (group === 'workflow' && sub === 'run') return true;
   const oneLine = !strict && typeof command === 'string' && command.length <= T.ghOnelinerMax && !T.ghOnelinerRe.test(command);
   if (oneLine && T.ghOneliner[group] && T.ghOneliner[group].has(sub)) return false;
@@ -2349,26 +2499,15 @@ function isHeavyGhSegment(segment, command, strict) {
     if (isReadOnlyGhGraphql(tokens, ghIdx) && !(command || '').includes('`')) return false;
     // `gh api graphql` always POSTs: heavy unless proven a read above.
     if (tokens.slice(ghIdx + 2).some((t) => RX44.test(t))) return true;
-    if (oneLine) {
-      // an explicit POST/PATCH/PUT (or the implicit POST of a field flag) on one short line is light; DELETE and a body file are not
-      let method = '', body = false;
-      for (let i = ghIdx + 2; i < tokens.length; i++) {
-        const t = tokens[i];
-        if ((t === '-X' || t === '--method') && tokens[i + 1] !== undefined) method = tokens[i + 1].toUpperCase();
-        else if (/^--method=/.test(t)) method = t.slice(9).toUpperCase();
-        if (t === '--input' || /^--input=/.test(t)) body = true;
-      }
-      if (!body && (method === '' || T.ghOnelinerApi.has(method))) return false;
-    }
+    const api = ah.cfg('command.read_only_api'), body = cmdRe(api.body_flags_re), attached = cmdRe(api.method_attached_re);
     for (let i = ghIdx + 2; i < tokens.length; i++) {
       const t = tokens[i];
-      if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
-      // Attached forms (-fk=v, -Fk=v, --field=k=v, --raw-field=k=v) and a
-      // request body (--input f / --input=f) are data args, same as separated.
-      if (RX48.test(t) || RX49.test(t) || t === '--input') return true;
-      if (t === '-X' || t === '--method') {
-        if (T.ghApiMethods.has((tokens[i + 1] || '').toUpperCase())) return true;
-      }
+      if (body.test(t)) return true;
+      let method = null;
+      if (api.method_flags.indexOf(t) >= 0) method = tokens[++i] || '';
+      else { const m = attached.exec(t); if (m) method = m[1] === undefined ? m[2] : m[1]; }
+      if (method !== null && api.methods.indexOf(method.toUpperCase()) < 0) return true;
+      if (ah.cfg('command.gh_gql_value_flags').indexOf(t) >= 0) i++;
     }
   }
   return false;
@@ -2403,9 +2542,28 @@ function isFlaggedInterpreterScript(segment) {
   return false;
 }
 
+// hooks/command-guard.js isChildGitSyncChain: every segment is a `git ...` (or a leading `cd`) and the only heavy ones are push/pull/fetch.
+function isChildGitSyncChain(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const segs = splitSegments(command).map((x) => x.trim()).filter(Boolean);
+  if (!segs.length) return false;
+  let sawSync = false;
+  for (const seg of segs) {
+    const verb = effectiveVerb(seg);
+    if (verb === 'cd') continue;
+    if (verb !== 'git') return false;
+    if (isGitPushSegment(seg) || isGitPullFetchSegment(seg)) { sawSync = true; continue; }
+    if (isHeavySegment(seg, command)) return false;
+  }
+  return sawSync;
+}
+
 function isHeavySegment(segment, command) {
   segment = segment.replace(T.controlPrefix, '');
   const unwrapped = segment.replace(T.timeoutPrefix, '');
+  if (isConfiguredReadOnlyRemote(segment)) return false;
+  if (remoteMatch(segment, 'command.remote_block')) return true;
+  if (remoteMatch(segment, 'command.remote_allow')) return false;
   for (const re of lightList()) {
     if (re.test(segment) || re.test(unwrapped)) return false;
   }
@@ -2467,17 +2625,7 @@ function extractShellCPayloadRaw(segment) {
   const verb = effectiveVerb(segment);
   if (!verb || !T.shellVerbs.has(verb)) return '';
   // Tokenize respecting quotes so the payload (which contains spaces) stays whole.
-  const tokens = [];
-  let cur = ''; let q = ''; let any = false;
-  const str = segment.trim();
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
-    if (q) { if (c === q) { q = ''; } else cur += c; any = true; continue; }
-    if (c === "'" || c === '"') { q = c; any = true; continue; }
-    if (cmdWs(c)) { if (any) { tokens.push(cur); cur = ''; any = false; } continue; }
-    cur += c; any = true;
-  }
-  if (any) tokens.push(cur);
+  const tokens = tokenizeQuoted(segment);
   // Find the -c flag; the NEXT token is the command payload.
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
@@ -2509,17 +2657,7 @@ function extractEvalPayloadRaw(segment) {
   const verb = effectiveVerb(segment);
   if (verb !== 'eval') return '';
   // Tokenize respecting quotes; strip quote delimiters so the payload is raw cmd.
-  const tokens = [];
-  let cur = ''; let q = ''; let any = false;
-  const str = segment.trim();
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
-    if (q) { if (c === q) { q = ''; } else cur += c; any = true; continue; }
-    if (c === "'" || c === '"') { q = c; any = true; continue; }
-    if (cmdWs(c)) { if (any) { tokens.push(cur); cur = ''; any = false; } continue; }
-    cur += c; any = true;
-  }
-  if (any) tokens.push(cur);
+  const tokens = tokenizeQuoted(segment);
   // Drop everything up to and including the `eval` verb token (basename-aware:
   // a path like /usr/bin/eval still resolves to eval). Leading wrapper/assignment
   // prefixes are already accounted for because effectiveVerb confirmed `eval`.
@@ -2577,7 +2715,8 @@ function classifyHeavy(command, depth) {
   const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
     if (isHeavySegment(seg, command)) {
-      if (isHeavyGhSegment(seg) || isGitPushSegment(seg) || isGitPullFetchSegment(seg)) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote') };
+      if (remoteMatch(seg, 'command.remote_block')) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote'), risk: true };
+      if (isHeavyGhSegment(seg) || isGitPushSegment(seg) || isGitPullFetchSegment(seg)) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote'), risk: remoteMatch(seg, 'command.remote_block') };
       const verb = effectiveVerb(seg);
       if (verb && T.heavyVerbs.has(verb)) return { kind: 'verb', label: verb };
       return { kind: 'category', label: ah.cfg('command.heavy_pattern_label') };
@@ -2756,9 +2895,21 @@ function isSyntaxOnlyCompileCheck(segment) {
 // shape only: no globs, no directory target, no extra args past the one
 // target token.
 function isSinglePytestFileCheck(segment) {
-  const m = segment.trim().match(RX60);
-  if (!m) return false;
-  const target = m[1];
+  const tokens = segment.trim().split(RX28).filter(Boolean);
+  if (tokens.length < 4 || !cmdRe(ah.cfg('command.pytest_interpreter_re')).test(basename(tokens[0])) || tokens[1] !== '-m' || tokens[2] !== 'pytest') return false;
+  const valueFlags = ah.cfg('command.pytest_value_flags'), flagRe = cmdRe(ah.cfg('command.pytest_flag_re'));
+  let target = null;
+  for (let i = 3; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.startsWith('-')) {
+      if (valueFlags.includes(t)) { if (i + 1 >= tokens.length || tokens[i + 1].startsWith('-')) return false; i++; continue; }
+      if (!flagRe.test(t)) return false;
+      continue;
+    }
+    if (target !== null) return false; // one target only
+    target = t;
+  }
+  if (target === null) return false;
   if (RX61.test(target)) return false;
   if (target.endsWith('/')) return false;
   return true;
@@ -3059,6 +3210,35 @@ function isBoundedVerificationCommand(command, ctx) {
   return sawQualifying;
 }
 
+// cmdOutputBounded(command) -> true iff every pipeline that runs something other than a plain light command ends in a bounded sink
+// (head, tail, wc, grep -c) or writes its stdout to a file. Used by the delegate stand-down: while spawning is stopped a heavy command
+// may run inline only when its output cannot flood the context. An unquoted `#` or a background `&` is never judged bounded.
+function cmdOutputBounded(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  if (RX82.test(neutralizeQuotedContents(command))) return false;
+  const { segments, delims } = splitSegmentsDetailed(command);
+  if (!segments.length) return false;
+  const redirect = new RegExp(ah.cfg('standdown.redirect_re'));
+  const ends = [';', '&&', '||', '\n', 'end'];
+  let heavy = false;
+  let bounded = false;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i].trim();
+    if (seg) {
+      if (redirect.test(neutralizeQuotedContents(seg)) || isBoundedSinkSegment(seg)) bounded = true;
+      else if (!(i > 0 && delims[i - 1] === '|') && !isPlainLightSegment(seg, command)) heavy = true;
+      else if (i > 0 && delims[i - 1] === '|') heavy = true;
+    }
+    const d = delims[i];
+    if (d === '|') continue;
+    if (ends.indexOf(d) < 0) return false;
+    if (heavy && !bounded) return false;
+    heavy = false;
+    bounded = false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Per-project command allowlist (owner-approved 2026-09-26). Lets a PROJECT
 // declare its own sanctioned exact commands (e.g. its deploy script) that run
@@ -3262,10 +3442,10 @@ function appendProjectCommandAllowAudit(entry) {
 // A bare remote/ref token: no leading '-' or '+' (rules out every flag and
 // force-refspec form), and no ':' anywhere (rules out `src:dst`/delete
 // refspecs) — enforced by the character class simply never including ':'.
-// The one optional flag slot right after `push` matches ONLY `-q`/`--quiet`/
+// The (up to two) flag slots right after `push` match ONLY `-q`/`--quiet`/
 // `-u`/`--set-upstream` verbatim (not a character class), so `--force`/`-f`/anything else there
 // still fails the whole regex, same as before this carve-out was widened.
-const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+(-q|--quiet|-u|--set-upstream))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+(?::[A-Za-z0-9_.\/-]+)?))?\s*$/;
+const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+(-q|--quiet|-u|--set-upstream))?(?:\s+(-q|--quiet|-u|--set-upstream))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+(?::[A-Za-z0-9_.\/-]+)?))?\s*$/;
 // (d) The one accepted trailing output filter, piped from the last segment.
 const PLAIN_OUTPUT_FILTER_RE = /^(?:tail|head)(?:\s+(?:-n\s*)?-?\d+)?\s*$/;
 // (d) A trailing `2>&1` (stderr merged into stdout) - no other redirect.
@@ -3348,14 +3528,15 @@ function classifyPlainGitChainSegment(segment) {
     // isPlainPushRefAllowed's SRC===DST===<current branch> check while git
     // itself pushes over ssh to host `evil.com`). Reject the segment outright
     // rather than let isPlainPushRefAllowed's ref-shaped check vouch for it.
-    if (m[3] && m[3].indexOf(':') !== -1 && !m[2]) return null;
+    if (m[4] && m[4].indexOf(':') !== -1 && !m[3]) return null;
     // `-u`/`--set-upstream` is the ONLY upstream flag accepted, and only with
     // BOTH an explicit remote and an explicit ref (`git push -u origin
     // <branch>`) - a bare `git push -u`/`-u origin` never qualifies. Remote/ref
     // are then vetted exactly like the plain form. It shares the single flag
     // slot, so `-q -u`/`-u -q`/`-uf` never match the regex.
-    if ((m[1] === '-u' || m[1] === '--set-upstream') && !(m[2] && m[3])) return null;
-    return { kind: 'push', remote: m[2] || null, ref: m[3] || null };
+    const upstream = [m[1], m[2]].some((f) => f === '-u' || f === '--set-upstream');
+    if (upstream && !(m[3] && m[4])) return null;
+    return { kind: 'push', remote: m[3] || null, ref: m[4] || null };
   }
   if (PLAIN_LOG_SEGMENT_RE.test(trimmed)) return { kind: 'log' };
   if (PLAIN_STATUS_SEGMENT_RE.test(trimmed)) return { kind: 'status' };
@@ -3379,7 +3560,13 @@ function classifyLeadingCdSegment(segment) {
   const tokens = tokenizeQuoted(trimmed);
   if (tokens.length !== 2 || tokens[0] !== 'cd') return null;
   const p = tokens[1];
-  if (!p || p === '-' || p.startsWith('~')) return null;
+  if (!p || p === '-') return null;
+  // `~/dir` is the home directory spelled for the shell; the same-repository check on the resolved path is the boundary
+  if (p.startsWith('~/')) {
+    const home = io.homeOf();
+    return home ? home.replace(RX8, '') + p.slice(1) : null;
+  }
+  if (p.startsWith('~')) return null;
   return p;
 }
 
@@ -3790,7 +3977,7 @@ function isGoogleApisHttpsUrl(raw) {
   if (!RX96.test(rawHost)) return false;
   // `new URL(raw)` is not available here: an IDNA label is validated by the URL parser in ways this check does not reproduce, and
   // a port that is not empty digits up to the maximum makes the parser throw
-  if (rawHost.split('.').some((l) => l.length >= 4 && l.slice(0, 4).toLowerCase() === 'xn--')) unsure();
+  if (rawHost.split('.').some((l) => l.length >= 4 && l.slice(0, 4).toLowerCase() === 'xn--')) { ah.unable('command:idna_host'); return false; } // an IDNA label is not provably a Google API host: refused
   const afterHost = raw.slice('https://'.length + rawHost.length);
   if (afterHost.charAt(0) === ':') {
     const pm = RX97.exec(afterHost);
@@ -4771,7 +4958,7 @@ var io = {
   homeOf: function () {
     var h = ah.env.get(ah.cfg('env.home'));
     if (h === null || h === '') h = ah.env.get(ah.cfg('env.home_alt'));
-    if (h === null || h === '') unsure();
+    if (h === null || h === '') { ah.unable('command:home_of'); h = ah.env.passwdHome() || ''; }
     return h;
   },
 };
@@ -4787,7 +4974,7 @@ function antiHallCliMatch(segment) {
 function launcherRegexes(cmd) {
   if (cmd.toLowerCase().indexOf(ah.cfg('command.launcher_marker')) < 0) return [];
   var homes = [], sh = spawn.stateHome();
-  if (sh.unknown) unsure();
+  if (sh.unknown) ah.unable('command:launcher_no_home');
   if (sh.ok) homes.push(sh.ok);
   var pw = ah.env.passwdHome();
   if (pw && homes.indexOf(pw) < 0) homes.push(pw);
@@ -4809,6 +4996,9 @@ function guarded(fn) {
 function mainFlow(payload) {
   const isSkipped = (name) => cmdSkipped(name);
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
+  // a command over the classify cap is judged in parts by the Node hook (a head/tail scan the engine does not reproduce): defer it
+  // before any parsing (the edit prefilter is false for it, so a gate behind that prefilter never fired)
+  // a command over the classify cap is judged in parts (the edit gate below scans its head and tail); the heavy-command gates skip it, as in Node
   const bm = LIB['./lib/block-message.js'];
   let hit;
   hit = guarded(() => {
@@ -4863,15 +5053,16 @@ function mainFlow(payload) {
   if (S.off) return 'allow';
   if (!coordinator.isCoordinator(payload)) return 'allow';
   hit = guarded(() => {
-    if (cmdMayWrite(command, 0)
+    if ((command.length > T.maxLen || cmdMayWrite(command, 0))
       && settingsGet('guards', 'bashEditParity') !== false
       && settings.enabled('safety', 'editGuard')
       && !isSkipped(ah.cfg('command.edit_guard_name'))
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
-      if (command.length > T.maxLen) unsure(); // a very large command is judged in parts, which the engine does not reproduce
-      if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
-        // a DevSwarm child workspace is a worker (hooks/lib/devswarm-role.js isChildWorker, which reads the disk): Node decides
-        if (LIB['./lib/devswarm-role.js'].isChildWorkspace()) unsure();
+      var scans = [command];
+      if (command.length > T.maxLen) { var bp = cmdBigParts(command); scans = bp.rest ? [bp.head, bp.rest] : [bp.head]; }
+      if (scans.some(function (c) { return classifyBashWork(c, payload, { editOnly: true }).editBlocks.length; })) {
+        // a DevSwarm child workspace is a worker on its own branch (hooks/lib/devswarm-role.js isChildWorker): its edits are its job
+        if (cmdChildWorker((payload && payload.cwd) || '')) return undefined;
         return blockExact(LIB['./edit-guard.js'].delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload));
       }
     }
@@ -4904,8 +5095,8 @@ function mainFlow(payload) {
   if (guarded(() => settingsGet('guards', 'allowBackgroundScratchScripts') !== false && isBackgroundScratchScript(command, payload))) return 'allow';
   if (guarded(() => settingsGet('guards', 'allowGcloudReads') !== false && isAllowedGcloudReadCommand(command))) return 'allow';
 
-  // a DevSwarm child workspace commits and pushes its own branch inline (hooks/command-guard.js isChildGitSyncChain): Node decides
-  if (LIB['./lib/devswarm-role.js'].isChildWorkspace()) unsure();
+  // a DevSwarm child worker commits and pushes its own branch inline (hooks/command-guard.js isChildGitSyncChain)
+  if (guarded(() => cmdChildWorker((payload && payload.cwd) || '') && isChildGitSyncChain(command))) return 'allow';
   const cls = classifyHeavy(command);
   const remote = !!cls && cls.kind === 'remote';
   const detail = remote ? '' : cls
@@ -4924,16 +5115,23 @@ function mainFlow(payload) {
   const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), detail: detail });
   const SUB = codexHost ? H.CODEX_SUBAGENT : ah.cfg('command.claude_subagent');
   const delegateTo = text.render(ah.cfg('command.msg_heavy_delegate'), { to: codexHost ? H.CODEX_CHEAP : SUB });
-  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude');
-  const reason = bm.blockMessage({
-    guard: ah.cfg('command.guard_name'),
+  // while spawning is stopped (the usage hard stop) there is nobody to delegate to: a heavy command with bounded output runs inline
+  const standStop = guarded(() => sd.applies(payload, ah.cfg('command.guard_name')));
+  if (standStop) {
+    if (guarded(() => cmdOutputBounded(command))) {
+      const standNote = guarded(() => sd.note(payload, standStop)) || '';
+      return standNote ? { advisory: text.advisoryJson('PreToolUse', standNote) } : 'allow';
+    }
+  }
+  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
+  const reason = text.detailsMessage('block', ah.cfg('command.guard_name'), {
     what: heavyWhat,
-    why: ah.cfg('command.msg_heavy_why'),
+    why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),
     instead: (devswarmPrimary && tierText
       ? text.render(ah.cfg('command.msg_heavy_instead_tier'), { delegate: delegateTo, sub: SUB })
       : delegateTo + '.') + cdJoinHint,
     allowed: allowedShapes,
-  });
+  }, payload && payload.session_id);
   return blockExact(reason);
 }
 
@@ -4958,6 +5156,6 @@ function decide(p, opts, event) {
   if (!ti || typeof ti !== 'object' || typeof ti.command !== 'string') return null;
   cmdBegin(opts);
   let v;
-  try { v = mainFlow(p); } catch (e) { if (!cmdFatal(e)) throw e; S.unsure = true; v = null; }
-  return cmdEnd() || v === null ? 'defer' : v;
+  try { v = mainFlow(p); } finally { cmdEnd(); } // a fatal exception (stack, memory, time) reaches the engine's own failure policy
+  return v === null || v === undefined ? 'allow' : v;
 }

@@ -1,9 +1,10 @@
 //! D87 end to end: the per-event and per-entry hook configuration (`[events.*]`, `[entries.*]` in the engine's user file or a
-//! project file) as the real binary applies it to `ah-engine hook --event ...`, with the Node hooks replaced by small shell
-//! commands through `--fallback-map`. Each test has its own HOME and state directory; no daemon is started (every check runs as its Node
-//! hook: `AH_ENGINE_DISPATCH_IN_PROCESS=0` with `AH_ENGINE_NOSPAWN=1`).
+//! project file) as the real binary applies it to `ah-engine hook --event ...`, with the built-in checks answered in the client.
+//! No hook command is launched any more, so what the configuration did is read from the plan event the dispatcher logs
+//! (`dispatch_plan`: `ran=[..]` in run order, `skipped_*`, `shadowed`, `off`). Each test has its own HOME and state directory.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,29 +22,13 @@ const POST_BASH: [&str; 7] = [
     "coordinator-work-guard:post",
     "agent-reminders",
 ];
-/// Entries the engine answers itself in these tests' environment, so no Node command runs for them. None: the tests run with
-/// the checks down (`AH_ENGINE_NOSPAWN=1`), so every entry runs as its Node command.
-const POST_NATIVE: [&str; 0] = [];
-const PRE_BASH: [&str; 12] = [
-    "compact-declaration-guard",
-    "git-guard",
-    "command-guard",
-    "coordinator-work-guard",
-    "merge-side-pick",
-    "merge-gate",
-    "scan-throttle",
-    "api-guard",
-    "ship-it-guard",
-    "procwatch-advisory",
-    "engine-role-guard",
-    "broad-kill-guard",
-];
 
 impl Env {
     fn new(name: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("ahd-cfg-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         Env { dir }
     }
@@ -56,51 +41,41 @@ impl Env {
         std::fs::write(self.state().join("config.toml"), text).unwrap();
     }
 
-    /// A map giving every listed id of `event` the command `f(id)`.
-    fn map(&self, event: &str, ids: &[&str], f: impl Fn(&str) -> String) -> PathBuf {
-        let m: serde_json::Map<String, serde_json::Value> = ids.iter().map(|id| (id.to_string(), f(id).into())).collect();
-        let p = self.dir.join(format!("{event}.map.json"));
-        std::fs::write(&p, serde_json::json!({ event: m }).to_string()).unwrap();
-        p
+    /// The plan events the dispatcher logged, oldest first: each field (`ran`, `skipped_max_rules`, ...) to its ids.
+    fn plans(&self) -> Vec<HashMap<String, Vec<String>>> {
+        self.log()
+            .lines()
+            .filter(|l| l.contains("dispatch_plan"))
+            .map(|l| {
+                l.split_whitespace()
+                    .filter_map(|w| {
+                        let (k, v) = w.split_once("=[")?;
+                        Some((k.to_string(), v.trim_end_matches(']').split(',').filter(|i| !i.is_empty()).map(str::to_string).collect()))
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
-    /// Every hook prints its id as additionalContext and appends it to `ran.log`.
-    fn ctx_map(&self, event: &str, ids: &[&str]) -> PathBuf {
-        let log = self.dir.join("ran.log");
-        self.map(event, ids, |id| {
-            format!("echo {id} >> {}; printf '{{\"hookSpecificOutput\":{{\"hookEventName\":\"{event}\",\"additionalContext\":\"CTX-{id}\"}}}}'", log.display())
-        })
+    /// One field of the latest plan event (empty when there is none).
+    fn plan(&self, field: &str) -> Vec<String> {
+        self.plans().last().and_then(|p| p.get(field).cloned()).unwrap_or_default()
     }
 
-    fn ran(&self) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_to_string(self.dir.join("ran.log")).unwrap_or_default().lines().map(str::to_string).collect();
-        v.sort();
-        v
-    }
-
-    fn run(&self, event: &str, map: &Path, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
-        self.run_as(false, event, map, payload, extra)
-    }
-
-    /// [`Env::run`] with the built-in checks answered in the client (`in_process`), as the shipped hooks run them.
-    fn run_native(&self, event: &str, map: &Path, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
-        self.run_as(true, event, map, payload, extra)
-    }
-
-    fn run_as(&self, in_process: bool, event: &str, map: &Path, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
+    /// The built-in checks answered in the client (`in_process`), as the shipped hooks run them.
+    fn run(&self, event: &str, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-        c.args(["hook", "--event", event, "--fallback-map", map.to_str().unwrap()])
+        c.args(["hook", "--event", event])
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-config")
-            // the plan (which entries run, in which order, under which configuration) is what is tested here, with every hook a
-            // fake: the checks run as their Node hooks (no daemon and none to start), because a check the engine answers itself
-            // would not run its fake and the ported entries would drop out of the plan's output
-            .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
-            .env("AH_ENGINE_NOSPAWN", if in_process { "0" } else { "1" })
+            // The plan (which entries run, in which order, under which configuration) is what is tested here.
+            .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+            .env("AH_ENGINE_NOSPAWN", "1")
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -114,10 +89,13 @@ impl Env {
 
     /// Everything the engine logged in its state dir.
     fn log(&self) -> String {
-        std::fs::read_dir(self.state())
-            .map(|rd| rd.flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default()
+        ah_engine::defaults::init().unwrap();
+        std::fs::read_to_string(self.state().join(ah_engine::health::log_name())).unwrap_or_default()
     }
+}
+
+fn post(cmd: &str, cwd: &Path) -> String {
+    serde_json::json!({"session_id": "cfg", "cwd": cwd, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}, "tool_response": {}}).to_string()
 }
 
 impl Drop for Env {
@@ -126,87 +104,68 @@ impl Drop for Env {
     }
 }
 
-fn post(cmd: &str, cwd: &Path) -> String {
-    serde_json::json!({"session_id": "cfg", "cwd": cwd, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}, "tool_response": {}}).to_string()
-}
-
 fn pre(cmd: &str, cwd: &Path) -> String {
     serde_json::json!({"session_id": "cfg", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}).to_string()
 }
 
-fn contexts(out: &str) -> Vec<String> {
-    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or(serde_json::Value::Null);
-    v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or("").split("\n\n").filter(|s| !s.is_empty()).map(str::to_string).collect()
-}
-
 #[test]
-fn without_any_config_every_matching_entry_runs_and_the_answer_is_the_tables_order() {
+fn without_any_config_every_matching_entry_runs_and_the_order_is_the_tables() {
     let e = Env::new("default");
-    let map = e.ctx_map("PostToolUse", &POST_BASH);
-    let (code, out, err) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
+    let (code, _, err) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(contexts(&out), POST_BASH.iter().filter(|i| !POST_NATIVE.contains(i)).map(|id| format!("CTX-{id}")).collect::<Vec<_>>());
     assert!(!e.log().contains("dispatch_plan"), "a default dispatch writes no plan event: {}", e.log());
+    // a configuration that changes nothing (a budget that is never reached) makes the plan observable
+    e.config("[events.PostToolUse]\nbudget_ms = 600000\n");
+    let (code, _, err) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(e.plan("ran"), POST_BASH, "every matching entry runs, in the table's order");
+    assert!(e.plan("skipped_max_rules").is_empty() && e.plan("skipped_budget").is_empty() && e.plan("off").is_empty());
 }
 
 #[test]
-fn order_and_max_rules_decide_which_entries_run_and_how_their_answers_combine() {
+fn order_and_max_rules_decide_which_entries_run() {
     let e = Env::new("order");
     e.config("[events.PostToolUse]\norder = [\"coordinator-work-guard:post\", \"output-verify-guard\"]\nmax_rules = 3\n");
-    let map = e.ctx_map("PostToolUse", &POST_BASH);
-    let (code, out, err) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
+    let (code, _, err) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(
-        contexts(&out),
-        ["CTX-coordinator-work-guard:post", "CTX-output-verify-guard", "CTX-merge-side-pick:post"],
+        e.plan("ran"),
+        ["coordinator-work-guard:post", "output-verify-guard", "merge-side-pick:post"],
         "listed ids first, then the table's order, cut at 3"
     );
-    assert_eq!(e.ran(), ["coordinator-work-guard:post", "merge-side-pick:post", "output-verify-guard"], "the cut entries never started");
-    let log = e.log();
-    assert!(
-        log.contains("dispatch_plan") && log.contains("skipped_max_rules=[git-guard:audit,devswarm-parent-reply-tracker,devswarm-child-drain,agent-reminders]"),
-        "{log}"
-    );
+    assert_eq!(e.plan("skipped_max_rules"), ["git-guard:audit", "devswarm-parent-reply-tracker", "devswarm-child-drain", "agent-reminders"], "{}", e.log());
 }
 
 #[test]
 fn an_off_event_answers_neutral_and_starts_nothing() {
     let e = Env::new("off");
     e.config("[events.PostToolUse]\nenabled = false\n");
-    let map = e.ctx_map("PostToolUse", &POST_BASH);
-    assert_eq!(e.run("PostToolUse", &map, &post("ls", &e.dir), &[]), (0, String::new(), String::new()));
-    assert!(e.ran().is_empty());
+    assert_eq!(e.run("PostToolUse", &post("ls", &e.dir), &[]), (0, String::new(), String::new()));
+    assert!(e.plan("ran").is_empty());
     assert!(e.log().contains("off=[merge-side-pick:post"), "{}", e.log());
 }
 
 #[test]
-fn a_shadowed_entry_runs_but_its_answer_is_never_delivered() {
+fn a_shadowed_entry_is_measured_and_an_off_entry_is_dropped() {
     let e = Env::new("shadow");
     e.config("[entries.\"output-verify-guard\"]\nmode = \"shadow\"\n[entries.\"git-guard:audit\"]\nmode = \"off\"\n");
-    let map = e.ctx_map("PostToolUse", &POST_BASH);
-    let (code, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!(code, 0);
-    let want: Vec<String> = POST_BASH
-        .iter()
-        .filter(|i| !["output-verify-guard", "git-guard:audit"].contains(i) && !POST_NATIVE.contains(i))
-        .map(|id| format!("CTX-{id}"))
-        .collect();
-    assert_eq!(contexts(&out), want);
-    assert!(e.ran().contains(&"output-verify-guard".to_string()), "shadow still runs it");
-    assert!(!e.ran().contains(&"git-guard:audit".to_string()), "off does not");
-    assert!(e.log().contains("shadowed=[output-verify-guard]"));
+    let (code, _, err) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
+    assert_eq!(code, 0, "{err}");
+    let want: Vec<&str> = POST_BASH.iter().copied().filter(|i| !["output-verify-guard", "git-guard:audit"].contains(i)).collect();
+    assert_eq!(e.plan("ran"), want, "neither the shadowed nor the off entry counts");
+    assert_eq!(e.plan("shadowed"), ["output-verify-guard"], "shadow still measures it");
+    assert_eq!(e.plan("off"), ["git-guard:audit"], "off does not run it");
 }
 
 #[test]
 fn a_when_override_skips_the_entry_for_payloads_that_do_not_match() {
     let e = Env::new("when");
     e.config("[entries.\"git-guard:audit\"]\nwhen = { field = \"/tool_input/command\", regex = \"^git\" }\n");
-    let map = e.ctx_map("PostToolUse", &POST_BASH);
-    let (_, out, _) = e.run("PostToolUse", &map, &post("ls -la", &e.dir), &[]);
-    assert!(!contexts(&out).contains(&"CTX-git-guard:audit".to_string()), "{out}");
-    assert!(e.log().contains("skipped_predicate=[git-guard:audit]"));
-    let (_, out, _) = e.run("PostToolUse", &map, &post("git status", &e.dir), &[]);
-    assert!(contexts(&out).contains(&"CTX-git-guard:audit".to_string()), "{out}");
+    e.run("PostToolUse", &post("ls -la", &e.dir), &[]);
+    assert!(!e.plan("ran").contains(&"git-guard:audit".to_string()), "{}", e.log());
+    assert_eq!(e.plan("skipped_predicate"), ["git-guard:audit"]);
+    e.run("PostToolUse", &post("git status", &e.dir), &[]);
+    assert!(e.plan("ran").contains(&"git-guard:audit".to_string()), "{}", e.log());
 }
 
 #[test]
@@ -214,28 +173,29 @@ fn a_project_file_applies_below_the_user_file_and_cannot_touch_guards() {
     let e = Env::new("project");
     std::fs::create_dir_all(e.dir.join(".anti-hall")).unwrap();
     std::fs::write(e.dir.join(".anti-hall/engine.toml"), "[events.PostToolUse]\nmax_rules = 1\n").unwrap();
-    let map = e.ctx_map("PostToolUse", &POST_BASH);
-    let (_, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!(contexts(&out), ["CTX-merge-side-pick:post"], "the project file caps the event");
+    e.run("PostToolUse", &post("ls", &e.dir), &[]);
+    assert_eq!(e.plan("ran"), ["merge-side-pick:post"], "the project file caps the event");
     e.config("[events.PostToolUse]\nmax_rules = 2\n");
-    let (_, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!(contexts(&out).len(), 2, "the user file outranks the project file");
+    e.run("PostToolUse", &post("ls", &e.dir), &[]);
+    assert_eq!(e.plan("ran").len(), 2, "the user file outranks the project file");
     // a project file that names a guard event is rejected whole: the event runs unconfigured
     std::fs::remove_file(e.state().join("config.toml")).unwrap();
     std::fs::write(e.dir.join(".anti-hall/engine.toml"), "[events.PreToolUse]\nbudget_ms = 5\n[events.PostToolUse]\nmax_rules = 1\n").unwrap();
-    let (_, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!(contexts(&out).len(), POST_BASH.len() - POST_NATIVE.len(), "an invalid project file is ignored, not half applied");
-    assert!(e.log().contains("config_invalid") && e.log().contains("project file"), "{}", e.log());
+    let before = e.plans().len();
+    let (code, _, err) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(e.plans().len(), before, "an invalid project file is ignored, not half applied: the defaults write no plan event");
+    assert!(e.log().contains("layer_notice") && e.log().contains("ignored (project)"), "{}", e.log());
 }
 
 #[test]
 fn an_invalid_user_file_runs_the_defaults_and_says_so() {
     let e = Env::new("invalid");
     e.config("[events.PostToolUse]\nmode = \"loud\"\n");
-    let map = e.ctx_map("PostToolUse", &POST_BASH);
-    let (code, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!((code, contexts(&out).len()), (0, POST_BASH.len() - POST_NATIVE.len()));
+    let (code, _, err) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
+    assert_eq!(code, 0, "{err}");
     assert!(e.log().contains("config_invalid"), "{}", e.log());
+    assert!(!e.log().contains("dispatch_plan"), "the defaults ran, so no plan event: {}", e.log());
 }
 
 #[test]
@@ -249,6 +209,7 @@ fn config_validate_enforces_the_guard_rule_on_the_real_command() {
             .env_clear()
             .env("HOME", e.dir.join("home"))
             .env("AH_ENGINE_DIR", e.state())
+            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .output()
             .unwrap();
         (o.status.code().unwrap(), String::from_utf8_lossy(&o.stdout).to_string())
@@ -271,65 +232,151 @@ fn config_validate_enforces_the_guard_rule_on_the_real_command() {
 }
 
 #[test]
-fn shadowing_a_guard_check_never_changes_the_outcome_and_logs_the_disagreement() {
+fn a_guard_check_in_shadow_still_decides_and_off_drops_it() {
     let e = Env::new("guard-shadow");
-    let map = e.map("PreToolUse", &PRE_BASH, |_| "true".into());
     let payload = pre("git push --force origin main", &e.dir);
-    let (code, _, err) = e.run_native("PreToolUse", &map, &payload, &[]);
+    let (code, _, err) = e.run("PreToolUse", &payload, &[]);
     assert_eq!(code, 2, "without the config the engine's git check blocks a force push: {err}");
+    // no Node hook runs beside a guard check, so shadow cannot turn it into a measurement: it still decides (never weaker)
     e.config("[entries.\"PreToolUse/git-guard\"]\nmode = \"shadow\"\n");
-    let (code, out, err) = e.run_native("PreToolUse", &map, &payload, &[]);
-    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "shadow: the Node hook (which allows) decides, the engine's block changes nothing");
-    let log = e.log();
-    assert!(log.contains("dispatch_shadow") && log.contains("git-guard agree=false engine_exit=2 node_exit=0"), "{log}");
+    let (code, _, err) = e.run("PreToolUse", &payload, &[]);
+    assert_eq!(code, 2, "shadow: the check still blocks a force push: {err}");
+    assert!(err.contains("git safety"), "{err}");
+    // off is the owner's explicit choice: the entry is dropped and no hook takes its place
     e.config("[entries.\"PreToolUse/git-guard\"]\nmode = \"off\"\n");
-    assert_eq!(e.run_native("PreToolUse", &map, &payload, &[]).0, 0, "off: the check does not run, the Node hook decides");
-    // the Node hook that decides still blocks when it blocks
-    let blocking = e.map("PreToolUse", &PRE_BASH, |id| if id == "git-guard" { "echo node-says-no >&2; exit 2".into() } else { "true".into() });
-    let (code, _, err) = e.run_native("PreToolUse", &blocking, &payload, &[]);
-    assert_eq!(code, 2, "{err}");
-    assert!(err.contains("node-says-no"), "{err}");
+    let (_, _, err) = e.run("PreToolUse", &payload, &[]);
+    assert!(!err.contains("git safety: a force push"), "off: the git check does not run: {err}");
+    // The bounded log can clip the final off field; the leading ran list still records its absence.
+    assert!(!e.plan("ran").contains(&"git-guard".to_string()), "{}", e.log());
 }
 
 #[test]
-fn a_guard_events_budget_defers_to_node_when_the_hooks_cannot_start_in_time() {
-    // review finding 17: a spent budget (a slow machine) blocked the call; it is no verdict, so the Node hooks decide
+fn a_guard_events_spent_budget_follows_the_budget_failure_mode() {
+    // review finding 17: a spent budget (a slow machine) is no verdict. There is no Node hook to decide, so the configured
+    // `budget` failure mode (closed) answers: the call is blocked with the reason, never let through unguarded.
     let e = Env::new("guard-budget");
     e.config("[events.PreToolUse]\nbudget_ms = 1\n");
-    let ran = e.dir.join("ran");
-    let map = e.map("PreToolUse", &PRE_BASH, |_| format!("echo x >> '{}'; sleep 0.3", ran.display()));
     let payload = pre("ls", &e.dir);
-    let (code, _, err) = e.run_native("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]);
-    assert!(err.contains("budget"), "the budget reason is given: {err}");
-    if ran.exists() {
-        // review P1-1: a hook that already ran would run again in the wrapper's rerun: fail closed instead of 75
-        assert_eq!(code, 2, "{err}");
-    } else {
-        assert_eq!(code, ah_engine::defaults::num("dispatch.defer_exit") as i32, "{err}");
-        assert!(err.contains("the Node hooks decide"), "defers: {err}");
-    }
-    // a budget that is not reached changes nothing
+    // a healthy daemon that refuses the request with ERR: the checks give no answer, and the 1 ms budget has passed by then
+    let sock = ah_engine::paths::socket_in(&e.state());
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flag = std::sync::Arc::clone(&alive);
+    let server = std::thread::spawn(move || {
+        use std::io::Read;
+        while flag.load(std::sync::atomic::Ordering::Acquire) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut body = Vec::new();
+                    ah_engine::discard::harmless(stream.read_to_end(&mut body));
+                    // the 1 ms budget must have passed before the refusal arrives: an instant ERR on a fast machine leaves it unspent
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    ah_engine::discard::harmless(stream.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Err, "no answer")));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+    });
+    let (code, _, err) = e.run("PreToolUse", &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0")]);
+    alive.store(false, std::sync::atomic::Ordering::Release);
+    ah_engine::discard::harmless(server.join());
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("budget") && err.contains("could not run the guards"), "the budget reason is given: {err}");
+    // a budget that is not reached changes nothing (the checks answer in the client)
     e.config("[events.PreToolUse]\nbudget_ms = 600000\n");
-    assert_eq!(e.run_native("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]).0, 0);
+    assert_eq!(e.run("PreToolUse", &payload, &[]).0, 0);
 }
 
 #[test]
 fn a_non_guard_events_budget_accounts_for_every_entry_exactly_once() {
     let e = Env::new("budget");
     e.config("[events.PostToolUse]\nbudget_ms = 1\n");
-    let map = e.ctx_map("PostToolUse", &POST_BASH);
-    let (code, _, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
+    let (code, _, _) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
     assert_eq!(code, 0);
-    let ran = e.ran().len();
-    let log = e.log();
-    let skipped = log
-        .lines()
-        .filter(|l| l.contains("dispatch_plan"))
-        .flat_map(|l| l.split("skipped_budget=[").nth(1).and_then(|r| r.split(']').next()).into_iter())
-        .flat_map(|r| r.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>())
-        .count();
-    assert_eq!(ran + skipped + POST_NATIVE.len(), POST_BASH.len(), "ran {ran} + skipped_budget {skipped}: {log}");
+    let (ran, skipped) = (e.plan("ran"), e.plan("skipped_budget"));
+    assert_eq!(ran.len() + skipped.len(), POST_BASH.len(), "ran {ran:?} + skipped_budget {skipped:?}: {}", e.log());
     e.config("[events.PostToolUse]\nbudget_ms = 600000\n");
-    let (_, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!(contexts(&out).len(), POST_BASH.len() - POST_NATIVE.len(), "a budget that is not reached skips nothing");
+    e.run("PostToolUse", &post("ls", &e.dir), &[]);
+    assert_eq!(e.plan("ran").len(), POST_BASH.len(), "a budget that is not reached skips nothing");
+    assert!(e.plan("skipped_budget").is_empty());
+}
+
+/// A daemon that answers every PreToolUse request with an OK reply holding `body`, until the returned flag is cleared: the late-reply
+/// case where the daemon answered some checks and dropped the rest.
+fn serve_replies(sock: &Path, body: String) -> (std::sync::Arc<std::sync::atomic::AtomicBool>, std::thread::JoinHandle<()>) {
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(sock).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flag = std::sync::Arc::clone(&alive);
+    let server = std::thread::spawn(move || {
+        use std::io::Read;
+        while flag.load(std::sync::atomic::Ordering::Acquire) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut req = Vec::new();
+                    ah_engine::discard::harmless(stream.read_to_end(&mut req));
+                    ah_engine::discard::harmless(stream.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Ok, &body)));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+    });
+    (alive, server)
+}
+
+/// Measurement (a), issue #336 item 1: a Write whose daemon reply is missing only non-safety checks (burn-breaker and the like) and has
+/// no runnable Node command. Before (`guards.failOpenNonSafety` off) the Write is BLOCKED; after (the default) it is allowed with one notice
+/// per session, and the pass is counted per check. A safety guard that goes unanswered still blocks in both.
+#[test]
+fn a_write_with_a_late_daemon_answer_is_blocked_before_and_allowed_with_one_notice_after() {
+    let e = Env::new("fail-open-write");
+    let payload = serde_json::json!({"session_id": "fo1", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Write",
+        "tool_input": {"file_path": e.dir.join("a.txt"), "content": "x"}});
+    let entries = ah_engine::dispatch::table::select_guarded("claude", "PreToolUse", &payload, Some("Write"));
+    let closed = |check: &str| ah_engine::script::failure_mode(check) == "closed";
+    let (safety, other): (Vec<_>, Vec<_>) = entries.iter().partition(|en| en.check.as_deref().is_some_and(closed));
+    assert!(!other.is_empty() && !safety.is_empty(), "a Write has both kinds of guard: safety {} other {}", safety.len(), other.len());
+    // the daemon answers the safety guards (an allow each) and drops the rest
+    let body = serde_json::Value::Array(safety.iter().map(|en| serde_json::json!([en.id, 0, "", ""])).collect()).to_string();
+    let sock = ah_engine::paths::socket_in(&e.state());
+    let (alive, server) = serve_replies(&sock, body);
+    let payload = payload.to_string();
+    let off = [("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("ANTIHALL_FAIL_OPEN_NON_SAFETY", "0")];
+    let on = [("AH_ENGINE_DISPATCH_IN_PROCESS", "0")];
+    let before = e.run("PreToolUse", &payload, &off);
+    let after = e.run("PreToolUse", &payload, &on);
+    let again = e.run("PreToolUse", &payload, &on);
+    alive.store(false, std::sync::atomic::Ordering::Release);
+    ah_engine::discard::harmless(server.join());
+    eprintln!("MEASURE a: before exit={} stderr={:?}", before.0, before.2.trim());
+    eprintln!("MEASURE a: after  exit={} stdout={:?}", after.0, after.1.trim());
+    eprintln!("MEASURE a: retry  exit={} stdout={:?}", again.0, again.1.trim());
+    assert_eq!(before.0, 2, "before: blocked rather than allowed unguarded: {before:?}");
+    assert!(before.2.contains("could not run the guards"), "{before:?}");
+    assert_eq!(after.0, 0, "after: allowed: {after:?}");
+    assert!(after.1.contains("systemMessage") && after.1.contains("could not run"), "after: one notice line: {after:?}");
+    assert_eq!(again.0, 0, "{again:?}");
+    assert!(!again.1.contains("systemMessage"), "the notice is told once per session: {again:?}");
+    let log = e.log();
+    assert!(log.contains("dispatch_fail_open") && log.contains("burn-breaker"), "the pass is on record per check: {log}");
+    let journal = std::fs::read_to_string(e.state().join(ah_engine::defaults::text("diagnostics.counters_file"))).unwrap_or_default();
+    assert!(journal.lines().any(|l| l.contains("fail_open") && l.contains("burn-breaker")), "counted per check: {journal}");
+}
+
+/// A safety guard (git) that goes unanswered keeps failing closed with the setting on.
+#[test]
+fn an_unanswered_safety_guard_still_blocks_with_fail_open_on() {
+    let e = Env::new("fail-open-safety");
+    let payload = serde_json::json!({"session_id": "fo2", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}});
+    let sock = ah_engine::paths::socket_in(&e.state());
+    let (alive, server) = serve_replies(&sock, "[]".to_string());
+    let r = e.run("PreToolUse", &payload.to_string(), &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0")]);
+    alive.store(false, std::sync::atomic::Ordering::Release);
+    ah_engine::discard::harmless(server.join());
+    assert_eq!(r.0, 2, "no answer from the git/command guards: blocked: {r:?}");
 }

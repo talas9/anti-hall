@@ -45,7 +45,8 @@ fn round_times(s: &str) -> String {
     // a pattern that does not compile leaves the text as it is: the gate then only treats a literally repeated block as
     // unchanged. Compiled once per defaults snapshot, so an edit of the setting applies on reload.
     static RE: defaults::Cache<Option<regex::Regex>> = defaults::Cache::new();
-    let Some(re) = RE.get_or_init(|| regex::Regex::new(defaults::text("inject_gate.iso_re")).ok()) else { return s.to_string() };
+    let compiled = RE.get_or_init(|| regex::Regex::new(defaults::text("inject_gate.iso_re")).ok());
+    let Some(re) = compiled.as_ref() else { return s.to_string() };
     re.replace_all(s, |c: &regex::Captures| match iso_ms(&c[0]) {
         Some(ms) => format!("@{}", (ms / 60_000.0).round() as i64),
         None => c[0].to_string(),

@@ -18,7 +18,7 @@
 //! client's exchange deadline and trips its watchdog on a worker busy longer than `daemon.stuck_ms`, so a check never makes
 //! the call there: its script defers, and the dispatcher process (a one-shot process under the hook's own timeout, which
 //! calls [`allow_blocking_calls`] before it runs a check listed in `judge.dispatch_blocking_checks`) runs the check again and
-//! makes the call itself, so the Node hook runs only if the check still defers. A one-shot command (`ah-engine check`, `ah-engine
+//! makes the call itself. A one-shot command (`ah-engine check`, `ah-engine
 //! jev triage`) calls [`allow_blocking_calls`] first too.
 pub mod cli;
 pub mod evidence;

@@ -24,7 +24,7 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::taskkit::time;
 use crate::defaults;
 use crate::meshw::common::{Inv, Obj, n, s};
-use crate::meshw::ident::{R, defer};
+use crate::meshw::ident::R;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -39,12 +39,10 @@ fn dir_of(inv: &Inv) -> Option<PathBuf> {
     Some(inv.write_home.join(defaults::text("mesh_write.dir_anti_hall")).join(defaults::text("mesh_write.dir_logs")))
 }
 
-/// Defers (before anything is written) when Node would not write the log at all: the call is then Node's, which also
-/// reports why on its stderr.
-pub fn ready(inv: &Inv) -> R<()> {
-    if dir_of(inv).is_none() {
-        return defer("log-test-context");
-    }
+/// Always ready: Node's `writeEntry` (anti-hall-log.js:213-248) never refuses the verb when it has no log directory (a test
+/// context without one); it drops the line and says why once on stderr, which `write_entry` does. Kept for the callers'
+/// signature.
+pub fn ready(_inv: &Inv) -> R<()> {
     Ok(())
 }
 
@@ -90,8 +88,22 @@ pub(crate) fn write_line(dir: &std::path::Path, line: &str) {
 /// `buildEntry` + `writeEntry`. `repo_key` is the explicit `ctx.repoKey` (`Some(None)` = explicit null); `None` = not given,
 /// so the environment's `DEVSWARM_REPO_KEY` or null.
 #[allow(clippy::too_many_arguments)]
-fn write_entry(inv: &Inv, op: &str, level: &str, repo_key: Option<Option<&str>>, mesh_id: Option<&str>, msg: &str, err: Option<&str>, ctx: Vec<(&str, OVal)>) {
-    let Some(dir) = dir_of(inv) else { return };
+fn write_entry(
+    inv: &Inv,
+    component: &str,
+    op: &str,
+    level: &str,
+    repo_key: Option<Option<&str>>,
+    mesh_id: Option<&str>,
+    msg: &str,
+    err: Option<&str>,
+    ctx: Vec<(&str, OVal)>,
+) {
+    let Some(dir) = dir_of(inv) else {
+        // anti-hall-log.js:243-248: the test-context guard says so once on stderr and the line is dropped
+        eprintln!("{}", defaults::render("devswarm_cli.msg_log_test_guard", &[("home", &inv.write_home.display())]));
+        return;
+    };
     let f = defaults::list("devswarm_cli.log_entry_fields");
     let repo = match repo_key {
         Some(r) => r.map(str::to_string),
@@ -99,7 +111,7 @@ fn write_entry(inv: &Inv, op: &str, level: &str, repo_key: Option<Option<&str>>,
     };
     let mut e = Obj::default();
     e.put(f[0], s(&time::iso(time::now_ms())))
-        .put(f[1], s(defaults::text("devswarm_cli.log_component")))
+        .put(f[1], s(component))
         .put(f[2], s(op))
         .put(f[3], s(level))
         .put(f[4], repo.as_deref().map_or(OVal::Null, s))
@@ -166,13 +178,23 @@ pub fn refusal(inv: &Inv, op: &str, repo_key: Option<&str>, id: Option<&str>, ms
         ctx.push((defaults::text("devswarm_cli.log_ctx_reason"), s(r)));
     }
     ctx.push((defaults::text("devswarm_cli.log_ctx_msg"), s(msg)));
-    write_entry(inv, op, defaults::text("devswarm_cli.log_level_error"), Some(repo_key), id, msg, Some(msg), ctx);
+    write_entry(inv, defaults::text("devswarm_cli.log_component"), op, defaults::text("devswarm_cli.log_level_error"), Some(repo_key), id, msg, Some(msg), ctx);
 }
 
 /// `alog.logEvent('devswarm-cli', op, 'info', msg, ctx)`: an informational entry without an error payload; the repo key is
 /// the environment's, as Node's `buildEntry` takes it when the caller names none.
 pub fn event(inv: &Inv, op: &str, msg: &str, ctx: Vec<(&str, OVal)>) {
-    write_entry(inv, op, defaults::text("devswarm_cli.log_level_info"), None, None, msg, None, ctx);
+    event_as(inv, defaults::text("devswarm_cli.log_component"), op, msg, ctx);
+}
+
+/// [`event`] for another module's component (`alog.logEvent('devswarm-maintainer-notice', ...)`).
+pub fn event_as(inv: &Inv, component: &str, op: &str, msg: &str, ctx: Vec<(&str, OVal)>) {
+    write_entry(inv, component, op, defaults::text("devswarm_cli.log_level_info"), None, None, msg, None, ctx);
+}
+
+/// `alog.logEvent('devswarm-cli', op, 'warn', msg, ctx)`: a warning entry without an error payload.
+pub fn warn_event(inv: &Inv, op: &str, msg: &str, ctx: Vec<(&str, OVal)>) {
+    write_entry(inv, defaults::text("devswarm_cli.log_component"), op, defaults::text("devswarm_cli.log_level_warn"), None, None, msg, None, ctx);
 }
 
 #[cfg(test)]
@@ -245,14 +267,18 @@ mod tests {
     }
 
     #[test]
-    fn the_log_directory_override_wins_and_a_test_context_without_one_defers() {
+    fn the_log_directory_override_wins_and_a_test_context_without_one_drops_the_line_and_the_verb_goes_on() {
         let home = scratch("env");
         let dir = home.join("elsewhere");
         let i = inv(&home, &[("ANTI_HALL_LOG_DIR", dir.to_str().unwrap_or_default())]);
         refusal(&i, "x", None, None, "m", None);
         assert!(dir.join("devswarm.jsonl").is_file());
         assert!(!home.join(".anti-hall/logs/devswarm.jsonl").exists());
-        assert!(ready(&inv(&home, &[("NODE_TEST_CONTEXT", "child-v8")])).is_err());
+        // anti-hall-log.js:213-248: no log directory in a test context is a dropped line, never a refused verb
+        let guarded = inv(&home, &[("NODE_TEST_CONTEXT", "child-v8")]);
+        assert!(ready(&guarded).is_ok());
+        refusal(&guarded, "x", None, None, "m", None);
+        assert!(!home.join(".anti-hall/logs/devswarm.jsonl").exists());
         assert!(ready(&inv(&home, &[("NODE_TEST_CONTEXT", "child-v8"), ("ANTI_HALL_LOG_DIR", dir.to_str().unwrap_or_default())])).is_ok());
     }
 

@@ -33,9 +33,30 @@ pub fn compact(snap: &Snapshot) -> Value {
     json!({"at": snap.at_ms, "readable": snap.app_readable, "ws": rows})
 }
 
-/// Persist the copy (atomic, best effort: a lost write leaves the previous copy, which goes stale and shows `?`).
+/// What the last write put in the file: the rows (the copy without its clock) and when it was written, so a reconcile that changed
+/// nothing the line shows does not write the file again.
+static LAST: std::sync::Mutex<Option<(String, i64)>> = std::sync::Mutex::new(None);
+
+/// Persist the copy (atomic, best effort: a lost write leaves the previous copy, which goes stale and shows `?`). A reconcile that
+/// found nothing new leaves the file as it is until `devswarm_rt.line_refresh_ms` have passed (so the copy never reads as stale), and
+/// the write is not synced to disk: the file is advisory and rebuilt by the next reconcile.
 pub fn write(snap: &Snapshot) {
-    crate::dsact::exec::write_atomic(&path(), &compact(snap).to_string());
+    let mut copy = compact(snap);
+    let rows = format!("{}{}", copy["readable"], copy["ws"]);
+    let now = snap.at_ms;
+    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.as_ref().is_some_and(|(r, at)| *r == rows && now.saturating_sub(*at) < defaults::num("devswarm_rt.line_refresh_ms") as i64 && path().exists()) {
+        return;
+    }
+    let path = path();
+    if let Some(d) = path.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports the failure
+    }
+    copy["at"] = json!(now);
+    let style = crate::atomic::Style { skip_sync: true, ..crate::atomic::Style::default() };
+    if crate::atomic::write_styled(&path, copy.to_string(), style).is_ok() {
+        *last = Some((rows, now));
+    }
 }
 
 /// The resolved segment settings.
@@ -183,5 +204,27 @@ mod tests {
         let per_ms = start.elapsed().as_secs_f64() * 1000.0 / 200.0;
         eprintln!("segment render: {per_ms:.4} ms per call (50 workspaces, debug build)");
         assert!(per_ms < 2.0, "{per_ms}");
+    }
+
+    #[test]
+    fn a_reconcile_that_changed_nothing_does_not_rewrite_the_copy_until_the_refresh_is_due() {
+        use crate::devswarm_rt::state::Snapshot;
+        use std::os::unix::fs::MetadataExt;
+        let ino = || std::fs::metadata(path()).map(|m| m.ino()).ok();
+        let at = |ms: i64| Snapshot { at_ms: ms, app_readable: true, ..Snapshot::default() };
+        let refresh = defaults::num("devswarm_rt.line_refresh_ms") as i64;
+        write(&at(1_000));
+        let first = ino().expect("the first write makes the copy");
+        write(&at(1_000 + refresh / 2));
+        assert_eq!(ino(), Some(first), "nothing changed inside the refresh window: the file is left as it is");
+        write(&at(1_000 + refresh + 1));
+        assert_ne!(ino(), Some(first), "past the refresh interval the clock in the copy moves on");
+        let second = ino();
+        let mut changed = at(1_000 + refresh + 2);
+        changed.app_readable = false;
+        write(&changed);
+        assert_ne!(ino(), second, "a change the line shows is written at once");
+        let text = std::fs::read_to_string(path()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["at"], json!(1_000 + refresh + 2));
     }
 }

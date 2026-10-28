@@ -23,10 +23,13 @@ function ovSignals(key) {
 // The text of the first genuine hit of one signal, or null. A count pattern only counts a non-zero count (every occurrence is
 // looked at); a pattern anchored to the start of a line is scanned by the interpreter (it is cheap), the others by the host's
 // linear-time engine so a large output cannot spend the time limit.
-function ovHit(s, text) {
+// `safe` is `hookProc.usv(text)`, made once by a caller that scans the same text with many patterns (a regex pass over a large output
+// per pattern was most of this check's time); without it the text is cleaned here.
+function ovHit(s, text, safe) {
   if (s.lineStart) { var h = text.match(s.re); return h ? h[0] : null; }
-  if (!s.count) { var r = ah.re.find(s.src, s.flags, hookProc.usv(text)); return r ? text.slice(r[0], r[1]) : null; }
-  var all = ah.re.findAll(s.src, s.flags, hookProc.usv(text));
+  var clean = safe === undefined ? hookProc.usv(text) : safe;
+  if (!s.count) { var r = ah.re.find(s.src, s.flags, clean); return r ? text.slice(r[0], r[1]) : null; }
+  var all = ah.re.findAll(s.src, s.flags, clean);
   for (var i = 0; i < all.length; i++) {
     var t = text.slice(all[i][0], all[i][1]), g = new RegExp(s.src, s.flags).exec(t);
     if (g && parseInt(g[1], 10) !== 0) return t;
@@ -34,18 +37,18 @@ function ovHit(s, text) {
   return null;
 }
 
-function ovFirstMatch(list, text) {
+function ovFirstMatch(list, text, safe) {
   for (var i = 0; i < list.length; i++) {
-    var t = ovHit(list[i], text);
+    var t = ovHit(list[i], text, safe);
     if (t !== null) return t;
   }
   return null;
 }
 
 // The exit codes (null for a non-finite one) the exit-code text scan sees, in order.
-function ovExitCodes(text, firstOnly) {
+function ovExitCodes(text, firstOnly, safeText) {
   var src = ah.cfg('output_verify.exit_code_re'), out = [];
-  var safe = hookProc.usv(text);
+  var safe = safeText === undefined ? hookProc.usv(text) : safeText;
   var all = firstOnly ? (function () { var r = ah.re.find(src, 'i', safe); return r ? [r] : []; })() : ah.re.findAll(src, 'i', safe);
   for (var i = 0; i < all.length; i++) {
     var g = new RegExp(src, 'i').exec(text.slice(all[i][0], all[i][1])), n = g ? parseInt(g[1], 10) : NaN;
@@ -151,19 +154,20 @@ function ovDecide(p, pend) {
   var blob = build(false), cap = ah.cfgNum('output_verify.scan_cap'), multi = vals.filter(ovHasOrdered);
   if (multi.length && (blob.length > cap || multi.some(function (x) { return ovOrderMatters(x, structured !== null, fail, pass); }))) {
     blob = build(true);
-    if (multi.some(function (x) { return ovHasUnlisted(x, order); })) return 'defer'; // the host's order of these keys is not known here: Node decides
+    if (multi.some(function (x) { return ovHasUnlisted(x, order); })) ah.unable('output-verify-guard:key_order_unknown'); // keys outside the configured order keep the order given
   }
   if (blob.length > cap) {
     var half = Math.floor(cap / 2);
     blob = blob.slice(0, half) + ah.cfg('output_verify.truncation_marker') + blob.slice(-half);
   }
   if (!blob) return 'allow';
+  var safeBlob = hookProc.usv(blob); // once for the exit-code scan and every signal pattern
   var exitCode = structured;
   if (exitCode === null) {
-    var xs = ovExitCodes(blob, true);
+    var xs = ovExitCodes(blob, true, safeBlob);
     if (xs.length && xs[0] !== null) exitCode = xs[0];
   }
-  var failHit = ovFirstMatch(fail, blob), passHit = ovFirstMatch(pass, blob);
+  var failHit = ovFirstMatch(fail, blob, safeBlob), passHit = ovFirstMatch(pass, blob, safeBlob);
   var nonZero = typeof exitCode === 'number' && exitCode !== 0;
   var mismatch = Boolean(passHit) && (Boolean(failHit) || nonZero);
   // the Jev shadow question (never the decision): a window that would end in a lone high surrogate ends one unit earlier
@@ -188,7 +192,7 @@ function ovDecide(p, pend) {
   }
   var reason = text.message('warn', ah.cfg('output_verify.guard_name'), {
     what: text.render(ah.cfg('output_verify.msg_what'), { bits: bits.join(ah.cfg('output_verify.bits_sep')) }),
-    why: ah.cfg('output_verify.msg_why'), instead: ah.cfg('output_verify.msg_instead'),
+    why: ah.cfg('output_verify.msg_why'), instead: ah.cfg('output_verify.msg_instead'), extra: bits,
   });
   return { exact: { code: 0, out: text.advisoryJson(ah.cfg('output_verify.event'), reason) + '\n', err: '' } };
 }

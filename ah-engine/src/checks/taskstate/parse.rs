@@ -2,12 +2,12 @@
 //!
 //! Mirrors `task-guard.js` `parseTasksFromFile` (variant [`Variant::Guard`]) and `lib/task-state.js` `reconstructTasks`
 //! (variant [`Variant::State`]). The two differ in: the State variant skips lines that do not contain `Task` or `TodoWrite`
-//! before parsing them, keeps and updates a task's description and subject, and builds its end-of-scan records differently;
-//! the Guard variant parses every line. Both keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
+//! before parsing them and builds its end-of-scan records differently; the Guard variant parses every line. Both retain
+//! descriptions for owner-decision markers and keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
 //! found", a TodoWrite) and drop a single id the harness reports as not found.
 use super::{
-    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, norm_blocked_by,
-    norm_owner, norm_priority, number_of_digits, priority_field, truthy_status,
+    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, is_non_string_status,
+    kept_status, norm_blocked_by, norm_owner, norm_priority, number_of_digits, priority_field, status_text,
 };
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
@@ -20,6 +20,8 @@ use std::collections::HashMap;
 /// What a reconstruction found.
 #[derive(Clone, Debug)]
 pub struct Facts {
+    /// At least one line could not be reconstructed; known tasks are retained.
+    pub unsure: bool,
     /// The tasks, in the order JavaScript's `Map` would hold them.
     pub tasks: TaskMap,
     /// A real list reset happened inside the window (no recovery from before it is possible).
@@ -35,7 +37,7 @@ struct Res {
     since_status: Regex,
 }
 
-fn res() -> &'static Res {
+fn res() -> std::sync::Arc<Res> {
     static R: crate::defaults::Cache<Res> = crate::defaults::Cache::new();
     R.get_or_init(|| Res {
         created: jsre::compile(defaults::text("taskstate.re_created"), true),
@@ -59,6 +61,26 @@ pub fn is_not_found(s: &str) -> bool {
 /// other bad line is invalid for JavaScript too and is skipped, as the Node code skips it.
 pub fn maybe_valid_for_js(line: &str) -> bool {
     crate::checks::guardkit::jsdiff::js_reads_differently_str(line)
+}
+
+/// One transcript line as the scans read it: parsed (as `JSON.parse` would, see [`jsdiff::parse_as_js`](crate::checks::guardkit::jsdiff::parse_as_js)),
+/// skipped (invalid for JavaScript too, as the Node code skips it), or not understood (JavaScript reads it and the engine cannot).
+pub enum Line {
+    /// The line, parsed.
+    Parsed(Value),
+    /// Invalid for JavaScript too: skipped.
+    Skip,
+    /// JavaScript reads it, the engine cannot.
+    Unsure,
+}
+
+/// See [`Line`].
+pub fn parse_line(t: &str) -> Line {
+    match crate::checks::guardkit::jsdiff::parse_as_js(t) {
+        Some(v) => Line::Parsed(v),
+        None if maybe_valid_for_js(t) => Line::Unsure,
+        None => Line::Skip,
+    }
 }
 
 /// The tool uses inside an entry (`collectToolUses`): the node itself when it is a tool use with a name, then everything
@@ -164,6 +186,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
     let mut window_reset = false;
     let mut first_created = f64::INFINITY;
     let mut calls: HashMap<String, Call> = HashMap::new();
+    let mut unsure = false;
 
     for line in lines {
         let t = js_trim(line);
@@ -173,14 +196,18 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         if variant == Variant::State && !t.contains("Task") && !t.contains("TodoWrite") {
             continue;
         }
-        let entry: Value = match serde_json::from_str(t) {
-            Ok(v) => v,
-            Err(_) if maybe_valid_for_js(t) => return Err(Unsure),
-            Err(_) => continue,
+        let entry: Value = match parse_line(t) {
+            Line::Parsed(v) => v,
+            Line::Unsure => {
+                unsure = true;
+                continue;
+            }
+            Line::Skip => continue,
         };
         // `entry.type` on a JSON `null` throws in JavaScript.
         if entry.is_null() {
-            return Err(Unsure);
+            unsure = true;
+            continue;
         }
         if get(&entry, "type").and_then(Value::as_str) == Some("user") {
             let content = get(&entry, "message").and_then(|m| get(m, "content")).and_then(Value::as_array);
@@ -240,134 +267,149 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         let mut uses = Vec::new();
         collect_tool_uses(&entry, &mut uses);
         for tu in uses {
-            let name = get(tu, "name").and_then(Value::as_str).unwrap_or("");
-            let inp0: &Value = match get(tu, "input") {
-                Some(v) if truthy(v) && v.is_object() => v,
-                _ => &empty,
-            };
-            if let Some(id_v) = get(tu, "id").filter(|v| truthy(v)) {
-                let Value::String(tid) = id_v else { return Err(Unsure) };
-                let task_id = match defaults::list("taskstate.id_keys").iter().find_map(|k| get(inp0, k).filter(|v| !v.is_null())) {
-                    Some(v) => Some(scalar_string(v)?),
-                    None => None,
+            let result: R<()> = (|| {
+                let name = get(tu, "name").and_then(Value::as_str).unwrap_or("");
+                let inp0: &Value = match get(tu, "input") {
+                    Some(v) if truthy(v) && v.is_object() => v,
+                    _ => &empty,
                 };
-                let msg_id = get(&entry, "message").and_then(|m| get(m, "id")).and_then(Value::as_str).map(str::to_string);
-                calls.insert(tid.clone(), Call { name: name.to_string(), task_id, msg_id });
-            }
-            match name {
-                "TodoWrite" => {
-                    if let Some(todos) = get(tu, "input").and_then(|i| get(i, "todos")).and_then(Value::as_array) {
-                        window_reset = true;
-                        tasks.clear();
-                        prov.clear();
-                        for todo in todos {
-                            // `todo.id` on a null or undefined element throws.
-                            if todo.is_null() {
-                                return Err(Unsure);
+                // A tool-use id that is not a string (a number or a boolean) is a Map key no tool_result can match: it is recorded for no
+                // call (the lookup is by the result's string id) and a TaskCreate under it lives under `String(id)`.
+                if let Some(Value::String(tid)) = get(tu, "id").filter(|v| truthy(v)) {
+                    let task_id = match defaults::list("taskstate.id_keys").iter().find_map(|k| get(inp0, k).filter(|v| !v.is_null())) {
+                        Some(v) => Some(scalar_string(v)?),
+                        None => None,
+                    };
+                    let msg_id = get(&entry, "message").and_then(|m| get(m, "id")).and_then(Value::as_str).map(str::to_string);
+                    calls.insert(tid.clone(), Call { name: name.to_string(), task_id, msg_id });
+                }
+                match name {
+                    "TodoWrite" => {
+                        if let Some(todos) = get(tu, "input").and_then(|i| get(i, "todos")).and_then(Value::as_array) {
+                            let mut replacement = TaskMap::default();
+                            for todo in todos {
+                                // `todo.id` on a null or undefined element throws.
+                                if todo.is_null() {
+                                    return Err(Unsure);
+                                }
+                                let size = replacement.len().to_string();
+                                let size_v = Value::String(size);
+                                let id_v = first_truthy(&[get(todo, "id"), get(todo, "content"), Some(&size_v)]).unwrap_or(&size_v);
+                                let id = scalar_string(id_v)?;
+                                let id_str_v = Value::String(id.clone());
+                                let content_v = first_truthy(&[get(todo, "content"), get(todo, "activeForm"), Some(&id_str_v)]);
+                                let content = match content_v {
+                                    Some(v) => scalar_string(v)?,
+                                    None => id.clone(),
+                                };
+                                replacement.set(
+                                    &id,
+                                    Task {
+                                        id: id.clone(),
+                                        content,
+                                        description: get(todo, "description").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                        status: Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".to_string())),
+                                        owner: norm_owner(get(todo, "owner")),
+                                        blocked_by: norm_blocked_by(get(todo, "blockedBy"))?,
+                                        blocked_on: if guard { todo_blocked_on(todo) } else { None },
+                                        priority: if guard { norm_priority(priority_field(todo))? } else { None },
+                                        subject_updated: false,
+                                        unknown: None,
+                                        block_unknown: false,
+                                        since,
+                                    },
+                                );
                             }
-                            let size = tasks.len().to_string();
-                            let size_v = Value::String(size);
-                            let id_v = first_truthy(&[get(todo, "id"), get(todo, "content"), Some(&size_v)]).unwrap_or(&size_v);
-                            let id = scalar_string(id_v)?;
-                            let id_str_v = Value::String(id.clone());
-                            let content_v = first_truthy(&[get(todo, "content"), get(todo, "activeForm"), Some(&id_str_v)]);
-                            let content = match content_v {
-                                Some(v) => scalar_string(v)?,
-                                None => id.clone(),
-                            };
-                            tasks.set(
-                                &id,
-                                Task {
-                                    id: id.clone(),
-                                    content,
-                                    description: String::new(),
-                                    status: Some(truthy_status(get(todo, "status"))?.unwrap_or_else(|| "pending".to_string())),
-                                    owner: norm_owner(get(todo, "owner")),
-                                    blocked_by: norm_blocked_by(get(todo, "blockedBy"))?,
-                                    blocked_on: if guard { todo_blocked_on(todo) } else { None },
-                                    priority: if guard { norm_priority(priority_field(todo))? } else { None },
-                                    subject_updated: false,
-                                    unknown: None,
-                                    block_unknown: false,
-                                    since,
-                                },
-                            );
+                            tasks = replacement;
+                            prov.clear();
+                            window_reset = true;
                         }
                     }
-                }
-                "TaskCreate" => {
-                    let inp = inp0;
-                    let Some(Value::String(tid)) = get(tu, "id").filter(|v| truthy(v)) else {
-                        // `if (tid)`: a create without an id is never recorded.
-                        continue;
-                    };
-                    let tid_v = Value::String(tid.clone());
-                    let content_v =
-                        first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)]).unwrap_or(&tid_v);
-                    let rec = Prov {
-                        content: scalar_string(content_v)?,
-                        description: match get(inp, "description") {
-                            Some(Value::String(s)) if variant == Variant::State => s.clone(),
-                            _ => String::new(),
-                        },
-                        status: truthy_status(get(inp, "status"))?.unwrap_or_else(|| "pending".to_string()),
-                        owner: norm_owner(get(inp, "owner")),
-                        blocked_by: norm_blocked_by(get(inp, "blockedBy"))?,
-                        blocked_on: create_blocked_on(inp),
-                        priority: if guard { norm_priority(priority_field(inp))? } else { None },
-                        since,
-                    };
-                    match prov.iter_mut().find(|(k, _)| k == tid) {
-                        Some((_, slot)) => *slot = rec,
-                        None => prov.push((tid.clone(), rec)),
+                    "TaskCreate" => {
+                        let inp = inp0;
+                        let Some(id_v) = get(tu, "id").filter(|v| truthy(v)) else {
+                            // `if (tid)`: a create without an id is never recorded.
+                            return Ok(());
+                        };
+                        let (tid, tid_v) = match id_v {
+                            Value::String(s) => (s.clone(), id_v.clone()),
+                            // a number or boolean id: its own Map key (distinct from the same text as a string), the task key `String(id)`
+                            Value::Number(_) | Value::Bool(_) => (format!("{NON_STRING_ID}{}", scalar_string(id_v)?), id_v.clone()),
+                            _ => return Err(Unsure),
+                        };
+                        let tid = &tid;
+                        let content_v = first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)])
+                            .unwrap_or(&tid_v);
+                        let rec = Prov {
+                            content: scalar_string(content_v)?,
+                            description: match get(inp, "description") {
+                                Some(Value::String(s)) => s.clone(),
+                                _ => String::new(),
+                            },
+                            status: kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".to_string()),
+                            owner: norm_owner(get(inp, "owner")),
+                            blocked_by: norm_blocked_by(get(inp, "blockedBy"))?,
+                            blocked_on: create_blocked_on(inp),
+                            priority: if guard { norm_priority(priority_field(inp))? } else { None },
+                            since,
+                        };
+                        match prov.iter_mut().find(|(k, _)| k == tid) {
+                            Some((_, slot)) => *slot = rec,
+                            None => prov.push((tid.clone(), rec)),
+                        }
                     }
-                }
-                "TaskUpdate" => {
-                    let inp = inp0;
-                    let Some(id) = update_id(inp)? else { continue };
-                    let ex = tasks.get(&id).cloned().unwrap_or_else(|| Task::unseen(&id));
-                    let status = match truthy_status(get(inp, "status"))? {
-                        Some(s) => Some(s),
-                        None => ex.status.clone(),
-                    };
-                    let subject = get(inp, "subject").and_then(Value::as_str).filter(|s| !s.is_empty());
-                    let upd = Task {
-                        id: ex.id.clone(),
-                        content: if variant == Variant::State { subject.map_or_else(|| ex.content.clone(), str::to_string) } else { ex.content.clone() },
-                        description: if variant == Variant::State {
-                            match get(inp, "description") {
+                    "TaskUpdate" => {
+                        let inp = inp0;
+                        let Some(id) = update_id(inp)? else { return Ok(()) };
+                        let ex = tasks.get(&id).cloned().unwrap_or_else(|| Task::unseen(&id));
+                        let status = match kept_status(get(inp, "status"))? {
+                            Some(s) => Some(s),
+                            None => ex.status.clone(),
+                        };
+                        let subject = get(inp, "subject").and_then(Value::as_str).filter(|s| !s.is_empty());
+                        let upd = Task {
+                            id: ex.id.clone(),
+                            // a rename counts in both variants: a task is listed by its current subject, not the one it was created with
+                            content: subject.map_or_else(|| ex.content.clone(), str::to_string),
+                            description: match get(inp, "description") {
                                 Some(Value::String(s)) => s.clone(),
                                 _ => ex.description.clone(),
-                            }
-                        } else {
-                            String::new()
-                        },
-                        status,
-                        owner: if get(inp, "owner").is_some() { norm_owner(get(inp, "owner")) } else { ex.owner.clone() },
-                        blocked_by: blocked_by_after_update(&ex.blocked_by, inp)?,
-                        blocked_on: if has_blocked_on_update(inp) { create_blocked_on(inp) } else { ex.blocked_on.clone() },
-                        priority: match guard {
-                            true if has_priority_update(inp) => norm_priority(priority_field(inp))?,
-                            true => ex.priority.clone(),
-                            false => None,
-                        },
-                        subject_updated: if variant == Variant::State && subject.is_some() { true } else { variant == Variant::State && ex.subject_updated },
-                        unknown: gaps_after_update(ex.unknown, inp),
-                        block_unknown: false,
-                        // `String(inp.status || '')` against the pending / in-progress pattern; a truthy non-string status was refused above
-                        since: match get(inp, "status").and_then(Value::as_str) {
-                            Some(s) if guard && res().since_status.is_match(s) => since,
-                            _ => ex.since,
-                        },
-                    };
-                    tasks.set(&id, upd);
+                            },
+                            status,
+                            owner: if get(inp, "owner").is_some() { norm_owner(get(inp, "owner")) } else { ex.owner.clone() },
+                            blocked_by: blocked_by_after_update(&ex.blocked_by, inp)?,
+                            blocked_on: if has_blocked_on_update(inp) { create_blocked_on(inp) } else { ex.blocked_on.clone() },
+                            priority: match guard {
+                                true if has_priority_update(inp) => norm_priority(priority_field(inp))?,
+                                true => ex.priority.clone(),
+                                false => None,
+                            },
+                            subject_updated: subject.is_some() || ex.subject_updated,
+                            unknown: gaps_after_update(ex.unknown, inp),
+                            block_unknown: false,
+                            // `String(inp.status || '')` against the pending / in-progress pattern
+                            since: if guard && res().since_status.is_match(&status_text(get(inp, "status"))?) { since } else { ex.since },
+                        };
+                        tasks.set(&id, upd);
+                    }
+                    _ => {}
                 }
-                _ => {}
+                Ok(())
+            })();
+            if result.is_err() {
+                unsure = true;
             }
         }
     }
     resolve_provisional(&mut tasks, &prov, &result_ids, variant);
-    Ok(Facts { tasks, window_reset, first_created })
+    // a task that ends the scan with a non-string status: the Node code lowercases it and throws
+    for t in tasks.values_mut() {
+        if is_non_string_status(t.status.as_deref()) {
+            t.status = None;
+            unsure = true;
+        }
+    }
+    Ok(Facts { tasks, window_reset, first_created, unsure })
 }
 
 /// `todo.blockedOn` as the TodoWrite record reads it: `todo.metadata.blockedOn` when not null, else `todo.blockedOn`.
@@ -375,10 +417,19 @@ fn todo_blocked_on(todo: &Value) -> Option<Value> {
     create_blocked_on(todo)
 }
 
+/// Marks a provisional key that came from a tool-use id that was not a string, so it never equals a string id of the same text (they are
+/// two Map keys in the Node code); the task key is the text after it.
+pub(super) const NON_STRING_ID: char = '\u{1}';
+
 /// The end-of-scan step: every TaskCreate gets the number its result named (or stays under its tool-use id).
 fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids: &[(String, String)], variant: Variant) {
     for (tid, rec) in prov {
-        let numeric = result_ids.iter().find(|(k, _)| k == tid).map(|(_, n)| n.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| tid.clone());
+        let numeric = result_ids
+            .iter()
+            .find(|(k, _)| k == tid)
+            .map(|(_, n)| n.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| tid.strip_prefix(NON_STRING_ID).unwrap_or(tid).to_string());
         let key = numeric;
         let mut ex = tasks.get(&key).cloned();
         if let Some(e) = &ex
@@ -393,8 +444,12 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
         {
             // `if (!(existing.sinceMs >= rec.sinceMs)) existing.sinceMs = rec.sinceMs`: the object in the map is the one changed
             e.since = e.since.merge_create(rec.since);
+            if e.description.is_empty() {
+                e.description = rec.description.clone();
+            }
             if let Some(t) = tasks.get_mut(&key) {
                 t.since = e.since;
+                t.description = e.description.clone();
             }
         }
         match (variant, ex) {
@@ -403,7 +458,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                 Task {
                     id: key.clone(),
                     content: rec.content.clone(),
-                    description: if variant == Variant::State { rec.description.clone() } else { String::new() },
+                    description: rec.description.clone(),
                     status: Some(rec.status.clone()),
                     owner: rec.owner.clone(),
                     blocked_by: rec.blocked_by.clone(),
@@ -416,13 +471,14 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                 },
             ),
             (Variant::Guard, Some(e)) => {
-                if e.content.is_empty() || e.content == key {
+                if e.content.is_empty() || e.content == key || e.subject_updated {
                     tasks.set(
                         &key,
                         Task {
                             id: key.clone(),
-                            content: rec.content.clone(),
-                            description: String::new(),
+                            // a subject an update set is newer than the create's
+                            content: if e.subject_updated { e.content.clone() } else { rec.content.clone() },
+                            description: if e.description.is_empty() { rec.description.clone() } else { e.description.clone() },
                             status: e.status.clone(),
                             owner: if e.owner.is_empty() { rec.owner.clone() } else { e.owner.clone() },
                             blocked_by: if e.blocked_by.is_empty() { rec.blocked_by.clone() } else { e.blocked_by.clone() },

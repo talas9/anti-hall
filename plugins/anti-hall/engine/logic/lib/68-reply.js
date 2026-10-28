@@ -4,9 +4,10 @@
 'use strict';
 var rp = {
   // The last `window` bytes of a transcript as lines (`split(/\r?\n/)`, a line cut by the window dropped), or null when unreadable.
-  lines: function (path, window) {
-    var t = ah.fs.readTail(path, window);
-    return t === null ? null : t.split(/\r?\n/);
+  // `needles` (optional): only the lines holding one of them come back (the host picks them; a caller that skips every other line
+  // anyway never sees the rest, which is what keeps a 512 KB window out of the interpreter).
+  lines: function (path, window, needles) {
+    return ah.fs.tailLines(path, window, true, needles);
   },
   // The text of one transcript entry; `map` (optional) is applied to every collected string. `dedup` (Jev's input only) skips the
   // nested message when this entry's own `content` was already collected, so the text is not read twice.

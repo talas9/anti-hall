@@ -36,10 +36,59 @@ value = ["auto_archive", "poke", "escalate"]
 # ---- the daemon thread ------------------------------------------------------------------------------------------------------
 
 [devswarm_wire.wait_ms]
-doc = "How long the DevSwarm thread waits for a file event before it checks whether the daemon is draining and whether the periodic reconcile is due."
-value = 500
+doc = "The longest the DevSwarm thread sleeps. It sleeps until the next thing is due (a file event, a deferred reconcile, a store poll, a gate deadline, an action or stall deadline), and never longer than this, so the daemon's drain and a change of devswarm_rt.mode are noticed within it."
+value = 2000
 min = 10
 max = 60000
+unit = "ms"
+
+[devswarm_wire.min_sleep_ms]
+doc = "The shortest sleep of the DevSwarm thread: a deadline that is already due is handled at once, but never busy-waits."
+value = 10
+min = 1
+max = 1000
+unit = "ms"
+
+[devswarm_wire.store_poll_ms]
+doc = "How often the held connection of each active mesh store, and of the app database, is asked `PRAGMA data_version` (it changes when another process commits). This replaces watching the SQLite files, which a reader's own open touches."
+value = 500
+min = 50
+max = 60000
+unit = "ms"
+
+[devswarm_wire.transcript_min_interval_ms]
+doc = "The least time between two reactions to one workspace's transcript growing (a Jev sweep mark and a stuck re-check). The gate only stats the transcript files (inode, size): growth inside the interval is acted on once, when the interval ends."
+value = 5000
+min = 0
+max = 3600000
+unit = "ms"
+
+[devswarm_wire.jev_dirty_flush_ms]
+doc = "How often the in-memory Jev dirty queue is written to its file when it changed (it is also written when the thread stops). A crash loses at most this much of queue changes; the scheduled sweep still covers every workspace."
+value = 5000
+min = 100
+max = 600000
+unit = "ms"
+
+[devswarm_wire.events_recheck_ms]
+doc = "How long the event-driven auto-archive waits before looking at its dirty workspaces again when it cannot act (the event trigger is off or the engine is not the executor)."
+value = 30000
+min = 1000
+max = 3600000
+unit = "ms"
+
+[devswarm_wire.reconcile_min_gap_ms]
+doc = "The least time between two reconciles the file events ask for. Changes inside the gap are folded into one reconcile at its end (none is lost), so a burst of changes, or a source that changes all the time, costs at most one reconcile per gap. 0 reconciles on every batch."
+value = 1000
+min = 0
+max = 600000
+unit = "ms"
+
+[devswarm_wire.periodic_full_sweep_ms]
+doc = "The longest the periodic reconcile goes without a full action sweep (every workspace's git facts, the mistake scan, the nag pass). In between it sweeps in full only when the reconcile saw a change in the DevSwarm state; edges are acted on through the event path either way."
+value = 300000
+min = 0
+max = 86400000
 unit = "ms"
 
 [devswarm_wire.act_min_gap_ms]
@@ -64,9 +113,103 @@ unit = "ms"
 doc = "The git executable the fact readers run."
 value = "git"
 
+[devswarm_wire.git_commondir_file]
+doc = "The file in a linked worktree's git directory that names the repository's common directory (where the refs and packed-refs live)."
+value = "commondir"
+
+[devswarm_wire.git_cache_exit_codes]
+doc = "The exit statuses of `git status` and `git rev-parse HEAD` that are an answer worth remembering; any other (a locked index, a missing repository) is asked again at the next call."
+value = ["0"]
+
+[devswarm_wire.git_cache_proof_exit_codes]
+doc = "The exit statuses of the merge and pushed proofs that are an answer worth remembering: 0, and 1 (`git merge-base --is-ancestor` answers a proven 'not merged' with it); any other is asked again at the next call."
+value = ["0", "1"]
+
+[devswarm_wire.git_cache_max_entries]
+doc = "Most git answers remembered at once (workspace x call); past it the memory is cleared and refilled by the next reconcile."
+value = 4096
+min = 16
+max = 1000000
+
+[devswarm_wire.git_cache_status_wt]
+doc = "Paths in the worktree whose change makes a remembered `git status` stale ('.' is the top directory: a file added or removed there). Edits to tracked files are caught by the age limits below, since they move no git file until staged."
+value = ["."]
+
+[devswarm_wire.git_cache_status_gitdir]
+doc = "Files of the worktree's git directory whose change makes a remembered `git status` stale (staging writes the index; a commit or checkout moves HEAD and appends to its reflog)."
+value = ["index", "HEAD", "logs/HEAD"]
+
+[devswarm_wire.git_cache_status_common]
+doc = "Files of the repository's common directory whose change makes a remembered `git status` stale."
+value = []
+
+[devswarm_wire.git_cache_status_max_ms]
+doc = "The longest a remembered CLEAN `git status` is kept while its files are unchanged. A clean tree turns dirty by an edit that moves no git file, so this is the staleness bound of the clean answer."
+value = 120000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_wire.git_cache_status_dirty_max_ms]
+doc = "The longest a remembered DIRTY `git status` is kept while its files are unchanged. A dirty tree turns clean only by staging, a commit or a checkout, each of which moves a signature file, so this is a safety net and the answer errs towards 'not clean'."
+value = 600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_wire.git_cache_ref_wt]
+doc = "Paths in the worktree whose change makes a remembered HEAD stale."
+value = []
+
+[devswarm_wire.git_cache_ref_gitdir]
+doc = "Files of the worktree's git directory whose change makes a remembered HEAD stale."
+value = ["HEAD", "logs/HEAD"]
+
+[devswarm_wire.git_cache_ref_common]
+doc = "Files of the repository's common directory whose change makes a remembered HEAD stale."
+value = []
+
+[devswarm_wire.git_cache_ref_max_ms]
+doc = "The longest a remembered HEAD is kept while its files are unchanged (a safety net for a repository that keeps no reflog)."
+value = 600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_wire.git_cache_proof_wt]
+doc = "Paths in the worktree whose change makes a remembered merge or pushed proof stale."
+value = []
+
+[devswarm_wire.git_cache_proof_gitdir]
+doc = "Files of the worktree's git directory whose change makes a remembered merge or pushed proof stale."
+value = ["HEAD", "logs/HEAD"]
+
+[devswarm_wire.git_cache_proof_common]
+doc = "Files of the repository's common directory whose change makes a remembered merge or pushed proof stale (a fetch moves the remote branches; the top directory of a remote catches a ref written in it)."
+value = ["packed-refs", "refs/remotes/origin", "refs/remotes/origin/HEAD"]
+
+[devswarm_wire.git_cache_proof_max_ms]
+doc = "The longest a remembered merge or pushed proof is kept while its files are unchanged (a remote branch in a sub-directory moves no signature file; a later merge is then seen at most this late)."
+value = 300000
+min = 1000
+max = 86400000
+unit = "ms"
+
 [devswarm_wire.watch_state_dirs]
 doc = "Directories under the DevSwarm state directory whose changes are hints for a reconcile (each key is a mesh_write.* setting that names the directory)."
 value = ["mesh_write.dir_heartbeats", "mesh_write.dir_plans", "mesh_write.dir_workspaces", "mesh_write.dir_summaries", "mesh_write.dir_archived"]
+
+[devswarm_wire.state_ignore_prefixes]
+doc = "File-name prefixes in the watched state directories that are not hints for a reconcile (each key is a setting that names the prefix). The ingest daemons' heartbeats (ingest-*.json, written every ~2 s) are never a reconcile input; without this they drove most reconciles."
+value = ["mesh_write.ingest_beat_prefix"]
+
+[devswarm_wire.state_ignore_contains]
+doc = "Name fragments in the watched state directories that are not hints for a reconcile (each key is a setting that names the fragment). A writer stages a file as `<name>.json.tmp.<pid>` and renames it; the rename is the event, the staged name is noise (Node's heartbeat and plan writers made several hints per write)."
+value = ["mesh_write.tmp_suffix"]
+
+[devswarm_wire.beat_dir_key]
+doc = "The mesh_write.* setting that names the heartbeats directory, whose files are workspace heartbeats: the beat of a workspace the state calls working is not a hint to reconcile (see devswarm_rt.stall_ms: the deadline check re-reads it when the silence clock runs out); every other beat is."
+value = "mesh_write.dir_heartbeats"
 
 [devswarm_wire.watch_git_names]
 doc = "Files of a worktree's git directory whose change means a commit or a checkout happened (a Jev hint for that workspace)."
@@ -89,6 +232,35 @@ doc = "The extension of a session transcript file."
 value = ".jsonl"
 
 # ---- consumers --------------------------------------------------------------------------------------------------------------
+
+[devswarm_wire.idle_tail_bytes]
+doc = "How much of the end of a candidate's transcript the idle check reads."
+value = 2097152
+unit = "bytes"
+
+[devswarm_wire.idle_background_marker]
+doc = "Text in a transcript's tail that shows the child launched background work; the idle check then holds the workspace, because Node waits for that work to report."
+value = "\"run_in_background\":true"
+
+[devswarm_wire.idle_type_assistant]
+doc = "The transcript entry type of the model's turn."
+value = "assistant"
+
+[devswarm_wire.idle_type_user]
+doc = "The transcript entry type of a prompt or a tool result."
+value = "user"
+
+[devswarm_wire.idle_stop_pointer]
+doc = "Where an assistant entry records why it stopped."
+value = "/message/stop_reason"
+
+[devswarm_wire.idle_stop_end_turn]
+doc = "The stop reason of an assistant entry that finished its turn."
+value = "end_turn"
+
+[devswarm_wire.msg_idle_uncertain]
+doc = "The log line when an auto-archive candidate is held because its idleness cannot be proven. {id}."
+value = "auto-archive candidate {id} held: idle uncertain"
 
 [devswarm_wire.advisory_enabled]
 doc = "Inject a one-paragraph note of the DevSwarm workspace changes a session has not seen yet (the `devswarm-rt-advisory` hook check). Off turns the injection off; the state is still kept."
@@ -159,7 +331,7 @@ doc = "The kinds of state change that mark a workspace's Jev data dirty and queu
 value = ["plan_step", "activity", "pr", "checks"]
 
 [devswarm_wire.jev_dirty_file]
-doc = "The file (under the engine state directory) listing the workspaces whose Jev sweep is queued, so a restart does not lose the queue."
+doc = "The file (under the engine state directory) the in-memory queue of workspaces whose Jev sweep is queued is saved to (every devswarm_wire.jev_dirty_flush_ms when it changed, and at shutdown), so a restart does not lose the queue."
 value = "rt-jev-dirty.json"
 
 [devswarm_wire.jev_dirty_cap]
@@ -171,12 +343,12 @@ max = 100000
 # ---- owner verbs and roles --------------------------------------------------------------------------------------------------
 
 [devswarm_wire.owner_verbs]
-doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory, supervisor, ingest and ledger (the action audit: per-feature counts, success rate, refusals by reason, mistake rate, in-doubt keys, witness agreement) read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request; wake-watch runs the idle-wake Monitor until the session ends. `create` answers deferred (the Node verb keeps it, because the engine cannot reproduce its source-freshness check yet); `merge` is a devswarm.js verb (compat_verbs) and runs the hivecontrol merge itself."
+doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory, supervisor, ingest and ledger (the action audit: per-feature counts, success rate, refusals by reason, mistake rate, in-doubt keys, witness agreement) read the state; archive, plan-prune and prune act at the owner's request; recover is always refused (the engine never kills or resumes a session: the on-demand kill is Node's recovery code); wake-watch runs the idle-wake Monitor until the session ends. `create` and `merge` are ah-engine mesh verbs (compat_verbs): `create` is `spawn` (the source-freshness check, the hivecontrol create, the registry seed, title, plan and launch check), `merge` runs the hivecontrol merge itself."
 value = ["status", "line", "advisory", "supervisor", "ingest", "ledger", "archive", "plan-prune", "prune", "recover", "create", "merge", "wake-watch"]
 
 [devswarm_wire.compat_verbs]
-doc = "The `ah-engine devswarm <verb> <args>` verbs that take exactly the arguments of `node scripts/devswarm.js <verb>` and print its output (lane l8; ported in `src/meshw/simple.rs`). They run under the role matrix like the owner verbs, then through the same front as `ah-engine mesh <devswarm.js argv>`: `mesh.engine_writes` off sends them to Node, on makes the engine answer and Node the cases it defers (exit 75 only when Node cannot run either)."
-value = ["help", "skip", "archive-ignore", "archive-unignore", "gate-intent", "notice", "plan", "scope", "gate", "workspaces", "logs", "wake-directive", "ready-check", "app-state", "app-sync", "done", "primary", "relay", "archive-request", "nudge", "supervision-report", "sync-ui", "retention", "unarchive", "migrate-owner-keys", "ensure", "register", "correct", "reap-orphans", "register-primary", "diagnose", "healthcheck", "merge", "spawn", "respawn", "reconcile-registry", "reap-stale", "reconcile-active", "auto-archive"]
+doc = "The `ah-engine devswarm <verb> <args>` verbs that take exactly the arguments of `ah-engine mesh <verb>` and print its output (lane l8; ported in `src/meshw/simple.rs`). They run under the role matrix like the owner verbs, then through the same front as `ah-engine mesh <mesh verb argv>`: `mesh.engine_writes` off sends them to Node, on makes the engine answer and Node the cases it defers (exit 75 only when Node cannot run either)."
+value = ["create", "help", "skip", "archive-ignore", "archive-unignore", "gate-intent", "notice", "plan", "scope", "gate", "workspaces", "logs", "wake-directive", "ready-check", "app-state", "app-sync", "done", "primary", "relay", "archive-request", "nudge", "supervision-report", "sync-ui", "retention", "unarchive", "migrate-owner-keys", "ensure", "register", "correct", "reap-orphans", "register-primary", "diagnose", "healthcheck", "merge", "spawn", "respawn", "reconcile-registry", "reap-stale", "reconcile-active", "auto-archive"]
 
 [devswarm_wire.command_word]
 doc = "The registered name of the command (`ah-engine devswarm ...`), used to find the verb's own arguments on the process command line."
@@ -206,9 +378,13 @@ value = "devswarm {verb} is not allowed for the {role} role (main session only)"
 doc = "Printed for an unknown verb. {verb}."
 value = "unknown devswarm verb {verb}"
 
-[devswarm_wire.msg_deferred]
-doc = "Printed for a verb the engine hands to Node. {verb}."
-value = "devswarm {verb} is run by scripts/devswarm.js (the engine cannot yet reproduce its checks)"
+[devswarm_wire.not_ported_verbs]
+doc = "Owner verbs the engine does not implement (their checks are not reproduced): they fail with devswarm_wire.msg_not_ported and devswarm_wire.not_ported_exit. Empty: every owner verb runs in the engine."
+value = []
+
+[devswarm_wire.msg_not_ported]
+doc = "Printed for a verb the engine does not implement. Nothing was done. {verb}."
+value = "devswarm {verb} is not available in this engine build and was not run (nothing was done)."
 
 [devswarm_wire.msg_missing_arg]
 doc = "Printed when a verb lacks a required flag. {flag}."
@@ -246,9 +422,9 @@ value = "--plan"
 doc = "Exit code for a refused or malformed owner verb."
 value = 64
 
-[devswarm_wire.deferred_exit]
-doc = "Exit code for a verb handed to Node (nothing was done)."
-value = 75
+[devswarm_wire.not_ported_exit]
+doc = "Exit code for a verb the engine does not implement (nothing was done): sysexits EX_UNAVAILABLE, never the 75 of a deferral."
+value = 69
 
 # ---- fact readers (the archive, prune and poke decisions) -------------------------------------------------------------------
 
@@ -272,9 +448,17 @@ value = "rt-nudges.json"
 doc = "DevSwarm actions the engine ran or declined from a state change, by kind and outcome."
 value = { kind = "counter", unit = "actions", labels = ["kind", "outcome"] }
 
+[metric.dswire_mode_change]
+doc = "Times the DevSwarm layer's mode (devswarm_rt.mode) changed while the daemon ran, by the new mode."
+value = { kind = "counter", unit = "changes", labels = ["mode"] }
+
 [metric.dswire_standdown]
 doc = "Action sweeps the engine skipped because the action's executor is not the engine."
 value = { kind = "counter", unit = "sweeps", labels = ["kind"] }
+
+[metric.dswire_full_sweeps]
+doc = "Full action sweeps (every workspace's facts read, plus the mistake scan and the nag pass) run by the DevSwarm layer."
+value = { kind = "counter", unit = "sweeps", labels = [] }
 
 [metric.dswire_advisory]
 doc = "Advisories injected into a session."
@@ -283,6 +467,22 @@ value = { kind = "counter", unit = "advisories", labels = [] }
 [metric.dswire_jev_dirty]
 doc = "Workspaces marked dirty for a per-child Jev sweep."
 value = { kind = "counter", unit = "marks", labels = [] }
+
+[metric.dswire_jev_threads]
+doc = "Threads started for a per-child Jev sweep (one per sweep that found queued workspaces and no sweep running)."
+value = { kind = "counter", unit = "threads", labels = [] }
+
+[metric.dswire_jev_coalesced]
+doc = "Jev sweep requests folded into the queue because a sweep was already running."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.dswire_reconcile_cpu_us]
+doc = "CPU microseconds of the calling thread spent in a DevSwarm reconcile, by cause (startup, event, periodic, overflow) and phase (derive: read and diff the sources; sweep: the action sweeps that follow)."
+value = { kind = "counter", unit = "us", labels = ["cause", "phase"] }
+
+[metric.dswire_reconcile_runs]
+doc = "DevSwarm reconciles by cause and outcome (noop: no state change found; changed: edges found)."
+value = { kind = "counter", unit = "runs", labels = ["cause", "outcome"] }
 
 [devswarm_wire.col_last_selected]
 doc = "The builders column holding when the owner last selected the workspace in the DevSwarm app (ISO text); the viewed gate of the auto-archive reads it."
@@ -329,3 +529,27 @@ value = "devswarm-rt-advisory"
 [metric.dswire_stall_actions]
 doc = "Pokes and escalations of silent workspaces the engine ran or refused (feature 5), by kind (poke, escalate) and outcome (ok, failed, refused); the same actions, their inputs and the mistake signals found later are in the action log (`ah-engine telemetry actions stall`)."
 value = { kind = "counter", unit = "actions", labels = ["kind", "outcome"] }
+
+[devswarm_wire.batch_role_dirs]
+doc = "The DevSwarm state directories a watcher batch is classified by, as defaults keys; the same position in `batch_role_names` is the role."
+value = ["mesh_write.dir_heartbeats", "mesh_write.dir_workspaces", "mesh_write.dir_summaries", "mesh_write.dir_plans"]
+
+[devswarm_wire.batch_role_names]
+doc = "The role label (work counter `dswire_batches.<role>`) of each directory in `batch_role_dirs`."
+value = ["heartbeat", "descriptor", "summary", "plan"]
+
+[devswarm_wire.batch_role_mixed]
+doc = "The role label of a watcher batch whose paths fall in different state directories."
+value = "mixed"
+
+[devswarm_wire.batch_role_other]
+doc = "The role label of a watcher batch with paths outside the state directories (transcripts, repositories)."
+value = "other"
+
+[devswarm_wire.probe_site_default]
+doc = "The site label of a probe read made outside any attributed code path (work counter `probe_reads.<site>.<cause>`)."
+value = "other"
+
+[devswarm_wire.probe_cause_default]
+doc = "The cause label of a probe read made outside any reconcile (work counter `probe_reads.<site>.<cause>`)."
+value = "none"

@@ -285,6 +285,23 @@ pub fn daemon_section(doc: &mut Doc) {
     match (&reply, &sock_kind) {
         (Some(r), _) => {
             doc.ok(defaults::render("doctor_msg.daemon_up", &[("reply", &js_trim(r))]));
+            let status = crate::client::ctl_json("status");
+            // #312: an answer of an essential reminder (diagnostics.shed_never) that was shed is a delivery failure the owner should see
+            let essential_shed = status.as_ref().and_then(|st| st.pointer("/delivery/essential_shed").and_then(serde_json::Value::as_u64)).unwrap_or(0);
+            if essential_shed > 0 {
+                doc.warnl(defaults::render("doctor_msg.delivery_shed", &[("n", &essential_shed)]));
+            }
+            if let Some(fo) = status.and_then(|st| st.get("fail_open").cloned()).filter(|f| f.is_object()) {
+                let num = |k: &str| fo.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+                let (n, window, top) = (num("in_window"), num("window_s"), fo.get("top_reason").and_then(serde_json::Value::as_str).unwrap_or(""));
+                let effect = crate::failopen::effect(top);
+                let args: [(&str, &dyn std::fmt::Display); 4] = [("n", &n), ("window", &window), ("top", &top), ("effect", &effect)];
+                match fo.get("state").and_then(serde_json::Value::as_str) {
+                    Some(s) if s == defaults::text("fail_open.state_hard") => doc.bad(defaults::render("doctor_msg.fail_open_hard", &args)),
+                    Some(s) if s == defaults::text("fail_open.state_soft") => doc.warnl(defaults::render("doctor_msg.fail_open_soft", &args)),
+                    _ => {}
+                }
+            }
             let their = r.split_whitespace().nth(1).unwrap_or("");
             if !their.is_empty() && their != crate::version() {
                 doc.infol(defaults::render("doctor_msg.daemon_other_version", &[("daemon", &their), ("engine", &crate::version())]));
@@ -322,6 +339,7 @@ pub fn daemon_section(doc: &mut Doc) {
     for (pid, socket) in non_live_serve_processes(&mut RealHost::new()) {
         doc.warnl(defaults::render("doctor_msg.daemon_non_live_serve", &[("pid", &pid), ("sock", &socket.display())]));
     }
+    doc.infol(health::starts::doctor_line());
     if let Some(left) = health::crashloop_remaining() {
         let reason = health::read_json("failure").and_then(|f| f["reason"].as_str().map(str::to_string)).unwrap_or_default();
         doc.bad(defaults::render("doctor_msg.crashloop", &[("secs", &(left.as_secs() + 1)), ("reason", &reason)]));
@@ -333,6 +351,9 @@ pub fn daemon_section(doc: &mut Doc) {
     if let Some(f) = health::read_json("failure") {
         let (class, reason, hint) = (f["class"].as_str().unwrap_or(""), f["reason"].as_str().unwrap_or(""), f["hint"].as_str().unwrap_or(""));
         doc.warnl(defaults::render("doctor_msg.failure_recorded", &[("class", &class), ("reason", &reason), ("hint", &hint)]));
+    }
+    if let Some(c) = health::last_crash() {
+        doc.warnl(defaults::render("doctor_msg.last_crash", &[("crash", &c)]));
     }
 }
 
@@ -386,7 +407,7 @@ mod tests {
             None
         }
         fn mem(&mut self) -> MemInfo {
-            MemInfo { swap_used: 0, pressure: Pressure::Unknown }
+            MemInfo { swap_used: 0, pressure: Pressure::Unknown, ram_total: 0, ram_free: 0 }
         }
         fn space(&self, _: &Path) -> Option<Space> {
             None

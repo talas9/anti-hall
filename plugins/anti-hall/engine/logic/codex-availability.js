@@ -2,7 +2,7 @@
 // quota hooks, which share the quota record in `~/.anti-hall/codex-availability.json`. This one probes PATH for a real codex executable,
 // records it (merging into the file, never clobbering the quota half), folds a usage-limit error found in a background Codex job log into
 // the quota record, and tells the session: the Codex text when the session is a Codex one, or a Claude tip while Codex is on PATH, plus a
-// warning line while a recorded outage is live. A state file or date the script cannot read the way Node reads it defers. Mirrors
+// warning line while a recorded outage is live. A state file or date the script cannot read the way Node reads it is never overwritten and adds no outage note (counted). Mirrors
 // hooks/codex-availability.js and hooks/lib/codex-quota.js. Keys and texts: codex_handover.toml (codex_handover.*).
 'use strict';
 
@@ -55,10 +55,12 @@ function cxReadQuota(home, now) {
   return { until: q.until, reason: typeof q.reason === 'string' ? q.reason : cxT('quota_default_reason') };
 }
 
-// The existing file for a merge: `Object.assign` would invoke the `__proto__` setter for such a key.
+// The existing file for a merge. Node merges with `Object.assign`, which runs the `__proto__` setter for such a key instead of copying
+// it, so the key is not in what Node writes back: it is dropped here too.
 function cxReadForWrite(home) {
   var raw = cxReadRaw(home);
-  return raw === null || Object.prototype.hasOwnProperty.call(raw, cxT('proto_key')) ? null : raw;
+  if (raw !== null) delete raw[cxT('proto_key')];
+  return raw;
 }
 
 // The UTF-8 size of a text, in bytes.
@@ -113,7 +115,7 @@ function cxParseWhen(s) {
   return null;
 }
 
-// `detectQuotaMessage(text)`: {reason, until} or null; 'unsure' when a date only V8 reads exactly is in it.
+// `detectQuotaMessage(text)`: {reason, until} or null; {reason, until: null, dateUnsure: true} when a date only V8 reads exactly is in it; 'unsure' when the reason itself cannot be cut the way Node cuts it.
 function cxDetect(t) {
   if (t === '' || cxCannotMatch(t)) return null;
   var m = new RegExp(cxT('quota_re'), 'i').exec(t);
@@ -123,13 +125,14 @@ function cxDetect(t) {
   var last = head.charCodeAt(head.length - 1);
   if (head.length === cxN('quota_reason_chars') && last >= 0xd800 && last <= 0xdbff) return 'unsure';
   var reason = head.replace(/\s+/g, ' ').trim(), until = null;
+  // a date only V8 reads exactly: the outage is still real, so the hit comes back with no date (the default cooldown) and says so
   var tm = new RegExp(cxT('try_again_re'), 'i').exec(from);
-  if (tm) { until = cxParseWhen(tm[1]); if (until === 'unsure') return 'unsure'; }
+  if (tm) { until = cxParseWhen(tm[1]); if (until === 'unsure') return { reason: reason, until: null, dateUnsure: true }; }
   if (until === null) {
     var um = new RegExp(cxT('until_re'), 'i').exec(from);
     if (um) {
       var d = ah.date.parse(um[1].trim());
-      if (d.unsure) return 'unsure';
+      if (d.unsure) return { reason: reason, until: null, dateUnsure: true };
       if (d.ms !== undefined) until = d.ms;
     }
   }
@@ -203,20 +206,23 @@ function cxQuotaNote(home, codex) {
 function decide(p) {
   if (cxJudgeChild()) return 'allow';
   var home = cxHome();
-  if (home === null) return 'defer';
+  if (home === null) { ah.unable('codex-availability:no_home', 'abandoned'); return 'allow'; } // no usable home (or the real home under a test): no state to keep
   var codex = cxIsCodex(p), available = cxProbe(ah.env.get('PATH') || '');
   // writeState: merge, never clobber the quota half of the file.
-  var merged = cxReadForWrite(home);
-  if (merged === null) return 'defer';
-  merged.available = available;
-  merged.checkedAt = ah.clock.now();
-  merged.source = cxT('avail_source');
-  var ok = cxWriteRecord(merged);
-  if (ok === null) return 'defer';
+  // A file this script cannot read exactly (over the read cap, unparsable depth, a `__proto__` key) is never overwritten: the write is skipped
+  // so a recorded outage survives, and the rest of the check goes on (counted).
+  var merged = cxReadForWrite(home), ok = true;
+  if (merged === null) { ah.unable('codex-availability:state_unreadable'); ok = true; } else {
+    merged.available = available;
+    merged.checkedAt = ah.clock.now();
+    merged.source = cxT('avail_source');
+    ok = cxWriteRecord(merged);
+    if (ok === null) { ah.unable('codex-availability:record_too_big'); ok = true; }
+  }
   if (!ok) return 'allow';
-  if (ah.settings.bool('codex_handover.setting_quota_detect') && !cxScanJobLogs(home, ah.clock.now())) return 'defer';
+  if (ah.settings.bool('codex_handover.setting_quota_detect') && !cxScanJobLogs(home, ah.clock.now())) ah.unable('codex-availability:job_scan_unsure');
   var prefix = cxQuotaNote(home, codex);
-  if (prefix === null) return 'defer';
+  if (prefix === null) { ah.unable('codex-availability:quota_note_unsure'); prefix = ''; }
   if (!available && prefix === '') return 'allow';
   return { advisory: text.advisoryJson(cxT('avail_event'), prefix + cxContext(codex)) };
 }

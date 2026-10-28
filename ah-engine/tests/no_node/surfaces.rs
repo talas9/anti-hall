@@ -2,7 +2,7 @@
 //! the monitors (monitors.json), and the daemon's own scheduled work.
 
 use crate::expected;
-use crate::harness::{DAEMON_TAG, Seen, World, cfg_int, cfg_list, cfg_str, note};
+use crate::harness::{DAEMON_TAG, Seen, World, cfg_int, cfg_list, note};
 
 use std::time::Duration;
 
@@ -46,20 +46,19 @@ fn hooks_json_starts_no_node() {
     expected::finish("hooks-json", serde_json::json!({"commands": commands, "node_paths": expected::seen_json(&seen)}), &problems);
 }
 
-/// The status line: the installer (as the skill runs it) writes `statusLine.command`; that command renders within its
-/// deadline with no Node, and names no Node script to fall back to.
+/// The status line installer is retired: it succeeds without Node and leaves no `statusLine.command` behind.
 #[test]
-fn statusline_installs_and_renders_without_node() {
+fn statusline_installer_is_retired_without_node() {
     let list = expected::load();
     let mut w = World::new("statusline");
     w.start_daemon();
     let timeout = Duration::from_secs(cfg_int(&w.cfg, "timeouts", "callsite_s"));
-    let deadline = Duration::from_secs(cfg_int(&w.cfg, "timeouts", "statusline_s"));
     let mut seen = Seen::new();
     let mut problems = Vec::new();
 
-    let mut cmd = w.command("/bin/sh", "statusline/install");
-    cmd.arg(w.plugin.join("scripts").join("ah-run.sh")).args(cfg_list(&w.cfg, "statusline", "install_args"));
+    // `ah-hook install-statusline ...` replaces itself with the engine (ah-launcher/tests/cli.rs): the engine, as the thin client runs it
+    let mut cmd = w.command(&w.engine, "statusline/install");
+    cmd.args(cfg_list(&w.cfg, "statusline", "install_args")).env("AH_ENGINE_PLUGIN_ROOT", &w.plugin);
     let inst = w.run(cmd, None, timeout);
     if inst.code != Some(0) {
         problems.push(format!("the status line installer exited {:?}: {}", inst.code, inst.stderr.trim()));
@@ -67,38 +66,24 @@ fn statusline_installs_and_renders_without_node() {
     let settings: serde_json::Value =
         std::fs::read_to_string(w.home.join(".claude").join("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let command = settings["statusLine"]["command"].as_str().map(str::to_string);
-    let mut render = serde_json::Value::Null;
     match &command {
-        None => problems.push("the installer wrote no statusLine.command into the scratch ~/.claude/settings.json".to_string()),
+        None => {}
         Some(c) => {
             if let Some(js) = js_in(c, &w) {
                 // the command still names a Node script the launcher falls back to
                 note(&mut seen, "statusline/command", &js, "settings.json");
             }
-            let session = w.subst(&cfg_str(&w.cfg, "statusline", "session"));
-            let mut cmd = w.command("/bin/sh", "statusline/render");
-            cmd.arg("-c").arg(c);
-            let o = w.run(cmd, Some(&session), deadline);
-            if o.timed_out || o.code != Some(0) || o.stdout.trim().is_empty() {
-                problems.push(format!(
-                    "the status line did not render within {deadline:?}: exit {:?}, timed out {}, stdout {:?}, stderr {:?}",
-                    o.code,
-                    o.timed_out,
-                    o.stdout.trim(),
-                    o.stderr.trim()
-                ));
-            }
-            render = serde_json::json!({"exit": o.code, "ms": o.elapsed_ms, "stdout": o.stdout, "stderr": o.stderr});
+            problems.push(format!("the retired installer still wrote statusLine.command: {c}"));
         }
     }
     w.settle();
-    for step in ["statusline/install", "statusline/render"] {
+    for step in ["statusline/install"] {
         for h in w.hits_of(step) {
             note(&mut seen, step, &w.script_key(&h.argv), step);
         }
     }
     problems.extend(expected::compare(&list, "statusline/", &seen));
-    let report = serde_json::json!({"command": command, "install_exit": inst.code, "render": render, "node_paths": expected::seen_json(&seen)});
+    let report = serde_json::json!({"command": command, "install_exit": inst.code, "node_paths": expected::seen_json(&seen)});
     expected::finish("statusline", report, &problems);
 }
 

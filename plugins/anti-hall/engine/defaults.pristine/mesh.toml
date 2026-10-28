@@ -56,13 +56,19 @@ value = 9007199254740991
 # ---- D45 stage 2: the switch that decides who writes (see mesh_write.toml) ----------------------------------------
 
 [mesh.engine_writes]
-doc = "Who runs the mesh verbs that write the store (`ah-engine mesh send|mesh read|mesh history|roster --ack`): off (Node, the engine only forwards), shadow (Node acts; the engine replays each call on a scratch copy and logs whether it would have done the same, in mesh_write.shadow_log) or on (the engine acts where it reproduces Node exactly, Node elsewhere; after the engine's own write it never reruns the verb in Node). Set it in settings.json (`mesh.engine_writes`) or the engine's config.toml. To turn it off: `{\"mesh\":{\"engine_writes\":\"off\"}}` in ~/.anti-hall/settings.json (or delete the key; off is the default)."
-value = "off"
+doc = "Whether the engine runs the mesh verbs that write the store (`ah-engine mesh send|mesh read|mesh history|roster --ack` and the rest): on (the default; the engine acts, and says so when it cannot answer a verb) or off (the diagnostic switch: the write verbs do nothing, are counted and say so). `shadow`, a value of earlier versions, reads as on. Set it in settings.json (`mesh.engine_writes`) or the engine's config.toml."
+value = "on"
 
 [mesh.engine_writes_modes]
-doc = "The words of mesh.engine_writes, in this order: off, shadow, on. Anything else reads as off."
+doc = "The words of mesh.engine_writes, in this order: off, shadow (reads as on), on. Anything else reads as off."
 value = ["off", "shadow", "on"]
 
 [mesh.db_flag]
-doc = "The flag that selects the read-only S0 reader (`ah-engine mesh <roster|unread|read|dump> --db <file>`); without it the words after `mesh` are a devswarm.js argv."
+doc = "The flag that selects the read-only S0 reader (`ah-engine mesh <roster|unread|read|dump> --db <file>`); without it the words after `mesh` are a ah-engine mesh argv."
 value = "--db"
+
+# ---- the S0 reader without --db: the project's own store ---------------------------------------------------------------
+
+[mesh.store_reader_verbs]
+doc = "The words of the read-only store reader (`ah-engine mesh unread|read|dump [--db <file>]`). Without `--db` the reader opens the store of the project the working directory is in (and, for `read <id>`, the one store that holds the id when this project does not). `roster` is not here: it is the mesh verb of that name."
+value = ["unread", "read", "dump"]

@@ -1,0 +1,16 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "reconcile failed: no-project",
+    "skipped": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/w1.json": "644 {\"id\":\"w1\"}",
+    ".anti-hall/logs/": "755",
+    ".anti-hall/logs/devswarm.jsonl": "644 {\"X\":0,\"component\":\"devswarm-cli\",\"op\":\"reconcile\",\"level\":\"error\",\"repoKey\":null,\"meshId\":null,\"X\":0,\"msg\":\"no-project\",\"err\":{\"message\":\"no-project\"},\"ctx\":{\"reason\":\"no-project\",\"msg\":\"no-project\"}}"
+  },
+  "stores": {}
+}

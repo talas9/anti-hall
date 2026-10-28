@@ -9,18 +9,80 @@
 //! must not disable the store for every other session).
 use super::when::{SessionCond, SessionOp};
 use crate::defaults;
+use crate::mem::{Admit, Budget, Owner, Registry, Spec};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::mem;
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 struct Slot {
     count: u64,
     last: Instant,
+    weight: usize,
+    /// The TTL of the condition that owns this counter: only it decides when the counter is idle.
+    ttl: Duration,
+}
+
+#[derive(Default)]
+struct SessionCore {
+    slots: Mutex<HashMap<(String, String), Slot>>,
+    bytes: AtomicUsize,
+}
+
+impl SessionCore {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), Slot>> {
+        self.slots.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn weight(session: &str, cond: &str) -> usize {
+        session.len().saturating_add(cond.len())
+    }
+
+    fn refresh_bytes(slots: &HashMap<(String, String), Slot>) -> usize {
+        slots.capacity().saturating_mul(mem::size_of::<((String, String), Slot)>()).saturating_add(slots.values().map(|s| s.weight).sum::<usize>())
+    }
+
+    fn store_bytes(&self, slots: &HashMap<(String, String), Slot>) {
+        self.bytes.store(Self::refresh_bytes(slots), SeqCst);
+    }
+
+    fn evict_expired(slots: &mut HashMap<(String, String), Slot>, now: Instant) {
+        let before = slots.len();
+        slots.retain(|_, s| now.saturating_duration_since(s.last) <= s.ttl);
+        if slots.len() != before {
+            slots.shrink_to_fit();
+        }
+    }
+
+    fn evict_oldest(slots: &mut HashMap<(String, String), Slot>) -> bool {
+        let oldest = slots.iter().min_by_key(|(_, s)| s.last).map(|(k, _)| k.clone());
+        oldest.is_some_and(|k| slots.remove(&k).is_some())
+    }
+}
+
+impl Owner for SessionCore {
+    fn bytes(&self) -> usize {
+        self.bytes.load(SeqCst)
+    }
+    fn shrink(&self, target: usize) {
+        let mut slots = self.lock();
+        while Self::refresh_bytes(&slots) > target && Self::evict_oldest(&mut slots) {}
+        slots.shrink_to_fit();
+        self.store_bytes(&slots);
+    }
+    fn recycle(&self) {
+        let mut slots = self.lock();
+        slots.clear();
+        slots.shrink_to_fit();
+        self.store_bytes(&slots);
+    }
 }
 
 /// The session counters of one process.
 pub struct SessionStore {
-    slots: Mutex<HashMap<(String, String), Slot>>,
+    core: Arc<SessionCore>,
+    budget: Budget,
     clock: Box<dyn Fn() -> Instant + Send + Sync>,
 }
 
@@ -33,56 +95,109 @@ impl Default for SessionStore {
 impl SessionStore {
     /// An empty store on the real clock.
     pub fn new() -> SessionStore {
-        SessionStore { slots: Mutex::new(HashMap::new()), clock: Box::new(Instant::now) }
+        Self::with_clock_and_registry(Instant::now, crate::mem::global())
     }
 
     /// An empty store on a caller's clock (tests advance time with it).
     pub fn with_clock(clock: impl Fn() -> Instant + Send + Sync + 'static) -> SessionStore {
-        SessionStore { slots: Mutex::new(HashMap::new()), clock: Box::new(clock) }
+        Self::with_clock_and_registry(clock, crate::mem::global())
+    }
+
+    fn with_clock_and_registry(clock: impl Fn() -> Instant + Send + Sync + 'static, reg: &Registry) -> SessionStore {
+        let core = Arc::new(SessionCore::default());
+        let owner: Arc<dyn Owner> = core.clone();
+        let budget = reg.register(
+            Spec::new("hook_sessions", "mem.hook_sessions_soft_bytes", "mem.hook_sessions_hard_bytes", "mem.hook_sessions_low_water_pct")
+                .with_entries("mem.hook_sessions_max_entries"),
+            Arc::downgrade(&owner),
+        );
+        SessionStore { core, budget, clock: Box::new(clock) }
     }
 
     /// Count one evaluation of `cond` in `session` and say whether the condition holds. A counter idle longer than its TTL
-    /// starts again from zero.
+    /// starts again from zero; idle counters are evicted even if a session never sends `SessionEnd`.
     pub fn test(&self, session: &str, cond: &SessionCond) -> bool {
         let now = (self.clock)();
         let ttl = Duration::from_secs(cond.ttl_s.unwrap_or_else(|| defaults::num("hooks.session_ttl_s")));
-        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        let max = defaults::num("hooks.session_max_keys") as usize;
-        if slots.len() >= max {
-            slots.retain(|_, s| now.saturating_duration_since(s.last) <= ttl);
-            if slots.len() >= max {
-                let oldest = slots.iter().min_by_key(|(_, s)| s.last).map(|(k, _)| k.clone());
-                if let Some(k) = oldest {
-                    slots.remove(&k);
-                }
-            }
+        let key = (session.to_string(), cond.name.clone());
+        let mut slots = self.core.lock();
+        SessionCore::evict_expired(&mut slots, now);
+        if let Some(count) = self.bump(&mut slots, &key, now, ttl) {
+            return holds(cond, count);
         }
-        let slot = slots.entry((session.to_string(), cond.name.clone())).or_insert(Slot { count: 0, last: now });
+        let max = self.budget.max_entries();
+        while max > 0 && slots.len() >= max && SessionCore::evict_oldest(&mut slots) {}
+        if max > 0 {
+            slots.shrink_to_fit();
+        }
+        let weight = SessionCore::weight(session, &cond.name);
+        slots.reserve(1);
+        self.core.store_bytes(&slots);
+        drop(slots);
+        if self.budget.admit(weight) == Admit::Refused {
+            let mut slots = self.core.lock();
+            slots.shrink_to_fit();
+            self.core.store_bytes(&slots);
+            return holds(cond, 1);
+        }
+        let mut slots = self.core.lock();
+        // another call may have created this counter while the lock was released: count on it instead of starting again
+        if let Some(count) = self.bump(&mut slots, &key, now, ttl) {
+            return holds(cond, count);
+        }
+        if max > 0 && slots.len() >= max {
+            slots.shrink_to_fit();
+            self.core.store_bytes(&slots);
+            return holds(cond, 1);
+        }
+        slots.insert(key, Slot { count: 1, last: now, weight, ttl });
+        self.core.store_bytes(&slots);
+        holds(cond, 1)
+    }
+
+    /// Count one more on an existing counter (a counter idle longer than `ttl` starts again); `None` when there is none.
+    fn bump(&self, slots: &mut HashMap<(String, String), Slot>, key: &(String, String), now: Instant, ttl: Duration) -> Option<u64> {
+        let slot = slots.get_mut(key)?;
         if now.saturating_duration_since(slot.last) > ttl {
             slot.count = 0;
         }
         slot.last = now;
+        slot.ttl = ttl;
         slot.count = slot.count.saturating_add(1);
-        match cond.op {
-            SessionOp::First => slot.count == 1,
-            SessionOp::Every(n) => (slot.count - 1).is_multiple_of(n),
-            SessionOp::AtLeast(n) => slot.count >= n,
-        }
+        let count = slot.count;
+        self.core.store_bytes(slots);
+        Some(count)
     }
 
     /// Forget every counter of a session (it ended).
     pub fn end(&self, session: &str) {
-        self.slots.lock().unwrap_or_else(|e| e.into_inner()).retain(|(s, _), _| s != session);
+        let mut slots = self.core.lock();
+        slots.retain(|(s, _), _| s != session);
+        slots.shrink_to_fit();
+        self.core.store_bytes(&slots);
     }
 
     /// How many counters are held.
     pub fn len(&self) -> usize {
-        self.slots.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.core.lock().len()
+    }
+
+    /// Estimated bytes held.
+    pub fn bytes(&self) -> usize {
+        self.core.bytes.load(SeqCst)
     }
 
     /// True when none are held.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+fn holds(cond: &SessionCond, count: u64) -> bool {
+    match cond.op {
+        SessionOp::First => count == 1,
+        SessionOp::Every(n) => (count - 1).is_multiple_of(n),
+        SessionOp::AtLeast(n) => count >= n,
     }
 }
 
@@ -128,6 +243,47 @@ mod tests {
     }
 
     #[test]
+    fn expired_counters_are_evicted_without_session_end() {
+        let ms = Arc::new(AtomicU64::new(0));
+        let base = Instant::now();
+        let m = ms.clone();
+        let s = SessionStore::with_clock(move || base + Duration::from_millis(m.load(Ordering::SeqCst)));
+        let c = cond("a", SessionOp::First, Some(1));
+        assert!(s.test("never-ended", &c));
+        assert_eq!(s.len(), 1);
+        ms.store(1_001, Ordering::SeqCst);
+        assert!(s.test("other", &c), "a later request prunes the idle session");
+        assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn a_short_ttl_condition_does_not_expire_a_long_ttl_counter() {
+        let ms = Arc::new(AtomicU64::new(0));
+        let base = Instant::now();
+        let m = ms.clone();
+        let s = SessionStore::with_clock(move || base + Duration::from_millis(m.load(Ordering::SeqCst)));
+        let (long, short) = (cond("a", SessionOp::First, Some(3600)), cond("b", SessionOp::First, Some(1)));
+        assert!(s.test("s", &long));
+        ms.store(2_000, Ordering::SeqCst);
+        assert!(s.test("s", &short));
+        assert!(!s.test("s", &long), "the long counter is still inside its own TTL");
+    }
+
+    #[test]
+    fn a_first_observation_that_lost_the_race_counts_on_the_existing_counter() {
+        let s = SessionStore::new();
+        let c = cond("a", SessionOp::AtLeast(3), None);
+        let key = ("s".to_string(), "a".to_string());
+        let now = Instant::now();
+        assert!(!s.test("s", &c));
+        // the interleaving: this call saw no counter, another created it (and counted), then this call reaches the final lock
+        assert!(!s.test("s", &c));
+        let mut slots = s.core.lock();
+        assert_eq!(s.bump(&mut slots, &key, now, Duration::from_secs(60)), Some(3), "the counter is kept, not reset to 1");
+        assert_eq!(s.bump(&mut slots, &("s".into(), "none".into()), now, Duration::from_secs(60)), None);
+    }
+
+    #[test]
     fn concurrent_first_tests_agree_on_exactly_one_winner() {
         let s = Arc::new(SessionStore::new());
         let c = cond("race", SessionOp::First, None);
@@ -146,11 +302,60 @@ mod tests {
     #[test]
     fn the_store_is_bounded() {
         let s = SessionStore::new();
-        let max = defaults::num("hooks.session_max_keys") as usize;
+        let max = defaults::num("mem.hook_sessions_max_entries") as usize;
         for i in 0..max + 50 {
             s.test(&format!("s{i}"), &cond("k", SessionOp::First, None));
         }
         assert!(s.len() <= max, "{} > {max}", s.len());
+    }
+
+    #[test]
+    fn the_store_obeys_its_memory_budget() {
+        let reg = crate::mem::Registry::new(
+            Box::new(|k| match k {
+                "mem.hook_sessions_soft_bytes" => 512,
+                "mem.hook_sessions_hard_bytes" => 1024,
+                "mem.hook_sessions_low_water_pct" => 50,
+                "mem.hook_sessions_max_entries" => 0,
+                _ => 0,
+            }),
+            Box::new(|_| {}),
+        );
+        let s = SessionStore::with_clock_and_registry(Instant::now, &reg);
+        let c = cond("k", SessionOp::First, None);
+        for i in 0..100 {
+            s.test(&format!("session-{i}-{}", "x".repeat(80)), &c);
+        }
+        assert!(s.bytes() <= 1024, "{} > hard budget", s.bytes());
+    }
+
+    #[test]
+    fn lowering_the_entry_cap_is_honored_on_the_next_insert() {
+        let max_entries = Arc::new(AtomicU64::new(64));
+        let cap = max_entries.clone();
+        let reg = crate::mem::Registry::new(
+            Box::new(move |k| match k {
+                "mem.hook_sessions_soft_bytes" => 1_048_576,
+                "mem.hook_sessions_hard_bytes" => 1_048_576,
+                "mem.hook_sessions_low_water_pct" => 50,
+                "mem.hook_sessions_max_entries" => cap.load(Ordering::SeqCst),
+                _ => 0,
+            }),
+            Box::new(|_| {}),
+        );
+        let s = SessionStore::with_clock_and_registry(Instant::now, &reg);
+        let c = cond("k", SessionOp::First, None);
+        for i in 0..64 {
+            assert!(s.test(&format!("session-{i}"), &c));
+        }
+        assert_eq!(s.len(), 64);
+        let capacity_before = s.core.lock().capacity();
+
+        max_entries.store(2, Ordering::SeqCst);
+        assert!(s.test("after-lower", &c));
+        assert!(s.len() <= 2, "{} > lowered cap", s.len());
+        assert!(s.core.lock().capacity() < capacity_before, "lowering the cap must release retained HashMap capacity");
+        assert!(!s.test("after-lower", &c), "the insert that enforced the lowered cap was retained");
     }
 
     #[test]
@@ -159,7 +364,7 @@ mod tests {
         let s2 = s.clone();
         crate::discard::harmless(
             std::thread::spawn(move || {
-                let _g = s2.slots.lock().unwrap();
+                let _g = s2.core.slots.lock().unwrap();
                 panic!("worker died");
             })
             .join(),

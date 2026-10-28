@@ -219,17 +219,31 @@ fn timer_name(unit: &str) -> String {
 
 /// The engine unit's files and their contents for `m`.
 pub fn engine_files(m: Manager, home: &Path, exe: &str) -> Vec<(PathBuf, String)> {
+    // The allocator tuning the daemon reads before its first allocation (`daemon.malloc_conf` under each name in
+    // `daemon.malloc_conf_vars`); a unit is a starter that, without it, runs the daemon on the allocator's own defaults.
+    let conf = defaults::text("daemon.malloc_conf");
+    let vars: Vec<&str> = if conf.is_empty() { Vec::new() } else { defaults::list("daemon.malloc_conf_vars") };
     let mut args = vec![exe.to_string()];
     args.extend(defaults::list("units.serve_args").into_iter().map(str::to_string));
+    args.push(defaults::text("health.start_reason_flag").to_string());
+    args.push(
+        crate::health::starts::reason(match m {
+            Manager::Launchd => "launchd",
+            Manager::Systemd => "systemd",
+        })
+        .to_string(),
+    );
     let interval = defaults::num("units.watch_interval_s").to_string();
     match m {
         Manager::Launchd => {
             let x = |s: &str| escape("units.xml_escapes", s);
             let lines: Vec<String> = args.iter().map(|a| fill(defaults::text("units.plist_arg"), &[("arg", &x(a))])).collect();
             let label = defaults::text("units.label");
+            let entries: Vec<String> = vars.iter().map(|v| fill(defaults::text("units.plist_env_entry"), &[("name", &x(v)), ("value", &x(conf))])).collect();
+            let env = if entries.is_empty() { String::new() } else { fill(defaults::text("units.plist_env"), &[("entries", &entries.join("\n"))]) };
             let text = fill(
                 defaults::text("units.plist_template"),
-                &[("label", &x(label)), ("args", &lines.join("\n")), ("interval", &interval), ("log", &x(defaults::text("units.plist_log")))],
+                &[("label", &x(label)), ("args", &lines.join("\n")), ("env", &env), ("interval", &interval), ("log", &x(defaults::text("units.plist_log")))],
             );
             vec![(plist_path(home, label), text)]
         }
@@ -237,10 +251,12 @@ pub fn engine_files(m: Manager, home: &Path, exe: &str) -> Vec<(PathBuf, String)
             let exec: Vec<String> = args.iter().map(|a| fill(defaults::text("units.exec_arg"), &[("arg", &escape("units.systemd_escapes", a))])).collect();
             let unit = defaults::text("units.unit_name");
             let dir = systemd_dir(home);
+            let esc = |s: &str| escape("units.systemd_escapes", s);
+            let env: String = vars.iter().map(|v| fill(defaults::text("units.service_env"), &[("name", &esc(v)), ("value", &esc(conf))]) + "\n").collect();
             vec![
                 (
                     dir.join(format!("{unit}{}", defaults::text("units.service_suffix"))),
-                    fill(defaults::text("units.service_template"), &[("exec", &exec.join(" "))]),
+                    fill(defaults::text("units.service_template"), &[("env", &env), ("exec", &exec.join(" "))]),
                 ),
                 (dir.join(timer_name(unit)), fill(defaults::text("units.timer_template"), &[("interval", &interval)])),
             ]

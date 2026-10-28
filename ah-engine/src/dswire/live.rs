@@ -71,7 +71,8 @@ impl RtLive<'_> {
             .and_then(|p| p.worktree.clone())
     }
 
-    fn auto_archive_facts(&self, app: &AppRead, b: &AppBuilder) -> Value {
+    fn auto_archive_facts(&self, app: &AppRead, b: &AppBuilder, fresh: bool) -> Value {
+        let _site = sources::at_site(if fresh { "facts_fresh" } else { "facts" });
         let descs = facts::descriptors(&self.home);
         let mine = facts::descs_of(&descs, b);
         let mut ids = vec![b.id.clone()];
@@ -89,9 +90,18 @@ impl RtLive<'_> {
                 .flatten()
         });
         let merged = self.merged_fact(app, b, &wt, head.as_deref(), done["boundToHead"] == json!(true) && done["done"] == json!(true), verified.as_deref());
-        let (clean, why) = git.clean(&wt);
+        let (clean, why) = if fresh { git.clean_now(&wt) } else { git.clean(&wt) };
         let probe = FsProbe::new(&self.home, self.now);
-        let act = facts::activity_ms(&self.home, &probe, b, &mine);
+        // Node's real-work clock never reads earlier than the newest inbound message or the last commit: both floor it here, and a
+        // clock that cannot be floored (the store cannot be read) or a turn that cannot be shown finished holds the workspace
+        let mut act = facts::activity_ms(&self.home, &probe, b, &mine);
+        let commit = crate::dssup::liveness::worktree_activity(self.runner, &wt).map(|ms| ms as i64);
+        let inbound = facts::last_inbound_ms(&self.home, repo_key.as_deref(), &ids);
+        act = [act, commit, inbound.map(|t| t as i64)].into_iter().flatten().max();
+        let uncertain = inbound.is_none() || facts::idle_uncertain(&self.home, &mine);
+        if uncertain {
+            crate::discard::note("devswarm_idle_uncertain", &defaults::render("devswarm_wire.msg_idle_uncertain", &[("id", &b.id)]));
+        }
         let last = self.last_selected(&b.id);
         // the newest inbound message and the commit time are floors under the idle clock, as in Node's real-work rule; the legacy
         // rule has neither, so they are not applied here (they could only make the workspace look less idle than Node does)
@@ -100,7 +110,7 @@ impl RtLive<'_> {
             "isPrimary": is_primary(b), "hasSummary": summary.is_some(), "done": done, "merged": merged,
             "clean": clean, "cleanReason": why, "unread": facts::unread_fact(&self.home, repo_key.as_deref(), summary.as_ref(), &ids),
             "hasLastSelected": last.is_some(), "lastSelectedAt": last.flatten(), "head": head,
-            "idle": {"ts": act, "via": "activity", "openRealTurn": false, "pendingBackground": false},
+            "idle": {"ts": act, "via": "activity", "openRealTurn": false, "pendingBackground": false, "uncertain": uncertain},
         })
     }
 
@@ -142,7 +152,7 @@ impl RtLive<'_> {
         let Some(app) = app else { return json!({"appReadable": false}) };
         let Some(b) = app.builders.iter().find(|b| b.id == id) else { return json!({"appReadable": true, "found": false}) };
         let wt = b.worktree.clone().unwrap_or_default();
-        let (clean, why) = self.git().clean(&wt);
+        let (clean, why) = self.git().clean_now(&wt);
         json!({
             "appReadable": true, "found": true, "builderType": b.builder_type, "archived": archived_flags(b), "isPrimary": is_primary(b),
             "cwd": b.worktree, "primaryCwd": Self::primary_cwd(app, &b.repo), "clean": clean, "cleanReason": why,
@@ -165,6 +175,7 @@ impl RtLive<'_> {
         // Every condition is read again NOW from its source, never taken from the snapshot: the workspace is still active (not
         // archived, hidden or closed), not paused, not waiting on CI, and silent on enough sources. The snapshot is consulted only for
         // the CI wait, whose source (the GitHub realtime state) the engine cannot re-read here.
+        let _site = sources::at_site("nudge_recheck");
         let app = self.app()?;
         let b = app.builders.iter().find(|b| b.id == id)?;
         let cfg = self.rt.cfg();
@@ -216,7 +227,7 @@ impl RtLive<'_> {
         if merged["merged"] != json!(true) {
             blockers.push(format!("not-merged({})", merged["via"].as_str().unwrap_or_default()));
         }
-        let (clean, why) = git.clean(&wt);
+        let (clean, why) = git.clean_now(&wt);
         if clean != Some(true) {
             blockers.push(why.unwrap_or("unclean").to_string());
         }
@@ -257,6 +268,53 @@ fn archived_since(home: &Path, id: &str) -> Option<i64> {
     })
 }
 
+impl RtLive<'_> {
+    /// The facts of [`LiveState::facts`]; `fresh` reads the auto-archive workspace's git status from git itself.
+    fn facts_with(&self, kind: &str, id: &str, fresh: bool) -> Option<Value> {
+        let kinds = defaults::list("devswarm_act.automatic_kinds");
+        let owner = defaults::list("devswarm_act.owner_kinds");
+        let ([k_auto, k_nudge_a, k_nudge_b, ..], [o_found_a, o_empty_a, o_empty_b, o_found_b, ..]) = (kinds.as_slice(), owner.as_slice()) else {
+            return None;
+        };
+        let app = self.app();
+        if kind == *k_auto {
+            let app = app?;
+            let b = app.builders.iter().find(|b| b.id == id)?;
+            return Some(self.auto_archive_facts(&app, b, fresh));
+        }
+        if kind == defaults::text("devswarm_act.nag_kind") {
+            let app = app?;
+            let b = app.builders.iter().find(|b| b.id == id)?;
+            let mut f = self.auto_archive_facts(&app, b, false);
+            let open = b.active == Some(true) && b.hidden == Some(false);
+            let lifecycle = json!(if open { "active" } else { "inactive" });
+            let pushed = if defaults::list("devswarm_act.nag_done_requires").contains(&"pushed") {
+                let wt = f.get("worktreePath").and_then(Value::as_str).unwrap_or_default().to_string();
+                Some(json!(f.get("head").and_then(Value::as_str).and_then(|h| self.git().pushed(&wt, h)) == Some(true)))
+            } else {
+                None
+            };
+            if let Some(o) = f.as_object_mut() {
+                o.insert("lifecycle".into(), lifecycle);
+                if let Some(p) = pushed {
+                    o.insert("pushed".into(), p);
+                }
+            }
+            return Some(f);
+        }
+        if kind == format!("{}-or-{}", k_nudge_a, k_nudge_b) {
+            return self.nudge_facts(id);
+        }
+        if kind == *o_found_a || kind == *o_found_b {
+            return Some(self.found(&app, id));
+        }
+        if kind == *o_empty_a || kind == *o_empty_b {
+            return Some(json!({}));
+        }
+        None
+    }
+}
+
 impl LiveState for RtLive<'_> {
     fn present(&self) -> bool {
         self.rt.detection().active() && self.app().is_some()
@@ -278,43 +336,17 @@ impl LiveState for RtLive<'_> {
     }
 
     fn facts(&self, kind: &str, id: &str) -> Option<Value> {
-        let kinds = defaults::list("devswarm_act.automatic_kinds");
-        let owner = defaults::list("devswarm_act.owner_kinds");
-        let app = self.app();
-        if kind == kinds[0] {
-            let app = app?;
-            let b = app.builders.iter().find(|b| b.id == id)?;
-            return Some(self.auto_archive_facts(&app, b));
-        }
-        if kind == defaults::text("devswarm_act.nag_kind") {
-            let app = app?;
-            let b = app.builders.iter().find(|b| b.id == id)?;
-            let mut f = self.auto_archive_facts(&app, b);
-            let open = b.active == Some(true) && b.hidden == Some(false);
-            f["lifecycle"] = json!(if open { "active" } else { "inactive" });
-            if defaults::list("devswarm_act.nag_done_requires").contains(&"pushed") {
-                let wt = f["worktreePath"].as_str().unwrap_or_default().to_string();
-                f["pushed"] = json!(f["head"].as_str().and_then(|h| self.git().pushed(&wt, h)) == Some(true));
-            }
-            return Some(f);
-        }
-        if kind == format!("{}-or-{}", kinds[1], kinds[2]) {
-            return self.nudge_facts(id);
-        }
-        if kind == owner[0] || kind == owner[3] {
-            return Some(self.found(&app, id));
-        }
-        if kind == owner[1] || kind == owner[2] {
-            return Some(json!({}));
-        }
-        None
+        self.facts_with(kind, id, false)
     }
-
+    fn facts_fresh(&self, kind: &str, id: &str) -> Option<Value> {
+        self.facts_with(kind, id, true)
+    }
     fn archived(&self, id: &str) -> Option<bool> {
         self.app()?.builders.iter().find(|b| b.id == id).map(archived_flags)
     }
 
     fn post_archive(&self, id: &str) -> Option<Value> {
+        let _site = sources::at_site("post_archive");
         let app = self.app()?;
         let b = app.builders.iter().find(|b| b.id == id)?;
         let wt = b.worktree.clone()?;

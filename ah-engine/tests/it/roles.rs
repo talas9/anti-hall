@@ -27,7 +27,7 @@ fn the_committed_skills_equal_the_generated_ones_for_both_hosts() {
             let committed = std::fs::read_to_string(plugin().join(&s.path)).unwrap_or_default();
             assert!(
                 committed == s.text,
-                "{} is stale: run ah-engine/scripts/gen-engine-skills.sh and commit ({} bytes committed, {} generated)",
+                "{} is stale: run `cargo run -q --bin ah-regen` (from ah-engine/) and commit ({} bytes committed, {} generated)",
                 s.path,
                 committed.len(),
                 s.text.len()
@@ -343,6 +343,24 @@ fn the_guard_reads_quoted_text_as_text_and_a_quoted_script_as_a_call() {
     }
     // ... but an unquoted heredoc that expands a substitution, or one a shell reads, still runs it
     for cmd in ["cat <<EOF\n$(ah-engine devswarm archive --id 1)\nEOF", "sh <<'EOF'\nah-engine devswarm archive --id 1\nEOF"] {
+        assert_eq!(guard(cmd, sub.clone(), &[]).0, 2, "{cmd}");
+    }
+}
+
+/// #176: the standard commit shape `git commit -m "$(cat <<'EOF' ... EOF\n)"` carries a quoted heredoc inside a command
+/// substitution. Its body is text for `cat`; an engine call named there is not a call. A quoted heredoc a shell reads still runs.
+#[test]
+fn a_quoted_heredoc_inside_a_command_substitution_is_text() {
+    let sub = json!({"agent_id": "a1", "agent_type": "general-purpose"});
+    for cmd in [
+        "git commit -m \"$(cat <<'EOF'\nfix: it's about ah-engine restore and ah-engine devswarm archive\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nrun ah-engine stop to halt\n\nbody with \"quotes\" and ah-engine restore x\nEOF\n)\"",
+        "gh pr create --body \"$(cat <<'EOF'\nah-engine devswarm archive --id 1\nEOF\n)\"",
+        "x=$(cat <<'EOF'\nah-engine restore snap\nEOF\n)",
+    ] {
+        assert_eq!(guard(cmd, sub.clone(), &[]).0, 0, "{cmd}");
+    }
+    for cmd in ["echo \"$(sh <<'EOF'\nah-engine devswarm archive --id 1\nEOF\n)\"", "echo \"$(ah-engine restore snap)\""] {
         assert_eq!(guard(cmd, sub.clone(), &[]).0, 2, "{cmd}");
     }
 }

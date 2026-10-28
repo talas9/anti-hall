@@ -1,0 +1,15 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "wake-monitor NOT shipped: watcher script missing at {ROOT}/home/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall-node/companion/lib/devswarm-wake-watch.js — Monitor-based idle-wake unavailable this run (cron fallback is unaffected)",
+    "live": false,
+    "shipped": false
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/ws-wake.json": "644 {\"id\":\"ws-wake\",\"worktreePath\":\"{ROOT}/home\",\"sessionId\":\"s-wake\"}"
+  },
+  "stores": {}
+}

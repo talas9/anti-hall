@@ -1,6 +1,5 @@
-//! The expected-failure list (expected_failures.toml): the live backlog of Node paths. A test fails on a Node path that is
-//! not listed (a new dependency on Node) AND on a listed path its surface no longer reaches (the lane that removed it must
-//! delete the entry), so the list can only shrink. v1.0 needs it empty.
+//! The expected-failure list (expected_failures.toml) is EMPTY and must stay empty: any Node path a surface reaches fails the
+//! test, and a non-empty `[[node]]` list is refused.
 
 use crate::harness::{self, Seen};
 
@@ -48,6 +47,7 @@ pub fn load() -> List {
             Decision { case: s(v, "case") }
         })
         .collect();
+    assert!(node.is_empty(), "expected_failures.toml must have no [[node]] entry: there is no Node left to allow ({} listed)", node.len());
     let mut keys = BTreeSet::new();
     for e in &node {
         assert!(keys.insert((e.surface.clone(), e.script.clone())), "expected_failures.toml lists {} / {} twice", e.surface, e.script);

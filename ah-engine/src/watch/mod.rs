@@ -60,6 +60,8 @@ pub struct Config {
     pub fs_poll_types: Vec<String>,
     /// Side-file suffixes of a SQLite database.
     pub sqlite_suffixes: Vec<String>,
+    /// Name suffixes never reported (files that change when they are only read, such as a SQLite shared-memory index).
+    pub ignore_suffixes: Vec<String>,
     /// Detection latency target (p95).
     pub latency_target: Duration,
     /// Idle CPU budget in thousandths of one core.
@@ -78,15 +80,39 @@ impl Config {
             max_entries: defaults::num("realtime.max_entries") as usize,
             fs_poll_types: defaults::list("realtime.fs_poll_types").into_iter().map(String::from).collect(),
             sqlite_suffixes: defaults::list("realtime.sqlite_suffixes").into_iter().map(String::from).collect(),
+            ignore_suffixes: defaults::list("realtime.ignore_suffixes").into_iter().map(String::from).collect(),
             latency_target: defaults::millis("realtime.latency_target_ms"),
             cpu_budget_permille: defaults::num("realtime.cpu_budget_permille"),
         }
     }
 
-    /// A [`Filter`] for a SQLite database name and its side files.
+    /// A [`Filter`] for a SQLite database name and its side files, less the ignored ones.
     pub fn sqlite_filter(&self, db: &str) -> Filter {
-        let suffixes: Vec<&str> = self.sqlite_suffixes.iter().map(String::as_str).collect();
+        let suffixes: Vec<&str> = self.sqlite_suffixes.iter().map(String::as_str).filter(|s| !self.ignore_suffixes.iter().any(|i| i == s)).collect();
         Filter::sqlite(db, &suffixes)
+    }
+
+    /// A [`Filter`] for every entry of a directory except the ignored names and the SQLite database `db` with its side files
+    /// (their commits are found another way, by `PRAGMA data_version`).
+    pub fn no_sqlite_filter(&self, db: &str) -> Filter {
+        let mut except = self.ignore_suffixes.clone();
+        except.extend(self.sqlite_suffixes.iter().cloned());
+        except.push(db.to_string());
+        Filter::Except(except)
+    }
+
+    /// A [`Filter`] for every entry of a directory except the ignored names (`realtime.ignore_suffixes`), those that start with
+    /// one of `prefixes` and those that contain one of `containing`.
+    pub fn all_but(&self, prefixes: Vec<String>, containing: Vec<String>) -> Filter {
+        if prefixes.is_empty() && containing.is_empty() {
+            return self.all_filter();
+        }
+        Filter::Ignoring { prefixes, suffixes: self.ignore_suffixes.clone(), containing }
+    }
+
+    /// A [`Filter`] for every entry of a directory except the ignored names (`realtime.ignore_suffixes`).
+    pub fn all_filter(&self) -> Filter {
+        Filter::Except(self.ignore_suffixes.clone())
     }
 }
 
@@ -293,7 +319,8 @@ impl Watcher {
             wake_cv: Condvar::new(),
         });
         let (s, poll, cap) = (Arc::clone(&shared), cfg.poll, cfg.max_entries);
-        let thread = std::thread::Builder::new().name("ah-watch".into()).spawn(move || scan_loop(&s, poll, cap)).ok();
+        let thread =
+            crate::discard::logged_ok("watch_thread_spawn", std::thread::Builder::new().name("ah-watch".into()).spawn(move || scan_loop(&s, poll, cap)));
         Watcher { cfg, shared, thread }
     }
 
@@ -380,7 +407,7 @@ impl Drop for Watcher {
         drop(lock(&self.shared.events).take()); // ends the OS watches and the callback's hold on the queue
         self.wake();
         if let Some(t) = self.thread.take() {
-            crate::discard::harmless(t.join().map_err(|_| ())); // keep: a scan thread that panicked has nothing left to report
+            crate::discard::logged("watch_scan_join", t.join().map_err(|_| "panic"));
         }
     }
 }

@@ -3,7 +3,7 @@
 //! * The rule for "ready" is the plugin script (`rules/gh-rt.js`, `ghReady`); this module carries its answer.
 //! * The notice is the `ready` edge (once per head commit: the ledger key `ready:<repo>#<number>:<sha>`), told to sessions by the
 //!   gh-rt-advisory check when `github_rt.ready_notify` is on.
-//! * The auto-merge (`github_rt.ready_auto_merge`, default on by owner decision) runs `gh pr merge --merge --match-head-commit`
+//! * The auto-merge (`github_rt.ready_auto_merge`, default off, owner rule: no auto-merge) runs `gh pr merge --merge --match-head-commit`
 //!   (`ready_merge_argv`, never `--admin`: GitHub's branch protection and required reviews still decide) once per head commit
 //!   (key `merge:<repo>#<number>:<sha>`, claimed in the ledger BEFORE the command runs, so a crash in between never repeats it),
 //!   after a live re-check of every condition. GitHub's own refusal is logged as `refused`, not as an error.
@@ -245,6 +245,11 @@ fn fetch_val(
 }
 
 /// The follow-ups of past merges that are due: is the base branch red on the merge commit, did a commit revert it?
+/// True when a merge follow-up is due (the tick must run to carry it out).
+pub(super) fn followups_pending(cfg: &Cfg, now: u64) -> bool {
+    cfg.flag("github_rt.ready_enabled") && !actlog::followups_due(&cfg.state_dir(), &word(cfg, "feature"), now).is_empty()
+}
+
 pub(super) fn followups(ctx: &Ctx, st: &mut State, prev_used: &mut Option<(u64, u64)>) {
     let cfg = ctx.cfg;
     let (feature, merge) = (word(cfg, "feature"), word(cfg, "merge"));

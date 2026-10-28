@@ -66,6 +66,21 @@ pub fn encode(kind: Kind, body: &str) -> Vec<u8> {
     out
 }
 
+/// The total byte length of the frame whose header is at the start of `buf`, once the header line is complete: lets a reader that
+/// must not wait for end-of-stream (the ack protocol keeps the connection open for ACK(res)) stop at the frame's own end.
+/// `None` = the header is not complete yet, or is not a frame header (the decode of what was read says which).
+pub fn total_len(buf: &[u8]) -> Option<usize> {
+    let nl = buf.iter().take(64).position(|&b| b == b'\n')?;
+    let head = std::str::from_utf8(buf.get(..nl)?).ok()?;
+    let mut it = head.split(' ');
+    if it.next() != Some(MAGIC) {
+        return None;
+    }
+    it.next()?;
+    let len: usize = it.next()?.parse().ok()?;
+    (nl + 1).checked_add(len)?.checked_add(END.len())
+}
+
 /// Validate and unpack a frame; any damage is an error, never a partial answer.
 pub fn decode(buf: &[u8]) -> Result<(Kind, String), FrameErr> {
     if buf.is_empty() {

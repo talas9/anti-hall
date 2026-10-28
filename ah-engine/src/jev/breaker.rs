@@ -1,9 +1,11 @@
-//! The per-vendor circuit breaker (D13).
+//! The per-vendor, per-integration circuit breaker (D13).
 //!
 //! Mirrors the breaker in `hooks/lib/jev-client.js` (`breakerOpen`, `breakerRecord`): per VENDOR, not per role, a count
 //! of consecutive fallback-eligible failures; at the threshold the vendor is skipped for a cooldown, after which the
 //! next call is a probe (the count stays at the threshold, so one more failure re-opens it at once and one success
-//! closes it). Node keeps this in `<home>/.anti-hall/cache/jev-breaker.json` because each hook is a fresh process.
+//! closes it). A call made for an integration counts under its own key (`<vendor><sep><integration>`, the separator from
+//! `jev.breaker_scope_sep`), so one slow integration cannot open the breaker the others call through; a call with no
+//! integration uses the bare vendor key, which is what Node reads and writes (Node keeps every other key it finds). Node keeps this in `<home>/.anti-hall/cache/jev-breaker.json` because each hook is a fresh process.
 //! While Node hooks and the engine both serve one user, the two must see ONE breaker, so [`Breakers::shared`] reads and
 //! writes that same file in Node's shape (`{<vendor>: {fails, openUntil}}` with the vendors "vercel" and "typesafe", epoch milliseconds, atomic tmp+rename, last
 //! writer wins, any I/O error reads as closed). [`Breakers::new`] keeps the state in memory (tests, one-shot use).
@@ -17,6 +19,7 @@
 
 use super::settings::Vendor;
 use crate::defaults;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -73,34 +76,35 @@ struct Entry {
 
 /// The breakers of both vendors.
 pub struct Breakers {
-    state: Mutex<[Entry; 2]>,
+    state: Mutex<HashMap<String, Entry>>,
     clock: Arc<dyn Clock>,
     /// Node's breaker file, when the state is shared with it.
     file: Option<std::path::PathBuf>,
 }
 
-fn slot(v: Vendor) -> usize {
-    match v {
-        Vendor::Vercel => 0,
-        Vendor::Typesafe => 1,
-    }
-}
-
 impl Breakers {
     /// Breakers on `clock`.
     pub fn new(clock: Arc<dyn Clock>) -> Breakers {
-        Breakers { state: Mutex::new([Entry::default(); 2]), clock, file: None }
+        Breakers { state: Mutex::new(HashMap::new()), clock, file: None }
     }
 
     /// Breakers whose state lives in the Node breaker file `path`, in epoch milliseconds from `clock`.
     pub fn shared(path: std::path::PathBuf, clock: Arc<dyn Clock>) -> Breakers {
-        Breakers { state: Mutex::new([Entry::default(); 2]), clock, file: Some(path) }
+        Breakers { state: Mutex::new(HashMap::new()), clock, file: Some(path) }
     }
 
     fn name(v: Vendor) -> &'static str {
         match v {
             Vendor::Vercel => "vercel",
             Vendor::Typesafe => "typesafe",
+        }
+    }
+
+    /// The key a vendor's breaker is kept under: the bare vendor, or the vendor scoped to one integration.
+    fn key(v: Vendor, scope: Option<&str>) -> String {
+        match scope.filter(|s| !s.is_empty()) {
+            Some(s) => format!("{}{}{}", Self::name(v), defaults::text("jev.breaker_scope_sep"), s),
+            None => Self::name(v).to_string(),
         }
     }
 
@@ -114,8 +118,8 @@ impl Breakers {
     }
 
     /// One vendor's entry as Node's `breakerEntry` reads it.
-    fn entry_from(&self, m: &serde_json::Map<String, serde_json::Value>, v: Vendor) -> Entry {
-        let Some(e) = m.get(Self::name(v)) else { return Entry::default() };
+    fn entry_from(&self, m: &serde_json::Map<String, serde_json::Value>, key: &str) -> Entry {
+        let Some(e) = m.get(key) else { return Entry::default() };
         let fails = e.get("fails").and_then(serde_json::Value::as_f64).filter(|f| f.is_finite() && *f >= 0.0);
         let Some(fails) = fails else { return Entry::default() };
         let now = self.clock.now_ms() as f64;
@@ -126,23 +130,35 @@ impl Breakers {
         Entry { fails: fails as u64, open_until: ou.map_or(0, |o| o as u64) }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, [Entry; 2]> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// True while `vendor` is being skipped.
+    /// True while `vendor` is being skipped for calls that name no integration.
     pub fn is_open(&self, vendor: Vendor) -> bool {
-        let e = if self.file.is_some() { self.entry_from(&self.read_file(), vendor) } else { self.lock()[slot(vendor)] };
+        self.is_open_for(vendor, None)
+    }
+
+    /// True while `vendor` is being skipped for `scope` (an integration id; `None` is the bare vendor).
+    pub fn is_open_for(&self, vendor: Vendor, scope: Option<&str>) -> bool {
+        let key = Self::key(vendor, scope);
+        let e = if self.file.is_some() { self.entry_from(&self.read_file(), &key) } else { self.lock().get(&key).copied().unwrap_or_default() };
         e.fails >= defaults::num("jev.breaker_threshold") && self.clock.now_ms() < e.open_until
     }
 
     /// Record the outcome of a call that reached the vendor: success closes the breaker, an eligible failure counts, and
     /// at or past the threshold every further failure (a failed probe included) re-opens it for a fresh cooldown.
     pub fn record(&self, vendor: Vendor, ok: bool) {
+        self.record_for(vendor, None, ok);
+    }
+
+    /// [`Breakers::record`] for the breaker of `vendor` under `scope`.
+    pub fn record_for(&self, vendor: Vendor, scope: Option<&str>, ok: bool) {
+        let key = Self::key(vendor, scope);
         if let Some(p) = &self.file {
             let _guard = self.lock(); // one writer per process; across processes the last writer wins, as in Node
             let mut m = self.read_file();
-            let e = self.entry_from(&m, vendor);
+            let e = self.entry_from(&m, &key);
             let next = if ok {
                 if e.fails == 0 {
                     return;
@@ -159,7 +175,7 @@ impl Breakers {
                     },
                 }
             };
-            m.insert(Self::name(vendor).to_string(), serde_json::json!({"fails": next.fails, "openUntil": next.open_until}));
+            m.insert(key.clone(), serde_json::json!({"fails": next.fails, "openUntil": next.open_until}));
             crate::discard::harmless((|| -> std::io::Result<()> {
                 if let Some(d) = p.parent() {
                     std::fs::create_dir_all(d)?;
@@ -169,7 +185,7 @@ impl Breakers {
             return;
         }
         let mut all = self.lock();
-        let e = &mut all[slot(vendor)];
+        let e = all.entry(key).or_default();
         if ok {
             *e = Entry::default();
             return;
@@ -230,6 +246,33 @@ mod tests {
         assert!(!a.is_open(Vendor::Typesafe));
         std::fs::write(&p, "not json").unwrap();
         assert!(!a.is_open(Vendor::Vercel), "a corrupt file is closed");
+    }
+
+    #[test]
+    fn one_integrations_failures_open_only_its_own_breaker() {
+        let (b, _) = breakers();
+        for _ in 0..defaults::num("jev.breaker_threshold") {
+            b.record_for(Vendor::Typesafe, Some("speculation"), false);
+        }
+        assert!(b.is_open_for(Vendor::Typesafe, Some("speculation")));
+        assert!(!b.is_open_for(Vendor::Typesafe, Some("dispatchTier")), "another integration still calls through");
+        assert!(!b.is_open(Vendor::Typesafe), "and so does a call that names none");
+    }
+
+    #[test]
+    fn a_scoped_entry_lives_beside_the_node_vendor_keys_in_the_shared_file() {
+        let d = std::env::temp_dir().join(format!("ah-brk-scope-{}", std::process::id()));
+        let p = d.join("cache/jev-breaker.json");
+        let b = Breakers::shared(p.clone(), Arc::new(ManualClock::default()));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"vercel":{"fails":1,"openUntil":0}}"#).unwrap();
+        for _ in 0..defaults::num("jev.breaker_threshold") {
+            b.record_for(Vendor::Typesafe, Some("speculation"), false);
+        }
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["vercel"]["fails"], 1, "Node's key is untouched");
+        assert_eq!(v["typesafe/speculation"]["fails"], 3);
+        assert!(!b.is_open(Vendor::Typesafe));
     }
 
     #[test]

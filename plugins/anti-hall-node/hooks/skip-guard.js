@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+// skip-guard.js — shared escape hatch for anti-hall guards.
+//
+// PRINCIPLE: the user's explicit instruction outranks any guard. When the user
+// CLEARLY and DIRECTLY asks the agent to skip a guard/rule, the agent records
+// that consent here; every guard checks it at startup and fail-opens (does not
+// interfere) while it is in effect.
+//
+// MECHANISM: a TTL'd JSON marker at ~/.anti-hall/skip.json, e.g.
+//   { "speculation-guard": 1736900000000, "all": 1736900000000 }
+// where each value is a Unix-ms EXPIRY. The agent writes it (default TTL 15
+// min) when the user explicitly opts out; it auto-expires so a safety guard is
+// never left silently disabled. The agent — not this file — is the
+// natural-language layer; this file stays dumb and deterministic.
+//
+// GRANULARITY (safe default): a broad "all" skip covers the noisy guards but
+// NOT the destructive git-guard checks (force-push / AI-credit trailer). To
+// skip git-guard the agent must name it explicitly (data["git-guard"]).
+//
+// FAIL DIRECTION: any error (missing/corrupt file) => isSkipped returns false
+// => the guard stays ACTIVE. A broken skip file must never silently disable a
+// guard. (This is the opposite of the hooks' own fail-OPEN: there a hook bug
+// must not block the user; here a skip-file bug must not disable protection.)
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const SKIP_FILE = path.join(os.homedir(), '.anti-hall', 'skip.json');
+
+// Guards NOT covered by a broad "all" skip — they must be named explicitly.
+// devswarm-read-guard is here because it prevents an IRREVERSIBLE native-queue
+// drain (data loss); a blanket "all" skip must not silence it — it needs an
+// explicit, guard-named skip (like git-guard).
+const DESTRUCTIVE = new Set(['git-guard', 'devswarm-read-guard', 'git-stash-guard']);
+
+// isSkipped(name): true when an unexpired, applicable skip is recorded.
+//   - data[name]  > now            -> skip this guard (covers destructive when named)
+//   - data.all    > now            -> skip, UNLESS name is destructive
+//   env (optional): the environment a guard's evaluate() was given; the marker is
+//   read from THAT env's HOME. Omitted -> the process home (SKIP_FILE), as before.
+function sessionId(env, payloadSession) {
+  if (typeof payloadSession === 'string' && payloadSession) return payloadSession;
+  const e = env || process.env;
+  return e.CLAUDE_CODE_SESSION_ID || e.CLAUDE_SESSION_ID || e.ANTIHALL_SESSION_ID || e.CODEX_THREAD_ID || '';
+}
+
+function isSkipped(name, env, payloadSession) {
+  try {
+    const file = env
+      ? path.join(require('../companion/lib/test-home-guard.js').resolveHome(env.HOME || env.USERPROFILE, env), '.anti-hall', 'skip.json')
+      : SKIP_FILE;
+    const raw = fs.readFileSync(file, 'utf8').trim();
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return false;
+    const now = Date.now();
+
+    const sid = sessionId(env, payloadSession);
+    const live = key => typeof data[key] === 'number' && data[key] > now;
+    const applies = key => live(key) || (sid !== '' && live(key + '@' + sid));
+    if (applies(name)) return true;
+
+    if (!DESTRUCTIVE.has(name)) {
+      if (applies('all')) return true;
+    }
+    return false;
+  } catch (_) {
+    // No marker / unreadable / bad JSON -> guard stays ACTIVE (safe direction).
+    return false;
+  }
+}
+
+module.exports = { isSkipped, sessionId, SKIP_FILE, DESTRUCTIVE };

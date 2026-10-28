@@ -10,7 +10,8 @@ use rusqlite::types::ValueRef;
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// One `builders` row.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -265,17 +266,198 @@ pub fn read_app(file: &Path) -> Option<AppRead> {
     Some(AppRead { builders, terminals, prs, sig: db_sig(file) })
 }
 
+/// What identifies a version of a file for the read cache (git's "stat data").
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileSig {
+    ino: u64,
+    mtime: i64,
+    mtime_ns: i64,
+    size: u64,
+}
+
+fn file_sig(m: &std::fs::Metadata) -> FileSig {
+    FileSig { ino: m.ino(), mtime: m.mtime(), mtime_ns: m.mtime_nsec(), size: m.size() }
+}
+
+/// A parsed value and the stat data of the file it was read from; `epoch` is the reconcile that last used it.
+struct Cached<T> {
+    sig: FileSig,
+    val: T,
+    epoch: u64,
+}
+
+/// The files a reconcile re-reads every time (heartbeats, plans, descriptors) are parsed once and kept while their stat data (inode,
+/// modification time, size) is unchanged, so an unchanged file costs one `stat` instead of a read and a parse. A file modified
+/// within `devswarm_rt.probe_cache_racy_ms` of being read is not kept (git's "racy entry" rule: a rewrite inside the clock's
+/// granularity with the same size would otherwise look unchanged). Entries a reconcile did not use are dropped at its end.
+pub struct ReadCache {
+    json: Mutex<HashMap<PathBuf, Cached<Arc<OVal>>>>,
+    descs: Mutex<HashMap<PathBuf, Cached<Option<crate::dswire::facts::Desc>>>>,
+    epoch: AtomicU64,
+    racy_ms: i64,
+}
+
+/// Reads answered from the read cache, since the process started (the `status --threads` work counters).
+pub static PROBE_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+
+impl Default for ReadCache {
+    fn default() -> ReadCache {
+        ReadCache::new()
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl ReadCache {
+    /// An empty cache.
+    pub fn new() -> ReadCache {
+        ReadCache {
+            json: Mutex::new(HashMap::new()),
+            descs: Mutex::new(HashMap::new()),
+            epoch: AtomicU64::new(1),
+            racy_ms: defaults::num("devswarm_rt.probe_cache_racy_ms") as i64,
+        }
+    }
+
+    /// Start a reconcile: entries it does not use are dropped by [`ReadCache::end`].
+    pub fn begin(&self) {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// End a reconcile: drop what it did not use.
+    pub fn end(&self) {
+        let e = self.epoch.load(Ordering::Relaxed);
+        lock(&self.json).retain(|_, c| c.epoch == e);
+        lock(&self.descs).retain(|_, c| c.epoch == e);
+    }
+
+    /// Whether a file last modified at `mtime` may be trusted by its stat data alone at `now_ms`.
+    fn settled(&self, sig: &FileSig, now_ms: i64) -> bool {
+        now_ms - (sig.mtime * 1000 + sig.mtime_ns / 1_000_000) > self.racy_ms
+    }
+
+    /// The parsed JSON file at `p`: from the cache when its stat data is unchanged, else read and parsed (and kept when settled).
+    pub fn json(&self, p: &Path) -> Option<Arc<OVal>> {
+        let sig = file_sig(&std::fs::metadata(p).ok()?);
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        if let Some(c) = lock(&self.json).get_mut(p)
+            && c.sig == sig
+        {
+            c.epoch = epoch;
+            count_hit();
+            return Some(c.val.clone());
+        }
+        let b = std::fs::read(p).ok()?;
+        count_read(b.len());
+        let val = Arc::new(OVal::parse(&String::from_utf8_lossy(&b))?);
+        if self.settled(&sig, crate::health::now_ms() as i64) {
+            lock(&self.json).insert(p.to_path_buf(), Cached { sig, val: val.clone(), epoch });
+        }
+        Some(val)
+    }
+
+    /// The descriptor in the file at `p` (`None` when it has none), by the same rule as [`ReadCache::json`].
+    pub fn descriptor(&self, p: &Path) -> Option<crate::dswire::facts::Desc> {
+        let sig = file_sig(&std::fs::metadata(p).ok()?);
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        if let Some(c) = lock(&self.descs).get_mut(p)
+            && c.sig == sig
+        {
+            c.epoch = epoch;
+            count_hit();
+            return c.val.clone();
+        }
+        let val = crate::dswire::facts::descriptor_at(p);
+        if self.settled(&sig, crate::health::now_ms() as i64) {
+            lock(&self.descs).insert(p.to_path_buf(), Cached { sig, val: val.clone(), epoch });
+        }
+        val
+    }
+}
+
 /// The file-system probe: heartbeats, plans and the mesh unread union under the DevSwarm state directory.
 pub struct FsProbe {
     home: PathBuf,
     now: i64,
+    cache: Option<Arc<ReadCache>>,
     plans: OnceLock<HashMap<String, PathBuf>>,
+    descs: OnceLock<Vec<crate::dswire::facts::Desc>>,
+}
+
+/// Files the probes read and their bytes, since the process started (the `status --threads` work counters).
+pub static PROBE_FILES_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// See [`PROBE_FILES_READ`].
+pub static PROBE_BYTES_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+type Attr = (Option<&'static str>, Option<&'static str>);
+
+thread_local! {
+    /// (site, cause) the probe reads of this thread are attributed to; `None` is the default label from the defaults.
+    static WHERE: std::cell::Cell<Attr> = std::cell::Cell::default();
+}
+
+/// Restores the previous read attribution when dropped.
+pub struct WhereGuard(Attr);
+
+impl Drop for WhereGuard {
+    fn drop(&mut self) {
+        WHERE.with(|w| w.set(self.0));
+    }
+}
+
+/// Attribute the probe reads of this thread to `site` (the code path asking) until the guard drops; the cause is kept.
+pub fn at_site(site: &'static str) -> WhereGuard {
+    WHERE.with(|w| {
+        let old = w.get();
+        w.set((Some(site), old.1));
+        WhereGuard(old)
+    })
+}
+
+/// Attribute the probe reads of this thread to `cause` (why the run happens) until the guard drops, unless one is already set.
+pub fn for_cause(cause: &'static str) -> WhereGuard {
+    WHERE.with(|w| {
+        let old = w.get();
+        if old.1.is_none() {
+            w.set((old.0, Some(cause)));
+        }
+        WhereGuard(old)
+    })
+}
+
+fn labels() -> (&'static str, &'static str) {
+    let (s, c) = WHERE.with(|w| w.get());
+    (s.unwrap_or_else(|| defaults::text("devswarm_wire.probe_site_default")), c.unwrap_or_else(|| defaults::text("devswarm_wire.probe_cause_default")))
+}
+
+/// Count one file read of `n` bytes by a probe.
+pub fn count_read(n: usize) {
+    PROBE_FILES_READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    PROBE_BYTES_READ.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+    let (site, cause) = labels();
+    crate::threads::tally(&format!("probe_reads.{site}.{cause}"), 1);
+    crate::threads::tally(&format!("probe_bytes.{site}.{cause}"), n as u64);
+}
+
+/// Count one read answered from the read cache.
+fn count_hit() {
+    PROBE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+    let (site, cause) = labels();
+    crate::threads::tally(&format!("probe_hits.{site}.{cause}"), 1);
 }
 
 impl FsProbe {
     /// A probe over `home`'s DevSwarm directory; `now` is the clock the unread union uses.
     pub fn new(home: &Path, now: i64) -> FsProbe {
-        FsProbe { home: home.to_path_buf(), now, plans: OnceLock::new() }
+        FsProbe { home: home.to_path_buf(), now, cache: None, plans: OnceLock::new(), descs: OnceLock::new() }
+    }
+    /// Answer the file reads of this probe from `cache` where the files are unchanged (the reconcile's own probe; an action's
+    /// re-check reads the sources again and uses none).
+    pub fn with_cache(mut self, cache: Arc<ReadCache>) -> FsProbe {
+        self.cache = Some(cache);
+        self
     }
     fn dir(&self, key: &str) -> PathBuf {
         devswarm_root(&self.home).join(defaults::text(key))
@@ -283,8 +465,17 @@ impl FsProbe {
     fn json(&self, dir: &str, id: &str) -> PathBuf {
         self.dir(dir).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")))
     }
-    fn read_json(p: &Path) -> Option<OVal> {
-        OVal::parse(&String::from_utf8_lossy(&std::fs::read(p).ok()?))
+    fn read_json(&self, p: &Path) -> Option<Arc<OVal>> {
+        if let Some(c) = &self.cache {
+            return c.json(p);
+        }
+        let b = std::fs::read(p).ok()?;
+        count_read(b.len());
+        OVal::parse(&String::from_utf8_lossy(&b)).map(Arc::new)
+    }
+    /// The workspace descriptors, read once per probe (a reconcile asks for them once per open workspace).
+    pub fn descriptors(&self) -> &[crate::dswire::facts::Desc] {
+        self.descs.get_or_init(|| crate::dswire::facts::descriptors_with(&self.home, self.cache.as_deref()))
     }
     /// worktree -> plan file, scanned once per probe.
     fn plan_files(&self) -> &HashMap<String, PathBuf> {
@@ -293,7 +484,7 @@ impl FsProbe {
             let Ok(rd) = std::fs::read_dir(self.dir("mesh_write.dir_plans")) else { return m };
             for e in rd.flatten() {
                 let p = e.path();
-                if let Some(OVal::Str(wt)) = Self::read_json(&p).and_then(|j| j.get(defaults::text("devswarm_rt.plan_key_worktree")).cloned()) {
+                if let Some(OVal::Str(wt)) = self.read_json(&p).and_then(|j| j.get(defaults::text("devswarm_rt.plan_key_worktree")).cloned()) {
                     m.insert(wt, p);
                 }
             }
@@ -304,13 +495,13 @@ impl FsProbe {
 
 impl Probe for FsProbe {
     fn heartbeat_ms(&self, id: &str) -> Option<i64> {
-        match Self::read_json(&self.json("mesh_write.dir_heartbeats", id))?.get(defaults::text("devswarm_rt.heartbeat_key_ts")) {
+        match self.read_json(&self.json("mesh_write.dir_heartbeats", id))?.get(defaults::text("devswarm_rt.heartbeat_key_ts")) {
             Some(OVal::Num(n)) if n.is_finite() && *n > 0.0 => Some(*n as i64),
             _ => None,
         }
     }
     fn plan_step(&self, worktree: &str) -> Option<String> {
-        let j = Self::read_json(self.plan_files().get(worktree)?)?;
+        let j = self.read_json(self.plan_files().get(worktree)?)?;
         let OVal::Arr(steps) = j.get(defaults::text("devswarm_rt.plan_key_steps"))? else { return None };
         steps.iter().find_map(|s| match (s.get(defaults::text("devswarm_rt.plan_key_status")), s.get(defaults::text("devswarm_rt.plan_key_n"))) {
             (Some(OVal::Str(st)), Some(OVal::Num(n))) if st == defaults::text("devswarm_rt.plan_status_doing") => {
@@ -327,9 +518,8 @@ impl Probe for FsProbe {
         };
         let mut out = Vec::new();
         if wanted.contains(&"transcript") {
-            let descs = facts::descriptors(&self.home);
             out.extend(
-                descs
+                self.descriptors()
                     .iter()
                     .filter(|d| d.id == id || worktree == Some(d.worktree.as_str()))
                     .filter_map(|d| mtime(&facts::transcript_path(&self.home, &d.worktree, &d.session))),
@@ -344,7 +534,7 @@ impl Probe for FsProbe {
         out
     }
     fn unread(&self, id: &str) -> Option<usize> {
-        let desc = Self::read_json(&self.json("mesh_write.dir_workspaces", id))?;
+        let desc = self.read_json(&self.json("mesh_write.dir_workspaces", id))?;
         let inbox = union::path_field(&desc, defaults::text("mesh_write.field_inbox_path")).ok()?;
         let cursor = union::path_field(&desc, defaults::text("mesh_write.field_cursor_path")).ok()?;
         let wt = union::path_field(&desc, defaults::text("mesh_write.field_worktree_path")).ok()??;
@@ -357,20 +547,31 @@ impl Probe for FsProbe {
             }
             None => None,
         };
-        let (store_base, nd_base) = match &reader {
-            Some(r) => union::floor_bases(r, &self.home, id, cursor.as_deref()).ok()?,
-            None => (0.0, 0.0),
+        // the floor view (the statusline has no reader of its own), through the one unread helper: the mail the workspace's own
+        // identity family sent is not unread
+        let Some(r) = &reader else {
+            let u = union::union_unread(&union::UnionIn {
+                inbox: inbox.as_deref(),
+                cursor_file: cursor.as_deref(),
+                id,
+                store: None,
+                store_base: 0.0,
+                nd_base: 0.0,
+                now: self.now,
+            })
+            .ok()?;
+            return Some(u.unread);
         };
-        let u = union::union_unread(&union::UnionIn {
-            inbox: inbox.as_deref(),
-            cursor_file: cursor.as_deref(),
-            id,
-            store: reader.as_ref(),
-            store_base,
-            nd_base,
-            now: self.now,
-        })
-        .ok()?;
+        let bases = union::floor_bases(r, &self.home, id, cursor.as_deref()).ok()?;
+        let pairs: Vec<(String, Option<String>)> = r
+            .roster()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|row| Some((row.get("id")?.as_str()?.to_string(), row.get("sessionId").and_then(|x| x.as_str()).map(str::to_string))))
+            .collect(); // keep: an unreadable registry means no family: every row counts, as before
+        let family = union::family_ids(id, &pairs);
+        let u = union::unread_at(r, id, inbox.as_deref(), cursor.as_deref(), bases, &family, self.now).ok()?;
+        crate::meshw::tick::note_own_excluded(&u);
         Some(u.unread)
     }
 }

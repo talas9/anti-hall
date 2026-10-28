@@ -5,6 +5,6 @@ const path = require('path');
 const [root, home] = process.argv.slice(2);
 process.env.HOME = home;
 process.env.ANTIHALL_CALLER = 'supervisor';
-const S = require(path.join(root, 'companion', 'devswarm-supervisor.js'));
+const S = require(path.join(root, '..', 'anti-hall-node', 'companion', 'devswarm-supervisor.js'));
 const r = S.reconcileSweepIfDue({ home });
 process.stdout.write(JSON.stringify(S.compactReconcileForLog(r, null).line) + '\n');

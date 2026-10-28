@@ -16,12 +16,12 @@ fn word(name: &str) -> &'static str {
     defaults::raw("judge_evidence.words").str_field(name)
 }
 
-fn observe() -> &'static Regex {
+fn observe() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("judge_evidence.observe_tools_re"), true))
 }
 
-fn prompt_skip() -> &'static Regex {
+fn prompt_skip() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("judge_evidence.prompt_skip_re"), false))
 }

@@ -512,6 +512,9 @@ fn refresh_repos(cfg: &Cfg, st: &mut State, now: u64) {
 /// Look at the repo's git files; true when a push or a checkout was noticed.
 fn refresh_git(cfg: &Cfg, repo: &mut Repo, now: u64) -> bool {
     let first = repo.gitdir.is_empty();
+    if first && now < repo.next_poll_ms {
+        return false; // git could not read this root last time: look again when the done cadence says, not at every tick
+    }
     if !first {
         let (l, r) = repos::signature(cfg, &repo.gitdir, &repo.commondir, &repo.branch);
         if l == repo.sig_local && r == repo.sig_remote {
@@ -520,6 +523,7 @@ fn refresh_git(cfg: &Cfg, repo: &mut Repo, now: u64) -> bool {
     }
     let Some(info) = repos::info(cfg, &repo.root) else {
         repo.kind = String::from("no_remote");
+        repo.next_poll_ms = now + cfg.int("github_rt.poll_done_ms");
         return false;
     };
     let branch_changed = info.branch != repo.branch;

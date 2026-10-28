@@ -1,13 +1,9 @@
 // Shared helpers of the session gates (jev-weekly-scorecard, jev-review-reminder, repair-on-reload): the checks that answer
-// "nothing to say" themselves when they can prove the Node hook would print and write nothing, and defer otherwise.
+// "nothing to say" themselves when they can prove the Node hook would print and write nothing. A read the host cannot answer is
+// counted (native_unable at gates:*) and takes the stated stand-in, never a hand-back.
 // Keys: engine/defaults/session_gates.toml (session_gates.*).
 'use strict';
 var gates = {
-  UNDECIDABLE: 'undecidable',
-  // Run `f`; a settings answer that needs the plugin root the request lacks (or a file too large to read) defers.
-  run: function (f) {
-    try { return f(); } catch (e) { if (e === gates.UNDECIDABLE) return 'defer'; throw e; }
-  },
   homeKnown: function () {
     var h = ah.env.get(ah.cfg('env.home'));
     return h !== null && ah.path.isAbsolute(h);
@@ -18,18 +14,19 @@ var gates = {
     var r = ah.env.get(ah.cfg('env.plugin_root'));
     return r === null ? '' : r;
   },
-  // `get(section, key, dflt)`: the value, or undefined for "nothing"; throws UNDECIDABLE.
+  // `get(section, key, dflt)`: the value, or undefined for "nothing". An answer the host cannot give (no plugin root at all) is `dflt`
+  // (counted).
   setting: function (key, dflt, root) {
     var r = ah.settings.get(key, dflt, root);
-    if (r.status === 'undecidable') throw gates.UNDECIDABLE;
+    if (r.status === 'undecidable') { ah.unable('gates:setting_undecidable'); return dflt; }
     return r.status === 'value' ? r.value : undefined;
   },
   isTrue: function (key, dflt, root) { return gates.setting(key, dflt, root) === true; },
   // A small JSON object file under the home directory, or null (absent, unreadable, not an object). A file past the read cap
-  // cannot be read whole here, so the Node hook decides.
+  // cannot be read whole here and counts as unreadable (counted).
   readObject: function (rel) {
     var path = ah.home() + '/' + rel, size = ah.fs.size(path);
-    if (size !== null && size > ah.cfgNum('script.read_max_bytes')) throw gates.UNDECIDABLE;
+    if (size !== null && size > ah.cfgNum('script.read_max_bytes')) { ah.unable('gates:state_file_big'); return null; }
     var t = ah.fs.readText(path);
     if (t === null) return null;
     var v;

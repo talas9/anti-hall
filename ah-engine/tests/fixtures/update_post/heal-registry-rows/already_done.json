@@ -1,0 +1,44 @@
+{
+  "answer": {
+    "attempted": true,
+    "checked": 0,
+    "detail": "heal-registry-rows: already completed for 0.1.0 — skipped (one-time per-version migration)",
+    "healed": 0,
+    "rehomed": 0,
+    "skippedAlreadyDone": true,
+    "stores": []
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/w1.json": "644 {\"id\":\"w1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/update-sweep-state.json": "644 {\"healRegistry\":{\"completedVersion\":\"0.1.0\"}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "w9",
+          "session_id": null,
+          "worktree_path": null
+        }
+      ]
+    },
+    "{REPOKEY}": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "w1",
+          "session_id": "s1",
+          "worktree_path": "/nonexistent/old/path"
+        }
+      ]
+    }
+  }
+}

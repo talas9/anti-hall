@@ -61,7 +61,12 @@ pub enum Combined {
     /// One output for the host.
     Answer(Outcome),
     /// The results cannot be expressed as one output; these entries conflict.
-    Conflict(Vec<String>),
+    Conflict {
+        /// The hooks whose outputs could not be combined.
+        ids: Vec<String>,
+        /// Why, for the log line.
+        why: String,
+    },
 }
 
 /// A JSON value that keeps object keys in document order (as `JSON.parse` does), so a merge can reproduce
@@ -231,7 +236,7 @@ pub fn sequential(results: &[HookResult], event: &str) -> Outcome {
         [one] => lines(&[*one]),
         many => match merge(many, true) {
             Combined::Answer(o) => o.out,
-            Combined::Conflict(_) => lines(&many[..1]),
+            Combined::Conflict { .. } => lines(&many[..1]),
         },
     };
     err.push_str(&lines(&plain));
@@ -449,14 +454,18 @@ fn merge(active: &[&HookResult], lenient: bool) -> Combined {
     }
     for r in active {
         if r.code != Some(0) {
-            return Combined::Conflict(ids());
+            let why = defaults::render("dispatch.msg_conflict_exit", &[("id", &r.id), ("code", &r.code.map_or_else(|| "none".to_string(), |c| c.to_string()))]);
+            return Combined::Conflict { ids: ids(), why };
         }
         err.push_str(&r.err);
         if r.out.trim().is_empty() {
             continue;
         }
-        let Some(Ordered::Obj(fields)) = parse_object(&r.out) else { return Combined::Conflict(ids()) };
+        let Some(Ordered::Obj(fields)) = parse_object(&r.out) else {
+            return Combined::Conflict { ids: ids(), why: defaults::render("dispatch.msg_conflict_plain", &[("id", &r.id)]) };
+        };
         for (k, v) in fields {
+            let field = k.clone();
             let ok = match (k.as_str(), v) {
                 (HSO, Ordered::Obj(inner)) => {
                     // a placeholder at the first position; the merged object replaces it at the end
@@ -488,7 +497,7 @@ fn merge(active: &[&HookResult], lenient: bool) -> Combined {
                 (k, v) => put(lenient, &mut top, k, v),
             };
             if !ok {
-                return Combined::Conflict(ids());
+                return Combined::Conflict { ids: ids(), why: defaults::render("dispatch.msg_conflict_field", &[("id", &r.id), ("field", &field)]) };
             }
         }
     }
@@ -529,8 +538,22 @@ mod tests {
     fn ans(c: Combined) -> Outcome {
         match c {
             Combined::Answer(o) => o,
-            Combined::Conflict(ids) => panic!("conflict {ids:?}"),
+            Combined::Conflict { ids, why } => panic!("conflict {ids:?}: {why}"),
         }
+    }
+
+    fn conflict_why(rs: &[HookResult]) -> String {
+        match combine(rs) {
+            Combined::Conflict { why, .. } => why,
+            Combined::Answer(o) => panic!("expected a conflict, got {o:?}"),
+        }
+    }
+
+    #[test]
+    fn a_conflict_says_which_hook_and_why() {
+        assert_eq!(conflict_why(&[r("a", 0, "{\"x\":1}\n", ""), r("b", 1, "", "boom")]), "hook b exited with status 1");
+        assert_eq!(conflict_why(&[r("a", 0, "{\"x\":1}\n", ""), r("b", 0, "plain text\n", "")]), "hook b printed output that is not a JSON object");
+        assert_eq!(conflict_why(&[r("a", 0, "{\"x\":1}\n", ""), r("b", 0, "{\"x\":2}\n", "")]), "hook b set field x to a value another hook set differently");
     }
 
     #[test]
@@ -665,11 +688,11 @@ mod tests {
     #[test]
     fn what_one_output_cannot_say_is_a_conflict() {
         let ctx = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"x\"}}";
-        assert_eq!(combine(&[r("a", 0, ctx, ""), r("b", 0, "plain", "")]), Combined::Conflict(vec!["a".into(), "b".into()]));
-        assert!(matches!(combine(&[r("a", 0, ctx, ""), r("b", 1, "", "boom")]), Combined::Conflict(_)));
-        assert!(matches!(combine(&[r("a", 0, "{\"continue\":false}", ""), r("b", 0, "{\"continue\":true}", "")]), Combined::Conflict(_)));
+        assert!(matches!(combine(&[r("a", 0, ctx, ""), r("b", 0, "plain", "")]), Combined::Conflict { ids, .. } if ids == ["a", "b"]));
+        assert!(matches!(combine(&[r("a", 0, ctx, ""), r("b", 1, "", "boom")]), Combined::Conflict { .. }));
+        assert!(matches!(combine(&[r("a", 0, "{\"continue\":false}", ""), r("b", 0, "{\"continue\":true}", "")]), Combined::Conflict { .. }));
         let other = "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"y\"}}";
-        assert!(matches!(combine(&[r("a", 0, ctx, ""), r("b", 0, other, "")]), Combined::Conflict(_)));
+        assert!(matches!(combine(&[r("a", 0, ctx, ""), r("b", 0, other, "")]), Combined::Conflict { .. }));
     }
 
     #[test]
@@ -689,7 +712,7 @@ mod tests {
             r("c", 1, "ignored", "e\n"),
             HookResult { id: "d".into(), code: None, out: String::new(), err: String::new() },
         ];
-        assert!(matches!(combine(&rs), Combined::Conflict(_)));
+        assert!(matches!(combine(&rs), Combined::Conflict { .. }));
         // the JSON keeps stdout (the host reads stdout as one object or as text), the plain text moves to stderr
         assert_eq!(sequential(&rs, "PreToolUse"), Outcome { out: "{\"x\":1}\n".into(), code: 0, err: "w\ne\nplain\n".into() });
     }

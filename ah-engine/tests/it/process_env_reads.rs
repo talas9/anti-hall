@@ -8,7 +8,19 @@ use std::path::{Path, PathBuf};
 
 /// (file suffix, why the process environment is the right one there).
 const ALLOW: &[(&str, &str)] = &[
+    ("src/meshw/orphan.rs", "the one-shot mesh orphan classifier snapshots its CLI invocation environment, not a hook request"),
+    ("src/web/manage.rs", "the CLI configuration writer records the actor of its own process in history"),
+    ("src/refresh/devswarm_compat.rs", "the refresh command probes the installed DevSwarm from its own CLI environment"),
+    ("src/operator/sweep.rs", "the installer sweep is a one-shot operator command; its child commands inherit the caller environment"),
+    ("src/operator/routine.rs", "one-shot install/update commands locate caller PATH tools and explicitly configured roots"),
+    ("src/doctor/mod.rs", "degraded doctor runs before defaults load and locates the callers installed thin client from HOME"),
+    ("src/audit/mod.rs", "the one-shot audit CLI selects the callers HOME when --home was not supplied"),
     ("src/hcguard.rs", "the test-build guard: the scratch-stub roots and HOME of the process it guards (read only while the guard is active, a test build)"),
+    (
+        "src/daemonenv.rs",
+        "the daemon's start-up sanitising (`sanitize`): it lists the process environment once, before any thread exists, only to REMOVE every variable that is not on `daemon.spawn_env_allow`, so no request is ever answered from the starting session's values",
+    ),
+    ("src/memdiag.rs", "the daemon's own environment, once at start: whether the allocator already got its tuning from the variables a starter set"),
     ("src/client.rs", "the hook client process: its environment IS the host's; reads the Node path and the fallback command"),
     (
         "src/checks/mcp_reaper/sys.rs",
@@ -48,16 +60,20 @@ const ALLOW: &[(&str, &str)] = &[
         "the operator command-line tools (`settings`, `defect`, `statusline`): one-shot processes whose own environment IS the caller's, snapshotted once at the command line (the daemon is not involved, D76)",
     ),
     (
-        "src/ops/shadow.rs",
-        "the Node shadow of those tools: the detached child inherits the command's environment on purpose, so the Node script sees what the real run saw; its only switch is its own recursion guard",
-    ),
-    (
         "src/meshw/simple.rs",
         "the detached `ah-engine mesh --verify` checker (same process as meshw/verify.rs): the real home it hands to the Node check it compares against",
     ),
     (
+        "src/script/golden_d6/tests.rs",
+        "test builds only (`#[cfg(test)]`): `AH_GOLDEN_ALL`, the developer switch that prints every golden mismatch instead of the first few; no request is ever answered from it",
+    ),
+    (
         "src/script/golden.rs",
         "the golden corpus replay, compiled into test builds only (`#[cfg(test)] mod golden`): `AH_REGEN_DEFERS`, the developer switch that rewrites a corpus's deferred cases from the script's own answers; no request is ever answered from it",
+    ),
+    (
+        "src/script/host_spawn.rs",
+        "the start-up probe warm-up runs in the daemon's own environment (the environment of the client that started it), so its cache key matches that client's later probes",
     ),
     (
         "src/script/host_proc.rs",
@@ -78,6 +94,10 @@ const ALLOW: &[(&str, &str)] = &[
     (
         "src/wakew/mod.rs",
         "`ah-engine devswarm wake-watch`, the idle-wake Monitor's own command-line process (run by `dswire/cli.rs`): the settings chain reads the Monitor's environment, as the Node watcher reads `process.env`; the daemon is not involved (D76)",
+    ),
+    (
+        "src/wakew/stale.rs",
+        "`stale_line`, run by the `ah-engine devswarm wake-watch` Monitor process (see `wakew/mod.rs`): the home variable of that process locates the version-independent watcher shim named in the stale-version line; the daemon is not involved",
     ),
     (
         "src/script/tests.rs",

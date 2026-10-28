@@ -126,9 +126,12 @@ fn workspace_row<'a>(summary: &'a Option<J>, id: &str) -> Option<&'a J> {
 }
 
 /// `inboundTotalOf(row)`: the count the watcher edge-triggers on, the summary's `directTotalFromOthers` (rows the workspace's own
-/// identity family did not send) when the writer published it, else the raw `total` of an older writer.
+/// identity family did not send). A row without it is "no data this tick", never the raw `total`: that counts the Primary's own
+/// sends too, so switching series between two ticks reads as a burst of new mail (downstream 2026-10-22: "direct total 5206 -> 5421
+/// (+215)", exactly the 215 rows the Primary itself had sent). Both shipped writers publish the field on every row; the broadcast
+/// channel already works this way.
 fn inbound_total(row: &J) -> Option<f64> {
-    finite(row.get("directTotalFromOthers")).or_else(|| finite(row.get("total")))
+    finite(row.get("directTotalFromOthers"))
 }
 
 /// `readPrimarySnapshot(home, hashes, id)`: the repo-key bucket first, the legacy bucket when the row is absent there.

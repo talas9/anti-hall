@@ -1,0 +1,48 @@
+# Resource budgets that tests enforce (a test that exceeds one FAILS the gate). Local tooling thresholds live here, not in the
+# engine: they are not settings of the shipped plugin.
+
+[devswarm_scale]
+# The scale test (tests/it/devswarm_wire.rs, `the_thread_stays_inside_its_budget_at_scale`): 1 primary + 10 workspaces + 10
+# sessions appending, on top of the weight of a long-lived machine (300 archived builders, 100 descriptors, 300 heartbeats).
+# Owner budget 2026-10-15: under 2% of one core and under 100 MB with a realistic DevSwarm and session load.
+cpu_pct = 2.0
+rss_mb = 100.0
+# A build without optimisations runs the same work slower; the CPU budget is set for the release binary the gate builds.
+debug_factor = 10.0
+# Seconds measured after the warm-up.
+window_s = 30
+warmup_s = 5
+# Periodic reconciles (the scheduler's safety-net job, one thread per run) fired inside the window. The real interval is
+# `devswarm_rt.reconcile_ms` (60 s), longer than the window, so the runs are spread over it: a deliberately stricter load.
+periodic_runs_per_window = 3
+
+[mem_reload]
+# tests/mem_reload.rs: a live daemon re-reads the plugin's defaults after each edit. Every reload may keep what the edit
+# changed (the values are `'static`), not a copy of the whole set. Measured over `reloads` edits after `warmup` more.
+reloads = 50
+warmup = 5
+# Bytes the `defaults_leak` holder may grow by, per reload.
+leak_bytes_per_reload = 4096
+# Kilobytes the counted heap (`status --memory` heap_live_kb) may grow by, per reload.
+heap_kb_per_reload = 8
+
+[native_session_checks]
+# The session-start and prompt checks that used to hand almost every call to Node (tests/it/native_session_checks.rs). Each value is the
+# largest p50, in milliseconds, of the check's own time inside the daemon (the `check_latency_us` histogram) over a run of calls with
+# a DevSwarm Primary, Jev on and a review due. Node needed about 280 ms for the same work. The gate builds without optimisations,
+# so the test multiplies by `debug_factor`.
+verify_first_orch_p50_ms = 5
+jev_review_reminder_p50_ms = 10
+devswarm_child_role_p50_ms = 5
+devswarm_parent_inbox_p50_ms = 10
+devswarm_parent_inbox_checkout_p50_ms = 40
+devswarm_child_turn_p50_ms = 10
+devswarm_child_turn_checkout_p50_ms = 40
+debug_factor = 10
+
+[time_scale]
+# The headroom factor of the wall-clock assertions (tests/common/scale.rs, `scaled`). The factor is ceil(load1 / (cores * load_per_core)):
+# 1 while the one-minute load is at most half the cores (a quiet machine keeps every bound exactly as written), 2 up to the cores, and so
+# on, never above `max`. AH_TEST_TIME_SCALE=<n> overrides it (CI sets it).
+load_per_core = 0.5
+max = 8

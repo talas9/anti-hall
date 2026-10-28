@@ -78,7 +78,7 @@ fn a_block_is_exit_2_with_the_reason_on_stderr() {
     let (out, err, code) = e.hook(&format!("git {P} --force origin main"));
     assert_eq!(code, 2, "stdout={out} stderr={err}");
     assert!(out.is_empty(), "{out}");
-    assert!(err.starts_with("\u{26d4} anti-hall \u{b7} git-guard: force push is blocked."), "{err}");
+    assert!(err.starts_with("\u{26d4} git safety: a force push was stopped."), "{err}");
     // served by the resident daemon on the next call
     assert!(e.up());
     let (_, err2, code2) = e.hook(&format!("git {P} -f"));
@@ -98,5 +98,7 @@ fn the_override_hint_names_the_configured_plugin_root() {
     let e = Env::new("root");
     let (_, err, code) = e.hook(&format!("git {P} --delete origin b"));
     assert_eq!(code, 2, "{err}");
-    assert!(err.contains("node '/plugin/scripts/devswarm.js' skip git-guard"), "{err}");
+    // The inline guard is brief; the remedy is the current deliberate contract.
+    assert!(err.contains("Do instead: get the owner’s approval for this exact deletion."), "{err}");
+    assert_eq!(err.lines().count(), 2);
 }

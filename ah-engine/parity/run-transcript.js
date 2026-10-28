@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Transcript-index parity over real transcripts (X1): for each file, the engine's facts (the `transcript_facts`
 // example, which reads the whole file) must equal the Node readers' facts (`transcript-facts.js`).
-//   node run-transcript.js --hooks <repo>/plugins/anti-hall/hooks [--engine ../target/release/examples/transcript_facts] file.jsonl ...
+//   node run-transcript.js --hooks <repo>/plugins/anti-hall-node/hooks [--engine ../target/release/examples/transcript_facts] file.jsonl ...
 // Read-only: it never writes to the transcripts. Exit code 1 when any file differs.
 'use strict';
 const fs = require('fs'), path = require('path'), cp = require('child_process');
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
-const HOOKS = path.resolve(arg('--hooks', path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks')));
+const HOOKS = path.resolve(arg('--hooks', path.join(__dirname, '..', '..', 'plugins', 'anti-hall-node', 'hooks')));
 const ENGINE = path.resolve(arg('--engine', path.join(__dirname, '..', 'target', 'release', 'examples', 'transcript_facts')));
 const files = process.argv.slice(2).filter((a, i, v) => !a.startsWith('--') && (i === 0 || !['--hooks', '--engine'].includes(v[i - 1])));
 if (!files.length) { console.log('SKIPPED: no corpus (pass transcript file paths); nothing was compared'); process.exit(0); }

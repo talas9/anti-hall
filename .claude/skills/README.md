@@ -8,6 +8,7 @@ copies them (like devDependencies). Claude Code loads them in sessions opened in
 - `gh-work`: issue -> branch -> PR -> merge lifecycle, board fields and bot labels.
 - `release`: drive `RELEASING.md` plus the GitHub-side release steps.
 - `engine-lane`: run an ah-engine lane (isolation, build queue, gates, goldens, cleanup).
+- `engine-debug`: find the cause of an engine problem (CPU, memory, frozen daemon, slow hooks) with evidence, safely.
 - `repo-hygiene`: branch/worktree sweep, stale index lock, agnostic scrub, hygiene tests.
 
 ## Autonomous mode
@@ -34,4 +35,4 @@ at about 4-5, do P0 first, commit as you go, no polling loops.
 Codex names come from the local `codex` model list (codex-cli 0.160); re-check it when the
 generation changes. The repo's own GitHub automation (community, pr-check, roadmap, docs
 inspector) routes per job in `.github/moderation/config.json` under `models`, with a Claude alias
-and a Copilot CLI model for each job.
+and a Copilot CLI model for each job (Copilot itself is off by default, `copilot_fallback`).

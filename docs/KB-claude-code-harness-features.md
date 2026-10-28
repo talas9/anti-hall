@@ -33,7 +33,7 @@ none of the earlier claims were changed.
 | `run_in_background` | **USED** | orchestration guidance + the wake-watch process | Standard background-Bash pattern for long ops; also underlies the wake-watch companion. |
 | `CronCreate` / `CronList` | **USED (opt-in)** | `hooks/lib/devswarm-wake.js` | DevSwarm self-wake fallback: an injected agent directive tells the agent to `CronCreate` its own wake job (Cron is a Claude tool, not a hook the plugin can register directly). |
 | Skills | **USED** | `plugins/anti-hall/skills/` (17, + `MODEL-POLICY.md`, not itself a skill) + `plugins/anti-hall/codex/skills/` (20) [UPDATE 2026-09-24, v0.108.0] | Claude: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `defects`, `devswarm`, `doctor`, `handover`, `install-statusline`, `jev`, `orchestration`, `root-cause`, `settings`, `ship-it`, `simplify`, `system-briefing`, `update`. Codex: the same set as `anti-hall-*` plus `context-conserve`, `omc`, `omx` (Codex-specific bridges), `model-policy`. |
-| Statusline | **USED** | `plugins/anti-hall/statusline/` | Rich / simple / monorepo renderers + phase bar; installed via the `install-statusline` skill. |
+| Statusline | **LEGACY / CLEANUP-ONLY** | `plugins/anti-hall/statusline/` | The command-backed installer is retired: setup/update/doctor/migration and `install-statusline` do not write Claude `settings.statusLine`. Legacy renderers remain for older installs, and `uninstall-statusline` cleans up old anti-hall `statusLine` entries. |
 | Subagent guards (`Agent`/`Task` matchers) | **USED** | `hooks.json` PreToolUse | `model-routing-guard`, `swarm-guard`, `phase-tracker` fire on both `Agent` and `Task` tool calls. |
 | `Workflow` tool | **USED** | `plugins/anti-hall/skills/{deadly-loop,ship-it}/references/*.workflow.js` | Delivered as user-saved workflow templates — a plugin cannot ship a workflow directly as an installable command, so these ship as reference files a skill instructs the user/agent to save. |
 | `SendMessage` | **GUIDANCE-ONLY** | `hooks/verify-first-subagent.js:56`, `skills/orchestration/SKILL.md:111` | [APPENDED 2026-08-21] Mentioned only in prompt guidance text — no actual tool-call site in the codebase. `ListAgents`: 0 code hits repo-wide (docs-only). See the owner-constraint note appended below §2 for why cross-machine `SendMessage`/`ListAgents` addressing should NOT be recommended for this owner. |
@@ -53,16 +53,16 @@ capability only; do not propose it as a cross-machine coordination layer for thi
 "Other LOCAL Claude Code sessions" row in §3's cross-session-messaging table) is itself
 account-scoped was not tested this session — flagged, not asserted either way.
 
-**[APPENDED 2026-08-21] This repo's own `eval/` harness (distinct from `evals/`).**
-`eval/` (singular) exists at the repo root: `run.js` (433 lines) + 4 pilot graders
+**[APPENDED 2026-08-21] This repo's own `tools/eval/` harness (distinct from `evals/`).**
+`tools/eval/` (singular) exists at the repo root: `run.js` (433 lines) + 4 pilot graders
 (`ship-it`, `scope-fidelity`, `rule-behavior`, `false-done`, 986 lines total) +
 `README.md` (296 lines). `evals/` (plural — the `claude plugin eval` CLI convention
 scaffolded by `eval init`) does **not** exist in this repo; the two names are easy to
 conflate and refer to different, non-interoperating things.
 
-**Capability boundary — honest, not equivalent to `claude plugin eval`:** the `eval/`
+**Capability boundary — honest, not equivalent to `claude plugin eval`:** the `tools/eval/`
 pilots score what the agent **STATES it would do**, not what it actually did — see
-`eval/…/ship-it-pilot.mjs:7-11`, which documents this directly. `claude plugin eval` run
+`tools/eval/…/ship-it-pilot.mjs:7-11`, which documents this directly. `claude plugin eval` run
 with `--allow-tools` plus a `tool_used: Skill` grader is categorically different: it
 proves the skill **actually fired** as a real tool call in a sandboxed execution, not
 merely that the model claimed it would. Neither harness subsumes the other — the
@@ -71,7 +71,7 @@ verified alternative, with actual case execution still UNVERIFIED this session (
 `claude plugin eval` entry in §3's Additions table above).
 
 **[APPENDED 2026-08-21] CI gap.** `package.json:7`'s `"test"` script is `node --test`
-only — CI runs no `eval/` pilot and no `claude plugin eval` suite. Neither harness's
+only — CI runs no `tools/eval/` pilot and no `claude plugin eval` suite. Neither harness's
 result gates a merge or release today.
 
 ---
@@ -269,7 +269,7 @@ and drops silently otherwise.
 **Recommended posture: LAYER, don't replace.** Keep the mesh as the durable store of
 record; Claude's native messaging is a candidate LOW-LATENCY WAKE + live-coordination
 layer over it — conceptually what
-`plugins/anti-hall/companion/lib/devswarm-wake-watch.js` already does with a `Monitor`.
+`plugins/anti-hall-node/companion/lib/devswarm-wake-watch.js` already does with a `Monitor`.
 The one genuinely NEW capability it unlocks is **cross-machine** reach, which a local
 SQLite mesh structurally cannot provide.
 

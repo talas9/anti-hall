@@ -13,8 +13,8 @@ if (!root || !src || !dst) { console.error('usage: snapshot.js <plugin-root> <sr
 const anon = flags.includes('--anonymise');
 const only = flags.includes('--stores') ? new Set(flags[flags.indexOf('--stores') + 1].split(',')) : null;
 const { DatabaseSync } = require('node:sqlite');
-const { meshMessageHash } = require(path.join(root, 'companion/lib/devswarm-store.js'));
-const ingest = require(path.join(root, 'companion/devswarm-ingest.js'));
+const { meshMessageHash } = require(path.join(root, '..', 'anti-hall-node', 'companion/lib/devswarm-store.js'));
+const ingest = require(path.join(root, '..', 'anti-hall-node', 'companion/devswarm-ingest.js'));
 const ds = '.anti-hall/devswarm';
 const FWD = /^(\[forwarded from archived [^\]]*\] )/;
 

@@ -15,7 +15,7 @@ use super::{Op, Scope, Unit};
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_trim, slice_utf16};
 use crate::defaults;
-use crate::meshw::ident::{Defer, R, defer};
+use crate::meshw::ident::R;
 use crate::meshw::idlock::is_safe_id as is_safe_id_text;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -164,12 +164,15 @@ pub fn repo_unknown_suppressed(home: &Path, repo_key: &str, scope: &str, now: i6
     (now as f64 - last) < defaults::num("devswarm_recon.recheck_ms") as f64
 }
 
-/// `stripAnsi(String(r || '')).trim().slice(0, 300)`; a cut through a surrogate pair is the caller's deferral.
+/// `stripAnsi(String(r || '')).trim().slice(0, 300)`. A cut through a surrogate pair leaves a lone surrogate in JavaScript, which a
+/// Rust string cannot hold: the text is cut one unit earlier instead (the same cut every time, so the marker's "same reason" test
+/// still holds).
 fn clean_reason(reason: &str) -> R<String> {
-    let re = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| Defer(e.to_string()))?;
+    let re = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| crate::dssup::failure(e.to_string()))?;
     let stripped = re.replace_all(reason, "");
-    slice_utf16(js_trim(&stripped), defaults::num("devswarm_recon.reason_max") as usize)
-        .ok_or_else(|| Defer(defaults::text("devswarm_recon.why_surrogate").to_string()))
+    let max = defaults::num("devswarm_recon.reason_max") as usize;
+    let text = js_trim(&stripped);
+    Ok(slice_utf16(text, max).or_else(|| slice_utf16(text, max.saturating_sub(1))).unwrap_or_default())
 }
 
 /// `record(home, repoKey, scope, reason, now)`: note one more sweep that met hivecontrol's "repository not found". The result is
@@ -194,9 +197,6 @@ pub fn plan_repo_unknown_record(home: &Path, repo_key: &str, scope: &str, reason
     match scopes.iter_mut().find(|(name, _)| *name == k) {
         Some(slot) => slot.1 = entry,
         None => scopes.push((k, entry)),
-    }
-    if scopes.iter().any(|(name, _)| crate::checks::guardkit::ojson::is_array_index_key(name)) {
-        return defer("array-index-key");
     }
     let suppressed = streak >= after;
     let engaged = suppressed && !(same && prev_streak.unwrap_or(0.0) >= after);
@@ -237,8 +237,8 @@ pub fn active_rel() -> String {
 type Rec = (String, Option<String>, Option<String>);
 
 /// `normalizeRecords(v)`: `None` when `v` is not an array; objects with a non-empty id become `{id, worktreePath, repositoryId}`
-/// with the worktree path resolved (`path.resolve`, then `realpath` when it exists). A relative path, or an id that is not a
-/// string, is a state the engine does not model.
+/// with the worktree path resolved (`path.resolve` against the process directory, then `realpath` when it exists). An id that is
+/// not text is its `String()`.
 fn normalize(v: &OVal) -> R<Option<Vec<Rec>>> {
     let OVal::Arr(items) = v else { return Ok(None) };
     let mut out = Vec::new();
@@ -248,18 +248,15 @@ fn normalize(v: &OVal) -> R<Option<Vec<Rec>>> {
         }
         let id = match r.get("id") {
             None | Some(OVal::Null) => String::new(),
-            Some(OVal::Str(t)) => t.clone(),
-            Some(_) => return defer("record-id-type"),
+            Some(v) => crate::dssup::appsync::plan::js_str(v),
         };
         if id.is_empty() {
             continue;
         }
         let wt = match r.get("worktreePath") {
             Some(OVal::Str(p)) if !p.is_empty() => {
-                if !p.starts_with('/') {
-                    return defer("relative-worktree");
-                }
-                let resolved = crate::meshw::ident::resolve_abs(p);
+                let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                let resolved = crate::meshw::ident::resolve(&cwd, p);
                 Some(crate::meshw::ident::realpath(&resolved).unwrap_or(resolved))
             }
             _ => None,
@@ -335,9 +332,6 @@ pub fn plan_active_cache(home: &Path, by_repo_key: &[(String, OVal)], now: i64, 
             });
             recs = prev.clone();
         }
-        if crate::checks::guardkit::ojson::is_array_index_key(k) {
-            return defer("array-index-key");
-        }
         count += recs.len();
         match kept.iter_mut().find(|(kk, _)| kk == k) {
             Some(slot) => slot.1 = recs,
@@ -402,14 +396,11 @@ pub fn sampling_candidates(home: &Path, ids: &[String], max_probe: usize) -> Vec
     out
 }
 
-/// `String(x)` of a `terminalId` the engine models (string, number, bool); anything else defers.
+/// `x == null ? null : String(x)` of a `terminalId`.
 fn terminal_text(v: &OVal) -> R<Option<String>> {
     match v {
         OVal::Null => Ok(None),
-        OVal::Str(t) => Ok(Some(t.clone())),
-        OVal::Num(x) => Ok(Some(crate::checks::jsport::num::to_js_string(*x))),
-        OVal::Bool(b) => Ok(Some(b.to_string())),
-        _ => defer("terminal-id-type"),
+        other => Ok(Some(crate::dssup::appsync::plan::js_str(other))),
     }
 }
 
@@ -427,11 +418,12 @@ pub fn sampling_scope(ids: &[String]) -> Scope {
 /// Returns the ops and Node's `{ran, probed, captured}`.
 pub fn plan_sampling(home: &Path, ids: &[String], max_probe: usize, probes: &[(String, Probe)], now: i64) -> R<Planned> {
     let candidates = sampling_candidates(home, ids, max_probe);
+    // an array is "an object" to `readState` but keeps no entry by id; it reads as no entries (and is written back as the object)
     let mut state = match file_json(home, &sampling_state_rel()) {
         Some(o @ OVal::Obj(_)) => o,
-        Some(OVal::Arr(_)) => return defer("sampling-state-shape"),
         _ => OVal::Obj(Vec::new()),
     };
+    let mut aborted = false;
     let samples = samples_rel();
     let max = defaults::num("devswarm_recon.samples_max_bytes");
     let mut size = std::fs::metadata(home.join(&samples)).map_or(0, |m| m.len());
@@ -459,8 +451,12 @@ pub fn plan_sampling(home: &Path, ids: &[String], max_probe: usize, probes: &[(S
                 (startup.is_some_and(|v| !matches!(v, OVal::Null)) || changed, tid)
             }
             OVal::Arr(_) => (false, None),
-            // `'terminalId' in info` throws on a primitive: Node's pass aborts there, the engine does not model it
-            _ => return defer("probe-shape"),
+            // `'terminalId' in info` throws on a primitive: Node's pass aborts there (what it appended before stays, the state is not
+            // written, and the supervisor ignores the error)
+            _ => {
+                aborted = true;
+                break;
+            }
         };
         if worth {
             let line = format!("{}\n", OVal::Obj(vec![("id".into(), s(id)), ("ts".into(), n(now)), ("raw".into(), info.clone())]).stringify());
@@ -469,13 +465,13 @@ pub fn plan_sampling(home: &Path, ids: &[String], max_probe: usize, probes: &[(S
                 size = 0;
             }
             size += line.len() as u64;
-            ops.push(Op::Append { rel: samples.clone(), bytes: line.into_bytes() });
+            ops.push(Op::Append { rel: samples.clone(), bytes: line.into_bytes(), keep: None });
             captured += 1;
         }
         let entry = OVal::Obj(vec![("terminalId".into(), new_tid.as_deref().map_or(OVal::Null, s)), ("lastProbedAt".into(), n(now))]);
         state.set(id, entry);
     }
-    if !candidates.is_empty() {
+    if !candidates.is_empty() && !aborted {
         ops.push(write_op(home, &sampling_state_rel(), state.stringify(), true));
     }
     let probes_json: serde_json::Map<String, Value> = probes.iter().map(|(i, p)| (i.clone(), json!({"ok": p.ok, "raw": p.raw}))).collect();
@@ -529,7 +525,9 @@ pub fn touched(u: &Unit) -> Vec<String> {
             | Op::Log { .. }
             | Op::Remove { .. }
             | Op::Forward { .. }
+            | Op::Mkdir { .. }
             | Op::RaiseCursors { .. }
+            | Op::ImportCursors { .. }
             | Op::RemoveRegistryIf { .. }
             | Op::Guard { .. }
             | Op::Pull { .. } => {}

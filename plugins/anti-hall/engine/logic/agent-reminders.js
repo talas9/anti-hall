@@ -44,5 +44,8 @@ function decide(p) {
   if (!ah.state.writeAtomic(cursor, String(taken))) return 'allow';
   if (items.length === 0) return 'allow';
   ah.state.appendFile(dir + '/' + paths.delivered, rows.join('\n') + '\n');
-  return { advisory: ah.cfg('agent_reminders.header') + '\n' + items.join('\n') };
+  // The advisory is the hook's stdout line, so it is the JSON object the host reads (context for the model on these events). Plain
+  // text here could not be combined with the other hooks' answers of the event (dispatch_conflict, 17 times on live20.1).
+  var text = ah.cfg('agent_reminders.header') + '\n' + items.join('\n');
+  return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } }) };
 }

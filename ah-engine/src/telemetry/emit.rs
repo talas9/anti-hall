@@ -42,6 +42,11 @@ pub fn set_read_only() {
     READ_ONLY.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Whether this process is the daemon (its recorder sink is installed): counters kept here stay in memory instead of the shared journal.
+pub fn in_daemon() -> bool {
+    SINK.get().is_some()
+}
+
 /// Send this process's events to `sink` instead of the inbox. Called once by the daemon; a second call changes nothing.
 pub fn install(sink: Sink) {
     crate::discard::harmless(SINK.set(sink).map_err(|_| ())); // keep: already installed by an earlier start in this process

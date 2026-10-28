@@ -23,6 +23,11 @@ pub fn git_scrubbed(cwd: &str, args: &[&str], timeout: Duration, env: &RequestEn
     for name in defaults::list("gitcache.bypass_env") {
         cmd.env_remove(name);
     }
+    // the scrubbed names go from this process's own environment too (Node deletes them from its copy of process.env): a
+    // daemon started from a session that had them set must not answer for that session's repository
+    for name in scrub {
+        cmd.env_remove(name);
+    }
     for (k, v) in env.to_map() {
         if !scrub.contains(&k.as_str()) {
             cmd.env(k, v);

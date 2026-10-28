@@ -1,0 +1,18 @@
+{
+  "exit": 0,
+  "files": {
+    ".claude/": "755",
+    ".claude/plugins/": "755",
+    ".claude/plugins/cache/": "755",
+    ".claude/plugins/cache/anti-hall/": "755",
+    ".claude/plugins/cache/anti-hall/anti-hall/": "755",
+    ".claude/plugins/cache/anti-hall/anti-hall/0.1.0/": "755",
+    ".claude/plugins/cache/anti-hall/anti-hall/0.1.0/marker.txt": "644 v1",
+    ".claude/plugins/installed_plugins.json": "644 {\"version\":2,\"plugins\":{\"anti-hall@anti-hall\":[{\"scope\":\"user\",\"installPath\":\"x\",\"version\":\"0.1.0\"}]}}",
+    ".claude/plugins/marketplaces/": "755",
+    ".claude/plugins/marketplaces/anti-hall/": "755",
+    ".claude/plugins/marketplaces/anti-hall/CHANGELOG.md": "644 # Changelog\n\npreamble\n\n## 0.1.0 - first\n\n- the first thing\n"
+  },
+  "stderr": "",
+  "stdout": "{\"installed\":\"0.1.0\",\"latest\":null,\"updated\":false,\"cacheSynced\":false,\"action\":\"check failed (offline / no git): fatal: '{ROOT}/origin.git' does not appear to be a git repository\"}\n❌ anti-hall · update: not updated\n  installed: 0.1.0\n  latest:    (unknown)\n  updated:   false\n  action:    check failed (offline / no git): fatal: '{ROOT}/origin.git' does not appear to be a git repository\n"
+}

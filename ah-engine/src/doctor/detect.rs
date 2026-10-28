@@ -140,25 +140,34 @@ pub fn codex_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) -> Option<&'
     let expected = codex_events(root);
     let re = crate::checks::lit_re(defaults::text("doctor.codex_hooks_enabled_re"));
     let dir = defaults::text("codex_install.dir");
-    let mut found: Vec<(&str, bool, Option<bool>)> = Vec::new();
+    let mut found = Vec::new();
     for (label, base) in [(defaults::text("doctor_msg.codex_label_project"), &ctx.cwd), (defaults::text("doctor_msg.codex_label_global"), &ctx.home)] {
         let d = Path::new(base).join(dir);
         let cfg = d.join(defaults::text("codex_install.config_file"));
-        if !cfg.is_file() {
+        let hooks = d.join(defaults::text("codex_install.hooks_file"));
+        if !cfg.is_file() && !hooks.is_file() {
             continue;
         }
         let enabled = std::fs::read_to_string(&cfg).is_ok_and(|t| re.is_match(&t));
-        found.push((label, enabled, codex_wired(&d.join(defaults::text("codex_install.hooks_file")), &expected)));
+        let missing = std::fs::read_to_string(&hooks)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|value| crate::hooksgen::missing_launcher(&value, &ctx.home, root, &ctx.env));
+        found.push((label, enabled, codex_wired(&hooks, &expected), missing, hooks));
     }
     if found.is_empty() {
         return Some(defaults::text("doctor_msg.codex_none"));
     }
     doc.head(defaults::text("doctor_msg.head_codex"));
-    for (label, enabled, wired) in found {
+    for (label, enabled, wired, missing, hooks) in found {
         if enabled {
             doc.ok(defaults::render("doctor_msg.codex_hooks_on", &[("label", &label)]));
         } else {
             doc.warnl(defaults::render("doctor_msg.codex_hooks_off", &[("label", &label)]));
+        }
+        if missing {
+            doc.bad(defaults::render("doctor_msg.codex_launcher_missing", &[("label", &label), ("file", &hooks.display())]));
+            continue;
         }
         match wired {
             Some(true) => doc.ok(defaults::render("doctor_msg.codex_wired", &[("label", &label)])),
@@ -230,7 +239,8 @@ pub fn foreign_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
             }
         }
     }
-    enabled.retain(|k| k != defaults::text("doctor.self_plugin_key"));
+    let own = crate::install::owning(&ctx.home, &root.to_string_lossy()).map(|o| o.key).unwrap_or_else(|| defaults::text("doctor.self_plugin_key").to_string());
+    enabled.retain(|k| k != &own);
     let mut results: Vec<(bool, String)> = Vec::new(); // (HIGH, message)
     if !enabled.is_empty() {
         let installed = read_bounded(&Path::new(&ctx.home).join(defaults::text("doctor.installed_plugins_rel")), defaults::num("doctor.installed_max_bytes"));
@@ -280,5 +290,52 @@ pub fn foreign_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
     }
     if !any {
         doc.infol(defaults::text("doctor_msg.foreign_none").to_string());
+    }
+}
+
+/// Stray history in submodules is diagnostic only: never move, repair or remove it.
+pub(super) fn stray_submodule_state(doc: &mut Doc, ctx: &Ctx) {
+    use crate::checks::jsport::{gitrun, ident};
+    use crate::reqenv::RequestEnv;
+    let env = RequestEnv::from_pairs(ctx.env.clone());
+    let context = ident::resolve_context(&ctx.cwd, false, &env);
+    if context.unsure {
+        return;
+    }
+    let Some(root) = context.worktree_root else { return };
+    let canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| PathBuf::from(&root));
+    let mut pending = vec![(canonical.clone(), 0u64)];
+    let history = defaults::list("task_lifecycle_log.history_dir").join("/");
+    while let Some((dir, depth)) = pending.pop() {
+        if depth >= defaults::num("codex_handover.max_submodule_hops") {
+            continue;
+        }
+        let args = defaults::list("doctor.submodule_paths_args");
+        let Some(out) = gitrun::git_scrubbed(
+            &dir.to_string_lossy(),
+            &args,
+            defaults::millis("codex_handover.identity_git_timeout_ms"),
+            &env,
+            &defaults::list("codex_handover.git_scrub_env"),
+        ) else {
+            continue;
+        };
+        for line in out.lines() {
+            let Some((_, rel)) = line.split_once(' ') else { continue };
+            let Ok(sub) = std::fs::canonicalize(dir.join(rel)) else { continue };
+            if !sub.starts_with(&canonical) || sub == dir {
+                continue;
+            }
+            // An uninitialised submodule is a plain directory, not a separate checkout.
+            let c = ident::resolve_context(&sub.to_string_lossy(), false, &env);
+            if c.toplevel.as_deref() != sub.to_str() {
+                continue;
+            }
+            let state = sub.join(&history);
+            if state.is_dir() {
+                doc.warnl(defaults::render("doctor_msg.stray_submodule_history", &[("path", &state.to_string_lossy())]));
+            }
+            pending.push((sub, depth + 1));
+        }
     }
 }

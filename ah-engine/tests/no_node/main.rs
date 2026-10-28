@@ -6,7 +6,7 @@
 //! `expected_failures.toml` is the live backlog of Node paths: a Node start that is not listed fails, and so does a listed
 //! path that is no longer reached, so each lane that removes a Node path deletes its entry. v1.0 needs the list empty.
 //! Reports (per test, JSON) land in `$CARGO_TARGET_TMPDIR/no_node/`. Run: `cargo nextest run --test no_node`.
-#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -15,4 +15,5 @@ mod callsites;
 mod expected;
 mod harness;
 mod hooks;
+mod sup;
 mod surfaces;

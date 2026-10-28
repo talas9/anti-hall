@@ -1,6 +1,6 @@
 # ah-engine shipped defaults for the engine's own service units (`ah-engine units`, `src/setup/units.rs`): the one launchd /
 # systemd user unit that keeps the engine daemon (`ah-engine serve`) running, and the retirement of the units the Node installers
-# wrote (companion/install-reaper.js, install-devswarm-supervisor.js, install-devswarm-ingest.js). Format: see the header of
+# wrote. Format: see the header of
 # engine.toml.
 #
 # The engine unit does not compete with the daemon a hook starts: it runs `ah-engine serve` on load and again every
@@ -164,7 +164,7 @@ value = "exit {code}"
 # ---- the engine unit -----------------------------------------------------------------------------------------------------------
 
 [units.engine_bin_rel]
-doc = "The engine binary the unit runs, relative to the home directory (where the bootstrap installs it and the hook wrapper finds it)."
+doc = "The engine binary the unit runs, relative to the home directory (where the installer puts it and the thin client finds it)."
 value = ".anti-hall/ah-engine/bin/ah-engine"
 
 [units.os_launchd]
@@ -202,7 +202,7 @@ doc = "Where launchd sends the unit's stdout and stderr (the daemon writes its o
 value = "/dev/null"
 
 [units.plist_template]
-doc = "The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {interval} {log}; every value is XML-escaped."
+doc = "The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {env} (the units.plist_env block, or nothing) {interval} {log}; every value is XML-escaped."
 value = '''
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -214,7 +214,7 @@ value = '''
   <array>
 {args}
   </array>
-  <key>RunAtLoad</key>
+{env}  <key>RunAtLoad</key>
   <true/>
   <key>StartInterval</key>
   <integer>{interval}</integer>
@@ -229,6 +229,18 @@ value = '''
 [units.plist_arg]
 doc = "One ProgramArguments entry of the LaunchAgent. {arg}."
 value = "    <string>{arg}</string>"
+
+[units.plist_env]
+doc = "The EnvironmentVariables block of the LaunchAgent, written when the engine has allocator tuning to hand its daemon (`daemon.malloc_conf`; the daemon reads it before its first allocation, and a unit is a starter that otherwise gives it none). {entries} is one units.plist_env_entry per variable."
+value = """  <key>EnvironmentVariables</key>
+  <dict>
+{entries}
+  </dict>
+"""
+
+[units.plist_env_entry]
+doc = "One variable of the LaunchAgent's EnvironmentVariables. {name} {value}, both XML-escaped."
+value = "    <key>{name}</key>\n    <string>{value}</string>"
 
 [units.xml_escapes]
 doc = "The XML escapes applied to every value put in a LaunchAgent, in order (the ampersand first)."
@@ -251,14 +263,14 @@ doc = "The file name suffix of a systemd timer."
 value = ".timer"
 
 [units.service_template]
-doc = "The systemd user service of the engine unit. {exec} is the quoted command line."
+doc = "The systemd user service of the engine unit. {exec} is the quoted command line; {env} is one units.service_env line per variable, or nothing."
 value = '''
 [Unit]
 Description=anti-hall engine daemon (starts it when none is running)
 
 [Service]
 Type=simple
-ExecStart={exec}
+{env}ExecStart={exec}
 '''
 
 [units.timer_template]
@@ -274,6 +286,10 @@ OnUnitInactiveSec={interval}
 [Install]
 WantedBy=timers.target
 '''
+
+[units.service_env]
+doc = "One Environment line of the systemd service: the allocator tuning (`daemon.malloc_conf`) for the daemon the unit starts, double-quoted with the systemd escapes applied. {name} {value}."
+value = 'Environment="{name}={value}"'
 
 [units.exec_arg]
 doc = "One argument of the ExecStart line: double-quoted, with the systemd escapes applied. {arg}."

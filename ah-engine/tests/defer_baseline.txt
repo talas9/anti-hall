@@ -1,0 +1,5 @@
+# Defer-site baseline read by tests/defer_ratchet.rs. Lower counts as defers are removed; never raise.
+# [hot_path] files must have 0 defer sites (starts empty).
+[hot_path]
+
+[counts]

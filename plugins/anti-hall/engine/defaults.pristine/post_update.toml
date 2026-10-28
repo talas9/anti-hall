@@ -1,0 +1,273 @@
+# ah-engine shipped defaults for `ah-engine post-update-check` (src/operator/post_update.rs): the step every update path ends with. It
+# verifies the live daemon, stops stray anti-hall processes by verified pid, and cleans old artifacts. Format: see the header of engine.toml.
+
+[cmd.post-update-check]
+doc = "The step every update ends with: verify exactly one live engine runs the installed binary (sha, path, answers status and a ping inside its budget), stop stale and scratch daemons and duplicate watchers by verified pid (never pkill), let watchers on a replaced binary re-execute themselves, report servers on an old binary, and clean old binary copies, dead pid files, a dead socket and dead temp files. --dry-run reports and changes nothing. Exit 0 verified, 1 not."
+value = { args = "[--dry-run] [--expect-sha <sha256>]", read_only = false, status = "implemented" }
+
+[post_update.flag_dry_run]
+doc = "Report what would be done, change nothing."
+value = "--dry-run"
+
+[post_update.flag_expect_sha]
+doc = "The sha256 the installed engine binary must have (default: the recorded .expected file)."
+value = "--expect-sha"
+
+[post_update.msg_flag_value]
+doc = "A flag lacks its value. {flag}."
+value = "post-update-check: {flag} needs a value"
+
+[post_update.msg_bad_arg]
+doc = "Unknown argument. {arg}."
+value = "post-update-check: unknown argument {arg}\nusage: post-update-check [--dry-run] [--expect-sha <sha256>] [--json]"
+
+# ---- what a process is --------------------------------------------------------------------------------------------------------
+
+[post_update.engine_names]
+doc = "Program names of the engine binary in a process listing."
+value = ["ah-engine"]
+
+[post_update.web_names]
+doc = "Program names of the dashboard server."
+value = ["ah-web"]
+
+[post_update.serve_words]
+doc = "An argument that makes an engine / dashboard process a long-running server."
+value = ["serve"]
+
+[post_update.watch_words]
+doc = "An argument that makes an engine process a long-running watcher (`ah-engine devswarm wake-watch`)."
+value = ["wake-watch"]
+
+[post_update.scratch_roots]
+doc = "Directories under which a running engine is a scratch or experiment daemon ({home} is the home directory): stopped as scratch, never as 'second daemon'."
+value = ["{home}/.anti-hall/work/", "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"]
+
+[post_update.home_token]
+doc = "The placeholder for the home directory in scratch_roots."
+value = "{home}"
+
+# ---- timings ---------------------------------------------------------------------------------------------------------------------
+
+[post_update.change_slack_s]
+doc = "A binary file counts as replaced after a process started only when it changed more than this many seconds later."
+value = 2
+unit = "s"
+
+[post_update.grace_ms]
+doc = "How long a stopped process gets to exit after TERM before KILL."
+value = 3000
+unit = "ms"
+
+[post_update.poll_ms]
+doc = "Polling step while waiting for a process to exit or a watcher to re-execute."
+value = 100
+unit = "ms"
+
+[post_update.kill_wait_ms]
+doc = "Wait after KILL before checking the process is gone."
+value = 300
+unit = "ms"
+
+[post_update.verify_tries]
+doc = "How many times the daemon is asked for its status while it is still coming up."
+value = 20
+
+[post_update.verify_pause_ms]
+doc = "Pause between those tries."
+value = 500
+unit = "ms"
+
+[post_update.ping_budget_ms]
+doc = "A control round trip (ping) slower than this is a problem."
+value = 1000
+unit = "ms"
+
+[post_update.watcher_settle_s]
+doc = "How long watchers on a replaced binary get to re-execute themselves before they are reported."
+value = 8
+unit = "s"
+
+[post_update.sha_chars]
+doc = "Characters of a sha256 shown in texts."
+value = 8
+
+# ---- cleanup ----------------------------------------------------------------------------------------------------------------------
+
+[post_update.artifact_names]
+doc = "Binary names whose old copies (`<name>.<anything>`) in the binary directory are cleaned."
+value = ["ah-engine", "ah-hook"]
+
+[post_update.keep_suffixes]
+doc = "Copies with these suffixes (after the binary name) are never cleaned: the previous binary, the known-good copy and the integrity records."
+value = [".prev", ".good", ".good.sha256", ".expected", ".accepted"]
+
+[post_update.artifact_min_age_s]
+doc = "An old binary copy is cleaned only when it is older than this."
+value = 300
+unit = "s"
+
+[post_update.pid_files]
+doc = "Pid files (in the state directory) removed when the process named in them is gone."
+value = ["daemon.run"]
+
+[post_update.tmp_suffix]
+doc = "Temp files `<name>.<pid>.<n>.tmp` of a dead process end in this."
+value = ".tmp"
+
+[post_update.tmp_min_age_s]
+doc = "A temp file is cleaned only when older than this."
+value = 600
+unit = "s"
+
+# ---- words ------------------------------------------------------------------------------------------------------------------------
+
+[post_update.how_failed]
+doc = "A stop or removal that did not work."
+value = "failed"
+
+[post_update.how_gone]
+doc = "The process was already gone."
+value = "already gone"
+
+[post_update.how_term]
+doc = "Stopped by TERM."
+value = "stopped (TERM)"
+
+[post_update.how_kill]
+doc = "Stopped by KILL after the grace."
+value = "stopped (KILL after grace)"
+
+[post_update.how_removed]
+doc = "A file was removed."
+value = "removed"
+
+[post_update.how_would_remove]
+doc = "A dry run would remove a file."
+value = "would be removed"
+
+[post_update.how_would_stop]
+doc = "A dry run would stop a process."
+value = "would be stopped"
+
+[post_update.how_would_wait]
+doc = "A dry run would wait for a watcher to re-execute."
+value = "would get a settle window to re-execute"
+
+[post_update.why_deleted]
+doc = "Why a process runs an old image: its binary was deleted."
+value = "its binary was deleted"
+
+[post_update.why_replaced]
+doc = "Why a process runs an old image: its binary was replaced after it started."
+value = "its binary was replaced after it started"
+
+[post_update.why_scratch]
+doc = "Why a daemon is stopped: it runs from a scratch directory."
+value = "scratch daemon (runs from a scratch directory)"
+
+[post_update.why_second_daemon]
+doc = "Why a daemon is stopped: it is not the verified one."
+value = "second daemon (not the verified one)"
+
+[post_update.why_duplicate]
+doc = "Why a watcher is stopped. {verb}, {session}."
+value = "duplicate {verb} watcher of session {session} (the newest stays)"
+
+[post_update.why_watcher_old]
+doc = "Why a watcher is reported: it is still on the replaced binary."
+value = "still running the replaced binary"
+
+[post_update.why_web_old]
+doc = "Why the dashboard server is reported. {why}."
+value = "dashboard server: {why}"
+
+[post_update.why_old_binary]
+doc = "Why an old binary copy is removed."
+value = "old binary copy beyond the kept ones"
+
+[post_update.why_dead_owner]
+doc = "Why a pid or temp file is removed. {pid}."
+value = "its owner (pid {pid}) is gone"
+
+[post_update.why_dead_socket]
+doc = "Why the socket file is removed."
+value = "no engine answers on it and none runs"
+
+[post_update.why_update_tmp]
+doc = "Why an updater scratch directory is removed."
+value = "leftover updater scratch directory"
+
+# ---- problems and lines --------------------------------------------------------------------------------------------------------------
+
+[post_update.problem_not_running]
+doc = "No engine answered status."
+value = "no engine daemon answers status"
+
+[post_update.problem_no_sweep]
+doc = "Nothing was stopped or cleaned because the daemon did not verify."
+value = "nothing was stopped or cleaned: the live daemon did not verify first"
+
+[post_update.problem_sha]
+doc = "The installed binary's sha differs from the expected one. {have}, {want}."
+value = "installed binary sha {have} is not the expected {want}"
+
+[post_update.problem_unreadable]
+doc = "The binary cannot be read. {path}."
+value = "cannot read the installed binary {path}"
+
+[post_update.problem_ping]
+doc = "No answer to a ping."
+value = "the daemon does not answer a ping"
+
+[post_update.problem_slow]
+doc = "A ping was slower than the budget. {ms}, {budget}."
+value = "ping took {ms} ms (budget {budget} ms)"
+
+[post_update.problem_path]
+doc = "The daemon runs another file than the installed binary. {pid}, {exe}, {bin}."
+value = "daemon pid {pid} runs {exe}, not the installed {bin}"
+
+[post_update.problem_old_daemon]
+doc = "The daemon runs an old image. {pid}, {why}."
+value = "daemon pid {pid} runs an old image: {why}"
+
+[post_update.problem_stop]
+doc = "A process could not be stopped. {pid}."
+value = "could not stop pid {pid}"
+
+[post_update.problem_daemons_left]
+doc = "Daemons remain besides the verified one. {n}."
+value = "{n} other engine daemon(s) still run"
+
+[post_update.line_dry]
+doc = "First line of a dry run."
+value = "post-update-check (dry run: nothing is changed)"
+
+[post_update.line_verified]
+doc = "Verified. {pid}, {sha}, {uptime}, {kb}, {ms}."
+value = "VERIFIED: daemon pid {pid}, binary sha {sha}, up {uptime} s, footprint {kb} KB, ping {ms} ms"
+
+[post_update.line_failed]
+doc = "Not verified."
+value = "NOT VERIFIED"
+
+[post_update.line_problem]
+doc = "One problem. {text}."
+value = "  PROBLEM: {text}"
+
+[post_update.line_stopped]
+doc = "A process was stopped. {pid}, {kind}, {reason}, {how}."
+value = "  {kind} pid {pid}: {reason} -> {how}"
+
+[post_update.line_reexeced]
+doc = "A watcher re-executed itself on the new binary. {pid}."
+value = "  watcher pid {pid}: re-executed on the new binary"
+
+[post_update.line_left]
+doc = "A process was left running and reported. {pid}, {kind}, {reason}, {next}."
+value = "  {kind} pid {pid}: {reason}; to renew it run: {next}"
+
+[post_update.line_cleaned]
+doc = "An artifact was cleaned. {path}, {reason}, {state}."
+value = "  {path}: {reason} -> {state}"

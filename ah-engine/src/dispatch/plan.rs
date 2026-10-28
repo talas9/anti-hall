@@ -2,16 +2,15 @@
 //! configuration ([`crate::hookcfg`]) and the entries' `when` predicates.
 //!
 //! In order: the event's `mode` (off answers the neutral no-op; shadow makes every entry shadow), the event's `order`, then per
-//! entry its `mode` (off skips it; on a guard entry with a built-in check it only turns the check off, so the Node hook decides;
-//! shadow runs it without letting it change the outcome, and on a guard entry with a check it runs the check beside the Node
-//! hook that decides, to log whether they agree), its `when` predicate (false skips it; unknown applies it) and the event's
+//! entry its `mode` (off skips it and no hook takes its place; shadow runs it without letting it change the outcome, except
+//! on a guard entry, whose check always decides because no Node hook runs beside it), its `when` predicate (false skips it; unknown applies it) and the event's
 //! `max_rules` cap. The event's `budget_ms` is enforced by the dispatcher while it runs the plan.
 //!
 //! Every entry the plan leaves out or shadows is counted, per event and entry, under one of the `hooks.outcomes` words.
 use super::table::Entry;
 use crate::defaults;
 use crate::hookcfg::session::SessionStore;
-use crate::hookcfg::when::{Ctx, Facts, LoadedFacts, NoFacts, SettingRef, Val};
+use crate::hookcfg::when::{Ctx, Facts, NoFacts, SettingRef, Val};
 use crate::hookcfg::{HookCfg, Mode};
 use crate::reqenv::RequestEnv;
 use serde_json::Value;
@@ -145,12 +144,9 @@ pub fn build(event: &str, matched: Vec<Entry>, cfg: &HookCfg, occ: &Occurrence<'
         let mode = if ecfg.mode == Mode::Shadow { Mode::Shadow } else { ec.mode };
         let mode = if guard && e.check.is_none() { Mode::On } else { mode }; // a guard entry with no engine check only has its Node hook
         if mode == Mode::Off {
+            // a check switched off is disabled: dropped from the plan, recorded as `off` in the event's telemetry (no Node hook
+            // takes its place any more)
             plan.dropped.push((e.id.clone(), Outcome::Off));
-            if guard && e.check.is_some() {
-                // the engine's check is off; the Node hook is the decider and still runs
-                kept += 1;
-                plan.items.push(Item { entry: Entry { check: None, ..e }, shadow: false });
-            }
             continue;
         }
         if let Some(w) = ec.when.as_ref().or(e.when.as_ref())
@@ -166,10 +162,8 @@ pub fn build(event: &str, matched: Vec<Entry>, cfg: &HookCfg, occ: &Occurrence<'
         }
         kept += 1;
         match mode {
-            Mode::Shadow if guard && e.check.is_some() => {
-                plan.items.push(Item { entry: Entry { check: None, ..e.clone() }, shadow: false });
-                plan.items.push(Item { entry: e, shadow: true });
-            }
+            // a guard entry is never only measured: with no Node hook to decide beside it, its check decides
+            Mode::Shadow if guard => plan.items.push(Item { entry: e, shadow: false }),
             Mode::Shadow => plan.items.push(Item { entry: e, shadow: true }),
             _ => plan.items.push(Item { entry: e, shadow: false }),
         }
@@ -179,7 +173,7 @@ pub fn build(event: &str, matched: Vec<Entry>, cfg: &HookCfg, occ: &Occurrence<'
 
 /// Settings and transcript facts loaded on first use, from the engine's own config files (never from Node).
 pub struct LiveFacts {
-    loaded: std::sync::OnceLock<(Value, crate::cfgstore::Effective)>,
+    loaded: std::sync::OnceLock<crate::cfgstore::Layers>,
 }
 
 impl Default for LiveFacts {
@@ -189,19 +183,22 @@ impl Default for LiveFacts {
 }
 
 impl LiveFacts {
-    fn loaded(&self) -> &(Value, crate::cfgstore::Effective) {
+    fn loaded(&self) -> &crate::cfgstore::Layers {
         self.loaded.get_or_init(|| {
             let (layers, _) = crate::cfgstore::load_layers_cold(&crate::cfgstore::Paths::from_env());
-            let eff = crate::cfgstore::Effective::resolve_process(&layers);
-            (layers.settings, eff)
+            layers
         })
     }
 }
 
 impl Facts for LiveFacts {
     fn setting(&self, r: &SettingRef, env: &RequestEnv) -> Option<Option<Val>> {
-        let (s, e) = self.loaded();
-        LoadedFacts { settings: s, effective: e, index: None }.setting(r, env)
+        let layers = self.loaded();
+        crate::hookcfg::when::setting_value(r, env, &layers.settings, |key| {
+            let entry = defaults::get(key)?;
+            let resolved = crate::cfgstore::resolve_one(entry, layers, &|n| env.get(n).map(str::to_owned));
+            Val::from_json(&resolved.value)
+        })
     }
 
     fn transcript(&self, payload: &Value, f: crate::hookcfg::when::Fact) -> Option<Option<Val>> {
@@ -219,10 +216,8 @@ pub fn load_config(cwd: &str) -> HookCfg {
             Default::default()
         }
     };
-    let project = crate::hookcfg::load_project(cwd).unwrap_or_else(|e| {
-        crate::health::log_event("config_invalid", e.code(), &e.to_string());
-        None
-    });
+    // the project layer is found from the project root (not the raw cwd) and cached per project, tighten-only (layers.rs)
+    let project = crate::layers::project(cwd).map(|p| p.hooks.clone());
     HookCfg::new(project, user)
 }
 
@@ -297,6 +292,25 @@ mod tests {
     }
 
     #[test]
+    fn live_predicate_facts_match_loaded_switch_and_engine_layers() {
+        use crate::hookcfg::when::LoadedFacts;
+        let layers = crate::cfgstore::Layers {
+            settings: serde_json::json!({"guards": {"shipitGate": true}}),
+            user: [("daemon.queue".to_string(), serde_json::json!(17))].into(),
+            ..Default::default()
+        };
+        let effective = crate::cfgstore::Effective::resolve_process(&layers);
+        let loaded = LoadedFacts { settings: &layers.settings, effective: &effective, index: None };
+        let live = LiveFacts { loaded: std::sync::OnceLock::from(layers.clone()) };
+        let env = RequestEnv::from_pairs([("HOME", "/ah-hookcfg-fixture")]);
+        let switch = defaults::setting_entries("guards", "shipitGate").into_iter().next().unwrap();
+        for setting in [SettingRef::Switch(&switch.value), SettingRef::Engine("daemon.queue")] {
+            assert_eq!(live.setting(&setting, &env), loaded.setting(&setting, &env));
+        }
+        assert_eq!(live.setting(&SettingRef::Engine("daemon.queue"), &env), Some(Some(Val::Int(17))));
+    }
+
+    #[test]
     fn the_default_configuration_plans_exactly_the_matched_entries_in_table_order() {
         let c = HookCfg::default();
         let p = plan_for("PostToolUse", post(), &c);
@@ -354,24 +368,22 @@ mod tests {
     }
 
     #[test]
-    fn a_guard_entry_with_a_check_turned_off_keeps_its_node_hook_as_the_decider() {
+    fn a_guard_entry_with_a_check_turned_off_is_dropped_and_no_hook_takes_its_place() {
         let p = plan_for("PreToolUse", json!({"tool_name":"Bash","session_id":"s"}), &cfg("[entries.\"PreToolUse/git-guard\"]\nmode = \"off\"\n"));
-        let it = p.items.iter().find(|i| i.entry.id == "git-guard").expect("the Node hook still runs");
-        assert!(it.entry.check.is_none() && !it.shadow, "off clears the engine check; the Node hook decides");
+        assert!(!p.items.iter().any(|i| i.entry.id == "git-guard"), "no Node hook is launched in place of the switched-off check");
         assert!(p.dropped.contains(&("git-guard".to_string(), Outcome::Off)));
     }
 
     #[test]
-    fn a_guard_entry_with_a_check_in_shadow_runs_the_check_beside_the_deciding_node_hook() {
+    fn a_guard_entry_with_a_check_in_shadow_is_decided_by_its_check() {
         let p = plan_for("PreToolUse", json!({"tool_name":"Bash","session_id":"s"}), &cfg("[entries.\"PreToolUse/git-guard\"]\nmode = \"shadow\"\n"));
-        let both: Vec<&Item> = p.items.iter().filter(|i| i.entry.id == "git-guard").collect();
-        assert_eq!(both.len(), 2);
-        assert!(both[0].entry.check.is_none() && !both[0].shadow, "the Node hook decides");
-        assert!(both[1].entry.check.is_some() && both[1].shadow, "the check is the shadow");
+        let all: Vec<&Item> = p.items.iter().filter(|i| i.entry.id == "git-guard").collect();
+        assert_eq!(all.len(), 1, "one item: there is no Node hook to decide beside the check");
+        assert!(all[0].entry.check.is_some() && !all[0].shadow, "a guard entry is never only measured: its check decides");
     }
 
     #[test]
-    fn shadow_never_changes_the_set_of_deciding_entries() {
+    fn shadow_never_makes_a_guard_check_stop_deciding() {
         let real = |p: &Plan| p.items.iter().filter(|i| !i.shadow).map(|i| (i.entry.id.clone(), i.entry.check.is_some())).collect::<Vec<_>>();
         let payload = json!({"tool_name":"Bash","session_id":"s"});
         let plain = real(&plan_for("PreToolUse", payload.clone(), &HookCfg::default()));
@@ -380,9 +392,8 @@ mod tests {
             payload,
             &cfg("[entries.\"PreToolUse/git-guard\"]\nmode = \"shadow\"\n[entries.\"PreToolUse/command-guard\"]\nmode = \"shadow\"\n"),
         ));
-        let strip = |v: &[(String, bool)]| v.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
-        assert_eq!(strip(&plain), strip(&shadowed), "the same ids decide; only their engine checks stopped deciding");
-        assert!(shadowed.iter().filter(|x| x.0 == "git-guard" || x.0 == "command-guard").all(|x| !x.1));
+        assert_eq!(plain, shadowed, "the same entries decide with the same checks: shadow on a guard entry changes nothing");
+        assert!(shadowed.iter().filter(|x| x.0 == "git-guard" || x.0 == "command-guard").all(|x| x.1));
     }
 
     #[test]
