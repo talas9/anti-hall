@@ -238,7 +238,9 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
     let p = ups("is", "go on", Some(&transcript));
     let now = t0.to_string();
-    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str())];
+    // the prompt digest (inject_gate) folds the tracker, sweep and verify-first lines into headlines in importance order, and only when it is
+    // shorter than the whole (which the rotating verify-first line decides): this test is about the join order and the request clock, so it is off
+    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0")];
     let (code, out, err) = e.run(&args, true, &p, &extra);
     assert_eq!((code, err.as_str()), (0, ""));
     assert!(out.contains("1 finished agent is idle and not stopped: zed (30m)") && !out.contains("NODE-RAN"), "{out}");
@@ -255,7 +257,7 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     assert_eq!(ctx(&again), "", "the dedupe state of the first call must hold");
     // two days on, the same agent is stale (long gone), not idle: it drops out of the advisory
     let later = (t0 + 2 * 86_400_000).to_string();
-    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", later.as_str())];
+    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", later.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0")];
     let (_, stale, _) = e.run(&args, true, &ups("is-stale", "go on", Some(&transcript)), &extra);
     assert!(!ctx(&stale).contains("finished agent"), "a stale agent must not be listed: {stale}");
 }
