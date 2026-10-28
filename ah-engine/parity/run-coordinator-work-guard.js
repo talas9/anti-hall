@@ -4,7 +4,7 @@
 // everything else must defer, because the window needs the command classifier and the hook environment. So the
 // result to look for is: MISMATCH=0 (whenever the engine answers, Node answered the same), and a defer rate that is
 // the share of main-thread calls.
-//   node run-coordinator-work-guard.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks
+//   node run-coordinator-work-guard.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks
 //        [--cmds fpr/cmds.jsonl] [--mode oneshot|daemon|both] [--main 1200] [--sub 5000] [--seed 1]
 // Corpus: (1) hand-written payload shapes under several CLAUDE_CODE_ENTRYPOINT values, (2) real commands from the field
 // data with their real subagent flag, (3) fuzzed markers and session ids. A real main-thread command runs the full

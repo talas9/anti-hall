@@ -15,13 +15,92 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
+/// One counted event a check noted: metric, label name, label value.
+type Note = (&'static str, &'static str, &'static str);
+
 thread_local! {
     static SCAN_BYTES: Cell<u64> = const { Cell::new(0) };
+    static CHECK_SCAN_BYTES: Cell<u64> = const { Cell::new(0) };
+    static CHECK_CPU_US: Cell<u64> = const { Cell::new(0) };
+    static CHECK_MEM: Cell<Option<crate::mem::Delta>> = const { Cell::new(None) };
+    static NOTES: std::cell::RefCell<Vec<Note>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TRANSCRIPT_SIZE: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
-/// A check scanned `bytes` of a transcript on this thread (a tail reader calls it); the worker adds it to the request's sample.
+/// A check scanned `bytes` of a transcript on this thread (a tail reader calls it); the worker adds it to the request's sample
+/// and the check that is running gets it too (see [`take_check_scan`]).
 pub fn note_scan(bytes: u64) {
+    crate::web::io::transcript_read(bytes);
     SCAN_BYTES.with(|c| c.set(c.get().saturating_add(bytes)));
+    CHECK_SCAN_BYTES.with(|c| c.set(c.get().saturating_add(bytes)));
+}
+
+/// The bytes scanned on this thread since the last call, and reset: what the check that just finished read. The request total
+/// ([`take_scan`]) is not affected.
+pub fn take_check_scan() -> u64 {
+    CHECK_SCAN_BYTES.with(Cell::take)
+}
+
+/// The CPU the check that just ran spent on this thread, in microseconds (the dispatcher notes it as the check finishes).
+pub fn note_check_cpu(us: u64) {
+    CHECK_CPU_US.with(|c| c.set(us));
+}
+
+/// The CPU noted for the check that just finished, and reset.
+pub fn take_check_cpu() -> u64 {
+    CHECK_CPU_US.with(Cell::take)
+}
+
+/// The memory the check that just ran allocated (`None` when it was not measured), noted by [`crate::checks::run_env_guarded`] as the
+/// check finishes.
+pub fn note_check_mem(d: Option<crate::mem::Delta>) {
+    CHECK_MEM.with(|c| c.set(d));
+}
+
+/// The memory noted for the check that just finished, and reset.
+pub fn take_check_mem() -> Option<crate::mem::Delta> {
+    CHECK_MEM.with(Cell::take)
+}
+
+/// A check on this thread saw one `metric` event labelled `label` = `value` (for instance a kept-walk hit, or the reason it
+/// missed); the observer counts it when the check finishes. Bounded per check: the notes past the cap are dropped.
+pub fn note_count(metric: &'static str, label: &'static str, value: &'static str) {
+    NOTES.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.len() < defaults::num("load.notes_cap") as usize {
+            n.push((metric, label, value));
+        }
+    });
+}
+
+/// The counts noted on this thread since the last call, and reset.
+pub fn take_counts() -> Vec<Note> {
+    NOTES.with(|n| std::mem::take(&mut *n.borrow_mut()))
+}
+
+/// The size of the transcript the request on this thread names (`None` when it names none or the file cannot be read).
+pub fn set_transcript_size(size: Option<u64>) {
+    TRANSCRIPT_SIZE.with(|c| c.set(size));
+}
+
+/// The transcript size noted for the request in progress.
+pub fn transcript_size() -> Option<u64> {
+    TRANSCRIPT_SIZE.with(Cell::get)
+}
+
+/// The label of the size bucket `size` falls in (`load.size_buckets_bytes` gives the upper bounds; `load.size_label_*` the names).
+pub fn size_bucket(size: Option<u64>) -> String {
+    let Some(size) = size else { return defaults::text("load.size_label_unknown").to_string() };
+    let bounds = defaults::raw("load.size_buckets_bytes")
+        .as_array()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_integer())
+        .map(|n| n.max(0) as u64)
+        .collect::<Vec<_>>();
+    let labels = defaults::raw("load.size_labels").as_array().unwrap_or_default().iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>();
+    let i = bounds.iter().position(|b| size <= *b).unwrap_or(bounds.len());
+    labels.get(i).cloned().unwrap_or_else(|| defaults::text("load.size_label_unknown").to_string())
 }
 
 thread_local! {
@@ -46,6 +125,9 @@ pub fn take_request() -> (String, Option<String>) {
 
 /// The bytes scanned on this thread since the last call, and reset.
 pub fn take_scan() -> u64 {
+    CHECK_SCAN_BYTES.with(Cell::take);
+    NOTES.with(|n| n.borrow_mut().clear());
+    TRANSCRIPT_SIZE.with(|c| c.set(None));
     SCAN_BYTES.with(Cell::take)
 }
 
@@ -210,6 +292,46 @@ mod tests {
 
     fn s(at_ms: u64, wait_us: u64, proc_us: u64, event: &str, session: &str) -> Sample {
         Sample { at_ms, wait_us, proc_us, in_flight: 1, event: event.into(), session: Some(session.into()), scan_bytes: 0 }
+    }
+
+    #[test]
+    fn a_check_gets_the_bytes_it_scanned_and_the_request_total_still_counts_them() {
+        take_scan();
+        note_scan(10);
+        note_scan(5);
+        assert_eq!(take_check_scan(), 15, "the check that just ran read 15");
+        assert_eq!(take_check_scan(), 0, "and the next one starts at zero");
+        note_scan(7);
+        assert_eq!(take_scan(), 22, "the request total is not reset by a check taking its share");
+        assert_eq!(take_check_scan(), 0, "a new request starts every check at zero");
+    }
+
+    #[test]
+    fn counted_notes_are_handed_over_once_and_are_bounded() {
+        take_scan();
+        note_count("agent_scan_kept", "result", "hit");
+        note_count("agent_scan_kept_miss", "reason", "gen");
+        assert_eq!(take_counts(), vec![("agent_scan_kept", "result", "hit"), ("agent_scan_kept_miss", "reason", "gen")]);
+        assert!(take_counts().is_empty());
+        for _ in 0..(defaults::num("load.notes_cap") + 10) {
+            note_count("agent_scan_kept", "result", "hit");
+        }
+        assert_eq!(take_counts().len() as u64, defaults::num("load.notes_cap"));
+        note_count("agent_scan_kept", "result", "hit");
+        take_scan();
+        assert!(take_counts().is_empty(), "a new request drops what the last one left");
+    }
+
+    #[test]
+    fn a_transcript_size_falls_in_the_named_class() {
+        let kb = 1024;
+        assert_eq!(size_bucket(None), defaults::text("load.size_label_unknown"));
+        assert_eq!(size_bucket(Some(10 * kb)), "lt200k");
+        assert_eq!(size_bucket(Some(200 * kb)), "lt200k", "an edge belongs to the lower class");
+        assert_eq!(size_bucket(Some(200 * kb + 1)), "lt1m");
+        assert_eq!(size_bucket(Some(5 * kb * kb)), "lt10m");
+        assert_eq!(size_bucket(Some(50 * kb * kb)), "lt100m");
+        assert_eq!(size_bucket(Some(300 * kb * kb)), "ge100m");
     }
 
     #[test]

@@ -84,8 +84,22 @@ fn field(m: &OVal, k: &str) -> Option<String> {
     }
 }
 
+/// The id a message's dedupe hash is taken under: the mesh label of the partition's checkout. One checkout can be registered as
+/// several partitions (the app's own row, the worktree label a spawn pre-registers, a Primary's label), and the app's native
+/// queue is one stream: with the hash taken under the partition id, the same message ingested through two of them was stored twice
+/// (downstream 2026-10-22: one `DONE:` notice read twice, empty sender, no seq). Under the checkout's label the store's UNIQUE(hash)
+/// keeps one. A partition with no registry row, or a path that has no label, keeps its own id.
+pub fn hash_scope(reader: &crate::mesh::MeshReader, workspace_id: &str) -> String {
+    registry_pairs(reader)
+        .iter()
+        .find(|(id, _)| id == workspace_id)
+        .and_then(|(_, wt)| crate::meshw::ident::primary_workspace_id(wt).ok())
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| workspace_id.to_string())
+}
+
 /// `messageHash(workspaceId, msg)`: `native:` + sha256 of the NUL-joined identifying fields (plus a canonical JSON of the whole
-/// message when it has no `createdAt` to tell two same-text messages apart).
+/// message when it has no `createdAt` to tell two same-text messages apart). `workspace_id` is the [`hash_scope`].
 pub fn message_hash(workspace_id: &str, m: &OVal) -> String {
     let keys = defaults::list("devswarm_ingest.hash_fields");
     let mut parts = vec![workspace_id.to_string()];
@@ -97,6 +111,13 @@ pub fn message_hash(workspace_id: &str, m: &OVal) -> String {
     }
     let d = ring::digest::digest(&ring::digest::SHA256, keyed.as_bytes());
     format!("{}{}", defaults::text("devswarm_ingest.hash_prefix"), hex(d.as_ref()))
+}
+
+/// The hash a message carried before the dedupe was taken under the checkout's label (under the partition id): `Some` only when
+/// that differs from the label-scoped one. A machine that ran an earlier version holds inbox lines and store rows under it, so a
+/// message already seen that way is a duplicate, not new mail.
+pub fn legacy_hash(scope: &str, workspace_id: &str, m: &OVal) -> Option<String> {
+    (scope != workspace_id).then(|| message_hash(workspace_id, m))
 }
 
 /// One row to append.
@@ -118,7 +139,7 @@ pub struct Row {
 }
 
 /// The rows of a batch.
-pub fn rows(workspace_id: &str, batch: &Batch, now: i64) -> Vec<Row> {
+pub fn rows(workspace_id: &str, scope: &str, batch: &Batch, now: i64) -> Vec<Row> {
     batch
         .messages
         .iter()
@@ -133,7 +154,7 @@ pub fn rows(workspace_id: &str, batch: &Batch, now: i64) -> Vec<Row> {
                 Parsed::Unknown => (now, true),
                 _ => (now, false),
             };
-            Row { workspace_id: workspace_id.to_string(), body, hash: message_hash(workspace_id, m), ts, sender: None, ts_fallback }
+            Row { workspace_id: workspace_id.to_string(), body, hash: message_hash(scope, m), ts, sender: None, ts_fallback }
         })
         .collect()
 }
@@ -153,6 +174,20 @@ pub fn branch_sender(registry: &[(String, String)], branch: &str) -> Option<Stri
     let want = branch_dir(branch);
     let mut hits: Vec<&String> =
         registry.iter().filter(|(_, wt)| Path::new(wt).file_name().is_some_and(|n| n.to_string_lossy() == want.as_str())).map(|(id, _)| id).collect();
+    hits.sort();
+    hits.dedup();
+    if hits.len() == 1 { Some(hits[0].clone()) } else { None }
+}
+
+/// The sender of a message whose branch names no registered workspace: a child's queue is the Primary's outbound (`pull` stamps
+/// the Primary's id the same way), so it is the one registered Primary. The Primary's own queue carries the children's notices,
+/// and two Primaries are ambiguous: neither is guessed.
+pub fn fallback_sender(registry: &[(String, String)], workspace_id: &str) -> Option<String> {
+    let prefix = defaults::text("mesh_write.primary_prefix");
+    if workspace_id.starts_with(prefix) {
+        return None;
+    }
+    let mut hits: Vec<&String> = registry.iter().map(|(id, _)| id).filter(|id| id.starts_with(prefix)).collect();
     hits.sort();
     hits.dedup();
     if hits.len() == 1 { Some(hits[0].clone()) } else { None }
@@ -204,17 +239,42 @@ pub struct Imported {
     pub lossy: bool,
     /// The rows, for the witness and the summary.
     pub rows: Vec<Row>,
+    /// Rows whose sender is the Primary fallback (no registered workspace is checked out under the message's branch).
+    pub fallbacks: usize,
 }
 
 /// `ingestPayload(s, raw, {workspaceId, home, now})`.
 pub fn ingest_payload(store: &MeshStore, home: &Path, workspace_id: &str, raw: &str, now: i64) -> Result<Imported, Refused> {
+    ingest_payload_seen(store, home, workspace_id, raw, now, &std::collections::HashSet::new())
+}
+
+/// [`ingest_payload`] for a caller that also keeps the durable inbox: `inbox_hashes` are the hashes its lines already carry, so a
+/// message whose line was written under the partition-id hash gets its store row under that same hash (the two channels then
+/// still agree it is one message).
+pub fn ingest_payload_seen(
+    store: &MeshStore,
+    home: &Path,
+    workspace_id: &str,
+    raw: &str,
+    now: i64,
+    inbox_hashes: &std::collections::HashSet<String>,
+) -> Result<Imported, Refused> {
     let batch = parse_batch(raw);
-    let mut rows = rows(workspace_id, &batch, now);
+    let scope = hash_scope(store.reader(), workspace_id);
+    let mut rows = rows(workspace_id, &scope, &batch, now);
+    let mut fallbacks = 0_usize;
     if !rows.is_empty() {
         // sender: the registry row checked out under the message's branch (a native message names only its branch)
         let registry = registry_pairs(store.reader());
         for (r, m) in rows.iter_mut().zip(&batch.messages) {
             r.sender = field(m, defaults::text("devswarm_ingest.from_branch_key")).and_then(|b| branch_sender(&registry, &b));
+            if r.sender.is_none() {
+                r.sender = fallback_sender(&registry, workspace_id);
+                fallbacks += usize::from(r.sender.is_some());
+            }
+        }
+        if fallbacks > 0 {
+            crate::metrics::bump("mesh_sender_fallback", &[("where", defaults::text("mesh_write.sender_fallback_ingest"))]);
         }
     }
     let mut inserted = 0;
@@ -226,8 +286,27 @@ pub fn ingest_payload(store: &MeshStore, home: &Path, workspace_id: &str, raw: &
                 return Err(Refused::Gone);
             }
             let mut n = 0;
-            for r in &rows {
-                if store.append_message_from(&r.workspace_id, r.ts, Some(&r.hash), &r.body, r.sender.as_deref()).map_err(|e| Refused::Store(e.to_string()))? {
+            // rows an earlier version stored under the partition-id hash are already here
+            let mut old: std::collections::HashSet<String> = std::collections::HashSet::new();
+            if scope != workspace_id {
+                store
+                    .reader()
+                    .for_each_message(workspace_id, 0, |m| {
+                        if let Some(h) = m["hash"].as_str() {
+                            old.insert(h.to_string());
+                        }
+                        true
+                    })
+                    .map_err(|e| Refused::Store(e.to_string()))?;
+            }
+            for (r, m) in rows.iter().zip(&batch.messages) {
+                let legacy = legacy_hash(&scope, workspace_id, m);
+                // (re-offering it under that hash is the ignored insert Node makes, so the table's counters agree too)
+                let hash = match legacy {
+                    Some(l) if old.contains(&l) || inbox_hashes.contains(&l) => l,
+                    _ => r.hash.clone(),
+                };
+                if store.append_message_from(&r.workspace_id, r.ts, Some(&hash), &r.body, r.sender.as_deref()).map_err(|e| Refused::Store(e.to_string()))? {
                     n += 1;
                 }
             }
@@ -238,7 +317,7 @@ pub fn ingest_payload(store: &MeshStore, home: &Path, workspace_id: &str, raw: &
         inserted = out?;
     }
     let lossy = rows.is_empty() && !raw.trim().is_empty() && !batch.recognized;
-    Ok(Imported { total: rows.len(), inserted, duplicate: rows.len() - inserted, lossy, rows })
+    Ok(Imported { total: rows.len(), inserted, duplicate: rows.len() - inserted, lossy, rows, fallbacks })
 }
 
 #[cfg(test)]
@@ -290,6 +369,54 @@ mod tests {
         let sender = |needle: &str| rows.iter().find(|m| m["body"].as_str().is_some_and(|b| b.contains(needle))).map(|m| m["sender"].clone());
         assert_eq!(sender("fix/foo"), Some(serde_json::json!("c1")));
         assert_eq!(sender("fix/ghost"), Some(serde_json::Value::Null), "an unregistered branch stays unattributed");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    #[test]
+    fn a_child_queue_message_from_no_known_branch_is_the_primarys() {
+        // #181: a poke whose fromBranch is "main" names no registered checkout; a child's queue is the Primary's outbound
+        let r: Vec<(String, String)> = vec![("c1".into(), "/x/c1".into()), ("primary-aaaa1111".into(), "/x/repo".into())];
+        assert_eq!(fallback_sender(&r, "c1").as_deref(), Some("primary-aaaa1111"));
+        assert_eq!(fallback_sender(&r, "primary-aaaa1111"), None, "the Primary's own queue carries the children's notices: no guess");
+        let two: Vec<(String, String)> = vec![("primary-aaaa1111".into(), "/x/a".into()), ("primary-bbbb2222".into(), "/x/b".into())];
+        assert_eq!(fallback_sender(&two, "c1"), None, "two Primaries: never a guess");
+        assert_eq!(fallback_sender(&[], "c1"), None);
+    }
+
+    #[test]
+    fn an_ingested_poke_from_main_carries_the_primary_as_sender() {
+        let dir = std::env::temp_dir().join(format!("ah-import-fallback-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = MeshStore::open(&dir.join("devswarm.db")).unwrap();
+        for (id, wt) in [("primary-aaaa1111", "/w/repo"), ("c1", "/x/repos/0/ab/fix-foo")] {
+            let row = RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+            st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        }
+        let raw = r#"[{"fromBranch":"main","message":"poke","createdAt":"2026-01-01T00:00:00Z"}]"#;
+        let done = ingest_payload(&st, &dir, "c1", raw, 1).unwrap();
+        assert_eq!(done.inserted, 1);
+        let rows = st.reader().last_messages("c1", 5).unwrap();
+        assert_eq!(rows[0]["sender"], serde_json::json!("primary-aaaa1111"), "the row is attributed, not NULL");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    /// downstream 2026-10-22: one native `DONE:` notice sat in the app row's partition AND the Primary label's partition (the same
+    /// checkout), so a union read returned it twice with an empty sender and no seq.
+    #[test]
+    fn the_same_native_message_through_two_partitions_of_one_checkout_is_stored_once() {
+        let dir = std::env::temp_dir().join(format!("ah-import-twin-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = MeshStore::open(&dir.join("devswarm.db")).unwrap();
+        for (id, wt) in [("primary-aaaa1111", "/w/repo"), ("app-row", "/w/repo"), ("other", "/w/elsewhere")] {
+            let row = RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+            st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        }
+        let raw = r#"[{"fromBranch":"x/y","message":"DONE: x/y - r@main@1","createdAt":"2026-01-01T00:00:00Z"}]"#;
+        assert_eq!(ingest_payload(&st, &dir, "primary-aaaa1111", raw, 1).unwrap().inserted, 1);
+        assert_eq!(ingest_payload(&st, &dir, "app-row", raw, 1).unwrap().inserted, 0, "the same checkout's other partition stores nothing");
+        assert_eq!(ingest_payload(&st, &dir, "other", raw, 1).unwrap().inserted, 1, "another checkout keeps its own copy");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 }

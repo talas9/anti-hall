@@ -81,8 +81,9 @@ var dedupe = {
     var mins = ah.settings.num('emit_dedupe.num_window_min');
     return isFinite(mins) && mins > 0 ? mins * ah.cfgNum('emit_dedupe.ms_per_minute') : ah.cfgNum('emit_dedupe.window_default_ms');
   },
-  // `shouldEmit({sessionId, key, content, transcriptPath, keepaliveTurns})`: false when the block is a repeat the model already
-  // holds. Anything that cannot be persisted emits.
+  // `shouldEmit({sessionId, key, content, transcriptPath, keepaliveTurns, readPath})`: false when the block is a repeat the model
+  // already holds. Anything that cannot be persisted emits. `readPath` (optional) is the path the transcript is opened at when the
+  // payload's is relative (hookProc.open); the record still names the payload's own path, as Node's does.
   shouldEmit: function (o) {
     var r = dedupe.evaluate(o, true);
     if (r === 'unsure') throw new Error('emit-dedupe: a transcript timestamp only JavaScript reads exactly');
@@ -107,7 +108,7 @@ var dedupe = {
     var emit = true, nextTurns = 0;
     if (same) {
       var since = prev.lastEmittedAt - tol, ch = typeof prev.ch === 'string' ? prev.ch : '', k = fin(prev.k) && prev.k > 0 ? prev.k : 1;
-      var consumed = dedupe.findInTail(o.transcriptPath, function (a) { return a.ts >= since && !!ch && dedupe.matchesExact(a.els, ch, k); });
+      var consumed = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= since && !!ch && dedupe.matchesExact(a.els, ch, k); });
       if (consumed === 'unsure') return 'unsure';
       if (consumed === null) {
         if ((now - prev.lastEmittedAt) < windowMs) { emit = false; nextTurns = turns; }
@@ -118,7 +119,7 @@ var dedupe = {
       } else if (!consumed) {
         if ((now - prev.lastEmittedAt) < maxPending) { emit = false; nextTurns = turns; }
       } else if (keepalive > 0) {
-        var nt = dedupe.findInTail(o.transcriptPath, function (a) { return a.ts >= lastSeen - tol; });
+        var nt = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= lastSeen - tol; });
         if (nt === 'unsure') return 'unsure';
         var t = turns + (nt === true ? 1 : 0);
         if (t > keepalive) emit = true; else { emit = false; nextTurns = t; }

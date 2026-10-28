@@ -4,7 +4,7 @@
 // when it started its detached refresh process. Mirrors hooks/claude-cli-version.js. Keys: session.toml (session.claude_cli_*).
 'use strict';
 function decide() {
-  if (spawn.osHome() === null) return 'defer';
+  if (spawn.osHome() === null) { ah.unable('claude-cli-version:no_home', 'abandoned'); return 'allow'; } // no absolute HOME: no cache to read, nothing to say
   return sess.driftProbe({ setting: 'session.setting_claude_cli', guard: 'session.claude_cli_guard', cache: 'session.claude_cli_cache',
     baseline: 'session.claude_cli_baseline', what: 'session.claude_cli_what', instead: 'session.claude_cli_instead', keyed: true, probe: 'claude_cli' });
 }

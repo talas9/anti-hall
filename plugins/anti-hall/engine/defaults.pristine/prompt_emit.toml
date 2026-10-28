@@ -1,20 +1,19 @@
 # ah-engine shipped defaults for the prompt-emission checks ported from Node: verify-first, idle-agent-sweep and
-# emit-dedupe-reset, and the per-session emit-dedupe store they share (hooks/verify-first.js, hooks/idle-agent-sweep.js,
-# hooks/emit-dedupe-reset.js, hooks/lib/emit-dedupe.js, hooks/lib/idle-agents.js, hooks/lib/agent-scan.js).
+# emit-dedupe-reset, and the per-session emit-dedupe store they share.
 #
 # Regex sources use JavaScript syntax (the Node hooks are the authority) and are translated by `checks::guardkit::jsre`; they
 # are written as TOML literal strings so no backslash is doubled, and a single quote is written \x27. Format: see the header
 # of engine.toml.
 
 [prompt_emit.judge_child_env]
-doc = "When this variable is 1 the hook runs inside the `claude -p` judge child, whose hooks must do nothing (hooks/lib/judge-child-exit.js): the check answers with no output and no state."
+doc = "When this variable is 1 the hook runs inside the `claude -p` judge child, whose hooks must do nothing: the check answers with no output and no state."
 value = "ANTIHALL_JUDGE_CHILD"
 
-# ---- emit-dedupe store (hooks/lib/emit-dedupe.js) ----------------------------------------------------------
+# ---- emit-dedupe store ----------------------------------------------------------
 
 [emit_dedupe.summary]
 doc = "One-line description of the emit-dedupe-reset check in the generated reference."
-value = "SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted (port of emit-dedupe-reset.js)."
+value = "SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted."
 
 [emit_dedupe.sw_enabled]
 doc = "Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing."
@@ -104,11 +103,11 @@ doc = "A session file not modified for this long is removed by the sweep (never 
 value = 604800000
 unit = "ms"
 
-# ---- verify-first (hooks/verify-first.js) ---------------------------------------------------------------------
+# ---- verify-first ---------------------------------------------------------------------
 
 [verify_first.summary]
 doc = "One-line description of the verify-first check in the generated reference."
-value = "UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node (port of verify-first.js)."
+value = "UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node."
 
 [verify_first.event]
 doc = "The hook event name in the check's output."
@@ -179,11 +178,11 @@ value = [
   "Prefer SHALLOW+WIDE over deep nesting: a subagent is a worker, not a sub-orchestrator - it does the work, it doesn't re-delegate unless told. Route read-only research to Explore (can't recurse). When work is breadth-first and needs 3+ parallel/nested spawns, lift it into ONE deterministic Workflow instead of ad-hoc chains.",
 ]
 
-# ---- idle-agent-sweep (hooks/idle-agent-sweep.js, hooks/lib/idle-agents.js, hooks/lib/agent-scan.js) ---------------------
+# ---- idle-agent-sweep ---------------------
 
 [idle_sweep.summary]
 doc = "One-line description of the idle-agent-sweep check in the generated reference."
-value = "UserPromptSubmit: lists agents that finished but were never stopped or closed, and the call that ends each (port of idle-agent-sweep.js)."
+value = "UserPromptSubmit: lists agents that finished but were never stopped or closed, and the call that ends each."
 
 [idle_sweep.event]
 doc = "The hook event name in the check's output."
@@ -264,7 +263,7 @@ value = "{why_head} until it is {past}."
 
 [idle_sweep.instead]
 doc = "Advisory advice; {verb} close or stop, {call} the exact call for the first agent."
-value = "if you have no more work for them, {verb} each one, e.g. {call} (one call per agent). Keep any you will re-task."
+value = "{verb} each finished agent you will not reuse."
 
 [idle_sweep.call_claude]
 doc = "The call that stops a Claude teammate; {id} is its name."
@@ -294,7 +293,7 @@ value = '\(\d+m\)'
 doc = "Control characters replaced by a space in a label (JavaScript regex, replaced globally)."
 value = '[\x00-\x1F\x7F-\x9F]'
 
-# ---- the Claude transcript scan (agent-scan.js) ----------------------------------------------------------
+# ---- the Claude transcript scan ----------------------------------------------------------
 
 [idle_sweep.prefilter]
 doc = "A transcript line is read only when it holds one of these (the Node scan's cheap pre-filter, in the same terms)."
@@ -365,6 +364,14 @@ value = '^(completed|failed|stopped|killed|cancelled|canceled)$'
 doc = "Idle reasons that end a teammate's work (JavaScript regex)."
 value = '^(available|failed)$'
 
+[idle_sweep.re_stop_gone]
+doc = "A TaskStop result that says the task no longer exists. The agent is gone, so the errored stop still ended it (JavaScript regex, case-insensitive)."
+value = 'no (such )?task found'
+
+[idle_sweep.stale_minutes]
+doc = "A finished agent idle longer than this many minutes is stale (long gone), not idle: it is dropped from the idle-agents advisory."
+value = 1440
+
 [idle_sweep.re_hex_id]
 doc = "A background agent id (JavaScript regex)."
 value = '^[0-9a-fA-F]{6,40}$'
@@ -401,7 +408,7 @@ value = '<status>([^<]*)</status>'
 doc = "A notification block directly inside a system-reminder block (JavaScript regex)."
 value = '<system-reminder>\s*<task-notification>'
 
-# ---- the Codex rollout scan (idle-agents.js) ------------------------------------------------------------
+# ---- the Codex rollout scan ------------------------------------------------------------
 
 [idle_sweep.codex_prefilter]
 doc = "A rollout line is read only when it holds one of these."
@@ -445,7 +452,7 @@ value = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 [verify_first.primary_nudge]
 doc = "The sentence appended to the rotating line in a DevSwarm Primary session that may dispatch workspaces (byte-identical to the Node hook's DEVSWARM_PRIMARY_NUDGE)."
-value = "DEVSWARM PRIMARY: the workspace is your TOP fan-out tier. A workspace-scale MATTER (a feature/fix/deploy - multi-step, own branch, own review) gets its OWN child workspace: `node scripts/devswarm.js spawn <branch> -p \"<brief>\"` - not a subagent. Subagents/Explore/Workflow are for lookups, single commands, scoped investigations and review passes."
+value = "DEVSWARM PRIMARY: the workspace is your TOP fan-out tier. A workspace-scale MATTER (a feature/fix/deploy - multi-step, own branch, own review) gets its OWN child workspace: `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"` - not a subagent. Subagents/Explore/Workflow are for lookups, single commands, scoped investigations and review passes."
 
 [verify_first.primary_joiner]
 doc = "Text between the rotating line and the Primary sentence."

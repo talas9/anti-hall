@@ -1,0 +1,92 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "promote-unclaimed: promoted 2 unclaimed workspace session id(s) — 3 left as is (no known session)",
+    "errors": 0,
+    "left": 3,
+    "ok": true,
+    "promoted": 2
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/heartbeats/": "755",
+    ".anti-hall/devswarm/heartbeats/u1.json": "644 {\"id\":\"u1\",\"sessionId\":\" sess-real-1 \"}",
+    ".anti-hall/devswarm/heartbeats/u3.json": "644 {\"id\":\"u3\",\"sessionId\":\" unclaimed:u3 \"}",
+    ".anti-hall/devswarm/heartbeats/u4.json": "644 {\"id\":\"u4\",\"sessionId\":\" sess-4 \"}",
+    ".anti-hall/devswarm/heartbeats/u5.json": "644 {\"id\":\"u5\",\"sessionId\":\" sess-5 \"}",
+    ".anti-hall/devswarm/summaries/": "755",
+    ".anti-hall/devswarm/summaries/5850a03e.json": "644 {\"generatedAt\":0,\"requiredGates\":[\"done\",\"merged\",\"tests_passed\"],\"workspaces\":{\"u5\":{\"id\":\"u5\",\"worktreePath\":\"/nonexistent/u5\",\"sessionId\":\"sess-5\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"total\":0,\"cursor\":0,\"unread\":0,\"directTotalFromOthers\":0,\"directUnread\":0,\"oldestDirectUnreadTs\":null,\"oldestDirectUnreadSender\":null,\"broadcastUnread\":0,\"broadcastUnreadFromOthers\":0,\"urgencyMax\":null,\"broadcastUrgencyMax\":null,\"working_on\":null,\"gates\":{},\"archive_ready\":false,\"archive_requested\":false,\"archive_request_only_unread\":false,\"pendingQuestions\":[]}},\"recent\":[],\"archivedRegistryRows\":[]}",
+    ".anti-hall/devswarm/summaries/bb82030d.json": "644 {\"generatedAt\":0,\"requiredGates\":[\"done\",\"merged\",\"tests_passed\"],\"workspaces\":{\"u1\":{\"id\":\"u1\",\"worktreePath\":\"/nonexistent/u1\",\"sessionId\":\"sess-real-1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"total\":0,\"cursor\":0,\"unread\":0,\"directTotalFromOthers\":0,\"directUnread\":0,\"oldestDirectUnreadTs\":null,\"oldestDirectUnreadSender\":null,\"broadcastUnread\":0,\"broadcastUnreadFromOthers\":0,\"urgencyMax\":null,\"broadcastUrgencyMax\":null,\"working_on\":null,\"gates\":{},\"archive_ready\":false,\"archive_requested\":false,\"archive_request_only_unread\":false,\"pendingQuestions\":[]}},\"recent\":[],\"archivedRegistryRows\":[]}",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/u1.json": "644 {\"id\":\"u1\",\"worktreePath\":\"/nonexistent/u1\",\"sessionId\":\"sess-real-1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/devswarm/workspaces/u2.json": "644 {\"id\":\"u2\",\"worktreePath\":\"/nonexistent/u2\",\"sessionId\":\"unclaimed:u2\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/devswarm/workspaces/u3.json": "644 {\"id\":\"u3\",\"worktreePath\":\"/nonexistent/u3\",\"sessionId\":\"unclaimed:u3\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/devswarm/workspaces/u4.json": "644 {\"id\":\"u4\",\"worktreePath\":\"/nonexistent/u4\",\"sessionId\":\"sess-reg-4\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/devswarm/workspaces/u5.json": "644 {\"id\":\"u5\",\"worktreePath\":\"/nonexistent/u5\",\"sessionId\":\"sess-5\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/logs/": "755",
+    ".anti-hall/logs/devswarm.jsonl": "644 {\"X\":0,\"component\":\"devswarm-cli\",\"op\":\"unclaimed-session-promoted\",\"level\":\"info\",\"repoKey\":null,\"meshId\":null,\"X\":0,\"msg\":\"workspace u1 promoted from unclaimed:u1 to a real session id\",\"ctx\":{\"id\":\"u1\",\"to\":\"sess-real-1\"}}\n{\"X\":0,\"component\":\"devswarm-cli\",\"op\":\"unclaimed-session-promoted\",\"level\":\"info\",\"repoKey\":null,\"meshId\":null,\"X\":0,\"msg\":\"workspace u5 promoted from unclaimed:u5 to a real session id\",\"ctx\":{\"id\":\"u5\",\"to\":\"sess-5\"}}"
+  },
+  "stores": {
+    "011e39ef": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "u3",
+          "session_id": "unclaimed:u3",
+          "worktree_path": "/nonexistent/u3"
+        }
+      ]
+    },
+    "5850a03e": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "u5",
+          "session_id": "sess-5",
+          "worktree_path": "/nonexistent/u5"
+        }
+      ]
+    },
+    "6ca202c8": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "u2",
+          "session_id": "unclaimed:u2",
+          "worktree_path": "/nonexistent/u2"
+        }
+      ]
+    },
+    "bb82030d": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "u1",
+          "session_id": "sess-real-1",
+          "worktree_path": "/nonexistent/u1"
+        }
+      ]
+    },
+    "e9c981a4": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "u4",
+          "session_id": "sess-reg-4",
+          "worktree_path": "/nonexistent/u4"
+        }
+      ]
+    }
+  }
+}

@@ -13,10 +13,10 @@ maintainers live in the
 
 ```text
 short-lived branch ──► dev ──► pull request ──► main ──► tag vX.Y.Z ──► GitHub Release
-                     (no CI)   (required checks)  (docs deploy)  (immutable)
+                     (path CI) (required checks)  (docs deploy)  (immutable)
 ```
 
-- Work lands on `dev`. Pushes to `dev` run no CI, so the local test suite is the gate.
+- Work lands on `dev`. Pushes to `dev` run only the path-filtered engine workflow and the privacy scan, so the local test suite is the gate.
 - `main` changes only through a pull request from `dev`. Merging that pull request is the
   release, and the docs site deploys from it.
 - Release tags (`vX.Y.Z`, `ah-engine-vX.Y.Z`) are immutable: they are never moved or
@@ -24,12 +24,18 @@ short-lived branch ──► dev ──► pull request ──► main ──►
 
 ## CI layout
 
+Required checks and the working rules are in [Development guide](DEVELOPMENT.md#merge-model).
+
 | When | What runs |
 |---|---|
-| Pull requests | Lean run: Node 24, Linux and macOS shards |
-| Release candidate tags, tags, pushes to `main`, weekly | Full matrix: Linux and macOS, Node 22 and 24 |
-| Nightly | Engine parity suites and timing benchmarks, kept out of the per-PR run |
-| Pull requests touching docs | Strict docs build (broken links or pages fail it) |
+| Pull request or push to `dev`, touching engine, launcher, plugin engine files | `ah-engine` workflow: `rust` (Linux gate with `./test.sh`, macOS build and smoke), `ah-hook` build on both, `doc-check` |
+| Pull request touching `ah-engine/`, `ah-launcher/`, `plugins/anti-hall/` | `no-node` (Linux and macOS) |
+| Every pull request | `tests-passed` (placeholder), `privacy-scan`, `pr-title`, PR check labels |
+| Pull request to `main` | `dev-only` (source must be `dev`); strict docs build when docs change |
+| Push to `main` | docs deploy (when docs change), `tests-passed`, `privacy-scan` |
+| Nightly and weekly | Full engine suite on both OSes, hardening bar, weekly full `doc-check`; a failure opens or updates one issue |
+
+Pushes to `dev` run the path-filtered engine workflow and the privacy scan only.
 
 ## Repo automation
 
@@ -49,5 +55,6 @@ anything.
 
 !!! note "Model chain"
     When a model is used, the order is Claude (primary token), Claude (secondary token),
-    GitHub Copilot, then rules only. Each job picks its model from
+    then rules only. GitHub Copilot is off by default (`copilot_fallback` is `false` in
+    `.github/moderation/config.json`); set it to `true` to add Copilot as the last slot. Each job picks its model from
     `.github/moderation/config.json`; no model version is pinned in a workflow.

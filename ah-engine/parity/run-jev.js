@@ -2,7 +2,7 @@
 // Parity harness for the Jev lane (D31, D34-D38): the Node client (authority: hooks/lib/jev-client.js, jev-assist.js,
 // secret-scrub.js) against `ah-engine jev`, over a loopback mock server. No real network, no real HOME.
 //
-//   node run-jev.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks
+//   node run-jev.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks
 //        [--cmds <cmds.jsonl>] [--scrub-n 12000] [--fuzz-n 20000] [--body-n 150] [--conc 8] [--show 15] [--out mismatches.json]
 //
 // What is compared, each at 100%:

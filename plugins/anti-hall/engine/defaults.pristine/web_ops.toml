@@ -1,0 +1,226 @@
+# ah-engine shipped defaults for the Command Center's Accounts & usage, Updates and Logs screens (ah-web, GH #266). Format: see the
+# header of engine.toml. `ah-web` reads this file itself (named by web.ops_cfg_rel) at start-up and whenever web.toml changes; the
+# page gets its texts merged into the `ui` labels and the numbers from /api/ops/config. Nothing here is a credential: the screens
+# never read a token or a key.
+
+[web.ops.usage_cache_rel]
+doc = "The usage cache the limit-conserve and spawn-usage checks read (the same file as ctxbudget.usage_cache), relative to the home directory. It holds percentages and reset times only."
+value = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json"
+
+[web.ops.usage_cache_max_bytes]
+doc = "Largest usage cache read; a bigger file shows as unavailable."
+value = 262144
+unit = "bytes"
+
+[web.ops.usage_stale_ms]
+doc = "A usage cache older than this is shown as stale (the same limit as ctxbudget.usage_max_stale_ms)."
+value = 21600000
+unit = "ms"
+
+[web.ops.usage_warn_pct]
+doc = "Usage percent from which a bucket turns amber and says it is approaching its limit."
+value = 70
+
+[web.ops.usage_bad_pct]
+doc = "Usage percent from which a bucket turns red (the limit-conserve threshold default, limitConserve.threshold)."
+value = 85
+
+[web.ops.usage_buckets]
+doc = "The fixed buckets of the usage cache: id, the cache field holding the percent, the field holding the reset time, and the ui text key of its name."
+value = [{ id = "five_hour", pct = "fiveHourPercent", resets = "fiveHourResetsAt", label_key = "ops_bucket_five_hour" }, { id = "weekly", pct = "weeklyPercent", resets = "weeklyResetsAt", label_key = "ops_bucket_weekly" }]
+
+[web.ops.usage_scoped_field]
+doc = "The usage cache field holding the per-model weekly buckets (each with id, label, percent, resetsAt)."
+value = "scopedWeeklyBuckets"
+
+[web.ops.usage_scoped_keys]
+doc = "Field names inside one per-model bucket: label, percent, resets."
+value = { label = "label", pct = "percent", resets = "resetsAt" }
+
+[web.ops.usage_scoped_active_field]
+doc = "The member of a model-specific bucket that says whether that model's limit is in use."
+value = "isActive"
+
+[web.ops.usage_scoped_hide_idle]
+doc = "A model-specific bucket that is not in use and has nothing used is left out of the gauges."
+value = true
+
+[web.ops.usage_scoped_label_text]
+doc = "How a model-specific bucket is named in the gauges; {label} is the name the usage cache gives it."
+value = "{label} model, weekly (separate limit)"
+
+[web.ops.usage_weekly_bucket]
+doc = "The id of the fixed bucket whose reset time the Telemetry forecast uses, so Accounts and Telemetry read one source."
+value = "weekly"
+
+[web.ops.usage_timestamp_field]
+doc = "The usage cache field holding the time it was read, ms since the epoch."
+value = "timestamp"
+
+[web.ops.usage_data_field]
+doc = "The usage cache field holding the buckets."
+value = "data"
+
+[web.ops.claude_json_rel]
+doc = "The host's account file, relative to the home directory. Only the fields named in web.ops.claude_account_fields, the e-mail address and display name of the logged-in account and a short fingerprint of userID are read out of it; no token or key."
+value = ".claude.json"
+
+[web.ops.claude_json_max_bytes]
+doc = "Largest account file read."
+value = 16777216
+unit = "bytes"
+
+[web.ops.claude_account_fields]
+doc = "The fields of the account file's oauthAccount object that are shown, each with the ui text key of its name (plan and limits, never an identity or a credential)."
+value = [{ field = "organizationType", label_key = "ops_plan" }, { field = "billingType", label_key = "ops_billing" }, { field = "organizationRateLimitTier", label_key = "ops_rate_tier" }, { field = "hasExtraUsageEnabled", label_key = "ops_extra_usage" }]
+
+[web.ops.claude_account_key]
+doc = "The account file's object that exists once the host is logged in."
+value = "oauthAccount"
+
+[web.ops.claude_email_field]
+doc = "The oauthAccount member holding the account's e-mail address (shown as the account's name on the Claude card)."
+value = "emailAddress"
+
+[web.ops.claude_name_field]
+doc = "The oauthAccount member holding the account's display name."
+value = "displayName"
+
+[web.ops.claude_value_labels]
+doc = "Human labels for the raw plan values of the account file. A value not listed here is shown as it is; a listed one shows its label and the raw value only in a tooltip."
+value = { claude_max = "Max", claude_pro = "Pro", claude_team = "Team", claude_enterprise = "Enterprise", stripe_subscription = "Subscription (Stripe)", apple_subscription = "Subscription (Apple)", google_play_subscription = "Subscription (Google Play)", default_claude_max_20x = "Max 20\u00d7", default_claude_max_5x = "Max 5\u00d7", default_claude_pro = "Pro", default_claude_ai = "Free" }
+
+[web.ops.claude_user_key]
+doc = "The account file's top-level id of the logged-in user; only its first characters are shown, as a fingerprint."
+value = "userID"
+
+[web.ops.fingerprint_chars]
+doc = "How many leading characters of the user id the fingerprint shows."
+value = 8
+
+[web.ops.codex_auth_rel]
+doc = "Codex's login file, relative to the home directory. Only its existence and modified time are looked at: it is never opened."
+value = ".codex/auth.json"
+
+[web.ops.cost_ctl]
+doc = "The engine control request that carries the per-agent cost report (its agent_cost member is shown)."
+value = "telemetry summary"
+
+[web.ops.cost_key]
+doc = "The member of the cost request's reply that holds the per-agent cost report."
+value = "agent_cost"
+
+[web.ops.cost_rows]
+doc = "Most agents listed in the cost table (the highest spenders first). The engine's own cost report is capped by agent_tracker.cost_limit."
+value = 50
+
+[web.ops.cost_name_fallback]
+doc = "What an agent with no title is called in the cost table. {dir} is the folder it works in (a workspace's branch folder). Used only when no title exists in the tracker or the DevSwarm name cache."
+value = "{dir}"
+
+[web.ops.cost_name_unknown]
+doc = "What an agent is called in the cost table when it has no title and no folder is known (never its raw id)."
+value = "Agent (not tracked)"
+
+[web.ops.poll_accounts_ms]
+doc = "How often the Accounts screen asks for fresh numbers while it is shown and the tab is visible."
+value = 15000
+unit = "ms"
+
+[web.ops.tick_ms]
+doc = "How often the reset countdowns redraw while the Accounts screen is shown and the tab is visible."
+value = 1000
+unit = "ms"
+
+[web.ops.update_args]
+doc = "The engine arguments of the update check. Must contain --check: the server refuses to run them otherwise, so this button can never apply an update."
+value = ["update", "--check", "--json"]
+
+[web.ops.update_guard_flag]
+doc = "The flag update_args must contain."
+value = "--check"
+
+[web.ops.update_timeout_ms]
+doc = "The update check is abandoned after this long (it fetches from the network)."
+value = 60000
+unit = "ms"
+
+[web.ops.update_min_gap_ms]
+doc = "Least time between two update checks; a button press inside it shows the last result."
+value = 15000
+unit = "ms"
+
+[web.ops.update_text_max]
+doc = "Characters of the check's message kept."
+value = 600
+
+[web.ops.logs_sources]
+doc = "The logs the Logs screen can tail (through the engine's own `diag file`, which scrubs and caps them): id, ui text key, the engine file id, format (tsv or json), then where ts, component, level and text are. tsv fields are column numbers; json fields are member names (text may list several, comma separated, joined by a space). level_mode: rules (substring rules on the level field) or fixed (the level field is itself the level every line has: the debug log carries no level of its own)."
+value = [{ id = "engine", label_key = "ops_src_engine", file = "state:ah-engine.log", format = "tsv", ts = "0", comp = "1", level = "2", text = "3", level_mode = "rules" }, { id = "debug", label_key = "ops_src_debug", file = "state:debug.ndjson", format = "json", ts = "ts", comp = "module", level = "debug", text = "msg,data", level_mode = "fixed" }, { id = "actions", label_key = "ops_src_actions", file = "state:actions.ndjson", format = "json", ts = "ts", comp = "feature", level = "outcome", text = "action,target,reason", level_mode = "rules" }]
+
+[web.ops.logs_unit_from]
+doc = "The raw unit word found after a number in log text, which is shown in a unit a person reads."
+value = "us"
+
+[web.ops.logs_unit_small]
+doc = "The label for that unit below logs_unit_step."
+value = "\u00b5s"
+
+[web.ops.logs_unit_big]
+doc = "The label for the larger unit, from logs_unit_step up."
+value = "ms"
+
+[web.ops.logs_unit_step]
+doc = "How many of the raw unit make one of the larger unit."
+value = 1000
+
+[web.ops.logs_diag_args]
+doc = "The engine arguments that read one log; {file} is the engine file id from web.ops.logs_sources."
+value = ["diag", "file", "{file}", "--json"]
+
+[web.ops.logs_cache_ms]
+doc = "A log read is reused for this long, so several open tabs cost the engine one read."
+value = 1500
+unit = "ms"
+
+[web.ops.logs_timeout_ms]
+doc = "A log read is abandoned after this long."
+value = 5000
+unit = "ms"
+
+[web.ops.logs_max_lines]
+doc = "Most lines one reply carries."
+value = 600
+
+[web.ops.logs_text_max]
+doc = "Characters kept of one line's text."
+value = 400
+
+[web.ops.logs_view_max]
+doc = "Most lines the page keeps and draws; older ones scroll away."
+value = 500
+
+[web.ops.logs_poll_ms]
+doc = "How often the Logs screen asks for new lines while it is shown, following and the tab is visible."
+value = 3000
+unit = "ms"
+
+[web.ops.log_levels]
+doc = "The level names, lowest first. The Logs screen filters at or above one."
+value = ["debug", "info", "warn", "error"]
+
+[web.ops.log_default_level]
+doc = "The level a line gets when no rule matches."
+value = "info"
+
+[web.ops.log_level_rules]
+doc = "Substring rules for level_mode rules, checked in order against the lower-cased level field: the first rule with a matching word sets the level."
+value = [{ level = "error", words = ["error", "fail", "hard", "panic", "crash"] }, { level = "warn", words = ["soft", "late", "slow", "stall", "warn", "retry", "timeout", "unable", "refused", "denied"] }, { level = "debug", words = ["trace", "debug"] }]
+
+[web.ops.idle_shell_state]
+doc = "The host's session status that means a shell command is running (the registry's own word). With a finished turn it makes an agent show as idle, shell running, not running."
+value = "shell"
+
+[web.ops.text]
+doc = "Texts of the Accounts, Updates and Logs screens, merged into the page's ui labels."
+value = { nav_accounts = "Accounts", ops_accounts_title = "Accounts and usage", ops_accounts_hint = "What the engine can see of the logged-in accounts. No token or key is ever read or shown.", ops_claude = "Claude", ops_codex = "Codex", ops_signed_in = "logged in", ops_signed_out = "not logged in", ops_plan = "Plan", ops_fingerprint = "Account id", ops_billing = "Billing", ops_rate_tier = "Limit tier", ops_extra_usage = "Extra usage", ops_yes = "yes", ops_no = "no", ops_codex_signed_in = "login file present", ops_codex_signed_out = "no login file", ops_codex_changed = "login changed", ops_codex_usage = "Codex usage is not reported by the engine.", ops_codex_no_details = "Account details not available: the login file keeps only a token, which is never read.", ops_raw_tip = "stored as", ops_email = "Account", ops_name = "Name", ops_usage_title = "Usage", ops_bucket_five_hour = "5-hour", ops_bucket_weekly = "Weekly", ops_resets_in = "resets in", ops_reset_passed = "reset time passed", ops_reset_unknown = "reset time unknown", ops_near_limit = "approaching its limit", ops_at_limit = "at its limit", ops_usage_stale = "stale", ops_usage_age = "read", ops_usage_none = "No usage reading yet.", ops_usage_error = "The usage reading failed.", ops_cost_title = "Cost per agent", ops_cost_none = "No agent cost recorded yet.", ops_cost_agent = "Agent", ops_cost_kind = "Kind", ops_cost_tokens = "Tokens", ops_cost_outcomes = "Outcomes", ops_cost_per = "Tokens per outcome", ops_cost_total = "Total", ops_swap_title = "Switch account", ops_swap_later = "later (#268)", ops_swap_hint = "Hot-swapping the logged-in account is planned. It will not touch credentials from this page.", ops_loading = "Loading...", ops_unavailable = "not available", ops_failed = "Could not load this.", ops_updates_title = "Updates", ops_updates_hint = "The versions in use and a read-only check for a newer one. Checking never applies an update.", ops_ver_plugin = "Plugin", ops_ver_engine = "Engine", ops_ver_engine_plugin = "Plugin the engine loaded", ops_ver_web = "Dashboard (ah-web)", ops_ver_build = "Engine build", ops_ver_hook = "Hook client", ops_ver_unknown = "not reported", ops_check_button = "Check for updates", ops_checking = "Checking...", ops_checking_note = "Reading the installed and the latest version. This takes a few seconds.", ops_check_title = "Last check", ops_check_never = "Not checked in this session.", ops_check_installed = "Plugin installed", ops_check_latest = "Plugin latest", ops_check_result = "Result", ops_check_at = "Checked", ops_check_readonly = "Read only: nothing was changed.", ops_check_available = "A newer version is available.", ops_check_current = "Up to date.", ops_check_channel = "Channel", ops_check_unknown = "Cannot tell: no source version to compare with.", ops_check_lagging = "Current, but the harness registry and cache disagree (see the note).", ops_check_failed = "The check failed.", ops_check_changelog = "What changed", ops_check_changelog_none = "The check does not list what changed. The update command shows the changelog when it applies an update.", ops_check_apply = "To update: run the anti-hall update command in a terminal.", ops_skew = "The dashboard and the engine loaded different plugin versions.", ops_compat_ok = "Component versions are compatible.", ops_logs_title = "Logs", ops_logs_hint = "The tail of the engine's own logs, read through the engine and scrubbed. Newest at the bottom.", ops_src_engine = "Engine log", ops_src_debug = "Debug log", ops_src_actions = "Action log", ops_log_source = "Log", ops_log_level = "Level", ops_log_component = "Component", ops_log_all = "all", ops_log_search = "Filter text", ops_log_pause = "Pause", ops_log_resume = "Resume", ops_log_follow = "Follow", ops_log_lines = "lines", ops_log_shown = "shown", ops_log_empty = "No lines match.", ops_log_paused = "paused", ops_log_truncated = "Older lines are cut off; showing the newest.", ops_log_clear_filters = "Clear filters", ops_idle_shell = "idle · shell running", ops_idle_shell_tip = "The agent finished its turn; a shell command it started is still running.", ops_check_local_ahead = "You are on a local build newer than the latest published release ({release}). Nothing to update.", ops_check_build = "Engine build", ops_check_source = "Installed from", ops_check_release = "Latest release", ops_source_release = "a GitHub release", ops_source_local = "a local build", ops_source_manual = "by hand (no install record)" }

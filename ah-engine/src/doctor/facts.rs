@@ -178,7 +178,7 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
         if n == 0 {
             break;
         }
-        ctx.update(&buf[..n]);
+        ctx.update(buf.get(..n).unwrap_or_default());
     }
     Ok(ctx.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect())
 }

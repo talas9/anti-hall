@@ -1,0 +1,15 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "wake-monitor shipped (state dir ready) — could not resolve a DevSwarm identity for {ROOT}/home, live-check skipped. Manual arm: call the `Monitor` tool with command `node {ROOT}/home/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall-node/companion/lib/devswarm-wake-watch.js`, arming it with persistent: true if your Monitor tool supports that field — otherwise set timeout_ms to its maximum and re-arm when the tool emits its final/expired event (never run two watchers; the watcher's own lock also guards this, and the cron job stays the fallback either way) (or run that command yourself in a background terminal).",
+    "live": false,
+    "shipped": true,
+    "stateDirEnsured": true
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/wake/": "755"
+  },
+  "stores": {}
+}

@@ -1,0 +1,155 @@
+/* ah-web-graph: styles for the shared node-graph component (agents, topology, rules/hooks editor).
+   Colours come from the theme tokens the component writes on .ahg (--ahg-*, from web.graph.theme.* in web_graph.toml);
+   chrome colours fall back to the page-level --ah-* tokens when tokens.css defines them. */
+@layer ahg {
+  .ahg {
+    --ahg-line: var(--ah-line, oklch(0.28 0.045 262));
+    --ahg-panel: var(--ah-panel, oklch(0.18 0.035 262));
+    --ahg-text: var(--ah-text, oklch(0.96 0.015 262));
+    --ahg-muted: var(--ah-muted, oklch(0.71 0.05 262));
+    --ahg-bad: var(--ah-bad, oklch(0.69 0.19 12));
+    --ahg-ok: var(--ah-ok, oklch(0.84 0.14 165));
+    --ahg-warn: var(--ah-warn, oklch(0.82 0.15 75));
+    --ahg-mono: var(--ah-mono, "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace);
+    --ahg-sans: var(--ah-sans, Inter, system-ui, -apple-system, "Segoe UI", sans-serif);
+    display: flex; width: 100%; height: 100%; min-height: 360px; container-type: inline-size;
+    font-family: var(--ahg-sans); color: var(--ahg-text);
+  }
+
+  .ahg-view {
+    position: relative; flex: 1 1 auto; min-width: 0; overflow: hidden; touch-action: none; cursor: grab; user-select: none;
+    border: 1px solid var(--ahg-line); border-radius: 16px; background-color: var(--ahg-bg);
+    background-image: linear-gradient(var(--ahg-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ahg-grid) 1px, transparent 1px);
+  }
+  .ahg-view:active { cursor: grabbing; }
+  .ahg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .ahg-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+
+  /* wires (Lite tier, and Full tier when neither WebGPU nor Canvas2D is available) */
+  .ahg-wires { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+  .ahg-wires path { fill: none; stroke: var(--ahg-wire); stroke-width: 1.6; stroke-linecap: round; }
+  .ahg-wires path[data-hot="true"] { stroke: var(--ahg-wire-hot); stroke-width: 2.4; }
+
+  .ahg-lbl {
+    position: absolute; transform: translate(-50%, -50%); padding: 1px 7px; border-radius: 999px; pointer-events: none;
+    font: 10px var(--ahg-mono); color: var(--ahg-muted); background: color-mix(in oklch, var(--ahg-bg) 85%, transparent);
+    border: 1px solid var(--ahg-line); white-space: nowrap;
+  }
+  .ahg-lbl[data-hot="true"] { color: var(--ahg-text); border-color: var(--ahg-wire-hot); }
+
+  /* node cards */
+  .ahg-node {
+    position: absolute; box-sizing: border-box; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 12px; cursor: pointer;
+    border-radius: 12px; border: 1px solid var(--ahg-line); text-align: left;
+    background: color-mix(in oklch, var(--ahg-panel) 88%, transparent); box-shadow: 0 6px 20px oklch(0 0 0 / 0.35);
+    transition: box-shadow .2s, border-color .2s;
+  }
+  .ahg-node:focus-visible { outline: 2px solid var(--k); outline-offset: 2px; }
+  .ahg-node[data-sel="true"] {
+    border-color: var(--k); background: color-mix(in oklch, var(--ahg-panel) 95%, var(--k));
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--k) 45%, transparent), 0 0 30px color-mix(in oklch, var(--k) 45%, transparent);
+  }
+  .ahg-node[data-hot="true"] { border-color: var(--ahg-wire-hot); box-shadow: 0 0 0 2px color-mix(in oklch, var(--ahg-wire-hot) 40%, transparent), 0 0 24px color-mix(in oklch, var(--ahg-wire-hot) 35%, transparent); }
+  .ahg-node[data-status="off"] { opacity: .55; }
+  .ahg-node[data-status="failed"] { border-color: var(--ahg-bad); }
+
+  .ahg-node::after { content: ""; position: absolute; right: 8px; top: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--st); }
+  .ahg-dot { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%; background: var(--k); box-shadow: 0 0 10px var(--k); }
+  .ahg-dot[data-shape="square"] { border-radius: 3px; }
+  .ahg-dot[data-shape="diamond"] { border-radius: 2px; transform: rotate(45deg) scale(.86); }
+  .ahg-node[data-status="running"] .ahg-dot { animation: ahgPulse 2.2s infinite; }
+  .ahg-node[data-status="idle"] .ahg-dot { box-shadow: none; opacity: .7; }
+
+  .ahg-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+  .ahg-txt b { font: 600 12px var(--ahg-sans); color: var(--ahg-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ahg-txt i { font: normal 400 10px var(--ahg-mono); color: var(--ahg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .ahg-more {
+    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--ahg-muted);
+    font: 700 14px/1 var(--ahg-sans); cursor: pointer; opacity: 0; transition: opacity .15s;
+  }
+  .ahg-node:hover .ahg-more, .ahg-node:focus-within .ahg-more, .ahg-node[data-sel="true"] .ahg-more { opacity: 1; }
+  .ahg-more:hover { color: var(--ahg-text); border-color: var(--ahg-line); }
+  @media (hover: none) { .ahg-more { opacity: 1; width: 32px; height: 32px; } }
+
+  .ahg-port { position: absolute; width: 9px; height: 9px; border-radius: 50%; transform: translate(-50%, -50%); background: var(--k); border: 2px solid var(--ahg-bg); box-sizing: content-box; }
+  .ahg-port.in { left: 0; }
+  .ahg-port.out { left: 100%; }
+  .ahg-port em { position: absolute; top: 50%; transform: translateY(-50%); font: normal 9px var(--ahg-mono); color: var(--ahg-muted); white-space: nowrap; pointer-events: none; }
+  .ahg-port.in em { right: 12px; }
+  .ahg-port.out em { left: 12px; }
+
+  .ahg-chip { position: absolute; top: -11px; right: 10px; padding: 1px 8px; border-radius: 999px; font: 10px var(--ahg-mono); white-space: nowrap; border: 1px solid var(--ahg-line); background: var(--ahg-panel); }
+  .ahg-chip.run { color: var(--ahg-warn); border-color: color-mix(in oklch, var(--ahg-warn) 55%, transparent); }
+  .ahg-chip.ok { color: var(--ahg-ok); border-color: color-mix(in oklch, var(--ahg-ok) 55%, transparent); }
+  .ahg-chip.bad { color: var(--ahg-bad); border-color: color-mix(in oklch, var(--ahg-bad) 55%, transparent); }
+
+  /* toolbar + minimap */
+  .ahg-tools { position: absolute; left: 12px; top: 12px; display: flex; flex-direction: column; border: 1px solid var(--ahg-line); border-radius: 10px; overflow: hidden; background: var(--ahg-panel); }
+  .ahg-tools button { width: 36px; height: 36px; border: 0; background: transparent; color: var(--ahg-text); font: 600 16px var(--ahg-sans); cursor: pointer; }
+  .ahg-tools button + button { border-top: 1px solid var(--ahg-line); }
+  .ahg-tools button:hover { background: color-mix(in oklch, var(--ahg-panel) 80%, var(--ahg-wire-hot)); }
+  .ahg-mini { position: absolute; right: 12px; bottom: 12px; border: 1px solid var(--ahg-line); border-radius: 10px; background: color-mix(in oklch, var(--ahg-panel) 85%, transparent); cursor: pointer; }
+  .ahg-mini-view { fill: color-mix(in oklch, var(--ahg-wire-hot) 12%, transparent); stroke: var(--ahg-wire-hot); stroke-width: 1; }
+  @container (max-width: 560px) { .ahg-mini, .ahg-lbl { display: none; } }
+
+  /* selection side panel slot */
+  .ahg-panel { flex: 0 0 min(300px, 38cqw); margin-left: 12px; padding: 14px; overflow: auto; border: 1px solid var(--ahg-line); border-radius: 16px; background: var(--ahg-panel); }
+  .ahg-panel-body { margin: 0; font: 12px/1.5 var(--ahg-mono); color: var(--ahg-muted); white-space: pre-wrap; }
+  @container (max-width: 700px) { .ahg-panel { position: absolute; right: 8px; bottom: 8px; max-height: 45%; width: calc(100% - 16px); flex: none; margin: 0; } }
+
+  /* action menu + confirm: native popovers anchored to the node card (top layer, so the world transform never distorts them) */
+  .ahg-pop {
+    inset: auto; margin: 0; padding: 6px; min-width: 190px; border: 1px solid var(--ahg-line); border-radius: 12px; color: var(--ahg-text);
+    background: color-mix(in oklch, var(--ahg-panel) 96%, transparent); box-shadow: 0 14px 40px oklch(0 0 0 / 0.5);
+    font: 13px var(--ahg-sans); position: fixed;
+  }
+  @supports (position-area: right) {
+    .ahg-menu { position-area: right span-bottom; margin-left: 8px; position-try-fallbacks: flip-inline, flip-block, flip-block flip-inline; }
+    .ahg-confirm { position-area: bottom span-right; margin-top: 8px; position-try-fallbacks: flip-block, flip-inline; }
+  }
+  @supports not (position-area: right) {
+    .ahg-pop { left: min(var(--mx, 0px), calc(100vw - 260px)); top: min(var(--my, 0px), calc(100vh - 220px)); }
+  }
+  .ahg-pop ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .ahg-pop li button {
+    width: 100%; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 6px 10px;
+    border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  }
+  .ahg-pop li button:hover:not(:disabled), .ahg-pop li button:focus-visible { background: color-mix(in oklch, var(--ahg-panel) 75%, var(--ahg-wire-hot)); outline: none; }
+  .ahg-pop li button:disabled { opacity: .45; cursor: not-allowed; }
+  .ahg-pop li button.destructive { color: var(--ahg-bad); }
+  .ahg-fb { font: 10px var(--ahg-mono); }
+  .ahg-fb.run { color: var(--ahg-warn); } .ahg-fb.ok { color: var(--ahg-ok); } .ahg-fb.bad { color: var(--ahg-bad); }
+  .ahg-empty { margin: 6px 10px; color: var(--ahg-muted); }
+  .ahg-confirm { max-width: 300px; padding: 14px; }
+  .ahg-confirm h3 { margin: 0 0 6px; font: 600 14px var(--ahg-sans); }
+  .ahg-confirm p { margin: 0 0 12px; color: var(--ahg-muted); line-height: 1.45; }
+  .ahg-btns { display: flex; gap: 8px; justify-content: flex-end; }
+  .ahg-btns button { min-height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--ahg-line); background: transparent; color: var(--ahg-text); font: 600 12px var(--ahg-sans); cursor: pointer; }
+  .ahg-btns button.destructive { border-color: color-mix(in oklch, var(--ahg-bad) 60%, transparent); background: color-mix(in oklch, var(--ahg-bad) 12%, transparent); color: var(--ahg-bad); }
+
+  /* live effects (fx.rs): the card of a node an event touched. Full animates it; Lite and reduced motion keep the static highlight. */
+  .ahg-wires path[data-busy="true"] { stroke-width: 3.2; }
+  .ahg-node[data-fx] {
+    border-color: var(--fx-c, var(--ahg-wire-hot));
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--fx-c, var(--ahg-wire-hot)) 50%, transparent), 0 0 30px color-mix(in oklch, var(--fx-c, var(--ahg-wire-hot)) 60%, transparent);
+  }
+  @keyframes ahgFxA { from { transform: scale(1.07); } to { transform: scale(1); } }
+  @keyframes ahgFxB { from { transform: scale(1.07); } to { transform: scale(1); } }
+  @keyframes ahgShakeA { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(3px); } }
+  @keyframes ahgShakeB { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(3px); } }
+  .ahg[data-tier="full"] .ahg-node[data-fx$="-a"] { animation: ahgFxA .5s ease-out; }
+  .ahg[data-tier="full"] .ahg-node[data-fx$="-b"] { animation: ahgFxB .5s ease-out; }
+  .ahg[data-tier="full"] .ahg-node[data-fx^="shake"][data-fx$="-a"] { animation: ahgShakeA .45s ease-in-out; }
+  .ahg[data-tier="full"] .ahg-node[data-fx^="shake"][data-fx$="-b"] { animation: ahgShakeB .45s ease-in-out; }
+
+  @keyframes ahgPulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--k) 55%, transparent); }
+    70% { box-shadow: 0 0 0 14px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  /* Lite tier: static; and honour reduced motion everywhere */
+  .ahg[data-tier="lite"] *, .ahg[data-tier="lite"] { animation: none !important; transition: none !important; }
+  @media (prefers-reduced-motion: reduce) { .ahg *, .ahg { animation: none !important; transition: none !important; } }
+}

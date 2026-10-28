@@ -38,7 +38,7 @@ fn is_file(p: &Path) -> bool {
 }
 
 /// `resolveBin({ env, home })`; `Err(())` when a `PATH` entry joins to a spelling `path.join` would normalise.
-fn resolve_bin(env: &Env, home: &Path) -> Result<Option<PathBuf>, ()> {
+pub(crate) fn resolve_bin(env: &Env, home: &Path) -> Result<Option<PathBuf>, ()> {
     let name = defaults::text("mesh_write.hivecontrol_bin");
     if let Some(explicit) = env.get(defaults::text("mesh_write.env_hivecontrol")) {
         let t = js_trim(explicit);
@@ -81,7 +81,7 @@ fn resolve_bin(env: &Env, home: &Path) -> Result<Option<PathBuf>, ()> {
 
 /// The key `probe` caches under: `bin|mtimeMs|size`, spelled both ways Node's `mtimeMs` has been computed; a cache that
 /// matches neither is not trusted.
-fn cache_keys(bin: &Path) -> Vec<String> {
+pub(crate) fn cache_keys(bin: &Path) -> Vec<String> {
     use std::os::unix::fs::MetadataExt;
     let Ok(m) = std::fs::metadata(bin) else { return Vec::new() };
     let (sec, nsec) = (m.mtime() as f64, m.mtime_nsec() as f64);
@@ -106,6 +106,20 @@ pub fn gate(env: &Env, home: &Path) -> Gate {
 /// Node records when the build lacks the verb; a caller that has none (every verb but `list`) gets [`Gate::Probe`] for a missing
 /// verb, which is a deferral: the engine reproduces neither the refusal text nor the cache line.
 pub fn gate_verb(env: &Env, home: &Path, verb: &str, dormant: Option<(&str, &str)>) -> Gate {
+    let cached = gate_cached(env, home, verb, dormant);
+    if !matches!(cached, Gate::Probe) {
+        return cached;
+    }
+    // the cache holds no entry for this build of hivecontrol: probe it (read-only `--version` / `--help`) and answer again; the
+    // daemon's recon fills the same file, and there is no Node to do it for a verb that runs first
+    if let Ok(Some(bin)) = resolve_bin(env, home) {
+        let runner = crate::dsact::runner::System { hc: bin.to_string_lossy().into_owned() };
+        crate::dssup::recon::capprobe::ensure(home, crate::meshw::common::now_ms(), env, &runner, verb);
+    }
+    gate_cached(env, home, verb, dormant)
+}
+
+fn gate_cached(env: &Env, home: &Path, verb: &str, dormant: Option<(&str, &str)>) -> Gate {
     let Ok(found) = resolve_bin(env, home) else { return Gate::Probe };
     let Some(bin) = found else { return Gate::Spawn };
     let cache = home
@@ -241,7 +255,7 @@ pub fn call_full(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         if let Ok(mut b) = buf.lock() {
-                            b.extend_from_slice(&chunk[..n]);
+                            b.extend_from_slice(chunk.get(..n).unwrap_or_default());
                             if b.len() > limit {
                                 too_much.store(true, Ordering::SeqCst);
                                 break;
@@ -317,6 +331,20 @@ pub fn call_full(args: &[&str], env: &Env, cwd: Option<&str>, timeout: std::time
     Full { call: Call { ok: false, raw, timed_out: false, error }, stderr, code, signal, spawn_failed: None, overflow: false }
 }
 
+/// Why a failed call failed, in a line: the exit code (or signal, or spawn error) and the first line it printed, stderr before stdout,
+/// cut to `devswarm_recon.failure_detail_max_chars` (`devswarm_recon.failure_detail`).
+pub fn failure_detail(f: &Full) -> String {
+    let first = |t: &str| t.lines().map(js_trim).find(|l| !l.is_empty()).unwrap_or_default().to_string();
+    let said = Some(first(&f.stderr)).filter(|l| !l.is_empty()).unwrap_or_else(|| first(&f.call.raw));
+    let how = match (f.code, f.signal) {
+        (Some(c), _) => defaults::render("devswarm_recon.failure_how_exit", &[("code", &c)]),
+        (None, Some(s)) => defaults::render("devswarm_recon.failure_how_signal", &[("signal", &signal_name(s))]),
+        _ => f.call.error.clone(),
+    };
+    let max = defaults::num("devswarm_recon.failure_detail_max_chars") as usize;
+    defaults::render("devswarm_recon.failure_detail", &[("how", &how), ("said", &said.chars().take(max).collect::<String>())])
+}
+
 /// What the capability gate says about one workspace verb, from the cache alone.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Cap {
@@ -365,7 +393,19 @@ pub fn cap_verb(env: &Env, home: &Path, verb: &str, min_version: Option<&str>, n
     if !too_old && has_verb {
         return Cap::Ok;
     }
+    let (reason, line) = dormant_line(verb, min_version, note, version, too_old);
+    // Node records the dormant line in its cache unless the cache already holds exactly it
+    match c.get("dormantLog").and_then(|d| d.get(&name)) {
+        Some(OVal::Str(l)) if *l == line => Cap::Dormant(reason),
+        _ => Cap::Probe,
+    }
+}
+
+/// The reason a workspace verb is dormant and the line Node's `recordDormant` writes for it: `verb` with its `minVersion`, the note
+/// the line carries, the build's version and whether it is older than the minimum.
+pub fn dormant_line(verb: &str, min_version: Option<&str>, note: Option<&str>, version: Option<&str>, too_old: bool) -> (String, String) {
     let tpl = crate::meshw::extverbs::tpl;
+    let name = format!("{}{verb}", defaults::text("devswarm_cli.hc_cap_prefix"));
     let min = min_version.unwrap_or_default();
     let have = version.unwrap_or(defaults::text("devswarm_cli.hc_unknown_version"));
     let reason = if too_old {
@@ -377,9 +417,5 @@ pub fn cap_verb(env: &Env, home: &Path, verb: &str, min_version: Option<&str>, n
     let note_part = note.map_or(String::new(), |n| tpl("devswarm_cli.hc_line_note", &[("note", n)]));
     let because = if min.is_empty() { reason.clone() } else { tpl("devswarm_cli.hc_line_needs", &[("min", min), ("have", have)]) };
     let line = tpl("devswarm_cli.hc_line", &[("name", &name), ("note", &note_part), ("because", &because)]);
-    // Node records the dormant line in its cache unless the cache already holds exactly it
-    match c.get("dormantLog").and_then(|d| d.get(&name)) {
-        Some(OVal::Str(l)) if *l == line => Cap::Dormant(reason),
-        _ => Cap::Probe,
-    }
+    (reason, line)
 }

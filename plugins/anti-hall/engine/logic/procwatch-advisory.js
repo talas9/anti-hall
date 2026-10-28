@@ -52,11 +52,28 @@ function pwMsg(kind, what, why, instead) {
 function pwProcLine(f) { return 'pid ' + f.pid + ' ' + String(f.cmd || '') + ' [' + String(f.class || '') + ']'; }
 
 // The directory a process runs in, appended when the report knows it (which project owns the process).
-function pwProcOwned(f) {
-  return pwProcLine(f) + (typeof f.cwd === 'string' && f.cwd !== '' ? text.render(ah.cfg('procwatch.msg_proc_cwd'), { cwd: f.cwd }) : '');
+function pwProjectRoot(cwd) {
+  if (typeof cwd !== 'string' || cwd === '') return { root: '', checkout: false };
+  var real = ah.fs.realpath(cwd) || cwd;
+  try {
+    var context = ah.repo.context(real);
+    if (!context.unsure && context.toplevel) return { root: context.toplevel, checkout: true };
+  } catch (e) { /* the session directory is the fallback */ }
+  return { root: real.replace(/\/+$/, '') || '/', checkout: false };
 }
 
-function pwOrphans(r, sid, nowS, st, parts) {
+function pwProcOwned(f, root) {
+  var cwd = typeof f.cwd === 'string' ? f.cwd : '';
+  var line = pwProcLine(f) + (cwd !== '' ? text.render(ah.cfg('procwatch.msg_proc_cwd'), { cwd: cwd }) : '');
+  if (!root || !cwd) return line;
+  var project = pwProjectRoot(cwd);
+  if (project.root && project.root !== root && (project.checkout || project.root.indexOf(root === '/' ? root : root + '/') !== 0)) {
+    line += text.render(ah.cfg('procwatch.msg_other_project'), { folder: project.root.slice(project.root.lastIndexOf('/') + 1) || project.root });
+  }
+  return line;
+}
+
+function pwOrphans(r, sid, nowS, st, parts, root) {
   var o = r.orphans || {}, count = typeof o.count === 'number' ? o.count : 0;
   var cooldown = ah.cfgNum('procwatch.orphan_cooldown_s');
   // a given process is reported once per session (acknowledged in the state file): a process of another project that this session
@@ -69,12 +86,12 @@ function pwOrphans(r, sid, nowS, st, parts) {
     var modes = r.modes && typeof r.modes === 'object' ? Object.keys(r.modes).map(function (k) { return k + '=' + r.modes[k]; }).join(', ') : '';
     var n = listed.length + unlisted;
     parts.push(pwMsg('warn',
-      text.render(ah.cfg('procwatch.msg_orphans_what'), { n: n, list: shown.map(pwProcOwned).join('; '), more: pwMore(n, shown.length) }),
+      text.render(ah.cfg('procwatch.msg_orphans_what'), { n: n, list: shown.map(function (f) { return pwProcOwned(f, root); }).join('; '), more: pwMore(n, shown.length) }),
       text.render(ah.cfg('procwatch.msg_orphans_why'), { modes: modes }), ah.cfg('procwatch.msg_orphans_instead')));
   }
   var stopped = (Array.isArray(r.kills) ? r.kills : []).filter(function (e) { return e.outcome !== 'gone' && typeof e.ts_s === 'number' && e.ts_s + cooldown > nowS; });
   if (stopped.length > 0 && pwFire(st, 'killed:' + sid, nowS, cooldown)) {
-    parts.push(pwMsg('tip', text.render(ah.cfg('procwatch.msg_killed'), { n: stopped.length, list: stopped.map(pwProcLine).join('; ') }), '', ''));
+    parts.push(pwMsg('tip', text.render(ah.cfg('procwatch.msg_killed'), { n: stopped.length, list: stopped.map(function (f) { return pwProcOwned(f, root); }).join('; ') }), '', ''));
   }
 }
 
@@ -134,7 +151,7 @@ function decide(p) {
       if (critical && typeof cmd === 'string' && ah.re.test(ah.cfg('disk_watch.heavy_command_re'), 'i', cmd)) {
         if (ah.settings.bool('disk_watch.block_at_critical')) {
           pwSave(st, nowS);
-          return { block: text.message('block', ah.cfg('procwatch.guard_name'), { what: text.render(ah.cfg('disk_watch.msg_blocked'), { list: pwDiskLines(low).join('; ') }) }) };
+          return { block: text.message('block', ah.cfg('procwatch.guard_name'), { what: text.render(ah.cfg('disk_watch.msg_blocked'), { list: pwDiskLines(low).join('; ') }), instead: pwDiskInstead(disk) }) };
         }
         if (pwFire(st, 'heavy:' + sid, nowS, cooldown)) {
           parts.push(pwMsg('warn', ah.cfg('disk_watch.msg_heavy') + ' ' + text.render(ah.cfg('disk_watch.msg_what'), { list: pwDiskLines(low).join('; ') }), ah.cfg('disk_watch.msg_why'), pwDiskInstead(disk)));
@@ -150,7 +167,7 @@ function decide(p) {
   }
 
   // ---- orphans, stops and resource warnings from the report ----
-  pwOrphans(r, sid, nowS, st, parts);
+  pwOrphans(r, sid, nowS, st, parts, pwProjectRoot(p[ah.cfg('procwatch.f_cwd')] || hookProc.cwd(p)).root);
   pwResource(r, sid, myPid, st, parts);
   pwSave(st, nowS);
   return parts.length > 0 ? { advisory: text.advisoryJson(event, parts.join('\n')) } : 'allow';

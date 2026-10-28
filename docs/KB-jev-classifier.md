@@ -33,13 +33,13 @@ single-turn classification call that a chat model would otherwise make.
 
 ## 2. Where anti-hall uses it
 
-**Today:** `plugins/anti-hall/hooks/speculation-guard.js` (Stop hook, Tier 2, always
+**Today:** `plugins/anti-hall-node/hooks/speculation-guard.js` (Stop hook, Tier 2, always
 registered). When Jev is enabled it is asked FIRST with a Noul question (`JEV_QUESTION` in
 the hook source; `true` = speculative). Only a confident `true` blocks on Jev's word; every
 other outcome runs the regex hedge-word check exactly as before. `speculation-judge.js`
 (Tier 3, Haiku via `ANTHROPIC_API_KEY`) no longer consults Jev.
 
-**Also:** `plugins/anti-hall/hooks/lib/jev-triage.js` + `jev-triage-worker.js` — DevSwarm
+**Also:** `plugins/anti-hall-node/hooks/lib/jev-triage.js` + `jev-triage-worker.js` — DevSwarm
 mesh message triage. See §9 below.
 
 **Why the other ~48 hooks stay plain code.** Every other hook in this plugin
@@ -110,7 +110,7 @@ verified), takes the key over stdin only (never as a chat message it repeats
 back, never as a CLI argument), writes it to the resolved key file with mode
 0600, enables Jev, runs one real test call, and reports status. It never
 prints, logs, or stores the key anywhere but that key file. Under the hood it
-drives `plugins/anti-hall/scripts/jev-setup.js` (`status`/`enable`/`disable`/
+drives `plugins/anti-hall-node/scripts/jev-setup.js` (`status`/`enable`/`disable`/
 `set-key`/`test`/`mode <integration> on|shadow|off`).
 
 ### Enable Jev
@@ -315,12 +315,12 @@ plus a per-feature key). Attaches an **advisory-only** label — `urgency`
 (`urgent`/`normal`) and `kind` (`question-needs-answer`/`blocker`/`status-report`/
 `done-report`/`fyi`) — to a mesh message wherever anti-hall renders one for the agent:
 
-- `plugins/anti-hall/scripts/devswarm.js` (`cmdInboxMessagesInner`, the shared engine
+- `plugins/anti-hall-node/scripts/devswarm.js` (`cmdInboxMessagesInner`, the shared engine
   behind `inbox messages`, `inbox read-primary`, and `inbox peek-primary`): each
   message row gains an additive `triage: {urgency?, kind?}` field. A row triage
   couldn't confidently classify simply omits the field — byte-identical to before this
   feature existed.
-- `plugins/anti-hall/hooks/devswarm-parent-inbox.js` (`buildBroadcastSegment`, the
+- `plugins/anti-hall-node/hooks/devswarm-parent-inbox.js` (`buildBroadcastSegment`, the
   `DEVSWARM BROADCAST` roster/FYI feed injected every Primary turn): a classified row's
   rendered line gains a bracketed `[kind]` tag, and an urgency-labeled row can gain the
   SAME `[URGENT]` tag the feed already renders for `isHighUrgency(r.urgency)` — never a
@@ -600,7 +600,7 @@ this release — the log format supports it for when it is.
 **`jev report`** (`scripts/jev-report.js`, read-only):
 
 ```
-node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
+~/.anti-hall/ah-engine/bin/ah-engine jev-report [--days 7] [--json] [--window 24h|7d]
   [--by project|session] [--project <name>] [--weekly]
 ```
 

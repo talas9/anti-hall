@@ -1,0 +1,57 @@
+/* The Settings screens (ah-web/ui manage.rs). Tokens come from app.css; Lite already drops motion through [data-mode="lite"]. */
+.manage-main { gap: 10px; }
+.mg { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.mg-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; max-width: 80ch; }
+.mg-h { margin: 0; font: 600 16px var(--font-head); }
+.mg-split { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.mg-cats { flex: 1 1 200px; max-width: 260px; display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; max-height: 80vh; overflow: auto; }
+.mg-cat { display: flex; justify-content: space-between; gap: 8px; align-items: center; min-height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid transparent; background: transparent; color: var(--text-mid); font-weight: 600; font-size: 12px; cursor: pointer; text-align: left; }
+.mg-cat .n { font: 11px var(--font-mono); color: var(--muted); white-space: nowrap; }
+.mg-cat.on { color: var(--cyan); background: color-mix(in oklch, var(--cyan) 9%, transparent); border-color: color-mix(in oklch, var(--cyan) 30%, transparent); }
+.mg-list { flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.mg-list.wide { flex-basis: 100%; }
+.mg-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.mg-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+.mg-card { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 6px 16px 10px; }
+.mg-card > h2 { margin: 12px 0 4px; font: 600 14px var(--font-head); color: var(--text-hi); }
+.mg-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.mg-card > h2 + .mg-row, .mg-card > .mg-row:first-child { border-top: 0; }
+.mg-row.changed { box-shadow: inset 3px 0 0 var(--violet); padding-left: 10px; }
+.mg-row.off .mg-name { color: var(--muted); }
+.mg-main { flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.mg-title { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.mg-name { font: 600 13px var(--font-mono); color: var(--text-hi); overflow-wrap: anywhere; }
+.mg-doc { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-mid); overflow-wrap: anywhere; }
+.mg-meta { margin: 0; font: 11px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.mg-side { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+.mg-edit { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mg-input { min-height: 38px; background: var(--panel); color: var(--text); border: 1px solid var(--line-2); border-radius: 10px; padding: 0 10px; font: 600 13px var(--font-mono); }
+.mg-input.num { width: 110px; } .mg-input.txt { min-width: min(100%, 260px); flex: 1 1 260px; }
+.mg-ro { font: 12px var(--font-mono); color: var(--dim); max-width: 280px; overflow-wrap: anywhere; }
+.mono { font-family: var(--font-mono); }
+.mg-btn { min-height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--panel); color: var(--text); font-weight: 600; font-size: 12px; cursor: pointer; }
+.mg-btn.primary { border-color: color-mix(in oklch, var(--cyan) 50%, transparent); color: var(--cyan); }
+.mg-btn.danger { border-color: color-mix(in oklch, var(--red) 55%, transparent); color: var(--red); }
+.mg-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.mg-badge { font: 10px var(--font-ui); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); }
+.mg-badge.chg { color: var(--violet); border-color: color-mix(in oklch, var(--violet) 45%, transparent); }
+.mg-badge.warn { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 45%, transparent); }
+.mg-badge.mode-on { color: var(--green); } .mg-badge.mode-shadow { color: var(--amber); } .mg-badge.mode-off { color: var(--idle); }
+.mg-chip { display: inline-block; margin: 0 4px 2px 0; padding: 0 6px; border-radius: 6px; background: color-mix(in oklch, var(--cyan) 8%, transparent); color: var(--cyan); }
+.mg-switch { width: 52px; height: 30px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel); position: relative; cursor: pointer; padding: 0; }
+.mg-switch .knob { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--idle); transition: left .18s; }
+.mg-switch.on { border-color: color-mix(in oklch, var(--cyan) 60%, transparent); background: color-mix(in oklch, var(--cyan) 22%, transparent); }
+.mg-switch.on .knob { left: 25px; background: var(--cyan); }
+.mg-switch:disabled { opacity: .5; cursor: not-allowed; }
+.mg-confirm { flex: 1 1 100%; border: 1px solid color-mix(in oklch, var(--amber) 50%, transparent); border-radius: 12px; padding: 10px 14px; background: color-mix(in oklch, var(--amber) 7%, transparent); }
+.mg-confirm p { margin: 4px 0 8px; font-size: 13px; color: var(--text); }
+.mg-fb { flex: 1 1 100%; margin: 0; font: 12px var(--font-mono); overflow-wrap: anywhere; }
+.mg button:focus-visible, .mg input:focus-visible, .mg select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+/* a category of options folds under its heading */
+.mg-fold > summary { cursor: pointer; list-style: none; }
+.mg-fold > summary::-webkit-details-marker { display: none; }
+.mg-fold > summary h2 { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.mg-fold > summary h2::before { content: "\25B8"; color: var(--dim); font-size: 12px; }
+.mg-fold[open] > summary h2::before { content: "\25BE"; }
+.mg-count { font: 11px var(--font-mono); color: var(--muted); }

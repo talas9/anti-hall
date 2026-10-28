@@ -1,4 +1,4 @@
-//! The speculation judge's user-turn text (Node: `hooks/lib/judge-core.js` `buildJudgeInput`).
+//! The speculation judge's user-turn text.
 //!
 //! JavaScript cuts these strings in UTF-16 units; a cut through a surrogate pair leaves a lone surrogate, which becomes
 //! U+FFFD when the text is written to the judge's stdin. [`slice16_lossy`] does the same, so the bytes the child reads

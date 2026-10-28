@@ -2,7 +2,7 @@
 //!
 //! * [`archive_left_reason`] and [`pick_archive_forward_survivor`] (`archiveLeftReason`, `pickArchiveForwardSurvivor`): pure
 //!   decisions over descriptor files and registry rows. The survivor pick is decided here for zero or one drainable sibling;
-//!   two or more need `pickSurvivor`'s cursor and heartbeat evidence and are handed to Node (a deferral, nothing decided).
+//!   two or more are ranked by `pickSurvivor`'s cursor and heartbeat evidence ([`super::survivor`]).
 //! * [`retire_identity_family`] (`retireIdentityFamilyDescriptors`): a twin descriptor is hard-linked into `archived/` and only
 //!   then is the active name removed ([`Op::Link`] then [`Op::UnlinkLinked`], two ops so the descriptor is in at least one
 //!   place after a crash between them). An archived copy that is another file is never overwritten; the twin stays and is
@@ -11,9 +11,9 @@
 //!   the owner key, revive the registry row and its summary).
 //! * [`fold_archived_family`] (`foldArchivedFamilyDescriptors`): the budgeted walk over tombstones that retires the twins.
 //! * [`fold_archived_rows`] (`foldArchivedRegistryRows`): per store and archived id, the archived id's own registry row is
-//!   removed under a conditional guard and the summary re-derived. A pair whose same-worktree siblings would have to be
-//!   folded into a survivor (`foldGroupIntoSurvivor`, slice S6) is not decided here: the whole pass is handed to Node, nothing
-//!   written, because Node's pass cannot be split per pair.
+//!   removed under a conditional guard and the summary re-derived. The same-worktree siblings of an archived id
+//!   are folded into the survivor first (`foldGroupIntoSurvivor`, planned by [`super::fold::plan_group`], each sibling under its own
+//!   lock), so the archived id's unread mail is forwarded before its row goes.
 //!
 //! Message rows are never read for writing, deleted or updated here (the ops cannot express it). Resume markers are written
 //! atomically (Node writes them in place) and a torn one reads as absent, exactly as Node's reader treats it. The budget is
@@ -21,15 +21,16 @@
 //! after the first item, as Node does.
 //!
 //! Not ported: the `dryRun` classification (doctor's detect()) stays Node's.
+use super::fold::{Cx, Sim, plan_group};
 use super::gate::{self, Job, Verdict};
-use super::heal::{js_string, truthy_path};
+use super::heal::js_string;
 use super::view::{self, archived_rel, descriptor_rel, registry};
 use super::{Hooks, Op, Pre, RegRow, Scope, Unit, UnitEnd};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
-use crate::meshw::ident::{R, canonical_worktree_real_path, defer, read_descriptor, repo_key_for_worktree};
+use crate::meshw::ident::{R, canonical_worktree_real_path, read_descriptor, repo_key_for_worktree};
 use crate::meshw::idlock::is_safe_id;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -75,8 +76,8 @@ pub fn run_plan(ctx: &Ctx, runner: &dyn Runner, plan: &Plan, hooks: &Hooks) -> R
 enum PathState {
     /// `ENOENT`.
     Absent,
-    /// Exists but unreadable, not a regular file, a symbolic link or not a JSON object.
-    Bad,
+    /// Exists but unreadable, not a regular file, a symbolic link or not a JSON object: `readDescriptorPathState`'s `error`.
+    Bad(String),
     /// A regular file holding a JSON object.
     Obj(OVal),
 }
@@ -84,11 +85,15 @@ enum PathState {
 fn path_state(p: &Path) -> PathState {
     match std::fs::symlink_metadata(p) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => PathState::Absent,
-        Err(_) => PathState::Bad,
-        Ok(m) if !m.is_file() => PathState::Bad,
-        Ok(_) => match std::fs::read(p).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) {
-            Some(v @ OVal::Obj(_)) => PathState::Obj(v),
-            _ => PathState::Bad,
+        Err(e) => PathState::Bad(e.to_string()),
+        Ok(m) if !m.is_file() => PathState::Bad(defaults::text("devswarm_recon.err_not_regular").to_string()),
+        Ok(_) => match std::fs::read(p) {
+            Err(e) => PathState::Bad(e.to_string()),
+            Ok(b) => match OVal::parse(&String::from_utf8_lossy(&b)) {
+                Some(v @ OVal::Obj(_)) => PathState::Obj(v),
+                Some(_) => PathState::Bad(defaults::text("devswarm_recon.err_not_object").to_string()),
+                None => PathState::Bad(serde_json::from_slice::<serde_json::Value>(&b).err().map_or_else(String::new, |e| e.to_string())),
+            },
         },
     }
 }
@@ -184,8 +189,9 @@ pub fn left_reason_job(home: &Path, id: &str, row_session: Option<Option<&str>>,
 /// `pickArchiveForwardSurvivor(s, home, archivedId, rows)`: the row that will actually drain the forwarded unread, by liveness.
 /// A sibling is drainable only with a descriptor file and a live session. No drainable sibling: the archived id itself. One:
 /// that sibling (`pickSurvivor` returns the only row it is given). Two or more: `pickSurvivor` ranks them by cursor and
-/// heartbeat evidence, which this slice does not reproduce, so it is a deferral.
-pub fn pick_archive_forward_survivor(home: &Path, archived_id: &str, rows: &[RegRow]) -> R<String> {
+/// heartbeat evidence ([`super::survivor`]); a winner that is not provably drainable leaves the unread with the archived id.
+pub fn pick_archive_forward_survivor(ctx: &Ctx, store: &str, archived_id: &str, rows: &[RegRow]) -> R<String> {
+    let home = ctx.home;
     let mut drainable = Vec::new();
     for r in rows {
         if r.row.id == archived_id || read_descriptor(home, &r.row.id).is_none() {
@@ -193,13 +199,22 @@ pub fn pick_archive_forward_survivor(home: &Path, archived_id: &str, rows: &[Reg
         }
         let sid = view::descriptor_of(r).session_id;
         if is_live_session(sid.as_deref()) {
-            drainable.push(r.row.id.clone());
+            drainable.push(r.clone());
         }
     }
     match drainable.len() {
         0 => Ok(archived_id.to_string()),
-        1 => Ok(drainable.remove(0)),
-        _ => defer(defaults::text("devswarm_recon.why_survivor_pick")),
+        1 => Ok(drainable.remove(0).row.id),
+        _ => {
+            let rd = crate::mesh::MeshReader::open(&view::store_db(home, store)).map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?;
+            let inv = super::survivor::inv_of(ctx);
+            let pick = super::survivor::pick_in(&inv, store, &rd, &drainable)?;
+            // post-check (defence in depth): a destination that cannot be proven drainable is never used
+            Ok(match pick.and_then(|id| drainable.iter().find(|d| d.row.id == id).cloned()) {
+                Some(d) if read_descriptor(home, &d.row.id).is_some() && is_live_session(view::descriptor_of(&d).session_id.as_deref()) => d.row.id,
+                _ => archived_id.to_string(),
+            })
+        }
     }
 }
 
@@ -264,15 +279,19 @@ fn id_text(v: Option<&OVal>) -> R<String> {
 /// Plan `retireIdentityFamilyDescriptors(home, archivedId, desc, {requireWorktreeGone})`. `gone` lists twins an earlier step of
 /// the same pass already retired (their names left `workspaces/`); it is how a multi-step pass is planned against one snapshot.
 pub fn plan_retire_identity_family(home: &Path, archived_id: &str, desc: &OVal, require_gone: bool, gone: &HashSet<String>) -> R<RetirePlan> {
-    let ArchDir::Dir(_) = archived_dir(home) else {
-        // Node creates the directory first; creating it is not a step the engine takes, and a non-directory yields no twins
-        return if matches!(archived_dir(home), ArchDir::Absent) {
-            defer(defaults::text("devswarm_recon.why_archived_absent"))
-        } else {
-            Ok(RetirePlan::empty())
-        };
-    };
-    let Some(names) = sorted_names(&workspaces_dir(home)) else { return Ok(RetirePlan::empty()) };
+    // `checkedArchivedDir(home, { create: true })`: an absent directory is created (even when nothing ends up retired); something
+    // that is not a real directory ends the call with nothing retired
+    let mut plan = RetirePlan::empty();
+    match archived_dir(home) {
+        ArchDir::Dir(_) => {}
+        ArchDir::Absent => plan.units.push(Unit {
+            label: "mkdir:archived".into(),
+            lock: None,
+            ops: vec![Op::Mkdir { rel: view::ds(defaults::text("mesh_write.dir_archived")) }],
+        }),
+        ArchDir::Bad => return Ok(RetirePlan::empty()),
+    }
+    let Some(names) = sorted_names(&workspaces_dir(home)) else { return Ok(plan) };
     let mut candidates: Vec<(OVal, Vec<u8>, (u64, u64))> = Vec::new();
     for n in &names {
         let Some(cid) = json_stem(n) else { continue };
@@ -292,7 +311,6 @@ pub fn plan_retire_identity_family(home: &Path, archived_id: &str, desc: &OVal, 
         candidates.push((d, bytes, (md.dev(), md.ino())));
     }
     let (a_id, a_sid) = (id_text(desc.get("id"))?, id_text(desc.get("sessionId"))?);
-    let mut plan = RetirePlan::empty();
     for (twin, bytes, ino) in &candidates {
         let (b_id, b_sid) = (id_text(twin.get("id"))?, id_text(twin.get("sessionId"))?);
         if !cross_linked(&a_id, &a_sid, &b_id, &b_sid) {
@@ -306,7 +324,11 @@ pub fn plan_retire_identity_family(home: &Path, archived_id: &str, desc: &OVal, 
         // archivedTombstoneDiffers: an archived copy at another inode is never ours to clobber
         let differs = match std::fs::symlink_metadata(home.join(&arch)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => return defer(defaults::text("devswarm_recon.why_unreadable")),
+            // `archivedTombstoneDiffers` throws on any other lstat error: inside the lock's try, the twin is left with that text
+            Err(e) => {
+                plan.left.push((b_id, defaults::render("devswarm_recon.reason_retire_failed", &[("why", &e)])));
+                continue;
+            }
             Ok(m) => (m.dev(), m.ino()) != *ino,
         };
         if differs {
@@ -410,9 +432,7 @@ pub fn fold_archived_family(home: &Path, now: i64, deadline: Option<i64>) -> R<P
         candidates.push((aid.to_string(), d));
     }
     let resume: Vec<String> = read_family_resume(home).into_iter().filter(|id| candidates.iter().any(|c| &c.0 == id)).collect();
-    if resume.iter().collect::<HashSet<_>>().len() != resume.len() {
-        return defer(defaults::text("devswarm_recon.why_resume_duplicates"));
-    }
+    // an id the marker names twice is walked twice, as Node's `resumeIds.concat(...)` walks it (the second visit finds its twins gone)
     let rset: HashSet<&String> = resume.iter().collect();
     let order: Vec<String> = resume.iter().cloned().chain(candidates.iter().map(|c| c.0.clone()).filter(|id| !rset.contains(id))).collect();
     let by_id: HashMap<&String, &OVal> = candidates.iter().map(|c| (&c.0, &c.1)).collect();
@@ -514,7 +534,8 @@ fn guard_matches(row: &RegRow) -> bool {
 }
 
 /// Plan `foldArchivedRegistryRows(home, {deadline})`.
-pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Plan> {
+pub fn fold_archived_rows(ctx: &Ctx, deadline: Option<i64>) -> R<Plan> {
+    let (home, now) = (ctx.home, ctx.now);
     let call = json!({"fn": "foldArchivedRows", "args": {"deadline": deadline}});
     let mut out = json!({"ok": true, "action": "fold-archived-rows", "dryRun": false, "scanned": 0, "pending": 0, "retired": [], "forwarded": 0, "left": [], "errors": 0});
     let buckets = store_buckets(home);
@@ -546,9 +567,10 @@ pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Pla
         if js_string(d.get("id"))? != id {
             continue;
         }
-        let real = match truthy_path(d.get("worktreePath"))? {
-            Some(wt) => canonical_worktree_real_path(&wt)?,
-            None => None,
+        // `d.worktreePath ? canonicalWorktreeRealPath(d.worktreePath) : null` (a path that is not text resolves to nothing)
+        let real = match d.get("worktreePath") {
+            Some(OVal::Str(wt)) if !wt.is_empty() => canonical_worktree_real_path(wt)?,
+            _ => None,
         };
         archived.push((id.to_string(), real));
     }
@@ -556,34 +578,50 @@ pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Pla
     if archived.is_empty() {
         return finish(Vec::new(), out, false);
     }
+    // a store that does not open is skipped, never wiped (Node: `errors++; continue`); a legacy journal store has no reader here and is
+    // passed over without an error, as the stages count it `disabled`
     let mut regs: Vec<(String, Vec<RegRow>)> = Vec::new();
+    let mut errors = 0u64;
     for b in &buckets {
-        regs.push((b.clone(), registry(home, b)?));
+        match registry(home, b) {
+            Ok(rows) => regs.push((b.clone(), rows)),
+            Err(crate::meshw::ident::Defer(why)) if why == defaults::text("devswarm_recon.reason_store_backend") => {
+                crate::obs::counters::account("duty", defaults::text("devswarm_recon.legacy_site"), crate::obs::counters::Outcome::Disabled, 0, 0);
+            }
+            Err(_) => errors += 1,
+        }
     }
     let resume = read_rows_resume(home);
     let all_ids: Vec<String> = archived.iter().map(|a| a.0.clone()).collect();
     let known: HashSet<&String> = all_ids.iter().collect();
-    let ids_for = |bucket: &str| -> R<Vec<String>> {
+    // an id the marker names twice is walked twice, as Node's `resumeIds.concat(...)` walks it
+    let ids_for = |bucket: &str| -> Vec<String> {
         let r: Vec<String> = resume.get(bucket).map(|v| v.iter().filter(|id| known.contains(id)).cloned().collect()).unwrap_or_default();
-        if r.iter().collect::<HashSet<_>>().len() != r.len() {
-            return defer(defaults::text("devswarm_recon.why_resume_duplicates"));
-        }
         let rs: HashSet<&String> = r.iter().collect();
         let rest: Vec<String> = all_ids.iter().filter(|id| !rs.contains(id)).cloned().collect();
-        Ok(r.into_iter().chain(rest).collect())
+        r.into_iter().chain(rest).collect()
     };
     let real_of: HashMap<&String, &Option<String>> = archived.iter().map(|a| (&a.0, &a.1)).collect();
     let mut canon: HashMap<String, Option<String>> = HashMap::new();
     let (mut units, mut remaining): (Vec<Unit>, Vec<(String, Vec<String>)>) = (Vec::new(), Vec::new());
     let (mut retired, mut left): (Vec<String>, Vec<Value>) = (Vec::new(), Vec::new());
-    let (mut exhausted, mut checked) = (false, 0usize);
+    let (mut exhausted, mut checked, mut forwarded) = (false, 0usize, 0i64);
+    let inv = super::survivor::inv_of(ctx);
+    let mut sim = Sim::default();
     for (bucket, rows0) in &regs {
         if exhausted {
-            remaining.push((bucket.clone(), ids_for(bucket)?));
+            remaining.push((bucket.clone(), ids_for(bucket)));
             continue;
         }
         let mut rows = rows0.clone();
-        let ids = ids_for(bucket)?;
+        let ids = ids_for(bucket);
+        let rd = match view::reader(home, bucket) {
+            Ok(rd) => rd,
+            Err(_) => {
+                errors += 1;
+                continue;
+            }
+        };
         for (ii, aid) in ids.iter().enumerate() {
             let Some(real) = real_of.get(aid) else { continue };
             if checked > 0 && deadline.is_some_and(|d| now >= d) {
@@ -608,13 +646,36 @@ pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Pla
             if own.is_none() && same.is_empty() {
                 continue;
             }
-            let survivor = pick_archive_forward_survivor(home, aid, &same)?;
-            if same.iter().any(|r| r.row.id != survivor) {
-                return defer(defaults::text("devswarm_recon.why_group_fold"));
-            }
-            if &survivor != aid {
+            let survivor = pick_archive_forward_survivor(ctx, bucket, aid, &same)?;
+            let survivor_is_other = &survivor != aid;
+            if survivor_is_other {
                 left.push(json!({"id": survivor, "bucket": bucket, "reason": defaults::text("devswarm_recon.reason_live")}));
             }
+            // the siblings: forward-before-tombstone into the survivor (each under its own lock), then the archived id's own row
+            let fold_cands: Vec<RegRow> = same.iter().filter(|r| r.row.id != survivor).cloned().collect();
+            let mut fold_changed = false;
+            if !fold_cands.is_empty() {
+                let cx = Cx { home, store: bucket, rd: &rd, now, rows: &rows, inv: &inv };
+                let (fold_units, go) = plan_group(&cx, &mut sim, &survivor, &fold_cands, true, !survivor_is_other)?;
+                units.extend(fold_units);
+                forwarded += go.forwarded;
+                retired.extend(go.retired.iter().map(|x| format!("{x}@{bucket}")));
+                let by_id: HashMap<&str, &RegRow> = same.iter().map(|r| (r.row.id.as_str(), r)).collect();
+                for x in &go.left {
+                    let sess = by_id.get(x.as_str()).map(|r| view::descriptor_of(r).session_id);
+                    let reason = archive_left_reason(home, x, sess.as_ref().map(Option::as_deref), go.left_anchor.contains(x));
+                    left.push(json!({"id": x, "bucket": bucket, "reason": reason}));
+                }
+                for x in &go.forward_failed {
+                    left.push(json!({"id": x, "bucket": bucket, "reason": defaults::text("devswarm_recon.reason_forward_failed")}));
+                }
+                for (x, why) in &go.skipped {
+                    left.push(json!({"id": x, "bucket": bucket, "reason": why}));
+                }
+                fold_changed = !go.retired.is_empty() || go.forwarded > 0;
+                rows.retain(|r| !go.retired.contains(&r.row.id));
+            }
+            let mut own_retired = false;
             if let Some(own) = own {
                 if guard_matches(&own) {
                     units.push(Unit {
@@ -624,9 +685,14 @@ pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Pla
                     });
                     retired.push(format!("{aid}@{bucket}"));
                     rows.retain(|r| &r.row.id != aid);
+                    own_retired = true;
                 } else {
                     left.push(json!({"id": aid, "bucket": bucket, "reason": defaults::text("devswarm_recon.reason_raced")}));
                 }
+            }
+            // a fold that forwarded or retired something refreshes the projection even when the archived id's own row did not go
+            if fold_changed && !own_retired {
+                units.push(Unit { label: format!("derive:{bucket}:{aid}"), lock: None, ops: vec![Op::Derive { store: bucket.clone() }] });
             }
         }
     }
@@ -639,6 +705,9 @@ pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Pla
     units.push(marker_unit("rows-resume", &rel, body));
     out["retired"] = json!(retired);
     out["pending"] = json!(retired.len());
+    out["forwarded"] = json!(forwarded);
+    out["errors"] = json!(errors);
+    out["ok"] = json!(errors == 0);
     out["left"] = Value::Array(left);
     if exhausted {
         out["budgetExhausted"] = json!(true);
@@ -671,9 +740,9 @@ fn physical_owner_key(desc: &OVal) -> R<Option<String>> {
     if let Some(k) = nonempty(desc.get("repoKey")) {
         return Ok(Some(k.to_string()));
     }
-    match truthy_path(desc.get("worktreePath"))? {
-        Some(wt) => repo_key_for_worktree(&wt),
-        None => Ok(None),
+    match desc.get("worktreePath") {
+        Some(OVal::Str(wt)) if !wt.is_empty() => repo_key_for_worktree(wt),
+        _ => Ok(None), // a path that is not text resolves to no key
     }
 }
 
@@ -710,8 +779,11 @@ fn restore_ops(home: &Path, id: &str, o: &RestoreOpts) -> R<(Vec<Op>, Value, Opt
     let archived = path_state(&arch_p);
     let arch_exists = !matches!(archived, PathState::Absent);
     let active = if arch_exists && !o.keep_marker { None } else { Some(path_state(&act_p)) };
-    if matches!(archived, PathState::Bad) || matches!(active, Some(PathState::Bad)) {
-        return defer(defaults::text("devswarm_recon.why_unreadable"));
+    if let PathState::Bad(why) = &archived {
+        return fail(defaults::render("devswarm_recon.err_read_archived", &[("why", why)]));
+    }
+    if let Some(PathState::Bad(why)) = &active {
+        return fail(defaults::render("devswarm_recon.err_read_active", &[("why", why)]));
     }
     let active_exists = matches!(active, Some(PathState::Obj(_)));
     let q = serde_json::to_string(id).unwrap_or_default();
@@ -726,9 +798,10 @@ fn restore_ops(home: &Path, id: &str, o: &RestoreOpts) -> R<(Vec<Op>, Value, Opt
         (_, Some(PathState::Obj(a))) if active_live => a.clone(),
         (PathState::Obj(a), _) => a.clone(),
         (_, Some(PathState::Obj(a))) => a.clone(),
-        _ => return defer(defaults::text("devswarm_recon.why_unreadable")),
+        // an archived descriptor or an active one exists by the checks above, and a bad one answered before this point
+        _ => return fail(defaults::render("devswarm_recon.err_no_archived", &[("id", &q)])),
     };
-    if safe_id_field(&desc).is_none() || js_string(desc.get("id"))? != id || truthy_path(desc.get("worktreePath"))?.is_none() {
+    if safe_id_field(&desc).is_none() || js_string(desc.get("id"))? != id || !desc.get("worktreePath").is_some_and(OVal::truthy) {
         return fail(defaults::render("devswarm_recon.err_identity", &[("id", &q)]));
     }
     let Some(owner) = physical_owner_key(&desc)? else { return fail(defaults::text("devswarm_recon.err_no_owner").to_string()) };
@@ -778,12 +851,27 @@ fn restore_ops(home: &Path, id: &str, o: &RestoreOpts) -> R<(Vec<Op>, Value, Opt
         return Ok((ops, json!({"ok": true, "restoredLink": created_link}), Some(owner)));
     }
     let row = registry_row_of(&desc, id)?;
-    if let Some(p) = &present
-        && p.row.worktree_path != row.worktree_path
-    {
-        return defer(defaults::text("devswarm_recon.why_collision"));
+    // `upsertRegistry`'s id-collision guard: a row of the id that maps to a different worktree is kept and the write is skipped
+    // (Node returns `false` and goes on to derive the summary, and `restoreArchivedDescriptor` reports ok)
+    let collision = match (&present, &row.worktree_path) {
+        (Some(p), Some(incoming)) => p.row.worktree_path.as_deref().is_some_and(|existing| !super::rehome::same_worktree(existing, incoming)),
+        _ => false,
+    };
+    if collision {
+        eprintln!(
+            "{}",
+            defaults::render(
+                "mesh_write.msg_registry_collision",
+                &[
+                    ("id", &serde_json::to_string(id).unwrap_or_default()),
+                    ("existing", &serde_json::to_string(&present.as_ref().and_then(|p| p.row.worktree_path.clone()).unwrap_or_default()).unwrap_or_default()),
+                    ("incoming", &serde_json::to_string(&row.worktree_path.clone().unwrap_or_default()).unwrap_or_default()),
+                ]
+            )
+        );
+    } else {
+        ops.push(Op::Upsert { store: owner.clone(), row: Box::new(row), pre: present.map(Box::new) });
     }
-    ops.push(Op::Upsert { store: owner.clone(), row: Box::new(row), pre: present.map(Box::new) });
     ops.push(Op::Derive { store: owner.clone() });
     Ok((ops, json!({"ok": true, "restoredLink": created_link}), Some(owner)))
 }
@@ -812,4 +900,49 @@ pub fn restore_archived_descriptor(home: &Path, id: &str, opts: &RestoreOpts) ->
 /// function to Node's scheduled sweep.
 pub fn engine_mode(st: &crate::checks::git::util::Settings) -> bool {
     crate::dssup::setting(st, "devswarm_sup.sweep_tail_mode").as_str() == Some(defaults::text("devswarm_recon.mode_engine"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checks::git::util::Settings;
+    use crate::meshw::store::{MeshStore, RegistryRow};
+
+    fn reg(id: &str, session: &str, updated_at: i64) -> RegRow {
+        RegRow {
+            row: RegistryRow { id: id.into(), worktree_path: Some("/wt".into()), session_id: Some(session.into()), ..RegistryRow::default() },
+            updated_at: Some(updated_at),
+            write_seq: Some(1),
+        }
+    }
+
+    fn descriptor(home: &Path, id: &str, session: &str) {
+        let dir = home.join(".anti-hall/devswarm/workspaces");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), json!({"id": id, "worktreePath": "/wt", "sessionId": session}).to_string()).unwrap();
+    }
+
+    #[test]
+    fn dssup_recon_archive_survivor_ranks_two_drainable_siblings() {
+        crate::defaults::init().unwrap();
+        let dir = crate::db::TempDir::new("archive-survivor");
+        let home = dir.0.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // the store the rows live in (the ranking reads its cursors)
+        MeshStore::open(&view::store_db(&home, "store")).unwrap();
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let ctx = Ctx { home: &home, root: &home, st: &st, now: 1_760_000_000_000, engine_pokes: true };
+        for (id, sid) in [("older", "sess-a"), ("newer", "sess-b"), ("dead", "unclaimed:x")] {
+            descriptor(&home, id, sid);
+        }
+        let rows = vec![reg("older", "sess-a", 100), reg("newer", "sess-b", 200), reg("dead", "unclaimed:x", 300)];
+        // two drainable siblings: the evidence ranking picks one of them (the freshest row here); the dead one is never a candidate
+        assert_eq!(pick_archive_forward_survivor(&ctx, "store", "arch", &rows).unwrap(), "newer");
+        // order does not matter
+        let rev: Vec<RegRow> = rows.iter().rev().cloned().collect();
+        assert_eq!(pick_archive_forward_survivor(&ctx, "store", "arch", &rev).unwrap(), "newer");
+        // one drainable sibling: that one; none: the archived id
+        assert_eq!(pick_archive_forward_survivor(&ctx, "store", "arch", &rows[..1]).unwrap(), "older");
+        assert_eq!(pick_archive_forward_survivor(&ctx, "store", "arch", &rows[2..]).unwrap(), "arch");
+    }
 }

@@ -3,9 +3,9 @@
 //! project's key, so project A has no path to project B's mailbox or values.
 use crate::db::{Db, Op, ProjVerb};
 use crate::error::{DbError, StoreError};
+use crate::mem::{BoundedCache, Spec};
 use crate::sql;
 use rusqlite::{OptionalExtension, params};
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -45,28 +45,44 @@ pub fn project_key(cwd: &str) -> String {
 }
 
 /// Bounded cwd -> key cache so the hot path does not stat per request.
-#[derive(Default)]
-pub struct KeyCache(HashMap<String, String>);
+pub struct KeyCache {
+    cache: BoundedCache<String, String>,
+}
+
+impl Default for KeyCache {
+    fn default() -> Self {
+        KeyCache {
+            cache: BoundedCache::new(
+                crate::mem::global(),
+                Spec::new("key_cache", "mem.key_cache_soft_bytes", "mem.key_cache_hard_bytes", "mem.key_cache_low_water_pct")
+                    .with_entries("mem.key_cache_max_entries"),
+            ),
+        }
+    }
+}
 
 impl KeyCache {
     /// Entries held.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.cache.len()
     }
     /// True when none is held.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.cache.is_empty()
+    }
+    /// Estimated bytes held.
+    pub fn bytes(&self) -> usize {
+        self.cache.bytes()
     }
     /// Project key for `cwd`, cached.
     pub fn key(&mut self, cwd: &str) -> String {
-        if let Some(k) = self.0.get(cwd) {
-            return k.clone();
+        if let Some(k) = self.cache.get(&cwd.to_string()) {
+            return k;
         }
-        if self.0.len() >= cap("key_cache_cap") {
-            self.0.clear();
-        }
-        let k = project_key(cwd);
-        self.0.insert(cwd.to_string(), k.clone());
+        let cwd = cwd.to_string();
+        let k = project_key(&cwd);
+        let weight = cwd.len().saturating_add(k.len()).saturating_add(std::mem::size_of::<(String, String)>());
+        self.cache.insert(cwd, k.clone(), weight);
         k
     }
 }
@@ -180,6 +196,15 @@ mod tests {
         assert_eq!(s.op(&ka2, "", "get", "token").unwrap(), "a-only");
         assert_eq!(s.op(&ka2, "", "take", "").unwrap(), "secret for A");
         crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
+    }
+
+    #[test]
+    fn key_cache_is_byte_bounded() {
+        let mut kc = KeyCache::default();
+        for i in 0..200 {
+            kc.key(&format!("/{}-{i}", "x".repeat(20_000)));
+        }
+        assert!(kc.bytes() <= defaults::num("mem.key_cache_hard_bytes") as usize, "key cache exceeded hard memory budget");
     }
 
     #[test]

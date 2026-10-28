@@ -24,7 +24,7 @@ BRANCH = "main"
 # Site page (relative to docs/) -> the repository file it is generated from.
 GENERATED = {
     "changelog.md": "CHANGELOG.md",
-    "settings/reference.md": "plugins/anti-hall/hooks/lib/settings-schema.js",
+    "settings/reference.md": "plugins/anti-hall-node/hooks/lib/settings-schema.js",
 }
 ORIGIN_TO_PAGE = {origin: page for page, origin in GENERATED.items()}
 

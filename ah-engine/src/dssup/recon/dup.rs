@@ -1,15 +1,14 @@
 //! `retireWorktreeDuplicates` (`scripts/devswarm-lib/fold.js`): fold every other registry row of the caller's physical worktree
 //! into the caller's own row, through the same per-candidate plan as the project-wide fold (see [`super::fold`]).
-use super::fold::{Cx, FoldOut, Sim, derive_blocked, plan_group};
+use super::fold::{Cx, FoldOut, Sim, plan_group};
 use super::gate::{self, Job, Verdict};
 use super::view::{self};
 use super::{Hooks, Op, Unit, UnitEnd};
 use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
 
 // ---- retireWorktreeDuplicates ---------------------------------------------------------------------------------------------------
 
@@ -51,7 +50,8 @@ pub fn retire_worktree_duplicates(ctx: &Ctx, runner: &dyn Runner, cwd: &str, kee
     let Some(keep_real) = ident::canonical_worktree_real_path(keep_wt)? else { return Ok(none(Verdict::Agreed)) };
     let Some(repo_key) = ident::resolve_context(cwd, true)?.repo_key else { return Ok(none(Verdict::Agreed)) };
     if !ctx.home.join(view::store_rel(&repo_key)).is_dir() {
-        return defer("store-missing"); // Node would create it
+        // Node's `openStore` creates the project's store (pinned sqlite) and finds no row in it; so does this
+        super::rehome::open_store(ctx.home, &repo_key).map_err(crate::dssup::failure)?;
     }
     let rows = view::registry(ctx.home, &repo_key)?;
     let rd = view::reader(ctx.home, &repo_key)?;
@@ -63,17 +63,13 @@ pub fn retire_worktree_duplicates(ctx: &Ctx, runner: &dyn Runner, cwd: &str, kee
         }
         cands.push(d.clone());
     }
-    let cx = Cx { home: ctx.home, store: &repo_key, rd: &rd, now: ctx.now, rows: &rows };
+    let inv = super::survivor::inv_of(ctx);
+    let cx = Cx { home: ctx.home, store: &repo_key, rd: &rd, now: ctx.now, rows: &rows, inv: &inv };
     let mut sim = Sim::default();
-    let (mut units, out) = plan_group(&cx, &mut sim, keep_id, &cands, false)?;
+    let (mut units, out) = plan_group(&cx, &mut sim, keep_id, &cands, false, false)?;
     let calls = vec![json!({"fn": "retireDup", "args": {"cwd": cwd, "id": keep_id, "worktreePath": keep_wt}})];
     let expect = vec![Some(dup_result(&out).unwrap_or(Value::Null))];
     if !out.retired.is_empty() || out.forwarded > 0 {
-        let retired: HashSet<String> = out.retired.iter().cloned().collect();
-        let raised: HashMap<String, i64> = out.raised.iter().cloned().collect();
-        if derive_blocked(&cx, &retired, &raised)? {
-            return defer(defaults::text("devswarm_recon.why_summary_orphan"));
-        }
         units.push(Unit { label: defaults::text("devswarm_recon.label_derive").into(), lock: None, ops: vec![Op::Derive { store: repo_key.clone() }] });
     }
     let mut scope = super::side::scope_for(&[]);

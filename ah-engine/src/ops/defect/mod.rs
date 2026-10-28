@@ -491,10 +491,7 @@ fn cmd_similar(run: &Run, a: &Args) -> Result<i32, Defer> {
 
 /// `defect <verb> [flags]`
 pub fn run(p: &Parsed) -> i32 {
-    let plan = crate::ops::shadow::begin(defaults::text("ops.verb_defect"), defaults::text("ops.script_defect"), &p.raw, None);
-    let code = run_inner(p);
-    crate::ops::shadow::end(plan, code);
-    code
+    run_inner(p)
 }
 
 fn run_inner(p: &Parsed) -> i32 {

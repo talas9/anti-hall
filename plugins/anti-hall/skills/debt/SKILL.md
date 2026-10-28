@@ -40,7 +40,7 @@ function fakeRouter(x) { /* hard-coded 2-way switch, fine for now */ }
 
 ## What `/anti-hall:debt` does
 
-It runs `plugins/anti-hall/scripts/harvest-debt.js` (pure Node, cross-platform, no deps), which:
+It runs `ah-engine harvest` (pure Node, cross-platform, no deps), which:
 
 1. **Greps** the target tree (default cwd; `--dir <path>`) for `anti-hall:` markers across all
    comment styles, skipping `.git`, `node_modules`, dot-dirs, and binaries.
@@ -55,9 +55,9 @@ It runs `plugins/anti-hall/scripts/harvest-debt.js` (pure Node, cross-platform, 
 Invoke:
 
 ```
-sh plugins/anti-hall/scripts/ah-run.sh harvest              # human table
-sh plugins/anti-hall/scripts/ah-run.sh harvest --json       # machine-readable
-sh plugins/anti-hall/scripts/ah-run.sh harvest --dir src --stale-days 60
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest              # human table
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --json       # machine-readable
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --dir src --stale-days 60
 ```
 
 ## Reading the report
@@ -65,9 +65,9 @@ sh plugins/anti-hall/scripts/ah-run.sh harvest --dir src --stale-days 60
 ```
 anti-hall debt register   (3 markers · 1 rot-risk)
 
-  src/router.js:12    ceiling: 30 lines   when: a 3rd backend needs it      ok
-  src/cache.js:88     ceiling: O(n^2)     when: n>1000                      ok
-  src/legacy.js:5     ceiling: 2 deps     when: —                  ⚠ rot: no trigger
+  src/router.rs:12    ceiling: 30 lines   when: a 3rd backend needs it      ok
+  src/cache.rs:88     ceiling: O(n^2)     when: n>1000                      ok
+  src/legacy.rs:5     ceiling: 2 deps     when: —                  ⚠ rot: no trigger
 ```
 
 - **ok** — budgeted debt with a live trigger; nothing to do until the trigger fires.

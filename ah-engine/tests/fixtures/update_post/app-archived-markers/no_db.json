@@ -1,0 +1,17 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "app-archived markers: no DevSwarm app database found - nothing to do",
+    "errors": 0,
+    "marked": 0,
+    "scanned": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/w1.json": "644 {\"id\":\"w1\"}",
+    ".anti-hall/update-sweep-state.json": "644 {\"markAppArchived\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null}}"
+  },
+  "stores": {}
+}

@@ -57,6 +57,8 @@ pub struct Metrics {
     gauges: BTreeMap<String, f64>,
     hists: BTreeMap<String, Hist>,
     series_per_metric: BTreeMap<String, usize>,
+    /// Per metric, the series past `telemetry.max_series` that kept their `telemetry.overflow_keep_labels` value.
+    kept_per_metric: BTreeMap<String, usize>,
 }
 
 /// Series key: `name` then `|label=value` pairs in label order.
@@ -76,9 +78,53 @@ fn bucket_bounds() -> Vec<u64> {
     defaults::raw("telemetry.latency_buckets_us").as_array().unwrap_or_default().iter().filter_map(defaults::V::as_integer).map(|v| v.max(0) as u64).collect()
 }
 
+/// The byte histogram bucket bounds (`telemetry.byte_buckets_bytes`).
+fn byte_bounds() -> Vec<u64> {
+    defaults::raw("telemetry.byte_buckets_bytes").as_array().unwrap_or_default().iter().filter_map(defaults::V::as_integer).map(|v| v.max(0) as u64).collect()
+}
+
+/// True when the registered metric `name` counts bytes (unit `bytes`): its histogram uses the byte buckets, not the latency ones.
+fn is_byte_metric(name: &str) -> bool {
+    let key = format!("metric.{name}");
+    defaults::has(&key) && defaults::raw(&key).str_field("unit") == defaults::text("telemetry.byte_unit")
+}
+
+/// The bucket bounds of the histogram `name`.
+fn bounds_for(name: &str) -> Vec<u64> {
+    if is_byte_metric(name) { byte_bounds() } else { bucket_bounds() }
+}
+
 /// True when `name` is a registered metric.
 pub fn is_registered(name: &str) -> bool {
     defaults::has(&format!("metric.{name}"))
+}
+
+/// Counts bumped by code that holds no `Metrics` (resolvers, discovery): series key -> (name, labels, count). The daemon moves them
+/// into its registry whenever it reads or snapshots the metrics ([`drain_pending`]).
+type Pending = BTreeMap<String, (String, Vec<(String, String)>, u64)>;
+static PENDING: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new());
+
+/// Add one to the counter `name` from code that has no `Metrics` at hand. A name nobody registered is ignored (a test catches it),
+/// and so is a new series once `telemetry.max_series` are waiting, so the table stays bounded between two drains.
+pub fn bump(name: &str, labels: &[(&str, &str)]) {
+    if !is_registered(name) {
+        return;
+    }
+    let key = series(name, labels);
+    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    if !g.contains_key(&key) && g.len() >= defaults::num("telemetry.max_series") as usize {
+        return;
+    }
+    g.entry(key).or_insert_with(|| (name.to_string(), labels.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect(), 0)).2 += 1;
+}
+
+/// Move the counts [`bump`] gathered into `m`.
+pub fn drain_pending(m: &mut Metrics) {
+    let taken = std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()));
+    for (name, labels, n) in taken.into_values() {
+        let l: Vec<(&str, &str)> = labels.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        m.add(&name, &l, n);
+    }
 }
 
 impl Metrics {
@@ -91,6 +137,21 @@ impl Metrics {
         let n = self.series_per_metric.entry(name.to_string()).or_insert(0);
         if *n >= defaults::num("telemetry.max_series") as usize {
             let over = defaults::text("telemetry.overflow_label");
+            // past the cap the labels that name WHO (`telemetry.overflow_keep_labels`, e.g. the check) stay and the others collapse, so
+            // a per-check cost stays visible; those series are bounded in turn by `telemetry.max_series_kept`
+            let keep = defaults::list("telemetry.overflow_keep_labels");
+            if labels.iter().any(|(l, _)| keep.contains(l)) {
+                let partial: Vec<(&str, &str)> = labels.iter().map(|(l, v)| (*l, if keep.contains(l) { *v } else { over })).collect();
+                let pk = series(name, &partial);
+                if self.counters.contains_key(&pk) || self.hists.contains_key(&pk) {
+                    return pk;
+                }
+                let kept = self.kept_per_metric.entry(name.to_string()).or_insert(0);
+                if *kept < defaults::num("telemetry.max_series_kept") as usize {
+                    *kept += 1;
+                    return pk;
+                }
+            }
             let collapsed: Vec<(&str, &str)> = labels.iter().map(|(l, _)| (*l, over)).collect();
             return series(name, &collapsed);
         }
@@ -117,10 +178,16 @@ impl Metrics {
 
     /// Record one observation (microseconds) in a histogram.
     pub fn observe(&mut self, name: &str, labels: &[(&str, &str)], micros: u64) {
-        let bounds: Vec<u64> = bucket_bounds();
+        let bounds: Vec<u64> = bounds_for(name);
         let exists = self.hists.contains_key(&series(name, labels));
         let k = self.key(name, labels, exists);
         self.hists.entry(k).or_default().observe(&bounds, micros);
+    }
+
+    /// Record one observation (bytes) in a histogram registered with unit `bytes` (the same as [`Metrics::observe`]; the name picks
+    /// the byte buckets).
+    pub fn observe_bytes(&mut self, name: &str, labels: &[(&str, &str)], bytes: u64) {
+        self.observe(name, labels, bytes);
     }
 
     /// A counter's value (0 when never incremented).
@@ -144,7 +211,6 @@ impl Metrics {
     /// Load a snapshot made by [`Metrics::export`]: its counters and histograms become the starting values. A histogram
     /// whose bucket count no longer matches `telemetry.latency_buckets_us` is skipped (its buckets would be misread).
     pub fn import(&mut self, v: &Value) {
-        let want = bucket_bounds().len() + 1;
         if let Some(c) = v.get("counters").and_then(Value::as_object) {
             for (k, n) in c {
                 if let Some(n) = n.as_u64() {
@@ -156,7 +222,7 @@ impl Metrics {
         if let Some(h) = v.get("histograms").and_then(Value::as_object) {
             for (k, x) in h {
                 let buckets: Vec<u64> = x.get("buckets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
-                if buckets.len() != want {
+                if buckets.len() != bounds_for(k.split('|').next().unwrap_or("")).len() + 1 {
                     continue;
                 }
                 let n = |f: &str| x.get(f).and_then(Value::as_u64).unwrap_or(0);
@@ -176,7 +242,6 @@ impl Metrics {
 
     /// Everything as JSON, optionally only series whose `check` label equals `check`.
     pub fn snapshot(&self, check: &str) -> Value {
-        let bounds: Vec<u64> = bucket_bounds();
         let wanted = |k: &str| check.is_empty() || k.contains(&format!("|check={check}"));
         let parse = |k: &str| -> (String, Map<String, Value>) {
             let mut it = k.split('|');
@@ -200,8 +265,17 @@ impl Metrics {
             .filter(|(k, _)| wanted(k))
             .map(|(k, h)| {
                 let (name, labels) = parse(k);
+                let bounds = bounds_for(&name);
+                let mean = h.sum.checked_div(h.count).unwrap_or(0);
+                if is_byte_metric(&name) {
+                    return json!({
+                        "name": name, "labels": labels, "count": h.count, "mean_bytes": mean, "max_bytes": h.max,
+                        "p50_bytes": h.quantile(&bounds, 0.50), "p95_bytes": h.quantile(&bounds, 0.95), "p99_bytes": h.quantile(&bounds, 0.99),
+                        "quantile_note": defaults::text("msg.metrics_quantile_note"),
+                    });
+                }
                 json!({
-                    "name": name, "labels": labels, "count": h.count, "mean_us": h.sum.checked_div(h.count).unwrap_or(0), "max_us": h.max,
+                    "name": name, "labels": labels, "count": h.count, "mean_us": mean, "max_us": h.max,
                     "p50_us": h.quantile(&bounds, 0.50), "p95_us": h.quantile(&bounds, 0.95), "p99_us": h.quantile(&bounds, 0.99),
                     "quantile_note": defaults::text("msg.metrics_quantile_note"),
                 })
@@ -242,14 +316,60 @@ mod tests {
     }
 
     #[test]
+    fn byte_histograms_use_the_byte_buckets_and_survive_a_snapshot_round_trip() {
+        let mut m = Metrics::default();
+        for v in [1000, 5000, 3 * 1024 * 1024] {
+            m.observe_bytes("check_mem_peak_bytes", &[("check", "git")], v);
+        }
+        m.observe("check_latency_us", &[("check", "git")], 300);
+        let s = m.snapshot("");
+        let h = s["histograms"].as_array().unwrap().iter().find(|h| h["name"] == "check_mem_peak_bytes").unwrap().clone();
+        assert_eq!((h["count"].as_u64(), h["max_bytes"].as_u64()), (Some(3), Some(3 * 1024 * 1024)));
+        assert_eq!(h["p50_bytes"], 16384, "5000 B sits in the <=16384 byte bucket");
+        assert_eq!(h["p99_bytes"], 4194304, "3 MiB sits in the <=4 MiB bucket");
+        let mut back = Metrics::default();
+        back.import(&m.export());
+        assert_eq!(back.snapshot(""), s, "both histogram families come back from storage with their own bucket counts");
+    }
+
+    #[test]
     fn a_label_with_unbounded_values_cannot_grow_memory() {
         let mut m = Metrics::default();
         for i in 0..10_000 {
             m.inc("check_calls", &[("check", &format!("c{i}"))]);
         }
-        let cap = defaults::num("telemetry.max_series") as usize;
+        let cap = defaults::num("telemetry.max_series") as usize + defaults::num("telemetry.max_series_kept") as usize;
         assert!(m.counters.len() <= cap + 1, "{} series", m.counters.len());
         assert_eq!(m.counter_total("check_calls"), 10_000, "overflow is still counted");
+    }
+
+    #[test]
+    fn past_the_cap_the_check_name_stays_and_only_the_other_labels_collapse() {
+        let mut m = Metrics::default();
+        let cap = defaults::num("telemetry.max_series") as usize;
+        let sizes = ["lt64k", "lt1m", "lt16m", "ge16m", "unknown"];
+        let checks = cap + 60; // more distinct checks than the cap: the pre-fix code folded the overflow into one `other`
+        for i in 0..checks {
+            for (j, sz) in sizes.iter().enumerate() {
+                m.add("check_bytes_read", &[("check", &format!("c{i}")), ("size", sz)], 1000 + j as u64);
+            }
+        }
+        let last = format!("c{}", checks - 1);
+        assert!(
+            m.counters.keys().any(|k| k.contains(&format!("check={last}|"))),
+            "the last check (past the cap) still has its own series: {:?}",
+            m.counters.keys().filter(|k| k.contains("other")).take(3).collect::<Vec<_>>()
+        );
+        let total: u64 = (0..sizes.len() as u64).map(|j| 1000 + j).sum::<u64>() * checks as u64;
+        assert_eq!(m.counter_total("check_bytes_read"), total, "nothing is lost, only coarser");
+        assert!(m.counters.len() <= cap + defaults::num("telemetry.max_series_kept") as usize + 1, "{} series", m.counters.len());
+        // a label that is not a check name (a path-like value) is still folded at the cap
+        let mut n = Metrics::default();
+        for i in 0..10_000 {
+            n.inc("check_calls", &[("check", &format!("c{i}"))]);
+        }
+        assert!(n.counters.len() <= cap + defaults::num("telemetry.max_series_kept") as usize + 1, "the kept series are bounded too: {}", n.counters.len());
+        assert_eq!(n.counter_total("check_calls"), 10_000);
     }
 
     #[test]

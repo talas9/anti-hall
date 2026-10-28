@@ -7,14 +7,11 @@ description: Install anti-hall for Claude Code or Codex, and check that it works
 
 ## Before you start
 
-- **Node.js 22 or newer** on your `PATH` (no longer needed from v1.0). Check with
-  `node --version`. Today it backs the temporary compatibility fallback and a few helper
-  scripts; if the shell Claude Code uses cannot find `node`, the hooks that fall back to
-  it are skipped without an error.
+- **No Node.js.** Every hook runs the `ah-hook` client and the `ah-engine` binary.
 - **macOS or Linux.** WSL on Windows works (it runs the Linux build). Native Windows is
   not supported yet.
 
-The plugin fetches the Rust engine binary itself, checked against a pinned sha256, and needs `curl` or `wget` plus `tar` for that. If the download fails, the temporary Node.js fallback answers until the engine is installed. There are no npm packages to install.
+The plugin fetches the Rust engine binary itself, checked against a pinned sha256, and needs `curl` or `wget` plus `tar` for that. If the download fails, run `hooks/install.sh --download` again once the network is back. There are no npm packages to install.
 
 !!! note "The engine binary"
     It comes from this repository's GitHub Releases (`ah-engine-v*`) and is installed only if its sha256 equals the one pinned in the plugin's `ah-engine.lock`. A failed download or a mismatch installs nothing. Opt out with `AH_ENGINE_BOOTSTRAP=0`. Details, provenance and building it yourself: [Binary download and verification](../how-it-works/index.md#binary-download-and-verification).
@@ -28,8 +25,9 @@ Inside Claude Code:
 /plugin install anti-hall@anti-hall
 ```
 
-The hooks apply to every project once the plugin is enabled. The statusline is a
-separate, optional step: [Statusline](../features/statusline.md).
+The hooks apply to every project once the plugin is enabled. anti-hall no longer
+installs a Claude `statusLine`; [Statusline](../features/statusline.md) now documents
+cleanup for older installs.
 
 !!! tip "Try it without installing"
     From a clone of the repository, `claude --plugin-dir /path/to/anti-hall` loads the
@@ -44,7 +42,7 @@ the hook files inside your clone.
 
     ```bash
     git clone https://github.com/talas9/anti-hall.git
-    node anti-hall/plugins/anti-hall/codex/install-codex.js --global
+    ~/.anti-hall/ah-engine/bin/ah-engine install-codex --global
     ```
 
     Writes `~/.codex/hooks.json`.
@@ -55,7 +53,7 @@ the hook files inside your clone.
 
     ```bash
     cd /path/to/your/project
-    node /path/to/anti-hall/plugins/anti-hall/codex/install-codex.js
+    ~/.anti-hall/ah-engine/bin/ah-engine install-codex
     ```
 
     Writes `.codex/hooks.json` in the current directory.
@@ -86,7 +84,7 @@ Or ask for `/anti-hall:doctor --repair`, which adds it to the repository's untra
 - In Claude Code, ask **"is anti-hall working"**. That runs the `doctor` skill, which
   runs live self-tests on every guard.
 - Or run `/anti-hall:settings` to see the active settings.
-- From a clone: `node plugins/anti-hall/hooks/doctor.js --check`.
+- From a clone: `~/.anti-hall/ah-engine/bin/ah-engine doctor --check`.
 
 ## Optional: Jev
 

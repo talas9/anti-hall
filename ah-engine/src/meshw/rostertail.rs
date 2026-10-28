@@ -1,4 +1,4 @@
-//! The part of `devswarm.js roster` that reads a child's session transcript: `childBusyState` (companion/lib/devswarm-idle.js)
+//! The part of `devswarm.js roster` that reads a child's session transcript: `childBusyState`
 //! as `rosterHints` calls it, reduced to the one question the row asks, "is the child waiting on a human".
 //!
 //! Node reads the last `tail_bytes` of the transcript (dropping the first, cut line when the file is longer), walks the entries
@@ -9,16 +9,16 @@
 //!
 //! The same read here is one bounded pass: the window is read once from the file, each line is parsed straight into only the
 //! fields the turn walk looks at (everything else is skipped by the parser, never built), and nothing but the last turn's tool
-//! calls and the set of answered call ids is kept. Anything this walk cannot settle exactly as JavaScript would (a number the
-//! parser rejects, an id that is an array, a timestamp in a form it does not recognise and no other entry gives one) is handed
-//! to Node.
+//! calls and the set of answered call ids is kept. A line the parser rejects but JavaScript reads (a lone surrogate escape, a number
+//! past the range of a double, nesting past the parser's limit) is read after a repair that changes only that part; an array
+//! where a text is expected is read as the text `String()` gives it; an entry time is read by `Date.parse`'s rules.
 //!
 //! Every limit, marker and text is a plugin setting (`devswarm_cli.rr_tr_*`).
-use crate::checks::guardkit::text::{collapse_ws, js_trim, js_trim_start, lossy_owned, slice_utf16};
+use crate::checks::guardkit::text::{collapse_ws, js_trim, js_trim_start, lossy_owned};
 use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::extverbs::tpl;
-use crate::meshw::ident::{R, defer};
+use crate::meshw::ident::R;
 use serde::de::{Deserialize, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -41,7 +41,8 @@ enum Sc {
     Bool(bool),
     Num(f64),
     Str(String),
-    Arr,
+    /// An array, as the text `String(array)` gives (its elements joined with commas, null as nothing).
+    Arr(String),
     Obj,
 }
 
@@ -59,19 +60,23 @@ impl Sc {
             Sc::Bool(b) => *b,
             Sc::Num(n) => *n != 0.0 && !n.is_nan(),
             Sc::Str(s) => !s.is_empty(),
-            Sc::Arr | Sc::Obj => true,
+            Sc::Arr(_) | Sc::Obj => true,
         }
     }
-    /// `String(x)`; an array (its text is its elements') is not reproduced.
-    fn js_string(&self) -> Result<String, ()> {
+    /// `String(x)`.
+    fn js_string(&self) -> String {
         match self {
-            Sc::Null => Ok("null".into()),
-            Sc::Bool(b) => Ok(b.to_string()),
-            Sc::Num(n) => Ok(to_js_string(*n)),
-            Sc::Str(s) => Ok(s.clone()),
-            Sc::Obj => Ok("[object Object]".into()),
-            Sc::Arr => Err(()),
+            Sc::Null => "null".into(),
+            Sc::Bool(b) => b.to_string(),
+            Sc::Num(n) => to_js_string(*n),
+            Sc::Str(s) => s.clone(),
+            Sc::Obj => "[object Object]".into(),
+            Sc::Arr(text) => text.clone(),
         }
+    }
+    /// How an element reads inside `Array.prototype.join`: null as nothing.
+    fn joined(&self) -> String {
+        if matches!(self, Sc::Null) { String::new() } else { self.js_string() }
     }
 }
 
@@ -108,8 +113,11 @@ impl<'de> Visitor<'de> for ScVisitor {
         Ok(Sc::Null)
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Sc, A::Error> {
-        while a.next_element::<IgnoredAny>()?.is_some() {}
-        Ok(Sc::Arr)
+        let mut parts: Vec<String> = Vec::new();
+        while let Some(el) = a.next_element::<Sc>()? {
+            parts.push(el.joined());
+        }
+        Ok(Sc::Arr(parts.join(",")))
     }
     fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<Sc, A::Error> {
         while m.next_key::<IgnoredAny>()?.is_some() {
@@ -127,22 +135,17 @@ impl<'de> Deserialize<'de> for Sc {
 
 /// One element of a `content` array. Only objects carry fields; anything else reads as a block with none (`b.type` of a
 /// string, a number or an array is `undefined`).
+#[derive(Default)]
 struct Blk {
     ty: Option<Sc>,
     tool_use_id: Option<Sc>,
     text: Option<Sc>,
     id: Option<Sc>,
     name: Option<Sc>,
-    /// The truncated question of an unresolved human-wait tool call (`Err`: the cut falls inside a surrogate pair).
-    question: Result<Option<String>, ()>,
-    /// `isMailboxTool(block)` of a tool call (`Err`: its name is an array, whose text JavaScript builds from its elements).
-    mailbox: Result<bool, ()>,
-}
-
-impl Default for Blk {
-    fn default() -> Blk {
-        Blk { ty: None, tool_use_id: None, text: None, id: None, name: None, question: Ok(None), mailbox: Ok(false) }
-    }
+    /// The truncated question of an unresolved human-wait tool call.
+    question: Option<String>,
+    /// `isMailboxTool(block)` of a tool call.
+    mailbox: bool,
 }
 
 struct BlkVisitor;
@@ -199,11 +202,11 @@ impl<'de> Visitor<'de> for BlkVisitor {
             b.question = extract_question(name, input.as_ref());
         }
         if is_ty(&b.ty, key("devswarm_cli.rr_tr_block_tool_use")) {
-            b.mailbox = match &b.name {
-                None => Ok(super::mboxtool::is_mailbox_tool("", input.as_ref())),
-                Some(n) if !n.truthy() => Ok(super::mboxtool::is_mailbox_tool("", input.as_ref())),
-                Some(n) => n.js_string().map(|s| super::mboxtool::is_mailbox_tool(&s, input.as_ref())),
+            let name = match &b.name {
+                Some(n) if n.truthy() => n.js_string(),
+                _ => String::new(),
             };
+            b.mailbox = super::mboxtool::is_mailbox_tool(&name, input.as_ref());
         }
         Ok(b)
     }
@@ -381,27 +384,25 @@ impl<'de> Deserialize<'de> for Entry {
 // the question of an open human-wait tool call
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// `truncateQuestionText`: whitespace collapsed and trimmed, cut to `rr_tr_question_len` UTF-16 units with the ellipsis; `Err`
-/// when the cut would split a surrogate pair.
-fn truncate_question(s: Option<&str>) -> Result<Option<String>, ()> {
+/// `truncateQuestionText`: whitespace collapsed and trimmed, cut to `rr_tr_question_len` UTF-16 units with the ellipsis. A cut inside a
+/// surrogate pair leaves JavaScript a lone surrogate, which text here cannot hold: it reads as the replacement character.
+fn truncate_question(s: Option<&str>) -> Option<String> {
     let t = js_trim(&collapse_ws(s.unwrap_or(""))).to_string();
     if t.is_empty() {
-        return Ok(None);
+        return None;
     }
     let max = defaults::num("devswarm_cli.rr_tr_question_len") as usize;
     if t.encode_utf16().count() <= max {
-        return Ok(Some(t));
+        return Some(t);
     }
-    match slice_utf16(&t, max - 1) {
-        Some(head) => Ok(Some(format!("{head}{}", key("devswarm_cli.ellipsis")))),
-        None => Err(()),
-    }
+    let head: Vec<u16> = t.encode_utf16().take(max - 1).collect();
+    Some(format!("{}{}", String::from_utf16_lossy(&head), key("devswarm_cli.ellipsis")))
 }
 
 /// `extractQuestionText(tu)` then `truncateQuestionText`: the first `questions[0].question`, else `question`, of an
 /// AskUserQuestion input; the `plan` of an ExitPlanMode input.
-fn extract_question(name: &str, input: Option<&Value>) -> Result<Option<String>, ()> {
-    let Some(Value::Object(o)) = input else { return Ok(None) };
+fn extract_question(name: &str, input: Option<&Value>) -> Option<String> {
+    let Some(Value::Object(o)) = input else { return None };
     let tools = defaults::list("devswarm_cli.rr_tr_wait_tools");
     let raw: Option<&str> = if tools.first() == Some(&name) {
         let first = match o.get(key("devswarm_cli.rr_tr_questions_field")) {
@@ -421,16 +422,117 @@ fn extract_question(name: &str, input: Option<&Value>) -> Result<Option<String>,
 // the walk
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// A strict stamp (`rr_tr_iso_pattern`) that `Date.parse` certainly reads.
-fn is_iso(re: &regex::Regex, s: &str) -> bool {
-    re.is_match(s)
+/// `Number.isFinite(Date.parse(e.timestamp))`: the strict stamp (`rr_tr_iso_pattern`) certainly reads; any other text is `Date.parse`'s
+/// to read (`jsport::date`), and one whose reading is not reproduced counts as no time (the row then carries no hint, as when the
+/// transcript has no time at all).
+fn entry_time_is_finite(k: &Keys, ts: &Sc) -> bool {
+    use crate::checks::jsport::date::{Parsed, parse};
+    let text = ts.js_string();
+    if k.iso.as_ref().is_some_and(|re| re.is_match(&text)) {
+        return true;
+    }
+    matches!(parse(&text), Parsed::Ms(ms) if ms.is_finite())
+}
+
+/// `line` with what only JavaScript's `JSON.parse` accepts repaired, parsed without the depth limit: a lone surrogate escape reads as
+/// the replacement character, a number past the range of a double as a very large one. `None` for a line nested past
+/// `rr_tr_max_depth` (no real transcript nests so far) or that still does not parse.
+fn parse_repaired(line: &str) -> Option<Entry> {
+    use serde::Deserialize as _;
+    let mut out = String::with_capacity(line.len());
+    let b = line.as_bytes();
+    let (mut i, mut depth, mut deepest) = (0usize, 0usize, 0usize);
+    let hex4 = |at: usize| -> Option<u32> { u32::from_str_radix(line.get(at..at + 4)?, 16).ok() };
+    while i < b.len() {
+        match b[i] {
+            b'"' => {
+                out.push('"');
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' && i + 1 < b.len() {
+                        if b[i + 1] == b'u' {
+                            let cp = hex4(i + 2);
+                            let low_follows = |at: usize| line.get(at..at + 2) == Some("\\u") && hex4(at + 2).is_some_and(|c| (0xDC00..0xE000).contains(&c));
+                            match cp {
+                                Some(c) if (0xD800..0xDC00).contains(&c) && low_follows(i + 6) => {
+                                    out.push_str(&line[i..i + 12]);
+                                    i += 12;
+                                }
+                                Some(c) if (0xD800..0xE000).contains(&c) => {
+                                    out.push_str(key("devswarm_cli.rr_tr_lone_surrogate"));
+                                    i += 6;
+                                }
+                                _ => {
+                                    out.push_str(&line[i..(i + 2).min(line.len())]);
+                                    i += 2;
+                                }
+                            }
+                        } else {
+                            // an escaped character (an escaped quote included) is copied as it is, whatever it is
+                            let end = (i + 2..=line.len().min(i + 5)).find(|e| line.is_char_boundary(*e)).unwrap_or(line.len());
+                            out.push_str(&line[i..end]);
+                            i = end;
+                        }
+                    } else {
+                        let end = (i + 1..=line.len()).find(|e| line.is_char_boundary(*e)).unwrap_or(line.len());
+                        out.push_str(&line[i..end]);
+                        i = end;
+                    }
+                }
+                if i < b.len() {
+                    out.push('"');
+                    i += 1;
+                }
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+                out.push(b[i] as char);
+                i += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                out.push(b[i] as char);
+                i += 1;
+            }
+            c if c == b'-' || c.is_ascii_digit() => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_digit() || matches!(b[i], b'+' | b'-' | b'.' | b'e' | b'E')) {
+                    i += 1;
+                }
+                let token = &line[start..i];
+                match token.parse::<f64>() {
+                    Ok(n) if n.is_infinite() => {
+                        if token.starts_with('-') {
+                            out.push('-');
+                        }
+                        out.push_str(key("devswarm_cli.rr_tr_big_number"));
+                    }
+                    _ => out.push_str(token),
+                }
+            }
+            _ => {
+                let end = (i + 1..=line.len()).find(|e| line.is_char_boundary(*e)).unwrap_or(line.len());
+                out.push_str(&line[i..end]);
+                i = end;
+            }
+        }
+    }
+    if deepest > defaults::num("devswarm_cli.rr_tr_max_depth") as usize {
+        return None;
+    }
+    let mut de = serde_json::Deserializer::from_str(&out);
+    de.disable_recursion_limit();
+    let e = Entry::deserialize(&mut de).ok()?;
+    de.end().ok()?;
+    Some(e)
 }
 
 struct Tool {
     id: Option<Sc>,
     name: Option<Sc>,
-    question: Result<Option<String>, ()>,
-    mailbox: Result<bool, ()>,
+    question: Option<String>,
+    mailbox: bool,
 }
 
 #[derive(Default)]
@@ -445,7 +547,8 @@ struct Turn {
 
 /// The settings the per-entry walk compares with, read once per call.
 struct Keys {
-    iso: regex::Regex,
+    /// The strict form of an entry time that certainly parses (a fast path; `None` when the pattern does not compile).
+    iso: Option<regex::Regex>,
     tool_use: &'static str,
     tool_result: &'static str,
     text: &'static str,
@@ -460,30 +563,30 @@ struct Walk {
     cron: bool,
     answered: HashSet<String>,
     finite_ts: bool,
-    odd_ts: bool,
 }
 
 /// `promptText(entry)`: the text a user prompt gives `wakeTrigger`; `None` is null.
-fn prompt_text(c: &Content, k: &Keys) -> R<Option<String>> {
+fn prompt_text(c: &Content, k: &Keys) -> Option<String> {
     match c {
-        Content::Str(s) => Ok(Some(s.clone())),
+        Content::Str(s) => Some(s.clone()),
         Content::Arr(bs) => {
             if bs.iter().any(|b| is_ty(&b.ty, k.tool_result)) {
-                return Ok(None);
+                return None;
             }
             let Some(t) = bs.iter().find(|b| is_ty(&b.ty, k.text)) else {
-                return Ok(Some(String::new()));
+                return Some(String::new());
             };
-            Ok(Some(match &t.text {
+            Some(match &t.text {
                 None => String::new(),
                 Some(v) if !v.truthy() => String::new(),
                 Some(Sc::Str(s)) => s.clone(),
+                // `String(array)` begins like its first element
+                Some(Sc::Arr(text)) => text.clone(),
                 // `String(x)` of a number, true or an object can never begin like a notification or a hook prompt
-                Some(Sc::Arr) => return defer("prompt-text-array"),
                 Some(_) => key("devswarm_cli.rr_tr_inert_text").to_string(),
-            }))
+            })
         }
-        Content::Other => Ok(None),
+        Content::Other => None,
     }
 }
 
@@ -502,15 +605,12 @@ impl Walk {
         self.cur = Some(Turn { prompted: true, wake, ..Turn::default() });
     }
 
-    fn apply(&mut self, e: Entry) -> R<()> {
+    fn apply(&mut self, e: Entry) {
         if e.side.as_ref().is_some_and(Sc::truthy) {
-            return Ok(());
+            return;
         }
-        match &e.ts {
-            Some(Sc::Str(s)) if is_iso(&self.k.iso, s) => self.finite_ts = true,
-            Some(Sc::Str(s)) if s.is_empty() => {}
-            Some(Sc::Null) | None => {}
-            Some(_) => self.odd_ts = true,
+        if e.ts.as_ref().is_some_and(|ts| entry_time_is_finite(&self.k, ts)) {
+            self.finite_ts = true;
         }
         let ty = e.ty.as_ref().and_then(Sc::str);
         let (t_sys, t_user, t_asst) = (self.k.types.first().copied(), self.k.types.get(1).copied(), self.k.types.get(2).copied());
@@ -530,19 +630,11 @@ impl Walk {
                     if is_ty(&b.ty, self.k.tool_result)
                         && let Some(id) = b.tool_use_id.as_ref().filter(|v| !matches!(v, Sc::Null))
                     {
-                        match id.js_string() {
-                            Ok(s) => {
-                                self.answered.insert(s);
-                            }
-                            Err(()) => return defer("tool-use-id-type"),
-                        }
+                        self.answered.insert(id.js_string());
                     }
                 }
             }
-            let p = match content {
-                Some(c) => prompt_text(c, &self.k)?,
-                None => None,
-            };
+            let p = content.and_then(|c| prompt_text(c, &self.k));
             let meta = e.meta.as_ref().is_some_and(Sc::truthy);
             match p {
                 Some(t) if !meta => {
@@ -571,7 +663,6 @@ impl Walk {
             }
             t.closed = false;
         }
-        Ok(())
     }
 }
 
@@ -581,17 +672,16 @@ fn clone_sc(v: &Option<Sc>) -> Option<Sc> {
         Sc::Bool(b) => Sc::Bool(*b),
         Sc::Num(n) => Sc::Num(*n),
         Sc::Str(s) => Sc::Str(s.clone()),
-        Sc::Arr => Sc::Arr,
+        Sc::Arr(text) => Sc::Arr(text.clone()),
         Sc::Obj => Sc::Obj,
     })
 }
 
 /// `String(tu.name || '')`.
-fn tool_name(v: &Option<Sc>) -> R<String> {
+fn tool_name(v: &Option<Sc>) -> String {
     match v {
-        None => Ok(String::new()),
-        Some(s) if !s.truthy() => Ok(String::new()),
-        Some(s) => s.js_string().or_else(|()| defer("tool-name-array")),
+        Some(s) if s.truthy() => s.js_string(),
+        _ => String::new(),
     }
 }
 
@@ -640,28 +730,22 @@ pub fn transcript_file(home: &Path, id: &str, wt: &str, session: &str) -> R<Opti
     if let Some(theirs) = beat.as_ref().and_then(|b| b.get(key("mesh_write.field_session_id")))
         && theirs.truthy()
     {
-        use crate::checks::guardkit::ojson::OVal;
-        let theirs = match theirs {
-            OVal::Str(t) => t.clone(),
-            OVal::Num(x) => to_js_string(*x),
-            OVal::Bool(b) => b.to_string(),
-            _ => return defer("heartbeat-session-type"),
-        };
-        if theirs != session {
+        // `String(beat.sessionId)`
+        if crate::meshw::ident::js_to_string(theirs) != session {
             return Ok(None);
         }
     }
-    if session.contains('/') || session.contains('\\') || session.contains("..") {
-        return defer("session-path");
-    }
     let from = key("devswarm_sup.lv_encode_chars");
     let encoded: String = wt.chars().map(|c| if from.contains(c) { key("devswarm_sup.lv_encode_to").to_string() } else { c.to_string() }).collect();
-    Ok(Some(
-        home.join(key("mesh_write.claude_dir"))
-            .join(key("devswarm_sup.lv_projects_dir"))
-            .join(encoded)
-            .join(format!("{session}{}", key("devswarm_sup.lv_transcript_ext"))),
-    ))
+    // `path.join(projectDir, session + '.jsonl')`: the join normalizes, so a session with a separator or `..` lands where Node's does
+    let joined = format!(
+        "{}/{}/{}/{encoded}/{session}{}",
+        home.display(),
+        key("mesh_write.claude_dir"),
+        key("devswarm_sup.lv_projects_dir"),
+        key("devswarm_sup.lv_transcript_ext")
+    );
+    Ok(Some(std::path::PathBuf::from(crate::checks::git::util::posix_normalize(&joined))))
 }
 
 /// What one pass over the window found: the walk, and the transcript's modification time (ms).
@@ -674,9 +758,8 @@ struct Scan {
 /// with a time).
 fn scan(file: &Path) -> R<Option<Scan>> {
     let Some((text, mtime)) = read_window(file, defaults::num("devswarm_cli.rr_tr_tail_bytes")) else { return Ok(None) };
-    let Ok(iso) = regex::Regex::new(key("devswarm_cli.rr_tr_iso_pattern")) else { return defer("iso-pattern") };
     let k = Keys {
-        iso,
+        iso: regex::Regex::new(key("devswarm_cli.rr_tr_iso_pattern")).ok(),
         tool_use: key("devswarm_cli.rr_tr_block_tool_use"),
         tool_result: key("devswarm_cli.rr_tr_block_tool_result"),
         text: key("devswarm_cli.rr_tr_block_text"),
@@ -684,24 +767,29 @@ fn scan(file: &Path) -> R<Option<Scan>> {
         types: defaults::list("devswarm_cli.rr_tr_types"),
         close: defaults::list("devswarm_cli.rr_tr_subtypes_close"),
     };
-    let mut w = Walk { k, cur: None, cron: false, answered: HashSet::new(), finite_ts: false, odd_ts: false };
+    let mut w = Walk { k, cur: None, cron: false, answered: HashSet::new(), finite_ts: false };
     for line in text.split('\n') {
         if line.is_empty() {
             continue;
         }
         match serde_json::from_str::<Entry>(line) {
-            Ok(e) => w.apply(e)?,
+            Ok(e) => w.apply(e),
             Err(err) => {
+                // a line JavaScript's parser reads but this one rejects is read after the repair; any other failure is a line
+                // `JSON.parse` throws on too: skipped
                 let msg = err.to_string();
                 if defaults::list("devswarm_cli.rr_tr_defer_errors").iter().any(|m| msg.contains(m)) {
-                    return defer("transcript-json");
+                    match parse_repaired(line) {
+                        Some(e) => w.apply(e),
+                        None => crate::metrics::bump(key("devswarm_cli.rr_tr_metric_skipped"), &[]),
+                    }
                 }
             }
         }
     }
+    // no entry has a time: Node reports nothing
     if !w.finite_ts {
-        // no entry has a time: Node cannot tell and reports nothing; an unrecognised form of time it might have read
-        return if w.odd_ts { defer("transcript-timestamp") } else { Ok(None) };
+        return Ok(None);
     }
     Ok(Some(Scan { w, mtime }))
 }
@@ -712,16 +800,9 @@ fn open_tool(w: &Walk) -> R<Option<Open>> {
         Some(t) if !t.closed => {
             let mut found = None;
             for tu in t.tools.iter().rev() {
-                let id = match tu.id.as_ref().filter(|v| !matches!(v, Sc::Null)) {
-                    Some(v) => match v.js_string() {
-                        Ok(s) => Some(s),
-                        Err(()) => return defer("tool-id-type"),
-                    },
-                    None => None,
-                };
+                let id = tu.id.as_ref().filter(|v| !matches!(v, Sc::Null)).map(Sc::js_string);
                 if id.as_deref().is_some_and(|i| !i.is_empty() && !w.answered.contains(i)) {
-                    let question = tu.question.clone().or_else(|()| defer("surrogate-cut"))?;
-                    found = Some(Open { tool: tool_name(&tu.name)?, question });
+                    found = Some(Open { tool: tool_name(&tu.name), question: tu.question.clone() });
                     break;
                 }
             }
@@ -761,18 +842,21 @@ pub struct Busy {
     pub waiting: bool,
     /// The preview of the unresolved question (only meaningful with `waiting`).
     pub question: Option<String>,
+    /// The transcript was read (it exists and holds entries): "not busy" is then a fact, not just the unknown cases.
+    pub seen: bool,
 }
 
 /// `childBusyState(desc, home, { now, freshMs })` from `realActivity` on: the transcript `file` at `now`, fresh within `fresh_ms`.
 pub fn busy_state(file: &Path, now: f64, fresh_ms: f64) -> R<Busy> {
-    let none = Busy { busy: false, waiting: false, question: None };
+    let none = Busy { busy: false, waiting: false, question: None, seen: false };
     let Some(sc) = scan(file)? else { return Ok(none) };
+    let none = Busy { seen: true, ..none };
     let open = open_tool(&sc.w)?;
     let fresh = is_fresh(now, sc.mtime, fresh_ms);
     if let Some(o) = &open
         && (defaults::list("devswarm_cli.rr_tr_wait_tools").contains(&o.tool.as_str()) || !fresh)
     {
-        return Ok(Busy { busy: false, waiting: true, question: o.question.clone() });
+        return Ok(Busy { busy: false, waiting: true, question: o.question.clone(), seen: true });
     }
     if !fresh {
         return Ok(none);
@@ -781,16 +865,82 @@ pub fn busy_state(file: &Path, now: f64, fresh_ms: f64) -> R<Busy> {
     // is mailbox-class
     let Some(t) = &sc.w.cur else { return Ok(none) };
     let ping = if t.prompted { t.wake && all_mailbox(t)? } else { !t.tools.is_empty() && all_mailbox(t)? };
-    Ok(Busy { busy: !ping, waiting: false, question: None })
+    Ok(Busy { busy: !ping, waiting: false, question: None, seen: true })
 }
 
 fn all_mailbox(t: &Turn) -> R<bool> {
-    for tool in &t.tools {
-        match tool.mailbox {
-            Ok(true) => {}
-            Ok(false) => return Ok(false),
-            Err(()) => return defer("tool-name-array"),
-        }
+    Ok(t.tools.iter().all(|tool| tool.mailbox))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transcript(tag: &str, lines: &[&str]) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ah-tail-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("t.jsonl");
+        std::fs::write(&f, lines.join("\n") + "\n").unwrap();
+        f
     }
-    Ok(true)
+
+    const PROMPT: &str = r#"{"type":"user","timestamp":"2026-10-30T10:00:00.000Z","message":{"role":"user","content":"go"}}"#;
+    const NOW: f64 = 1_793_354_401_000.0; // 2026-10-30T10:00:01Z
+
+    fn ask(extra: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-10-30T10:00:01.000Z","message":{{"content":[{{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{{"question":"{extra}"}}}}]}}}}"#
+        )
+    }
+
+    /// A day after the 28th is not in the strict stamp form, but `Date.parse` reads it: the child waiting on a question is shown.
+    #[test]
+    fn an_entry_time_after_the_28th_is_read_like_any_other() {
+        let f = transcript("day30", &[PROMPT, &ask("Which one?")]);
+        assert_eq!(waiting_hint(&f, NOW).unwrap().as_deref(), Some("waiting-on-human: Which one?"));
+    }
+
+    /// A lone surrogate escape, a number past the range of a double and an array where a text or an id is expected are all lines
+    /// JavaScript reads; none hands the roster to Node.
+    #[test]
+    fn lines_only_javascript_reads_are_read() {
+        let lone = ask(r"hi \ud800 there");
+        let f = transcript("lone", &[PROMPT, &lone]);
+        let hint = waiting_hint(&f, NOW).unwrap().unwrap();
+        assert!(hint.starts_with("waiting-on-human: hi ") && hint.ends_with(" there"), "{hint}");
+        let big = r#"{"type":"system","subtype":"x","timestamp":"2026-10-30T10:00:00.500Z","n":1e999}"#;
+        let f = transcript("big", &[PROMPT, big, &ask("still read")]);
+        assert_eq!(waiting_hint(&f, NOW).unwrap().as_deref(), Some("waiting-on-human: still read"));
+        // a tool call id that is an array, answered by a result whose id is the same array
+        let array_id = r#"{"type":"assistant","timestamp":"2026-10-30T10:00:01.000Z","message":{"content":[{"type":"tool_use","id":["a","b"],"name":"AskUserQuestion","input":{"question":"q"}}]}}"#;
+        let answered = r#"{"type":"user","timestamp":"2026-10-30T10:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":["a","b"]}]}}"#;
+        let f = transcript("arrid", &[PROMPT, array_id]);
+        assert!(waiting_hint(&f, NOW).unwrap().is_some());
+        let f = transcript("arrans", &[PROMPT, array_id, answered]);
+        assert!(waiting_hint(&f, NOW).unwrap().is_none(), "the result answers the call");
+    }
+
+    /// The preview is cut at 120 UTF-16 units; a cut inside an emoji reads as the replacement character, not as a handover.
+    #[test]
+    fn a_cut_inside_a_surrogate_pair_reads_as_the_replacement_character() {
+        let text = format!("{}\u{1F600} end", "a".repeat(118));
+        let f = transcript("cut", &[PROMPT, &ask(&text)]);
+        let hint = waiting_hint(&f, NOW).unwrap().unwrap();
+        assert!(hint.ends_with("\u{fffd}\u{2026}"), "{hint}");
+    }
+
+    /// `path.join` normalizes: a session id with a separator or `..` reaches the file Node reads, no deferral.
+    #[test]
+    fn a_session_id_with_a_separator_reaches_the_file_node_reads() {
+        let home = std::env::temp_dir();
+        let p = transcript_file(&home, "id", "/w/x", "../other/s1").unwrap().unwrap();
+        assert!(p.ends_with("other/s1.jsonl"), "{}", p.display());
+        assert!(!p.to_string_lossy().contains(".."), "{}", p.display());
+    }
+
+    #[test]
+    fn the_strict_time_pattern_compiles() {
+        assert!(regex::Regex::new(key("devswarm_cli.rr_tr_iso_pattern")).is_ok());
+    }
 }

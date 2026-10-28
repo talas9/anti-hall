@@ -1,0 +1,32 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "fold-archived-rows: already completed for 0.1.0 — skipped (one-time per-version migration)",
+    "errors": 0,
+    "forwarded": 0,
+    "left": 0,
+    "retired": 0,
+    "skippedAlreadyDone": true
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/archived/": "755",
+    ".anti-hall/devswarm/archived/a1.json": "644 {\"id\":\"a1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/update-sweep-state.json": "644 {\"foldArchivedRows\":{\"completedVersion\":\"0.1.0\"},\"foldArchivedFamilyDescriptors\":{\"completedVersion\":\"0.1.0\"}}"
+  },
+  "stores": {
+    "{REPOKEY}": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "a1",
+          "session_id": "s1",
+          "worktree_path": "{REPO}"
+        }
+      ]
+    }
+  }
+}

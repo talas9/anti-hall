@@ -1,0 +1,12 @@
+{
+  "exit": 0,
+  "files": {
+    ".claude/": "755",
+    ".claude/plugins/": "755",
+    ".claude/plugins/marketplaces/": "755",
+    ".claude/plugins/marketplaces/anti-hall/": "755",
+    ".claude/plugins/marketplaces/anti-hall/CHANGELOG.md": "644 # Changelog\n\npreamble\n\n## 0.1.0 - first\n\n- the first thing\n"
+  },
+  "stderr": "",
+  "stdout": "{\"installed\":null,\"latest\":\"0.2.0\",\"updated\":false,\"cacheSynced\":false,\"action\":\"unknown-installed-version — could not determine the installed anti-hall version (installed_plugins.json, cache dirs, and plugin.json all yielded no valid X.Y.Z); reinstall the plugin or inspect ~/.claude/plugins/installed_plugins.json\"}\n✅ anti-hall · update: already up to date\n  installed: (unknown)\n  latest:    0.2.0\n  updated:   false\n  action:    unknown-installed-version — could not determine the installed anti-hall version (installed_plugins.json, cache dirs, and plugin.json all yielded no valid X.Y.Z); reinstall the plugin or inspect ~/.claude/plugins/installed_plugins.json\n"
+}

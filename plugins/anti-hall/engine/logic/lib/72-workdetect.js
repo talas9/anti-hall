@@ -1,7 +1,7 @@
 // What counts as a file-changing action in a transcript (D88 batch 6): a translation of hooks/lib/work-detect.js (`isCountedWork` and
 // what it calls). One definition, shared by the tasklist Stop gate and any check that judges work. A relative path is judged against
-// the session's directory (the payload's `cwd`); where that cannot be settled (a path that climbs out, a session directory under the
-// temp root, no directory at all) the call throws `wd.UNSURE` and the check defers. Keys: task_guards.toml (workdetect.*, taskkit.*).
+// the session's directory (the payload's `cwd`); where that cannot be settled (no usable directory) it counts as not under the temp
+// root (counted, native_unable at `workdetect.*`). Keys: task_guards.toml (workdetect.*, taskkit.*).
 'use strict';
 var wd = {
   UNSURE: { unsure: true },
@@ -35,9 +35,8 @@ var wd = {
   underTmp: function (p, cx) {
     if (!p) return false;
     if (p.charAt(0) === '/') return wd.isUnder(ah.path.resolveAbs(p), cx.tmp);
-    if (!cx.cwd || cx.cwd.charAt(0) !== '/') throw wd.UNSURE;
-    if (p.split('/').indexOf('..') >= 0 || wd.isUnder(ah.path.resolveAbs(cx.cwd), cx.tmp)) throw wd.UNSURE;
-    return false;
+    if (!cx.cwd || cx.cwd.charAt(0) !== '/') { ah.unable('workdetect:relative_no_cwd'); return false; }
+    return wd.isUnder(ah.path.resolve(cx.cwd, p), cx.tmp);
   },
   // The paths a session's ONE user request names (cx.requested: [{raw, abs}]), or [] when the session has more than one request,
   // none, or the window does not hold the whole transcript. A path that is, or holds, the session directory is not an output.
@@ -48,7 +47,7 @@ var wd = {
       var raw = lines[i];
       if (raw.indexOf('"user"') < 0) continue;
       var r = jx.parse(raw.trim());
-      if (r.unsure) throw wd.UNSURE;
+      if (r.unsure) { ah.unable('workdetect:request_line_unsure'); continue; }
       var e = r.v;
       if (r.invalid || !e || e.type !== 'user' || e.isMeta === true || !e.message) continue;
       var c = e.message.content, txt = '', isResult = false;

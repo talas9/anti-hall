@@ -1,28 +1,28 @@
-# ah-engine shipped defaults for the DevSwarm supervisor duties (lane l7, `src/dssup`): everything the Node liveness supervisor
-# (companion/devswarm-supervisor.js, run by launchd / systemd / cron every 60-120 s) does besides auto-archive, so the engine's
+# ah-engine shipped defaults for the DevSwarm supervisor duties (lane l7, `src/dssup`): everything the old Node liveness supervisor
+# (run by launchd / systemd / cron every 60-120 s) did besides auto-archive, so the engine's
 # scheduler can take them over and the Node job can be switched off as a whole. Format: see the header of engine.toml. Every key
 # can be overridden in the `devswarm_sup` section of settings.json. Nothing here is compiled into the binary.
 #
 # THE SWITCH: `devswarm_sup.mode`. `engine` (the default) makes the engine's scheduler job `devswarm_supervisor` run the duties
-# below; `witness` leaves every duty to the Node supervisor and the engine runs none of them. In engine mode the engine also takes
+# below; `off` runs none of them (a diagnostic: the tick is counted as `disabled`). In engine mode the engine also takes
 # poke and escalate (their executors default to `auto`, which follows this mode) and refuses to act while the Node supervisor is
 # still running (the double-run guard). The go-live steps are in docs/AH-ENGINE.md, "DevSwarm supervisor cutover".
 
 [devswarm_sup.mode]
-doc = "Who owns the supervisor duties: engine (the default: the engine's scheduler runs them, poke and escalate follow; while a Node supervisor job is still installed and running the engine stands down, so there is never a second actor) | witness (the Node supervisor job does; the engine runs none of them). Anything else reads as witness, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit."
+doc = "Whether the engine runs the supervisor duties: engine (the default: the engine's scheduler runs them, poke and escalate follow; while a Node supervisor job is still installed and running the engine stands down, so there is never a second actor) | off (the diagnostic switch: the engine runs none of them; each tick is counted as disabled). Anything else reads as off, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit."
 value = "engine"
 
 [devswarm_sup.reconcile_mode]
-doc = "Who runs the reconcile sweep duty while devswarm_sup.mode is `engine`: node (Node's reconcileSweepIfDue, unchanged; the default until the proof window) | engine (the engine reconciles each project natively, every state change witnessed against Node on scratch copies first, and Node runs the rest of the sweep: the mesh fold, the active-workspace probe, start-up sampling). Anything else reads as node, so a typo never starts a second actor."
-value = "node"
+doc = "Whether the reconcile sweep duty runs while devswarm_sup.mode is `engine`: engine (the default: the engine reconciles each project natively and folds its duplicate mesh rows; the active-workspace probe and start-up sampling of Node's sweep are held) | off (the duty is disabled: counted, nothing run). Anything else reads as off."
+value = "engine"
 
 [devswarm_sup.reconcile_mode_words]
-doc = "The words of devswarm_sup.reconcile_mode, in the order node, engine."
-value = ["node", "engine"]
+doc = "The words of devswarm_sup.reconcile_mode, in the order off, engine."
+value = ["off", "engine"]
 
 [devswarm_sup.mode_words]
-doc = "The words of devswarm_sup.mode, in the order witness, engine."
-value = ["witness", "engine"]
+doc = "The words of devswarm_sup.mode, in the order off, engine."
+value = ["off", "engine"]
 
 [devswarm_sup.tick_ms]
 doc = "How often the scheduler job `devswarm_supervisor` runs while the mode is `engine` (Node's installer sweeps every 60-120 s). The job does nothing where DevSwarm is absent or the mode is witness."
@@ -101,8 +101,8 @@ doc = "Least time between two reconcile sweeps. Node: devswarm.reconcileSweepSec
 value = { type = "number", section = "devswarm", key = "reconcileSweepSec", env = "ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC", min = 300, max = 100000000, default = 900 }
 
 [devswarm_sup.sweep_tail_mode]
-doc = "Who decides the sweep tail (archived registry rows, twin descriptors; the reconcile port): node (the default; Node's scheduled functions do it) or engine (the engine decides each step after Node's own function, run on a scratch mirror, agrees)."
-value = { type = "enum", section = "devswarm", key = "sweepTailMode", env = "ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE", values = ["node", "engine"], default = "node" }
+doc = "Whether the engine decides the sweep tail (archived registry rows, twin descriptors, the deferred post-update stages and the reconcile-family update stages): engine (the default) | off (those steps are disabled: counted, nothing run)."
+value = { type = "enum", section = "devswarm", key = "sweepTailMode", env = "ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE", values = ["off", "engine"], default = "engine" }
 
 [devswarm_sup.set_housekeeping_mode]
 doc = "Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep."
@@ -120,13 +120,42 @@ value = { type = "number", section = "devswarm", key = "supervisorSweepBudgetMs"
 doc = "Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries."
 value = { type = "number", section = "devswarm", key = "maxRecoveries", env = "ANTIHALL_DEVSWARM_MAX_RECOVERIES", min = 1, max = 20, default = 3 }
 
+# ---- input gates ---------------------------------------------------------------------------------------------------------------
+# A gated duty is not run while the stat data of its inputs is unchanged since its last run, for at most gate_max_unchanged_ms.
+# The gate only delays a duty by that bound; a tick that runs recomputes from fresh inputs.
+
+[devswarm_sup.gate_duties]
+doc = "The duties the input gate applies to (each needs entries in gate_inputs and gate_max_unchanged_ms). An empty list runs every duty on every tick."
+value = ["verdicts", "app_sync", "retention"]
+
+[devswarm_sup.gate_max_unchanged_ms]
+doc = "Per gated duty, the longest it goes unrun while its inputs are unchanged (0 = never skipped). Past it the duty runs again whatever the stat data says; it bounds what an input the gate cannot see (a transcript being written, a process, the clock) can delay."
+value = { verdicts = 120000, app_sync = 300000, retention = 600000 }
+
+[devswarm_sup.gate_inputs]
+doc = "Per gated duty, what its signature covers: appdb (the app database and its -wal), ds-dir:<dir> / ds-tree:<dir> (a directory under the DevSwarm state directory, tree = one level of subdirectories too), home-dir:<dir> / home-tree:<dir> / home-file:<file> (under the home directory). Outputs of the duties are not listed. A duty is only armed by a quiet run: the liveness sweep with a stale workspace, a forced notice or a parked notice keeps running every tick (nudge windows and retries are not file changes). verdicts leaves the heartbeats out on purpose (every working child rewrites its beat every few seconds, so the gate would never skip); a beat is picked up within gate_max_unchanged_ms."
+value = { verdicts = ["ds-dir:workspaces", "ds-dir:plans", "ds-dir:escalation-pending", "ds-tree:store", "home-dir:.claude/sessions", "home-file:.anti-hall/state/jev-triage-pending.json", "home-file:.anti-hall/settings.json"], app_sync = ["appdb", "ds-dir:workspaces", "home-file:.anti-hall/settings.json"], retention = ["ds-tree:store", "home-file:.anti-hall/settings.json"] }
+
+[devswarm_sup.gate_subdir_depth]
+doc = "The gate_inputs kinds that also list one level of subdirectories."
+value = ["ds-tree", "home-tree"]
+
+[devswarm_sup.gate_env_prefix]
+doc = "Environment variables whose names start with this are part of a gated duty's signature (the supervisor's switches and thresholds are read from them), so a changed switch runs the duty at once. The settings in force (a config reload) and who pokes are always part of it."
+value = "ANTIHALL_"
+
+[devswarm_sup.gate_ignore_suffixes]
+doc = "File-name suffixes the gate ignores in a listing: a SQLite -shm index changes whenever any process opens the database, even a reader, and holds no data."
+value = ["-shm"]
+
+[devswarm_sup.msg_gate_unchanged]
+doc = "The reason recorded for a gated duty that was not run. {age} seconds since its last run, {max} the bound."
+value = "inputs unchanged for {age} s (bound {max} s)"
+
 # ---- the duties ------------------------------------------------------------------------------------------------------------
-# One table per duty, run in this order by the tick. kind `native` is done by the engine itself; kind `node` runs the Node
-# supervisor's own function for the duty in a bounded `node` subprocess (the engine owns the schedule, the cool-down gate, the
-# lock, the bound and the record; the function keeps writing the files it writes today, so every shared file stays byte-for-byte
-# Node's). gate `tick` runs on every tick, gate `cooldown` only when its state file's lastRunAt plus the `sec` setting has passed
-# and the `mode` setting is not off. The snippet's arguments are: the plugin root, the home directory, and `engine` or `node`
-# (who pokes: `node` only when both executors are node).
+# One table per duty, run in this order by the tick. Every duty is native (`kind`): the engine owns the schedule, the cool-down gate,
+# the lock and the record, and writes the files Node wrote (byte for byte). gate `tick` runs on every tick, gate `cooldown` only when
+# its state file's lastRunAt plus the `sec` setting has passed and the `mode` setting is not off.
 
 [devswarm_sup.duties]
 doc = "The duties of one tick, in order (the order of Node's main(): log rotation, the liveness sweep, reconcile, deferred stage, app sync, retention, housekeeping; auto-archive is the engine's own action layer and poke / escalate its action sweeps)."
@@ -134,77 +163,116 @@ value = ["log_rotate", "verdicts", "reconcile", "deferred", "app_sync", "retenti
 
 [devswarm_sup."duty.log_rotate"]
 doc = "Rotate the supervisor log (and the engine's own tick log) to one .1 generation when it passes set_log_rotate_bytes. Native. Only the supervisor's own bounded log is touched."
-value = { kind = "native", gate = "tick", timeout_ms = 5000, witness_snippet = 'process.env.HOME=process.argv[2];const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const env=Object.assign({},process.env,{ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES:process.argv[3]});console.log(JSON.stringify(S.rotateSupervisorLogIfNeeded({home:process.argv[2],env})))' }
+value = { kind = "native", gate = "tick" }
 
 [devswarm_sup."duty.verdicts"]
-doc = "The liveness sweep: compute and write every workspace's liveness verdict file natively; a workspace that is stale, has a Jev blocker or a step plan, or that the engine cannot prove it decides like Node, goes to Node's own sweep (suppressors, the forced parent notice for an urgent mesh unread, straying and the Jev blocker label), and parked escalation notices are re-sent by Node. When the engine owns poke and escalate Node's poke step is switched off (the engine's action layer pokes)."
-value = { kind = "node", native = true, gate = "tick", timeout_ms = 300000, witness_timeout_ms = 120000, witness_snippet = 'const fs=require("fs");const path=require("path");const root=process.argv[1];const home=process.argv[2];process.env.HOME=home;const spec=JSON.parse(fs.readFileSync(process.argv[3],"utf8"));const L=require(root+"/companion/lib/liveness.js");const S=require(root+"/companion/devswarm-supervisor.js");const prev=new Map(spec.items.map((i)=>[L.livenessPathFor(i.id,home),i.prev]));const block=()=>undefined;const guard=Object.assign({},fs,{readFileSync:(p,...a)=>{if(prev.has(String(p))){const t=prev.get(String(p));if(t===null){const e=new Error("ENOENT");e.code="ENOENT";throw e}return t}return fs.readFileSync(p,...a)},appendFileSync:block,mkdirSync:block,writeFileSync:block,renameSync:block});const ds=new Map(S.readDescriptors(home).map((d)=>[d.id,d]));const out={};for(const i of spec.items){const d=ds.get(i.id);if(!d){out[i.id]=null;continue}try{out[i.id]=JSON.stringify(L.computeLiveness({descriptor:d,now:spec.now,home,idleThresholdMs:spec.idleMs,nudgeWindowMs:spec.nudgeWindowMs,runners:{fs:guard}}))}catch(e){out[i.id]="error: "+String(e&&e.message)}}console.log(JSON.stringify(out))', snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const o=Object.assign({home:process.argv[2]},S.resolveThresholdsFromEnv(process.env));if(process.argv[3]==="engine")o.deps={pokeOrEscalate:()=>({action:"engine-owned"})};const r=S.sweepOnce(o);console.log(JSON.stringify({sweep:r.length,drained:r.escalationsDrained}))', tail_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const fs=require("fs");const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const L=require(process.argv[1]+"/companion/lib/liveness.js");const spec=JSON.parse(process.argv[4]);const tail=new Set(spec.tail);const all=new Set(spec.tail.concat(spec.full));const o=Object.assign({home:process.argv[2]},S.resolveThresholdsFromEnv(process.env));o.deps={readDescriptors:(h,F)=>S.readDescriptors(h,F).filter((d)=>all.has(d.id)),computeLiveness:(x)=>tail.has(x.descriptor.id)?JSON.parse(fs.readFileSync(L.livenessPathFor(x.descriptor.id,x.home),"utf8")):L.computeLiveness(x),writeVerdict:(id,v,h,F)=>tail.has(id)?null:L.writeVerdict(id,v,h,F)};if(process.argv[3]==="engine")o.deps.pokeOrEscalate=()=>({action:"engine-owned"});const r=S.sweepOnce(o);console.log(JSON.stringify({sweep:r.length,drained:r.escalationsDrained}))' }
+doc = "The liveness sweep: compute and write every workspace's liveness verdict file natively, send the forced parent notice and re-send parked escalation notices when the engine owns poke and escalate. The per-workspace tail work (Jev blocker label, straying signals) and a workspace the engine cannot prove it decides like Node are held (counted native_unable, named in the record)."
+value = { kind = "native", gate = "tick" }
 
 [devswarm_sup."duty.reconcile"]
-doc = "The reconcile sweep: drain stranded per-worktree queues into the shared store (reconcile), fold duplicate mesh rows, probe the active workspace list for the app-side archive cache, and sample start-up. Node's state file reconcile-sweep-state.json keeps the cool-down, so either side finding it fresh does nothing."
-value = { kind = "node", gate = "cooldown", state = "reconcile-sweep-state.json", sec = "devswarm_sup.set_reconcile_sec", mode = "devswarm_sup.set_reconcile_mode", timeout_ms = 900000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const r=S.reconcileSweepIfDue({home:process.argv[2]});console.log(JSON.stringify(S.compactReconcileForLog(r,null).line))' }
+doc = "The reconcile sweep: drain stranded per-worktree queues into the shared store (reconcile) and fold duplicate mesh rows, project by project, natively. The active-workspace probe and start-up sampling of Node's sweep have no native port and are held. Node's state file reconcile-sweep-state.json keeps the cool-down."
+value = { kind = "native", gate = "cooldown", state = "reconcile-sweep-state.json", sec = "devswarm_sup.set_reconcile_sec", mode = "devswarm_sup.set_reconcile_mode" }
 
 [devswarm_sup."duty.deferred"]
-doc = "One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. The rotation cursor (deferred-sweep-state.json), the marker peek and the nothing-pending answer are native; a stage that has work runs as Node's own runDeferredStage (the store folds of update.js stay Node's)."
-value = { kind = "node", native = true, gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.deferredSweepIfDue({home:process.argv[2]})))', stage_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const stage=process.argv[3];try{const budgetMs=S.resolveSupervisorSweepBudgetMs(process.env);const result=S.runDeferredStage(stage,{home:process.argv[2],env:process.env,budgetMs});console.log(JSON.stringify({stage,ran:true,budgetMs,result}))}catch(e){console.log(JSON.stringify({stage:null,ran:false,error:String(e&&e.message||e)}))}' }
+doc = "One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. The rotation cursor (deferred-sweep-state.json), the marker peek and the stage itself (the engine's recon ports) are native; a stage the engine does not take is held and comes round again."
+value = { kind = "native", gate = "tick" }
 
 [devswarm_sup."duty.app_sync"]
-doc = "Sync the DevSwarm app state (archived markers, titles, message gaps) into app-state.json and the names cache. Native: one read of the app database per tick, no Node process on a quiet tick; a marker is written, and a stale marker retired, only when Node's own function (run read only) names the same workspaces, and the retirement itself is executed by Node's function after that agreement."
-value = { kind = "node", native = true, gate = "tick", timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.appDbSyncIfDue({home:process.argv[2]})))', witness_timeout_ms = 120000, mark_dry_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";if(process.argv[3])process.env.ANTIHALL_DEVSWARM_APP_DB=process.argv[3];const C=require(process.argv[1]+"/scripts/devswarm.js");const r=C.markAppArchivedDescriptors(process.argv[2],{env:process.env,now:Number(process.argv[4]),dryRun:true});console.log(JSON.stringify({ids:r.results.filter((x)=>x.action).map((x)=>x.id),pending:r.pending,errors:r.errors,appDb:r.appDb}))', retire_dry_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";if(process.argv[3])process.env.ANTIHALL_DEVSWARM_APP_DB=process.argv[3];const C=require(process.argv[1]+"/scripts/devswarm.js");const r=C.retireStaleArchivedMarkers(process.argv[2],{env:process.env,now:Number(process.argv[4]),dryRun:true});console.log(JSON.stringify({ids:r.results.filter((x)=>x.action==="would-retire").map((x)=>x.id),pending:r.pending,errors:r.errors,appDb:r.appDb}))', retire_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";if(process.argv[3])process.env.ANTIHALL_DEVSWARM_APP_DB=process.argv[3];const C=require(process.argv[1]+"/scripts/devswarm.js");const r=C.retireStaleArchivedMarkers(process.argv[2],{env:process.env,now:Number(process.argv[4])});console.log(JSON.stringify({retired:r.retired,pending:r.pending,errors:r.errors,left:r.left}))', witness_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";if(process.argv[3])process.env.ANTIHALL_DEVSWARM_APP_DB=process.argv[3];const C=require(process.argv[1]+"/scripts/devswarm.js");const r=C.syncAppState(process.argv[2],{env:process.env,now:Number(process.argv[4]),dryRun:true});console.log(String(JSON.stringify(r.state)))' }
+doc = "Sync the DevSwarm app state (archived markers, titles, message gaps) into app-state.json and the names cache. Native: one read of the app database per tick, no process on a quiet tick; a marker is written from the engine's own plan. Retiring a stale marker (restoring a descriptor) has no native port and is held."
+value = { kind = "native", gate = "tick" }
 
 [devswarm_sup."duty.retention"]
-doc = "Bounded growth of the message stores: archive-first tombstoning of old, fully read message bodies (never a row delete; positions and dedupe depend on every row staying), native in the armed state. The engine plans natively and writes only when Node's own planner, run read only on the same store, agrees on the exact rows; a disagreement or a witness that cannot run does nothing and is logged. The one-time dry-run report phase, the journal fold and the archive cap stay Node's own functions."
-value = { kind = "node", native = true, gate = "tick", timeout_ms = 300000, witness_timeout_ms = 120000, snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";console.log(JSON.stringify(require(process.argv[1]+"/companion/lib/devswarm-retention.js").sweep({home:process.argv[2]})))', witness_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");const spec=JSON.parse(process.argv[3]);const home=process.argv[2];const st={stores:{},holds:spec.holds||{},phase:"armed"};const plan=R.planStore({home,hash:spec.hash,settings:spec.settings,now:spec.now,state:st,ignoreAge:true});const dry=R.pruneStore({home,hash:spec.hash,settings:spec.settings,now:spec.now,state:st,dryRun:true});const p={};for(const k of Object.keys(plan.partitions)){const x=plan.partitions[k];p[k]={rows:x.rows,candidates:x.candidates,candidateBytes:x.candidateBytes,tombstoned:x.tombstoned,bound:x.bound,protected:{tooNew:x.protected.tooNew,keepLast:x.protected.keepLast,unread:x.protected.unread,question:x.protected.question,ndjson:x.protected.ndjson,broadcast:x.protected.broadcast,held:x.protected.held}}}console.log(JSON.stringify({cands:plan.candidates.map((c)=>[c.id,c.pos,c.partition,c.blen,c.oldEnough?1:0]),dry:{ok:dry.ok,error:dry.error,skipped:dry.skipped||null,ageCandidates:dry.ageCandidates,sizeCandidates:dry.sizeCandidates,candidateBytes:dry.candidateBytes,overLimit:dry.overLimit,overLimitProtected:dry.overLimitProtected},parts:p}))', fold_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.foldLegacyJournal({home:process.argv[2],hash:process.argv[3],env:process.env})))', cap_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.enforceArchiveCap({home:process.argv[2],settings:JSON.parse(process.argv[3])})))', fold_dry_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.foldLegacyJournal({home:process.argv[2],hash:process.argv[3],env:process.env,dryRun:true})))', cap_dry_snippet = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/companion/lib/devswarm-retention.js");console.log(JSON.stringify(R.enforceArchiveCap({home:process.argv[2],settings:JSON.parse(process.argv[3]),dryRun:true})))' }
+doc = "Bounded growth of the message stores: archive-first tombstoning of old, fully read message bodies (never a row delete; positions and dedupe depend on every row staying). The engine plans twice and writes only when the plans are identical. The journal fold and the archive-cap eviction remove data for good and are owner-gated (rt_fold_alone, rt_cap_alone, both off by default: held)."
+value = { kind = "native", gate = "tick" }
 
 [devswarm_sup."duty.housekeeping"]
 doc = "Disk hygiene: sweep the reaped-workspace logs and the child-gate files by the doctor's repair rules. Node's housekeeping-sweep-state.json keeps the cool-down. Native: removes only files older than the retention window, one directory level, only the sweep's own suffix."
-value = { kind = "node", native = true, gate = "cooldown", state = "housekeeping-sweep-state.json", sec = "devswarm_sup.set_housekeeping_sec", mode = "devswarm_sup.set_housekeeping_mode", timeout_ms = 300000, witness_snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const env=Object.assign({},process.env,{ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS:process.argv[3],ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS:process.argv[4]});const r=S.housekeepingSweepIfDue({home:process.argv[2],env,now:Number(process.argv[5])});const rows=[];for(const k of Object.keys((r&&r.results)||{}))for(const x of r.results[k])rows.push([x.status,x.file]);console.log(JSON.stringify(rows))', snippet = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");console.log(JSON.stringify(S.housekeepingSweepIfDue({home:process.argv[2]})))' }
+value = { kind = "native", gate = "cooldown", state = "housekeeping-sweep-state.json", sec = "devswarm_sup.set_housekeeping_sec", mode = "devswarm_sup.set_housekeeping_mode" }
 
-[devswarm_sup.node_duties]
-doc = "Duties that have a native implementation but are to run as Node's own function instead (the rollback lever for one duty: name it here and the next tick runs Node's function in a bounded subprocess, as before the port). Empty: every ported duty runs natively."
+[devswarm_sup.duties_off]
+doc = "The diagnostic switch of each duty: a duty named here (log_rotate, verdicts, reconcile, deferred, app_sync, retention, housekeeping, or recover for the on-demand recovery) does nothing, and says so: its record is `disabled` (a recover request is `refused`), logged and counted. Empty (the default): every duty runs natively."
 value = []
 
-# ---- the non-acting Node witness ---------------------------------------------------------------------------------------------
-# For a duty the engine ran natively, Node's own function runs in a scratch HOME over a scratch MIRROR of the inputs (names,
-# sizes, modification times; never contents) and the two outcomes are compared; one line per comparison goes to witness_file.
+[devswarm_sup.msg_duty_off]
+doc = "The reason in the record of a duty that is switched off (devswarm_sup.duties_off or its mode setting)."
+value = "switched off (devswarm_sup.duties_off or the duty's mode)"
 
-[devswarm_sup.set_witness]
-doc = "Run the non-acting Node witness for the native supervisor duties: on | off. The witness only ever touches scratch copies; it costs one short Node run per duty per witness_every_ms."
-value = { type = "enum", section = "devswarm_sup", key = "witness", env = "ANTIHALL_DEVSWARM_SUP_WITNESS", values = ["on", "off"], default = "on" }
+[devswarm_sup.msg_duty_unknown]
+doc = "The reason in the record of a duty name the engine has no native implementation of."
+value = "no native implementation of this duty"
 
-[devswarm_sup.witness_off]
-doc = "The word of devswarm_sup.witness that switches the witness off."
-value = "off"
+[devswarm_sup.tick_name]
+doc = "The accounting name of the whole supervisor tick when it is switched off (devswarm_sup.mode off)."
+value = "supervisor_tick"
 
-[devswarm_sup.witness_every_ms]
-doc = "Least time between two witness comparisons of one duty."
+[devswarm_sup.ds_why_cursor]
+doc = "Why the deferred duty holds its tick: the rotation cursor is a value JavaScript would index differently."
+value = "the rotation cursor cannot be read exactly like JavaScript"
+
+[devswarm_sup.ds_why_stage]
+doc = "Why the deferred duty holds a stage the engine does not take now (an unusable marker or an unknown stage). Placeholder: {stage}."
+value = "stage {stage} not taken: marker unusable or stage unknown; it comes round again"
+
+[devswarm_sup.lv_why_full]
+doc = "Why the verdicts duty holds a workspace the engine cannot prove it decides like Node (a field of an unexpected type, a store it will not read exactly like Node)."
+value = "workspace not decided natively (unexpected data); no verdict written this tick"
+
+[devswarm_sup.rt_held_backoff_ms]
+doc = "A store whose plan moved under the retention comparison (unstable) is not tried again before this long has passed."
 value = 21600000
 min = 1000
 max = 31536000000
 unit = "ms"
 
-[devswarm_sup.witness_max_files]
-doc = "Most files a witness mirror holds for one directory; a larger one is not mirrored and that comparison is skipped (never a partial one)."
-value = 50000
-min = 1
-max = 10000000
+[devswarm_sup.set_rt_fold_alone]
+doc = "Owner-gated (OFF by default). Fold a store's legacy journal (compress it, then REMOVE the raw journal file) on the engine's own plan. Off: the fold is held (counted `held`, nothing removed, named in the record). Node's merge check that used to agree to it is gone."
+value = { type = "bool", section = "devswarm_sup", key = "retention.foldAlone", env = "ANTIHALL_DEVSWARM_SUP_RETENTION_FOLD_ALONE", default = false }
 
-[devswarm_sup.witness_keep_sample]
-doc = "How many files still inside the retention window a witness mirror also holds, so a Node that removes too much shows up."
-value = 50
-min = 0
-max = 100000
+[devswarm_sup.set_rt_cap_alone]
+doc = "Owner-gated (OFF by default). Evict archive month files over the archive size cap (archived message bodies are REMOVED for good) on the engine's own list. Off: the eviction is held (counted `held`, nothing removed, named in the record)."
+value = { type = "bool", section = "devswarm_sup", key = "retention.capAlone", env = "ANTIHALL_DEVSWARM_SUP_RETENTION_CAP_ALONE", default = false }
 
-[devswarm_sup.witness_dir]
-doc = "Where the witness builds its scratch mirrors, relative to the home directory. Each is removed when its comparison is done."
-value = ".anti-hall/witness"
+[devswarm_sup.rt_step_fold]
+doc = "The accounting name of the owner-gated journal fold."
+value = "retention_fold"
 
-[devswarm_sup.witness_state]
-doc = "When each duty was last compared (a JSON object duty -> ms), relative to the home directory."
-value = ".anti-hall/logs/devswarm-sup-witness-state.json"
+[devswarm_sup.rt_step_cap]
+doc = "The accounting name of the owner-gated archive-cap eviction."
+value = "retention_cap"
+
+[devswarm_sup.rt_fold_not_sqlite]
+doc = "Why a journal is not folded: the store's chosen backend is not sqlite, or its database is empty (foldLegacyJournal reason)."
+value = "not-sqlite-store"
+
+[devswarm_sup.rt_fold_merge_not_recorded]
+doc = "Why a journal is not folded: no merge marker records that the journal was merged into sqlite (foldLegacyJournal reason)."
+value = "merge-not-recorded"
+
+[devswarm_sup.rt_fold_merge_check_failed]
+doc = "Why a journal is not folded: the dry run of the merge could not be made (foldLegacyJournal reason)."
+value = "merge-check-failed"
+
+[devswarm_sup.rt_fold_merge_pending]
+doc = "Why a journal is not folded: the journal side holds messages or registry rows sqlite lacks, so removing it would lose them (foldLegacyJournal reason)."
+value = "merge-pending"
+
+[devswarm_sup.rt_why_fold_off]
+doc = "Why the journal fold is held: removing the raw journal needs devswarm_sup.rt_fold_alone, which is off."
+value = "held: the journal fold removes raw files and is owner-gated (devswarm_sup.rt_fold_alone is off)"
+
+[devswarm_sup.rt_why_cap_off]
+doc = "Why the archive-cap eviction is held: removing archived bodies needs devswarm_sup.rt_cap_alone, which is off."
+value = "held: the archive-cap eviction removes archived bodies and is owner-gated (devswarm_sup.rt_cap_alone is off)"
+
+[devswarm_sup.msg_recover_native_refused]
+doc = "Printed when a recovery request passed every check and is refused all the same: the engine never kills or resumes a session (owner decision F)."
+value = "recover is refused: the engine does not kill or resume a session, and there is no rollback of a kill; use the on-demand Node recovery (devswarm-recover) for a confirmed wedge"
+
+# ---- the native result log ----------------------------------------------------------------------------------------------------
+# The non-acting Node witness is gone; the native results of the duties that act on user data are logged to witness_file instead.
 
 [devswarm_sup.witness_file]
-doc = "The witness log, one JSON line per comparison (`match`: true / false, or null when Node could not run), relative to the home directory."
+doc = "The log of the native duties' results (retention plans and holds, app-sync marks), one JSON line each (`native`: true), relative to the home directory."
 value = ".anti-hall/logs/devswarm-sup-witness.ndjson"
 
 [devswarm_sup.action_log]
@@ -227,9 +295,21 @@ value = "devswarm-supervisor"
 doc = "The outcomes that count as success in telemetry; any other counts as an error (a notice that had to be parked, a write that failed)."
 value = ["ok", "ran", "marked", "retired", "pruned"]
 
-[devswarm_sup.mistake_command]
-doc = "The telemetry `cmd` h of a mistake signal (e = the action word it is about). An escalation notice is a mistake when the escalated workspace later turns out to have a live session (the `cleared` line of the recovery log)."
-value = "dssup-mistake"
+[devswarm_sup.act_skip_outcomes]
+doc = "The outcome words that count as a skip (not applicable, nothing done) in an act telemetry event of the supervisor; a word in action_success is an allow, one in act_block_outcomes a block, any other an error."
+value = ["skipped"]
+
+[devswarm_sup.act_block_outcomes]
+doc = "The outcome words that count as a refusal (block) in an act telemetry event of the supervisor (a recover request the engine refused)."
+value = ["refused"]
+
+[devswarm_sup.act_duty]
+doc = "The action word of the act telemetry event of one duty's tick outcome ({duty} = the duty name)."
+value = "duty-{duty}"
+
+[devswarm_sup.act_recover_reasons]
+doc = "The reason word of the act telemetry event for each way a recover request is refused (caller, id, request, duplicate, descriptor, max, switched_off, native_refused)."
+value = { caller = "caller", id = "bad-id", request = "no-request", duplicate = "duplicate", descriptor = "no-descriptor", max = "max-recoveries", switched_off = "switched-off", native_refused = "native-refused" }
 
 [devswarm_sup.env_disable]
 doc = "The environment variable that is the hard kill switch of every DevSwarm job (Node: DISABLE_ANTIHALL_DEVSWARM)."
@@ -373,30 +453,6 @@ value = "dssup-notice-drained"
 
 # ---- the worker process ----------------------------------------------------------------------------------------------------
 
-[devswarm_sup.node_bin]
-doc = "The Node executable the `node` duties run through (resolved on PATH). A missing one fails the duty with a recorded error; nothing else is affected."
-value = "node"
-
-[devswarm_sup.node_args]
-doc = "The arguments before the duty's snippet (the snippet, the plugin root, the home directory and the poke owner follow)."
-value = ["-e"]
-
-[devswarm_sup.owner_engine]
-doc = "The poke-owner argument given to the liveness sweep when the engine owns poke and escalate."
-value = "engine"
-
-[devswarm_sup.owner_node]
-doc = "The poke-owner argument given to the liveness sweep when Node's own poke step should run (both executors are node)."
-value = "node"
-
-[devswarm_sup.detail_chars]
-doc = "Most characters of a duty's output kept in the tick record."
-value = 600
-min = 40
-max = 20000
-
-# ---- verdict mirror of an engine poke / escalate ---------------------------------------------------------------------------
-
 [devswarm_sup.liveness_dir]
 doc = "The liveness verdict files, relative to the DevSwarm state directory (Node: livenessPathFor)."
 value = "liveness"
@@ -426,17 +482,6 @@ doc = "The reason Node records when an escalation follows used-up pokes."
 value = "poke-exhausted"
 
 # ---- recover (on demand only) ----------------------------------------------------------------------------------------------
-
-[devswarm_sup.recover_snippet]
-doc = "What runs Node's on-demand recovery (companion/devswarm-recover.js `run`, the same call its CLI makes) for ONE workspace. It resolves the ONE process of the workspace (exactly one match or it abstains), confirms its identity and working directory right before SIGTERM and again before SIGKILL, and resumes the session headless. The engine decides whether it may start; the kill stays Node's. Arguments: the plugin root, the home directory, the workspace id."
-value = 'process.env.HOME=process.argv[2];const o=require(process.argv[1]+"/companion/devswarm-recover.js").run([process.argv[3]],{});console.log(JSON.stringify(o));process.exit(o.ok?0:1)'
-
-[devswarm_sup.recover_timeout_ms]
-doc = "Bound of one recovery run (it waits the grace period and the resume readiness)."
-value = 180000
-min = 5000
-max = 900000
-unit = "ms"
 
 [devswarm_sup.recover_ledger]
 doc = "The record of recover requests already run, under the engine state directory: a request id is never run twice."
@@ -470,47 +515,19 @@ value = "no usable descriptor for workspace {id} (needs worktreePath and session
 doc = "Printed when the workspace was already recovered the most times allowed. {id} {n} {max}."
 value = "workspace {id} was already recovered {n} time(s) (limit {max}); needs a manual continue in the DevSwarm app"
 
-[devswarm_sup.msg_recover_failed]
-doc = "Printed when the recovery run could not be completed. {why}."
-value = "recover did not complete: {why}"
-
-[devswarm_sup.msg_recover_rollback_no_node]
-doc = "Printed when devswarm_sup.node_duties names recover (the rollback to Node's own kill) but no Node can be found: the engine refuses rather than signal with its own kill, and records nothing."
-value = "recover is rolled back to Node (devswarm_sup.node_duties names recover) but no Node is installed; remove recover from devswarm_sup.node_duties to use the engine's own recovery"
-
 # ---- recover, native ---------------------------------------------------------------------------------------------------------
 # The kill-and-resume of ONE workspace's session (src/dssup/kill.rs): target-session.js and recovery.js `recover` in Rust. Node's
-# findTarget runs as a read-only witness first; naming `recover` in node_duties hands the whole kill back to Node.
+# `devswarm_sup.duties_off` naming `recover` switches the recovery off (there is no Node rollback of the kill).
 
 
 [devswarm_sup.recover_duty]
-doc = "The name `recover` goes by in devswarm_sup.node_duties and in the witness log."
+doc = "The name `recover` goes by in devswarm_sup.duties_off and in the accounting."
 value = "recover"
-
-[devswarm_sup.recover_witness_veto]
-doc = "1: when Node's read-only target lookup does not confirm the process the engine would signal, the engine stands down (reason `witness-disagrees`) instead of signalling. 0: the witness only logs. A Node that cannot be run never vetoes."
-value = 1
-min = 0
-max = 1
-
-[devswarm_sup.recover_witness_timeout_ms]
-doc = "Bound of the witness's target lookup."
-value = 20000
-min = 1000
-max = 300000
-unit = "ms"
-
-[devswarm_sup.recover_witness_snippet]
-doc = "What Node runs as the recover witness: findTarget (read-only: ps and the working-directory probe) for the descriptor's worktree and session, allowing an interactive session as the owner's explicit recover does. Arguments: the plugin root, the home directory, the worktree, the session id."
-value = 'process.env.HOME=process.argv[2];const T=require(process.argv[1]+"/companion/lib/target-session.js");console.log(JSON.stringify(T.findTarget({worktreePath:process.argv[3],sessionId:process.argv[4],home:process.argv[2],allowInteractive:true})))'
 
 [devswarm_sup.set_grace_sec]
 doc = "How long after SIGTERM the engine waits before it checks whether the process is still there. Node: devswarm.graceSec."
 value = "{ type = \"number\", section = \"devswarm\", key = \"graceSec\", env = \"ANTIHALL_DEVSWARM_GRACE_SEC\", min = 1, max = 60, default = 5 }"
 
-[devswarm_sup.kill_witness_disagrees]
-doc = "The abstain reason when the Node witness did not confirm the target."
-value = "witness-disagrees"
 
 [devswarm_sup.kill_no_target]
 doc = "The abstain reason when there is no target."
@@ -613,13 +630,6 @@ value = ["-p", "--resume", "{uuid}", "--dangerously-skip-permissions"]
 doc = "The start of the temporary file the resumed session's first output goes to."
 value = "antihall-resume-"
 
-[devswarm_sup.kill_readiness_ms]
-doc = "How long a fresh resume is watched for an immediate failure. Never a kill deadline."
-value = 4000
-min = 500
-max = 60000
-unit = "ms"
-
 [devswarm_sup.kill_poll_ms]
 doc = "How often the readiness watch checks whether the resumed session has exited."
 value = 100
@@ -630,8 +640,8 @@ unit = "ms"
 # ---- the supervisor verb ---------------------------------------------------------------------------------------------------
 
 [devswarm_sup.msg_witness]
-doc = "The tick's answer while the mode is witness."
-value = "witness mode: the Node supervisor owns the supervisor duties"
+doc = "The tick's answer while the mode is off (the diagnostic switch)."
+value = "devswarm_sup.mode is off: the supervisor duties are switched off (counted as disabled)"
 
 [devswarm_sup.msg_inert]
 doc = "The tick's answer where DevSwarm is absent."
@@ -657,15 +667,11 @@ value = "cooldown"
 doc = "The reason a duty was not started because its switch is off."
 value = "disabled"
 
-[devswarm_sup.msg_no_node]
-doc = "The error of a duty whose Node worker could not be started."
-value = "node could not be started"
-
 
 # ---- the liveness sweep, native (src/dssup/liveness.rs) ----------------------------------------------------------------------
 # computeLiveness + writeVerdict of companion/lib/liveness.js for every workspace descriptor. A workspace the engine cannot
 # prove it decides exactly like Node (a stale verdict, a Jev blocker or a step plan to look at, an unexpected field or store
-# shape) is handed to Node's own sweepOnce, restricted to it. Naming `verdicts` in node_duties hands the whole sweep back.
+# shape) is handed to Node's own sweepOnce, restricted to it. Naming `verdicts` in duties_off switches the sweep off.
 
 [devswarm_sup.set_idle_sec]
 doc = "How long a workspace's transcript and worktree must both be quiet before an unread mailbox makes it stale. Node: devswarm.idleSec (floor 60)."
@@ -676,7 +682,7 @@ doc = "How long a poke stays in effect before the sweep decides again. Node: dev
 value = { type = "number", section = "devswarm", key = "nudgeWindowSec", env = "ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC", min = 1, max = 100000000, default = 180 }
 
 [devswarm_sup.set_dry_run_verdicts]
-doc = "Dry run of the native liveness sweep: it computes every verdict and reports what it would write, but writes nothing and starts no Node work. Use it to look at the engine's decisions before it acts."
+doc = "Dry run of the liveness sweep: computes verdicts, reports them, writes nothing. Use it to preview the engine's decisions."
 value = { type = "bool", section = "devswarm_sup", key = "dryRun.verdicts", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_VERDICTS", default = false }
 
 [devswarm_sup.lv_ms_per_sec]
@@ -700,11 +706,28 @@ max = 604800000
 unit = "ms"
 
 [devswarm_sup.lv_git_timeout_ms]
-doc = "Bound of the git call that reads a worktree's last commit time (liveness.js GIT_TIMEOUT_MS)."
+doc = "Bound of the git call that reads a worktree's last commit time."
 value = 4000
 min = 100
 max = 600000
 unit = "ms"
+
+[devswarm_sup.lv_git_sig_files]
+doc = "Files of a worktree's git directory that change when its HEAD moves (a checkout rewrites HEAD, a commit appends to its reflog). The last-commit-time answer is remembered while their size and modification time are unchanged."
+value = ["HEAD", "logs/HEAD"]
+
+[devswarm_sup.lv_git_cache_max_ms]
+doc = "The longest a remembered last-commit time is kept without asking git again, whatever the files say (a safety net for a repository that keeps no reflog)."
+value = 600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.lv_git_cache_max_entries]
+doc = "Most worktrees whose last-commit time is remembered; past it the memory is cleared and refilled by the next sweep."
+value = 4096
+min = 16
+max = 1000000
 
 [devswarm_sup.lv_git_bin]
 doc = "The git executable (resolved on PATH)."
@@ -715,7 +738,7 @@ doc = "The arguments of the last-commit-time call; {worktree} is the workspace's
 value = ["-C", "{worktree}", "log", "-1", "--format=%ct"]
 
 [devswarm_sup.lv_projects_dir]
-doc = "The directory of the Claude session transcripts under ~/.claude (companion/lib/target-session.js projectDirFor)."
+doc = "The directory of the Claude session transcripts under ~/.claude."
 value = "projects"
 
 [devswarm_sup.lv_transcript_ext]
@@ -813,19 +836,9 @@ value = "row"
 doc = "The field of a parked notice that marks it delivered."
 value = "delivered"
 
-[devswarm_sup.lv_witness_max_ids]
-doc = "Most workspaces one witness comparison covers (the oldest verdicts first); a sweep with more is sampled, never skipped whole."
-value = 500
-min = 1
-max = 100000
-
-[devswarm_sup.lv_spec_file]
-doc = "The file in a witness scratch directory that holds the witness's inputs (the clock, the thresholds and each workspace's previous verdict text)."
-value = "spec.json"
-
 # ---- retention, native (src/dssup/retention) ---------------------------------------------------------------------------------
 # The settings are Node's (devswarm.retention.*), read exactly (no rounding of a fractional value). Everything below the settings is
-# a rule or a name of Node's retention module (companion/lib/devswarm-retention.js), kept here so none is compiled into the binary.
+# a rule or a name of Node's retention module, kept here so none is compiled into the binary.
 
 [devswarm_sup.set_rt_days]
 doc = "Days of message bodies kept before they are archived and tombstoned; 0 switches retention off. Node: devswarm.retention.days."
@@ -852,12 +865,9 @@ doc = "Time budget of one store's tombstoning batches (environment only, as in N
 value = { type = "number", section = "devswarm_sup_env", key = "retention_budget_ms", env = "ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS", min = 0, default = 5000, exact = true }
 
 [devswarm_sup.set_dry_run_retention]
-doc = "Dry run of the native retention: it plans and compares with Node's planner, logs what it would tombstone and writes nothing (no archive, no tombstone, no state)."
+doc = "Dry run of retention: plans and logs what it would tombstone, writes nothing."
 value = { type = "bool", section = "devswarm_sup", key = "dryRun.retention", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_RETENTION", default = false }
 
-[devswarm_sup.set_rt_require_witness]
-doc = "Tombstone only when Node's planner ran and agreed, whenever a Node is installed: a Node that fails or disagrees holds the store back. On a machine with no Node at all (decommissioned) the engine relies on its own two identical plans, its in-transaction checks and the archive written first. The journal fold and the archive-cap eviction still need Node's agreement and are held without it."
-value = { type = "bool", section = "devswarm_sup", key = "retention.requireWitness", env = "ANTIHALL_DEVSWARM_SUP_RETENTION_REQUIRE_WITNESS", default = true }
 
 [devswarm_sup.rt_action]
 doc = "The action word of a retention pass that tombstoned rows of a store (action ledger, telemetry `cmd` h; the target is the store hash)."
@@ -1068,6 +1078,26 @@ value = "prune-batch"
 doc = "The log event of a store still over its limit after a visit."
 value = "over-limit"
 
+[devswarm_sup.rt_err_gzip]
+doc = "The error of a failed gzip step of the retention archive (spawn, pipe, exit status). Placeholder: {why}."
+value = "gzip failed: {why}"
+
+[devswarm_sup.rt_err_gzip_stdin]
+doc = "The gzip failure detail when the child's input pipe is missing."
+value = "no input pipe"
+
+[devswarm_sup.rt_err_gzip_feeder]
+doc = "The gzip failure detail when the thread feeding gzip panicked."
+value = "input writer failed"
+
+[devswarm_sup.rt_err_gzip_roundtrip]
+doc = "The gzip failure detail when a compressed archive member does not inflate back to the bytes it was made from."
+value = "the compressed member does not match its source"
+
+[devswarm_sup.rt_ev_prune_error]
+doc = "The log event of a store whose sweep failed (Node: prune-error); the store's result carries ok false and the error text."
+value = "prune-error"
+
 [devswarm_sup.rt_ev_over_limit_protected]
 doc = "The log event of a store over its limit with nothing more that may be pruned."
 value = "over-limit-protected"
@@ -1076,41 +1106,14 @@ value = "over-limit-protected"
 doc = "The answer when another retention run holds the lock."
 value = "lock-busy"
 
-[devswarm_sup.rt_msg_witness_output]
-doc = "Why a witness answer was not used: its output did not parse."
-value = "the witness output did not parse"
-
-[devswarm_sup.rt_msg_node_plan]
-doc = "Why a comparison failed: Node's planner did not plan the store."
-value = "Node's planner did not plan the store"
-
-[devswarm_sup.rt_msg_cand_differ]
-doc = "Why a comparison failed: the candidate rows differ (followed by the first differing index and the two counts)."
-value = "the candidate rows differ at index"
-
-[devswarm_sup.rt_msg_parts_differ]
-doc = "Why a comparison failed: a partition's statistics differ."
-value = "a partition's statistics differ from Node's"
-
-[devswarm_sup.rt_msg_choice_differ]
-doc = "Why a comparison failed: the counts chosen differ. {engine} and {node} are the two records."
-value = "the rows chosen differ: engine {engine}, Node {node}"
-
 [devswarm_sup.rt_no_table_text]
 doc = "The text of SQLite's error for a table an older store does not have yet (such a store has no reader cursors: no rows, not an error)."
 value = "no such table"
 
-[devswarm_sup.rt_msg_no_witness]
-doc = "Why nothing was tombstoned: Node's planner could not run and the witness is required."
-value = "the witness could not run"
 
 [devswarm_sup.rt_msg_unstable]
 doc = "Why nothing was tombstoned: the store changed while the plan was compared."
 value = "the store changed during the comparison"
-
-[devswarm_sup.rt_text_types]
-doc = "The SQLite storage types a message body may have for the engine to plan it (text, or NULL for a tombstone); any other type (a blob, a number) is a value Node would turn into text its own way, so the sweep is Node's."
-value = ["text", "null"]
 
 # ---- the dry-run report phase, the journal fold and the archive cap, native (src/dssup/retention/{dry,fold,cap}.rs) -----------------
 
@@ -1154,25 +1157,16 @@ value = '^(\d{4}-\d{2})\.ndjson\.gz$'
 doc = "The protection rules a first-run dry-run summary counts, in the order of its `protected` object (Node: tooNew, keepLast, unread, question, ndjson, broadcast, held)."
 value = ["tooNew", "keepLast", "unread", "question", "ndjson", "broadcast", "held"]
 
-[devswarm_sup.rt_msg_fold_differ]
-doc = "Why a legacy journal was not folded: the engine's file list is not the one Node's own dry run gives."
-value = "the journal file list differs from Node's"
 
 [devswarm_sup.rt_msg_fold_changed]
 doc = "Why a folded journal file was kept: it changed after it was read."
 value = "changed while it was archived"
 
-[devswarm_sup.rt_msg_cap_differ]
-doc = "Why no archive file was evicted: the engine's eviction list is not the one Node's own dry run gives."
-value = "the eviction list differs from Node's"
 
 [devswarm_sup.rt_msg_report_shape]
-doc = "Why the first-run dry-run phase is left to Node: the existing report is not a shape the engine writes over."
-value = "dry-run report shape"
+doc = "The sweep error when the existing dry-run report is a scalar: Node cannot set `stores` on it and the sweep answers `{ran: false, error}`."
+value = "Cannot create property 'stores' on a dry-run report that is not an object"
 
-[devswarm_sup.rt_msg_dry_differ]
-doc = "Why the first-run dry-run report was not written: the engine's store summary differs from Node's."
-value = "the dry-run summary differs from Node's"
 
 # ---- the app sync, native (src/dssup/appsync/) ------------------------------------------------------------------------------------
 
@@ -1323,10 +1317,6 @@ value = "isPinned"
 [devswarm_sup.as_c_last_selected]
 doc = "The last selected time column."
 value = "lastSelectedAt"
-
-[devswarm_sup.as_c_last_accessed]
-doc = "The last accessed time column."
-value = "lastAccessed"
 
 [devswarm_sup.as_key_sep]
 doc = "The separator inside the pull request by repository and branch key."
@@ -1480,9 +1470,6 @@ value = "ANTIHALL_INGEST_DRY_RUN"
 doc = "Its value for dry."
 value = "1"
 
-[devswarm_sup.as_undefined]
-doc = "What Node prints for a missing state (the witness comparison)."
-value = "undefined"
 
 [devswarm_sup.as_focus_ms]
 doc = "How recent the app's last selection must be for a workspace to count as focused."
@@ -1567,6 +1554,74 @@ value = "marked"
 doc = "The outcome word of a marker that could not be written."
 value = "failed"
 
+[devswarm_sup.as_dir_retired]
+doc = "The directory a retired stale marker is moved to (never deleted)."
+value = "archived-retired"
+
+[devswarm_sup.as_msg_retired_dir]
+doc = "Why a marker was not retired: the retired directory is a link or a file."
+value = "retired dir is not a real directory"
+
+[devswarm_sup.as_why_lock_busy]
+doc = "Why a stale marker was left: another actor holds the workspace's lock (tried again next sweep)."
+value = "lock-busy"
+
+[devswarm_sup.as_why_restore_failed]
+doc = "Why a stale marker was left: the descriptor or registry row could not be restored first. Placeholder: {error}."
+value = "restore-failed: {error}"
+
+[devswarm_sup.as_why_retired_exists]
+doc = "Why a stale marker was left: the retired file for this id and second already exists (never overwritten)."
+value = "retired-exists"
+
+[devswarm_sup.as_retired_raw]
+doc = "The field that carries the marker's bytes when they are not a JSON object."
+value = "raw"
+
+[devswarm_sup.as_retired_field]
+doc = "The field a retired marker gets, holding the retire record."
+value = "retired"
+
+[devswarm_sup.as_retired_at]
+doc = "The retire record's time field (epoch ms)."
+value = "at"
+
+[devswarm_sup.as_retired_by]
+doc = "The retire record's actor field."
+value = "by"
+
+[devswarm_sup.as_retired_reason]
+doc = "The retire record's reason field."
+value = "reason"
+
+[devswarm_sup.as_retired_builder]
+doc = "The retire record's app builder id field."
+value = "builderId"
+
+[devswarm_sup.as_retired_restored]
+doc = "The retire record's field saying the workspace was restored to active."
+value = "restored"
+
+[devswarm_sup.as_retired_by_value]
+doc = "Who retired the marker (the retire record's actor)."
+value = "devswarm-app-sync"
+
+[devswarm_sup.as_retired_reason_value]
+doc = "Why the marker was retired (the retire record's reason)."
+value = "open in the DevSwarm app (isActive=1, isHidden=0); workspace restored to active"
+
+[devswarm_sup.as_action_retire]
+doc = "The action word of a stale marker retire (action ledger)."
+value = "dssup-app-retire-marker"
+
+[devswarm_sup.as_action_retired]
+doc = "The outcome word of a marker retired."
+value = "retired"
+
+[devswarm_sup.as_action_left]
+doc = "The outcome word of a marker left in place (the reason is in the ledger row)."
+value = "left"
+
 
 # ---- the deferred stage, native (src/dssup/deferred.rs) --------------------------------------------------------------------------
 
@@ -1620,3 +1675,382 @@ value = "no-marker"
 
 # ---- who runs the sweep tail (reconcile port) ----------------------------------------------------------------------------------
 
+# ---- the per-workspace tail of the verdicts duty (src/dssup/tail.rs) -------------------------------------------------------------
+
+[devswarm_sup.tl_ask_dir]
+doc = "The directory, under the DevSwarm state directory, holding the blocker label's per-workspace ask state."
+value = "blocker-label-ask"
+
+[devswarm_sup.tl_reask_default_sec]
+doc = "The blocker label's re-ask interval when the setting is not a positive number."
+value = 21600
+min = 60
+max = 8640000
+unit = "s"
+
+[devswarm_sup.tl_set_reask_sec]
+doc = "Seconds a blocker label decision is not asked or logged again while its input (workspace, kind, time) is unchanged. Node: devswarm.supervisorBlockerLabelReaskSec."
+value = { section = "devswarm", key = "supervisorBlockerLabelReaskSec", env = "ANTIHALL_DEVSWARM_SUPERVISOR_BLOCKER_LABEL_REASK_SEC", option = "devswarm_supervisor_blocker_label_reask_sec", default = 21600, min = 60 }
+
+[devswarm_sup.tl_integration]
+doc = "The Jev integration id of the blocker label."
+value = "supervisorBlockerLabel"
+
+[devswarm_sup.tl_kind_blocker]
+doc = "The triage kind that reads as a blocker."
+value = "blocker"
+
+[devswarm_sup.tl_kind_question]
+doc = "The triage kind that reads as a question the Primary has not answered."
+value = "question-needs-answer"
+
+[devswarm_sup.tl_label_wedged]
+doc = "The blocker label of a blocker."
+value = "wedged"
+
+[devswarm_sup.tl_label_waiting]
+doc = "The blocker label of an unanswered question."
+value = "waiting-on-parent"
+
+[devswarm_sup.tl_changed]
+doc = "The decision row's direction word for an advisory label."
+value = "changed"
+
+[devswarm_sup.tl_backend_cache]
+doc = "The decision row's backend and cost source of a label re-read from the triage cache."
+value = "cache"
+
+[devswarm_sup.tl_derived_from]
+doc = "The decision row's `derivedFrom` of the blocker label: it re-reads the triage label, it is not an independent Jev decision."
+value = "triage"
+
+[devswarm_sup.tl_project_unknown]
+doc = "The decision row's project when the working directory has no name."
+value = "unknown"
+
+[devswarm_sup.tl_usage_dir]
+doc = "The directory, under the DevSwarm state directory, holding the per-plan token-usage state."
+value = "token-usage"
+
+[devswarm_sup.tl_usage_read_max]
+doc = "Most bytes of a child's transcript read in one pass (the rest is read on the next)."
+value = 8388608
+min = 4096
+max = 1073741824
+unit = "bytes"
+
+[devswarm_sup.tl_usage_seen_keep]
+doc = "How many assistant message ids are remembered, so a message written as several transcript entries counts once."
+value = 32
+min = 1
+max = 10000
+
+[devswarm_sup.tl_usage_marker]
+doc = "The text a transcript line must hold to be parsed as a usage record."
+value = '"usage"'
+
+[devswarm_sup.tl_assistant]
+doc = "The transcript entry type that carries token usage."
+value = "assistant"
+
+[devswarm_sup.tl_step_done]
+doc = "The status of a finished plan step."
+value = "done"
+
+[devswarm_sup.tl_status_nudged]
+doc = "The verdict status of a workspace that has been nudged."
+value = "nudged"
+
+[devswarm_sup.tl_status_escalated]
+doc = "The verdict status of a workspace that has been escalated."
+value = "escalated"
+
+[devswarm_sup.tl_reason_idle]
+doc = "The start of the idle signal's reason (followed by how long)."
+value = "idle "
+
+[devswarm_sup.tl_reason_stall]
+doc = "The start of the stall signal's reason (followed by how long)."
+value = "no step progress "
+
+[devswarm_sup.tl_reason_burn]
+doc = "The burn signal's reason. Placeholders: {used} (tokens, abbreviated) and {step}."
+value = "used {used} tokens since step {step} last moved"
+
+[devswarm_sup.tl_reason_off_scope]
+doc = "The start of the off-scope signal's reason (followed by the first files)."
+value = "off-scope "
+
+[devswarm_sup.tl_reason_more]
+doc = "Added to the off-scope reason when more files are outside than are listed. Placeholder: {n}."
+value = " (+{n} more)"
+
+[devswarm_sup.tl_files_shown]
+doc = "How many off-scope files the signal's reason names."
+value = 5
+min = 1
+max = 100
+
+[devswarm_sup.tl_files_kept]
+doc = "How many off-scope files the signal keeps in the stray state."
+value = 50
+min = 1
+max = 1000
+
+[devswarm_sup.tl_default_base]
+doc = "The base the off-scope check compares a child's commits to when its plan names none."
+value = "origin/HEAD"
+
+[devswarm_sup.tl_diff_unknown]
+doc = "The reason the ready check gives when it could not read the diff (the off-scope check then says nothing)."
+value = "diff-unknown"
+
+[devswarm_sup.tl_stray_dir]
+doc = "The directory, under the DevSwarm state directory, holding the straying state per plan (the parent Stop gate reads it)."
+value = "stray"
+
+[devswarm_sup.tl_warned_keep]
+doc = "How many warned signal episodes the stray state keeps per plan (the oldest are dropped first)."
+value = 100
+min = 1
+max = 100000
+
+[devswarm_sup.tl_ev_tokens]
+doc = "The supervision log event written when a plan step's token period closes."
+value = "tokens"
+
+[devswarm_sup.tl_ev_warn]
+doc = "The supervision log event written when a straying warning is issued."
+value = "warn"
+
+[devswarm_sup.tl_alert_component]
+doc = "The component of the central-log alert for a straying warning."
+value = "devswarm-supervisor"
+
+[devswarm_sup.tl_alert_op]
+doc = "The operation of the straying alert."
+value = "straying"
+
+[devswarm_sup.tl_alert_level]
+doc = "The level of the straying alert."
+value = "warn"
+
+[devswarm_sup.tl_alert_msg]
+doc = "The text of the straying alert."
+value = "DEVSWARM STRAYING"
+
+[devswarm_sup.tl_alert_kind]
+doc = "The stable alert kind of a straying warning (the workspace id rides in the details, never in the kind)."
+value = "devswarm-straying"
+
+[devswarm_sup.tl_set_plan_tracking]
+doc = "Whether step plans are tracked, and with them the straying signals. Node: devswarm.planTracking."
+value = { section = "devswarm", key = "planTracking", env = "ANTIHALL_DEVSWARM_PLAN_TRACKING", option = "devswarm_plan_tracking", default = true }
+
+[devswarm_sup.tl_set_burn_warn]
+doc = "Weighted tokens a child may spend since its last step progress before the burn signal (0 turns it off). Node: devswarm.burnTokensWarn."
+value = { section = "devswarm", key = "burnTokensWarn", env = "ANTIHALL_DEVSWARM_BURN_TOKENS_WARN", option = "devswarm_burn_tokens_warn", default = 2000000, min = 0 }
+
+[devswarm_sup.tl_set_burn_cache_pct]
+doc = "How much a cached-input read counts toward the burn, in percent of a fresh input token. Node: devswarm.burnCacheReadPct."
+value = { section = "devswarm", key = "burnCacheReadPct", env = "ANTIHALL_DEVSWARM_BURN_CACHE_READ_PCT", option = "devswarm_burn_cache_read_pct", default = 10, min = 0, max = 100 }
+
+[devswarm_sup.tl_set_dormant_ms]
+doc = "How long a workspace whose session transcript resolves may stay silent before the stray signals treat it as dormant. Node: devswarm.dormantMs."
+value = { section = "devswarm", key = "dormantMs", env = "ANTIHALL_DEVSWARM_DORMANT_MS", default = 1800000 }
+
+[devswarm_sup.tl_dormant_default_ms]
+doc = "The dormancy window when the setting is not a positive number."
+value = 1800000
+min = 1000
+max = 8640000000
+unit = "ms"
+
+[devswarm_sup.tl_env_idle_ms]
+doc = "The environment variable that sets the wide idle window of a workspace whose transcript does not resolve."
+value = "ANTIHALL_DEVSWARM_IDLE_MS"
+
+[devswarm_sup.tl_idle_default_ms]
+doc = "The wide idle window when the variable above is absent, not a number or not positive."
+value = 21600000
+min = 1000
+max = 8640000000
+unit = "ms"
+
+[devswarm_sup.tl_ms_per_minute]
+doc = "Milliseconds in a minute (the stall window is configured in minutes)."
+value = 60000
+min = 1
+max = 1000000
+
+[devswarm_sup.tl_ready_args]
+doc = "The arguments of the read-only ready check that lists a child's files outside its plan's scope. Placeholders: {base} (the plan's base) and {allow} (the scope globs and extras, comma separated)."
+value = ["ready-check", "HEAD", "--base", "{base}", "--allow", "{allow}"]
+
+[devswarm_sup.tl_digest_len]
+doc = "How many hex digits of the SHA-1 of the off-scope file list name an off-scope episode."
+value = 10
+min = 4
+max = 40
+
+[devswarm_sup.sl_day_start]
+doc = "The time of day appended to a UTC day (YYYY-MM-DD) to read the day's first instant when a supervision roll-up is written."
+value = "T00:00:00Z"
+
+[devswarm_sup.jv_state_dir]
+doc = "The directory under the DevSwarm root that keeps, per plan, when each supervision Jev question was last asked and which answer was counted."
+value = "supervision-jev"
+
+[devswarm_sup.jv_on_brief]
+doc = "The off-scope question `devswarmOnBrief`: is the work outside the scope off the child's brief. `cap` limits the scrubbed state in characters; `state` is its template ({step} {scope} {summaries} {commits} {files}); `note_true` / `note_false` are the verdicts attached to the warning for each answer; `min_pct` is the floor of the confidence threshold in percent (0 = the configured threshold alone)."
+value = { id = "devswarmOnBrief", cap = 1500, min_pct = 0, instructions = "A child workspace was given a step plan and a file scope. Is the work described below OFF its brief (not needed for any of its steps)?", when_true = "off the brief", when_false = "on the brief (needed for its steps)", state = "{step}\nscope: {scope}\nrecent summaries: {summaries}\nrecent commits: {commits}\nfiles outside scope: {files}", note_true = "off-brief", note_false = "on-brief" }
+
+[devswarm_sup.jv_extra]
+doc = "The off-scope question `devswarmExtraSanctioned`: did the user ask for the extra work (as `jv_on_brief`; the state template takes {prompts} and {files})."
+value = { id = "devswarmExtraSanctioned", cap = 1000, min_pct = 90, instructions = "A child workspace changed files outside its assigned scope. Given the user prompts it received, is this extra work UNSANCTIONED (the user did not ask for it)?", when_true = "unsanctioned: the user did not ask for it", when_false = "the user asked for this work", state = "user prompts: {prompts}\nfiles outside scope: {files}", note_true = "not requested by the user", note_false = "the user asked for this" }
+
+[devswarm_sup.jv_step_line]
+doc = "The current step as the on-brief question shows it. {n} {done} {total} {text} {blocked}."
+value = "latest touched step {n} ({done}/{total} done): {text}{blocked}"
+
+[devswarm_sup.jv_blocked]
+doc = "Appended to the step line when the current step is blocked."
+value = " (blocked)"
+
+[devswarm_sup.jv_join_list]
+doc = "The separator of the scope globs and the off-scope files in the question."
+value = ", "
+
+[devswarm_sup.jv_join_item]
+doc = "The separator of the summaries, commit subjects and user prompts in the question."
+value = " | "
+
+[devswarm_sup.jv_ellipsis]
+doc = "The mark that ends a question text cut at its limit."
+value = "…"
+
+[devswarm_sup.jv_files_shown]
+doc = "How many off-scope files go into a question."
+value = 20
+min = 1
+max = 1000
+
+[devswarm_sup.jv_summaries_key]
+doc = "The plan field that holds the child's step summaries, and the field of each that holds its text."
+value = ["summaries", "text"]
+
+[devswarm_sup.jv_scope_key]
+doc = "The plan field that holds the scope globs."
+value = "scope_globs"
+
+[devswarm_sup.jv_git_bin]
+doc = "The executable that lists a child's recent commits."
+value = "git"
+
+[devswarm_sup.jv_git_args]
+doc = "The arguments that list the subjects of a child's last commits, each followed by its files. {wt} is the worktree; the subject starts after a 0x01 mark."
+value = ["-C", "{wt}", "log", "-10", "--format=%x01%s", "--name-only"]
+
+[devswarm_sup.jv_git_mark]
+doc = "The mark in the commit listing that starts each commit."
+value = "\u0001"
+
+[devswarm_sup.jv_git_timeout_ms]
+doc = "The longest the commit listing may take."
+value = 3000
+min = 100
+max = 60000
+
+[devswarm_sup.jv_commits_max]
+doc = "How many commit subjects go into the on-brief question."
+value = 5
+min = 1
+max = 50
+
+[devswarm_sup.jv_prompts_read_max]
+doc = "How many bytes from the end of the child's transcript are read for the user's prompts."
+value = 262144
+min = 1024
+max = 16777216
+
+[devswarm_sup.jv_prompts_keep]
+doc = "How many of the child's last user prompts go into the question."
+value = 3
+min = 1
+max = 20
+
+[devswarm_sup.jv_prompt_cap]
+doc = "The most characters of one user prompt in the question."
+value = 400
+min = 10
+max = 5000
+
+[devswarm_sup.jv_prompt_marker]
+doc = "A transcript line is looked at as a prompt only when it holds this text."
+value = "\"user\""
+
+[devswarm_sup.jv_prompt_skip_re]
+doc = "A user message that starts like this (after trimming) is the harness speaking, not a prompt."
+value = "^<(command|local-command|task-notification|system-reminder)"
+
+[devswarm_sup.jv_trig_keep]
+doc = "How many trigger marks a plan's Jev state keeps per question before the oldest is dropped."
+value = 20
+min = 2
+max = 1000
+
+[devswarm_sup.jv_ev_answer]
+doc = "The supervision log event written once per cached answer the supervisor first reads."
+value = "jev"
+
+[devswarm_sup.jv_ev_trigger]
+doc = "The supervision log event written once per trigger of a question."
+value = "jev-trigger"
+
+[devswarm_sup.jv_outcome_seen]
+doc = "The trigger outcome: the question's precondition held."
+value = "seen"
+
+[devswarm_sup.jv_outcome_skipped]
+doc = "The trigger outcome: the precondition held but nothing was asked."
+value = "skipped"
+
+[devswarm_sup.jv_skip_reason]
+doc = "Why nothing was asked: the question's mode is off, or Jev is disabled."
+value = "mode-off-or-jev-disabled"
+
+[devswarm_sup.jv_default_trigger]
+doc = "The trigger key of an off-scope signal that has neither a key nor a step."
+value = "off-scope"
+
+[metric.dssup_appdb_date_unread]
+doc = "Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full)."
+value = { kind = "counter", unit = "dates", labels = [] }
+
+[devswarm_sup.as_js_null]
+doc = "JavaScript's String(null), the text of a descriptor's null id."
+value = "null"
+
+[devswarm_sup.as_js_object]
+doc = "JavaScript's String({}), the text of an object where an id or path is expected."
+value = "[object Object]"
+
+[devswarm_sup.as_collate_order]
+doc = "The order in which ICU's root collation (Intl.Collator, the default of localeCompare) ranks the ASCII characters that are not letters: space, punctuation and symbols, then digits, then letters (case-folded here; at the same letter lower case sorts before upper)."
+value = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz"
+
+[devswarm_sup.as_err_reduce_undefined]
+doc = "The error of the gap total when the kept gaps carry no repos (TypeError text of JavaScript)."
+value = "Cannot read properties of undefined (reading 'reduce')"
+
+[devswarm_sup.as_err_reduce_null]
+doc = "The error of the gap total when the kept gaps' repos is null."
+value = "Cannot read properties of null (reading 'reduce')"
+
+[devswarm_sup.as_err_reduce_fn]
+doc = "The error of the gap total when the kept gaps' repos is no array."
+value = "gaps.repos.reduce is not a function"
+
+[devswarm_sup.as_err_read_gap_null]
+doc = "The error of the gap total when a kept repos row is null."
+value = "Cannot read properties of null (reading 'gap')"

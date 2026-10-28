@@ -1,4 +1,4 @@
-//! The per-session emit-dedupe store (`hooks/lib/emit-dedupe.js`); the `emit-dedupe-reset` check (`hooks/emit-dedupe-reset.js`,
+//! The per-session emit-dedupe store; the `emit-dedupe-reset` check (`hooks/emit-dedupe-reset.js`,
 //! SessionStart) is a plugin script (`engine/logic/emit-dedupe-reset.js`, store in `lib/74-emit-dedupe.js`).
 //!
 //! Several UserPromptSubmit hooks decide whether to repeat a block the model already holds. They share one state file per

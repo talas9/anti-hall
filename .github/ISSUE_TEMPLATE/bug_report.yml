@@ -92,7 +92,7 @@ body:
     id: doctor
     attributes:
       label: Doctor output
-      description: Output of `/anti-hall:doctor` (or `node plugins/anti-hall/hooks/doctor.js --check` from a checkout), trimmed.
+      description: Output of `/anti-hall:doctor` (or `node plugins/anti-hall-node/hooks/doctor.js --check` from a checkout), trimmed.
       render: text
     validations:
       required: true

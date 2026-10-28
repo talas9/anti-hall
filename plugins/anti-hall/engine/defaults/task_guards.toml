@@ -38,11 +38,11 @@ value = '^\s*gitdir:\s*(.+?)\s*$'
 doc = "The name of the entry that marks a git checkout root."
 value = ".git"
 
-# ---- task-lifecycle-log (hooks/task-lifecycle-log.js) ---------------------------------------------------------
+# ---- task-lifecycle-log ---------------------------------------------------------
 
 [task_lifecycle_log.summary]
 doc = "One-line description of the task-lifecycle-log check in the generated reference."
-value = "Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js)."
+value = "Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index."
 
 [task_lifecycle_log.setting]
 doc = "Where the on/off switch is read from (maintenance.taskLifecycleLog, default on)."
@@ -88,11 +88,11 @@ value = "INDEX.md"
 doc = "The ledger file extension."
 value = ".md"
 
-# ---- dispatch-tier (hooks/dispatch-tier.js) -------------------------------------------------------------------------
+# ---- dispatch-tier -------------------------------------------------------------------------
 
 [dispatch_tier.summary]
 doc = "One-line description of the dispatch-tier check in the generated reference."
-value = "Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off (port of dispatch-tier.js)."
+value = "Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off."
 
 [dispatch_tier.jev_id]
 doc = "The Jev integration id the dispatch-tier hook asks."
@@ -103,7 +103,7 @@ doc = "The task tools whose text changes the hook classifies."
 value = ["TaskCreate", "TaskUpdate"]
 
 [dispatch_tier.owner_marker_setting]
-doc = "Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
+doc = "Owner-blocked marker switch. Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
 value = { section = "guards", key = "taskGuardOwnerBlockedMarker", env = "ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER", aliases = [], option = "guards_task_guard_owner_blocked_marker", default = true }
 
 [dispatch_tier.owner_values]
@@ -152,9 +152,37 @@ value = "the DEFAULT when unsure: a lookup, a bug fix, a UI text or copy change,
 
 # ---- task fact model (checks::taskstate: lib/task-state.js, task-guard.js parseTasksFromFile, lib/task-subject-backfill.js) ----
 
+[taskstate.js_parse_max_depth]
+doc = "The deepest bracket nesting of a transcript line the engine reads the way JSON.parse does when serde_json's 128-level limit rejects it (JavaScript's own stack ends far past it). A deeper line cannot be read and leaves the scan unsure."
+value = 2000
+min = 128
+max = 100000
+
 [taskstate.tail_bytes]
 doc = "How much of the end of a transcript the task reconstruction reads (the Node `MAX_TAIL_BYTES`, 1.5 MiB)."
 value = 1572864
+min = 1
+
+[taskstate.store_base]
+doc = "Path parts, under the home directory, of Claude Code's own task store: one directory per task list, one `<id>.json` per task. It is the authoritative list when it exists (the transcript tail of a long session no longer holds the creates). Codex has no such store, so it keeps the transcript reconstruction."
+value = [".claude", "tasks"]
+
+[taskstate.store_dir_names]
+doc = "Candidate directory names of a session's task list under the store, tried in order, the first that exists wins. `{sid}` is the session id, `{sid8}` its first 8 characters (the list id the `session-<8>` convention uses). A session id with a character outside `[A-Za-z0-9_-]` is not looked up."
+value = ["session-{sid8}", "{sid}"]
+
+[taskstate.store_file_suffix]
+doc = "Suffix of the task files in a store directory (the lock and high-water-mark files lack it)."
+value = ".json"
+
+[taskstate.store_max_files]
+doc = "Most task files read from one store directory; a larger directory is read as absent and the transcript reconstruction answers (fail-open, bounded hook latency)."
+value = 1000
+min = 1
+
+[taskstate.store_file_max_bytes]
+doc = "Largest task file read; a bigger one is skipped."
+value = 65536
 min = 1
 
 [taskstate.re_created]
@@ -176,6 +204,18 @@ value = ["taskId", "id", "task_id"]
 [taskstate.tools_collect_keys]
 doc = "The object keys the tool-use collector descends into, in order (the Node `collectToolUses`)."
 value = ["content", "message", "messages", "tool_uses", "parts"]
+
+[taskstate.task_tools]
+doc = "The tool names a task reconstruction reacts to (a call that creates, updates, lists or reads tasks, or rewrites the whole list). The kept task lines (transcript.tasks_cache_*) hold every line that names one; a name a reconstruction acts on that is missing here would make its kept answer differ from a fresh read."
+value = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]
+
+[taskstate.in_progress_statuses]
+doc = "Statuses (lowercase) that count a task as in progress (a subset of the open statuses); the open-task facts the Stop gate reads from the session task store use it."
+value = ["in_progress", "in-progress"]
+
+[taskstate.pending_statuses]
+doc = "Statuses (lowercase) that count an open task as waiting to start; with the in-progress statuses they make up the open ids the Stop gate reads from the session task store."
+value = ["pending"]
 
 [taskstate.open_statuses]
 doc = "Statuses (lowercase) that make a task open."
@@ -245,11 +285,11 @@ min = 1
 doc = "Prefix of the stamp file that throttles one prefix's sweep."
 value = ".prune-stamp-"
 
-# ---- task-guard (hooks/task-guard.js) --------------------------------------------------------------------------------
+# ---- task-guard --------------------------------------------------------------------------------
 
 [task_guard.summary]
 doc = "One-line description of the task-guard check in the generated reference."
-value = "Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic block), with the loop state, the per-prompt budget and the OMC and live-agent steps aside of the Node hook; hands a Stop whose answer needs the DevSwarm app database to Node (port of task-guard.js)."
+value = "Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic block), with the loop state, the per-prompt budget and the OMC and live-agent steps aside of the Node hook; hands a Stop whose answer needs the DevSwarm app database to Node."
 
 [task_guard.guard_name]
 doc = "The guard id of task-guard (the skip key and the message prefix)."
@@ -260,7 +300,7 @@ doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
 value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
 
 [task_guard.prune_setting]
-doc = "How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)."
+doc = "Completed or cancelled tasks kept before the task tracker suggests pruning."
 value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
 
 [task_guard.state_prefix]
@@ -271,10 +311,6 @@ value = "last-stop-taskset-"
 doc = "How many hex characters of the transcript path hash name a session that has no id."
 value = 16
 min = 1
-
-[task_guard.prune_advisory]
-doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
-value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"
 
 [task_guard.note_line]
 doc = "The line that carries the unknown-state note; `{note}` is the note."
@@ -291,9 +327,13 @@ value = "ANTIHALL_JUDGE_CHILD"
 # -- task-guard: the open-task decision (sharp idle-neglect block, generic block, loop state)
 
 [task_guard.max_blocks]
-doc = "Most Stop blocks task-guard makes in one session (both kinds counted); after that every Stop is let through."
+doc = "Most Stop blocks task-guard makes per cap_scope window (both kinds counted); a new real owner turn resets the default owner_turn window. Same-set dedupe remains independent."
 value = 5
 min = 1
+
+[task_guard.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [task_guard.hash_sep]
 doc = "The separator between the task ids hashed into the loop state (a NUL character)."
@@ -308,12 +348,28 @@ doc = "The loop state file's field for the hash of the last blocked set."
 value = "hash"
 
 [task_guard.state_blocks_key]
-doc = "The loop state file's field for the number of blocks made this session."
+doc = "The loop state file's field for the number of blocks made in the current cap_scope window."
 value = "blocks"
 
 [task_guard.pending_status]
 doc = "The status (lowercase) of a task that can be dispatched now."
 value = "pending"
+
+[task_guard.owner_name_key]
+doc = "The field of the Agent call that launched a running agent which names it (its `name`). A task whose owner is that name is attended, like one owned by the agent's id or description."
+value = "name"
+
+[task_guard.owner_decision_markers]
+doc = "Case-insensitive phrases in a task owner, subject or description that mean an explicit owner decision is pending. Honored while guards.taskGuardOwnerBlockedMarker is enabled."
+value = ["owner-go", "waiting owner", "needs your OK"]
+
+[task_guard.advise_unresolved_owners]
+doc = "Advise instead of blocking Stop when a non-coordinator task owner cannot be resolved to known live or finished tracker work. False restores blocking for unresolved owners."
+value = true
+
+[task_guard.unresolved_owner_advisory]
+doc = "Fail-open advisory for unresolved task owners; {list} uses the existing bounded task renderer."
+value = "[task-guard] owner liveness is unknown; resolve or reassign these tasks when ready: {list}\n"
 
 [task_guard.owner_match_min]
 doc = "The shortest task owner text that counts as naming a running agent by a part of its description (an owner of fewer characters matches only the agent's id or its whole description). A task owned by a running agent is attended and is not listed by the generic block."
@@ -349,7 +405,7 @@ value = 2
 min = 0
 
 [task_guard.min_priority_setting]
-doc = "The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
+doc = "Priority floor of the idle-neglect block. The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
 value = { section = "guards", key = "idleNeglectMinPriority", type = "enum", values = ["p0", "p1", "p2", "p3"], env = "ANTIHALL_IDLE_NEGLECT_MIN_PRIORITY", aliases = [], default = "p1" }
 
 [task_guard.dispatch_demand_setting]
@@ -357,11 +413,11 @@ doc = "Whether running agents are counted per task from this session's transcrip
 value = { section = "guards", key = "dispatchDemand", env = "ANTIHALL_DISPATCH_DEMAND", aliases = [], default = true }
 
 [task_guard.proven_only_setting]
-doc = "Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
+doc = "Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
 value = { section = "guards", key = "idleNeglectProvenOnly", env = "ANTIHALL_IDLE_NEGLECT_PROVEN_ONLY", aliases = [], default = true }
 
 [task_guard.agent_max_age_setting]
-doc = "Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
+doc = "Max age of an agent counted as cover. Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
 value = { section = "guards", key = "idleNeglectAgentMaxAgeMin", env = "ANTIHALL_IDLE_NEGLECT_AGENT_MAX_AGE_MIN", aliases = [], min = 0, default = 30 }
 
 [task_guard.agent_max_age_default_min]
@@ -491,35 +547,39 @@ value = "apply_patch"
 
 [task_guard.idle_what]
 doc = "The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail."
-value = "stop blocked: {n} non-blocked, unassigned task(s) have no in-flight agent: {list}{more}."
+value = "{n} open tasks have no agent working on them."
 
 [task_guard.idle_why]
 doc = "The why line of the idle-neglect block."
-value = "Dispatchable work is sitting idle."
+value = "Work that could run in parallel is sitting idle."
+
+[task_guard.devswarm_hint]
+doc = "The DevSwarm sentence added to the idle-neglect block's do-instead line while the app database shows a live workspace; `{upd}` is the task update tool."
+value = " If a DevSwarm workspace has it, set the owner ({upd} owner) to that workspace's title."
 
 [task_guard.idle_instead]
 doc = "The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing)."
-value = "dispatch them now in parallel (one background agent each, cap {cap}), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy ({upd} addBlockedBy). A running agent already covers a task: set the task owner to it ({upd} owner) and it counts as attended.{devswarm}"
+value = "assign the pending tasks to agents."
 
 [task_guard.idle_allowed]
 doc = "The allowed-here line of the idle-neglect block."
-value = "a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:'owner' (or 'user'/'human'/'external'), or give it an \"OWNER:\" / \"OWNER DECISION\" subject prefix. Never a fake blockedBy dependency."
+value = "a task waiting on the user (hardware, a decision): mark it blocked on 'owner', or start its subject with \"OWNER:\"."
 
 [task_guard.generic_what]
 doc = "The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail."
-value = "stop blocked: open tasks remain: {list}{more}."
+value = "open tasks remain unfinished."
 
 [task_guard.generic_why]
 doc = "The why line of the generic block."
-value = "Tasks should not sit neglected when the session stops."
+value = "Open tasks should not be left behind when the session stops."
 
 [task_guard.generic_instead]
 doc = "The do-instead line of the generic block; `{upd}` is the task update tool."
-value = "pick up pending tasks and dispatch subagents to finish them in parallel (up to the cap, ~min(16, cores-2)); or mark them completed/deferred ({upd}), or tell the user what is pending and why you are stopping."
+value = "finish the pending tasks before stopping."
 
 [task_guard.generic_allowed]
 doc = "The allowed-here line of the generic block; `{upd}` is the task update tool."
-value = "a genuinely blocked task: mark it via {upd} with blockedBy:[<open task id>] or metadata.blockedOn:'owner'/'user'/'human'/'external'; it is then no longer listed."
+value = "a task that is truly blocked: mark it with {upd} (blockedBy an open task, or blockedOn 'owner'); it is then no longer listed."
 
 [task_guard.block_json]
 doc = "The stdout line of a block; `{reason}` is the reason as a JSON string."
@@ -549,7 +609,7 @@ value = "idleNeglectBlocks"
 doc = "The metrics file's per-session pending-demand object (kept as is, made an empty object when it is not one)."
 value = "pending"
 
-# -- task-guard: the DevSwarm app database (companion/lib/devswarm-app-db.js appDbPath); its presence defers the answers that need it
+# -- task-guard: the DevSwarm app database; its presence defers the answers that need it
 
 [task_guard.app_db_env]
 doc = "The environment variable that names the DevSwarm app database (or `off`)."
@@ -575,7 +635,7 @@ value = ".config"
 doc = "The DevSwarm app database under the application data directory, as path segments."
 value = ["DevSwarm", "devswarm.db"]
 
-# -- task-guard: OMC loop detection (hooks/omc-detect.js)
+# -- task-guard: OMC loop detection
 
 [task_guard.omc_disable_env]
 doc = "The environment variable that turns OMC off."
@@ -649,7 +709,7 @@ unit = "ms"
 doc = "The state field that ties a loop to one session."
 value = "session_id"
 
-# -- task-guard: the per-prompt budget (hooks/lib/stop-policy.js budgetSpent)
+# -- task-guard: the per-prompt budget
 
 [task_guard.budget_setting]
 doc = "Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget)."
@@ -749,11 +809,11 @@ value = ["Agent", "Task", "CronCreate", "CronDelete"]
 doc = "File-mutating tools: each call counts as work unless it targets an excluded path."
 value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 
-# ---- tasklist-guard (hooks/tasklist-guard.js) ---------------------------------------------------------------------------
+# ---- tasklist-guard ---------------------------------------------------------------------------
 
 [tasklist_guard.summary]
 doc = "One-line description of the tasklist-guard check in the generated reference."
-value = "Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop state, dedupe, cap, handover advisories, stop-policy budget and acknowledgement; answers the quiet Stops, plan mode and the resume-verification nudge with the same file effects (port of tasklist-guard.js)."
+value = "Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop state, dedupe, cap, handover advisories, stop-policy budget and acknowledgement; answers the quiet Stops, plan mode and the resume-verification nudge with the same file effects."
 
 [tasklist_guard.guard_name]
 doc = "The guard id of tasklist-guard (the skip key and the message prefix)."
@@ -787,7 +847,7 @@ value = 1000
 min = 0
 
 [tasklist_guard.plan_mode_text]
-doc = "The advisory printed instead of a decision while the session is in plan mode."
+doc = "The advisory printed on stderr instead of a decision while the session is in plan mode (stdout stays empty, so another Stop hook's JSON still merges)."
 value = "[tasklist-guard] PLAN MODE — Stop not blocked (progress-file writes are not possible in plan mode). Track this work as tasks and refresh the progress file once you leave plan mode.\n"
 
 [tasklist_guard.plan_mode_value]
@@ -830,9 +890,13 @@ min = 1
 # ---- tasklist-guard: the block path (the Stop that nudges) ---------------------------------------------------------------
 
 [tasklist_guard.max_blocks]
-doc = "How many blocks one session gets at most (MAX_BLOCKS); a session at the cap stops quietly."
+doc = "Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-signal dedupe remains independent; the separate once-per-session reduced-nag budget is unchanged."
 value = 3
 min = 1
+
+[tasklist_guard.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [tasklist_guard.work_bucket_max]
 doc = "Highest work bucket in the dedupe signal (the work count divided by the threshold, floored, capped here)."
@@ -876,15 +940,15 @@ value = "<!-- session: {session} | started: {started} -->"
 
 [tasklist_guard.what_reset]
 doc = "Block headline when the task store was reset (a session restore)."
-value = "the task store was reset (session restore)."
+value = "the task list was lost during session restore."
 
 [tasklist_guard.why_reset]
 doc = "Block reason when the task store was reset."
-value = "The old task ids are gone, not un-tracked."
+value = "The old tasks are gone, not finished."
 
 [tasklist_guard.what_no_tasks]
 doc = "Block headline when work was done and no task was tracked; {n} is the work count."
-value = "stop blocked: {n} file-changing actions this session but NO tasks tracked."
+value = "{n} files changed but no tasks tracked."
 
 [tasklist_guard.why_no_tasks]
 doc = "Block reason when no task was tracked."
@@ -892,27 +956,27 @@ value = "Work this size needs a task list and a progress file."
 
 [tasklist_guard.prior_snapshot]
 doc = "Appended to the no-tasks reason when another session of today left a handover state file; {path} is its path."
-value = " A prior session's snapshot exists at {path}: recreate your task list from it first."
+value = " An earlier session left a snapshot to rebuild the list from (see the details file)."
 
 [tasklist_guard.what_stalled]
 doc = "Block headline when tasks are in progress with no live agent; {n} is the count."
-value = "stop blocked: {n} tasks are in_progress but NO background agent is live."
+value = "{n} tasks are marked in progress with no active agent."
 
 [tasklist_guard.why_stalled]
 doc = "Block reason when tasks are stalled in progress."
-value = "They are stalled, not worked in parallel."
+value = "They are stalled, not running in parallel."
 
 [tasklist_guard.what_progress]
 doc = "Block headline when the progress file is missing or stale; {n} is the work count, {path} the progress file."
-value = "stop blocked: {n} file-changing actions but {path} is missing or stale."
+value = "{n} files changed but progress is missing or stale."
 
 [tasklist_guard.why_progress]
 doc = "Block reason when the progress file is missing or stale."
-value = "The progress file must track what was done."
+value = "The progress file must record what was done."
 
 [tasklist_guard.what_reduced]
 doc = "Block headline of the reduced nag (a session without task tools); {n} is the work count."
-value = "stop blocked: {n} file-changing actions, no tasks tracked."
+value = "{n} files changed but no work tracked."
 
 [tasklist_guard.why_reduced]
 doc = "Block reason of the reduced nag."
@@ -920,31 +984,31 @@ value = "Untracked work gets lost."
 
 [tasklist_guard.instead_reduced]
 doc = "What to do instead, reduced nag; {progress} and {history} are the files."
-value = "list the open tasks and status in your reply, priority first. Progress: {progress} History: {history}"
+value = "list the open tasks and their status in your reply, priority first."
 
 [tasklist_guard.instead_reset]
 doc = "Lead of what to do instead after a task store reset (Claude wording)."
-value = "recreate the open tasks with TaskCreate (see the progress file / handover), then continue. "
+value = "restore the open tasks, then stop again."
 
 [tasklist_guard.instead_reset_codex]
 doc = "Lead of what to do instead after a task store reset (Codex wording)."
-value = "recreate the open tasks in your task list (see the progress file / handover), then continue. "
+value = "restore the open tasks, then stop again."
 
 [tasklist_guard.instead_stalled]
 doc = "What to do about tasks stalled in progress."
-value = "dispatch a background agent for EACH now (do not serialize to one), or set idle ones back to pending; start the highest-priority task's agent first but keep the rest running. "
+value = "assign an agent to each stalled task."
 
 [tasklist_guard.instead_capture]
 doc = "What to do instead: capture the work as tasks (Claude wording)."
-value = "Capture the work as priority-sorted tasks via TaskCreate/TaskUpdate (TaskList first to dedup; link with addBlockedBy/addBlocks), set statuses, and update "
+value = "add the work as tasks, then stop again."
 
 [tasklist_guard.instead_capture_codex]
 doc = "What to do instead: capture the work as tasks (Codex wording)."
-value = "Capture the work as priority-sorted tasks in your task list (check it first to dedup; link related ones), set statuses, and update "
+value = "add the work as tasks, then stop again."
 
 [tasklist_guard.instead_files]
 doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
-value = "{progress} (done/in-progress/next); a new file gets this header on top: {header}. Gitignore it. Append each COMPLETED task to {history} (append-only ledger, one entry per task: Cause / Fix / Verified; gitignore it too; it usually exists already, so {append}). The progress file can be written freely. No Bash heredoc (git-guard scans its body as shell)."
+value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
 
 [tasklist_guard.append_claude]
 doc = "How to append to the history file (Claude wording)."
@@ -955,7 +1019,7 @@ doc = "How to append to the history file (Codex wording)."
 value = "append with a one-line `>>`, never overwrite it"
 
 [tasklist_guard.omc_text]
-doc = "Printed instead of the block while an oh-my-claudecode autonomous loop is active."
+doc = "Printed on stderr instead of the block while an oh-my-claudecode autonomous loop is active (stdout stays empty, so another Stop hook's JSON still merges)."
 value = "[tasklist-guard] OMC autonomous loop active — deferring Stop block to avoid deadlock.\n"
 
 [tasklist_guard.handovers_dir]
@@ -985,7 +1049,7 @@ value = '{"advised":true}'
 
 [tasklist_guard.advisory_text]
 doc = "The no-handover advisory appended to a block."
-value = "\n💡 anti-hall · handover: no handover exists yet after significant work.\nDo instead: consider /anti-hall:handover before ending."
+value = "\n💡 anti-hall · handover: no handover has been saved yet, and a lot of work happened.\nDo instead: run /anti-hall:handover before ending."
 
 [tasklist_guard.stale_prefix]
 doc = "Prefix of the once-per-session marker of the stale-handover advisory (`<prefix><session>.json`)."
@@ -997,7 +1061,7 @@ value = '{"warned":true}'
 
 [tasklist_guard.stale_text]
 doc = "The stale-handover advisory appended to a block."
-value = "\n⚠️ anti-hall · handover: the saved handover is stale (work happened after it was written).\nDo instead: refresh it before the user compacts."
+value = "\n⚠️ anti-hall · handover: the saved handover is out of date (work happened after it was written).\nDo instead: refresh it with /anti-hall:handover before compacting."
 
 [tasklist_guard.jev_id]
 doc = "The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it)."
@@ -1020,7 +1084,7 @@ doc = "The session summary Jev judges; the fields are the work count, threshold,
 value = "workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgress={stale} progressFresh={fresh} openTaskCount={open}"
 
 [tasklist_guard.no_task_tools_setting]
-doc = "The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
+doc = "Nag form when task tools are missing. The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
 value = { section = "guards", key = "tasklistNoTaskTools", type = "enum", env = "ANTIHALL_TASKLIST_NO_TASK_TOOLS", aliases = [], option = "", default = "reduced", values = ["reduced", "full", "skip"] }
 
 [tasklist_guard.protocol_setting]
@@ -1079,7 +1143,31 @@ min = 1
 
 [tasklist_guard.ack_hint]
 doc = "The acknowledgement hint appended to a block; {key}, {now} and {path} are filled in."
-value = "Override (only if the user explicitly confirmed this exact condition is fine): write {\"{key}\": {now}} into {path} (merge with existing keys); it then stays advisory for the rest of the session."
+value = "Mechanical override, only if the user explicitly confirmed this exact condition is fine: write {\"{key}\": {now}} into {path} (merge with existing keys). The block then stays advisory for the rest of the session."
+
+[tasklist_guard.ack_human]
+doc = "The override line of a tasklist-guard block, phrased for the human; the mechanical override is in the details file (ack_hint)."
+value = "tell the agent \"skip tasklist-guard\""
+
+[tasklist_guard.details_label]
+doc = "Label of the last line of a tasklist-guard block: the file with the long instructions."
+value = "details: "
+
+[tasklist_guard.details_dir]
+doc = "Directory of the tasklist-guard details file under the anti-hall state directory."
+value = "block-details"
+
+[tasklist_guard.details_ext]
+doc = "File extension of the tasklist-guard details file."
+value = ".md"
+
+[tasklist_guard.details_head]
+doc = "First line of the tasklist-guard details file."
+value = "Task list and progress file: what to do"
+
+[tasklist_guard.prior_detail]
+doc = "Line of the tasklist-guard details file that names the snapshot an earlier session left; {path} is its path."
+value = "An earlier session left a snapshot to rebuild the task list from: {path}"
 
 [tasklist_guard.budget_setting]
 doc = "guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off)."
@@ -1090,7 +1178,7 @@ doc = "The stop-policy state directory under the anti-hall state directory, as p
 value = ["devswarm", "stop-policy"]
 
 [tasklist_guard.policy_tail_bytes]
-doc = "How much of the end of the transcript is read for the prompt key (transcript-tail.js MAX_TAIL_BYTES)."
+doc = "How much of the end of the transcript is read for the prompt key."
 value = 1572864
 min = 1
 
@@ -1112,7 +1200,7 @@ doc = "Text a transcript line must hold to be read as a possible user prompt."
 value = '"user"'
 
 [tasklist_guard.omc_state_files]
-doc = "The oh-my-claudecode loop state files (omc-detect.js)."
+doc = "The oh-my-claudecode loop state files."
 value = ["ralph-state.json", "ultrawork-state.json", "autopilot-state.json", "ultraqa-state.json", "team-state.json", "ultrapilot-state.json", "pipeline-state.json", "omc-teams-state.json"]
 
 [tasklist_guard.omc_state_dir]
@@ -1178,3 +1266,61 @@ value = '[\\/]\.codex[\\/]'
 [tasklist_guard.low_priorities]
 doc = "Priorities (lowercase) below the actionable floor for the stalled-in-progress count."
 value = ["p2", "low", "deferred"]
+
+[tasklist_guard.instead_progress]
+doc = "Compact guard message text."
+value = "update the progress file, then stop again."
+
+[tasklist_guard.resume_instead]
+doc = "Compact guard message text."
+value = "verify the handover and record the result."
+
+# ---- tasklist-hygiene ------------------------------------------------------------------------
+
+[tasklist_hygiene.summary]
+doc = "One-line description of the tasklist-hygiene check in the generated reference."
+value = "Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
+
+[tasklist_hygiene.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "tasklist-hygiene"
+
+[tasklist_hygiene.create_tool]
+doc = "The tool that creates a task."
+value = "TaskCreate"
+
+[tasklist_hygiene.update_tool]
+doc = "The tool that changes a task (status, subject)."
+value = "TaskUpdate"
+
+[tasklist_hygiene.done_trigger]
+doc = "The TaskUpdate status values that count as a task being finished and trigger the delete-it line."
+value = ["completed"]
+
+[tasklist_hygiene.msg_done]
+doc = "What the done line says; {id} is the task id."
+value = "task {id} done: task-list entries of this session are not user data; log its outcome in .anti-hall/history/<date>/<session>.md, then delete it."
+
+[tasklist_hygiene.instead_done]
+doc = "What to do, in the done line."
+value = "TaskUpdate status=deleted once logged there; the list holds open tasks only. Nothing else is exempt from the never-delete rule."
+
+[tasklist_hygiene.msg_subject]
+doc = "The subject breach; {n} is the subject length and {max} handover.taskSubjectMax."
+value = "task subject is {n} chars (max {max})."
+
+[tasklist_hygiene.msg_open]
+doc = "The open-count breach; {n} is the open-task count and {max} handover.taskListBudget."
+value = "{n} open tasks (budget {max})."
+
+[tasklist_hygiene.join]
+doc = "Separator between the parts of one line."
+value = " "
+
+[tasklist_hygiene.instead_budget]
+doc = "What to do, in the advisory line."
+value = "keep subjects as `T-<n> [P] title`, details in the history ledger; delete finished tasks."
+
+[tasklist_hygiene.instead_block]
+doc = "What to do, in the block message."
+value = "shorten the subject and delete finished tasks first; put details in the history ledger."

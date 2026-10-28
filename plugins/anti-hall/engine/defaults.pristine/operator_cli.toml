@@ -85,7 +85,11 @@ value = "T00:00:00Z"
 
 [opcli.review_keys]
 doc = "Names of the JSON members of the review state, a decision row and a rollup."
-value = { integrations = "integrations", shadow_since = "shadowSince", last_reviewed = "lastReviewedAt", snoozed_until = "snoozedUntil", due_since = "dueSince", id = "id", type = "type", day = "day", groups = "groups", n = "n", ts = "ts", days = "days", decisions = "decisions", latency = "latencyMs", reviewed_type = "reviewed" }
+value = { integrations = "integrations", shadow_since = "shadowSince", last_reviewed = "lastReviewedAt", snoozed_until = "snoozedUntil", due_since = "dueSince", id = "id", type = "type", day = "day", groups = "groups", n = "n", ts = "ts", days = "days", decisions = "decisions", latency = "latencyMs", reviewed_type = "reviewed", ids = "ids" }
+
+[opcli.review_shown_type]
+doc = "The `type` of the review metrics row that records a SessionStart reminder."
+value = "reminder-shown"
 
 [opcli.review_none]
 doc = "`review-due` when nothing is due. Placeholders: {after}, {min}."
@@ -130,6 +134,22 @@ value = "{id} snoozed until {until}"
 [opcli.review_write_failed]
 doc = "A review-state write that failed after the verb was answered (best effort, as in Node: said, not fatal). Placeholder: {error}."
 value = "⚠️ anti-hall · jev-setup: could not save the review state: {error}"
+
+[opcli.review_scan_over_limit]
+doc = "The Jev decision-log scan stopped at its memory hard limit (mem.jev_review_scan_hard_bytes); the review state counts as unusable. Placeholders: {file}, {limit}."
+value = "review state: the Jev decision log {file} holds a line longer than the scan's {limit}-byte limit (mem.jev_review_scan_hard_bytes); the review was skipped"
+
+[opcli.review_stats_fingerprint_bytes]
+doc = "Bytes at each end of the kept part of a Jev decision-log file that are compared with the file before its kept totals are used again; a file that differs there was rewritten and is read from its start."
+value = 4096
+min = 1
+unit = "bytes"
+
+[opcli.review_stats_max_files]
+doc = "How many decision-log files the review scan keeps totals for (the log and its numbered generations); the least recently used are dropped first and read again from their start."
+value = 64
+min = 0
+unit = "count"
 
 [opcli.review_state_bad]
 doc = "The review state holds an entry that is not an object, which the verb cannot update (nothing is written). Placeholder: {id}."
@@ -202,13 +222,13 @@ value = "autoHandover"
 [opcli.ahc_current]
 doc = "The settings `writeConfig` and `resolveEffective` read, in order, each as `name:default` (the default is JSON): the value a verb starts from."
 value = [
-  "enabled:true", "pct:85", "nag:true", "nagStepPct:5", "nagQuietMin:15", "maxTokens:0", "gateNewWork:true", "gateBudgetPct:5",
+  "enabled:true", "pct:93", "nag:true", "nagStepPct:5", "nagQuietMin:15", "maxTokens:500000", "gateNewWork:true", "gateBudgetPct:5",
   "decisivePrompt:true", "gateHousekeepingMarkers:\"\"",
 ]
 
 [opcli.ahc_default_pct]
 doc = "The threshold `on` restores when the stored one is not 1-99."
-value = 85
+value = 93
 
 [opcli.ahc_default_nag_step_pct]
 doc = "The nag step reported when the trigger is switched off by the environment."
@@ -485,3 +505,106 @@ value = "coordinator work baseline: calls {calls} · work {work} · share {share
 [opcli.cwb_unclassified]
 doc = "stderr note when some commands could not be classified by the engine and were counted as not work. Placeholder: {count}."
 value = "coordinator-work-baseline: {count} command(s) depend on something only the hook process can see (a relative path, an unreadable file) and were counted as not work"
+
+# ---- status --migration (#43) --------------------------------------------------------------------------------------------
+# The Node-to-engine migration report, generated from the engine's registries (src/migration.rs).
+
+[opcli.migration_flag]
+doc = "The `ah-engine status` flag that prints the migration report: every hook check, supervisor duty, post-update stage, command and Node switch as native, partial or node (`status --migration [--json]`)."
+value = "--migration"
+
+[opcli.migration_status_native]
+doc = "Migration status word: the path runs in the engine with no Node path left."
+value = "native"
+
+[opcli.migration_status_partial]
+doc = "Migration status word: the engine answers, but a Node path remains (a real deferral, a Node witness, a Node key that still ships, a Node switch that is on)."
+value = "partial"
+
+[opcli.migration_status_node]
+doc = "Migration status word: Node still answers (a check with a Node twin, a duty that runs as Node's function, a post-update stage that names a Node function, a planned command). Also the duty kind that names a Node function."
+value = "node"
+
+[opcli.migration_missing]
+doc = "Migration report: the count (and the human status) of entries whose source does not say where they stand. A test holds it at 0."
+value = "missing"
+
+[opcli.migration_kind_hook]
+doc = "Migration report kind of a registry check."
+value = "hook"
+
+[opcli.migration_kind_duty]
+doc = "Migration report kind of a DevSwarm supervisor duty (devswarm_sup.duties)."
+value = "duty"
+
+[opcli.migration_kind_stage]
+doc = "Migration report kind of a post-update stage (update_post.stages)."
+value = "stage"
+
+[opcli.migration_kind_verb]
+doc = "Migration report kind of a command of the registry (cmd.*)."
+value = "verb"
+
+[opcli.migration_kind_switch]
+doc = "Migration report kind of a Node switch (opcli.migration_switches)."
+value = "switch"
+
+[opcli.migration_why_twin]
+doc = "Migration reason: the check is not classified in script.engine_only_checks, so a script failure has no declared policy."
+value = "node_twin"
+
+[opcli.migration_why_defer]
+doc = "Migration reason: the check's script (or a script it includes) has a real deferral (opcli.migration_defer_re outside comments)."
+value = "defer"
+
+[opcli.migration_why_node_kind]
+doc = "Migration reason: the duty's kind is still node (it runs as Node's function, or natively with a Node witness or remainder)."
+value = "node_kind"
+
+[opcli.migration_why_fn]
+doc = "Migration reason prefix: the post-update stage names this Node function."
+value = "fn"
+
+[opcli.migration_why_fallback]
+doc = "Migration reason prefix: the native post-update stage names a Node function it falls back to when the port cannot answer."
+value = "fallback"
+
+[opcli.migration_why_key]
+doc = "Migration reason prefix: this Node key of the command still ships."
+value = "node_key"
+
+[opcli.migration_why_switch]
+doc = "Migration reason prefix: this Node switch is not 0."
+value = "switch"
+
+[opcli.migration_defer_re]
+doc = "Migration report: the pattern of a real deferral in a check script, matched after comments are removed."
+value = '''\breturn\s*\(?\s*['"]defer['"]'''
+
+[opcli.migration_duty_prefix]
+doc = "Migration report: the defaults key prefix of a supervisor duty's row (the duty name follows)."
+value = "devswarm_sup.duty."
+
+[opcli.migration_cmd_implemented]
+doc = "Migration report: the command registry status word of a command the engine answers."
+value = "implemented"
+
+[opcli.migration_cmd_planned]
+doc = "Migration report: the prefix of the command registry status of a command not yet in the engine (its Node script answers)."
+value = "planned"
+
+[opcli.migration_verb_node_keys]
+doc = "Migration report: per command, the defaults keys whose presence means a Node path of that command remains (the command is then partial). A lane that removes the Node path removes the key, and the report follows."
+value = {}
+
+[opcli.migration_switches]
+doc = "Migration report: the Node switches, name to defaults key; native when the key is 0, partial otherwise."
+value = {}
+
+[opcli.migration_heading]
+doc = "Migration report heading. Placeholders: {native}, {partial}, {node}, {missing}."
+value = "Node-to-engine migration: {native} native, {partial} partial, {node} node, {missing} missing"
+
+[opcli.migration_line]
+doc = "Migration report: one entry. Placeholders: {kind}, {name}, {status}, {why}."
+value = "  {status}  {kind}  {name}  {why}"

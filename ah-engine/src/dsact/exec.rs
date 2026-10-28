@@ -161,7 +161,7 @@ impl<'a> Act<'a> {
     }
 
     /// `hivecontrol --version`, once per layer.
-    fn version(&self) -> (bool, Option<Vec<u64>>) {
+    pub fn version(&self) -> (bool, Option<Vec<u64>>) {
         if let Some(p) = self.probe.borrow().clone() {
             return p;
         }
@@ -173,7 +173,7 @@ impl<'a> Act<'a> {
     }
 
     /// Whether the DevSwarm CLI can run `verb`: present, and new enough where the verb has a minimum.
-    pub(super) fn capability(&self, verb: &str) -> Result<(), String> {
+    pub fn capability(&self, verb: &str) -> Result<(), String> {
         let (missing, ver) = self.version();
         if missing {
             return Err(defaults::text("devswarm_act.msg_inert").to_string());
@@ -296,9 +296,11 @@ impl<'a> Act<'a> {
         Report::new(kind, id, &key, word, detail)
     }
 
-    /// One auto-archive candidate: decide from fresh facts.
-    pub(super) fn auto_candidate(&self, id: &str, s: &ActSettings) -> Option<Value> {
-        let facts = self.live.facts(defaults::text("devswarm_act.auto_archive_kind"), id)?;
+    /// One auto-archive candidate: decide from current facts; `fresh` reads git itself instead of its remembered answers (the re-check
+    /// right before an archive must never act on a remembered "clean").
+    pub fn auto_candidate(&self, id: &str, s: &ActSettings, fresh: bool) -> Option<Value> {
+        let kind = defaults::text("devswarm_act.auto_archive_kind");
+        let facts = if fresh { self.live.facts_fresh(kind, id)? } else { self.live.facts(kind, id)? };
         let p = self.payload(defaults::text("devswarm_act.auto_archive_kind"), facts.clone(), json!({}), self.archived_keys(id), s);
         let mut d = decide(&self.home_str(), &p).ok()?;
         d["id"] = json!(id);
@@ -313,7 +315,7 @@ impl<'a> Act<'a> {
     pub(super) fn archive_one(&self, id: &str, s: &ActSettings, trigger: &str, plan: Option<Value>) -> One {
         let kind = defaults::text("devswarm_act.auto_archive_kind");
         let (feature, outs) = (defaults::list("devswarm_act.feature_names")[0], defaults::list("devswarm_act.outcome_words"));
-        let Some(first) = plan.or_else(|| self.auto_candidate(id, s)).filter(|d| d.get("eligible").and_then(Value::as_bool) == Some(true)) else {
+        let Some(first) = plan.or_else(|| self.auto_candidate(id, s, false)).filter(|d| d.get("eligible").and_then(Value::as_bool) == Some(true)) else {
             return One::NotEligible;
         };
         let started = std::time::Instant::now();
@@ -343,7 +345,7 @@ impl<'a> Act<'a> {
             return One::Refused(why);
         };
         // facts are read again immediately before the action (the plan may be seconds old)
-        let again = self.auto_candidate(id, s);
+        let again = self.auto_candidate(id, s, true);
         let Some(d) = again.as_ref().filter(|d| d.get("eligible").and_then(Value::as_bool) == Some(true)) else {
             self.log(&json!({"ts": self.live.now_ms(), "kind": kind, "id": id, "outcome": Word::Stale.text()}));
             record(
@@ -386,7 +388,7 @@ impl<'a> Act<'a> {
             return json!({"mode": s.mode, "dormant": defaults::text("devswarm_act.msg_inert"), "candidates": 0, "wouldArchive": [], "archived": [], "failed": []});
         }
         let cap = self.capability(defaults::list("devswarm_act.id_verbs")[0]);
-        let cands: Vec<Value> = self.live.candidates().iter().filter_map(|id| self.auto_candidate(id, &s)).collect();
+        let cands: Vec<Value> = self.live.candidates().iter().filter_map(|id| self.auto_candidate(id, &s, false)).collect();
         let eligible = |c: &Value| c.get("eligible").and_then(Value::as_bool) == Some(true);
         let would: Vec<String> =
             cands.iter().filter(|c| eligible(c)).take(s.max_per_sweep.max(1) as usize).filter_map(|c| c["id"].as_str().map(str::to_string)).collect();

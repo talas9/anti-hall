@@ -84,11 +84,35 @@ pub fn kill_all() {
     }
 }
 
-fn drain(mut r: impl Read + Send + 'static) -> mpsc::Receiver<(Vec<u8>, bool)> {
+/// Collect a helper's output: at most `mem.proc_output_max_bytes` are kept (the cut is marked with `mem.proc_output_marker`); the
+/// rest is read and dropped so the helper never blocks on a full pipe and the daemon never holds an unbounded buffer.
+fn drain(r: impl Read + Send + 'static) -> mpsc::Receiver<(Vec<u8>, bool)> {
+    drain_capped(r, defaults::num("mem.proc_output_max_bytes") as usize, defaults::text("mem.proc_output_marker").as_bytes().to_vec())
+}
+
+fn drain_capped(mut r: impl Read + Send + 'static, cap: usize, marker: Vec<u8>) -> mpsc::Receiver<(Vec<u8>, bool)> {
     let (tx, rx) = mpsc::channel();
+    let chunk_len = defaults::num("io.chunk_bytes") as usize;
     std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let clean = r.read_to_end(&mut b).is_ok();
+        let (mut b, mut chunk, mut cut, mut clean) = (Vec::new(), vec![0u8; chunk_len], false, true);
+        loop {
+            match r.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let room = cap.saturating_sub(b.len());
+                    b.extend_from_slice(chunk.get(..n.min(room)).unwrap_or_default());
+                    cut |= n > room;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => {
+                    clean = false;
+                    break;
+                }
+            }
+        }
+        if cut {
+            b.extend_from_slice(&marker);
+        }
         crate::discard::harmless(tx.send((b, clean))); // keep: the receiver is gone; nobody is waiting for the result
     });
     rx
@@ -130,9 +154,18 @@ fn kill_group(child: &mut std::process::Child) {
 ///
 /// # Errors
 /// See [`Error`].
-pub fn run(mut cmd: Command, what: &str, timeout: Duration, poll: Duration) -> Result<Output, Error> {
+pub fn run(cmd: Command, what: &str, timeout: Duration, poll: Duration) -> Result<Output, Error> {
+    run_with_stdin(cmd, Stdio::null(), what, timeout, poll)
+}
+
+/// [`run`] with `stdin` as the child's standard input instead of /dev/null (a file or pipe the caller prepared). `run` itself
+/// always uses /dev/null: a `Command` cannot report an stdin set on it, so a caller that needs one passes it here.
+///
+/// # Errors
+/// See [`Error`].
+pub fn run_with_stdin(mut cmd: Command, stdin: Stdio, what: &str, timeout: Duration, poll: Duration) -> Result<Output, Error> {
     apply_git_env(&mut cmd);
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -209,11 +242,34 @@ mod tests {
     }
 
     #[test]
+    fn output_past_the_cap_is_cut_marked_and_the_rest_is_still_read() {
+        let mut data = vec![b'a'; 100_000];
+        data[0] = b'x';
+        let rx = drain_capped(std::io::Cursor::new(data), 1000, b"[cut]".to_vec());
+        let (kept, clean) = rx.recv().unwrap();
+        assert!(clean);
+        assert_eq!((kept.len(), kept[0], &kept[1000..]), (1005, b'x', &b"[cut]"[..]), "1000 bytes kept, then the marker");
+        let rx = drain_capped(std::io::Cursor::new(vec![b'b'; 1000]), 1000, b"[cut]".to_vec());
+        assert_eq!(rx.recv().unwrap().0.len(), 1000, "output exactly at the cap is not marked");
+    }
+
+    #[test]
     fn output_over_a_pipe_buffer_never_deadlocks_and_both_streams_are_kept() {
         // review finding 12: pipes read only after exit deadlocked a child that wrote more than 64 KiB
         let o = run(sh("head -c 300000 /dev/zero; head -c 200000 /dev/zero >&2"), "test", Duration::from_secs(10), Duration::from_millis(5)).unwrap();
         assert!(o.status.success());
         assert_eq!((o.stdout.len(), o.stderr.len()), (300_000, 200_000));
+    }
+
+    #[test]
+    fn a_provided_stdin_reaches_the_child_and_run_still_gives_dev_null() {
+        let f = std::env::temp_dir().join(format!("ah-proc-stdin-{}", std::process::id()));
+        std::fs::write(&f, b"payload").unwrap();
+        let o = run_with_stdin(sh("cat"), Stdio::from(std::fs::File::open(&f).unwrap()), "test", Duration::from_secs(10), Duration::from_millis(5)).unwrap();
+        assert_eq!(o.stdout, b"payload");
+        let o = run(sh("cat"), "test", Duration::from_secs(10), Duration::from_millis(5)).unwrap();
+        assert!(o.stdout.is_empty(), "run reads /dev/null");
+        crate::discard::harmless(std::fs::remove_file(&f)); // keep: test cleanup
     }
 
     /// A stand-in named `git` that behaves like `git status` on a stale index: unless GIT_OPTIONAL_LOCKS=0 it takes

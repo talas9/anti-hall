@@ -1,8 +1,9 @@
 //! What the app sync would do to the descriptor directories, planned natively: the archived markers for workspaces the app shows
 //! archived or deleted (`markAppArchivedDescriptors`) and the stale markers the app shows open again (`retireStaleArchivedMarkers`),
 //! plus the marker write itself. Planning reads only; [`write_marker`] creates a marker file that must not exist yet and never
-//! touches the descriptor it copies. The retire step's execution (a restored descriptor, a revived registry row) stays Node's own
-//! function, run only when Node's dry run names exactly the ids planned here (see the module `mod.rs`).
+//! touches the descriptor it copies. The retire step ([`retire_marker`]) restores the descriptor and revives the registry row through
+//! the recon planner's own restore (`restoreArchivedDescriptor` with `keepMarker`), and only then moves the marker to
+//! `archived-retired/`; a marker is never deleted.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an unreadable or torn descriptor is skipped (Node: `try { JSON.parse(...) } catch (_) { continue }`)
 use super::snap::Snap;
@@ -10,7 +11,7 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::jsport::fsx;
 use crate::defaults;
 use crate::meshw::appdb::norm_path;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use std::path::{Path, PathBuf};
 
@@ -32,14 +33,21 @@ impl Desc {
         }
     }
 
-    /// The `worktreePath`, `Defer` for a truthy value that is not a string.
+    /// The `worktreePath` as the sync reads it: `String(d.worktreePath)` for a truthy value, none for a falsy one.
     pub fn worktree(&self) -> R<Option<String>> {
-        match self.body.get(defaults::text("devswarm_sup.as_c_worktree_path")) {
-            None | Some(OVal::Null) => Ok(None),
-            Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
-            Some(v) if !v.truthy() => Ok(None),
-            Some(_) => defer("descriptor-worktree-type"),
-        }
+        Ok(self.body.get(defaults::text("devswarm_sup.as_c_worktree_path")).filter(|v| v.truthy()).map(js_str))
+    }
+}
+
+/// `String(v)` of a parsed JSON value: arrays join their elements with commas (null as empty), objects are `[object Object]`.
+pub fn js_str(v: &OVal) -> String {
+    match v {
+        OVal::Null => defaults::text("devswarm_sup.as_js_null").to_string(),
+        OVal::Bool(b) => b.to_string(),
+        OVal::Num(n) => crate::checks::jsport::num::to_js_string(*n),
+        OVal::Str(s) => s.clone(),
+        OVal::Arr(a) => a.iter().map(|x| if matches!(x, OVal::Null) { String::new() } else { js_str(x) }).collect::<Vec<_>>().join(","),
+        OVal::Obj(_) => defaults::text("devswarm_sup.as_js_object").to_string(),
     }
 }
 
@@ -56,12 +64,8 @@ pub fn read_json_dir(dir: &Path) -> R<Vec<Desc>> {
         let Some(stem) = name.strip_suffix(ext) else { continue };
         let Ok(bytes) = std::fs::read(dir.join(&name)) else { continue };
         let Some(body @ OVal::Obj(_)) = OVal::parse(&String::from_utf8_lossy(&bytes)) else { continue };
-        let id = match body.get(defaults::text("devswarm_sup.as_c_id")) {
-            None => stem.to_string(),
-            Some(OVal::Str(s)) => s.clone(),
-            Some(OVal::Num(n)) => crate::checks::jsport::num::to_js_string(*n),
-            Some(_) => return defer("descriptor-id-type"),
-        };
+        // `Object.assign({ id: stem }, d)`: the descriptor's own `id` wins, whatever it is, and readers take `String(d.id)`
+        let id = body.get(defaults::text("devswarm_sup.as_c_id")).map_or_else(|| stem.to_string(), js_str);
         out.push(Desc { id, body });
     }
     Ok(out)
@@ -144,7 +148,7 @@ pub fn plan_marks(home: &Path, snap: &Snap) -> R<MarkPlan> {
     let wdir = dir_of(home, "devswarm_sup.as_dir_workspaces");
     let adir = dir_of(home, "devswarm_sup.as_dir_archived");
     let ext = defaults::text("devswarm_sup.as_json_ext");
-    let uuid = regex::Regex::new(defaults::text("devswarm_sup.as_builder_re")).map_err(|e| ident::Defer(e.to_string()))?;
+    let uuid = regex::Regex::new(defaults::text("devswarm_sup.as_builder_re")).map_err(|e| crate::dssup::failure(e.to_string()))?;
     let mut plan = MarkPlan::default();
     for (name, _) in fsx::read_dir_names(&wdir.to_string_lossy()).unwrap_or_default() {
         let Some(id) = name.strip_suffix(ext) else { continue };
@@ -287,4 +291,131 @@ pub fn plan_retire(home: &Path, snap: &Snap, now: i64) -> R<RetirePlan> {
         plan.ids.push(id.to_string());
     }
     Ok(plan)
+}
+
+/// How retiring one stale marker ended.
+#[derive(Debug, PartialEq)]
+pub enum Retired {
+    /// The workspace is active again and the marker moved to `archived-retired/`.
+    Done,
+    /// The marker went away before the lock was taken: nothing to do.
+    Gone,
+    /// Nothing was changed for this marker (or only the restore landed, which is idempotent): the reason, the marker stays.
+    Left(String),
+    /// A step failed with an error (counted as an error of the pass).
+    Failed(String),
+}
+
+fn retired_dir_checked(home: &Path) -> Result<PathBuf, String> {
+    let dir = dir_of(home, "devswarm_sup.as_dir_retired");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let st = std::fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
+    if !st.is_dir() || st.file_type().is_symlink() {
+        return Err(defaults::text("devswarm_sup.as_msg_retired_dir").to_string());
+    }
+    Ok(dir)
+}
+
+/// Retire one stale marker (`retireStaleArchivedMarkers`, one id): under the id's lock, restore the descriptor and revive the
+/// registry row first (the marker stays until the workspace is verifiably active again), then write the marker's bytes plus a
+/// `retired` record to `archived-retired/<id>.<now>.json` (new file, never overwritten) and only then remove the marker, so the
+/// descriptor is in at least one place after a crash between the two. Nothing is ever deleted that is not copied first.
+pub fn retire_marker(ctx: &crate::dssup::tick::Ctx, id: &str, builder_id: &str) -> Retired {
+    use crate::dssup::recon::{Op, Pre, Unit, UnitEnd, apply, archive, view};
+    let home = ctx.home;
+    let Some(lock) = crate::meshw::idlock::acquire(home, id) else { return Retired::Left(defaults::text("devswarm_sup.as_why_lock_busy").to_string()) };
+    let r = (|| {
+        let marker_rel = view::archived_rel(id);
+        let marker_path = home.join(&marker_rel);
+        let Ok(body) = std::fs::read(&marker_path) else { return Retired::Gone };
+        let env = apply::Env { home, now: ctx.now, st: ctx.st, log_dir: None };
+        // restore first (the same restore `unarchive` runs); the marker moves only after the workspace is verifiably active again
+        let opts = archive::RestoreOpts { keep_marker: true, require_owner_key: None };
+        let plan = match archive::restore_archived_descriptor(home, id, &opts) {
+            Ok(p) => p,
+            Err(d) => return Retired::Left(defaults::render("devswarm_sup.as_why_restore_failed", &[("error", &d.0)])),
+        };
+        if !matches!(plan.result.get("ok"), Some(serde_json::Value::Bool(true))) {
+            let why = plan.result.get("error").and_then(|e| e.as_str()).unwrap_or_default();
+            return Retired::Left(defaults::render("devswarm_sup.as_why_restore_failed", &[("error", &why)]));
+        }
+        for u in &plan.job.units {
+            let unlocked = Unit { label: u.label.clone(), lock: None, ops: u.ops.clone() };
+            match apply::unit(&env, &unlocked, &crate::dssup::recon::Hooks::none()) {
+                UnitEnd::Applied => {}
+                UnitEnd::Deferred(why) => return Retired::Left(why),
+                UnitEnd::Failed(why) => return Retired::Failed(why),
+            }
+        }
+        let dir = match retired_dir_checked(home) {
+            Ok(d) => d,
+            Err(e) => return Retired::Left(e),
+        };
+        let name = format!("{id}.{}{}", ctx.now, defaults::text("devswarm_sup.as_json_ext"));
+        if dir.join(&name).exists() {
+            return Retired::Left(defaults::text("devswarm_sup.as_why_retired_exists").to_string());
+        }
+        let text = String::from_utf8_lossy(&body).into_owned();
+        let mut rec = match OVal::parse(&text) {
+            Some(o @ OVal::Obj(_)) => o,
+            _ => OVal::Obj(vec![(defaults::text("devswarm_sup.as_retired_raw").to_string(), OVal::Str(text.clone()))]),
+        };
+        let s = |t: &str| OVal::Str(t.to_string());
+        let key = |k: &str| defaults::text(k).to_string();
+        rec.set(
+            &key("devswarm_sup.as_retired_field"),
+            OVal::Obj(vec![
+                (key("devswarm_sup.as_retired_at"), OVal::Num(ctx.now as f64)),
+                (key("devswarm_sup.as_retired_by"), s(defaults::text("devswarm_sup.as_retired_by_value"))),
+                (key("devswarm_sup.as_retired_reason"), s(defaults::text("devswarm_sup.as_retired_reason_value"))),
+                (key("devswarm_sup.as_retired_builder"), s(builder_id)),
+                (key("devswarm_sup.as_retired_restored"), OVal::Bool(true)),
+            ]),
+        );
+        let dest_rel = view::ds(&format!("{}/{name}", defaults::text("devswarm_sup.as_dir_retired")));
+        let unit = Unit {
+            label: format!("retire-marker:{id}"),
+            lock: None,
+            ops: vec![
+                Op::Write { rel: dest_rel, bytes: rec.stringify().into_bytes(), pre: Pre::Absent },
+                Op::Unlink { rel: marker_rel, pre: Pre::Digest(view::sha256_hex(&body)) },
+            ],
+        };
+        match apply::unit(&env, &unit, &crate::dssup::recon::Hooks::none()) {
+            UnitEnd::Applied => Retired::Done,
+            UnitEnd::Deferred(why) => Retired::Left(why),
+            UnitEnd::Failed(why) => Retired::Failed(why),
+        }
+    })();
+    lock.release();
+    r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_descriptor_with_an_odd_id_or_worktree_is_read_as_javascript_stringifies_it() {
+        crate::defaults::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("ah-as-plan-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.json"), r#"{"id":{"x":1},"worktreePath":7}"#).unwrap();
+        std::fs::write(dir.join("b.json"), r#"{"id":null,"worktreePath":["p","q"]}"#).unwrap();
+        std::fs::write(dir.join("c.json"), r#"{"id":12,"worktreePath":""}"#).unwrap();
+        std::fs::write(dir.join("d.json"), r#"{"worktreePath":"/w"}"#).unwrap();
+        let mut got: Vec<(String, Option<String>)> = read_json_dir(&dir).unwrap().iter().map(|d| (d.id.clone(), d.worktree().unwrap())).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("12".to_string(), None),
+                ("[object Object]".to_string(), Some("7".to_string())),
+                ("d".to_string(), Some("/w".to_string())),
+                ("null".to_string(), Some("p,q".to_string())),
+            ]
+        );
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
 }

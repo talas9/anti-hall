@@ -29,8 +29,8 @@ working", "write a handover") and the matching skill is picked.
 | `doctor` | "Is anti-hall working?" | Live self-tests on every guard. `--repair` applies safe fixes. |
 | `settings` | "Turn off X", "set auto-handover to 80%" | Shows or changes settings. See [Changing settings](../settings/index.md). |
 | `update` | "Update anti-hall", "is anti-hall up to date" | Updates in place and shows the changelog. See [Update](../start/update.md). |
-| `activate` | First-time setup | Installs the statusline and the model-routing state in one go. |
-| `install-statusline` | "Install the statusline" | Installs the two-line statusline. See [Statusline](statusline.md). |
+| `activate` | First-time setup | Installs the model-routing state; it does not add a Claude `statusLine`. |
+| `install-statusline` | Old statusline muscle memory | Retired no-op. Use `uninstall-statusline` only to clean up older anti-hall `statusLine` installs. See [Statusline](statusline.md). |
 | `system-briefing` | "Brief me on anti-hall", "what does X mean" | An operator guide to the terms, rules, commands and settings, with a live list of what is installed. |
 | `defects` | "File an anti-hall bug", "did they fix my report" | Files and tracks reports about anti-hall itself. |
 | `jev` | "Activate jev", "jev report" | Sets up and reports on the optional Jev classifier. |

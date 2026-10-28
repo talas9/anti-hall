@@ -1,5 +1,6 @@
-//! Running an event's Node hooks the way the host runs them: each `hooks.json` command under the shell, all at once,
-//! with the payload on stdin, stdout and stderr captured, and the entry's own timeout. A hook that runs longer is
+//! The results of an event's hook commands (`hooks.json`). The dispatcher no longer launches any: an entry its built-in check does
+//! not answer ends as a hook that could not run ([`unavailable`]). The launcher itself (each command under the shell, all at once,
+//! with the payload on stdin, stdout and stderr captured, and the entry's own timeout) stays as test infrastructure only. A hook that runs longer is
 //! killed with its whole process group and counts as having said nothing, as the host discards a timed-out hook.
 //!
 //! Every hook ends with a [`Fate`], so the dispatcher can tell "the hook ran and said nothing" (an allow) from "the hook
@@ -8,11 +9,17 @@ use super::combine::{self, HookResult};
 use super::table::Entry;
 use crate::defaults;
 use crate::telemetry::event::Outcome;
+#[cfg(test)]
 use std::fs::File;
+#[cfg(test)]
 use std::io::{Read, Write};
+#[cfg(test)]
 use std::os::unix::fs::FileExt;
+#[cfg(test)]
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
+#[cfg(test)]
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -100,18 +107,29 @@ impl Running {
     }
 }
 
+#[cfg(test)]
 fn reader<R: Read + Send + 'static>(r: Option<R>) -> Option<Capture> {
     let mut r = r?;
     let cap = Capture { buf: Arc::new(Mutex::new(Vec::new())), done: Arc::new(AtomicBool::new(false)), failed: Arc::new(AtomicBool::new(false)) };
     let (buf, done, failed) = (cap.buf.clone(), cap.done.clone(), cap.failed.clone());
+    let max = defaults::num("mem.proc_output_max_bytes") as usize;
     std::thread::spawn(move || {
         let mut chunk = vec![0u8; defaults::num("io.small_chunk_bytes") as usize];
+        let mut cut = false;
         loop {
             match r.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
+                    // keep at most `mem.proc_output_max_bytes`; the rest is read and dropped so the child never blocks on a full pipe
                     if let Ok(mut b) = buf.lock() {
-                        b.extend_from_slice(&chunk[..n]);
+                        let room = max.saturating_sub(b.len());
+                        if n > room && !cut {
+                            cut = true;
+                            b.extend_from_slice(chunk.get(..room).unwrap_or_default());
+                            b.extend_from_slice(defaults::text("mem.proc_output_marker").as_bytes());
+                        } else if !cut {
+                            b.extend_from_slice(chunk.get(..n).unwrap_or_default());
+                        }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -126,6 +144,7 @@ fn reader<R: Read + Send + 'static>(r: Option<R>) -> Option<Capture> {
     Some(cap)
 }
 
+#[cfg(test)]
 enum Input {
     Bytes(Vec<u8>),
     File(File),
@@ -138,18 +157,37 @@ impl Running {
     }
 }
 
+/// A hook that cannot be started because the dispatcher no longer launches hook commands: it has no child and ends with
+/// [`Fate::Spawn`], so a guard event treats it as a hook that could not run (no decision) and the event's configured failure
+/// mode answers. Nothing is spawned and no process is counted.
+pub fn unavailable(entry: &Entry) -> Running {
+    Running {
+        id: entry.id.clone(),
+        event: String::new(),
+        child: None,
+        spawn_err: Some(std::io::Error::other(defaults::text("dispatch.msg_hook_not_launched"))),
+        out: None,
+        err: None,
+        timeout: Duration::ZERO,
+        started: Instant::now(),
+    }
+}
+
+#[cfg(test)]
 /// Start `entry`'s command with in-memory `payload` on stdin. A command that cannot start is a hook with no child (its
 /// fate is [`Fate::Spawn`]; the host's "could not run" is no decision either).
 pub fn start(entry: &Entry, payload: &[u8]) -> Running {
     start_with_input(entry, Ok(Input::Bytes(payload.to_vec())))
 }
 
+#[cfg(test)]
 /// Start `entry`'s command with stdin copied from `payload`. Each child gets an independent descriptor and the feeder
 /// uses positional reads, so concurrent hooks never share or race a file offset.
 pub fn start_file(entry: &Entry, payload: &File) -> Running {
     start_with_input(entry, payload.try_clone().map(Input::File))
 }
 
+#[cfg(test)]
 fn start_with_input(entry: &Entry, input: std::io::Result<Input>) -> Running {
     let shell = defaults::list("dispatch.shell");
     let mut spawn_err = None;
@@ -168,7 +206,10 @@ fn start_with_input(entry: &Entry, input: std::io::Result<Input>) -> Running {
             .process_group(0)
             .spawn()
         {
-            Ok(child) => Some((child, input)),
+            Ok(child) => {
+                crate::obs::counters::handback(crate::obs::counters::Handback::NodeLaunch, &format!("dispatch:hook:{}", entry.id));
+                Some((child, input))
+            }
             Err(e) => {
                 spawn_err = Some(e);
                 None
@@ -205,6 +246,7 @@ fn start_with_input(entry: &Entry, input: std::io::Result<Input>) -> Running {
     }
 }
 
+#[cfg(test)]
 fn write_stdin(stdin: &mut impl Write, data: &[u8]) -> std::io::Result<()> {
     match stdin.write_all(data) {
         Ok(()) => Ok(()),
@@ -213,6 +255,7 @@ fn write_stdin(stdin: &mut impl Write, data: &[u8]) -> std::io::Result<()> {
     }
 }
 
+#[cfg(test)]
 fn feed_file(file: &File, stdin: &mut impl Write) -> std::io::Result<()> {
     let len = file.metadata()?.len();
     let mut off = 0;
@@ -225,7 +268,7 @@ fn feed_file(file: &File, stdin: &mut impl Write) -> std::io::Result<()> {
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
-        match stdin.write_all(&buf[..n]) {
+        match stdin.write_all(buf.get(..n).unwrap_or_default()) {
             Ok(()) => off += n as u64,
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
             Err(e) => return Err(e),

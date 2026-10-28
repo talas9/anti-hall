@@ -26,22 +26,30 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
+0. Install the thin client and the engine if `~/.anti-hall/ah-engine/bin/ah-hook` is missing (nothing is downloaded on its own:
+   `engine.bootstrap` defaults to false; ask the user first). The plugin's one shell file does it, checked against the sha256
+   pinned in `ah-engine.lock`:
+
+```bash
+test -x "$HOME/.anti-hall/ah-engine/bin/ah-hook" || sh "$ANTI_HALL_ROOT/hooks/install.sh" --download -v
+```
+
 1. Install project-local Codex hooks:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex
 ```
 
 2. For global Codex hooks instead:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex --global
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex --global
 ```
 
 3. Verify:
 
 ```bash
-node "$ANTI_HALL_ROOT/hooks/doctor.js"
+~/.anti-hall/ah-engine/bin/ah-engine doctor
 codex features list
 test -f .codex/hooks.json && sed -n '1,220p' .codex/hooks.json
 ```
@@ -49,7 +57,7 @@ test -f .codex/hooks.json && sed -n '1,220p' .codex/hooks.json
 4. Write sentinel:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/scripts/write-activation-sentinel.js"
+~/.anti-hall/ah-engine/bin/ah-engine codex-activate
 ```
 
 Codex limitations after activation:

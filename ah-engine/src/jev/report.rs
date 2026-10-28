@@ -325,6 +325,58 @@ fn s(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+/// What the report is made of, read into `input` (the logs with every retained generation, the rollups, the labels, `jev.json`,
+/// the budget settings and state). No credit balance and no modes yet.
+fn read_data(input: &mut Value, base: &Path, home_dir: &Path) {
+    let path = |key: &str| base.join(defaults::text(key));
+    let logs = |key: &str| texts(&retained(&path(key)));
+    input["assist"] = json!(texts(&retained(&base.join(defaults::text("jev.log_file")))));
+    input["triage"] = json!(logs("jevrep.triage_log"));
+    input["judge"] = json!(logs("jevrep.judge_log"));
+    input["supervision"] = json!(logs("jevrep.supervision_log"));
+    input["rollups"] = json!(rollups(base));
+    input["labels"] = json!(read_one(&path("jevrep.labels_log")).into_iter().collect::<Vec<_>>());
+    input["jevJson"] = json!(read_one(&base.join(defaults::text("jev.legacy_file"))));
+    let st = settings_for(home_dir);
+    input["budget"] = json!({
+        "mode": if st.budget_watch { defaults::text("jevrep.budget_watch") } else { defaults::text("jevrep.budget_unlimited") },
+        "usdPerDay": st.budget_usd_per_day, "usdPerWeek": st.budget_usd_per_week, "minCreditUsd": st.budget_min_credit_usd,
+    });
+    input["modes"] = Value::Null;
+    input["credit"] = json!(defaults::text("jevrep.credit_skipped"));
+    input["budgetState"] = json!(read_one(&base.join(defaults::text("jev.state_dir")).join(defaults::text("jev.budget_file"))));
+}
+
+/// The weekly scorecard of `home` (the 7-day verdict of every integration with its current mode), as the `--weekly --json` report
+/// builds it, or `None` when it could not be built (the rules script is off or failed, or its output is not a scorecard). Read-only.
+/// The rules script runs on a thread of its own: the calling check's thread already holds the per-thread script pool.
+pub(crate) fn weekly_scorecard(home: &Path) -> Option<Value> {
+    let argv: Vec<&str> = defaults::list("jevrep.weekly_argv");
+    std::thread::scope(|sc| {
+        sc.spawn(|| {
+            let base = base_of(home);
+            let mut input = json!({"argv": argv, "now": now_ms(), "cfg": cfg()});
+            read_data(&mut input, &base, home);
+            let first = rules("jevReportRun", &input)?;
+            let mut modes = serde_json::Map::new();
+            let st = weekly_settings(home, None);
+            for id in first.get("needModes").and_then(Value::as_array)? {
+                let name = match id {
+                    Value::String(n) => n.clone(),
+                    other => js_join_text(other),
+                };
+                modes.insert(name.clone(), json!(st.mode(&name, false).as_str()));
+            }
+            input["modes"] = Value::Object(modes);
+            let res = rules("jevReportRun", &input)?;
+            serde_json::from_str::<Value>(res.get("out")?.as_str()?).ok().filter(|v| v.get("integrations").is_some_and(Value::is_array))
+        })
+        .join()
+        .ok()
+        .flatten()
+    })
+}
+
 /// `jev-report [...]`
 pub fn run_cmd(p: &Parsed) -> i32 {
     run_with(p, &HttpTransport::new())
@@ -362,22 +414,7 @@ pub(crate) fn run_with(p: &Parsed, transport: &dyn Transport) -> i32 {
         _ => {
             let weekly = plan.get("weekly").and_then(Value::as_bool).unwrap_or(false);
             let grouped = plan.get("grouped").and_then(Value::as_bool).unwrap_or(false);
-            let logs = |key: &str| texts(&retained(&path(key)));
-            input["assist"] = json!(texts(&retained(&base.join(defaults::text("jev.log_file")))));
-            input["triage"] = json!(logs("jevrep.triage_log"));
-            input["judge"] = json!(logs("jevrep.judge_log"));
-            input["supervision"] = json!(logs("jevrep.supervision_log"));
-            input["rollups"] = json!(rollups(&base));
-            input["labels"] = json!(read_one(&path("jevrep.labels_log")).into_iter().collect::<Vec<_>>());
-            input["jevJson"] = json!(read_one(&base.join(defaults::text("jev.legacy_file"))));
-            let st = settings_for(&home_dir);
-            input["budget"] = json!({
-                "mode": if st.budget_watch { defaults::text("jevrep.budget_watch") } else { defaults::text("jevrep.budget_unlimited") },
-                "usdPerDay": st.budget_usd_per_day, "usdPerWeek": st.budget_usd_per_week, "minCreditUsd": st.budget_min_credit_usd,
-            });
-            input["modes"] = Value::Null;
-            input["credit"] = json!(defaults::text("jevrep.credit_skipped"));
-            input["budgetState"] = json!(read_one(&base.join(defaults::text("jev.state_dir")).join(defaults::text("jev.budget_file"))));
+            read_data(&mut input, &base, &home_dir);
             let mut cache_entry = None;
             if !weekly && !grouped {
                 let (text, entry) = match credit_text(&real_home, now, transport) {

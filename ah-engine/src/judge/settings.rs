@@ -1,5 +1,5 @@
 //! The settings the judge reads: the model alias, the backend, the per-integration backend switches and whether an
-//! Anthropic key is visible. Each is read with the same precedence chain as the Node hooks (`hooks/lib/settings.js`).
+//! Anthropic key is visible. Each is read with the same precedence chain as the Node hooks.
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::settings::{get_bool, get_enum, get_string};
 use crate::checks::guardkit::text::js_trim;

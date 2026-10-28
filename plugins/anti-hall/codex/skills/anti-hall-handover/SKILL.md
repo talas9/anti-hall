@@ -13,15 +13,17 @@ Codex-native mirror of the Claude `handover` skill — same artifact contract
 and templates; only platform phrasing differs (no `/compact` references,
 `AGENTS.md` instead of `CLAUDE.md`).
 
-**Triggered automatically, too.** `hooks/auto-handover.js` (UserPromptSubmit, shared
+**Triggered automatically, too.** `auto-handover` (UserPromptSubmit, shared
 verbatim with the Claude plugin) watches the main agent's estimated context usage and, at
-85% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
+93% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
 `ANTIHALL_AUTO_HANDOVER_PCT`; `anti-hall-settings` skill to change it), injects
 a directive to run THIS skill's contract yourself, right now, without asking the user
 first — same self-write mandate as below. A long autonomous turn that never passes a
-user prompt gets the same directive once at a `Stop` (`hooks/auto-handover-pause-nag.js`,
+user prompt gets the same directive once at a `Stop` (`auto-handover-pause-nag`,
 shared latch, never while `stop_hook_active`). If you're reading this skill because that
 directive fired, follow it exactly as written; nothing else changes.
+
+**Recommended threshold.** Set the handover to fire 5% of the window before that model's auto-compact: `autoHandover.pct` = 93 for 200k models (Claude auto-compact at 98%), and for 1M models `autoHandover.maxTokens` = 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. These are the shipped defaults (93% and 500000 tokens); see the `anti-hall-settings` skill, "Recommended setup". Codex: leave `model_auto_compact_token_limit` alone; if you set it, hand over 5% of the window before it.
 
 Prepares a session handover: perishable job state (goal, current position,
 next executable step, decisions, dead ends, verification status) written to
@@ -123,7 +125,7 @@ consolidated schema):
    written, one of `auto-threshold` / `user-request` / `restart-pending` /
    `task-boundary`, plus the current context % if known. Source the % from a
    statusline if shown, or from `~/.anti-hall/auto-handover/<tag>.json`
-   (`hooks/lib/auto-handover-state.js`'s per-session latch, shared verbatim
+   (`auto-handover-state`'s per-session latch, shared verbatim
    with the Claude plugin — `firedPct` is the % it crossed the threshold at;
    `<tag>` is the session id from "Session id" below). Use `auto-threshold`
    ONLY when that file's `fired` is `true` for this session, or the
@@ -230,6 +232,8 @@ Trigger: <auto-threshold|user-request|restart-pending|task-boundary> · context:
 - [ ] `git status` — expect: <what>
 - [ ] `pwd` — expect: <path>
 - [ ] re-read `AGENTS.md` — rules may have been dropped by a context reset
+- [ ] rebuild the session task list from `.anti-hall/tasks/INDEX.md` Active rows only
+- [ ] MEMORY.md consolidated (within `handover.memoryIndexMaxLines` / `handover.memoryIndexMaxChars`)
 - [ ] `<smoke/test command>` — expect: <result>
 - [ ] read-back to the user: goal, next action, active session rules — in your own words, before any new work
 
@@ -294,13 +298,21 @@ as `.anti-hall/progress/INDEX.md`:
 1. Determine session id (a runtime id if available, or sha1-of-transcript-path
    fallback, or a stable slug) and today's date.
 2. Compute seq = (existing `HANDOVER*.md` count in this session's dir) + 1.
-3. Write/update the 5 files: `HANDOVER.md` (or `HANDOVER-N.md`), `state.md`,
+3. **Consolidate the task list and the MEMORY.md index** (before writing files):
+   - Task list, open tasks only: delete completed tasks from the session task list. Group duplicates and related items into one task each; keep at most `handover.taskListBudget` active tasks (default 12).
+   - Subjects are `T-<n> [P] <short title>`, at most `handover.taskSubjectMax` characters (default 60). `n` is the PRIORITY RANK: the smaller the number, the higher the priority. Renumber after every change.
+   - Details live in `.anti-hall/tasks/INDEX.md` (one line per active task, plus a Backlog section for the rest) and in `.anti-hall/tasks/T-<n>/` folders only for local material. Never copy a GitHub issue's content: the issue is the spec. Nothing is dropped: a task removed from the session list moves to the INDEX Backlog.
+   - Verify "done" or "obsolete" against real state (GitHub issue/PR state, logs, files) before dropping a task. Never delete data; archive instead.
+   - The handover's Open items and the state.md task table are generated from the INDEX Active section, not from a dump of the session list.
+   - MEMORY.md index: group related one-line entries into topic sections; each line at most ~130 characters; keep every memory file reachable from the index (one line may link several related files: `[a](a.md) · [b](b.md) — shared hook`). Never delete memory files: change structure only. Flag stale or contradicted memories in the handover for owner OK instead of deleting them. Stay within `handover.memoryIndexMaxLines` (default 100) and `handover.memoryIndexMaxChars` (default 12000).
+   - The terminal "ready to restart" declaration is refused while the task list or the memory index is over budget, or while the active list still contains completed tasks.
+4. Write/update the 5 files: `HANDOVER.md` (or `HANDOVER-N.md`), `state.md`,
    `decisions.md`, `trials.md`, `knowledge.md` (seq N>1: apply the carry-forward
    rule above first). Detail files are append-only
    across a session's multiple handovers (seq 2 appends to seq 1's `state.md`
    etc., doesn't overwrite); `HANDOVER*.md` itself is a fresh file per seq.
-4. Append the `INDEX.md` row (create `INDEX.md` if it doesn't exist yet).
-5. Report to the user EVERY path written this call — the handover directory,
+5. Append the `INDEX.md` row (create `INDEX.md` if it doesn't exist yet).
+6. Report to the user EVERY path written this call — the handover directory,
    each of the 5 files (`HANDOVER*.md`, `state.md`, `decisions.md`, `trials.md`,
    `knowledge.md`), and the exact `INDEX.md` row appended — plus a one-line
    summary of what was captured. Don't summarize the paths away; list them.
@@ -323,7 +335,7 @@ continuation (official Codex hooks reference, learn.chatgpt.com/docs/hooks).
 `handover-resume.js` is registered on `SessionStart` with no matcher, so it
 fires there too.
 
-**PreCompact safety net.** `hooks/precompact-snapshot.js` (registered on Codex's
+**PreCompact safety net.** `precompact-snapshot` (registered on Codex's
 own `PreCompact` event) writes `PRECOMPACT-<n>.md` into this session's handover
 dir right before every compaction: `pwd`, git branch/HEAD/dirty files, a
 task-list snapshot when the transcript has one, the last 10 user messages
@@ -331,6 +343,8 @@ verbatim (Codex rollout `user_message` events), and a pointer to the newest
 `HANDOVER*.md`. Mechanical, never a substitute for this skill, and it never
 stops compaction (no stdout, exit 0). The resume hook names it on the next
 `SessionStart`.
+
+Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 **Write proactively** — at task boundaries or when a reset is likely, not only
 when asked and not at the absolute context-window limit (reset mechanisms can
@@ -376,7 +390,7 @@ final message depends on the `Trigger:` line you recorded above:
 - Never say "safe for a reset" (the 🟢 line) unless the threshold fired or
   context is genuinely high — that line reads as a stop-now signal, and
   a proactive save below threshold is not one (field incident: a session below
-  the 85% auto threshold invoked this skill because a restart was mentioned,
+  the auto threshold invoked this skill because a restart was mentioned,
   and the old unconditional "✅ HANDOVER COMPLETE — SAFE FOR CONTEXT
   COMPACTION/RESET NOW" wording was read as a premature signal to stop).
 

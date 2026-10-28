@@ -9,7 +9,7 @@
 //! The engine's Jev resolver (`jev::settings`, `jev::credentials`) answers every "what would the hooks use" question, so
 //! `status` cannot show a value the hooks are not using. `test` (a real gateway call per transport) lives in `jev_setup/test.rs`
 //! and the shadow-review verbs `review-due`, `reviewed` and `snooze` in `jev_setup/review.rs`; every verb is answered here.
-mod review;
+pub(crate) mod review;
 mod test;
 
 use super::jsfmt::{keys, pretty, to_fixed2};
@@ -222,6 +222,17 @@ fn write_json_atomic(file: &Path, value: J) -> Result<(), SetupError> {
     crate::atomic::write(file, body).map_err(|e| SetupError::Io { what: what("setup.what_write", &file.display()), source: e })
 }
 
+/// [`write_json_atomic`], except that a file which already holds exactly the bytes to write is left alone (no temporary file, no
+/// disk sync, same inode and modification time).
+fn write_json_atomic_if_changed(file: &Path, value: J) -> Result<(), SetupError> {
+    let mut body = pretty(&normalised(value));
+    body.push('\n');
+    if std::fs::read(file).is_ok_and(|on_disk| on_disk == body.as_bytes()) {
+        return Ok(());
+    }
+    crate::atomic::write(file, body).map_err(|e| SetupError::Io { what: what("setup.what_write", &file.display()), source: e })
+}
+
 /// `writeJevJsonMerged`: read-modify-write of the legacy `jev.json`, atomic, keeping every field the mutator leaves.
 fn write_jev_json(home: &Path, mutate: impl FnOnce(&mut Vec<(String, J)>)) -> Result<(), SetupError> {
     let path = jev_json_path(home);
@@ -295,7 +306,7 @@ fn lookup_with_notes(s: &JevSettings, vendor: Vendor) -> (bool, Option<String>, 
         }
     }
     let mut rejected = None;
-    if s.allow_legacy_key_read && s.env().get(legacy_var(vendor)).is_none_or(|v| js_trim(v).is_empty()) {
+    if s.allow_legacy_key_read {
         let file = key_file_path(s, vendor);
         if let Err(why) = read_key_file(&file, s.home()) {
             rejected = Some(node_reason(&why));
@@ -308,13 +319,6 @@ fn own_var(v: Vendor) -> &'static str {
     match v {
         Vendor::Vercel => defaults::text("env.jev_key_vercel"),
         Vendor::Typesafe => defaults::text("env.jev_key_typesafe"),
-    }
-}
-
-fn legacy_var(v: Vendor) -> &'static str {
-    match v {
-        Vendor::Vercel => defaults::text("env.jev_legacy_key_vercel"),
-        Vendor::Typesafe => defaults::text("env.jev_legacy_key_typesafe"),
     }
 }
 
@@ -707,9 +711,8 @@ fn cmd_status(cx: &mut Ctx) -> Result<(), SetupError> {
     }
     // a legacy key that exists but is not read
     if !s.allow_legacy_key_read {
-        let env_present = cx.env.get(legacy_var(transport)).is_some_and(|v| !v.is_empty());
         let file_present = std::fs::metadata(key_file_path(&s, transport)).is_ok_and(|m| m.is_file() && m.len() > 0);
-        if env_present || file_present {
+        if file_present {
             out(&defaults::render("setup.fmt_status_notice", &[("text", &defaults::text("setup.msg_migration_notice"))]))?;
         }
     }

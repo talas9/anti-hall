@@ -50,7 +50,7 @@ function decide(p) {
   if (typeof taskId !== 'string' || !taskId || !tp) return 'allow';
   var scan = ah.transcript.agentScan(hookProc.open(p, tp), ah.cfgNum('stale_note.scan_bytes'), true);
   if (scan === null) return 'allow';
-  if (scan.unsure) return 'defer'; // the transcript cannot be read exactly as JavaScript would: Node decides
+  if (scan.unsure) ah.unable('stale-agent-stop-note:scan_unsure'); // lines only JavaScript reads exactly are skipped by the scan; the note is built from the rest
   var t = sanNote(scan, taskId, ah.clock.now());
   return t === null ? 'allow' : { advisory: text.advisoryJson('PreToolUse', t) };
 }

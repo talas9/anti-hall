@@ -1,4 +1,4 @@
-//! The machine around the engine: HOME, PATH, the tools the hook wrapper needs, Node (the fallback), git and gh, WSL, the log and
+//! The machine around the engine: HOME, PATH, the tools the hook wrapper needs, git and gh, WSL, the log and
 //! telemetry files, and the optional Node witness kit. Every probe of another program is bounded ([`crate::proc::run`]).
 use super::Doc;
 use crate::defaults;
@@ -42,11 +42,6 @@ fn probe(program: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// The major version of a `node --version` line such as `v22.3.0`.
-pub fn node_major(v: &str) -> Option<u64> {
-    v.trim().trim_start_matches('v').split('.').next()?.parse().ok()
-}
-
 /// PATH findings: empty, relative or empty entries, missing system directories.
 pub fn path_findings(path: Option<&str>) -> Vec<(bool, String)> {
     let Some(p) = path.filter(|p| !p.is_empty()) else {
@@ -67,8 +62,8 @@ pub fn path_findings(path: Option<&str>) -> Vec<(bool, String)> {
     out
 }
 
-/// EV-01..11, ND-01..05: HOME, PATH, tools, Node, git, gh, WSL. Returns whether Node can run.
-pub fn environment_section(doc: &mut Doc, ctx: &Ctx, engine_usable: bool, uid: u32) -> bool {
+/// EV-01..11, ND-04: HOME, PATH, tools, git, gh, WSL, and the engine itself.
+pub fn environment_section(doc: &mut Doc, ctx: &Ctx, engine_usable: bool, uid: u32) {
     doc.head(defaults::text("doctor_msg.head_toolchain"));
     let home = &ctx.home;
     if !Path::new(home).is_absolute() {
@@ -117,25 +112,10 @@ pub fn environment_section(doc: &mut Doc, ctx: &Ctx, engine_usable: bool, uid: u
     if which("gh", path).is_none() {
         doc.infol(defaults::text("doctor_msg.gh_missing").to_string());
     }
-    // Node is optional: the engine runs the hooks. A missing, broken or old Node is a warning (only the checks the engine still
-    // hands to their Node twin lose it); the failure is a missing working engine with no usable Node behind it.
-    let min = defaults::num("doctor.node_min_major");
-    let mut node_ok = false;
-    match which(defaults::text("doctor.node_default"), path) {
-        None => doc.warnl(defaults::render("doctor_msg.node_missing", &[("min", &min)])),
-        Some(n) => match probe(&n, &[defaults::text("doctor.node_version_flag")]) {
-            Err(why) => doc.warnl(defaults::render("doctor_msg.node_broken", &[("why", &why)])),
-            Ok(v) if node_major(&v).is_some_and(|m| m >= min) => {
-                node_ok = true;
-                doc.infol(defaults::render("doctor_msg.node_ok", &[("v", &v), ("min", &min)]));
-            }
-            Ok(v) => doc.warnl(defaults::render("doctor_msg.node_old", &[("v", &v), ("min", &min)])),
-        },
+    // the hooks run in the engine: without a working one nothing runs
+    if !engine_usable {
+        doc.bad(defaults::text("doctor_msg.no_engine").to_string());
     }
-    if !engine_usable && !node_ok {
-        doc.bad(defaults::text("doctor_msg.no_engine_no_node").to_string());
-    }
-    node_ok
 }
 
 /// The cached verdict on whether this Claude Code version has a usable `doctor` subcommand: `<version> <yes|no>`.
@@ -351,13 +331,6 @@ fn collect_commands(v: &serde_json::Value, out: &mut BTreeMap<String, ()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn node_versions_parse() {
-        assert_eq!(node_major("v22.3.0"), Some(22));
-        assert_eq!(node_major("v8.17.0"), Some(8));
-        assert_eq!(node_major("garbage"), None);
-    }
 
     #[test]
     fn path_oddities() {

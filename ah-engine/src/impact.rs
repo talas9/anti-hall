@@ -60,13 +60,16 @@ pub fn summary(store: &dyn Store, filter: &ImpactFilter, recent: usize) -> Value
         "recent": events,
         "savings": {
             "model_routing": {
-                "label": "estimate",
+                "label": defaults::text("impact.estimate_label"),
+                "how_counted": defaults::text("impact.routing_how_counted"),
                 "status": defaults::text("msg.impact_no_routing"),
                 "estimated_usd": null,
                 "method": defaults::text("impact.savings_method"),
                 "price_table": {"date": table.str_field("date"), "source": table.str_field("source")},
             },
             "measured_benchmarks": [],
+            "measured_benchmarks_label": defaults::text("impact.measured_label"),
+            "measured_benchmarks_how_counted": defaults::text("impact.benchmarks_how_counted"),
         },
     })
 }

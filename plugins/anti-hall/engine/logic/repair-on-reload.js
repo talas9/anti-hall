@@ -36,28 +36,26 @@ function inCooldown(version) {
 }
 
 function decide(p, opts) {
-  if (!gates.homeKnown()) return 'defer';
-  return gates.run(function () {
-    var root = gates.pluginRoot(opts);
-    if (gates.judgeChild()) return 'allow';
-    var on = gates.setting('repair_reload.setting', undefined, root);
-    if (on === false || on === 'off') return 'allow';
-    if (gates.isObject(p) && ah.cfg('session_gates.agent_key_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; })) return 'allow';
-    if (ah.settings.skipped(ah.cfg('repair_reload.guard_name'))) return 'allow';
-    if (root === '') return 'defer';
-    var raw = ah.fs.readText(root + '/' + ah.cfg('guardkit.plugin_manifest')), manifest = null;
-    if (raw !== null) { try { manifest = JSON.parse(raw); } catch (e) { manifest = null; } }
-    var version = gates.isObject(manifest) && typeof manifest.version === 'string' && manifest.version !== '' ? manifest.version : null;
-    if (version === null) return 'allow';
-    // A version that is not a plain three-part one is compared by Node with NaN arithmetic; leave it to Node.
-    var running = version.trim() === version ? triple(version) : null;
-    if (running === null) return 'defer';
-    if (!repairPending(running)) return 'allow';
-    if (inCooldown(version)) return 'allow';
-    // Past every gate the Node hook took `repair-on-reload.lock` and started `doctor.js --repair --migrations-only` detached.
-    // The engine asks its refresh job instead (probe `repair`): the job re-checks the cooldown, takes the same lock, runs the
-    // engine's own migrations-only repair bounded and stamps the cooldown once it started. Silent, as Node.
-    sess.requestRefresh('repair', { version: version, pluginRoot: root });
-    return 'allow';
-  });
+  if (!gates.homeKnown()) { ah.unable('repair-on-reload:no_home', 'abandoned'); return 'allow'; } // no absolute HOME: no marker to read
+  var root = gates.pluginRoot(opts);
+  if (gates.judgeChild()) return 'allow';
+  var on = gates.setting('repair_reload.setting', undefined, root);
+  if (on === false || on === 'off') return 'allow';
+  if (gates.isObject(p) && ah.cfg('session_gates.agent_key_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; })) return 'allow';
+  if (ah.settings.skipped(ah.cfg('repair_reload.guard_name'))) return 'allow';
+  if (root === '') { ah.unable('repair-on-reload:no_plugin_root', 'abandoned'); return 'allow'; } // no plugin root: no manifest to read, no repair to ask for
+  var raw = ah.fs.readText(root + '/' + ah.cfg('guardkit.plugin_manifest')), manifest = null;
+  if (raw !== null) { try { manifest = JSON.parse(raw); } catch (e) { manifest = null; } }
+  var version = gates.isObject(manifest) && typeof manifest.version === 'string' && manifest.version !== '' ? manifest.version : null;
+  if (version === null) return 'allow';
+  // A version that is not a plain three-part one is compared by Node with NaN arithmetic; no repair is asked for (counted).
+  var running = version.trim() === version ? triple(version) : null;
+  if (running === null) { ah.unable('repair-on-reload:version_form', 'abandoned'); return 'allow'; } // not a plain three-part version: no repair is asked for
+  if (!repairPending(running)) return 'allow';
+  if (inCooldown(version)) return 'allow';
+  // Past every gate the Node hook took `repair-on-reload.lock` and started `doctor.js --repair --migrations-only` detached.
+  // The engine asks its refresh job instead (probe `repair`): the job re-checks the cooldown, takes the same lock, runs the
+  // engine's own migrations-only repair bounded and stamps the cooldown once it started. Silent, as Node.
+  sess.requestRefresh('repair', { version: version, pluginRoot: root });
+  return 'allow';
 }

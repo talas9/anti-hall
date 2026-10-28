@@ -1,4 +1,6 @@
 #![allow(
+    clippy::panic,
+    clippy::unreachable,
     dead_code,
     clippy::type_complexity,
     clippy::collapsible_if,
@@ -27,10 +29,6 @@ use std::process::Command;
 
 fn have(bin: &str) -> bool {
     Command::new(bin).arg("--version").output().is_ok_and(|o| o.status.success())
-}
-
-fn node_ready() -> bool {
-    have("node") && have("git")
 }
 
 struct Fix {
@@ -190,144 +188,8 @@ fn refs(v: &[(String, String)]) -> Vec<(&str, &str)> {
     v.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect()
 }
 
-#[test]
-fn every_stage_ends_in_the_same_state_in_engine_mode_as_in_node_mode() {
-    if !node_ready() {
-        return;
-    }
-    let mut engine_items = 0;
-    for stage in 0..4 {
-        let node_home = fix(&format!("e2e-node-{stage}"));
-        let eng_home = fix(&format!("e2e-eng-{stage}")).engine();
-        // twin repositories must have the same paths in both homes for the snapshots to compare, so seed with the SAME relative layout
-        // and compare after replacing each home's own path
-        let (a, b) = (two_repos(&node_home, 2), two_repos(&eng_home, 2));
-        seed(&node_home, stage, &refs(&a));
-        seed(&eng_home, stage, &refs(&b));
-        let runner = System::configured();
-        let nrec = ah_engine::dssup::deferred::duty(&node_home.ctx(), &runner);
-        let erec = ah_engine::dssup::deferred::duty(&eng_home.ctx(), &runner);
-        assert!(nrec.get("engine").is_none(), "node mode: {nrec}");
-        let items = erec["engine"]["items"].as_array().unwrap_or_else(|| panic!("engine mode ran no item: {erec}"));
-        assert!(!items.is_empty(), "{erec}");
-        engine_items += items.iter().filter(|i| i["by"] == "engine").count();
-        // same final state
-        let norm_home = |f: &Fix, repos: &[(String, String)]| {
-            let own = f.home.to_string_lossy().into_owned();
-            f.snapshot()
-                .into_iter()
-                .map(|(k, v)| (k.replace(&own, "H"), v.replace(&own, "H")))
-                .map(|(k, v)| {
-                    let mut v = v;
-                    for (i, (key, wt)) in repos.iter().enumerate() {
-                        v = v.replace(wt.as_str(), &format!("WT{i}")).replace(key.as_str(), &format!("K{i}"));
-                    }
-                    (k, v)
-                })
-                .collect::<BTreeMap<_, _>>()
-        };
-        let (mut ns, mut es) = (norm_home(&node_home, &a), norm_home(&eng_home, &b));
-        // the stores are named by their key, which differs between the two homes
-        let rename = |m: &mut BTreeMap<String, String>, repos: &[(String, String)]| {
-            *m = std::mem::take(m)
-                .into_iter()
-                .map(|(mut k, v)| {
-                    for (i, (key, _)) in repos.iter().enumerate() {
-                        k = k.replace(key.as_str(), &format!("K{i}"));
-                    }
-                    (k, v)
-                })
-                .collect();
-        };
-        rename(&mut ns, &a);
-        rename(&mut es, &b);
-        assert_eq!(ns.keys().collect::<Vec<_>>(), es.keys().collect::<Vec<_>>(), "stage {}: the same files", STAGES[stage]);
-        for (k, v) in &ns {
-            assert_eq!(v, &es[k], "stage {}: {k} differs between Node mode and engine mode", STAGES[stage]);
-        }
-        // the result Node's stage function returned and the engine's say the same
-        let (nr, er) = (&nrec["detail"]["result"], &erec["detail"]["result"]);
-        for field in ["attempted", "errors", "budgetExhausted"] {
-            assert_eq!(nr.get(field), er.get(field), "stage {} result.{field}\nnode:   {nr}\nengine: {er}", STAGES[stage]);
-        }
-        println!("PARITY S8.{} files={} engine_items={}", STAGES[stage], ns.len(), items.iter().filter(|i| i["by"] == "engine").count());
-    }
-    assert!(engine_items >= 4, "the engine did items itself ({engine_items})");
-}
-
 fn marker(f: &Fix) -> OVal {
     OVal::parse(&f.read(".anti-hall/update-sweep-state.json").unwrap()).unwrap()
-}
-
-#[test]
-fn the_marker_is_written_like_nodes_with_a_resume_list_and_then_a_completed_stamp() {
-    if !node_ready() {
-        return;
-    }
-    let mut f = fix("marker").engine();
-    let repos = two_repos(&f, 2);
-    seed(&f, 3, &refs(&repos));
-    // a budget of zero stops after the first item (Node: `i > 0 && elapsed >= budget`)
-    f.st.env.insert("ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS".into(), "0".into());
-    let r = System::configured();
-    let rec = ah_engine::dssup::deferred::duty(&f.ctx(), &r);
-    let res = &rec["detail"]["result"];
-    assert_eq!((res["budgetExhausted"].as_bool(), res["pending"].as_u64()), (Some(true), Some(1)), "{rec}");
-    let m = marker(&f);
-    let e = m.get("healRegistry").unwrap();
-    assert_eq!(
-        e.stringify(),
-        format!("{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[\"{}\"],\"lastCompletedHash\":\"{}\",\"completedVersion\":null}}", repos[1].0, repos[0].0)
-    );
-    // the next tick (rotation back on the stage) resumes the list and stamps the version
-    f.put(&f.ds("deferred-sweep-state.json"), "{\"nextStageIndex\":3}");
-    f.st.env.remove("ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS");
-    let rec = ah_engine::dssup::deferred::duty(&f.ctx(), &r);
-    assert_eq!(rec["detail"]["result"]["budgetExhausted"], false, "{rec}");
-    let e = marker(&f);
-    let e = e.get("healRegistry").unwrap();
-    assert!(matches!(e.get("completedVersion"), Some(OVal::Str(v)) if v == "9.9.9"), "{}", e.stringify());
-    assert!(matches!(e.get("pendingHashes"), Some(OVal::Arr(a)) if a.is_empty()));
-    assert!(matches!(e.get("pendingVersion"), Some(OVal::Null)));
-    assert!(e.get("completedTs").is_some());
-}
-
-#[test]
-fn a_stage_without_a_usable_resume_list_is_nodes_whole() {
-    if !node_ready() {
-        return;
-    }
-    let f = fix("nolist").engine();
-    f.put(&f.ds("deferred-sweep-state.json"), "{\"nextStageIndex\":3}");
-    f.put(".anti-hall/update-sweep-state.json", "{\"healRegistry\":{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[1,2]}}");
-    let before = f.read(".anti-hall/update-sweep-state.json");
-    assert!(ah_engine::dssup::recon::stage::run(&f.ctx(), &System::configured(), STAGES[3], &Hooks::none()).is_none());
-    assert_eq!(f.read(".anti-hall/update-sweep-state.json"), before, "nothing written");
-    let g = fix("nomode");
-    seed(&g, 3, &refs(&two_repos(&g, 1)));
-    assert!(ah_engine::dssup::recon::stage::run(&g.ctx(), &System::configured(), STAGES[3], &Hooks::none()).is_none(), "node mode: the engine takes no stage");
-}
-
-#[test]
-fn an_item_node_must_do_is_handed_to_nodes_own_function_and_still_counts() {
-    if !node_ready() {
-        return;
-    }
-    // an orphan whose family already has registry rows is the fold's work, which the orphan heal hands back
-    let f = fix("handback").engine();
-    let repos = two_repos(&f, 1);
-    let (k, wt) = (&repos[0].0, &repos[0].1);
-    f.put(&f.ds("deferred-sweep-state.json"), "{\"nextStageIndex\":1}");
-    f.row(k, "w-live", wt, Some("s1"));
-    f.live("w-live", wt, "s1");
-    f.msg(k, "o1");
-    f.live("o1", wt, "so1");
-    f.put(".anti-hall/update-sweep-state.json", &format!("{{\"healOrphanPartitions\":{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[\"{k}\"]}}}}"));
-    let rec = ah_engine::dssup::deferred::duty(&f.ctx(), &System::configured());
-    let items = rec["engine"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "{rec}");
-    assert_eq!(rec["detail"]["result"]["attempted"], true, "{rec}");
-    println!("handback item: {}", items[0]);
 }
 
 // ---- crash safety -----------------------------------------------------------------------------------------------------------
@@ -372,44 +234,6 @@ fn crashed(stage: usize, point: &str) -> Fix {
     f
 }
 
-#[test]
-fn a_sigkill_between_two_items_keeps_the_old_marker_and_the_rerun_ends_where_an_uninterrupted_run_ends() {
-    if !node_ready() {
-        return;
-    }
-    let mut checked = 0;
-    for stage in [0usize, 1, 3] {
-        // the uninterrupted reference
-        let reference = fix(&format!("crash-ref-{stage}")).engine();
-        let repos = two_repos(&reference, 2);
-        seed(&reference, stage, &refs(&repos));
-        let r = System::configured();
-        let _ = ah_engine::dssup::deferred::duty(&reference.ctx(), &r);
-        let want = marker(&reference);
-        for point in [format!("stage:{}:0:after", STAGES[stage]), format!("stage:{}:record:before", STAGES[stage]), format!("stage:{}:1:before", STAGES[stage])]
-        {
-            let f = crashed(stage, &point);
-            // the marker is the pre-run marker whole (the write is one rename), and parses
-            let m = marker(&f);
-            let e = m.get(KEYS[stage]).unwrap();
-            assert!(matches!(e.get("pendingHashes"), Some(OVal::Arr(a)) if a.len() == 2), "{point}: the resume list is whole: {}", e.stringify());
-            // the rerun (the next tick; the rotation moved on, so point it back) finishes the same way
-            f.put(&f.ds("deferred-sweep-state.json"), &format!("{{\"nextStageIndex\":{stage}}}"));
-            let mut f = f;
-            f.st.env.insert("ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE".into(), "engine".into());
-            let rec = ah_engine::dssup::deferred::duty(&f.ctx(), &r);
-            assert_eq!(rec["detail"]["result"]["attempted"], true, "{point}: {rec}");
-            let got = marker(&f);
-            let (ge, we) = (got.get(KEYS[stage]).unwrap(), want.get(KEYS[stage]).unwrap());
-            for field in ["completedVersion", "pendingVersion", "pendingHashes", "lastCompletedHash"] {
-                assert_eq!(ge.get(field).map(OVal::stringify), we.get(field).map(OVal::stringify), "{point}: {field}");
-            }
-            checked += 1;
-        }
-    }
-    assert_eq!(checked, 9);
-}
-
 // ---- the invariant over every reconcile module ------------------------------------------------------------------------------
 
 #[test]
@@ -426,19 +250,20 @@ fn no_reconcile_module_can_delete_or_rewrite_a_message_row() {
         }
     }
     assert!(n >= 12, "all the reconcile modules were read ({n})");
-    // the SQL the port owns: the only statement that removes a row is the guarded registry delete
+    // the SQL the port owns: the only statements that remove a row are registry deletes: the guarded one (the fold) and the re-home's
+    // removal of the source store's registry row after the copy was verified (Node's `removeRegistry`)
     let sql = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sql.rs")).unwrap();
     let removers: Vec<&str> = sql.lines().filter(|l| l.contains("pub const RECON_") && l.to_ascii_uppercase().contains("DELETE")).collect();
-    assert_eq!(removers.len(), 1, "{removers:?}");
-    assert!(removers[0].contains("FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?"));
+    assert_eq!(removers.len(), 2, "{removers:?}");
+    assert!(removers.iter().all(|l| l.contains("FROM registry WHERE id = ?")), "{removers:?}");
+    assert!(removers.iter().any(|l| l.contains("FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?")));
     let writers: Vec<&str> = sql.lines().filter(|l| l.contains("pub const RECON_") && l.to_ascii_uppercase().contains("INTO MESSAGES")).collect();
     assert!(writers.is_empty(), "{writers:?}");
-    // no std::fs removal of a directory tree anywhere but the gate's own scratch mirrors
+    // no std::fs removal of a directory tree anywhere (the gate's scratch mirrors for Node's witness are gone with the witness)
     let mut trees = Vec::new();
     for e in std::fs::read_dir(&dir).unwrap().flatten() {
         let text = std::fs::read_to_string(e.path()).unwrap_or_default();
         trees.extend(text.lines().filter(|l| l.contains("remove_dir_all")).map(|l| format!("{}: {}", e.file_name().to_string_lossy(), l.trim())));
     }
-    assert_eq!(trees.len(), 1, "{trees:?}");
-    assert!(trees[0].starts_with("gate.rs:") && trees[0].contains("scratch"), "{trees:?}");
+    assert!(trees.is_empty(), "{trees:?}");
 }

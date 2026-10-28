@@ -60,23 +60,20 @@ pub fn plugin_rules_file() -> Option<PathBuf> {
     defaults::root().map(|r| r.join(defaults::text("paths.plugin_rules_file")))
 }
 
-/// The user's rules override in the state directory (`rules.json` there), which replaces the shipped file when it exists.
+/// The user's rules file in the state directory (`rules.json` there). It is merged over the shipped rules by id (`layers.rs`);
+/// it no longer replaces them.
 pub fn user_rules_file() -> PathBuf {
     dir().join(defaults::text("paths.rules_file"))
 }
 
-/// The rules file in effect: the `AH_ENGINE_RULES` override, else the user's file in the state dir when there is one (user
-/// overrides stay under `~/.anti-hall`), else the plugin's. A path that does not exist is returned as is (an unreadable rules
-/// file reads as the empty rule set, as before).
+/// The base rules file: the `AH_ENGINE_RULES` override (then it is the whole rule set), else the plugin's shipped file. The user's
+/// files are layered over the shipped one by `layers::load_host_rules`. A path that does not exist is returned as is (an
+/// unreadable rules file reads as the empty rule set, as before).
 pub fn rules_file() -> PathBuf {
     if let Some(p) = defaults::env_var("rules") {
         return PathBuf::from(p);
     }
-    let user = user_rules_file();
-    if user.is_file() {
-        return user;
-    }
-    plugin_rules_file().unwrap_or(user)
+    plugin_rules_file().unwrap_or_else(user_rules_file)
 }
 
 #[cfg(test)]

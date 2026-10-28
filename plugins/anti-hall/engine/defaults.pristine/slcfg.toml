@@ -1,12 +1,8 @@
-# ah-engine shipped defaults for the statusline helper commands (L9a): `phase` (statusline/phase.js), `install-statusline` and
+# ah-engine shipped defaults for the statusline helper commands (L9a): `phase`, `install-statusline` and
 # `uninstall-statusline` (the `src/ops/phase.rs` and `src/ops/slcfg.rs` modules). Format: see the header of engine.toml.
 #
 # The message texts are the Node scripts' own, word for word: the parity tests compare the commands' output with the scripts'
 # byte for byte. A `{name}` in a text is filled in at run time.
-
-[env.dispatcher_override]
-doc = "Test-only switch of the installer: names the dispatcher path to embed without checking that it exists (Node: ANTIHALL_DISPATCHER_OVERRIDE)."
-value = "ANTIHALL_DISPATCHER_OVERRIDE"
 
 [slcfg.tmp_env]
 doc = "The environment variables the operating system's temporary directory is read from, in order."
@@ -64,17 +60,33 @@ value = "settings.local.json"
 doc = "Appended to a settings file's name for its one-time backup."
 value = ".bak-antihall"
 
-[slcfg.stable_dir]
-doc = "The status line directory of the marketplace installation, relative to the home directory (stable across plugin updates)."
-value = ".claude/plugins/marketplaces/anti-hall/plugins/anti-hall/statusline"
+[slcfg.client_bin_rel]
+doc = "The thin client inside the engine state directory (paths.base_dir/paths.state_dir under the home directory): the program the migrated status line command runs."
+value = "bin/ah-hook"
 
-[slcfg.dispatcher_file]
-doc = "The status line dispatcher script."
-value = "statusline.js"
+[slcfg.mig_fixed]
+doc = "Migration row: an existing status line command that ran the retired shell wrapper now runs the thin client. {path} {command}."
+value = "statusLine in {path} now runs the thin client: {command}"
 
-[slcfg.uninstall_file]
-doc = "The uninstaller script named in the installer's closing hint."
-value = "uninstall-statusline.js"
+[slcfg.mig_dry_run]
+doc = "Migration row (dry run): what would change. {path} {command}."
+value = "would update the statusLine in {path} to run the thin client: {command}"
+
+[slcfg.mig_ambiguous]
+doc = "Migration row: the command appears other than once in the file's text, or the edit does not read back as intended, so the file is left exactly as it is. {path}."
+value = "left the statusLine in {path} as it is (its command text is not a single plain string the migration can replace in place)"
+
+[slcfg.mig_backup_failed]
+doc = "Migration row: the one-time backup could not be made, so the file is left exactly as it is. {path}."
+value = "left the statusLine in {path} as it is (its one-time backup could not be written)"
+
+[slcfg.mig_write_failed]
+doc = "Migration row: the settings file could not be written. {path}."
+value = "could not write {path}; the statusLine there is unchanged"
+
+[slcfg.install_retired]
+doc = "Message printed by install-statusline after the anti-hall statusline was retired; the command is kept as a no-op so old docs and habits do not re-add statusLine."
+value = "anti-hall statusline installation has been retired; no statusLine setting was written. Use uninstall-statusline to clean up old installs."
 
 [slcfg.gitignore_file]
 doc = "The project's ignore file."
@@ -152,26 +164,6 @@ value = "{err}, mkdir '{path}'"
 doc = "Node's wording of a failed file copy. Placeholders: err from to."
 value = "{err}, copyfile '{from}' -> '{to}'"
 
-[slcfg.dispatcher_line]
-doc = "The first line of the installer. Placeholders: path note."
-value = "Dispatcher: {path}{note}"
-
-[slcfg.dispatcher_stable]
-doc = "After the dispatcher path when it is the marketplace one."
-value = "  (stable marketplace path)"
-
-[slcfg.dispatcher_dev]
-doc = "After the dispatcher path when it is the one next to the installer."
-value = "  (dev/__dirname fallback)"
-
-[slcfg.inst_not_found_1]
-doc = "stderr: the dispatcher is missing. Placeholders: path."
-value = "❌ anti-hall · install-statusline: statusline.js not found at: {path}"
-
-[slcfg.inst_not_found_2]
-doc = "stderr: what to do about it."
-value = "Do instead: keep the installer in the same directory as statusline.js."
-
 [slcfg.inst_refused]
 doc = "stderr: the installer refuses to write user configuration under a test. Placeholders: path."
 value = "⛔ anti-hall · install-statusline: refused under a test: {path} is outside a temp dir."
@@ -201,7 +193,7 @@ doc = "A value shown under a note. Placeholders: text."
 value = "  {text}"
 
 [slcfg.note_project_2]
-doc = "Why the installer writes the local file."
+doc = "Legacy note for the retired installer when a committed project statusLine exists."
 value = "  Installing into settings.local.json so anti-hall takes precedence (local > project)."
 
 [slcfg.note_user_1]
@@ -211,10 +203,6 @@ value = "NOTE: ~/.claude/settings.json (user/global) defines a statusLine:"
 [slcfg.note_user_2]
 doc = "What the local file will do to it."
 value = "  Installing into settings.local.json will take precedence over it."
-
-[slcfg.already_1]
-doc = "The effective statusLine already is the dispatcher."
-value = "Already installed — the effective statusLine already points at anti-hall statusline.js."
 
 [slcfg.source_local]
 doc = "Where an installed statusLine came from."
@@ -238,11 +226,11 @@ value = "  To switch modes, uninstall first, then re-run with --consolidate:"
 
 [slcfg.advisory_3]
 doc = "The uninstall hint."
-value = "    node statusline/install-statusline.js --uninstall   # or remove statusLine from settings manually"
+value = "    ah-engine uninstall-statusline          # or remove statusLine from settings manually"
 
 [slcfg.advisory_4]
 doc = "The reinstall hint."
-value = "    node statusline/install-statusline.js --consolidate"
+value = "    ah-engine install-statusline --consolidate"
 
 [slcfg.no_changes]
 doc = "Nothing was changed."
@@ -396,10 +384,6 @@ value = "Old statusLine:"
 doc = "There was no old value."
 value = "No existing statusLine."
 
-[slcfg.unsafe_1]
-doc = "stderr: the dispatcher path has shell metacharacters."
-value = "⛔ anti-hall · install-statusline: dispatcher path contains shell metacharacters — refusing to embed in statusLine.command."
-
 [slcfg.unsafe_2]
 doc = "stderr: the path. Placeholders: path."
 value = "  Path: {path}"
@@ -408,10 +392,6 @@ value = "  Path: {path}"
 doc = "stderr: manual installation. Placeholders: path."
 value = "  To install manually, add to {path}:"
 
-[slcfg.unsafe_4]
-doc = "stderr: the manual entry."
-value = '    "statusLine": { "type": "command", "command": "node \"/path/to/statusline.js\"" }'
-
 [slcfg.write_failed_1]
 doc = "stderr: the settings file could not be written. Placeholders: path msg."
 value = "❌ anti-hall · install-statusline: Could not write {path}: {msg}"
@@ -419,10 +399,6 @@ value = "❌ anti-hall · install-statusline: Could not write {path}: {msg}"
 [slcfg.write_failed_2]
 doc = "stderr: how to get back."
 value = "Do instead: restore from backup:"
-
-[slcfg.write_failed_3]
-doc = "stderr: the restore command. Placeholders: path."
-value = '  node "{path}"'
 
 [slcfg.new_statusline]
 doc = "Heading of the new value."
@@ -467,10 +443,6 @@ value = "  The bar appears in every repo on this machine."
 [slcfg.to_uninstall]
 doc = "Heading of the uninstall hint."
 value = "To uninstall:"
-
-[slcfg.uninstall_hint]
-doc = "The uninstall command. Placeholders: path."
-value = '  node "{path}"'
 
 [slcfg.u_not_found]
 doc = "stderr: the settings file does not exist. Placeholders: path."
@@ -608,127 +580,30 @@ value = ["code", "desc", "done", "total", "started"]
 doc = "A field name the engine does not merge (JavaScript treats it as the object's prototype); `update` with it is left to the Node script."
 value = "__proto__"
 
-[ops.verb_phase]
-doc = "The shadow name of the phase command."
-value = "phase"
-
-[ops.verb_install]
-doc = "The shadow name of the status line installer."
-value = "install-statusline"
-
-[ops.verb_uninstall]
-doc = "The shadow name of the status line uninstaller."
-value = "uninstall-statusline"
-
-[ops.script_phase]
-doc = "The Node phase script, relative to the plugin root."
-value = "statusline/phase.js"
-
-[ops.script_install]
-doc = "The Node installer, relative to the plugin root."
-value = "statusline/install-statusline.js"
-
-[ops.script_uninstall]
-doc = "The Node uninstaller, relative to the plugin root."
-value = "statusline/uninstall-statusline.js"
-
-[ops.shadow_rate_phase]
-doc = "How many runs in a thousand of the phase command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one."
-value = 1000
-env = "AH_ENGINE_SHADOW_RATE_PHASE"
-min = 0
-max = 1000
-
-[ops.shadow_rate_install]
-doc = "How many runs in a thousand of install-statusline are also run by the Node installer in the background, on a scratch copy of the settings (never a second real write), and compared (0 turns the shadow off)."
-value = 1000
-env = "AH_ENGINE_SHADOW_RATE_INSTALL"
-min = 0
-max = 1000
-
-[ops.shadow_rate_uninstall]
-doc = "How many runs in a thousand of uninstall-statusline are also run by the Node uninstaller in the background, on a scratch copy of the settings, and compared (0 turns the shadow off)."
-value = 1000
-env = "AH_ENGINE_SHADOW_RATE_UNINSTALL"
-min = 0
-max = 1000
-
-[ops.shadow_inst_home]
-doc = "The files under the home directory the installer shadow copies into its scratch home and compares afterwards."
-value = [".claude/settings.json", ".claude/settings.json.bak-antihall", ".anti-hall/base-statusline.json", ".anti-hall/consolidated-base.json"]
-
-[ops.shadow_inst_link]
-doc = "The home entries the installer shadow reads through links (the Node installer only checks that the marketplace dispatcher exists)."
-value = [".claude/plugins"]
-
-[ops.shadow_inst_cwd]
-doc = "The files under the working directory the installer shadow copies into its scratch working directory and compares afterwards."
-value = [".claude/settings.json", ".claude/settings.local.json", ".claude/settings.json.bak-antihall", ".claude/settings.local.json.bak-antihall", ".gitignore"]
-
-[ops.shadow_cwd_dir]
-doc = "The scratch working directory of an installer shadow, inside its scratch directory."
-value = "cwd"
-
-[ops.shadow_cwd_word]
-doc = "Replaces the real and the scratch working directory in compared text."
-value = "CWD"
-
-[ops.shadow_inst_home_tag]
-doc = "Prefix of a home-relative file in the installer shadow's state digest."
-value = "h:"
-
-[ops.shadow_inst_cwd_tag]
-doc = "Prefix of a working-directory-relative file in the installer shadow's state digest."
-value = "c:"
-
-[env.statusline_node_only]
-doc = "When non-empty the installer writes the Node-only status line command (as the Node installer does) and the upgrade leaves an existing one alone. Used by the parity tests, which compare the two installers' output."
-value = "ANTIHALL_STATUSLINE_NODE_ONLY"
-
 [slcfg.launcher_rel]
-doc = "The launcher an earlier engine installer named in the statusLine command (it ran the engine first and the Node script when the engine was absent or deferred), relative to the directory of the status line dispatcher. Only used to recognise that form for the migration."
+doc = "The launcher an earlier engine installer named in the statusLine command, relative to the directory of the status line dispatcher. Legacy recognition only (the migration rewrites it to the thin client's command, hooks_form.statusline_template)."
 value = "../scripts/ah-run.sh"
 
 [slcfg.command_launcher]
-doc = "The launcher form of the statusLine command an earlier engine installer wrote. {launcher} {dispatcher}. Only used to recognise that form exactly for the migration."
+doc = "The launcher form of the statusLine command an earlier engine installer wrote. {launcher} {dispatcher}. Legacy recognition only; no migration writes it."
 value = 'sh "{launcher}" --stdin statusline -- "{dispatcher}"'
-
-[slcfg.mig_fixed]
-doc = "Migration row: an existing status line command now runs the engine directly. {path} {command}."
-value = "statusLine in {path} now runs the engine directly: {command}"
-
-[slcfg.mig_dry_run]
-doc = "Migration row (dry run): what would change. {path} {command}."
-value = "would update the statusLine in {path} to run the engine directly: {command}"
-
-[slcfg.mig_ambiguous]
-doc = "Migration row: the command appears other than once in the file's text, or the edit does not read back as intended, so the file is left exactly as it is. {path}."
-value = "left the statusLine in {path} as it is (its command text is not a single plain string the migration can replace in place)"
-
-[slcfg.mig_backup_failed]
-doc = "Migration row: the one-time backup could not be made, so the file is left exactly as it is. {path}."
-value = "left the statusLine in {path} as it is (its one-time backup could not be written)"
-
-[slcfg.mig_write_failed]
-doc = "Migration row: the settings file could not be written. {path}."
-value = "could not write {path}; the statusLine there is unchanged"
 
 # ---- v1.0: the engine's own status line command, and no deferral (L04) ---------------------------------------------------
 
 [slcfg.command_engine]
-doc = "The statusLine command the installer writes: the engine's own status line, no launcher and no Node script. {engine}."
+doc = "The legacy engine statusLine command recognised by uninstall/cleanup; the retired installer no longer writes it. {engine}."
 value = '"{engine}" statusline'
 
 [slcfg.engine_command_re]
-doc = "Recognises a statusLine command in the engine's own form (installer, uninstaller)."
-value = '^"[^"]+/ah-engine" statusline$'
+doc = "Recognises a statusLine command in the engine's own form or the thin client's form (uninstaller, migration)."
+value = '^"[^"]+/(?:ah-engine|ah-hook)" statusline$'
 
 [slcfg.launcher_form_re]
 doc = "Recognises the launcher form an earlier engine installer wrote; named groups launcher and dispatcher (checked again against slcfg.command_launcher)."
 value = '^sh "(?<launcher>[^"]+)" --stdin statusline -- "(?<dispatcher>[^"]+)"$'
 
 [slcfg.engine_bin_rel]
-doc = "The engine executable inside the engine state directory (paths.base_dir/paths.state_dir under the home directory), where the hook wrappers look for it first."
+doc = "The engine executable inside the engine state directory (paths.base_dir/paths.state_dir under the home directory), where the thin client looks for it first."
 value = "bin/ah-engine"
 
 [slcfg.engine_line]

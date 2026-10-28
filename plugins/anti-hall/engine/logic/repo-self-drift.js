@@ -31,7 +31,7 @@ function rsdScan(root, now) {
 function decide(p, opts) {
   if (sess.judgeChild()) return 'allow';
   var home = spawn.osHome(), root = sess.pluginRoot(opts);
-  if (home === null || root === null) return 'defer';
+  if (home === null || root === null) { ah.unable('repo-self-drift:no_home_or_root', 'abandoned'); return 'allow'; } // nothing to read, nothing to say
   if (!ah.settings.bool('session.setting_repo_self_drift') || ah.settings.skipped(ah.cfg('session.repo_self_drift_guard'))) return 'allow';
   var now = ah.clock.now(), rel = ah.cfg('session.repo_self_drift_cache'), cache = sess.readCache(rel);
   if (!sess.isFresh(cache, now, ah.cfgNum('session.drift_cache_ttl_ms'))) {

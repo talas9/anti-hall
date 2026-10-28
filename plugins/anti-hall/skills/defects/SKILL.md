@@ -13,19 +13,19 @@ A durable, file-based, two-way channel for reporting bugs found in anti-hall its
 the guards, hooks, skills, statusline, or DevSwarm integration — back to the maintainer,
 and for reading the maintainer's rulings back. It lives at `~/.anti-hall/defects/`,
 **home-scoped** (works the same from any repo), and is deliberately NOT built on
-anti-hall's own DevSwarm messaging layer (see `hooks/lib/defect-store.js`'s header for
+anti-hall's own DevSwarm messaging layer (see `defect-store`'s header for
 why: a channel for reporting bugs in the messaging layer must not itself depend on that
 layer).
 
 ## The five core verbs
 
-All invocations are `sh plugins/anti-hall/scripts/ah-run.sh defect <verb> ...` run from an
-anti-hall checkout, or `sh <plugin-root>/scripts/ah-run.sh defect <verb> ...` when resolving
+All invocations are `"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect <verb> ...` run from an
+anti-hall checkout, or `"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect <verb> ...` when resolving
 the plugin root generically (mirrors the `doctor`/`debt` skills' invocation style).
 
 1. **report** — file a new defect (or add an occurrence to an existing one via dedup).
    ```
-   sh plugins/anti-hall/scripts/ah-run.sh defect report \
+   "$HOME/.anti-hall/ah-engine/bin/ah-engine" defect report \
      --class hook-crash --sev p1 \
      --sym "command-guard throws on empty argv" \
      --repro "run command-guard.js with stdin ''" \
@@ -44,8 +44,8 @@ the plugin root generically (mirrors the `doctor`/`debt` skills' invocation styl
    defect 001e6bb600c5's `partial` status to make `list --open` report 0 while real
    P0/P1 defects sat unresolved). `--json` for machine output.
    ```
-   sh plugins/anti-hall/scripts/ah-run.sh defect list --mine --json
-   sh plugins/anti-hall/scripts/ah-run.sh defect list --unfinished --json
+   "$HOME/.anti-hall/ah-engine/bin/ah-engine" defect list --mine --json
+   "$HOME/.anti-hall/ah-engine/bin/ah-engine" defect list --unfinished --json
    ```
 3. **show `<fp>`** — every line of one defect (its fingerprint), open or archived.
 4. **rule `<fp>` --status ack|fixed|partial|wontfix|notabug|dup** — MAINTAINER-ONLY.
@@ -67,10 +67,10 @@ These three verbs turn the channel into a bug history, so the same thing is not 
 in circles. They read every record: reported defects plus fixes imported from git.
 
 ```bash
-sh plugins/anti-hall/scripts/ah-run.sh defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
-sh plugins/anti-hall/scripts/ah-run.sh defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
-sh plugins/anti-hall/scripts/ah-run.sh defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
-sh plugins/anti-hall/scripts/ah-run.sh defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
 ```
 
 - **`backfill`** imports every `fix:` / `fix(scope):` commit as a record with status
@@ -92,14 +92,14 @@ sh plugins/anti-hall/scripts/ah-run.sh defect similar <symptom words...> [--comp
 Before fixing an anti-hall bug, run `similar` and read the past fixes for that component.
 If the component is a hotspot, fix the class of bug, not just this instance.
 
-Optional fields on `report` and `rule`: `--component <path or module>` (normalized:
-`plugins/anti-hall/hooks/lib/x.js` becomes `hooks/x`), `--cause <class>` and
+Optional fields on `report` and `rule`: `--component <path or module>` (normalized to a short
+module name), `--cause <class>` and
 `--regression-of <fp>`. Records without these fields still load. `--cause` must be one of:
 `archived-or-held-state`, `id-mismatch`, `home-or-state-leak`, `lock-or-race`,
 `timing-or-load-flake`, `transcript-parse`, `blocking-hook-loop`, `fail-open-missing`,
 `stale-path-or-version`, `platform-compat`, `wrong-default`, `other`.
 
-## `class` and `sev` (closed vocabularies — copied verbatim from `hooks/lib/defect-store.js`)
+## `class` and `sev` (closed vocabularies — copied verbatim from `defect-store`)
 
 - `class` (`CLASS_ENUM`, exactly these 8): `guard-false-positive`, `guard-miss`,
   `hook-crash`, `state-leak`, `messaging`, `doc`, `install`, `other`.
@@ -118,7 +118,7 @@ risks command injection or corruption. Two safe paths:
   ```js
   const { execFileSync } = require('child_process');
   execFileSync('node', [
-    'plugins/anti-hall/scripts/defect.js', 'report',
+    'ah-engine defect', 'report',
     '--class', 'hook-crash', '--sev', 'p1',
     '--sym', symptomText,       // raw string, no shell escaping needed — argv, not a shell line
     '--repro', reproText,

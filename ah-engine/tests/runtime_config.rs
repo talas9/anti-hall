@@ -6,6 +6,7 @@
 //! reason code, a plugin update (a directory swap) is picked up. Then the cold-start case, where nothing can be loaded: the
 //! engine answers "unavailable" (the exit code the wrapper turns into the Node fallback), never a built-in default.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 mod common;
 use ah_engine::client;
 use serde_json::Value;

@@ -1,7 +1,8 @@
 # ah-engine shipped defaults for the agent tracker (`src/agents`, `ah-engine agents`, the scheduled job `agent_tick`, the scripted check
 # `agent-reminders`). Format: see the header of engine.toml. The tracker follows every agent it can find (the main sessions, their
 # subagents and background tasks, DevSwarm workspaces), keeps a per-agent progress series, raises signals (hung, looping, token
-# waste, drift, stale heartbeat, no Monitor armed), and delivers reminders and advisories. It never stops or kills an agent.
+# waste, drift, stale heartbeat, no Monitor armed), and delivers reminders and advisories. An unhealthy child is reported to its direct
+# parent as a nudge (agent_nudge.toml); escalated to the owner and, past a limit, stopped by verified pid or stop request (Primaries exempt).
 # Every threshold, window, weight, pattern, path, word and text is tuned here, never in Rust.
 
 [job.agent_tick]
@@ -26,66 +27,162 @@ value = { section = "agents", key = "tracker", env = "ANTIHALL_AGENT_TRACKER", a
 doc = "Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued for any agent."
 value = { section = "agents", key = "reminders", env = "ANTIHALL_AGENT_REMINDERS", aliases = [], option = "", default = true }
 
+[agent_tracker.rearm_idle_setting]
+doc = "Quiets the re-arm note with no child workspaces. Where the switch is read from that keeps the wake-watch re-arm reminder silent for a Primary checkout with no live child workspaces (agents.rearmNeedsChildren, default on): with nothing to wake it for, the watcher declines to arm and there is nothing to re-arm."
+value = { section = "agents", key = "rearmNeedsChildren", env = "ANTIHALL_AGENT_REARM_NEEDS_CHILDREN", aliases = [], option = "", default = true }
+
 [agent_tracker.owner_setting]
 doc = "Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a notice to the owner notices file."
 value = { section = "agents", key = "ownerNotify", env = "ANTIHALL_AGENT_OWNER_NOTIFY", aliases = [], option = "", default = false }
 
+[agent_tracker.wake_setting]
+doc = "Where the off switch of the session wake-watch is read from (agents.wakeWatch, default on): off, `agents wake-watch` arms nothing (the cron and ScheduleWakeup fallbacks are unaffected) and a main session is no longer reported as unarmed."
+value = { section = "agents", key = "wakeWatch", env = "ANTIHALL_AGENT_WAKE_WATCH", aliases = [], option = "", default = true }
+
+[agent_tracker.wake_verb]
+doc = "The `ah-engine agents` subcommand that runs the session wake Monitor."
+value = "wake-watch"
+
+[agent_tracker.wake_flag_auto]
+doc = "The option the plugin's monitor entry passes: the harness started the watcher at session start, so the expected refusals (switched off, no session id, already armed) print nothing."
+value = "--auto"
+
+[agent_tracker.wake_session_env]
+doc = "The variables that name the session the wake-watch belongs to, in order; the first non-empty one is the key of its wake feed."
+value = ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "ANTIHALL_SESSION_ID"]
+
+[agent_tracker.wake_walk_depth]
+doc = "When no session variable is set (a Monitor's shell has none), how many parent processes the wake-watch walks up to find the process the host registered for a session."
+value = 8
+
+[agent_tracker.wake_command]
+doc = "The Monitor command that arms the DevSwarm wake-watch. It names the stable engine path and no plugin root: the engine finds the plugin itself, and a root pinned to one cached version goes stale at the next update."
+value = "exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\" devswarm wake-watch --auto"
+
+[agent_tracker.primary_prefix]
+doc = "The id prefix of a DevSwarm Primary's descriptor. A Primary with no live child is not armed by the DevSwarm wake-watch (its idle-skip), so the tracker does not tell it to; its own wake path is the session wake-watch."
+value = "primary-"
+
+[agent_tracker.wake_poll_ms]
+doc = "How often the wake-watch looks at its session's wake feed (a size check of one file), in milliseconds. A quiet session costs no tokens."
+value = 1000
+unit = "ms"
+
+[agent_tracker.wake_stamp_ms]
+doc = "How often the wake-watch renews its armed stamp, in milliseconds; the stamp counts as live for limits.stale_lock_ms."
+value = 30000
+unit = "ms"
+
 [agent_tracker.paths]
-doc = "Where the tracker reads and writes. Relative to the user home unless noted: projects (the Claude Code transcripts), base (the anti-hall directory), dir (the tracker's own directory under base), state, series, reminders (one queue file per agent or session), delivered (what the hook delivered), outbox (reminders for DevSwarm workspaces, for the mesh action layer), notices (owner notices), probe (the cached Claude Code capability probe), heartbeats (the agent heartbeat files, under base), devswarm (the DevSwarm directory, under base), subagents (sub-directory of a session directory that holds its subagent transcripts), watcher (the wake-watch script, relative to the plugin root)."
-value = { projects = ".claude/projects", base = ".anti-hall", dir = "agent-tracker", state = "state.json", series = "series.ndjson", reminders = "reminders", delivered = "delivered.ndjson", outbox = "mesh-outbox.ndjson", notices = "owner-notices.ndjson", probe = "claude-probe.json", heartbeats = "agents", devswarm = "devswarm", subagents = "subagents", watcher = "companion/lib/devswarm-wake-watch.js", transcript_ext = ".jsonl", agent_prefix = "agent-", meta_ext = ".meta.json", queue_ext = ".ndjson", cursor_ext = ".cursor", plans = "plans", workspaces = "workspaces", archived = "archived", locks = "locks", lock_prefix = "wake-watch-", lock_ext = ".lock", json_ext = ".json" }
+doc = "Where the tracker reads and writes. Relative to the user home unless noted: projects (the Claude Code transcripts), base (the anti-hall directory), dir (the tracker's own directory under base), state, series, reminders (one queue file per agent or session), delivered (what the hook delivered), outbox (reminders for DevSwarm workspaces, for the mesh action layer), notices (owner notices), probe (the cached Claude Code capability probe), heartbeats (the agent heartbeat files, under base), devswarm (the DevSwarm directory, under base), subagents (sub-directory of a session directory that holds its subagent transcripts), sessions (the host's registry of live sessions, one file per process), codex (the Codex session tree: year/month/day directories of rollout files), rollout_prefix (the start of a rollout file name)."
+value = { projects = ".claude/projects", base = ".anti-hall", dir = "agent-tracker", state = "state.json", series = "series.ndjson", reminders = "reminders", delivered = "delivered.ndjson", outbox = "mesh-outbox.ndjson", notices = "owner-notices.ndjson", probe = "claude-probe.json", heartbeats = "agents", devswarm = "devswarm", subagents = "subagents", wake = "wake", armed_ext = ".armed", transcript_ext = ".jsonl", agent_prefix = "agent-", meta_ext = ".meta.json", queue_ext = ".ndjson", cursor_ext = ".cursor", plans = "plans", workspaces = "workspaces", names = "names", archived = "archived", locks = "locks", lock_prefix = "wake-watch-", lock_ext = ".lock", json_ext = ".json", sessions = ".claude/sessions", codex = ".codex/sessions", rollout_prefix = "rollout-" }
 
 [agent_tracker.limits]
 doc = """Bounds and thresholds of one tick (milliseconds unless the name says otherwise).
-active_window_ms: a transcript untouched this long is not tracked. max_agents: most agents followed (newest first). first_read_bytes: how much of the end of a transcript is read the first time it is seen (its totals then count from there). read_max_bytes: most read from one transcript per tick. hung_ms: a running agent with no activity this long is hung; hung_pending_ms: the same while a tool call is still unanswered (a long build or wait is legitimate). loop_window: how many recent tool calls are compared; loop_repeats: identical calls in that window that make a loop; loop_edit_repeats: the same for edits of one file; loop_span_ms: the repeats must fall within this much time of the newest one (the same poll every few minutes is not a loop); error_window, error_repeats: the same for an identical error text. waste_window_ms: the window tokens and progress are compared over; waste_min_span_ms: the least history needed before it is judged; waste_min_tokens: tokens spent in the window below which nothing is wasted; waste_max_progress: progress units in that window at or below which the spend is waste; cache_read_pct: how much a cache-read token counts toward the spend, in percent. drift_min_events: edits and commands seen under the current step before drift is judged; drift_max_overlap_pct: the share of the step's words the recent work may share before it is drift; drift_min_step_words, drift_min_word_len: how small a step or a word is too small to judge; work_words_max: how many recent work words are kept. heartbeat_stale_ms: a running agent heartbeat older than this is stale (the Node watchdog default). monitor_min_bg: background tasks running before a missing wake path is reported; bg_bash_ms: how long a background shell command counts as running. confirm_ticks: ticks a signal must stay up before its first reminder. outcome_timeout_ms: a reminded signal still up after this is recorded as not recovered. fp_min_progress: progress that makes a cleared, un-reminded flag a false positive. samples_max: samples kept per agent. files_max: distinct edited files remembered per agent. series_every_ms: how often an agent's series sample is written to the telemetry store and the series file. series_retention_ms, series_max_bytes: age and size cut of the series file. day_retention: days of daily totals kept. state_max_bytes: a state file bigger than this is discarded (it is only a cache). delivered_max: delivered rows read per tick. text_cap: characters kept of a command, a step or an evidence line. claude_cli_timeout_ms: bound of one `claude` subprocess. probe_ttl_ms: how long a cached capability probe is trusted when the version did not change. stale_lock_ms: a wake-watch lock older than this does not count as armed (the DevSwarm wake-watch rule). queue_keep_ms: a fully delivered queue file is removed after this."""
-value = { active_window_ms = 21600000, max_agents = 120, first_read_bytes = 2097152, read_max_bytes = 16777216, hung_ms = 1200000, hung_pending_ms = 2700000, loop_window = 30, loop_repeats = 5, loop_edit_repeats = 9, loop_span_ms = 600000, error_window = 12, error_repeats = 4, waste_window_ms = 1800000, waste_min_span_ms = 900000, waste_min_tokens = 600000, waste_max_progress = 0, cache_read_pct = 10, drift_min_events = 8, drift_max_overlap_pct = 8, drift_min_step_words = 3, drift_min_word_len = 4, work_words_max = 400, heartbeat_stale_ms = 1200000, monitor_min_bg = 1, bg_bash_ms = 1800000, confirm_ticks = 2, outcome_timeout_ms = 3600000, fp_min_progress = 1, samples_max = 120, files_max = 400, series_every_ms = 300000, series_retention_ms = 604800000, series_max_bytes = 8388608, day_retention = 14, state_max_bytes = 33554432, delivered_max = 500, text_cap = 160, claude_cli_timeout_ms = 4000, probe_ttl_ms = 86400000, stale_lock_ms = 120000, queue_keep_ms = 600000 }
+active_window_ms: a transcript untouched this long is not tracked. max_agents: most agents followed (newest first). first_read_bytes: how much of the end of a transcript is read the first time it is seen (its totals then count from there). read_max_bytes: most read from one transcript per tick. hung_ms: a running agent with no activity this long is hung; hung_pending_ms: the same while a tool call is still unanswered (a long build or wait is legitimate). loop_window: how many recent tool calls are compared; loop_repeats: identical calls in that window that make a loop; loop_edit_repeats: the same for edits of one file; loop_span_ms: the repeats must fall within this much time of the newest one (the same poll every few minutes is not a loop); error_window, error_repeats: the same for an identical error text. waste_window_ms: the window tokens and progress are compared over; waste_min_span_ms: the least history needed before it is judged; waste_min_tokens: tokens spent in the window below which nothing is wasted; waste_max_progress: progress units in that window at or below which the spend is waste; cache_read_pct: how much a cache-read token counts toward the spend, in percent. drift_min_events: edits and commands seen under the current step before drift is judged; drift_max_overlap_pct: the share of the step's words the recent work may share before it is drift; drift_min_step_words, drift_min_word_len: how small a step or a word is too small to judge; work_words_max: how many recent work words are kept. heartbeat_stale_ms: a running agent heartbeat older than this is stale (the Node watchdog default). monitor_min_bg: background tasks running before a missing wake path is reported; bg_bash_ms: how long a background shell command counts as running. confirm_ticks: ticks a signal must stay up before its first reminder. outcome_timeout_ms: a reminded signal still up after this is recorded as not recovered. fp_min_progress: progress that makes a cleared, un-reminded flag a false positive. samples_max: samples kept per agent. files_max: distinct edited files remembered per agent. series_every_ms: how often an agent's series sample is written to the telemetry store and the series file. series_retention_ms, series_max_bytes: age and size cut of the series file. day_retention: days of daily totals kept. state_max_bytes: a state file bigger than this is discarded (it is only a cache). delivered_max: delivered rows read per tick. text_cap: characters kept of a command, a step or an evidence line. claude_cli_timeout_ms: bound of one `claude` subprocess. probe_ttl_ms: how long a cached capability probe is trusted when the version did not change. cli_list_ttl_ms: how long the host's session listing (`claude agents --json`, one heavy process) is trusted before it is asked again; between listings each agent keeps the host state and gone flag of the last one, and a listing is also taken at once when a main or workspace agent appears that the last listing did not see. stale_lock_ms: a wake-watch lock older than this does not count as armed (the DevSwarm wake-watch rule). queue_keep_ms: a fully delivered queue file is removed after this. idle_open_ms: a subagent or workspace that finished its turn with a task still open and has been silent this long is idle with open work (the wake signal idle_open_task). exit_keep_ms: how long an ended background shell task stays reported by the signal watched_exit. max_codex: most Codex sessions followed (newest first, on top of max_agents). codex_days: how many of the newest day directories of the Codex tree are looked at. codex_running_ms: a Codex rollout written to this recently is running, an older one waits (Codex has no process registry to join). codex_first_line_max: most bytes read of a rollout's first line (its session metadata). rollout_stamp_len: characters of the timestamp and dash between the prefix and the session id in a rollout file name. done_keep_ms: how long a finished agent (state done) stays in the status list after its last output; live agents always show. headless_head_bytes: how much of the start of a transcript is read to find its entrypoint. pid_start_slack_ms: a registered process that started later than its session plus this is a reused pid, not that session. codex_done_after_ms: a one-shot Codex run (`codex exec`) with no output for this long is done even without a terminal record. codex_stale_after_ms: any Codex rollout with no output for this long is done (an interactive session idle that long is over). codex_tail_bytes: how much of the end of a rollout is read to find whether its last turn ended. dead_idle_ms: a subagent, teammate or session with no live process, silent this long, whose parent session is not live either, is dead (one whose transcript or project directory is gone is dead at once). owner_active_ms: a main or workspace session whose owner sent a message this recently is healthy (the token-waste signal stays down; agents.nudgeOwnerActive). drift_once_per_step: 1 = the drift reminder is sent once per declared step (a cleared and re-raised flag on the same step text is not reminded again), 0 = every raise. drift_min_hits: shared words between the step (plus its task description) and the recent work that already count as on-step."""
+value = { active_window_ms = 21600000, task_names_max = 200, max_agents = 120, first_read_bytes = 2097152, read_max_bytes = 16777216, hung_ms = 1200000, hung_pending_ms = 2700000, loop_window = 30, ci_wait_calls = 6, loop_repeats = 5, loop_edit_repeats = 9, loop_span_ms = 600000, error_window = 12, error_repeats = 4, waste_window_ms = 1800000, waste_min_span_ms = 900000, waste_min_tokens = 600000, waste_max_progress = 0, cache_read_pct = 10, drift_min_events = 8, drift_max_overlap_pct = 8, drift_min_step_words = 3, drift_min_word_len = 4, work_words_max = 400, heartbeat_stale_ms = 1200000, monitor_min_bg = 1, bg_bash_ms = 1800000, confirm_ticks = 2, outcome_timeout_ms = 3600000, fp_min_progress = 1, samples_max = 120, files_max = 400, series_every_ms = 300000, series_retention_ms = 604800000, series_max_bytes = 8388608, day_retention = 14, state_max_bytes = 33554432, delivered_max = 500, text_cap = 160, claude_cli_timeout_ms = 4000, probe_ttl_ms = 86400000, cli_list_ttl_ms = 300000, stale_lock_ms = 120000, queue_keep_ms = 600000, idle_open_ms = 600000, exit_keep_ms = 3600000, max_codex = 40, codex_days = 3, codex_running_ms = 180000, codex_first_line_max = 262144, rollout_stamp_len = 20, pid_start_slack_ms = 120000, done_keep_ms = 1800000, headless_head_bytes = 65536, codex_done_after_ms = 300000, codex_stale_after_ms = 7200000, codex_tail_bytes = 65536, dead_idle_ms = 3600000, owner_active_ms = 1800000, drift_once_per_step = 1, drift_min_hits = 1 }
+
+[agent_tracker.cost_limit]
+doc = "The most agents the cost report (`telemetry summary`, key `agent_cost`) lists, most tokens first."
+value = 50
+min = 1
+max = 1000
+
+[agent_tracker.cost_outcome_units]
+doc = "What the cost report counts as an outcome when it divides an agent's tokens (input plus output): the work units the tracker keeps per agent."
+value = "commits + pushes + finished steps + passing test runs + files edited"
 
 [agent_tracker.weights]
-doc = "Progress units each kind of work is worth: commit (a successful git commit), step (a plan or task step completed), test (a test run that passed), file (a file edited for the first time)."
-value = { commit = 10, step = 5, test = 2, file = 1 }
+doc = "Progress units each kind of work is worth: commit (a successful git commit), step (a plan or task step completed), test (a test run that passed), file (a file edited for the first time), push (a successful git push), build (a compile or check that finished), merge (a successful pull-request merge), deploy (a successful deploy command), agent_result (a subagent's result returned to the session that launched it: a foreground launch's result or a completed task-notification), report_file (a new file written under a report path, patterns.report_path, instead of the plain file weight). A commit, a push or a finished build also restarts the waste window (agent_waste.toml)."
+value = { commit = 10, step = 5, test = 2, file = 1, push = 3, build = 3, merge = 10, deploy = 10, agent_result = 4, report_file = 3 }
 
 [agent_tracker.cooldowns]
-doc = "Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap)."
-value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 900000, max_per_day = 12 } }
+doc = "Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent)."
+value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, agent_waste = { cooldown_ms = 1800000, max_per_day = 4 }, burn_soft = { cooldown_ms = 1800000, max_per_day = 4, confirm_ticks = 1 }, burn_hard = { cooldown_ms = 900000, max_per_day = 6, confirm_ticks = 1 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 900000, max_per_day = 12 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 }, no_work = { cooldown_ms = 3600000, max_per_day = 20, once = true, confirm_ticks = 1 } }
 
 [agent_tracker.spam]
 doc = "Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder)."
 value = { max_per_tick = 6, max_pending = 3, max_per_delivery = 3, max_text = 700 }
 
+[agent_tracker.targets]
+doc = "The route targets a signal may name. to: whose session the reminder is for (self: the agent itself; coordinator: the session that launched it, a subagent's parent, the newest active main session for a heartbeat, the agent itself for a main session); via: how it is delivered (queue: the session's reminder queue, delivered by its hook at the next turn, and the mesh outbox for a workspace's parent; wake: the session's wake feed, which its idle wake-watch Monitor turns into a stdout line that wakes it; owner: the owner notices file, only while agents.ownerNotify is on). A new target is a row here, then named in routes."
+value = { self = { to = "self", via = "queue" }, coordinator = { to = "coordinator", via = "queue" }, wake = { to = "coordinator", via = "wake" }, self_wake = { to = "self", via = "wake" }, owner = { to = "owner", via = "owner" } }
+
 [agent_tracker.routes]
-doc = "Where each signal goes. self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it (a subagent's parent session, a workspace's parent over the mesh, the newest active main session for a heartbeat); owner: the owner notices file (only while agents.ownerNotify is on)."
-value = { hung = ["coordinator", "owner"], looping = ["coordinator", "owner"], token_waste = ["coordinator", "owner"], drift = ["self"], heartbeat_stale = ["coordinator"], monitor_unarmed = ["self"] }
+doc = "Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on)."
+value = { hung = ["coordinator", "wake", "owner"], looping = ["coordinator", "wake", "owner"], token_waste = ["coordinator", "wake", "owner"], agent_waste = ["coordinator", "wake", "owner"], burn_soft = ["self", "coordinator", "wake"], burn_hard = ["self", "coordinator", "wake"], drift = ["self"], heartbeat_stale = ["coordinator", "wake"], monitor_unarmed = ["self"], idle_open_task = ["coordinator", "wake"], watched_exit = ["coordinator", "wake"], no_work = ["coordinator", "wake"] }
 
 [agent_tracker.signals]
 doc = "The signals the tick evaluates, in order. A name not listed here is never raised."
-value = ["hung", "looping", "token_waste", "drift", "heartbeat_stale", "monitor_unarmed"]
+value = ["hung", "looping", "token_waste", "agent_waste", "burn_soft", "burn_hard", "drift", "heartbeat_stale", "monitor_unarmed", "idle_open_task", "watched_exit", "no_work"]
 
 [agent_tracker.kinds]
-doc = "The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file)."
-value = { main = "main", subagent = "subagent", workspace = "workspace", heartbeat = "heartbeat" }
+doc = "The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), teammate (an in-process teammate of an agent team: a subagent transcript whose meta names it one), codex (a Codex CLI session, from its rollout file), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file)."
+value = { main = "main", subagent = "subagent", teammate = "teammate", codex = "codex", workspace = "workspace", heartbeat = "heartbeat" }
+
+[agent_tracker.registry]
+doc = "The host's registry of live sessions (agent_tracker.paths.sessions: one JSON file per running process, removed when it exits) as a liveness source: a session whose process is alive is running or waiting, never done, however old its transcript. Fields: pid, session (the session id), cwd, started (ms), status, name. busy / waiting / blocked: the status words (the same words as claude_cli's, plus the registry's own: shell = a shell command is running). A status in none of the lists decides nothing and the transcript does."
+value = { pid = "pid", session = "sessionId", cwd = "cwd", started = "startedAt", status = "status", name = "name", busy = ["busy", "shell"], waiting = ["idle", "waiting"], blocked = ["blocked"] }
+
+[agent_tracker.meta]
+doc = "Field names of a subagent's meta file (the host's format). task_kind and teammate: a subagent whose task_kind field equals teammate is an in-process teammate of an agent team; name: its team name for it; description: the task description the launcher gave it (a stop of the teammate is answered with this text); team: the team; finished: true once the host recorded the agent as finished."
+value = { task_kind = "taskKind", teammate = "in_process_teammate", name = "name", description = "description", team = "teamName", finished = "finished" }
+
+[agent_tracker.roster]
+doc = "The host's team roster as a liveness source for teammates: <dir>/<team>/<file> lists the members of an agent team (field `members`, each with a `name`); the host removes a teammate when it is stopped or finishes, but writes nothing into the teammate's own transcript, which reads running for as long as it is tracked. A teammate whose meta file names a team and whose name is missing from that team's readable roster, or is listed with a `joined` time later than the agent's start plus rejoin_slack_ms (the name belongs to a newer spawn), is finished. grace_ms: how long a teammate must have been followed before its absence counts (the roster is written at spawn, but a tick may read it between the two writes). A roster that is missing or unreadable decides nothing."
+value = { dir = ".claude/teams", file = "config.json", members = "members", name = "name", joined = "joinedAt", grace_ms = 120000, rejoin_slack_ms = 120000 }
+
+[agent_tracker.codex]
+doc = "Field names of a Codex rollout file (Codex's format): its first line is a session_meta record whose payload carries the session id, the working directory and the originator (exec_originators: the originators of one-shot runs, which end for good when a turn ends). A turn is marked in the file by a record of one of start_types or terminal_types (marker: how such a type appears in a record, {} = the type); the last mark in the tail decides whether the turn ended."
+value = { type_key = "type", meta_type = "session_meta", payload = "payload", id = "id", cwd = "cwd", originator = "originator", exec_originators = ["codex_exec"], marker = "\"type\":\"{}\"", start_types = ["task_started"], terminal_types = ["task_complete", "turn_aborted"] }
+
+[agent_tracker.headless]
+doc = "Headless one-shot runs (a plugin's `claude -p` judge calls, SDK runs) are not agents: they are never tracked, listed or counted. A transcript is headless when its first lines carry key = one of values (the host's entrypoint field: sdk-cli), or when its project directory name contains one of dir_contains (directories only such runs write to)."
+value = { key = "entrypoint", values = ["sdk-cli"], dir_contains = ["double-shot-latte"] }
+
+[agent_tracker.counts]
+doc = "Names of the summary counts in the status JSON. Live = not done. sessions: main and workspace sessions (matches the claude processes in `ps`), subagents, teammates, codex; headless: one-shot runs left out; done_hidden: finished agents older than limits.done_keep_ms left out of the list."
+value = { sessions = "sessions_live", subagents = "subagents_live", teammates = "teammates_live", codex = "codex_live", headless = "headless_skipped", done_hidden = "done_hidden", listed = "listed" }
+
+[agent_tracker.roles]
+doc = "The names of the derived role of a session in the status JSON: primary (it coordinates at least one other agent) and solo (it does not)."
+value = { primary = "primary", solo = "solo" }
+
+[agent_tracker.guard_live_states]
+doc = "Tracker states that prove a task owner or spawn-ceiling row is live, when its backing transcript is readable and fresh. Finished, dead and stale rows never count as live."
+value = ["running", "waiting"]
+
+[agent_tracker.guard_inactive_states]
+doc = "Tracker states that conclusively exclude a retained row from live guard counts; absent or unreadable evidence remains unknown."
+value = ["done", "dead", "stale"]
+
+[agent_tracker.guard_job_kind]
+doc = "Kind of a background shell job exposed to task coverage from the tracker's unfinished bg_ids; jobs expire using the existing limits.bg_bash_ms."
+value = "shell"
 
 [agent_tracker.states]
-doc = "The names of an agent's states: running, waiting (finished its turn, or the host says it waits for input), done (a subagent that finished), stale (running but its heartbeat or transcript went quiet past the active window)."
-value = { running = "running", waiting = "waiting", done = "done", stale = "stale" }
+doc = "The names of an agent's states: running, waiting (finished its turn with no tool call open, or the host says it waits for input; a host \"busy\" over an ended turn is a background shell, not work), done (a subagent that finished), stale (running but its heartbeat or transcript went quiet past the active window), dead (no live process and its project directory or transcript is gone, or silent past limits.dead_idle_ms with no live parent: out of the live list, its flags cleared, nothing deleted)."
+value = { running = "running", waiting = "waiting", done = "done", stale = "stale", dead = "dead" }
 
 [agent_tracker.channels]
 doc = "The names of the delivery channels, as they appear in telemetry and the status table."
-value = { self = "self", coordinator = "coordinator", owner = "owner", session = "session", mesh = "mesh", owner_file = "owner" }
+value = { self = "self", coordinator = "coordinator", owner = "owner", session = "session", mesh = "mesh", owner_file = "owner", wake = "wake" }
 
 [agent_tracker.transcript]
 doc = "Field and value names of the Claude Code transcript lines the tracker reads (the host's own format)."
-value = { type_key = "type", assistant = "assistant", user = "user", message = "message", content = "content", usage = "usage", id = "id", stop_reason = "stop_reason", end_turn = "end_turn", ts = "timestamp", cwd = "cwd", session = "sessionId", tool_use = "tool_use", tool_result = "tool_result", text = "text", name = "name", input = "input", tool_use_id = "tool_use_id", is_error = "is_error", in_tok = "input_tokens", out_tok = "output_tokens", cr_tok = "cache_read_input_tokens", cw_tok = "cache_creation_input_tokens", command = "command", file_path = "file_path", pattern = "pattern", path = "path", background = "run_in_background", persistent = "persistent", delay = "delaySeconds", recurring = "recurring", todos = "todos", status = "status", completed = "completed", in_progress = "in_progress", active_form = "activeForm", subject = "subject", content_key = "content", task_status = "status", description = "description", sidechain = "isSidechain" }
+value = { type_key = "type", assistant = "assistant", user = "user", message = "message", content = "content", usage = "usage", id = "id", stop_reason = "stop_reason", end_turn = "end_turn", ts = "timestamp", cwd = "cwd", session = "sessionId", tool_use = "tool_use", tool_result = "tool_result", text = "text", name = "name", input = "input", tool_use_id = "tool_use_id", is_error = "is_error", in_tok = "input_tokens", out_tok = "output_tokens", cr_tok = "cache_read_input_tokens", cw_tok = "cache_creation_input_tokens", command = "command", file_path = "file_path", pattern = "pattern", path = "path", background = "run_in_background", persistent = "persistent", delay = "delaySeconds", recurring = "recurring", todos = "todos", status = "status", completed = "completed", in_progress = "in_progress", active_form = "activeForm", subject = "subject", content_key = "content", task_status = "status", task_id = "taskId", description = "description", sidechain = "isSidechain", meta = "isMeta", origin = "origin", origin_kind = "kind", tool_result_top = "toolUseResult" }
 
 [agent_tracker.tools]
-doc = "Tool names by role: edit (change a file), shell (run a command), agent (launch a subagent), todo (a task list rewrite), task_update (a single task update), monitor / cron / wakeup (arm a wake path)."
-value = { edit = ["Edit", "Write", "MultiEdit", "NotebookEdit"], shell = ["Bash"], agent = ["Agent", "Task"], todo = ["TodoWrite"], task_update = ["TaskUpdate"], monitor = ["Monitor"], cron = ["CronCreate"], wakeup = ["ScheduleWakeup"] }
+doc = "Tool names by role: edit (change a file), shell (run a command), agent (launch a subagent), todo (a task list rewrite), task_create (a new task-list item), task_update (a single task update), monitor / cron / wakeup (arm a wake path), read (look at a file or search: their targets count as recent work for the drift check, a read of the step's files is on-step)."
+value = { edit = ["Edit", "Write", "MultiEdit", "NotebookEdit"], shell = ["Bash"], agent = ["Agent", "Task"], todo = ["TodoWrite"], task_create = ["TaskCreate"], task_update = ["TaskUpdate"], monitor = ["Monitor"], cron = ["CronCreate"], wakeup = ["ScheduleWakeup"], read = ["Read", "Grep", "Glob"] }
 
 [agent_tracker.wake]
 doc = "How long each kind of wake path keeps the session reachable, in milliseconds: monitor (a Monitor without persistent: true, which ends at its own cap), persistent (a persistent Monitor), cron (a CronCreate job), wakeup_slack (added to a ScheduleWakeup's own delay)."
 value = { monitor = 1800000, persistent = 86400000, cron = 604800000, wakeup_slack = 300000 }
 
 [agent_tracker.patterns]
-doc = "Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed)."
-value = { commit = "\\bgit\\s+(-C\\s+\\S+\\s+)?commit\\b", test = "\\b(cargo\\s+(test|nextest)|npm\\s+(run\\s+)?test|node\\s+--test|pytest|go\\s+test|flutter\\s+test|jest|vitest|make\\s+test)\\b", test_pass = "(\\btest result: ok\\b|\\b[0-9]+ passed\\b|\\bpass(ed)?\\b\\s*[0-9]+|\\ball tests passed\\b|^ok\\b)", test_fail = "(\\bFAILED\\b|\\b[1-9][0-9]* failed\\b|\\btest result: FAILED\\b|\\bfail\\s+[1-9])" }
+doc = "Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), task_created (the result of a task-list create: captures the new task id), bg_started (the result of a background shell command: captures the task id whose end notice is awaited), ci_wait (a command that checks or watches CI), merge (a pull-request merge, counted as an outcome), deploy (a deploy command, counted as an outcome), build (a compile or check: cargo build, check, clippy, or an npm/go/make/flutter build), build_pass (output that shows it finished), build_fail (output that shows it failed), report_path (a file path that is a report: written under a scratchpad, reports or findings directory), owner_skip (the start of a user line that is not the owner talking: a task notice, a reminder block, a command echo)."
+value = { commit = "\\bgit\\s+(-[Cc]\\s+\\S+\\s+)*commit\\b", push = "\\bgit\\s+(-[Cc]\\s+\\S+\\s+)*push\\b", build = "\\b(cargo\\s+(build|check|clippy)|go\\s+build|flutter\\s+build|make\\s+build|npm\\s+run\\s+build)\\b", build_pass = "\\b(Finished|Compiling|Built target|build succeeded|Built)\\b", build_fail = "(error(\\[E\\d+\\])?:|could not compile|FAILED|build failed)", guard_fire = "⛔ anti-hall · [a-z0-9-]+:", test = "\\b(cargo\\s+(test|nextest)|npm\\s+(run\\s+)?test|node\\s+--test|pytest|go\\s+test|flutter\\s+test|jest|vitest|make\\s+test)\\b", test_pass = "(\\btest result: ok\\b|\\b[0-9]+ passed\\b|\\bpass(ed)?\\b\\s*[0-9]+|\\ball tests passed\\b|^ok\\b)", task_created = "Task\\s*#?([A-Za-z0-9_-]+)\\s+created", bg_started = "running in background with ID:\\s*([A-Za-z0-9_-]+)", test_fail = "(\\bFAILED\\b|\\b[1-9][0-9]* failed\\b|\\btest result: FAILED\\b|\\bfail\\s+[1-9])", ci_wait = "\\bgh\\s+(run\\s+(watch|view|list)|pr\\s+(checks|view|status)|api\\s+\\S*(check-runs|actions/runs))\\b", merge = "(?:^|[;&|(]\\s*)gh\\s+pr\\s+merge\\b|(?:^|[;&|(]\\s*)(?:hivecontrol|devswarm)\\s+workspace\\s+merge-into-source\\b", deploy = "(?:^|[;&|(]\\s*)(?:(?:bash|sh|python3?|node)\\s+)?(?:\\S*/)?(?:[\\w.-]*deploy[\\w.-]*|firebase\\s+deploy|npm\\s+run\\s+deploy\\S*|gcloud\\s+\\S+(?:\\s+\\S+)?\\s+deploy|vercel\\s+deploy)" , codex_job = '\btask-[A-Za-z0-9][A-Za-z0-9_-]*\b', report_path = "(?:^|/)(?:scratchpad|reports?|findings)/", owner_skip = "^\\s*<(?:task-notification|system-reminder|local-command|user-prompt-submit-hook|cross-session-message)" }
 
 [agent_tracker.words]
 doc = "Words left out when a step is compared with the work done (drift), as one list; the split characters that cut a path or command into words."
@@ -96,12 +193,12 @@ doc = "The Claude Code CLI as a data source, used only where it beats parsing a 
 value = { bin = "claude", version_args = ["--version"], agents_args = ["agents", "--json"], verified = { agents_json = "2.1.295", version_text = "2.1.295" }, busy = ["busy"], waiting = ["waiting", "idle"], blocked = ["blocked"], failed = ["failed"], id = "sessionId", status = "status", state = "state", kind = "kind", pid = "pid", name = "name", cwd = "cwd" }
 
 [agent_tracker.devswarm_fields]
-doc = "Field names of the DevSwarm descriptor, plan and wake-watch lock files the tracker reads (the DevSwarm format)."
-value = { id = "id", session = "sessionId", worktree = "worktreePath", steps = "steps", step_status = "status", step_text = "text", step_done = "done", step_doing = "doing", step_blocked = "blocked", step_ts = "ts", lock_ts = "ts", lock_pid = "pid", hb_ts = "ts", hb_status = "status", hb_step = "step", hb_id = "id", hb_running = "running" }
+doc = "Field names of the DevSwarm descriptor, plan, wake-watch lock and workspace name-cache files the tracker reads (the DevSwarm format); title is the field of the name cache that holds a workspace's display title."
+value = { id = "id", session = "sessionId", worktree = "worktreePath", title = "name", steps = "steps", step_status = "status", step_text = "text", step_done = "done", step_doing = "doing", step_blocked = "blocked", step_ts = "ts", lock_ts = "ts", lock_pid = "pid", hb_ts = "ts", hb_status = "status", hb_step = "step", hb_id = "id", hb_running = "running" }
 
 [agent_tracker.fmt]
-doc = "Layout of the status table: columns (the header words, in order), the separator between columns, and the word for an absent value. ago_units: the suffixes used for seconds, minutes, hours and days in an age."
-value = { columns = ["AGENT", "KIND", "STATE", "TOK_IN", "TOK_OUT", "CACHE", "TOOLS", "PROGRESS", "LAST_OUTPUT", "FLAGS"], sep = "  ", none = "-", ago_units = ["s", "m", "h", "d"], flags_sep = ",", name_max = 28, unit_ms = [1000, 60000, 3600000, 86400000], day_ms = 86400000, ms_per_s = 1000, pct = 100 }
+doc = "Layout of the status table: columns (the header words, in order), the separator between columns, and the word for an absent value. ago_units: the suffixes used for seconds, minutes, hours and days in an age. count_steps / count_units: the divisors and suffixes of a token count in a message (995687 reads 995k, 1500000 reads 1.5M). count_decimal_below_tenths: a count below this many tenths of its unit shows one decimal (1.5M), at or above it whole units (12M)."
+value = { columns = ["AGENT", "KIND", "STATE", "TOK_IN", "TOK_OUT", "CACHE", "TOOLS", "PROGRESS", "LAST_OUTPUT", "WASTE", "FLAGS"], sep = "  ", none = "-", ago_units = ["s", "m", "h", "d"], count_steps = [1, 1000, 1000000], count_units = ["", "k", "M"], flags_sep = ",", name_max = 28, unit_ms = [1000, 60000, 3600000, 86400000], day_ms = 86400000, ms_per_s = 1000, pct = 100, count_decimal_below_tenths = 100 }
 
 [msg.agent_hung]
 doc = "Advisory: an agent has produced no output for too long. Placeholders: {agent}, {kind}, {idle}, {tool}."
@@ -124,12 +221,80 @@ doc = "Reminder: a heartbeat file went stale. Placeholders: {agent}, {age}, {ste
 value = "agent tracker: agent {agent} has not updated its heartbeat for {age} (its last step: {step}). It may be hung or finished without saying so."
 
 [msg.agent_monitor_unarmed]
-doc = "Reminder to arm a wake path (generic sessions). Placeholders: {count}, {armed}."
-value = "agent tracker: you have {count} background task(s) running and no Monitor, cron or scheduled wake armed ({armed}). Without one you are not woken when they finish. Arm one now: call `Monitor` with a command that prints a line when the work finishes, or `CronCreate` / `ScheduleWakeup` a check for a few minutes from now."
+doc = "Reminder to arm a wake path (generic sessions), one short line. Placeholders: {count}, {armed}."
+value = "agent tracker: {count} background task(s) running and no wake path armed ({armed}); you are not woken when they end. Arm `Monitor` (ah-engine agents wake-watch) with timeout_ms 1800000 (without it the Monitor expires after the 5-minute default) or `CronCreate` a check."
 
 [msg.agent_monitor_unarmed_devswarm]
 doc = "Reminder to arm the wake-watch (DevSwarm workspaces). Placeholders: {command}."
-value = "agent tracker: no Monitor wake-watch covers this workspace (its lock is missing, stale or its process is gone). Re-arm it now: call `Monitor` with command `{command}` (persistent: true if your Monitor tool supports it). The cron tick stays your fallback wake path."
+value = "agent tracker: no Monitor wake-watch covers this workspace (its lock is missing, stale or its process is gone). Re-arm it now: call `Monitor` with command `{command}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default; add persistent: true if your Monitor tool supports it). The cron tick stays your fallback wake path."
+
+[msg.agent_idle_open_task]
+doc = "Wake advisory: an agent finished its turn with a task open and went quiet. Placeholders: {agent}, {kind}, {idle}, {task}."
+value = "agent tracker: {kind} {agent} has been idle for {idle} with its task still open ({task}). Re-task it (SendMessage) or stop it; the tracker never does either."
+
+[agent_tracker.no_work]
+doc = "The no_work signal requires a valid transcript scanned from its start through its current end. Partial, truncated or unread scans are unknown and never notify. Rescue wrappers (agent type or Codex job id in a result) are excluded because their work happens elsewhere. max_tools controls the threshold."
+value = { max_tools = 0, agent_type_fields = ["agentType", "subagent_type", "agent_type"], rescue_type = "codex:codex-rescue", result_field = "toolUseResult", result_agent_field = "agentId" }
+
+[msg.agent_no_work]
+doc = "Advisory to the coordinator: a subagent ended without doing anything. Placeholders: {agent}, {kind}, {tools}."
+value = "agent tracker: {kind} {agent} finished with {tools} tool uses: it did no work, so its report is not a result. Do not count it as done; re-brief it or do the step yourself."
+
+[msg.agent_watched_exit]
+doc = "Wake advisory: a background shell task an agent started has ended. Placeholders: {agent}, {kind}, {count}, {task}."
+value = "agent tracker: {count} background task(s) of {kind} {agent} ended (last: {task}). Read its output and act on the result."
+
+[agent_tracker.live_plan]
+doc = "The live facts of a DevSwarm workspace's work that the roster shows beside its plan (the plan is the workspace's own `heartbeat --step` report and goes stale). dir: the folder under the tracker's directory holding one file per workspace (task-list completions, commits, pushes, merges and deploys, when it last shipped); stale_ms: how far after the plan's last report a commit, push, merge or deploy must be before the roster says the plan is behind."
+value = { dir = "live-plan", stale_ms = 300000 }
+
+[agent_tracker.native_wake]
+doc = "The native wake of an idle DevSwarm workspace (`workspace reactivate-child`, run after a mesh send to the workspace and by `agents send`; switched with agents.wakeWatch). idle_ms: how long a running-looking workspace must have been silent before it is woken (one that ended its turn is woken at once); cooldown_ms: the least gap between two wakes of one workspace; timeout_ms: the bound of each hivecontrol call; text_cap: characters of a preview or an error kept; dir: the folder (under the tracker's base) holding each workspace's last-wake stamp."
+value = { idle_ms = 120000, cooldown_ms = 300000, timeout_ms = 15000, text_cap = 200, dir = "native-wake" }
+
+[agent_tracker.wake_prefix]
+doc = "The first words of the prompt `workspace reactivate-child` queues. DevSwarm stores that prompt as a direct mesh row from the parent, so the engine recognises a wake row by this prefix and never counts it as mail: not in a workspace's unread count, not in the direct total the wake-watch edge-triggers on. The wake prompt is built from it (`msg.native_wake_prompt`)."
+value = "anti-hall wake:"
+
+[msg.native_wake_prompt]
+doc = "The prompt `workspace reactivate-child` queues for an idle workspace; it only sends the workspace to its mesh inbox. Placeholders: {prefix} (agent_tracker.wake_prefix), {id} (the workspace), {text} (a short preview, may be empty)."
+value = "{prefix} a mesh message is waiting for workspace {id}. Run `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull {id}` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read {id}` and act on it. {text}"
+
+[msg.agent_wake_line]
+doc = "The stdout line the wake-watch prints for one wake row; this is what the host delivers to the idle session. Placeholder: {text}."
+value = "[agent-wake] {text}"
+
+[agent_tracker.wake_coalesce_setting]
+doc = "Wake rows merge into one line per window. Setting agents.wakeCoalesceSeconds (seconds, default 20, 0 = off: every wake row prints at once): wake rows that arrive within this window of the first unprinted one are printed as ONE line that counts rows per agent (msg.agent_wake_merged), so a burst of completions costs one host notification instead of one each. A single row in the window prints unchanged, up to the window late. The rows are also in the coordinator's reminder queue, so nothing is lost by merging the line."
+value = { type = "number", section = "agents", key = "wakeCoalesceSeconds", env = "ANTIHALL_AGENT_WAKE_COALESCE_SECONDS", option = "", min = 0, max = 600, default = 20 }
+
+[msg.agent_wake_merged]
+doc = "The one stdout line the wake-watch prints for several wake rows coalesced in a window. Placeholders: {n} (rows), {secs} (span from the first to the last row, rounded up), {items} (msg.agent_wake_merged_item per agent, joined by agent_tracker.wake_merge.item_sep)."
+value = "[agent-wake] {n} wake rows in {secs}s: {items}. Full texts arrive with your reminders."
+
+[msg.agent_wake_merged_item]
+doc = "One agent of a coalesced wake line. Placeholders: {agent}, {n} (its rows), {signals} (its distinct signals joined by agent_tracker.wake_merge.signal_sep)."
+value = "{agent} x{n} ({signals})"
+
+[agent_tracker.wake_merge]
+doc = "Separators of a coalesced wake line: item_sep between agents, signal_sep between one agent's signals."
+value = { item_sep = "; ", signal_sep = ", " }
+
+[msg.agent_wake_refused]
+doc = "Printed by a wake-watch started by hand (not --auto) that declines to arm. Placeholder: {reason}."
+value = "[agent-wake] not armed: {reason}"
+
+[msg.agent_wake_reason_off]
+doc = "Why the wake-watch did not arm: a switch is off (agents.tracker or agents.wakeWatch)."
+value = "switched off (agents.tracker / agents.wakeWatch)"
+
+[msg.agent_wake_reason_no_session]
+doc = "Why the wake-watch did not arm: no session id in the environment."
+value = "no session id in the environment"
+
+[msg.agent_wake_reason_held]
+doc = "Why the wake-watch did not arm: another live watcher already covers this session."
+value = "another wake-watch already covers this session"
 
 [msg.agent_armed_never]
 doc = "What {armed} reads when no wake path was ever armed in the transcript window."
@@ -165,7 +330,7 @@ value = "unavailable, transcripts used"
 
 [msg.agent_usage]
 doc = "Usage line of `ah-engine agents`."
-value = "usage: ah-engine agents status [--json] | tick [--json]"
+value = "usage: ah-engine agents status [--json] | tick [--json] | wake-watch [--auto] | send <id> [...] | nudge <child> stop|msg|snooze|other ..."
 
 [msg.agent_disabled]
 doc = "What a tick prints when the tracker switch is off."
@@ -196,9 +361,71 @@ doc = "The subcommand the scheduled job `agent_tick` runs."
 value = "tick"
 
 [agent_tracker.sources]
-doc = "The names of where an agent's numbers come from, as they appear in telemetry and the status JSON."
-value = { transcript = "transcript", heartbeat = "heartbeat" }
+doc = "The names of where an agent's numbers come from (process: a live process in the host's session registry; codex: a Codex rollout file), as they appear in telemetry and the status JSON."
+value = { transcript = "transcript", heartbeat = "heartbeat", process = "process", codex = "codex" }
 
 [env.claude_bin]
 doc = "Overrides the Claude Code program the agent tracker asks for its session listing (tests point it at a stand-in)."
 value = "AH_ENGINE_CLAUDE_BIN"
+
+[agent_tracker.progress_request_text]
+doc = "The reminder an agent gets when the dashboard asks it for progress."
+value = "Progress requested from the dashboard: reply with a short status (what is done, what is running, what is blocked) before you continue."
+
+[agent_tracker.stop_request_text]
+doc = "The reminder an agent gets when the dashboard asks it to stop on its own."
+value = "Stop requested from the dashboard: finish or park what you are doing, report where you stopped, and do not start new work until told."
+
+# ---- the owner's channel and the stop action for stuck agents (task #207, src/agents/escalate.rs; the nudge loop is agent_nudge.toml) ----------------------------------------------
+
+[agent_tracker.act_setting]
+doc = "Where the switch of the stuck-agent action is read from (agents.actOnStuck, default on): on, a child whose nudge was escalated to the owner and is still open past agent_tracker.escalate.act_after_ms is stopped by the means its kind allows (a one-shot Codex run: SIGTERM by the pid that holds its rollout open, re-checked; a DevSwarm workspace: the stop request of `agents send`; a subagent or teammate: a stop request to its live coordinator). Primaries are never acted on. Off, it is only escalated."
+value = { section = "agents", key = "actOnStuck", env = "ANTIHALL_AGENT_ACT_ON_STUCK", aliases = [], option = "", default = true }
+
+[agent_tracker.escalate]
+doc = "The owner's channel and the stop action for stuck agents (src/agents/escalate.rs, used by the nudge loop of agent_nudge.toml). act_after_ms: a nudge that was escalated to the owner and is still open this long after it was first sent runs the action of the child's kind (agent_tracker.act_setting), once. exempt_kinds: kinds never nudged about or acted on (a Primary may run for hours; a DevSwarm Primary's session is exempt by its descriptor prefix agent_tracker.primary_prefix). codex_hung_ms: a one-shot Codex run quiet this long with no terminal record, whose process still holds its rollout open, is hung (a nudge to the session that launched it). term_cmds: the command substrings a process must show to be signalled for a Codex row (one-shot runs only: a shared Codex server holds many sessions' rollouts and never matches)."
+value = { act_after_ms = 3600000, exempt_kinds = ["main"], codex_hung_ms = 1800000, term_cmds = ["codex exec"] }
+
+[agent_tracker.escalate_words]
+doc = "The action words the stop action writes to telemetry (field action)."
+value = { act_term = "term", act_stop_request = "stop_request", act_none = "none" }
+
+[msg.agent_act_codex]
+doc = "Appended to the escalation when a hung one-shot Codex run was sent SIGTERM. Placeholder: {pid}."
+value = " Sent SIGTERM to Codex pid {pid} (it held the session's rollout open)."
+
+[msg.agent_act_workspace]
+doc = "Appended to the escalation when a hung DevSwarm workspace was asked to stop."
+value = " Asked the workspace to stop (agents send --stop-request)."
+
+[msg.agent_act_child]
+doc = "Appended to the escalation when the live coordinator of a hung subagent or teammate was asked to stop it. Placeholder: {parent}."
+value = " Asked its coordinator {parent} to stop it."
+
+[msg.agent_act_child_request]
+doc = "The stop request queued for the coordinator of a hung subagent or teammate. Placeholders: {agent} (its id), {name}."
+value = "agent tracker: your subagent {name} ({agent}) has been hung past the action limit. Stop it now (TaskStop {agent}) and take over or re-dispatch its work."
+
+[msg.agent_act_none]
+doc = "Appended to the escalation when the action found nothing it may stop (no single pid matched, or no live coordinator)."
+value = " Nothing was stopped: no process matched by pid; stop it by hand."
+
+[agent_tracker.stop_result]
+doc = "How the tracker reads a stop of an in-process teammate in its launching session's transcript. use_type: the block type of a tool call; name / desc: the fields of the launching call that name the teammate and describe its task; result: the entry field holding a tool's structured result; kind: the field of that result naming the task type, teammate: its value for an in-process teammate; command: the field holding the task's description, which the stop's answer repeats."
+value = { use_type = "tool_use", name = "name", desc = "description", result = "toolUseResult", kind = "task_type", teammate = "in_process_teammate", command = "command" }
+
+[agent_tracker.no_work_states]
+doc = "No-work evidence states in agents status: unknown means incomplete scan, excluded a Codex-rescue wrapper, no_work a proven empty finished child, clear otherwise."
+value = { unknown = "unknown", excluded = "excluded", no_work = "no_work", clear = "clear" }
+
+[agent_tracker.owner_active_setting]
+doc = "Where the switch of the owner-active rule is read from (agents.nudgeOwnerActive, default on): on, a main or workspace session whose owner sent a message within limits.owner_active_ms is healthy, so the token-waste signal stays down for it and the agentHealth judge is told when the owner last spoke; off, only outcomes count."
+value = { section = "agents", key = "nudgeOwnerActive", env = "ANTIHALL_AGENT_NUDGE_OWNER_ACTIVE", aliases = [], option = "", default = true }
+
+[agent_tracker.owner_origins]
+doc = "The origin kinds of a user line (its origin.kind field) that are the owner talking; a user line with no origin counts when it is not a meta line, carries no tool result and does not start like patterns.owner_skip."
+value = ["human"]
+
+[agent_tracker.result_statuses]
+doc = "The task-notification statuses that mean a subagent returned a result to its launcher (counted once per task id as the agent_result weight)."
+value = ["completed"]

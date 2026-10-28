@@ -5,8 +5,8 @@
 //! 1. that vendor's own plugin option (`CLAUDE_PLUGIN_OPTION_JEV_<VENDOR>_API_KEY`);
 //! 2. the vendor-less legacy option, but only when it is bound to this vendor (`jev.genericKeyVendor`, a home-only
 //!    setting), because it carries no vendor name and so must not follow a transport flip to another vendor;
-//! 3. only with the home-only opt-in `jev.allowLegacyKeyRead`: the vendor's legacy environment variable, then a key
-//!    file.
+//! 3. only with the home-only opt-in `jev.allowLegacyKeyRead`: a key file. No key is ever read from an environment
+//!    variable other than the plugin options above.
 //!
 //! A key is read for exactly the vendor it was entered for. It is a [`Key`], whose `Debug` output is redacted and
 //! which has no `Display`, so it cannot reach a log or an error message by accident.
@@ -37,8 +37,6 @@ impl fmt::Debug for Key {
 pub enum KeySource {
     /// A plugin option.
     PluginOption,
-    /// A legacy environment variable (opt-in).
-    LegacyEnv,
     /// A legacy key file (opt-in).
     LegacyFile,
 }
@@ -73,14 +71,6 @@ fn own_option_var(vendor: Vendor) -> &'static str {
     }
 }
 
-/// The vendor's legacy key variable.
-fn legacy_var(vendor: Vendor) -> &'static str {
-    match vendor {
-        Vendor::Vercel => defaults::text("env.jev_legacy_key_vercel"),
-        Vendor::Typesafe => defaults::text("env.jev_legacy_key_typesafe"),
-    }
-}
-
 /// Resolve the key for `vendor` (Node: `resolveCredential`). Never logs or returns key material outside `key`.
 pub fn resolve_key(settings: &JevSettings, vendor: Vendor) -> KeyLookup {
     let env = settings.env();
@@ -101,11 +91,6 @@ pub fn resolve_key(settings: &JevSettings, vendor: Vendor) -> KeyLookup {
         out.diagnostic = Some(defaults::render("msg.jev_generic_key_bound", &[("bound", &bound.as_str()), ("option", &option), ("vendor", &vendor.as_str())]));
     }
     if !settings.allow_legacy_key_read {
-        return out;
-    }
-    if let Some(v) = env.get_nonempty(legacy_var(vendor)) {
-        out.key = Some(Key(v));
-        out.source = Some(KeySource::LegacyEnv);
         return out;
     }
     // The configured key file is as ambiguous as the generic option, so it applies only to the vendor that option is
@@ -212,9 +197,10 @@ mod tests {
         std::fs::write(h.join(".config/vercel/ai-gateway-key"), "file-key\n").unwrap();
         let off = settings(&[("AI_GATEWAY_API_KEY", "env-key")], json!({}), &h);
         assert!(resolve_key(&off, Vendor::Vercel).key.is_none());
-        let on = settings(&[("AI_GATEWAY_API_KEY", "env-key")], json!({"allowLegacyKeyRead": true}), &h);
+        let on = settings(&[("AI_GATEWAY_API_KEY", "env-key"), ("TYPESAFE_API_KEY", "env-key")], json!({"allowLegacyKeyRead": true}), &h);
         let r = resolve_key(&on, Vendor::Vercel);
-        assert_eq!((r.key.unwrap().expose(), r.source), ("env-key", Some(KeySource::LegacyEnv)));
+        assert_eq!((r.key.unwrap().expose(), r.source), ("file-key", Some(KeySource::LegacyFile)), "a legacy env var is never read, even with the opt-in");
+        assert!(resolve_key(&on, Vendor::Typesafe).key.is_none());
         let file = settings(&[], json!({"allowLegacyKeyRead": true}), &h);
         assert_eq!(resolve_key(&file, Vendor::Vercel).key.unwrap().expose(), "file-key");
         assert!(resolve_key(&file, Vendor::Typesafe).key.is_none(), "another vendor reads its own file, which is absent");

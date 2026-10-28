@@ -1,5 +1,5 @@
 //! D58, D87: the dispatch table in `defaults/dispatch.toml` is the hand-maintained table of record. These tests check the
-//! table itself: every entry has a Node command to fall back to and names a real check (D74), entry ids are unique within an
+//! table itself: every entry has a built-in check or a Node command to fall back to, and a named check is a real one (D74), entry ids are unique within an
 //! event, and the model-routing entries stay scoped. That the plugin's committed `hooks.json` files, registries and fallback
 //! lists equal what the table generates is `tests/hooks_files.rs`.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
@@ -16,7 +16,9 @@ fn every_entry_can_fall_back_to_node_and_names_a_real_check() {
             ids.dedup();
             assert_eq!(ids.len(), es.len(), "{host} {event}: entry ids must be unique (they key the fallback map)");
             for e in &es {
-                assert!(!e.command.trim().is_empty(), "{host} {event} {}: no Node command to fall back to (D74)", e.id);
+                // an entry is answered by a built-in check (engine-only when it has no Node twin) or by its Node command (the commands
+                // file of the Node backup plugin), never by nothing (D74)
+                assert!(e.check.is_some() || !e.command.trim().is_empty(), "{host} {event} {}: no check and no Node command to fall back to (D74)", e.id);
                 if let Some(c) = &e.check {
                     assert!(ah_engine::checks::get(c).is_some(), "{host} {event} {}: unknown check {c}", e.id);
                 }

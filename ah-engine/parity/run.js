@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Parity harness: run each corpus command through the Node hook AND the engine, diff decision + message.
-//   node run.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks --corpus corpus.jsonl [--rules ../../plugins/anti-hall/engine/rules.json] [--limit N] [--show 15]
+//   node run.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks --corpus corpus.jsonl [--rules ../../plugins/anti-hall/engine/rules.json] [--limit N] [--show 15]
 // Node side: `git-guard.js` for the two git rules; `command-guard.js` for rm -rf (it has no rm -rf rule: example only).
 // Everything runs under a temp HOME and a temp engine dir; nothing touches the real home.
 const fs = require('fs'), os = require('os'), path = require('path'), cp = require('child_process');

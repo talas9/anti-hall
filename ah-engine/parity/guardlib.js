@@ -124,7 +124,7 @@ process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.ex
     fs.writeFileSync(rf, JSON.stringify({ version: 1, rules: [Object.assign({ id: o.name, events, tools: o.tools || ['Bash'], check: o.check, action: 'deny', options: { plugin_root: PLUGIN_ROOT } }, o.engineRule || {})] }));
     const eenv = homed(Object.assign({ PATH: basePath, HOME: homeE, USERPROFILE: homeE, ANTIHALL_TEST_ISOLATION: '1' }, ctx.env || {}), homeE);
     const deferLog = path.join(tmp, 'defer' + gi + '.log');
-    const denv = Object.assign({}, eenv, { AH_PARITY_DEFER_LOG: deferLog, AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity', AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_NODE: process.execPath, AH_ENGINE_BREAKER_N: '1000000' });
+    const denv = Object.assign({}, eenv, { AH_PARITY_DEFER_LOG: deferLog, AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity', AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_SCRIPT_CUT_AT_DEADLINE: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_NODE: process.execPath, AH_ENGINE_BREAKER_N: '1000000' });
     const oenv = Object.assign({}, eenv, { AH_ENGINE_PLUGIN_ROOT: PLUGIN_ROOT });
     const warm = JSON.stringify({ session_id: 'warm', cwd: '/tmp', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo warm' } });
     if (MODE !== 'oneshot') {

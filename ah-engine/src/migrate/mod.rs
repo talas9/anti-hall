@@ -14,8 +14,14 @@
 //! journal stores, the workspace registry and descriptors) are not in the engine yet: while any of those directories holds an
 //! entry, such a step reports `skipped`, says it is left to the Node doctor, and does not stamp its marker, so the Node doctor
 //! still does it. With no DevSwarm state they report exactly what Node reports ("nothing to migrate") and stamp.
+pub mod childlabels;
 pub mod cli;
+pub mod cursorhyg;
+pub mod poststages;
+pub mod promote;
+pub mod readercur;
 pub mod settings;
+pub mod splitmerge;
 pub mod state;
 pub mod sweeps;
 
@@ -574,12 +580,58 @@ pub fn run(ctx: &Ctx) -> Vec<Row> {
     heal_registry_rows(ctx, &mut rows);
     sweeps::all(ctx, &mut rows);
     statusline_upgrade(ctx, &mut rows);
+    hooks_upgrade(ctx, &mut rows);
     rows
 }
 
-/// Engine only (Node's repair pass has no such step): a status line command that anti-hall installed in the Node-only form runs
-/// the engine first from now on. A row is reported only when a file is changed (or would be, on a dry run, or could not be), so a
-/// home with nothing to upgrade reports exactly what Node reports.
+/// Upgrade retired hook launchers on both hosts, including user and project Codex registrations. No version stamp: a copied
+/// old registration must be repaired even after an earlier pass. Unreadable or invalid files are left alone.
+pub(crate) fn hooks_upgrade(ctx: &Ctx, rows: &mut Vec<Row>) {
+    let id = defaults::text("hooks_form.repair_id");
+    let mut seen = std::collections::BTreeSet::new();
+    for target in defaults::raw("hooks_form.repair_targets").as_array().unwrap_or_default() {
+        let template = target.str_field("path");
+        if (template.contains("{home}") && ctx.home.is_empty())
+            || (template.contains("{cwd}") && ctx.cwd.is_empty())
+            || (template.contains("{root}") && ctx.plugin_root.as_deref().is_none_or(str::is_empty))
+        {
+            continue;
+        }
+        let path = PathBuf::from(defaults::fill(template, &[("home", &ctx.home), ("cwd", &ctx.cwd), ("root", &ctx.plugin_root.as_deref().unwrap_or(""))]));
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Some(text) = read_text_note(ctx, &path) else { continue };
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let n = crate::hooksgen::upgrade_hooks(&mut value, target.str_field("host"));
+        if n == 0 {
+            continue;
+        }
+        let body = match serde_json::to_string_pretty(&value) {
+            Ok(body) => body + "\n",
+            Err(e) => {
+                rows.push(Row::new(id, id, "failed", e.to_string()));
+                continue;
+            }
+        };
+        match crate::operator::install_codex::write_changed(&path, &body, ctx.dry_run) {
+            Ok(_) => rows.push(Row::new(
+                id,
+                id,
+                if ctx.dry_run { "skipped" } else { "fixed" },
+                defaults::render(
+                    if ctx.dry_run { "doctor_l.msg_repair_hooks_would" } else { "hooks_form.repair_done" },
+                    &[("n", &n), ("file", &path.display())],
+                ),
+            )),
+            Err(e) => rows.push(Row::new(id, id, "failed", e)),
+        }
+    }
+}
+
+/// Engine only (Node's repair pass has no such step): a status line command that still runs the retired shell wrapper runs the thin
+/// client from now on. A row is reported only when a file is changed (or would be, on a dry run, or could not be), so a home with
+/// nothing to upgrade reports exactly what Node reports.
 fn statusline_upgrade(ctx: &Ctx, rows: &mut Vec<Row>) {
     let id = step("statusline");
     for u in crate::ops::slcfg::upgrade_commands(&ctx.home, &ctx.cwd, &ctx.env, ctx.dry_run) {

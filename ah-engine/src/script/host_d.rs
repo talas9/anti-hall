@@ -65,7 +65,7 @@ fn task_json(t: &Task) -> Value {
 
 /// `transcriptTasks(path, variant, window, wide)`: JSON text.
 ///
-/// `variant` is `guard` (`task-guard.js` `parseTasksFromFile`), `state` (`lib/task-state.js` `reconstructTasks`) or `scan` (the
+/// `variant` is `guard`, `state` or `scan` (the
 /// task part of `tasklist-guard.js` `scanTranscript`). `window` is the tail read in bytes; a cut tail is completed from before the
 /// window the way `lib/task-subject-backfill.js` does (a bounded, exact scan; where Node's clock would decide, the answer is
 /// `unsure`). `wide` is only read by `scan`: the widened window searched for task activity when a cut tail holds none.
@@ -76,6 +76,15 @@ fn task_json(t: &Task) -> Value {
 ///   hook would end silently (a JSON `null` entry makes it throw), or `{"unreadable":true}` when the file cannot be read;
 /// - any variant: `{"unsure":true}` when a record or value only JavaScript could read exactly was met.
 pub fn transcript_tasks(path: &str, variant: &str, window: f64, wide: f64) -> String {
+    tasks_of(path, variant, window, wide, true)
+}
+
+/// [`transcript_tasks`] reading the whole window every time: the reference the kept lines are tested against.
+pub fn transcript_tasks_uncached(path: &str, variant: &str, window: f64, wide: f64) -> String {
+    tasks_of(path, variant, window, wide, false)
+}
+
+fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> String {
     let unsure = || json!({"unsure": true}).to_string();
     let window = if window.is_finite() && window > 0.0 { window as u64 } else { defaults::num("taskstate.tail_bytes") };
     if variant == "scan" {
@@ -83,10 +92,12 @@ pub fn transcript_tasks(path: &str, variant: &str, window: f64, wide: f64) -> St
             return json!({"unreadable": true}).to_string();
         }
         let wide = if wide.is_finite() && wide > 0.0 { wide as u64 } else { window };
-        return match scanview::scan_tasks(path, window, wide) {
+        let scan = if kept { scanview::scan_tasks(path, window, wide) } else { scanview::scan_tasks_uncached(path, window, wide) };
+        return match scan {
             Err(_) => unsure(),
             Ok(None) => json!({"quiet": true}).to_string(),
             Ok(Some(s)) => json!({
+                "unsure": s.unsure,
                 "sawTaskActivity": s.saw_task_activity,
                 "taskStoreReset": s.task_store_reset,
                 "inProgressCount": s.in_progress_count,
@@ -96,13 +107,23 @@ pub fn transcript_tasks(path: &str, variant: &str, window: f64, wide: f64) -> St
         };
     }
     let v = if variant == "state" { Variant::State } else { Variant::Guard };
-    let Some((data, truncated)) = read_tail(path, window) else { return json!({"tasks": [], "unreadable": true}).to_string() };
-    let lines = lines_of(&data, truncated);
+    // the task lines kept since the last call when there are any, else the window read afresh
+    let kept_lines = if kept { super::tasks_cache::lines(path, window) } else { None };
+    let data;
+    let (lines, truncated): (Vec<&str>, bool) = match &kept_lines {
+        Some((k, truncated)) => (k.iter().map(String::as_str).collect(), *truncated),
+        None => {
+            let Some((d, truncated)) = read_tail(path, window) else { return json!({"tasks": [], "unreadable": true}).to_string() };
+            data = d;
+            (lines_of(&data, truncated), truncated)
+        }
+    };
     let Ok(mut facts) = reconstruct(&lines, v) else { return unsure() };
     if truncated && backfill(&mut facts, path, window).is_err() {
-        return unsure();
+        facts.unsure = true;
     }
     json!({
+        "unsure": facts.unsure,
         "tasks": facts.tasks.values().map(task_json).collect::<Vec<_>>(),
         "windowReset": facts.window_reset,
         "firstCreated": if facts.first_created.is_finite() { json!(facts.first_created) } else { Value::Null },
@@ -125,6 +146,7 @@ pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
         "lastSeenMs": r.last_seen_ms,
         "pendingMessage": r.pending_message,
         "taskType": r.task_type,
+        "shellKind": r.shell_kind,
         "spawnInput": r.spawn_input,
     })
 }
@@ -161,7 +183,9 @@ pub fn agent_scan(path: &str, tail: f64, ignore_unanswered_stops: bool) -> Strin
 fn jev_record_outcome(id: &str, hash: &str, outcome: &str, source: Option<String>, project_from: Option<String>) -> rquickjs::Result<()> {
     let (home, env) = with_settings(|st| (st.home.clone(), crate::jev::Env::from_pairs(st.env.clone())))?;
     let project = crate::jev::shared::project_for(project_from.as_deref());
-    crate::jev::shared::lane(std::path::Path::new(&home), &env).record_outcome(id, hash, outcome, source.as_deref(), project.as_deref());
+    if let Some(lane) = crate::jev::shared::lane(std::path::Path::new(&home), &env) {
+        lane.record_outcome(id, hash, outcome, source.as_deref(), project.as_deref());
+    }
     Ok(())
 }
 
@@ -187,7 +211,7 @@ fn plugin_versions(root: &str) -> rquickjs::Result<String> {
     use crate::checks::session::jval::{J, Parsed, parse};
     let (home, env) = with_settings(|st| (st.home.clone(), crate::reqenv::RequestEnv::from_pairs(st.env.clone())))?;
     let mut unsure = false;
-    let registered = match crate::checks::session::version_alert::harness_version(&env, &home) {
+    let registered = match crate::checks::session::version_alert::harness_version(&env, &home, root) {
         Ok(v) => v,
         Err(()) => {
             unsure = true;
@@ -289,6 +313,7 @@ fn read_end(path: &str, bytes: f64) -> Option<String> {
     let size = f.metadata().ok()?.len();
     let len = size.min(want);
     f.seek(SeekFrom::Start(size - len)).ok()?;
+    crate::load::note_scan(len);
     let mut buf = vec![0u8; len as usize];
     f.read_exact(&mut buf).ok()?;
     Some(crate::checks::guardkit::text::lossy_owned(buf))

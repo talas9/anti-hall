@@ -3,5 +3,5 @@
 const path = require('path');
 const [root, home] = process.argv.slice(2);
 process.env.HOME = home;
-const S = require(path.join(root, 'companion', 'devswarm-supervisor.js'));
+const S = require(path.join(root, '..', 'anti-hall-node', 'companion', 'devswarm-supervisor.js'));
 process.stdout.write(JSON.stringify(S.distinctRepoKeys(S.readDescriptors(home))) + '\n');

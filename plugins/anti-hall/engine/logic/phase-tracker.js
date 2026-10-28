@@ -25,7 +25,7 @@ function ptTag(p) {
 
 function decide(p) {
   var home = spawn.osHome();
-  if (home === null) return 'defer';
+  if (home === null) { ah.unable('phase-tracker:no_home', 'abandoned'); return 'allow'; } // no absolute HOME: no log or heartbeat can be kept
   var tag = ptTag(p);
   var now = ah.clock.now();
   var root = ah.cfg('spawn_ctx.state_root');
@@ -39,7 +39,7 @@ function decide(p) {
   if (readable) {
     lines = old.trim().split(/\r?\n/).filter(function (l) { var ms = parseInt(l, 10); return isFinite(ms) && (now - ms) < keep; });
     lines.push(Math.floor(now) + ' ' + tag);
-    try { ah.state.writeAtomic(logRel, lines.join('\n') + '\n'); } catch (e) { return 'defer'; } // refused before anything was written
+    try { ah.state.writeAtomic(logRel, lines.join('\n') + '\n'); } catch (e) { ah.unable('phase-tracker:log_write_refused', 'abandoned'); return 'allow'; } // refused before anything was written
   }
   try { ah.state.writeAtomic(root + '/' + ah.cfg('phase_tracker.agents_dir') + '/' + ah.cfg('phase_tracker.heartbeat_file'), '{"ts":' + Math.floor(now) + '}'); } catch (e) { /* best effort, as in Node */ }
   return 'allow';

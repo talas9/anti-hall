@@ -3,7 +3,7 @@
 use super::api::{Fail, GhRunner, Resp, Runner};
 use super::cfg::Cfg;
 use super::poll::{self, State};
-use super::{repos, segment, status_json};
+use super::{repos, segment, status_json, tick_needed};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
@@ -140,12 +140,13 @@ struct Fx {
 
 impl Fx {
     fn new(name: &str) -> Fx {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("ghrt-test").join(format!("{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join("ghrt-test").join(format!("{name}-{}", std::process::id()));
         if dir.exists() {
             std::fs::remove_dir_all(&dir).unwrap();
         }
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = Cfg::shipped().in_dir(&dir.join("state"));
+        let dir = dir.canonicalize().unwrap();
+        let cfg = Cfg::shipped().in_dir(&dir.join("state")).with("github_rt.ready_auto_merge", json!(true));
         Fx { dir, cfg }
     }
 
@@ -676,6 +677,17 @@ fn a_whole_tick_through_the_shell_stub_ends_in_an_edge() {
 }
 
 #[test]
+fn gh_poll_job_returns_nonzero_when_recent_sessions_and_gh_fails() {
+    let fx = Fx::new("pollfail");
+    fx.repo("r1", Some(ACME));
+    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with_field("github_rt.gh", "argv", json!(["sh", "-c", "exit 42"]));
+    let run = GhRunner::new(&cfg);
+    let (v, code) = super::poll_once(&cfg, &run, T0 + 1000);
+    assert_eq!(code, 1, "{v}");
+    assert_ne!(v["gh"], "ok", "{v}");
+}
+
+#[test]
 fn an_owner_notification_runs_only_for_a_listed_kind_with_shell_metacharacters_removed() {
     let fx = Fx::new("notify");
     fx.repo("r1", Some(ACME));
@@ -817,7 +829,10 @@ fn becomes_ready_on(name: &str, branch: &str, workspace: bool) -> (Fx, Stub) {
         git(&r, &["checkout", "-q", "-b", branch]);
     }
     let db = app_db(&fx, workspace.then_some((branch, r.as_path())));
-    fx.cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_app_db", json!(db.to_str().unwrap()));
+    fx.cfg = Cfg::shipped()
+        .in_dir(&fx.dir.join("state"))
+        .with("github_rt.ready_auto_merge", json!(true))
+        .with("github_rt.ready_app_db", json!(db.to_str().unwrap()));
     let s = Stub::new();
     open_pr(&s);
     fx.tick(&s, T0 + 1000);
@@ -1046,12 +1061,16 @@ fn only_a_workspace_pull_request_is_auto_merged() {
     // the same branch name on a workspace that lives in another directory is not this pull request's workspace
     let (fx, s) = becomes_ready_on("scope-elsewhere", "feat/child-work", false);
     let db = app_db(&fx, Some(("feat/child-work", Path::new("/somewhere/else"))));
-    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_app_db", json!(db.to_str().unwrap()));
+    let cfg = Cfg::shipped()
+        .in_dir(&fx.dir.join("state"))
+        .with("github_rt.ready_auto_merge", json!(true))
+        .with("github_rt.ready_app_db", json!(db.to_str().unwrap()));
     poll::tick(&cfg, &s, T0 + 100_000, false);
     assert!(s.merges.borrow().is_empty());
     // scope all: any ready pull request
     let (fx, s) = becomes_ready_on("scope-all", "dev", false);
-    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_auto_merge_scope", json!("all"));
+    let cfg =
+        Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_auto_merge", json!(true)).with("github_rt.ready_auto_merge_scope", json!("all"));
     poll::tick(&cfg, &s, T0 + 100_000, false);
     assert_eq!(s.merges.borrow().len(), 1);
     // a draft is never ready, in any scope
@@ -1059,4 +1078,45 @@ fn only_a_workspace_pull_request_is_auto_merged() {
     s.set("pulls", 200, "\"pdr\"", json!([{"number": 7, "state": "open", "draft": true, "base": {"ref": "main"}, "title": "t"}]));
     fx.tick(&s, T0 + 100_000);
     assert!(s.merges.borrow().is_empty());
+}
+
+#[test]
+fn a_tick_is_needed_only_when_something_could_change() {
+    let fx = Fx::new("needed");
+    let r = fx.repo("r1", Some(ACME));
+    let s = Stub::new();
+    open_pr(&s);
+    let needed = |now: u64| tick_needed(&fx.cfg, now);
+    assert!(needed(T0 + 500), "a directory nobody has resolved yet");
+    fx.tick(&s, T0 + 1000);
+    assert!(!needed(T0 + 2000), "resolved, signature unchanged, nothing due: the job is skipped");
+    git(&r, &["commit", "-q", "--allow-empty", "-m", "second"]);
+    assert!(needed(T0 + 3000), "HEAD moved: look at the repo");
+    fx.tick(&s, T0 + 3000);
+    assert!(!needed(T0 + 3500), "and once looked at, quiet again");
+    let due = fx.repo_state("r1").next_poll_ms;
+    assert!(!needed(due - 1) && needed(due), "a repo whose poll time has come");
+    let ttl = fx.cfg.int("github_rt.cwd_ttl_ms");
+    assert!(!needed(T0 + 1000 + ttl + 5), "no recent session: nothing to follow");
+}
+
+#[test]
+fn a_root_git_cannot_read_is_looked_at_again_on_the_done_cadence_not_at_every_tick() {
+    let fx = Fx::new("unreadable");
+    let plain = fx.dir.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    git(&plain, &["init", "-q", "-b", "main"]); // no commit: the root resolves, the branch and head do not
+    fx.note(&plain, T0);
+    let s = Stub::new();
+    fx.tick(&s, T0 + 1000);
+    let done = fx.cfg.int("github_rt.poll_done_ms");
+    let repo = fx.repo_state("plain");
+    assert_eq!(repo.next_poll_ms, T0 + 1000 + done, "retry time is the done cadence");
+    assert!(!tick_needed(&fx.cfg, T0 + 2000), "the 20 s tick does not run git on it again");
+    assert!(tick_needed(&fx.cfg, T0 + 1000 + done + 1));
+}
+
+#[test]
+fn auto_merge_is_off_by_default() {
+    assert!(!Cfg::shipped().flag("github_rt.ready_auto_merge"), "owner rule: no auto-merge unless switched on");
 }

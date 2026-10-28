@@ -73,10 +73,12 @@ pub fn child_context(c: &Child<'_>) -> String {
     out
 }
 
-/// The source `buildLauncherSource(segments, fallback)` generates for the script at `target` (path parts joined by `/`)
-/// whose absolute path at generation time is `fallback`.
-pub fn launcher_source(target: &str, fallback: &str) -> String {
-    let segments = serde_json::to_string(&target.split('/').collect::<Vec<_>>()).unwrap_or_default();
-    let fallback = serde_json::to_string(fallback).unwrap_or_default();
-    fill_once(defaults::text("devswarm_role.launcher_src"), &[("segments", &segments), ("fallback", &fallback)])
+/// The command agents run for every DevSwarm CLI verb: `devswarm_role.engine_cli` with the absolute home filled in.
+pub fn engine_cli(home: &str) -> String {
+    fill_once(defaults::text("devswarm_role.engine_cli"), &[("home", home)])
+}
+
+/// The command agents arm with `Monitor` for the mailbox watcher: `devswarm_role.engine_watcher` with the home filled in.
+pub fn engine_watcher(home: &str) -> String {
+    fill_once(defaults::text("devswarm_role.engine_watcher"), &[("home", home)])
 }

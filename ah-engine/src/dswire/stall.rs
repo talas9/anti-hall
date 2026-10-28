@@ -53,6 +53,7 @@ impl Wire {
             let last = r.inputs.pointer("/inputs/last_activity_ms").and_then(Value::as_i64).unwrap_or(0);
             let due = now as u64 + defaults::num("devswarm_rt.stall_followup_wait_ms");
             actlog::followup_add(&self.state_dir, word("feature"), &r.kind, &r.id, due, json!({"last_activity_ms": last}), now as u64);
+            self.followup_next.fetch_min(due as i64, Ordering::SeqCst);
         }
     }
 
@@ -60,6 +61,15 @@ impl Wire {
     pub fn stuck_among(&self, ids: &[String]) -> bool {
         let snap = self.rt.current();
         ids.iter().any(|id| snap.workspaces.get(id).is_some_and(|w| w.activity.value == Activity::Stuck))
+    }
+
+    /// Whether a heartbeat of workspace `id` cannot change what a reconcile derives: the state has the workspace active and working.
+    /// A newer beat leaves it working (silence needs the beat to be OLDER than `stall_ms`), and the deadline check in
+    /// [`Wire::stall_tick`] reads the beat again when the working workspace's clock runs out, so the clock cannot be missed. A stuck
+    /// or unknown workspace, one that is not active, and one the state has never seen are not quiet: their beat is a real change.
+    pub fn beat_is_quiet(&self, id: &str) -> bool {
+        self.rt.mode() == Mode::On
+            && self.rt.current().workspaces.get(id).is_some_and(|w| w.lifecycle.value == Lifecycle::Active && w.activity.value == Activity::Working)
     }
 
     /// One cheap pass of the stall trigger, run by the watcher loop: the deadline check and the due follow-ups.
@@ -82,7 +92,35 @@ impl Wire {
                 self.reconcile(Cause::Event);
             }
         }
-        self.stall_followups(now);
+        if now >= self.followup_next.load(Ordering::SeqCst) {
+            self.stall_followups(now);
+        }
+    }
+
+    /// Read the earliest follow-up time from the log (at start, and after the follow-ups have been looked at).
+    pub fn refresh_followup_next(&self) {
+        let due = actlog::followups_due(&self.state_dir, word("feature"), u64::MAX).iter().filter_map(|f| f.get("due_ms").and_then(Value::as_u64)).min();
+        self.followup_next.store(due.map_or(i64::MAX, |d| d as i64), Ordering::SeqCst);
+    }
+
+    /// Milliseconds until [`Wire::stall_tick`] has something to do: the soonest of a follow-up coming due and the silence clock of a
+    /// working workspace reaching `stall_ms` (never sooner than the check gap). `None` when nothing is waiting or the mode is not on.
+    pub fn stall_due_in(&self, now: i64) -> Option<i64> {
+        if self.rt.mode() != Mode::On {
+            return None;
+        }
+        let stall = self.rt.cfg().stall_ms;
+        let reach = self
+            .rt
+            .current()
+            .workspaces
+            .values()
+            .filter(|w| w.lifecycle.value == Lifecycle::Active && w.activity.value == Activity::Working)
+            .map(|w| w.activity.observed_ms + stall)
+            .min()
+            .map(|at| at.max(self.last_stall.load(Ordering::SeqCst) + defaults::num("devswarm_rt.stall_check_min_gap_ms") as i64));
+        let follow = Some(self.followup_next.load(Ordering::SeqCst)).filter(|d| *d != i64::MAX);
+        reach.into_iter().chain(follow).min().map(|at| (at - now).max(0))
     }
 
     /// Check the nudges and escalations whose wait has passed: did the workspace show new activity?
@@ -119,5 +157,6 @@ impl Wire {
             }
             actlog::followup_done(&self.state_dir, word("feature"), action, id, if bad { "mistake" } else { "clean" }, None, now as u64);
         }
+        self.refresh_followup_next();
     }
 }

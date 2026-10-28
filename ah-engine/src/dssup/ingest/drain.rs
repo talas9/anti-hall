@@ -39,16 +39,45 @@ pub struct Project {
     pub workspace_id: String,
 }
 
+/// Why a path is not a project the engine can drain: the `devswarm_ingest.drop_reason_*` key (its text is the reason) and detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropReason {
+    /// The `devswarm_ingest.drop_reason_*` settings key naming the reason.
+    pub key: &'static str,
+    /// What the resolver said (a deferral code, a kind, a path).
+    pub detail: String,
+}
+
+impl DropReason {
+    pub(crate) fn new(key: &'static str, detail: impl Into<String>) -> DropReason {
+        DropReason { key, detail: detail.into() }
+    }
+
+    /// The reason word, also the `reason` label of `ingest_drops`.
+    pub fn word(&self) -> &'static str {
+        defaults::text(self.key)
+    }
+}
+
 impl Project {
     /// Resolve a path to its project: the repository's MAIN worktree (what the Node unit bakes as its working directory, never a
     /// linked worktree that may be removed), its repo key and its Primary id. Any worktree of a repository names the same project.
-    /// `None` for a path that is not in a git repository, or whose main worktree is gone (nothing to drain there).
+    /// `Err` with the reason for a path that cannot be a project: not in a git repository, whose main worktree is gone, or that
+    /// the identity resolver cannot place.
+    pub fn resolve_why(path: &str) -> Result<Project, DropReason> {
+        let c = ident::resolve_context(path, true).map_err(|d| DropReason::new("devswarm_ingest.drop_reason_defer", d.0))?;
+        let Some(main) = c.main_worktree else { return Err(DropReason::new("devswarm_ingest.drop_reason_non_git", c.kind)) };
+        if !std::path::Path::new(&main).is_dir() {
+            return Err(DropReason::new("devswarm_ingest.drop_reason_no_main", main));
+        }
+        let repo_key = c.repo_key.ok_or_else(|| DropReason::new("devswarm_ingest.drop_reason_no_key", main.clone()))?;
+        let workspace_id = ident::primary_workspace_id(&main).map_err(|d| DropReason::new("devswarm_ingest.drop_reason_primary_id", d.0))?;
+        Ok(Project { worktree: main, repo_key, workspace_id })
+    }
+
+    /// [`Project::resolve_why`] without the reason: `None` for a path that is not a project.
     pub fn resolve(path: &str) -> Option<Project> {
-        let c = ident::resolve_context(path, true).ok()?;
-        let wt = c.main_worktree.filter(|m| std::path::Path::new(m).is_dir())?;
-        let repo_key = c.repo_key?;
-        let workspace_id = ident::primary_workspace_id(&wt).ok()?;
-        Some(Project { worktree: wt, repo_key, workspace_id })
+        Project::resolve_why(path).ok()
     }
 }
 
@@ -156,7 +185,6 @@ pub struct Drainer {
     quarantine_suppressed: u64,
     started_at: i64,
     code_version: Option<String>,
-    witness: Option<super::witness::Mirror>,
     last_refusal: Option<String>,
 }
 
@@ -164,7 +192,7 @@ fn now_ms() -> i64 {
     crate::health::now_ms() as i64
 }
 
-fn lock_params() -> nodelock::Params {
+pub(super) fn lock_params() -> nodelock::Params {
     nodelock::Params {
         stale_ms: defaults::num("devswarm_ingest.lock_stale_ms"),
         wait_ms: 0,
@@ -175,6 +203,16 @@ fn lock_params() -> nodelock::Params {
         boot_slop_s: defaults::num("mesh_write.id_lock_boot_slop_s"),
         steal_dead: true,
     }
+}
+
+/// The lock file of the project with `repo_key`.
+pub fn lock_path_of(home: &Path, repo_key: &str) -> PathBuf {
+    devswarm_root(home).join(defaults::text("mesh_write.dir_locks")).join(format!(
+        "{}{}{}",
+        defaults::text("devswarm_ingest.lock_prefix"),
+        repo_key,
+        defaults::text("mesh_write.lock_suffix")
+    ))
 }
 
 /// Append a `[ISO] line` to the ingest log (the file the Node daemon's unit writes), best effort.
@@ -219,19 +257,13 @@ impl Drainer {
             quarantine_suppressed: 0,
             started_at: now_ms(),
             code_version,
-            witness: None,
             last_refusal: None,
         }
     }
 
     /// The lock file of this project.
     pub fn lock_path(&self) -> PathBuf {
-        devswarm_root(&self.home).join(defaults::text("mesh_write.dir_locks")).join(format!(
-            "{}{}{}",
-            defaults::text("devswarm_ingest.lock_prefix"),
-            self.project.repo_key,
-            defaults::text("mesh_write.lock_suffix")
-        ))
+        lock_path_of(&self.home, &self.project.repo_key)
     }
 
     fn inv(&self) -> Inv {
@@ -282,7 +314,6 @@ impl Drainer {
             self.log(&defaults::render("devswarm_ingest.msg_hc_unusable", &[("bin", &self.hc.bin), ("src", &self.hc.source)]));
         }
         self.self_register();
-        self.witness = super::witness::Mirror::open(&self.home, &self.project.repo_key);
         Start::Started
     }
 
@@ -394,7 +425,13 @@ impl Drainer {
 
     fn import(&self, raw: &str, now: i64) -> Result<Imported, Refused> {
         let Some(store) = &self.store else { return Err(Refused::Store(defaults::text("devswarm_ingest.msg_no_store").to_string())) };
-        import::ingest_payload(store, &self.home, &self.project.workspace_id, raw, now)
+        let done = import::ingest_payload(store, &self.home, &self.project.workspace_id, raw, now)?;
+        // the drain's own log line; the recon pull shares the importer and writes none (Node's `pull` does not either)
+        if done.fallbacks > 0 {
+            let (wher, id) = (defaults::text("mesh_write.sender_fallback_ingest"), &self.project.workspace_id);
+            self.log(&defaults::render("mesh_write.msg_sender_fallback", &[("where", &wher), ("id", id), ("n", &done.fallbacks)]));
+        }
+        Ok(done)
     }
 
     /// Replay every open batch of the WAL (and of a prior reader key's, adopted); true when nothing is left pending.
@@ -617,9 +654,6 @@ impl Drainer {
                             self.wal_replay_needed = true;
                         }
                     }
-                    if let Some(m) = &mut self.witness {
-                        m.record(&poll.raw, now, &ing);
-                    }
                     if ing.lossy {
                         self.quarantine(&poll.raw, now);
                     }
@@ -647,16 +681,6 @@ impl Drainer {
         let interval_ms = (self.cfg.interval_sec.max(1) * 1000).min(defaults::num("devswarm_ingest.max_pace_ms"));
         let elapsed = started.elapsed().as_millis() as u64;
         Step { wait_ms: interval_ms.saturating_sub(elapsed), stop: false }
-    }
-
-    /// Run the Node witness when it is due: Node's `ingestPayload` over the mirrored batches in a scratch HOME, compared with the
-    /// mirror and with the live store. Bounded; never changes what the drain did.
-    pub fn maybe_witness(&mut self, runner: &dyn Runner) {
-        let now = now_ms();
-        let (Some(m), Some(store), Some(root)) = (&mut self.witness, &self.store, defaults::root()) else { return };
-        if m.due(now) {
-            m.compare(runner, &root, store, &self.project, now);
-        }
     }
 
     /// The monitor outcome and counters, for the status verb.

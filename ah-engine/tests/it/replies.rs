@@ -45,14 +45,22 @@ pub struct Case {
     pub env: Vec<(String, String)>,
     pub transcript: Option<String>,
     pub steps: Vec<Step>,
+    /// State files Node writes and the engine deliberately does not (a documented, reasoned difference; the verdict, exit code and
+    /// stdout still have to match exactly). Skipped in the state comparison ONLY while the engine has not written the file.
+    pub engine_omits: Vec<String>,
 }
 
 impl Case {
     pub fn new(name: &str) -> Case {
-        Case { name: name.into(), files: Vec::new(), aged: Vec::new(), env: Vec::new(), transcript: None, steps: Vec::new() }
+        Case { name: name.into(), files: Vec::new(), aged: Vec::new(), env: Vec::new(), transcript: None, steps: Vec::new(), engine_omits: Vec::new() }
     }
     pub fn file(mut self, rel: &str, body: &str) -> Case {
         self.files.push((rel.into(), body.into()));
+        self
+    }
+    /// The engine deliberately leaves `rel` unwritten where Node writes it (see [`Case::engine_omits`]).
+    pub fn engine_omits(mut self, rel: &str) -> Case {
+        self.engine_omits.push(rel.into());
         self
     }
     pub fn aged(mut self, rel: &str, body: &str) -> Case {
@@ -147,16 +155,6 @@ fn base_env(c: &mut Command, home: &Path) {
     }
 }
 
-fn run_node(hook: &str, home: &Path, case: &Case, input: &str) -> (i32, String, String) {
-    let mut c = Command::new("node");
-    c.arg(repo().join("plugins/anti-hall/hooks").join(hook));
-    base_env(&mut c, home);
-    for (k, v) in &case.env {
-        c.env(k, v);
-    }
-    run(c, input)
-}
-
 fn run_engine(check: &str, home: &Path, case: &Case, input: &str) -> (i32, String, String) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     c.arg("check").arg(check);
@@ -244,84 +242,6 @@ fn mkhome(tag: &str, case: &Case) -> PathBuf {
         std::fs::OpenOptions::new().write(true).open(&f).unwrap().set_modified(old).unwrap();
     }
     d
-}
-
-/// Run `case` against the Node hook `hook` and the engine check `check`, accumulating into `t`.
-pub fn run_case(hook: &str, check: &str, case: &Case, t: &mut Tally) {
-    let nh = mkhome("n", case);
-    let eh = mkhome("e", case);
-    let tdir = std::env::temp_dir().join(format!("ah-reply-t-{}-{}", std::process::id(), ID.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&tdir).unwrap();
-    let tpath = tdir.join("transcript.jsonl");
-    if let Some(body) = &case.transcript {
-        std::fs::write(&tpath, body).unwrap();
-    }
-    let tstr = tpath.to_string_lossy().into_owned();
-    for (i, step) in case.steps.iter().enumerate() {
-        t.steps += 1;
-        let who = format!("{} step {i}", case.name);
-        let (input_n, input_e) = match &step.raw {
-            Some(r) => (r.replace("$T", &tstr).replace("$H", &nh.to_string_lossy()), r.replace("$T", &tstr).replace("$H", &eh.to_string_lossy())),
-            None => (subst(&step.payload, &tstr, &nh.to_string_lossy()).to_string(), subst(&step.payload, &tstr, &eh.to_string_lossy()).to_string()),
-        };
-        let before = tree(&eh);
-        let e = run_engine(check, &eh, case, &input_e);
-        let deferred = e.1.trim() == "AHFALLBACK";
-        match step.expect {
-            Expect::Same => {
-                let n = run_node(hook, &nh, case, &input_n);
-                if deferred {
-                    t.failures.push(format!("{who}: engine deferred but the step must be answered; node={n:?} input={input_e}"));
-                    copy_tree(&nh, &eh);
-                    continue;
-                }
-                t.same += 1;
-                if (n.0, &n.1, &n.2) != (e.0, &e.1, &e.2) {
-                    t.failures.push(format!("{who}: output differs\n  node  ={n:?}\n  engine={e:?}\n  payload={input_n}"));
-                }
-                let (tn, te) = (tree(&nh), tree(&eh));
-                // the asks nobody waits for write their rows after the hook returns, on both sides: compared by
-                // tests/jev_integrations_parity.rs, which waits for them
-                let tn: BTreeMap<_, _> = tn.into_iter().filter(|(k, _)| k != ".anti-hall/logs/jev-assist.ndjson").collect();
-                let te: BTreeMap<_, _> = te.into_iter().filter(|(k, _)| k != ".anti-hall/logs/jev-assist.ndjson").collect();
-                if tn.keys().any(|k| k.contains(".jsonl") || k.contains("state-") || k.contains("tg-")) || tn.values().any(|v| v.contains("lastSweep")) {
-                    t.wrote += 1;
-                }
-                if tn != te {
-                    t.failures.push(format!("{who}: state differs\n  node  ={tn:?}\n  engine={te:?}"));
-                    copy_tree(&nh, &eh);
-                }
-            }
-            Expect::Defer | Expect::DeferNoNode => {
-                if !deferred {
-                    t.failures.push(format!("{who}: engine answered ({e:?}) but the step must defer"));
-                } else {
-                    t.deferred += 1;
-                    if tree(&eh) != before {
-                        t.failures.push(format!("{who}: a deferral changed state"));
-                    }
-                }
-                if step.expect == Expect::Defer {
-                    let _ = run_node(hook, &nh, case, &input_n);
-                }
-                copy_tree(&nh, &eh);
-            }
-        }
-    }
-    ah_engine::discard::harmless(std::fs::remove_dir_all(&nh));
-    ah_engine::discard::harmless(std::fs::remove_dir_all(&eh));
-    ah_engine::discard::harmless(std::fs::remove_dir_all(&tdir));
-}
-
-/// Run every case and fail with the first differences.
-pub fn run_all(hook: &str, check: &str, cases: &[Case]) -> Tally {
-    let mut t = Tally::default();
-    for c in cases {
-        run_case(hook, check, c, &mut t);
-    }
-    eprintln!("{check}: cases={} steps={} same={} deferred={} wrote-state={} failures={}", cases.len(), t.steps, t.same, t.deferred, t.wrote, t.failures.len());
-    assert!(t.failures.is_empty(), "{} differences, first ones:\n{}", t.failures.len(), t.failures.iter().take(8).cloned().collect::<Vec<_>>().join("\n---\n"));
-    t
 }
 
 // ---- transcript line builders -----------------------------------------------------------------------------

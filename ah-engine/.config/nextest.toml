@@ -8,14 +8,127 @@ fail-fast = false
 default-filter = 'not test(/^memory_soak::/)'
 
 # The pull-request gate (GitHub Actions sets CI=true). Left out, and run by the `nightly` profile instead: the memory soak and the
-# wall-clock benches (script_latency, telemetry_overhead), which measure the machine and fail on a shared runner, and the heavy
+# wall-clock benches (script_latency, telemetry_overhead, watch_bench: 62 s, and the DevSwarm scale budget test: 36 s, on the ubuntu job of run 40181393883), which measure the machine and fail on a shared runner, and the heavy
 # Node parity sweeps (the `heavy-sweeps` group below), which took most of the gate's 56 min; every other parity lane, and every
 # policy gate (compiled logic, hardcoded tunables, process environment, temp leaks, the daemon-survivor check), stays in.
 [profile.ci]
 inherits = "default"
 slow-timeout = { period = "60s", terminate-after = 5 }
 retries = 0
-default-filter = 'not (test(/^memory_soak::/) | binary(script_latency) | binary(telemetry_overhead) | test(api_guard_matches_node) | test(codex_nudge_matches_node) | test(handover_resume_matches_node) | test(session_checks_match_node) | test(precompact_snapshot_matches_node) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz) | test(no_defaults_text_is_embedded) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post_matches_node) | test(git_audit_matches_node) | test(failure_nudge_matches_node) | test(edit_guard_matches_node) | test(codex_quota_detect_matches_node) | test(the_scan_matches_node_on_random_transcripts) | test(verify_first_through_the_dispatcher) | test(ctxbudget_checks_match_node) | test(the_store_free_cli_verbs_match_node) | test(tasklist_guard_matches_node) | test(session_end_mcp_reaper_script_matches_the_compiled_port) | test(command_guard_matches_node) | test(node_and_engine_outputs_match_for_model_routing_table) | test(child_drain_allow_is_node_silence) | test(reply_tracker_allow_is_node_silence))'
+default-filter = 'not (test(/^memory_soak::/) | binary(script_latency) | binary(telemetry_overhead) | binary(watch_bench) | test(the_thread_stays_inside_its_budget_at_scale) | test(api_guard_matches_node) | test(codex_nudge_matches_node) | test(handover_resume_matches_node) | test(session_checks_match_node) | test(precompact_snapshot_matches_node) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz) | test(no_defaults_text_is_embedded) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post_matches_node) | test(git_audit_matches_node) | test(failure_nudge_matches_node) | test(edit_guard_matches_node) | test(codex_quota_detect_matches_node) | test(the_scan_matches_node_on_random_transcripts) | test(verify_first_through_the_dispatcher) | test(ctxbudget_checks_match_node) | test(the_store_free_cli_verbs_match_node) | test(tasklist_guard_matches_node) | test(session_end_mcp_reaper_script_matches_the_compiled_port) | test(command_guard_matches_node) | test(node_and_engine_outputs_match_for_model_routing_table) | test(child_drain_allow_is_node_silence) | test(reply_tracker_allow_is_node_silence))'
+
+# ---- Test packs (docs/DEVELOPMENT.md, "Test packs"; AGENTS.md, "Tests"). The names of what each pack runs live HERE and nowhere else. ----
+#
+# LANE   `cargo nextest run -j 2 --profile policy` + `cargo nextest run -j 2 --profile lane -E 'test(~<module>)'` (or `scripts/lane-tests.sh <module>...`):
+#        the touched module's tests and the policy gates. `lane` is "everything except the Node parity lanes, the benches, the soak and the
+#        wall-clock drills"; a module filter (-E, ANDed with it) narrows it to the touched code.
+# DEV    `cargo nextest run -j 2 --profile dev` (run before each live deploy; target 5 min at -j 2): the policy gates, one or two recorded-golden
+#        cases of every guard that BLOCKS (no live Node), the dispatcher's block / fail-closed path, the launcher / wrapper fail-open drills,
+#        the crash-loop breaker and rollback, config load, ack protocol basics and the memory / CPU budget reporting.
+# RELEASE `cargo nextest run --profile release`: everything, the goldens, replay, soak and benches.
+
+# The policy gates: no hardcoded tunables, compiled config / logic, process environment reads, temp-dir leaks, defaults keys, docs
+# coverage and reference, the generated hook files, the Node-free `no_node` gate, the cut knob, the error-audit ratchet and the memory guard.
+[profile.policy]
+inherits = "default"
+slow-timeout = { period = "60s", terminate-after = 5 }
+retries = 0
+default-filter = '''
+test(/^(no_hardcoded_tunables|no_compiled_config|compiled_logic_gate|process_env_reads|temp_leaks|defaults_keys|docs_coverage|reference|hooks_files|template_drift|dep_budget|mem_guard|event_budgets|stop_scripts_guardrail)::/)
+| binary(no_node) | binary(error_audit_ratchet) | binary(script_cut_knob)
+'''
+
+# The `quick` pack: the PR-into-dev gate (ah-engine.yml job `quick`, target a few minutes). It is the `lane` base (no Node parity lanes, benches,
+# soak or wall-clock drills) minus the groups that spawn daemons by the hundred or measure the machine: dispatch_e2e, session_e2e, reliability
+# and its drills, the memory measurement tests, the soak, watch_bench, the DevSwarm scale budget test, the no_node harness, and the
+# heavy-sweeps tests the lane regexes do not name. All of it still runs in the full pack (a PR into main, a push to main, the nightly,
+# a manual dispatch, or a PR into dev labelled `full-ci`). The policy gates (mem_guard included), the deterministic unit and invariant
+# tests and the script goldens stay in. `cargo nextest list --profile quick` shows the result.
+[profile.quick]
+inherits = "default"
+slow-timeout = { period = "60s", terminate-after = 5 }
+retries = 0
+default-filter = '''
+not (test(/parity/) | test(/matches_node|match_node|_node_answer|node_silence|what_node_does|node_and_engine/)
+| binary(/parity|^mesh_|^devswarm_(l8|ds|cli)|^dssup_recon|^no_node|^mem_(measure|reload)|watch_bench|script_latency|telemetry_overhead|^memory_soak|hardening_bar/)
+| test(/^(reliability|crashloop_drill|fail_closed_matrix|spool|schedule|dispatch_e2e|session_e2e|mem_measure[a-z_]*|mem_restart_e2e|mem_reload|memory_soak)::/)
+| test(the_thread_stays_inside_its_budget_at_scale) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz)
+| test(no_defaults_text_is_embedded) | test(verify_first_through_the_dispatcher)
+| test(session_end_mcp_reaper_script_matches_the_compiled_port))
+'''
+
+# The lane base: every test except the Node parity lanes (a name or a binary that says parity or matches_node), the mesh / devswarm / dssup
+# parity binaries, the benches, the memory soak and the wall-clock drills (reliability, crashloop_drill, fail_closed_matrix, spool, schedule),
+# which the `dev` and `release` packs cover. Narrow it with -E 'test(~module)'; `--ignore-default-filter` runs a named heavy test anyway.
+[profile.lane]
+inherits = "default"
+slow-timeout = { period = "60s", terminate-after = 5 }
+retries = 0
+default-filter = '''
+not (test(/parity/) | test(/matches_node|match_node|_node_answer|node_silence|what_node_does|node_and_engine/)
+| binary(/parity|^mesh_|^devswarm_(l8|ds|cli)|^dssup_recon|watch_bench|script_latency|telemetry_overhead|memory_soak/)
+| test(/^(reliability|crashloop_drill|fail_closed_matrix|spool|schedule|memory_soak)::/))
+'''
+
+# The essential pack. Guard smoke = the recorded-golden replay of every guard that blocks (the `script::` golden tests: command / git for
+# force push and destructive git, edit, merge, api, ask, broad-kill, ship-it, task, tasklist, speculation, verify-first), never live Node.
+[profile.dev]
+inherits = "default"
+slow-timeout = { period = "60s", terminate-after = 5 }
+retries = 0
+default-filter = '''
+test(/^(no_hardcoded_tunables|no_compiled_config|compiled_logic_gate|process_env_reads|temp_leaks|defaults_keys|docs_coverage|reference|hooks_files|dep_budget|mem_guard|event_budgets|stop_scripts_guardrail)::/)
+| binary(no_node) | binary(error_audit_ratchet) | binary(script_cut_knob)
+| test(/^(broad_kill|crashloop_drill|e2e|session_e2e|dispatch_table|dispatch_config|defaults_failover)::/)
+| binary(config_hotswap) | binary(runtime_config) | binary(defaults_overlay) | binary(debug_mode)
+| test(/^(config|defaults|cfgstore|frame|client|failopen|crash|deadline|limits|gate|hooksgen|budget|atomic|load|reqenv)::/)
+| test(=script::tests::command_script_matches_the_compiled_port)
+| test(=script::tests::git_script_matches_the_compiled_port)
+| test(=script::tests::edit_guard_script_matches_the_compiled_port)
+| test(=script::tests::merge_gate_script_matches_the_compiled_port)
+| test(=script::tests::api_guard_script_matches_the_compiled_port)
+| test(=script::tests::ask_guard_script_matches_the_compiled_port)
+| test(=script::tests::broad_kill_guard_script_matches_its_golden_corpus)
+| test(=script::tests::a_fail_closed_engine_only_check_blocks_on_a_guard_event_only_and_a_node_twin_always_defers)
+| test(=script::tests::a_check_with_a_node_twin_defers_when_its_script_fails_on_any_event)
+| test(=script::tests::the_policy_applies_to_every_kind_of_script_failure)
+| test(=script::tests_golden_d6::task_guard_script_matches_the_compiled_port)
+| test(=script::tests_golden_d6::tasklist_guard_script_matches_the_compiled_port)
+| test(=script::tests_golden_d6::speculation_guard_script_matches_the_compiled_port)
+| test(=script::tests::ship_it_guard_script_matches_the_compiled_port)
+| test(=script::tests::verify_first_subagent_script_matches_the_compiled_port)
+| test(=script::tests::verify_first_full_script_matches_the_compiled_port)
+| test(=dispatch_e2e::the_built_in_check_blocks_in_process_and_through_the_daemon)
+| test(=dispatch_e2e::a_guard_event_that_cannot_run_its_node_hooks_fails_closed)
+| test(=dispatch_e2e::a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node)
+| test(=dispatch_e2e::a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision)
+| test(=dispatch_e2e::a_reply_that_never_comes_fails_open_without_node_and_counts_in_the_slow_streak)
+| test(=fail_closed_matrix::pretooluse_invalid_utf8_fails_closed_before_hooks_run)
+| test(=fail_closed_matrix::a_truly_absent_daemon_fails_open_without_running_hooks)
+| test(=fail_closed_matrix::an_engine_only_advisory_whose_script_fails_on_a_guard_event_allows)
+| test(=launcher_parity::the_engine_answers_and_the_node_script_never_runs)
+| test(=launcher_parity::without_an_engine_node_runs)
+| test(=launcher_parity::any_other_engine_exit_is_the_commands_own)
+| test(=reliability::wrapper_fails_open_under_one_second_with_no_daemon)
+| test(=reliability::wrapper_restart_loop_fails_open_under_one_second)
+| test(=reliability::wrapper_fails_open_under_one_second_when_daemon_accepts_and_never_replies)
+| test(=reliability::wrapper_returns_the_guards_block_when_the_daemon_is_slow)
+| test(=reliability::a_late_deny_from_a_daemon_with_a_fresh_heartbeat_still_blocks)
+| test(=reliability::engine_down_fails_open_quickly_with_or_without_fallback)
+| test(=reliability::bad_replies_fail_open_never_block)
+| test(=reliability::hung_engine_times_out_then_falls_back)
+| test(=reliability::healthy_engine_answers_and_fallback_is_not_run)
+| test(=reliability::breaker_opens_after_repeated_failures_and_skips_engine)
+| test(=reliability::crash_loop_stops_respawning_records_reason_and_advises_once)
+| test(=reliability::default_client_deadline_is_under_one_second)
+| test(=reliability::ack_protocol_reports_phases_delivery_and_launcher_counters)
+| test(=reliability::a_client_that_is_gone_before_the_ack_is_not_judged)
+| test(=reliability::an_unconfirmed_verdict_is_an_undelivered_verdict_fail_open)
+| test(=reliability::status_reports_all_required_fields)
+| test(=reliability::memory_limit_and_nice_are_applied_and_reported)
+| test(=reliability::rss_over_cap_restarts_cleanly_and_next_client_respawns)
+| test(=reliability::cpu_budget_trip_uses_the_fallback_contract)
+'''
 
 # The nightly / release run (ah-engine.yml on its schedule, a manual dispatch and a version tag; AH_TEST_PROFILE=nightly): the
 # whole suite, the soak, the benches and the heavy sweeps included.
@@ -27,6 +140,11 @@ default-filter = 'all()'
 
 # The soak run of a release train: everything, the soak group included. Run it with Node live so the Node goldens are checked
 # against the real hooks (tests/goldens/README.md): `AH_LIVE_NODE=1 cargo nextest run --release --profile soak`.
+# The release pack (`--profile release`, AH_LIVE_NODE=1 so every Node golden is checked against the real hooks): the nightly set.
+[profile.release]
+inherits = "nightly"
+default-filter = 'all()'
+
 [profile.soak]
 inherits = "default"
 default-filter = 'all()'
@@ -52,6 +170,10 @@ slow-timeout = { period = "300s", terminate-after = 24 }
 heavy-sweeps = { max-threads = 3 }
 # Long soaks that measure the machine: one at a time, outside the default run.
 soak = { max-threads = 1 }
+# Wall-clock fail-open tests (the sub-second / 3 s bounds of the hook wrapper, the 20-parallel wrappers, the crash-loop and fail-closed
+# drills): each measures how long a process tree took, so two of them side by side, or beside a heavy sweep's workers, push it over
+# its bound (seen at -j 2 with load 11-13). One at a time, in every profile.
+wrapper-timing = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'test(/^memory_soak::/)'
@@ -62,3 +184,22 @@ slow-timeout = { period = "300s", terminate-after = 6 }
 filter = 'test(api_guard_matches_node) | test(codex_nudge_matches_node) | test(handover_resume_matches_node) | test(session_checks_match_node) | test(precompact_snapshot_matches_node) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz) | test(no_defaults_text_is_embedded) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post_matches_node) | test(git_audit_matches_node) | test(failure_nudge_matches_node) | test(edit_guard_matches_node) | test(codex_quota_detect_matches_node) | test(the_scan_matches_node_on_random_transcripts) | test(verify_first_through_the_dispatcher) | test(ctxbudget_checks_match_node) | test(the_store_free_cli_verbs_match_node) | test(tasklist_guard_matches_node) | test(session_end_mcp_reaper_script_matches_the_compiled_port) | test(command_guard_matches_node) | test(node_and_engine_outputs_match_for_model_routing_table) | test(child_drain_allow_is_node_silence) | test(reply_tracker_allow_is_node_silence) | test(operator_parity::phase_agrees_with_node)'
 test-group = 'heavy-sweeps'
 slow-timeout = { period = "300s", terminate-after = 6 }
+
+[[profile.default.overrides]]
+filter = 'binary(it) & test(/^(reliability|crashloop_drill|fail_closed_matrix)::/)'
+test-group = 'wrapper-timing'
+
+# script_latency replays every golden case many times (about 275 s alone on a dev Mac, longer under load): its own slow-timeout, so the
+# default 180 s cut cannot TIMEOUT a gate. Its budget assertions are unchanged (their failures are tracked in R1).
+[[profile.default.overrides]]
+filter = 'binary(script_latency)'
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+# The Node parity lanes (a test or binary named parity, the mesh / dssup lanes, parent_inbox and child_turn among them) each spawn Node
+# and the engine per scenario: the 8 that TIMED OUT at the 180 s cut in the live19 gate (mesh_tick, mesh_readprimary, verify_first,
+# merge_gate, operator_parity statusline / install_project_scope, doctor_parity omc_detection, dssup_liveness random corpora) passed
+# alone in 50-120 s, so the cut was the load, not a hang. 300 s for all of them, in every profile; a real hang is still killed, 120 s later.
+# (The heavy-sweeps override above wins for the tests it names: it is matched first and keeps its own 1800 s.)
+[[profile.default.overrides]]
+filter = 'test(/parity/) | binary(/parity|^mesh_|^dssup_/) | test(/^(devswarm_parent_inbox_parity|devswarm_child_turn_parity)::/)'
+slow-timeout = { period = "60s", terminate-after = 5 }

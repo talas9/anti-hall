@@ -60,13 +60,13 @@ doc = "Log line when the guard refuses a call. Placeholders: bin, resolved, var.
 value = "hivecontrol refused: '{bin}' resolves to '{resolved}', which is not a test stub (put the stub in a scratch directory or name its directory in {var})"
 
 [devswarm_act.hc_timeout_ms]
-doc = "Wall-clock bound of one hivecontrol call; on expiry only the engine's own child is killed (Node: lifecycle.js HC_TIMEOUT_MS and archive.js APP_ARCHIVE_TIMEOUT_MS)."
+doc = "Wall-clock bound of one hivecontrol call; on expiry only the engine's own child is killed."
 value = 60000
 min = 1000
 max = 600000
 
 [devswarm_act.probe_timeout_ms]
-doc = "Bound of the `--version` capability probe (Node: devswarm-capabilities.js HELP_TIMEOUT_MS)."
+doc = "Bound of the `--version` capability probe."
 value = 8000
 min = 500
 max = 60000
@@ -83,12 +83,30 @@ value = 10
 min = 1
 max = 1000
 
+[devswarm_act.poll_fast_ms]
+doc = "How long a call is checked every devswarm_act.poll_ms; a call that runs longer is a long poll and is checked every devswarm_act.poll_slow_ms."
+value = 500
+min = 0
+max = 60000
+unit = "ms"
+
+[devswarm_act.poll_slow_ms]
+doc = "How often the runner checks a call that has run longer than devswarm_act.poll_fast_ms. The longest a finished long poll waits to be noticed; a hundred checks a second per running drain was most of an idle daemon's wake-ups."
+value = 250
+min = 1
+max = 10000
+unit = "ms"
+
+[devswarm_act.pipe_thread_name]
+doc = "The name of the thread that reads one output pipe of a DevSwarm CLI call (what `status --threads` and a stack sample call it)."
+value = "ah-hc-pipe"
+
 [devswarm_act.verbs]
 doc = "The hivecontrol verbs the engine may spawn, as `verb:minVersion` (empty version = any). Anything else is refused before a process starts (Node: capabilities.js default-deny registry)."
 value = ["archive:2.5.3", "delete:2.5.3", "create:", "update-title:", "check-merge:", "merge-into-source:"]
 
 [devswarm_act.id_verbs]
-doc = "Verbs that default to the CURRENT workspace when no id is given, so an explicit non-empty id (never starting with `-`) is mandatory (Node: lifecycle.js verbArgv, archive.js hcArchiveCall)."
+doc = "Verbs that default to the CURRENT workspace when no id is given, so an explicit non-empty id (never starting with `-`) is mandatory."
 value = ["archive", "delete"]
 
 [devswarm_act.argv_archive]
@@ -100,7 +118,7 @@ doc = "Argv of a delete (Node: ['workspace','delete',id])."
 value = ["workspace", "delete", "{id}"]
 
 [devswarm_act.argv_create]
-doc = "Fixed head of a create; the owner's own arguments follow unchanged, except the anti-hall flag in devswarm_act.create_strip (Node: spawn.js)."
+doc = "Fixed head of a create; the owner's own arguments follow unchanged, except the anti-hall flag in devswarm_act.create_strip."
 value = ["workspace", "create"]
 
 [devswarm_act.create_strip]
@@ -108,26 +126,26 @@ doc = "Arguments removed from a create request before it reaches hivecontrol (an
 value = ["--from-local"]
 
 [devswarm_act.argv_title]
-doc = "Argv of the best-effort title follow-up of a create; `{branch}` and `{title}` are the request's (Node: spawn.js 1086)."
+doc = "Argv of the best-effort title follow-up of a create; `{branch}` and `{title}` are the request's."
 value = ["workspace", "update-title", "-b", "{branch}", "{title}"]
 
 [devswarm_act.argv_check_merge]
-doc = "Argv of the informational check run before a merge (Node: spawn.js 1265)."
+doc = "Argv of the informational check run before a merge."
 value = ["workspace", "check-merge"]
 
 [devswarm_act.argv_merge]
-doc = "Fixed head of a merge; the owner's own arguments follow unchanged (Node: spawn.js 1271)."
+doc = "Fixed head of a merge; the owner's own arguments follow unchanged."
 value = ["workspace", "merge-into-source"]
 
 [devswarm_act.archive_retry_re]
-doc = "A failed archive whose error matches this (case-insensitive) is retried once: the known-flaky terminal confirmation (Node: archive.js APP_ARCHIVE_RETRYABLE_RE)."
+doc = "A failed archive whose error matches this (case-insensitive) is retried once: the known-flaky terminal confirmation."
 value = "could not confirm"
 
 [devswarm_act.archive_refused_flag]
-doc = "A zero-exit archive whose JSON body has this key set to false did not archive anything and counts as a failure (Node: archive.js hcArchiveCall)."
+doc = "A zero-exit archive whose JSON body has this key set to false did not archive anything and counts as a failure."
 value = "archived"
 
-# ---- settings (same keys, tiers and defaults as Node's hooks/lib/settings-schema.js) ---------------------------------
+# ---- settings ---------------------------------
 
 [devswarm_act.set_mode]
 doc = "Auto-archive mode: on (archive), dry-run (plan only, nothing spawned), off. Node: devswarm.autoArchive.mode."
@@ -222,7 +240,7 @@ doc = "Node's auto-archive NDJSON log, relative to the home directory; the witne
 value = ".anti-hall/logs/devswarm-auto-archive.ndjson"
 
 [devswarm_act.undo_hint]
-doc = "Text appended to the Primary's notice of an auto-archive (Node: lifecycle.js UNDO_HINT)."
+doc = "Text appended to the Primary's notice of an auto-archive."
 value = "undo: unarchive it from the archived workspaces list in the DevSwarm app"
 
 [devswarm_act.script_name]
@@ -334,7 +352,7 @@ doc = "Delete refused: the plan could not be marked used. Placeholder: {why}."
 value = "could not mark the plan used: {why}"
 
 [devswarm_act.argv_version]
-doc = "Argv of the capability probe (Node: devswarm-capabilities.js `--version`)."
+doc = "Argv of the capability probe."
 value = ["--version"]
 
 [devswarm_act.plan_mode_words]
@@ -372,7 +390,7 @@ doc = "Which ledger outcome words map to which telemetry outcome of an `act` eve
 value = { allow = ["done"], block = ["refused", "stale", "in-doubt", "unavailable"], error = ["failed"], timeout = ["timeout"] }
 
 [devswarm_act.audit_default_days]
-doc = "The default window of the audit in days (`--since 7d`, `36h` or a day count overrides it)."
+doc = "The default window of the audit in days (`--since 7d` or a day count overrides it)."
 value = 7
 min = 1
 max = 365
@@ -534,6 +552,10 @@ value = "another trigger is already acting on {id}"
 [devswarm_act.msg_stale]
 doc = "Why an action was refused: the preconditions changed between the decision and the action."
 value = "preconditions changed between the decision and the action"
+
+[devswarm_act.msg_idle_uncertain]
+doc = "The g-idle blocker of an auto-archive candidate whose idleness cannot be proven (Node's idle rule can only be stricter than the engine's, never looser, so the workspace is held)."
+value = "held: idle uncertain"
 
 [metric.dsx_actions]
 doc = "Automatic archive and nag attempts of the DevSwarm expansion features, by feature and outcome (ok, refused, failed)."

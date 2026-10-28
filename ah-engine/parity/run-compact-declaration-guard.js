@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Parity of the built-in `compact-declaration-guard` check against hooks/compact-declaration-guard.js (PreToolUse).
-//   node run-compact-declaration-guard.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks
+//   node run-compact-declaration-guard.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks
 //        [--cmds fpr/cmds.jsonl] [--edits fpr/edits.jsonl] [--mode oneshot|daemon|both] [--real 6000] [--win 700] [--seed 1]
 // The engine may answer only allow, or defer (a possible declaration, or something it cannot judge exactly); Node may
 // answer allow or block. So: whenever the engine answers, Node must have allowed (MISMATCH otherwise), and every call

@@ -16,6 +16,11 @@ pub trait LiveState {
     fn stale(&self) -> Vec<String>;
     /// The decision script's facts for `kind` on workspace `id` (see the script header for each kind's shape).
     fn facts(&self, kind: &str, id: &str) -> Option<Value>;
+    /// [`Self::facts`] with every git answer read from git itself, never from memory (a remembered answer can be up to minutes old). An
+    /// action that is about to change something re-checks with this.
+    fn facts_fresh(&self, kind: &str, id: &str) -> Option<Value> {
+        self.facts(kind, id)
+    }
     /// Whether the app database now lists `id` as archived.
     fn archived(&self, id: &str) -> Option<bool>;
     /// What an auto-archived workspace looks like now, for the mistake signals: `{head, activityMs}` (its worktree's HEAD and the

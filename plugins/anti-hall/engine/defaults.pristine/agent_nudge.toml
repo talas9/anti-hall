@@ -1,0 +1,202 @@
+# ah-engine shipped defaults for the nudge loop (`src/agents/nudge.rs`, task #207). Format: see the header of engine.toml.
+# When a child agent (subagent, teammate, DevSwarm workspace, one-shot Codex run) looks unhealthy, its DIRECT parent is asked in
+# plain words whether to do something about it; the parent answers with one verb (or prose, classified by Jev); the engine
+# verifies what happened, reminds on a cadence, escalates to the owner's channel only when the parent is not live or ignores or
+# keeps snoozing, and records every nudge (state + telemetry class `nudge`, `query nudges`). Primaries are never nudged about.
+# Every window, cap, word and text is tuned here, never in Rust.
+
+[agent_nudge.setting]
+doc = "Where the nudge loop's switch is read from (agents.nudge, default on): on, an unhealthy child's signals go to its direct parent as a nudge (the plain reminder routes stay quiet about them); off, the plain reminder routes of agent_tracker.routes deliver them as before."
+value = { section = "agents", key = "nudge", env = "ANTIHALL_AGENT_NUDGE", aliases = [], option = "", default = true }
+
+[agent_nudge.limits]
+doc = """Windows and caps of the nudge loop (milliseconds unless the name says otherwise). cadence_ms: least time between two nudges about one child while it has no answer (each is a short reminder). window_ms: how long after an answer the engine waits before it verifies it (stop: still running then = said_not_done; msg: no new output then = back to reminding). ignored_escalate: reminders without answer or change before the owner's channel is told. max_reminders: reminders after which the nudge is closed as ignored. snooze_default_min, snooze_min_min, snooze_max_min: the snooze given when none (or other) is asked, the shortest (also given for a reason the nudgeReason judge rates implausible) and the longest, in minutes. snoozes_escalate: snoozes after which the owner's channel is told. walk_max: ancestors tried past a parent that is not live. health_per_tick: agentHealth judge calls one tick may make (a latency bound: each is a model call). health_recheck_ms: a child the judge called busy (or a Codex run with no live process) is looked at again after this. health_calls: recent tool calls sent to the judges. step_cap, name_cap, reason_cap: characters of a step or call, a child name, a stored reason. idle_min_show: minutes without output from which the nudge says so. dead_notice_window_ms: a child that died longer ago than this is not looked at. dead_fresh_ms: a child that died longer ago than this when first marked dead is recorded in telemetry only, no notice. dead_per_target: dead notices one target gets in a tick before they are sent as one summary line. answers_max: answer rows read per tick. log_max: closed nudges kept in the state. top_parents: parents listed in the roll-up's most-ignoring list. turns_max, turn_text_cap: turns of a parent kept for matching (and characters of each). prose_per_tick: nudgeReply calls the turn matching may make per tick. match_name_min: shortest child name (characters) a reply or command may mention it by. match_id_prefix_min: shortest id prefix a tool call may name the child by. ref_len, ref_tries: characters of a nudge's ref token, and attempts to find one no open nudge has. replay_bytes: how far back in an already-read transcript a parent that starts being watched late is read for turns since the delivery. snooze_forget_ms: a snooze kept per child and trigger (it holds a re-raised condition while it runs, and its count carries to the next nudge) is forgotten this long after it ran out. wake_fallback_ms: a nudge sent only to the parent's wake feed (one delivery, not two) is put in its reminder queue too when no delivery was recorded this long after it was sent."""
+value = { cadence_ms = 900000, window_ms = 900000, ignored_escalate = 3, max_reminders = 8, snooze_default_min = 30, snooze_min_min = 10, snooze_max_min = 240, snoozes_escalate = 4, walk_max = 4, health_per_tick = 2, health_recheck_ms = 900000, health_calls = 12, step_cap = 140, name_cap = 60, reason_cap = 400, idle_min_show = 5, dead_notice_window_ms = 21600000, answers_max = 200, log_max = 2000, top_parents = 5, turns_max = 24, turn_text_cap = 600, prose_per_tick = 2, match_name_min = 4, match_id_prefix_min = 8, ref_len = 4, ref_tries = 32, replay_bytes = 1048576, dead_fresh_ms = 1800000, dead_per_target = 3, snooze_forget_ms = 21600000, wake_fallback_ms = 180000 }
+
+[agent_nudge.triggers]
+doc = "Which tracker signals make a child a nudge candidate, and the trigger kind each counts as (hung, idle, loop, waste). Waste signals are raised only with real tokens spent. codex_hung: the kind of a one-shot Codex run quiet past agent_tracker.escalate.codex_hung_ms with no end record and a live process. A signal not listed here never nudges."
+value = { hung = "hung", heartbeat_stale = "hung", idle_open_task = "idle", looping = "loop", agent_waste = "waste", token_waste = "waste", codex_hung = "hung" }
+
+[agent_nudge.kind_words]
+doc = "The word a nudge uses for the child's kind (by tracker kind); other: any kind not listed."
+value = { subagent = "subagent", teammate = "teammate", workspace = "workspace", codex = "codex", other = "agent" }
+
+[agent_nudge.answers]
+doc = "The answer words of the nudge verb: stop (the parent stops the child; verified), msg (it redirects or unblocks it; acted when new output follows), snooze (it knows, it is fine, remind later; minutes capped), other (any other reason, required; handled as a snooze with the default time). prose: what a reply in free words is recorded as before the nudgeReply judge classifies it. acted: the parent spawned a replacement for the child (found from its tool calls, counted like a stop)."
+value = { stop = "stop", msg = "msg", snooze = "snooze", other = "other", prose = "prose", acted = "acted" }
+
+[agent_nudge.outcomes]
+doc = "The verified outcomes a nudge closes with: acted_stopped (said stop and the child stopped), acted_progress (the child produced new output and its unhealthy signals cleared), finished (the child finished), said_not_done (said stop, still running after the window: recorded, then reminding resumes), ignored (closed after max_reminders without answer or change), snoozed (the state while a snooze runs), child_died."
+value = { acted_stopped = "acted_stopped", acted_progress = "acted_progress", finished = "finished", said_not_done = "said_not_done", ignored = "ignored", snoozed = "snoozed", child_died = "child_died" }
+
+[agent_nudge.words]
+doc = "Words the loop writes: the telemetry class and its events, the reminder signal name (the delivered rows match on it), the delivery path words, the owner-file target, the dead trigger and the roll-up window names."
+value = { class = "nudge", signal = "nudge", ev_sent = "sent", ev_reminded = "reminded", ev_answered = "answered", ev_said_not_done = "said_not_done", ev_ignored = "ignored", ev_escalated = "escalated", ev_acted = "acted", ev_resolved = "resolved", ev_dead = "dead", ev_health = "health", path_queue = "queue", path_wake = "wake", path_notices = "notices", path_join = "+", owner_file = "owner-notices", trigger_dead = "dead", ev_snooze_held = "snooze_held", window_today = "today", window_daemon = "this_daemon" }
+
+[agent_nudge.units]
+doc = "Token counts in nudge texts: thousands and millions, and their suffixes."
+value = { k = 1000, m = 1000000, k_word = "k", m_word = "M" }
+
+[agent_nudge.evidence_fmt]
+doc = "The evidence fragments of a nudge, joined by join. idle ({min}), stuck ({step}: the call in flight or the signal's step), waste ({tokens} spent with no outcome), ci_wait (its latest calls check or watch CI: a legitimate wait), owner ({min}: the outcomes line the judge reads says when the owner last spoke), judge ({label}, {ref}: the agentHealth verdict and the evidence line it cited)."
+value = { idle = "no output for {min} min", stuck = "stuck on: {step}", waste = "{tokens} tokens with 0 outcomes", judge = "judge: {label} ({ref})", ci_wait = "its latest calls wait on CI (gh run/pr checks), so quiet is expected", owner = ", owner spoke {min} min ago", join = "; " }
+
+[agent_nudge.outcomes_line]
+doc = "The outcomes section line sent to the agentHealth judge. Placeholders: {commits}, {steps}, {checks}, {files}, {reports} (subagent results and report files), {owner} (the evidence_fmt owner text, empty when the owner has not spoken in the window)."
+value = "commits {commits}, steps done {steps}, passing checks {checks}, files edited {files}, reports and subagent results {reports}{owner}"
+
+[agent_nudge.paths]
+doc = "Files of the nudge loop, under the tracker's directory: answers (one row per answer the verb recorded)."
+value = { answers = "nudge-answers.ndjson" }
+
+[agent_nudge.sources]
+doc = "Where an answer came from, as telemetry carries it (answer_source): verb (the agents nudge verb; wins), ref (a reply of the parent that starts with the nudge's ref token), tool (the parent's own tool call that stops, messages or replaces the child), prose (a reply of the parent that mentions the child, classified by nudgeReply), none (no answer)."
+value = { verb = "verb", ref = "ref", tool = "tool", prose = "prose", none = "none" }
+
+[agent_nudge.match]
+doc = "How the parent's turns after a delivered nudge are matched to it (no verb needed). stop_tools / msg_tools / spawn_tools: tool names whose call on the child counts as stop / msg / acted; shell_tools: tools whose command is checked for the stop and send verbs below; fields: the tool input fields kept as the call's values (command only for shell tools); ref_words: words that make a reply about the nudge when it is the only one open for that parent."
+value = { stop_tools = ["TaskStop", "KillShell"], msg_tools = ["SendMessage"], spawn_tools = ["Agent", "Task"], shell_tools = ["Bash"], fields = ["task_id", "shell_id", "to", "id", "name", "description", "command", "target", "task_name"], ref_words = ["nudge", "looks unhealthy"] }
+
+[agent_nudge.codex_turn]
+doc = "Field and value names of the Codex rollout lines read for the turns of a watched Codex parent (the host's own format): a line of type item holds a payload; a payload of type message with the assistant role has content items of type text_item carrying text; a payload of type call has a name and a JSON string args."
+value = { type_key = "type", item = "response_item", payload = "payload", ptype = "type", message = "message", role = "role", assistant = "assistant", content = "content", text_item = "output_text", text = "text", call = "function_call", name = "name", args = "arguments", ts = "timestamp" }
+
+[agent_nudge.codex_tools]
+doc = "Codex tool names that count for the turn matching, each mapped to the tool word of agent_nudge.match it behaves as (shell commands are checked for the stop and send verbs; send_message to an agent is a message; close_agent a stop; spawn_agent a spawn). A Codex tool not listed is not kept."
+value = { shell = "Bash", exec_command = "Bash", shell_command = "Bash", local_shell = "Bash", send_message = "SendMessage", send_input = "SendMessage", close_agent = "TaskStop", spawn_agent = "Agent" }
+
+[agent_nudge.match_stop_cmd]
+doc = "The command text that makes a shell command a stop of the agent it names."
+value = "agents stop"
+
+[agent_nudge.match_send_cmd]
+doc = "The command text that makes a shell command a message to the agent it names."
+value = "agents send"
+
+[agent_nudge.match_tool_kind]
+doc = "The kind word of a kept tool-call turn."
+value = "tool"
+
+[agent_nudge.match_text_kind]
+doc = "The kind word of a kept reply turn."
+value = "text"
+
+[agent_nudge.ref_alphabet]
+doc = "The characters a nudge's ref token is made of (lower case and digits, no look-alikes)."
+value = "abcdefghjkmnpqrstuvwxyz23456789"
+
+[agent_nudge.verb]
+doc = "The `ah-engine agents` subcommand that records a parent's answer to a nudge."
+value = "nudge"
+
+[agent_nudge.cmd]
+doc = "The command a nudge tells the parent to answer with (works the same from Claude Code and Codex shells)."
+value = "\"$HOME/.anti-hall/ah-engine/bin/ah-engine\" agents nudge"
+
+[agent_nudge.health_integration]
+doc = "The Jev evidence integration that judges whether a flagged child is really unhealthy (jev_evidence.toml evidence.cfg)."
+value = "agentHealth"
+
+[agent_nudge.health_busy]
+doc = "The agentHealth label that holds the nudge for a re-check (the child is legitimately busy)."
+value = "busy"
+
+[agent_nudge.reply_integration]
+doc = "The Jev evidence integration that classifies a prose reply into an answer word."
+value = "nudgeReply"
+
+[agent_nudge.reason_integration]
+doc = "The Jev evidence integration that rates a snooze or other reason against the child's activity."
+value = "nudgeReason"
+
+[agent_nudge.reason_plausible]
+doc = "The nudgeReason label that lets the requested snooze stand."
+value = "plausible"
+
+[agent_nudge.unknown_parent]
+doc = "How a walked nudge names a direct parent that could not be told."
+value = "unknown"
+
+[agent_nudge.why_no_parent]
+doc = "Escalation reason: no live parent or ancestor."
+value = "no live parent or ancestor can take it"
+
+[agent_nudge.why_ignored]
+doc = "Escalation reason: the parent left the reminders unanswered."
+value = "its parent left the reminders unanswered"
+
+[agent_nudge.why_snoozed]
+doc = "Escalation reason: the parent kept snoozing."
+value = "its parent keeps snoozing it"
+
+[agent_nudge.dead_silent]
+doc = "Why a child was marked dead: silent with no live parent."
+value = "silent with no live parent"
+
+[agent_nudge.dead_gone]
+doc = "Why a child was marked dead: its transcript or folder is gone."
+value = "its transcript or folder is gone"
+
+[agent_nudge.daemon_uptime_key]
+doc = "The field of `ah-engine status` that gives the daemon's uptime in seconds (the this-daemon roll-up window starts there)."
+value = "uptime_s"
+
+[msg.agent_nudge]
+doc = "The nudge to the direct parent. Placeholders: {kind}, {name}, {dur} (how long the child has run), {tokens} (k/M), {evidence}, {walked} (empty, or msg.agent_nudge_walked), {answer} (msg.agent_nudge_answer)."
+value = "Your {kind} '{name}' has been running {dur}, used {tokens}, and looks unhealthy: {evidence}.{walked} Do you want to do something about it? {answer}"
+
+[msg.agent_nudge_repeat]
+doc = "A repeat of an unanswered nudge (short). Placeholders: {n} (the reminder number), {kind}, {name}, {evidence}, {answer}."
+value = "Reminder {n}: your {kind} '{name}' still looks unhealthy ({evidence}). {answer}"
+
+[msg.agent_nudge_answer]
+doc = "How a nudge tells the parent to answer. Placeholders: {ref} (the nudge's ref token), {cmd}, {child} (the child's id)."
+value = "[nudge #{ref}] Start your reply with the ref: \"{ref}: stop\", \"{ref}: msg <text>\", \"{ref}: snooze 30 - reason\", \"{ref}: other <reason>\", or \"{ref}: \" and your answer in words. Or run: {cmd} {child} stop | msg \"<text>\" | snooze <min> [\"reason\"] | other \"<reason>\""
+
+[msg.agent_nudge_walked]
+doc = "Added to a nudge that went past a parent that is not live. Placeholder: {direct} (the direct parent)."
+value = " (Its direct parent {direct} is not live, so this comes to you as the nearest live ancestor.)"
+
+[msg.agent_nudge_dead]
+doc = "The notice about a child that died (no question). Placeholders: {kind}, {name}, {when} (how long ago it last wrote), {why}."
+value = "Your {kind} '{name}' died {when} ago ({why}); marked dead."
+
+[msg.agent_nudge_dead_batch]
+doc = "The one line that replaces more dead notices than limits.dead_per_target for one target in a tick. Placeholders: {n}, {project}."
+value = "{n} agents in {project} marked dead."
+
+[msg.agent_nudge_escalate]
+doc = "The escalation on the owner's channel. Placeholders: {kind}, {name}, {parent}, {evidence}, {why}, {answer}."
+value = "agent tracker escalation: {kind} '{name}' (parent {parent}) looks unhealthy ({evidence}) and {why}. {answer}"
+
+[msg.agent_nudge_acted]
+doc = "Owner notice after the stop action ran on an escalated child. Placeholders: {kind}, {name}, {action} (one of the msg.agent_act_* sentences)."
+value = "agent tracker: {kind} '{name}' stayed unhealthy after escalation.{action}"
+
+[msg.agent_nudge_usage]
+doc = "Usage of the nudge answer verb. Placeholder: {cmd}."
+value = "usage: {cmd} <child> stop | msg \"<text>\" | snooze <min> [\"reason\"] | other \"<reason>\" | <a reply in your own words>"
+
+[msg.agent_nudge_need_reason]
+doc = "Refusal of `other` without a reason."
+value = "other needs a reason: agents nudge <child> other \"<reason>\""
+
+[msg.agent_nudge_recorded]
+doc = "Confirmation that an answer was recorded. Placeholders: {child}, {answer}."
+value = "nudge answer recorded for {child}: {answer} (the engine checks it at its next tick)"
+
+[agent_nudge.snooze_setting]
+doc = "Where the switch of the held snooze is read from (agents.nudgeSnoozeHold, default on): on, a snooze is kept per child and trigger, outlives the nudge it was given to and holds a re-raised condition (no new nudge until it runs out; its count carries over); off, a snooze lives and dies with its nudge."
+value = { section = "agents", key = "nudgeSnoozeHold", env = "ANTIHALL_AGENT_NUDGE_SNOOZE_HOLD", aliases = [], option = "", default = true }
+
+[agent_nudge.once_setting]
+doc = "Once-only nudge delivery switch. Where the switch of once-only delivery is read from (agents.nudgeDeliverOnce, default on): on, a nudge goes to the parent's wake feed when a wake-watch is armed (the queue only when it is not, or when the wake line was not delivered within limits.wake_fallback_ms), so the parent sees it once; off, it goes to both."
+value = { section = "agents", key = "nudgeDeliverOnce", env = "ANTIHALL_AGENT_NUDGE_DELIVER_ONCE", aliases = [], option = "", default = true }
+
+[msg.agent_nudge_snooze_clamped]
+doc = "Said when a snooze was asked for more than the longest allowed. Placeholders: {child}, {min} (given), {max}, {asked}."
+value = "snoozed {child} for {min} min, the maximum (asked for {asked}); ask again when it runs out"
+
+[msg.agent_nudge_snooze_floor]
+doc = "Said when a snooze was asked for less than the shortest allowed. Placeholders: {child}, {min} (given), {asked}."
+value = "snoozed {child} for {min} min, the shortest allowed (asked for {asked})"
