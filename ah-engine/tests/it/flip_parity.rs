@@ -647,6 +647,9 @@ fn has_context_check(host: &str, event: &str) -> bool {
 
 /// One row: the two answers must be identical (or the documented stricter one, for the one documented class).
 fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
+    if row.class == "fuzz" {
+        return check_fuzz(rig, row, n);
+    }
     let want = rig.old(row, n);
     let got = rig.new_path(row);
     let ok = if row.stricter {
@@ -695,6 +698,63 @@ fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
             cut(&got.err)
         ))
     }
+}
+
+/// The failure mode of a check per `script.failure_mode_by_check`, else `script.failure_mode_default`.
+fn is_closed_check(check: &str) -> bool {
+    let mode = defaults::raw("script.failure_mode_by_check").get(check).and_then(|v| v.as_str()).unwrap_or_else(|| defaults::text("script.failure_mode_default"));
+    mode == defaults::text("script.failure_mode_closed")
+}
+
+/// One fuzz row. No hook command is launched any more (the fake Node hooks of the row are never run), and the stand-in daemon gives
+/// no usable answer, so every selected entry is unanswered and its check's failure mode decides: a `closed` check on a guard event
+/// BLOCKS (exit 2, script.msg_unanswered named on stderr); anything else is let through (exit 0, empty stdout, guards.failOpenNonSafety).
+fn check_fuzz(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
+    let got = rig.new_path(row);
+    let selected: Vec<String> = select(&rig.registry[host_index(row.host)], row.host, &row.event, row.logical.as_ref()).into_iter().map(|s| s.id).collect();
+    let guard_event = defaults::list("dispatch.guard_events").contains(&row.event.as_str());
+    let closed: Vec<String> = table::entries(row.host, &row.event)
+        .into_iter()
+        .filter(|e| selected.contains(&e.id) && e.check.as_deref().is_some_and(is_closed_check))
+        .filter_map(|e| e.check)
+        .collect();
+    let unanswered = format!("({})", defaults::text("script.msg_unanswered"));
+    let ok = if guard_event && !closed.is_empty() {
+        // Either closed-guard block names the check: the check's own failure policy (script.msg_unanswered) or the dispatcher's
+        // infra block of an entry it could not run (the engine could not run the guards for the event).
+        let infra_notice = format!("anti-hall: the engine could not run the guards for {}", row.event);
+        got.code == Some(2)
+            && got.out.is_empty()
+            && closed.iter().any(|c| got.err.contains(c.as_str()))
+            && (got.err.contains(&unanswered) || got.err.starts_with(&infra_notice))
+    } else {
+        // Let through. On a guard event the user is told once per session and check (script.msg_guard_down); that notice is the only
+        // thing allowed on stdout, and it names a selected, non-closed check.
+        let notice_of = |c: &str| defaults::render("script.msg_guard_down", &[("check", &c), ("why", &defaults::text("script.msg_unanswered"))]);
+        let said_ok = got.out.is_empty()
+            || (guard_event
+                && parse_object(&got.out).is_some_and(|o| {
+                    o.len() == 1
+                        && o.get("systemMessage").and_then(Value::as_str).is_some_and(|m| {
+                            table::entries(row.host, &row.event).iter().any(|e| {
+                                selected.contains(&e.id) && e.check.as_deref().is_some_and(|c| !is_closed_check(c) && m == notice_of(c))
+                            })
+                        })
+                }));
+        got.code == Some(0) && said_ok
+    };
+    if ok {
+        return Ok(());
+    }
+    let cut = |s: &str| s.chars().take(300).collect::<String>();
+    Err(format!(
+        "{} {} [fuzz] row {n}: closed checks selected={closed:?}; got code={:?} out={:?} err={:?}",
+        row.host,
+        row.event,
+        got.code,
+        cut(&got.out),
+        cut(&got.err)
+    ))
 }
 
 fn run_rows(rig: &Rig, rows: Vec<Row>, conc: usize) -> (usize, Vec<String>, usize, String) {
