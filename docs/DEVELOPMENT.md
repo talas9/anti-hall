@@ -422,7 +422,7 @@ The CI quick profile and change-detection job are described in their own subsect
 
 The plugin and the engine have separate versions and separate release procedures. A release is a maintainer task.
 
-- **Plugin:** [RELEASING.md](../RELEASING.md). Bump `plugins/anti-hall/.claude-plugin/plugin.json` (the version authority; the Codex manifest, `package.json` and `package-lock.json` track it), add a `CHANGELOG.md` section, sweep the docs, run `node --test`, then a pull request `dev` to `main` and a tag after the merge. Check the GitHub Actions result before calling a release done.
+- **Plugin:** [RELEASING.md](../RELEASING.md). Bump `plugins/anti-hall/.claude-plugin/plugin.json` (the version authority; the Codex manifest, `package.json` and `package-lock.json` track it), add a `CHANGELOG.md` section, sweep the docs, run `node --test`, then a pull request `dev` to `main` and a tag after the merge. Check the GitHub Actions result before calling a release done. Before tagging, also run `claude plugin validate plugins/anti-hall` (Claude Code 2.1.290+; offline, no login). CI runs it in the non-required `plugin-validate` job of `.github/workflows/test.yml` with a pinned CLI version; it is not part of the required `tests-passed` check, so a CLI release that tightens validation cannot block unrelated merges. Re-run it locally after bumping the pin.
 - **Engine:** [`ah-engine/RELEASING.md`](../ah-engine/RELEASING.md). Bump `version` in `ah-engine/Cargo.toml`, run the prepare workflow, merge the pull request that updates `ah-engine.lock`, then push the tag `ah-engine-vX.Y.Z`.
 
 ## Repository layout

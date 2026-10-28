@@ -1094,6 +1094,17 @@ fn a_main_session_with_running_agents_and_no_wake_path_is_told_and_a_live_watche
     assert!(!run("armed-main", true).0, "a live wake-watch is a wake path");
 }
 
+/// Waits until the wake watcher has read its starting offset and stamped itself armed (the stamp is written after the offset is read). A fixed
+/// sleep here raced a slow thread start: rows appended before the offset was read are, by design, not replayed.
+fn wait_armed(e: &Env) {
+    for _ in 0..500 {
+        if sinks::wake_armed(e, "parent") {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn the_wake_watch_prints_each_row_once_and_marks_the_session_armed() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1116,7 +1127,7 @@ fn the_wake_watch_prints_each_row_once_and_marks_the_session_armed() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     };
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    wait_armed(&e);
     assert!(sinks::wake_armed(&e, "parent"), "the stamp says the session can be woken");
     idle_subagent(&h, n, 30);
     let mut st = State::default();
@@ -1539,7 +1550,7 @@ fn wake_burst_lines(window_secs: &str) -> Vec<String> {
             wake::pump(&e2, "parent", std::time::Duration::from_millis(20), &mut |l| seen.lock().unwrap().push(l.to_string()), &|| stop.load(Ordering::Relaxed))
         })
     };
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    wait_armed(&e);
     let feed = sinks::WakeFeed::file(&e, "parent");
     std::fs::create_dir_all(feed.parent().unwrap()).unwrap();
     for (i, (agent, signal)) in

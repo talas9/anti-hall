@@ -147,6 +147,10 @@ never a reason to fail anti-hall's own exit code); additive `UserPromptSubmit`/
 are ever reported — never a full command string (which can carry a local
 username/path) or file contents.
 
+**After a fix that changes the plugin set:** since Claude Code 2.1.299, `/reload-plugins`
+also picks up plugins installed from another terminal (`claude plugin install …`), so no
+restart is needed to see them; re-run the doctor afterwards.
+
 ## Repair mode
 
 Plain `doctor` is **read-only**: full diagnosis, no repair pass, nothing changed. Repairs

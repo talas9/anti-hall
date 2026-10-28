@@ -1749,6 +1749,28 @@ fn the_shared_regex_cache_is_bounded_by_bytes_and_shared_across_threads() {
     assert!(super::recache::get("(", "").is_err(), "an invalid pattern is an error, not a cache entry");
 }
 
+/// Claude Code 2.1.292 fires UserPromptSubmit before a skill or command is expanded, so `prompt` is the raw `/skill args` text.
+/// None of the prompt checks may read expanded skill text: each must answer the raw slash prompt exactly as it answers a plain
+/// prompt of the same session shape, and none may block.
+#[test]
+fn the_prompt_checks_answer_a_raw_slash_command_prompt_like_a_plain_one() {
+    let opts = json!({"payload_sha1": "015d8cb1790e94c77d711b8f8dcbc993aa175346"});
+    for check in ["verify-first", "task-tracker", "limit-conserve-inject", "auto-handover", "agent-reminders", "gh-rt-advisory"] {
+        let answer = |prompt: &str, tag: &str| {
+            let h = home(&format!("raw-{check}-{tag}"));
+            let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "cwd": "/tmp", "prompt": prompt});
+            let v = super::run_forced(check, &p, &opts, "UserPromptSubmit", &env(&h))
+                .unwrap_or_else(|| panic!("{check}: a shipped script"))
+                .unwrap_or_else(|| panic!("{check}: a verdict"));
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: a test scratch directory
+            v
+        };
+        let raw = answer("/anti-hall:ship-it build x", "raw");
+        assert!(!matches!(raw, Verdict::Block(_)), "{check} blocked a raw slash prompt: {raw:?}");
+        assert_eq!(raw, answer("build x", "plain"), "{check} reads the prompt text beyond its own purpose");
+    }
+}
+
 /// A cached pattern weighs its program plus the per-thread search scratch the regex crate keeps inside it (and cannot report):
 /// `daemon.workers` times `script.regex_scratch_bytes`, so the registry sees the memory the lazy DFAs really hold.
 #[test]

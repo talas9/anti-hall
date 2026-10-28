@@ -19,6 +19,12 @@ Brings anti-hall up to the latest released version **in place** and reports exac
 what changed. The hard part of a plugin self-update is honesty about what actually
 takes effect in-session — this skill does not over-promise.
 
+> **Claude Code 2.1.299+:** `/reload-plugins` also picks up a plugin installed or updated from
+> another terminal (for example `claude plugin update anti-hall@anti-hall` run in a second
+> shell), so a restart is not needed for that case. `claude plugin install --marketplace <source>`
+> names the marketplace source on the install itself (see `claude plugin install --help`),
+> so a fresh install no longer needs a separate `/plugin marketplace add`.
+
 ## How the install is laid out (VERIFIED — do not re-derive)
 
 - **Marketplace clone** — `~/.claude/plugins/marketplaces/anti-hall/` — a real git
