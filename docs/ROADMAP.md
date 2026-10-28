@@ -14,7 +14,11 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 
 ## Status as of 2026-10-28
 
-Engine **0.2.1** and plugin **0.301.1** are released. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. All PRs are merged and none is open; the `dev` head is `e575549a`. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
+Engine **0.2.1** and plugin **0.301.1** are released. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
+
+**Shipped to `dev` since the audit:** #372 (hardening bar: parent binding only for a hand-started serve), #373 (flip-parity and fail-closed bars follow the no-Node fail-open contract; closed guards proven to block by mutation), #374 (breaker and corrupt-socket bars rewritten for the down-marker contract; stronger prune wording), #375 (capped prune Stop-block and a P0-P3 priority tag check in the task-list guard; first instance of [#377](https://github.com/talas9/anti-hall/issues/377)).
+
+**Open PRs:** #380 (strict broken-engine notice matrix for [#183](https://github.com/talas9/anti-hall/issues/183); bounded defaults-reload retention for [#171](https://github.com/talas9/anti-hall/issues/171)), #381 (claim-evidence guard precision, [#376](https://github.com/talas9/anti-hall/issues/376) and [#336](https://github.com/talas9/anti-hall/issues/336)), #382 (regression test for stale or swapped defaults in the deploy routine). CI pending on all three.
 
 **Completed on `dev`** (PR numbers):
 
@@ -36,7 +40,11 @@ So 33 of 33 P0/P1 issues are still open; none meets the "0 open P0/P1" gate. Git
 
 **Still open at the head of the list:** runaway token burn ([#270](https://github.com/talas9/anti-hall/issues/270), guards shipped, effect not yet measured); guards that fail open ([#201](https://github.com/talas9/anti-hall/issues/201)); no/broken engine passes through ([#183](https://github.com/talas9/anti-hall/issues/183)); code-scanning alerts ([#224](https://github.com/talas9/anti-hall/issues/224), [#329](https://github.com/talas9/anti-hall/issues/329)); Codex parity gaps ([#314](https://github.com/talas9/anti-hall/issues/314)); work-method review ([#341](https://github.com/talas9/anti-hall/issues/341)); late hook replies ([#22](https://github.com/talas9/anti-hall/issues/22)); memory growth ([#21](https://github.com/talas9/anti-hall/issues/21)); runtime cutover ([#76](https://github.com/talas9/anti-hall/issues/76)).
 
-**CI:** `main` is 159 commits behind `dev`, so the scheduled nightly and fuzz runs on `main` are still red; the fixes (such as #205) are on `dev` only. This is expected to clear when the release train (dev to main) lands. Pending before or with that train: a release version mismatch fix and a timing fix for the `check_mem` test. Nightly failures are tracked in [#360](https://github.com/talas9/anti-hall/issues/360) and [#163](https://github.com/talas9/anti-hall/issues/163).
+**CI:** `main` is 159 commits behind `dev`, so the scheduled nightly and fuzz runs on `main` are still red; the fixes (such as #205) are on `dev` only. This is expected to clear when the release train (dev to main) lands. Pending before or with that train: a release version mismatch fix and a timing fix for the `check_mem` test. Nightly failures are tracked in [#360](https://github.com/talas9/anti-hall/issues/360) and [#163](https://github.com/talas9/anti-hall/issues/163). On [#360](https://github.com/talas9/anti-hall/issues/360): the hardening-bar root cause and the stale oracles are fixed (#372, #373, #374); remaining are the script-latency timing flake and parallel flakiness in the task e2e and DevSwarm wire tests.
+
+**Release gate:** the full test pack runs on the dev-to-main PR; the release does not ship on a partial run.
+
+**P0 list (in order):** (1) finish the merge wave (#380, #381, #382); (2) clear the release-gate reds ([#360](https://github.com/talas9/anti-hall/issues/360) items above); (3) live rebuild of the engine; (4) close-out evidence for [#270](https://github.com/talas9/anti-hall/issues/270), [#201](https://github.com/talas9/anti-hall/issues/201), [#191](https://github.com/talas9/anti-hall/issues/191) and [#183](https://github.com/talas9/anti-hall/issues/183).
 
 ### Priority scale
 
