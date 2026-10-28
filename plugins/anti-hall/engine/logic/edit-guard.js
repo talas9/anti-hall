@@ -135,7 +135,7 @@ function egNudge(p, tool, cwd) {
   if (st.count > threshold) {
     var tp = p.transcript_path;
     if (tp && typeof tp === 'string' && ah.fs.kind(tp) !== null) {
-      var open = tk.tasks(tp).filter(function (x) { return tk.isOpen(x) && tk.blockedOnText(x) === ''; });
+      var open = tk.tasks(tp, ah.home(), p.session_id).filter(function (x) { return tk.isOpen(x) && tk.blockedOnText(x) === ''; });
       // positive proof of zero live workspaces: the app database is present and readable and lists none that is not archived
       var proven = tk.appDbPresent(ah.home()) && tk.appBuilders() !== null && !tk.anyLiveChildren();
       if (open.length > 0 && proven) note = ah.cfg('edit_guard.nudge_note');

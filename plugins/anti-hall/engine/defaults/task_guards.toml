@@ -209,6 +209,14 @@ value = ["content", "message", "messages", "tool_uses", "parts"]
 doc = "The tool names a task reconstruction reacts to (a call that creates, updates, lists or reads tasks, or rewrites the whole list). The kept task lines (transcript.tasks_cache_*) hold every line that names one; a name a reconstruction acts on that is missing here would make its kept answer differ from a fresh read."
 value = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]
 
+[taskstate.in_progress_statuses]
+doc = "Statuses (lowercase) that count a task as in progress (a subset of the open statuses); the open-task facts the Stop gate reads from the session task store use it."
+value = ["in_progress", "in-progress"]
+
+[taskstate.pending_statuses]
+doc = "Statuses (lowercase) that count an open task as waiting to start; with the in-progress statuses they make up the open ids the Stop gate reads from the session task store."
+value = ["pending"]
+
 [taskstate.open_statuses]
 doc = "Statuses (lowercase) that make a task open."
 value = ["pending", "in_progress", "in-progress"]

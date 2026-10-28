@@ -73,6 +73,7 @@ mod spawn_budget;
 mod spool;
 mod stop_scripts_guardrail;
 mod task_checks_e2e;
+mod task_readers_store;
 mod telemetry;
 mod temp_leaks;
 mod transcript_index;
