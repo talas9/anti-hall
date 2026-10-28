@@ -16,12 +16,21 @@
 # Test-only knobs (honoured ONLY with AH_WRAPPER_TEST=1): AH_ENGINE_RELEASE_BASE (http and file allowed), AH_BOOTSTRAP_UNAME_S / _M /
 # _R, AH_BOOTSTRAP_LIBC (gnu|musl).
 
-here=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
+# Hook mode must never lose the hook: the command line names the installed thin client in AH_CLIENT, so when anything below this
+# point cannot be worked out (unreadable defaults, no HOME, a broken tool) the call is still handed to that client, stdin intact.
+# Without AH_CLIENT (or while the client is not installed) a failure ends quietly with exit 0, as before.
+bail() {
+  case "${1:-}" in --download) exit 0 ;; esac
+  if [ -n "${AH_CLIENT:-}" ] && [ -x "$AH_CLIENT" ]; then exec "$AH_CLIENT" "$@"; fi
+  exit 0
+}
+
+here=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || bail "$@"
 root=${AH_ENGINE_PLUGIN_ROOT:-"$here/.."}
 cfg=$root/engine/defaults/engine.toml
 msgs=$root/engine/defaults/messages.toml
-[ -f "$cfg" ] && [ -f "$msgs" ] || exit 0
-[ -n "${HOME:-}" ] || exit 0
+[ -f "$cfg" ] && [ -r "$cfg" ] && [ -f "$msgs" ] && [ -r "$msgs" ] || bail "$@"
+[ -n "${HOME:-}" ] || bail "$@"
 
 # the value of [KEY] in FILE: a string without its quotes, or the first token of a number
 toml_value() { # toml_value FILE KEY
@@ -39,7 +48,7 @@ state=$base/$(c paths.state_dir)
 bindir=$state/bin
 engine_name=$(c install.member_engine)
 hook_name=$(c install.member_hook)
-[ -n "$engine_name" ] && [ -n "$hook_name" ] && [ -n "$(c paths.base_dir)" ] || exit 0
+[ -n "$engine_name" ] && [ -n "$hook_name" ] && [ -n "$(c paths.base_dir)" ] || bail "$@"
 test_mode=0
 [ "${AH_WRAPPER_TEST:-}" = 1 ] && test_mode=1
 
@@ -53,11 +62,52 @@ sha256_of() {
   fi
 }
 
+# #368: the installed engine (the installer's marker) is older than the release ah-engine.lock pins: ONE line on stderr (the same text
+# the thin client prints), once per host process, and the thin client is told so it stays quiet. Nothing is downloaded; any problem
+# (no lock, no marker, unreadable or odd version text) says nothing. Versions compare by their numbers, with the old plugin-numbering
+# floor (launcher.legacy_scheme_floor) counting as older, exactly as the thin client compares them.
+stale_notice() {
+  want=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$root/$(c launcher.engine_lock_file)" 2>/dev/null | head -n 1)
+  have=$(awk '{ print $1; exit }' "$state/$(c install.file_marker)" 2>/dev/null)
+  case "$want$have" in ""|*[!0-9A-Za-z.+-]*) return 0 ;; esac
+  [ -n "$want" ] && [ -n "$have" ] || return 0
+  older=$(awk -v a="$have" -v b="$want" -v f="$(c launcher.legacy_scheme_floor)" '
+    function parse(v, arr,   n, i, k, p) {
+      sub(/[ \t].*/, "", v); sub(/^v/, "", v); sub(/[+-].*/, "", v)
+      n = split(v, p, "."); k = 0
+      for (i = 1; i <= n; i++) { if (p[i] !~ /^[0-9]+$/) break; arr[++k] = p[i] + 0 }
+      return k
+    }
+    function cmp(x, nx, y, ny,   i, n, u, w) {
+      n = nx > ny ? nx : ny
+      for (i = 1; i <= n; i++) { u = (i <= nx) ? x[i] : 0; w = (i <= ny) ? y[i] : 0; if (u < w) return -1; if (u > w) return 1 }
+      return 0
+    }
+    BEGIN {
+      nx = parse(a, X); ny = parse(b, Y); nf = parse(f, F)
+      if (!nx || !ny) exit
+      lx = nf && cmp(X, nx, F, nf) >= 0; ly = nf && cmp(Y, ny, F, nf) >= 0
+      if (lx != ly) { if (lx) print 1; exit }
+      if (cmp(X, nx, Y, ny) < 0) print 1
+    }' 2>/dev/null)
+  [ "$older" = 1 ] || return 0
+  knob=$(c launcher.knob_stale_noticed)
+  case "$knob" in ""|*[!A-Za-z0-9_]*) ;; *) eval "export $knob=1" ;; esac
+  seen=$state/$(c install.file_stale_notice)
+  [ "$(cat "$seen" 2>/dev/null)" != "$PPID" ] || return 0
+  printf '%s\n' "$PPID" >"$seen" 2>/dev/null
+  printf '%s\n' "$(m msg.launcher_stale_engine | sed "s|{have}|$have|g; s|{want}|$want|g")" >&2
+}
+
 # ---- hook mode ------------------------------------------------------------------------------------------------------------------
 if [ "$mode" = hook ]; then
   event=${1:-}
-  # installed meanwhile (an earlier session, another host): this call is then the thin client's
-  if [ -x "$bindir/$hook_name" ]; then exec "$bindir/$hook_name" "$@"; fi
+  # installed: this call is the thin client's. SessionStart comes here FIRST (hooks_form.installer_first_events), so an install whose
+  # client predates the stale-engine notice still hears it; the notice never stops the hook from running.
+  if [ -x "$bindir/$hook_name" ]; then
+    if [ "$event" = SessionStart ] && [ "$(c launcher.stale_notice_on)" != 0 ]; then stale_notice; fi
+    exec "$bindir/$hook_name" "$@"
+  fi
   payload=$(dd bs=4096 count=1 2>/dev/null)
   sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
   [ -n "$sid" ] || sid=-

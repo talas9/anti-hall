@@ -241,6 +241,10 @@ impl L {
         let Some(root) = self.plugin_root.as_ref() else {
             return;
         };
+        // hooks/install.sh already said it for this session start and set this knob for the client it handed over to
+        if crate::util::env_nonempty(&self.key("launcher.knob_stale_noticed")).is_some() {
+            return;
+        }
         let pinned = std::fs::read_to_string(root.join(self.key("launcher.engine_lock_file")))
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())

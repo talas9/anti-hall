@@ -1348,6 +1348,10 @@ min = 1
 doc = "Install log, inside the state directory."
 value = "bootstrap.log"
 
+[install.file_stale_notice]
+doc = "Holds the process id of the host process that already got the stale-engine notice from hooks/install.sh (inside the state directory), so the notice shows once per host process, not at every session start event."
+value = "stale-engine-hook.notice"
+
 [install.file_notice]
 doc = "Holds the id of the session that already got the one notice of hooks/install.sh (inside the state directory)."
 value = "install.notice"
@@ -1897,6 +1901,14 @@ value = "AH_UPDATE_NO_ATTEST"
 doc = "A hook command in the direct form: run the installed thin client, else the installer. Placeholders: {event}, {host_args}, {prefix} (the plugin root variable or path)."
 value = "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" {event}{host_args} || exec sh \"{prefix}/hooks/install.sh\" {event}{host_args}"
 
+[hooks_form.installer_first_template]
+doc = "The direct form of a hook command for the events listed in hooks_form.installer_first_events: the plugin's installer (fresh with every plugin update) runs first and hands over to the installed thin client, so an install whose client is too old to know a newer notice still hears it. The command names the client in AH_CLIENT so the installer can still hand over to it if it cannot read its own configuration. Falls back to the client itself when the installer file is missing. Placeholders as hooks_form.template."
+value = "[ -f \"{prefix}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"{prefix}/hooks/install.sh\" {event}{host_args} || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" {event}{host_args}"
+
+[hooks_form.installer_first_events]
+doc = "The events whose hook command uses hooks_form.installer_first_template instead of hooks_form.template. Every other event runs the installed thin client first."
+value = ["SessionStart"]
+
 [hooks_form.retired_command_re]
 doc = "Complete retired anti-hall hook command accepted by launcher repair and missing-launcher diagnosis. Captures: launcher, prefix, event, host; arbitrary shell commands are left alone."
 value = '^\s*(?:exec\s+)?sh\s+"(?P<launcher>(?P<prefix>[^"\r\n]+)/hooks/ah-hook\.sh)"\s+(?P<event>[A-Za-z][A-Za-z0-9]*)(?:\s+--host\s+(?P<host>claude|codex))?\s*$'
@@ -2324,6 +2336,10 @@ doc = "1 (default): the thin client tells the session once, on stderr, when the 
 value = 1
 min = 0
 max = 1
+
+[launcher.knob_stale_noticed]
+doc = "Environment variable hooks/install.sh sets for the thin client it hands over to once it has printed the stale-engine notice, so a client that knows the notice does not print it a second time."
+value = "AH_STALE_NOTICED"
 
 [launcher.legacy_scheme_floor]
 doc = "The first version of the OLD numbering. Builds made while the engine, hook client and web server carried the plugin's number report 0.300.x / 0.301.x (`0.301.1+<branch>.<sha>`); each component now has its own version (0.2.0, ...). An engine, hook client or web server at or above this floor counts as OLDER than any version below it, in every comparison: the install routine's downgrade check, the Updates page and `ah-hook doctor`. So nobody needs --force to go from 0.301.1 to 0.2.0. Plugin versions are never compared through this floor."

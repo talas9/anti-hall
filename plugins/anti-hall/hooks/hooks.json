@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10
           }
         ]

@@ -127,3 +127,16 @@ fn the_codex_host_gets_the_same_notice() {
     );
     assert!(o.err.contains("ah-hook install"), "{}", o.err);
 }
+
+#[test]
+fn the_installer_knob_silences_the_client_notice() {
+    let env = setup("stale_knob", "0.2.1", Some("0.2.0"));
+    let e = fake(&env);
+    let o = env.run(
+        "PreToolUse",
+        PAYLOAD_S1,
+        Some(&e),
+        &[("AH_STALE_NOTICED", "1")],
+    );
+    assert!(!o.err.contains("ah-hook install"), "{}", o.err);
+}

@@ -834,13 +834,28 @@ impl Doc<'_> {
             String::new()
         };
         cmd == fill(
-            &self.s.text("hooks_form.template"),
+            &self.template_for(event),
             &[
                 ("event", event),
                 ("host_args", &host_args),
                 ("prefix", prefix),
             ],
         )
+    }
+
+    /// The direct form of `event`'s hook command: the installer-first form for the events that list it, else the client-first form.
+    fn template_for(&self, event: &str) -> String {
+        let first = self.s.text("hooks_form.installer_first_template");
+        if !first.is_empty()
+            && self
+                .s
+                .list("hooks_form.installer_first_events")
+                .iter()
+                .any(|e| e == event)
+        {
+            return first;
+        }
+        self.s.text("hooks_form.template")
     }
 
     fn hooks_wiring(&mut self) {
@@ -1282,7 +1297,6 @@ impl Doc<'_> {
     /// Rewrite the old-form commands of a hooks file to the direct form; returns how many were rewritten.
     fn rewrite_hooks(&self, v: &mut serde_json::Value) -> usize {
         let mut n = 0;
-        let tpl = self.s.text("hooks_form.template");
         let wrapper = self.s.text("doctor_l.wrapper_name");
         let host_codex = self.s.text("hooks_form.host_codex");
         let host_args_codex = self.s.text("hooks_form.host_args_codex");
@@ -1330,7 +1344,7 @@ impl Doc<'_> {
                         String::new()
                     };
                     let new = fill(
-                        &tpl,
+                        &self.template_for(event),
                         &[
                             ("event", event),
                             ("host_args", &host_args),
