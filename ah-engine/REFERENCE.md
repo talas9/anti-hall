@@ -4377,6 +4377,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.devswarm_hint` | ` If a DevSwarm workspace has it, set the owner ({upd} owner) to that workspac...` |  |  | The DevSwarm sentence added to the idle-neglect block's do-instead line while the app database shows a live workspace; `{upd}` is the task update tool. |
 | `task_guard.dispatch_demand_setting` | `5 entries` |  |  | Whether running agents are counted per task from this session's transcript (guards.dispatchDemand, default on); off restores the legacy rule (any fresh agent heartbeat silences the idle-neglect block). |
 | `task_guard.dispatch_list_max` | `12` |  |  | Most tasks the idle-neglect block names. |
+| `task_guard.enforce_state_prefix` | `tasklist-enforce-` |  |  | Prefix of the per-session file that counts the prune and priority Stop blocks (`<prefix><session>`). |
 | `task_guard.generic_allowed` | `a task that is truly blocked: mark it with {upd} (blockedBy an open task, or ...` |  |  | The allowed-here line of the generic block; `{upd}` is the task update tool. |
 | `task_guard.generic_instead` | `finish the pending tasks before stopping.` |  |  | The do-instead line of the generic block; `{upd}` is the task update tool. |
 | `task_guard.generic_what` | `open tasks remain unfinished.` |  |  | The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail. |
@@ -4427,12 +4428,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.owner_match_min` | `4` |  | chars | The shortest task owner text that counts as naming a running agent by a part of its description (an owner of fewer characters matches only the agent's id or its whole description). A task owned by a running agent is attended and is not listed by the generic block. |
 | `task_guard.owner_name_key` | `name` |  |  | The field of the Agent call that launched a running agent which names it (its `name`). A task whose owner is that name is attended, like one owned by the agent's id or description. |
 | `task_guard.pending_status` | `pending` |  |  | The status (lowercase) of a task that can be dispatched now. |
+| `task_guard.priority_block_text` | `🏷️ [task-guard] priority tag must be P0-P3 (found {list}): rename the task, e...` |  |  | The reason of the priority-tag Stop block; `{list}` names the offending tags. |
+| `task_guard.priority_check_max_setting` | `6 entries` |  |  | Most Stop blocks per session for one set of bad priority tags (guards.priorityTagBlockMax); once reached the Stop passes. |
+| `task_guard.priority_check_setting` | `5 entries` |  |  | On/off for the priority-slot check at Stop (guards.priorityTagCheck, default on). |
 | `task_guard.priority_default_rank` | `1` |  |  | The rank of a task with no priority or an unrecognised one (fail-open: it counts as P1). |
+| `task_guard.priority_list_max` | `3` |  |  | Most offending tags named in the priority block message. |
 | `task_guard.priority_low` | `low, deferred` |  |  | Priority words (lowercase) that rank below the default. |
 | `task_guard.priority_low_rank` | `2` |  |  | The rank of a low or deferred task. |
+| `task_guard.priority_ok_re` | `^P[0-3]$` |  |  | JavaScript regex source (case-insensitive) a priority slot must match whole: P0 to P3. |
 | `task_guard.priority_rank_re` | `^p([0-9]+)$` |  |  | JavaScript regex source of a priority label with a rank (`p0`, `p1`, ...), matched on the trimmed lowercase label. |
+| `task_guard.priority_slot_re` | `^\s*(?:T-\d+\s+)?\[([^\]]*)\]` |  |  | JavaScript regex source of the priority slot of a task subject: an optional `T-<n>` id, then a bracketed tag; group 1 is the tag text. |
 | `task_guard.prompt_id_key` | `prompt_id` |  |  | The Stop payload field that names the prompt. |
 | `task_guard.proven_only_setting` | `5 entries` |  |  | Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on). |
+| `task_guard.prune_block_max_setting` | `6 entries` |  |  | Most Stop blocks per session for one completed-task count (guards.pruneStopBlockMax); once reached the Stop passes. A changed count starts a new window. |
+| `task_guard.prune_block_setting` | `5 entries` |  |  | On/off for the capped Stop block that follows an ignored prune advisory (guards.pruneStopBlock, default on). |
+| `task_guard.prune_block_text` | `🧹 [task-guard] {n} completed tasks (> {limit}) still listed: log them in the ...` |  |  | The reason of the prune Stop block; `{n}` is the completed/cancelled count and `{limit}` the limit (guards.pruneCompletedTasksAfter). |
 | `task_guard.prune_setting` | `6 entries` |  |  | Completed or cancelled tasks kept before the task tracker suggests pruning. |
 | `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
 | `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
@@ -5399,7 +5409,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `378 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `382 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7813,7 +7823,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `378 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `382 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
