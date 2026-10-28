@@ -647,13 +647,16 @@ fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
 
 /// Whether `check` is a safety guard: its failure mode in script.failure_mode_by_check is the blocking one.
 fn is_closed_check(check: &str) -> bool {
-    let d = ah_engine::defaults::raw("script.failure_mode_by_check").get(check).and_then(|v| v.as_str()).unwrap_or_else(|| ah_engine::defaults::text("script.failure_mode_default"));
+    let d = ah_engine::defaults::raw("script.failure_mode_by_check")
+        .get(check)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| ah_engine::defaults::text("script.failure_mode_default"));
     d == ah_engine::defaults::text("script.failure_mode_closed")
 }
 
 fn check(what: &str, row: &Row, want: Want, r: &Run, can_block: bool) {
-    let ctx =
-        format!("{what}: code {} out {:?} err {:?} marked {} timed out {} (second hook: expected {} marked {} timed out {})",
+    let ctx = format!(
+        "{what}: code {} out {:?} err {:?} marked {} timed out {} (second hook: expected {} marked {} timed out {})",
         r.code,
         r.out.chars().take(300).collect::<String>(),
         r.err,
@@ -672,7 +675,8 @@ fn check(what: &str, row: &Row, want: Want, r: &Run, can_block: bool) {
     }
     // fail-closed = a block that says the guards could not answer: the dispatcher's infra block, or a CLOSED check's own failure policy
     // (script.msg_fail_closed with script.msg_unanswered as the reason)
-    let closed = r.code == 2 && (r.err.contains("could not run the guards") || r.err.contains(&format!("({})", ah_engine::defaults::text("script.msg_unanswered"))));
+    let closed =
+        r.code == 2 && (r.err.contains("could not run the guards") || r.err.contains(&format!("({})", ah_engine::defaults::text("script.msg_unanswered"))));
     // An event with no safety guard (Stop, SubagentStop: a test holds that none is closed) cannot block on its own failure: every
     // unanswered entry is open, so the call is let through, whatever the row's Node-era wording asked for.
     if !can_block {
@@ -691,7 +695,10 @@ fn check(what: &str, row: &Row, want: Want, r: &Run, can_block: bool) {
         Want::Blocks(s) if r.err.contains(s) => assert_eq!(r.code, 2, "{ctx}"),
         Want::Blocks(s) | Want::BlocksOrClosed(s) | Want::OneJson(s) if closed || r.err.contains(s) || r.out.contains(s) => {}
         Want::Blocks(_) | Want::BlocksOrClosed(_) | Want::OneJson(_) | Want::ClosedOrAllow | Want::Allow | Want::Discarded | Want::InfraDefer | Want::Defer => {
-            assert!(closed || (r.code == 0 && !silent_allow || r.code == 0 && matches!(want, Want::Allow | Want::Discarded | Want::ClosedOrAllow)), "expected the engine's own answer (fail-closed or a let-through): {ctx}")
+            assert!(
+                closed || (r.code == 0 && !silent_allow || r.code == 0 && matches!(want, Want::Allow | Want::Discarded | Want::ClosedOrAllow)),
+                "expected the engine's own answer (fail-closed or a let-through): {ctx}"
+            )
         }
     }
     let _ = row;

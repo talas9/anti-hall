@@ -702,7 +702,8 @@ fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
 
 /// The failure mode of a check per `script.failure_mode_by_check`, else `script.failure_mode_default`.
 fn is_closed_check(check: &str) -> bool {
-    let mode = defaults::raw("script.failure_mode_by_check").get(check).and_then(|v| v.as_str()).unwrap_or_else(|| defaults::text("script.failure_mode_default"));
+    let mode =
+        defaults::raw("script.failure_mode_by_check").get(check).and_then(|v| v.as_str()).unwrap_or_else(|| defaults::text("script.failure_mode_default"));
     mode == defaults::text("script.failure_mode_closed")
 }
 
@@ -736,9 +737,9 @@ fn check_fuzz(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
                 && parse_object(&got.out).is_some_and(|o| {
                     o.len() == 1
                         && o.get("systemMessage").and_then(Value::as_str).is_some_and(|m| {
-                            table::entries(row.host, &row.event).iter().any(|e| {
-                                selected.contains(&e.id) && e.check.as_deref().is_some_and(|c| !is_closed_check(c) && m == notice_of(c))
-                            })
+                            table::entries(row.host, &row.event)
+                                .iter()
+                                .any(|e| selected.contains(&e.id) && e.check.as_deref().is_some_and(|c| !is_closed_check(c) && m == notice_of(c)))
                         })
                 }));
         got.code == Some(0) && said_ok
