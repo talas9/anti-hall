@@ -115,13 +115,18 @@ doc = "Breaker cooldown for the run (`AH_ENGINE_BREAKER_COOLDOWN_S`)."
 value = 2
 unit = "s"
 
+[breaker.down_marker_ttl_ms]
+doc = "Down-marker TTL for the run (`AH_ENGINE_DOWN_MARKER_TTL_MS`): a failed exchange marks the daemon down and suppresses attempts for this long, so only calls spaced beyond it each reach the daemon and count toward the breaker. Kept near zero so the bar drives real failures back to back."
+value = 1
+unit = "ms"
+
 [breaker.deadline_ms]
-doc = "Client deadline for the run (`AH_ENGINE_DEADLINE_MS`) against the hung stand-in daemon, so each failure costs this long."
+doc = "Client deadline for the run (`AH_ENGINE_DEADLINE_MS`) given to every call of the bar."
 value = 150
 unit = "ms"
 
 [breaker.open_calls]
-doc = "Hook calls made while the breaker is open: each must skip the engine and answer faster than any call that waited out the deadline."
+doc = "Hook calls made while the breaker is open: each must skip the engine (the garbage-frame stand-in sees no new connection) and pass through."
 value = 5
 
 # ---- panic injection --------------------------------------------------------------------------------------------------
@@ -135,6 +140,11 @@ value = 5
 [corrupt.calls]
 doc = "Hook calls against each corrupt-socket case (a garbage-frame server, a non-socket file at the socket path)."
 value = 4
+
+[corrupt.down_marker_ttl_ms]
+doc = "Down-marker TTL for the garbage-frame case (`AH_ENGINE_DOWN_MARKER_TTL_MS`): kept near zero so every call reaches the stand-in and counts as its own failure instead of being skipped by the marker."
+value = 1
+unit = "ms"
 
 [corrupt.garbage]
 doc = "The bytes the garbage-frame stand-in answers with: not a valid frame."

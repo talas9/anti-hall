@@ -391,26 +391,48 @@ fn breaker_failures_open_it_calls_follow_the_no_engine_policy_and_a_half_open_pr
             ("AH_ENGINE_BREAKER_WINDOW_S", n("breaker.window_s").to_string()),
             ("AH_ENGINE_BREAKER_COOLDOWN_S", n("breaker.cooldown_s").to_string()),
             ("AH_ENGINE_DEADLINE_MS", deadline.as_millis().to_string()),
+            ("AH_ENGINE_DOWN_MARKER_TTL_MS", n("breaker.down_marker_ttl_ms").to_string()),
         ],
     );
     let mut r = Report::new(20, "breaker");
     let nospawn = [("AH_ENGINE_NOSPAWN", "1")];
-    fake_server(&lab, || None); // a hung daemon
+    // a daemon that answers with a malformed frame: the only exchange result that counts toward the breaker is `Failed`
+    // (a hung or slow daemon is `Hung`/`Slow`, counted separately); the down marker's TTL is shortened so each call
+    // reaches the stand-in instead of being skipped
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (h, garbage) = (hits.clone(), t("corrupt.garbage").into_bytes());
+    fake_server(&lab, move || {
+        h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(garbage.clone())
+    });
+    let seen = || hits.load(std::sync::atomic::Ordering::SeqCst);
     let until = lab.eng().join("breaker.until");
-    // n failures open it; each waited out the deadline
-    let failing: Vec<Call> = (0..n("breaker.n")).map(|_| lab.hook_with(DENY_IN, &nospawn)).collect();
+    // n malformed replies open it, each spaced beyond the down-marker TTL
+    let failing: Vec<Call> = (0..n("breaker.n"))
+        .map(|_| {
+            std::thread::sleep(ms("common.poll_ms").max(Duration::from_millis(n("breaker.down_marker_ttl_ms") * 3)));
+            lab.hook_with(DENY_IN, &nospawn)
+        })
+        .collect();
+    r.check("every failing call reached the stand-in", seen(), n("breaker.n"), seen() as u64 == n("breaker.n"));
+    let fails = lab.log_count("client_fail");
+    r.check("client_fail logged per malformed reply", fails, n("breaker.n"), fails as u64 == n("breaker.n"));
     let fb = failing.iter().filter(|c| c.answer() == Answer::Client).count();
     r.check("failing calls answered by the client itself", fb, failing.len(), fb == failing.len());
     r.check("breaker open after n failures", until.exists(), true, until.exists());
     let opened = lab.log_count("breaker_open");
     r.check("breaker_open logged", opened, 1, opened == 1);
-    // open: calls skip the engine (faster than any call that waited) and follow the no-engine policy
-    let fastest_wait = failing.iter().map(|c| c.dt).min().unwrap();
+    // open: calls skip the engine (the stand-in sees no new connection) and follow the no-engine policy
+    let before_open = seen();
     let open: Vec<Call> = (0..n("breaker.open_calls")).map(|_| lab.hook_with(DENY_IN, &nospawn)).collect();
     let fb = open.iter().filter(|c| c.answer() == Answer::Client).count();
     r.check("open-breaker calls answered by the client itself", fb, open.len(), fb == open.len());
+    let reached = seen() - before_open;
+    r.check("open-breaker calls that reached the stand-in", reached, 0, reached == 0);
     let slowest = open.iter().map(|c| c.dt).max().unwrap();
-    r.check("slowest open-breaker call (ms)", slowest.as_millis(), format!("< {}", fastest_wait.as_millis()), slowest < fastest_wait);
+    r.check("slowest open-breaker call (ms)", slowest.as_millis(), call_ceiling(deadline).as_millis(), slowest <= call_ceiling(deadline));
+    let ok_exit = failing.iter().chain(open.iter()).all(|c| c.code == 0);
+    r.check("every call exited 0 (pass-through)", ok_exit, true, ok_exit);
     // half-open, failing: after the cooldown one failure re-opens it at once (the earlier ones are still in the window)
     let first_until = std::fs::read_to_string(&until).unwrap();
     std::thread::sleep(Duration::from_secs(n("breaker.cooldown_s")) + ms("common.poll_ms") * 4);
@@ -481,10 +503,17 @@ fn corrupt_socket_garbage_frames_and_a_non_socket_fall_back_never_allow() {
     let calls = n("corrupt.calls");
     {
         // a server that answers with bytes that are not a frame
-        let lab = Lab::new("garb", &[("AH_ENGINE_NOSPAWN", "1".to_string())]);
+        // a failed exchange marks the daemon down for a TTL; shorten it and space the calls beyond it so each call is its own failure
+        let ttl = n("corrupt.down_marker_ttl_ms");
+        let lab = Lab::new("garb", &[("AH_ENGINE_NOSPAWN", "1".to_string()), ("AH_ENGINE_DOWN_MARKER_TTL_MS", ttl.to_string())]);
         let garbage = t("corrupt.garbage").into_bytes();
         fake_server(&lab, move || Some(garbage.clone()));
-        let cs: Vec<Call> = (0..calls).map(|_| lab.hook(DENY_IN)).collect();
+        let cs: Vec<Call> = (0..calls)
+            .map(|_| {
+                std::thread::sleep(Duration::from_millis(ttl * 3));
+                lab.hook(DENY_IN)
+            })
+            .collect();
         let fb = cs.iter().filter(|c| c.answer() == Answer::Client).count();
         r.check("garbage frames: calls answered by the client itself", fb, calls, fb as u64 == calls);
         let slowest = cs.iter().map(|c| c.dt).max().unwrap();
@@ -496,6 +525,10 @@ fn corrupt_socket_garbage_frames_and_a_non_socket_fall_back_never_allow() {
             format!(">= {}", calls.min(engine_num("client.breaker_n"))),
             failed as u64 >= calls.min(engine_num("client.breaker_n")),
         );
+        // the breaker opens once the default threshold of malformed replies is reached (corrupt.calls >= client.breaker_n)
+        let (opened, open_file) = (lab.log_count("breaker_open"), lab.eng().join("breaker.until").exists());
+        let should_open = calls >= engine_num("client.breaker_n");
+        r.check("garbage frames: breaker opened at the threshold", opened, u64::from(should_open), opened as u64 == u64::from(should_open) && open_file == should_open);
     }
     {
         // a regular file where the socket should be: never deleted, never mistaken for a daemon
