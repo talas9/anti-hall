@@ -715,6 +715,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `hooks_form.host_args_codex` | ` --host codex` |  |  | What a Codex hook command adds after the event. |
 | `hooks_form.host_claude` | `claude` |  |  | The name of the Claude host. |
 | `hooks_form.host_codex` | `codex` |  |  | The name of the Codex host (the value of --host). |
+| `hooks_form.installer_first_events` | `SessionStart` |  |  | The events whose hook command uses hooks_form.installer_first_template instead of hooks_form.template. Every other event runs the installed thin client first. |
+| `hooks_form.installer_first_template` | `[ -f "{prefix}/hooks/install.sh" ] && exec sh "{prefix}/hooks/install.sh" {ev...` |  |  | The direct form of a hook command for the events listed in hooks_form.installer_first_events: the plugin's installer (fresh with every plugin update) runs first and hands over to the installed thin client, so an install whose client is too old to know a newer notice still hears it. Falls back to the client itself when the installer file is missing. Placeholders as hooks_form.template. |
 | `hooks_form.node_word` | `node` |  |  | The program name that marks Node on an entry path. |
 | `hooks_form.old_markers` | `ah-hook.sh, ah-run.sh` |  |  | Text in a hook or statusLine command that marks the retired shell wrappers. |
 | `hooks_form.repair_done` | `rewrote {n} retired anti-hall hook command(s) in {file}; backup saved beside ...` |  |  | Successful hook launcher migration, after an exclusive backup and atomic replacement. Placeholders: n, file. |
@@ -743,6 +745,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `install.file_log` | `bootstrap.log` |  |  | Install log, inside the state directory. |
 | `install.file_marker` | `bootstrap.installed` |  |  | Marker of what the installer put in place: <version> <asset sha256> <engine sha256> [<ah-hook sha256>]. A binary that does not match it (a local build) is never overwritten. |
 | `install.file_notice` | `install.notice` |  |  | Holds the id of the session that already got the one notice of hooks/install.sh (inside the state directory). |
+| `install.file_stale_notice` | `stale-engine-hook.notice` |  |  | Holds the process id of the host process that already got the stale-engine notice from hooks/install.sh (inside the state directory), so the notice shows once per host process, not at every session start event. |
 | `install.kill_grace_s` | `2` |  | s | How long a timed-out command gets after TERM before it is killed. |
 | `install.libc_default` | `gnu` |  |  | The libc part of the Linux triple when musl is not detected. |
 | `install.libc_musl` | `musl` |  |  | The libc part of the Linux triple on a musl system. |
@@ -823,6 +826,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `launcher.knob_integrity_park` | `AH_INTEGRITY_PARK` |  |  | Test-only: environment variable naming a path prefix; the integrity verbs stop at their race points (`validated`, `before_break`, `after_break`) while the file <prefix>.<point> exists, and create <prefix>.<point>.parked when they arrive. Honoured only when the test flag is set. It makes the install-lock interleavings deterministic. |
 | `launcher.knob_kill_grace_s` | `AH_KILL_GRACE_S` |  |  | Test-only: environment variable that sets the kill grace in whole seconds. |
 | `launcher.knob_libc` | `AH_BOOTSTRAP_LIBC` |  |  | Test-only: environment variable that names the libc (gnu or musl) instead of detecting it. |
+| `launcher.knob_stale_noticed` | `AH_STALE_NOTICED` |  |  | Environment variable hooks/install.sh sets for the thin client it hands over to once it has printed the stale-engine notice, so a client that knows the notice does not print it a second time. |
 | `launcher.knob_sweep_age_s` | `AH_HOOK_SWEEP_AGE_S` |  |  | Test-only: environment variable of the retired shell wrapper's run-directory sweep age (accepted for parity, unused by the thin client). |
 | `launcher.knob_timeout_ms` | `AH_HOOK_TIMEOUT_MS` |  |  | Test-only: environment variable that sets the hook budget in milliseconds. |
 | `launcher.knob_timeout_s` | `AH_HOOK_TIMEOUT_S` |  |  | Test-only: environment variable that sets the hook budget in whole seconds. |

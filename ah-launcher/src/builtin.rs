@@ -155,6 +155,7 @@ pub const STRS: &[(&str, &str)] = &[
     ),
     ("launcher.knob_update_git_url", "AH_UPDATE_GIT_URL"),
     ("launcher.knob_update_triple", "AH_UPDATE_TRIPLE"),
+    ("launcher.knob_stale_noticed", "AH_STALE_NOTICED"),
     ("launcher.knob_update_no_attest", "AH_UPDATE_NO_ATTEST"),
     ("launcher.arg_auto", "--auto"),
     ("launcher.knob_uname_s", "AH_BOOTSTRAP_UNAME_S"),

@@ -48,7 +48,17 @@ pub fn thin_command(host: &str, event: &str) -> String {
     let var = defaults::raw("dispatch.root_vars").get(host).map(|v| v.strings()).unwrap_or_default().first().copied().unwrap_or("");
     let extra = defaults::raw("dispatch.thin_host_args").str_field(host);
     let prefix = format!("${{{var}}}");
-    defaults::fill(defaults::text("hooks_form.template"), &[("event", &event), ("host_args", &extra), ("prefix", &prefix)])
+    defaults::fill(template_for(event), &[("event", &event), ("host_args", &extra), ("prefix", &prefix)])
+}
+
+/// The direct form of `event`'s command: `hooks_form.installer_first_template` for the events in `hooks_form.installer_first_events`
+/// (the plugin's installer runs first and hands over to the client), `hooks_form.template` for every other event.
+pub(crate) fn template_for(event: &str) -> &'static str {
+    if defaults::raw("hooks_form.installer_first_events").strings().contains(&event) {
+        defaults::text("hooks_form.installer_first_template")
+    } else {
+        defaults::text("hooks_form.template")
+    }
 }
 
 /// Rewrite only complete retired anti-hall launcher commands, preserving every other hook and its metadata.
@@ -66,7 +76,7 @@ pub(crate) fn upgrade_hooks(value: &mut serde_json::Value, host: &str) -> usize 
                     continue;
                 }
                 let command = defaults::fill(
-                    defaults::text("hooks_form.template"),
+                    template_for(event),
                     &[("event", event), ("host_args", &defaults::raw("dispatch.thin_host_args").str_field(host)), ("prefix", &prefix.as_str())],
                 );
                 let Some(slot) = hook.get_mut("command") else { continue };

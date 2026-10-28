@@ -1131,5 +1131,132 @@ test_direct_form_without_the_client_runs_the_installer_once_and_fails_open() {
 }
 check direct_form_without_the_client_runs_the_installer_once_and_fails_open test_direct_form_without_the_client_runs_the_installer_once_and_fails_open
 
+# ---- #368: SessionStart goes through the plugin's install.sh first, which tells a stale install about its old engine ----------------
+# A scratch HOME and a scratch plugin root (the shipped defaults and install.sh copied in) with a stub ah-hook that records its
+# arguments and stdin. The command run is the one hooks.json ships for SessionStart.
+ss_make() { # ss_make NAME PINNED MARKER_VERSION|none|nofile [bin|nobin]
+  ssd=$tmp/ss-$1
+  rm -rf "$ssd"
+  mkdir -p "$ssd/h/.anti-hall/ah-engine/bin" "$ssd/plugin/hooks" "$ssd/plugin/engine"
+  cp -R "$repo/plugins/anti-hall/engine/defaults" "$ssd/plugin/engine/defaults"
+  cp "$repo/plugins/anti-hall/hooks/install.sh" "$ssd/plugin/hooks/install.sh"
+  printf '{"schema":1,"version":"%s","assets":{}}\n' "$2" >"$ssd/plugin/ah-engine.lock"
+  case "$3" in
+    none|nofile) : ;;
+    *) printf '%s aa bb cc\n' "$3" >"$ssd/h/.anti-hall/ah-engine/bootstrap.installed" ;;
+  esac
+  if [ "${4:-bin}" = bin ]; then
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >"%s/args"\ncat >"%s/stdin"\nprintf "knob=%%s\\n" "${AH_STALE_NOTICED:-}" >"%s/env"\nexit 0\n' "$ssd" "$ssd" "$ssd" >"$ssd/h/.anti-hall/ah-engine/bin/ah-hook"
+    chmod +x "$ssd/h/.anti-hall/ah-engine/bin/ah-hook"
+  fi
+}
+ss_run() { # ss_run NAME: run the shipped SessionStart command; sets ss_rc
+  cmd=$(hook_command_of "$repo/plugins/anti-hall/hooks/hooks.json" SessionStart) || return 1
+  set +e
+  HOME=$ssd/h CLAUDE_PLUGIN_ROOT=$ssd/plugin sh -c "$cmd" <"$payload" >"$ssd/out" 2>"$ssd/err"
+  ss_rc=$?
+  set -e
+}
+ss_ran_binary() { [ "$(cat "$ssd/args" 2>/dev/null)" = SessionStart ] && cmp -s "$ssd/stdin" "$payload"; }
+
+test_sessionstart_stale_marker_prints_one_notice_and_runs_the_client() {
+  ss_make stale 0.2.1 0.2.0 || return 1
+  ss_run || return 1
+  [ "$ss_rc" -eq 0 ] && ss_ran_binary || return 1
+  [ "$(wc -l <"$ssd/err" | tr -d ' ')" -eq 1 ] || return 1
+  grep -q '0\.2\.0' "$ssd/err" && grep -q '0\.2\.1' "$ssd/err" && grep -q 'ah-hook install' "$ssd/err" || return 1
+  [ ! -s "$ssd/out" ] || return 1
+  # a client that also knows the notice is told this one was said
+  grep -q 'knob=1' "$ssd/env" || return 1
+  # a second session start of the same host process: silent, and the client still runs
+  rm -f "$ssd/args" "$ssd/stdin"
+  ss_run || return 1
+  ss_ran_binary && [ ! -s "$ssd/err" ]
+}
+check sessionstart_stale_marker_prints_one_notice_and_runs_the_client test_sessionstart_stale_marker_prints_one_notice_and_runs_the_client
+
+test_sessionstart_old_numbering_counts_as_older() {
+  ss_make legacy 0.2.1 0.301.1+b.abc || return 1
+  ss_run || return 1
+  ss_ran_binary && grep -q 'ah-hook install' "$ssd/err"
+}
+check sessionstart_old_numbering_counts_as_older test_sessionstart_old_numbering_counts_as_older
+
+test_sessionstart_equal_or_newer_marker_is_silent() {
+  for v in 0.2.1 0.2.2 0.3.0 0.10.0 0.299.9; do
+    ss_make "eq$v" 0.2.1 "$v" || return 1
+    ss_run || return 1
+    ss_ran_binary || return 1
+    [ ! -s "$ssd/err" ] || return 1
+  done
+  ss_make double 0.10.0 0.9.0 || return 1   # numeric, not lexical: 0.9.0 is older than 0.10.0
+  ss_run || return 1
+  grep -q 'ah-hook install' "$ssd/err"
+}
+check sessionstart_equal_or_newer_marker_is_silent test_sessionstart_equal_or_newer_marker_is_silent
+
+test_sessionstart_missing_or_junk_marker_is_silent_and_runs_the_client() {
+  ss_make nomarker 0.2.1 nofile || return 1
+  ss_run || return 1
+  ss_ran_binary || return 1
+  [ ! -s "$ssd/err" ] || return 1
+  ss_make junk 0.2.1 garbage || return 1
+  ss_run || return 1
+  ss_ran_binary || return 1
+  [ ! -s "$ssd/err" ] || return 1
+  ss_make nolock 0.2.1 0.2.0 || return 1
+  rm -f "$ssd/plugin/ah-engine.lock"
+  ss_run || return 1
+  ss_ran_binary && [ ! -s "$ssd/err" ]
+}
+check sessionstart_missing_or_junk_marker_is_silent_and_runs_the_client test_sessionstart_missing_or_junk_marker_is_silent_and_runs_the_client
+
+test_sessionstart_notice_is_off_with_the_setting() {
+  ss_make off 0.2.1 0.2.0 || return 1
+  awk 'f && /^value/ { print "value = 0"; f = 0; next } /^\[launcher.stale_notice_on\]/ { f = 1 } { print }' "$ssd/plugin/engine/defaults/engine.toml" >"$ssd/e.toml"
+  mv "$ssd/e.toml" "$ssd/plugin/engine/defaults/engine.toml"
+  ss_run || return 1
+  ss_ran_binary && [ ! -s "$ssd/err" ]
+}
+check sessionstart_notice_is_off_with_the_setting test_sessionstart_notice_is_off_with_the_setting
+
+test_sessionstart_without_the_client_keeps_the_old_install_behaviour() {
+  ss_make nobin 0.2.1 0.2.0 nobin || return 1
+  ss_run || return 1
+  [ "$ss_rc" -eq 0 ] && [ ! -s "$ssd/out" ] || return 1
+  [ "$(wc -l <"$ssd/err" | tr -d ' ')" -eq 1 ] || return 1
+  # the install notice, not the stale one; nothing downloaded
+  ! grep -q 'ah-hook install' "$ssd/err" && [ ! -e "$ssd/h/.anti-hall/ah-engine/bin/ah-hook" ]
+}
+check sessionstart_without_the_client_keeps_the_old_install_behaviour test_sessionstart_without_the_client_keeps_the_old_install_behaviour
+
+test_sessionstart_with_a_missing_install_sh_still_runs_the_client() {
+  ss_make noinst 0.2.1 0.2.0 || return 1
+  rm -f "$ssd/plugin/hooks/install.sh"
+  ss_run || return 1
+  [ "$ss_rc" -eq 0 ] && ss_ran_binary
+}
+check sessionstart_with_a_missing_install_sh_still_runs_the_client test_sessionstart_with_a_missing_install_sh_still_runs_the_client
+
+test_only_sessionstart_differs_from_the_direct_form_of_every_other_event() {
+  for f in "$repo/plugins/anti-hall/hooks/hooks.json" "$repo/plugins/anti-hall/codex/hooks/hooks.json"; do
+    case "$f" in */codex/*) extra=' --host codex'; var='${PLUGIN_ROOT}' ;; *) extra=; var='${CLAUDE_PLUGIN_ROOT}' ;; esac
+    n=0
+    for ev in $(sed -n 's/^    "\([A-Za-z]*\)": \[$/\1/p' "$f"); do
+      cmd=$(hook_command_of "$f" "$ev") || return 1
+      old="[ -x \"\$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"\$HOME/.anti-hall/ah-engine/bin/ah-hook\" $ev$extra || exec sh \"$var/hooks/install.sh\" $ev$extra"
+      n=$((n + 1))
+      if [ "$ev" = SessionStart ]; then
+        [ "$cmd" != "$old" ] || return 1
+        case "$cmd" in "[ -f \"$var/hooks/install.sh\" ] && exec sh \"$var/hooks/install.sh\" SessionStart$extra || "*) : ;; *) return 1 ;; esac
+      else
+        [ "$cmd" = "$old" ] || return 1
+      fi
+    done
+    [ "$n" -ge 5 ] || return 1
+  done
+}
+check only_sessionstart_differs_from_the_direct_form_of_every_other_event test_only_sessionstart_differs_from_the_direct_form_of_every_other_event
+
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

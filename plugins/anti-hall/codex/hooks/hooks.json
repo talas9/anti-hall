@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "command": "[ -f \"${PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex",
             "timeout": 10
           }
         ]
