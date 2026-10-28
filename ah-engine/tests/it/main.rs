@@ -8,6 +8,7 @@
 mod broad_kill;
 #[path = "../common/mod.rs"]
 mod common;
+mod deploy_defaults_gate;
 mod event_budgets;
 mod lane_waste;
 mod replies;
