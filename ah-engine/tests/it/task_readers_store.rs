@@ -131,7 +131,10 @@ fn compact_advice_guard_counts_the_finished_tasks_of_the_store() {
     let mut p = stop(&s, &tr);
     p["last_assistant_message"] = json!("safe to compact");
     let out = s.check("compact-advice-guard", &p, &[("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000"), ("ANTIHALL_TEST_ISOLATION", "1")]);
-    assert!(out.contains("\"decision\":\"block\"") && out.contains("the handover is not"), "two finished tasks in the store (the transcript has none): the declaration is over budget: {out}");
+    assert!(
+        out.contains("\"decision\":\"block\"") && out.contains("the handover is not"),
+        "two finished tasks in the store (the transcript has none): the declaration is over budget: {out}"
+    );
 }
 
 /// The request marker dispatch-tier writes is keyed by a hash of the task's text. A TaskUpdate that only carries a description is
