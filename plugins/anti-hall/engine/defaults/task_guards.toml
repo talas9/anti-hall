@@ -292,7 +292,7 @@ doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
 value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
 
 [task_guard.prune_setting]
-doc = "Completed or cancelled tasks kept before the task tracker (UserPromptSubmit) suggests pruning."
+doc = "Completed or cancelled tasks kept before the task tracker suggests pruning."
 value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
 
 [task_guard.state_prefix]

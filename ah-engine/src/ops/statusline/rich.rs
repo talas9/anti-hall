@@ -599,7 +599,8 @@ mod consistency_tests {
 
     #[test]
     fn no_mark_before_context_and_no_duplicate_separators() {
-        let toml = include_str!("../../../../plugins/anti-hall/engine/defaults/operator.toml");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults/operator.toml");
+        let toml = std::fs::read_to_string(path).unwrap();
         for k in ["ctx_mark", "usage_sep", "usage_ctx_gap"] {
             assert!(!toml.contains(&format!("[statusline.{k}]")), "{k} must be gone");
         }
