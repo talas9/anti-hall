@@ -531,7 +531,7 @@ unit = "%"
 min = 0
 
 [daemon.orphan_check_ms]
-doc = "How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; non-live daemons also check that their parent process and socket file still exist. Once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable."
+doc = "How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; non-live daemons also check that their socket file still exists, and a hand-started serve (start reason manual) that its parent process still exists. Once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable."
 value = 2000
 min = 100
 unit = "ms"
