@@ -799,11 +799,11 @@ value = "set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely"
 # ---- settings the main-thread decision reads ---------------------------------------------------------------------------
 
 [command.allow_subagent_mailbox_setting]
-doc = "guards.allowSubagentMailbox: a one-off allow of the subagent mailbox verbs (default off)."
+doc = "a one-off allow of the subagent mailbox verbs (default off)."
 value = { section = "guards", key = "allowSubagentMailbox", type = "boolean", env = "ANTIHALL_ALLOW_SUBAGENT_MAILBOX", aliases = [], option = "guards_allow_subagent_mailbox", default = false }
 
 [command.stash_guard_setting]
-doc = "guards.stashGuard: arms the git stash guard for every repository (default off)."
+doc = "arms the git stash guard for every repository (default off)."
 value = { section = "guards", key = "stashGuard", type = "boolean", env = "ANTIHALL_STASH_GUARD", aliases = [], option = "guards_stash_guard", default = false }
 
 [command.inbox_cmd_setting]
@@ -811,19 +811,19 @@ doc = "devswarm.inboxCmd: a consumer-configured command to read pending mesh mes
 value = { section = "devswarm", key = "inboxCmd", env = "ANTIHALL_DEVSWARM_INBOX_CMD", aliases = [], option = "devswarm_inbox_cmd", default = "" }
 
 [command.setting_allow_read_only_verify]
-doc = "guards.allowReadOnlyVerify: the bounded single-target verification allowance (default on)."
+doc = "the bounded single-target verification allowance (default on)."
 value = { section = "guards", key = "allowReadOnlyVerify", type = "boolean", env = "ANTIHALL_ALLOW_READ_ONLY_VERIFY", aliases = [], option = "guards_allow_read_only_verify", default = true }
 
 [command.setting_allow_read_only_verify_scripts]
-doc = "guards.allowReadOnlyVerifyScripts: the script form of that allowance (default on)."
+doc = "the script form of that allowance (default on)."
 value = { section = "guards", key = "allowReadOnlyVerifyScripts", type = "boolean", env = "ANTIHALL_ALLOW_READ_ONLY_VERIFY_SCRIPTS", aliases = [], option = "guards_allow_read_only_verify_scripts", default = true }
 
 [command.setting_project_command_allow]
-doc = "guards.projectCommandAllow: the per-project command allowlist (default on)."
+doc = "the per-project command allowlist (default on)."
 value = { section = "guards", key = "projectCommandAllow", type = "boolean", env = "ANTIHALL_PROJECT_COMMAND_ALLOW", aliases = [], option = "guards_project_command_allow", default = true }
 
 [command.setting_allow_plain_push]
-doc = "guards.allowPlainPush: the plain git push chain allowance (default on)."
+doc = "the plain git push chain allowance (default on)."
 value = { section = "guards", key = "allowPlainPush", type = "boolean", env = "ANTIHALL_ALLOW_PLAIN_PUSH", aliases = [], option = "guards_allow_plain_push", default = true }
 
 [command.setting_allow_bg_scratch]
@@ -831,19 +831,19 @@ doc = "Allowance for background scratch scripts (default on)."
 value = { section = "guards", key = "allowBackgroundScratchScripts", type = "boolean", env = "ANTIHALL_ALLOW_BACKGROUND_SCRATCH_SCRIPTS", aliases = [], option = "guards_allow_background_scratch_scripts", default = true }
 
 [command.setting_allow_gcloud_reads]
-doc = "guards.allowGcloudReads: the narrow read-only Google Cloud access (default on)."
+doc = "the narrow read-only Google Cloud access (default on)."
 value = { section = "guards", key = "allowGcloudReads", type = "boolean", env = "ANTIHALL_ALLOW_GCLOUD_READS", aliases = [], option = "guards_allow_gcloud_reads", default = true }
 
 [command.setting_bash_edit_parity]
-doc = "guards.bashEditParity: edit-guard's verdict applied to Bash writes (default on)."
+doc = "edit-guard's verdict applied to Bash writes (default on)."
 value = { section = "guards", key = "bashEditParity", type = "boolean", env = "ANTIHALL_BASH_EDIT_PARITY", aliases = [], option = "", default = true }
 
 [command.setting_project_edit_allow]
-doc = "guards.projectEditAllow: the per-project edit allowlist (default on)."
+doc = "the per-project edit allowlist (default on)."
 value = { section = "guards", key = "projectEditAllow", type = "boolean", env = "ANTIHALL_PROJECT_EDIT_ALLOW", aliases = [], option = "guards_project_edit_allow", default = true }
 
 [command.eg_allow_setting]
-doc = "guards.editGuardAllow: extra file globs edit-guard allows (comma or colon separated, empty by default)."
+doc = "extra file globs edit-guard allows (comma or colon separated, empty by default)."
 value = { section = "guards", key = "editGuardAllow", env = "ANTIHALL_EDIT_GUARD_ALLOW", aliases = [], option = "guards_edit_guard_allow", default = "" }
 
 [command.tier_repos_setting]

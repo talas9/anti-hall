@@ -1328,11 +1328,11 @@ value = "shorten the subject and delete finished tasks first; put details in the
 # ---- task-list enforcement at Stop: capped prune block + P0-P3 priority slot ----
 
 [task_guard.prune_block_setting]
-doc = "On/off for the capped Stop block that follows an ignored prune advisory (guards.pruneStopBlock, default on)."
+doc = "Capped Stop block after an ignored prune advisory."
 value = { section = "guards", key = "pruneStopBlock", env = "ANTIHALL_PRUNE_STOP_BLOCK", aliases = [], default = true }
 
 [task_guard.prune_block_max_setting]
-doc = "Most Stop blocks per session for one completed-task count (guards.pruneStopBlockMax); once reached the Stop passes. A changed count starts a new window."
+doc = "Max prune Stop blocks per completed-task count."
 value = { section = "guards", key = "pruneStopBlockMax", env = "ANTIHALL_PRUNE_STOP_BLOCK_MAX", aliases = [], min = 1, default = 2 }
 
 [task_guard.prune_block_text]
@@ -1340,11 +1340,11 @@ doc = "The reason of the prune Stop block; `{n}` is the completed/cancelled coun
 value = "🧹 [task-guard] {n} completed tasks (> {limit}) still listed: log them in the history ledger, then TaskUpdate status=deleted."
 
 [task_guard.priority_check_setting]
-doc = "On/off for the priority-slot check at Stop (guards.priorityTagCheck, default on)."
+doc = "Stop check for non-P0-P3 priority tags."
 value = { section = "guards", key = "priorityTagCheck", env = "ANTIHALL_PRIORITY_TAG_CHECK", aliases = [], default = true }
 
 [task_guard.priority_check_max_setting]
-doc = "Most Stop blocks per session for one set of bad priority tags (guards.priorityTagBlockMax); once reached the Stop passes."
+doc = "Max priority-tag Stop blocks per tag set."
 value = { section = "guards", key = "priorityTagBlockMax", env = "ANTIHALL_PRIORITY_TAG_BLOCK_MAX", aliases = [], min = 1, default = 2 }
 
 [task_guard.priority_slot_re]

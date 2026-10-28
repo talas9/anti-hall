@@ -49,7 +49,7 @@ max = 1000
 # ---- lane-test-guard (suite-scale tests) -------------------------------------------------------------------
 
 [lane_test.sw]
-doc = "Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands."
+doc = "Default on; off lets a subagent run suite-scale test commands."
 value = { section = "guards", key = "laneTestGuard", type = "boolean", env = "ANTIHALL_LANE_TEST_GUARD", option = "", default = true }
 
 [lane_test.sw_allow_suites]
@@ -184,7 +184,7 @@ value = "tell the agent \"skip lane-test-guard\""
 # ---- queued-wait-guard (background builds and sleep loops) -------------------------------------------------
 
 [queued_wait.sw]
-doc = "Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops."
+doc = "Default on; off lets a subagent run heavy commands in the background and poll with sleep loops."
 value = { section = "guards", key = "queuedWaitGuard", type = "boolean", env = "ANTIHALL_QUEUED_WAIT_GUARD", option = "", default = true }
 
 [queued_wait.guard_name]
