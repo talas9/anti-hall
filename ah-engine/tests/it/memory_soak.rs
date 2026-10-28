@@ -83,7 +83,7 @@ impl Soak {
     fn map(&self) -> PathBuf {
         let p = self.dir.join("map.json");
         let table: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks/ah-fallback.map.json")).unwrap(),
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/ah-fallback.map.json")).unwrap(),
         )
         .unwrap();
         let noop: serde_json::Map<String, serde_json::Value> = table
@@ -154,7 +154,15 @@ impl Drop for Soak {
             self.env(&mut c);
             c.output().ok();
         });
-        std::fs::remove_dir_all(&self.dir).ok();
+        // a failed soak keeps its state (the daemon log says why a daemon went away); a passing one cleans up
+        if std::thread::panicking() {
+            eprintln!("soak state kept for diagnosis: {}", self.dir.display());
+            let log = std::fs::read_to_string(self.dir.join("state/ah-engine.log")).unwrap_or_default();
+            let tail: Vec<&str> = log.lines().rev().take(40).collect();
+            eprintln!("daemon log tail (newest first):\n{}", tail.join("\n"));
+        } else {
+            std::fs::remove_dir_all(&self.dir).ok();
+        }
     }
 }
 
@@ -169,10 +177,23 @@ fn a_long_mixed_run_stays_under_the_default_cap_and_flat_with_zero_restarts() {
         let (ev, p) = s.payload(i);
         s.hook(&map, ev, &p);
         if i + 1 == warm {
-            at_warm = Some(s.status());
+            let st = s.status();
+            eprintln!("soak warm: calls={warm} rss_kb={} heap_live_kb={}", st["memory"]["rss_kb"], st["memory"]["heap_live_kb"]);
+            at_warm = Some(st);
         }
-        if (i + 1) % (total / 5).max(1) == 0 && i + 1 > warm {
-            samples.push(s.status());
+        if (i + 1) % (total / 20).max(1) == 0 && i + 1 > warm {
+            let st = s.status();
+            // the RSS series of the run, one line per sample (`--no-capture` shows it)
+            eprintln!("soak sample: calls={} rss_kb={} heap_live_kb={} pid={}", i + 1, st["memory"]["rss_kb"], st["memory"]["heap_live_kb"], st["pid"]);
+            if samples.last().is_some_and(|p: &serde_json::Value| p["pid"] != st["pid"]) {
+                eprintln!(
+                    "soak: the daemon changed (pid {} -> {}); start log: {:?}",
+                    samples.last().map_or(serde_json::Value::Null, |p| p["pid"].clone()),
+                    st["pid"],
+                    std::fs::read_to_string(s.dir.join("state/starts")).ok()
+                );
+            }
+            samples.push(st);
         }
     }
     let at_warm = at_warm.expect("a warm-up sample");

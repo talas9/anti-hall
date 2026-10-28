@@ -1,0 +1,330 @@
+# Token-waste guards for subagents (GH #270), PreToolUse on Bash, Claude and Codex, engine-only (no Node twin): lane-test-guard keeps
+# a subagent from running suite-scale tests, queued-wait-guard keeps it from queueing heavy commands in the background and from
+# poll/sleep loops. Both judge SUBAGENTS only (the main session and a workspace child are never blocked). The decision logic is
+# engine/logic/lane-test-guard.js and queued-wait-guard.js over the shared command parser engine/logic/lib/52-lane-waste.js; every
+# list, pattern, number and text is here (D88).
+
+# ---- shared: the command parser ----------------------------------------------------------------------------
+
+[lane_waste.wrappers]
+doc = "Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...)."
+value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k"], stdbuf = ["-i", "-o", "-e"], setsid = [], caffeinate = ["-t", "-w"], lockf = ["-t", "-s", "-k"], flock = ["-w", "-E", "-c"], taskpolicy = ["-c", "-b", "-d", "-g", "-p"] }
+
+[lane_waste.wrapper_positional]
+doc = "Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file)."
+value = { timeout = 1, lockf = 1, flock = 1 }
+
+[lane_waste.prefix_words]
+doc = "Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch)."
+value = ["{", "!", "if", "then", "else", "elif", "do", "while", "until", "time"]
+
+[lane_waste.shells]
+doc = "Shell interpreters whose -c argument is itself a script, so a command inside it still counts."
+value = ["sh", "bash", "zsh", "dash", "ksh"]
+
+[lane_waste.script_flag_re]
+doc = "The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax)."
+value = '^-[A-Za-z]*c[A-Za-z]*$'
+
+[lane_waste.loop_openers]
+doc = "Shell words that open a loop; a command inside one runs repeatedly."
+value = ["while", "until", "for"]
+
+[lane_waste.loop_closer]
+doc = "The shell word that closes a loop."
+value = "done"
+
+[lane_waste.max_depth]
+doc = "How deep the guards follow nested sh -c scripts before they stop looking."
+value = 4
+min = 1
+max = 20
+
+[lane_waste.cmd_max]
+doc = "Characters of the offending command shown in a block message (longer is cut)."
+value = 120
+min = 20
+max = 1000
+
+# ---- lane-test-guard (suite-scale tests) -------------------------------------------------------------------
+
+[lane_test.sw]
+doc = "Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands."
+value = { section = "guards", key = "laneTestGuard", type = "boolean", env = "ANTIHALL_LANE_TEST_GUARD", option = "", default = true }
+
+[lane_test.sw_allow_suites]
+doc = "Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside)."
+value = { section = "guards", key = "allowTestSuites", type = "boolean", env = "ANTIHALL_ALLOW_TEST_SUITES", option = "", default = false }
+
+[lane_test.sw_policy]
+doc = "Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run."
+value = { section = "guards", key = "testPolicy", env = "ANTIHALL_TEST_POLICY", aliases = [], option = "", default = "targeted", values = ["none", "targeted", "suites"] }
+
+[lane_test.sw_policy_main]
+doc = "On makes testPolicy none apply to the main session too (default off)."
+value = { section = "guards", key = "testPolicyMainThread", type = "boolean", env = "ANTIHALL_TEST_POLICY_MAIN", option = "", default = false }
+
+[lane_test.policy_none]
+doc = "The testPolicy value under which every test-runner command is blocked."
+value = "none"
+
+[lane_test.policy_suites]
+doc = "The testPolicy value under which every test run is allowed (the suite check stands aside)."
+value = "suites"
+
+[lane_test.policy_runners]
+doc = "Every test-runner command, one row per runner, judged only under guards.testPolicy none: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed, so env prefixes, cd, pipes and compound commands are handled by the shared parser); `label` names the runner in the block message."
+value = [
+  { label = "cargo test", re = '^(?:\S*/)?cargo\s(?:\+\S+\s)?(?:test|t)(?:\s|$)' },
+  { label = "cargo nextest", re = '^(?:\S*/)?(?:cargo\s(?:\+\S+\s)?nextest|cargo-nextest|nextest)(?:\s|$)' },
+  { label = "node --test", re = '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)' },
+  { label = "npm test", re = '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:test|test:\S+)(?:\s|$)' },
+  { label = "pytest", re = '^(?:python3?\s-m\s)?pytest(?:\s|$)' },
+  { label = "vitest", re = '^(?:(?:npx|bunx|pnpm\sexec|pnpm\sdlx|yarn)\s)?vitest(?:\s|$)' },
+  { label = "jest", re = '^(?:(?:npx|bunx|pnpm\sexec|pnpm\sdlx|yarn)\s)?jest(?:\s|$)' },
+  { label = "go test", re = '^go\stest(?:\s|$)' },
+  { label = "ctest", re = '^ctest(?:\s|$)' },
+  { label = "mvn test", re = '^(?:\S*/)?(?:mvn|mvnw)\s(?:\S+\s)*?test(?:\s|$)' },
+  { label = "gradle test", re = '^(?:\S*/)?(?:gradle|gradlew)\s(?:\S+\s)*?test(?:\s|$)' },
+  { label = "flutter test", re = '^flutter\stest(?:\s|$)' },
+  { label = "dart test", re = '^dart\stest(?:\s|$)' },
+  { label = "swift test", re = '^swift\stest(?:\s|$)' },
+  { label = "test.sh", re = '^(?:\S*/)?test\.sh(?:\s|$)' },
+  { label = "xcodebuild test", re = '^xcodebuild\s(?:\S+\s)*?test(?:\s|$)' },
+]
+
+[lane_test.msg_policy_what]
+doc = "Heading of the block under testPolicy none. Placeholders: {cmd} the command as it was written, {label} the kind of test run."
+value = "tests are off by owner policy ({label}): {cmd}"
+
+[lane_test.msg_policy_why]
+doc = "Why every test run is blocked under testPolicy none."
+value = "The owner chose to verify at deploy instead of running tests here."
+
+[lane_test.msg_policy_instead]
+doc = "What to do instead under testPolicy none."
+value = "Build or check syntax, then report the change and that tests were not run."
+
+[lane_test.msg_policy_override]
+doc = "How the user can lift the testPolicy block (shown on the last line)."
+value = "tell the agent \"skip lane-test-guard\""
+
+[lane_test.guard_name]
+doc = "The guard id the lane test guard answers to in skip.json and in its messages."
+value = "lane-test-guard"
+
+[lane_test.summary]
+doc = "One-line description of the lane-test-guard check in the generated reference."
+value = "PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on)."
+
+[lane_test.cargo_commands]
+doc = "Command names whose first plain word is a cargo subcommand (cargo test, cargo +nightly nextest run)."
+value = ["cargo"]
+
+[lane_test.cargo_test_subcommands]
+doc = "The cargo subcommands that run tests. Without a narrowing filter they run the whole suite."
+value = ["test", "t", "nextest"]
+
+[lane_test.cargo_value_flags]
+doc = "Flags of cargo test and nextest that take the next word as their value (so that word is not a test filter)."
+value = ["-j", "--jobs", "-p", "--package", "--features", "-F", "--target", "--target-dir", "--manifest-path", "--profile", "--config", "-Z", "--color", "--message-format", "--cargo-profile", "--build-jobs", "--test-threads", "--partition", "--retries", "--run-ignored", "--archive-file", "--cargo-quiet", "--exclude", "--skip", "--bin", "--example", "--bench"]
+
+[lane_test.cargo_narrow_flags]
+doc = "Flags that narrow a cargo test run to one named target or expression (the next word names it): --test <integration test file>, -E / --filter-expr <nextest filter expression>, --doc is not narrow."
+value = ["--test", "-E", "--filter-expr"]
+
+[lane_test.cargo_suite_flags]
+doc = "Flags that make a cargo test run suite-scale even with a filter word (every package of the workspace)."
+value = ["--workspace", "--all"]
+
+[lane_test.cargo_toolchain_re]
+doc = "A word between cargo and its subcommand that is a toolchain selector (cargo +nightly test), not the subcommand. Regular expression (Rust syntax)."
+value = '^\+\S+$'
+
+[lane_test.nextest_run_words]
+doc = "Words after nextest that run tests and are not a filter (nextest run); the filter comes after them."
+value = ["run", "r"]
+
+[lane_test.nextest_other_words]
+doc = "Words after nextest that do not run tests (nextest list, nextest archive): the command is not a suite run."
+value = ["list", "archive", "show-config", "self", "help"]
+
+[lane_test.cargo_no_run_flags]
+doc = "Flags that make cargo test only build the test binaries and run nothing: not a suite run."
+value = ["--no-run", "--list", "--help", "-h"]
+
+[lane_test.rules]
+doc = "Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message."
+value = [
+  { id = "node-test", label = "node --test", re = '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)', unless_re = '\.(?:[cm]?js|ts|mts|cts)(?:\s|$)' },
+  { id = "npm-test", label = "npm test", re = '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:test|test:\S+)(?:\s|$)' },
+  { id = "test-sh", label = "test.sh", re = '^(?:\S*/)?test\.sh(?:\s|$)' },
+  { id = "make-test", label = "make test", re = '^make\s(?:\S+\s)*?(?:test|tests|check|gate|replay|soak)(?:\s|$)' },
+  { id = "pytest", label = "pytest", re = '^(?:python3?\s-m\s)?pytest(?:\s|$)', unless_re = '(?:\.py|::)\S*(?:\s|$)' },
+  { id = "flutter-test", label = "flutter test", re = '^flutter\stest(?:\s|$)', unless_re = '\.dart(?:\s|$)' },
+  { id = "replay-soak", label = "replay or soak runner", re = '^(?:\S*/)?(?:[\w.-]*[-_.])?(?:replay|soak)(?:[-_.][\w.-]*)?(?:\s|$)' },
+]
+
+[lane_test.msg_what]
+doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run."
+value = "a helper cannot run this full suite ({label}): {cmd}"
+
+[lane_test.msg_why]
+doc = "Why suite runs are blocked for subagents."
+value = "Full suites can queue behind a shared build lock and waste the work budget."
+
+[lane_test.msg_instead]
+doc = "What to do instead."
+value = "Run a build check or one allowed module test, then report the result."
+
+[lane_test.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "tell the agent \"skip lane-test-guard\""
+
+# ---- queued-wait-guard (background builds and sleep loops) -------------------------------------------------
+
+[queued_wait.sw]
+doc = "Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops."
+value = { section = "guards", key = "queuedWaitGuard", type = "boolean", env = "ANTIHALL_QUEUED_WAIT_GUARD", option = "", default = true }
+
+[queued_wait.guard_name]
+doc = "The guard id the queued-wait guard answers to in skip.json and in its messages."
+value = "queued-wait-guard"
+
+[queued_wait.summary]
+doc = "One-line description of the queued-wait-guard check in the generated reference."
+value = "PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds."
+
+[queued_wait.heavy_res]
+doc = "Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it."
+value = [
+  '^cargo\s(?:\+\S+\s)?(?:build|b|check|c|test|t|nextest|clippy|run|r|bench|doc|install|llvm-cov|miri)(?:\s|$)',
+  '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:build|test|lint|ci|install|i)(?:\s|$)',
+  '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)',
+  '^(?:\S*/)?(?:test|build|gate|replay|soak)[-_.\w]*\.sh(?:\s|$)',
+  '^make(?:\s|$)',
+  '^(?:xcodebuild|gradle|gradlew|\./gradlew|mvn|flutter\s(?:build|test)|dart\s(?:test|compile)|go\s(?:build|test)|swift\s(?:build|test)|pytest|tox|ctest|cmake\s--build)(?:\s|$)',
+  '^(?:\S*/)?ah-engine\s(?:\S+\s)*?(?:replay|soak)(?:\s|$)',
+]
+
+[queued_wait.sleep_commands]
+doc = "Commands that only wait. Their duration arguments are summed."
+value = ["sleep"]
+
+[queued_wait.sleep_max_s]
+doc = "A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground)."
+value = 30
+unit = "s"
+min = 1
+max = 3600
+
+[queued_wait.loop_sleep_max_s]
+doc = "A sleep inside a while, until or for loop of more than this many seconds is blocked: a poll loop re-sends the agent's context on every turn it runs."
+value = 5
+unit = "s"
+min = 0
+max = 3600
+
+[queued_wait.duration_unit_s]
+doc = "Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds."
+value = { s = 1, m = 60, h = 3600, d = 86400 }
+
+[queued_wait.bg_field]
+doc = "The Bash tool input field that starts the command in the background."
+value = "run_in_background"
+
+[queued_wait.msg_what_bg]
+doc = "Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written."
+value = "a helper cannot start this build or test in the background: {cmd}"
+
+[queued_wait.msg_what_sleep]
+doc = "Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit."
+value = "this wait is too long ({secs}s; limit {max}s): {cmd}"
+
+[queued_wait.msg_what_loop]
+doc = "Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit."
+value = "this poll loop waits too long ({secs}s per round; limit {max}s): {cmd}"
+
+[queued_wait.msg_why]
+doc = "Why background heavy commands and poll loops are blocked."
+value = "Repeated checks while waiting use the work budget without making progress."
+
+[queued_wait.msg_instead_bg]
+doc = "What to do instead of a background heavy command."
+value = "Run the command in the foreground under the shared lock."
+
+[queued_wait.msg_instead_sleep]
+doc = "What to do instead of a long sleep or poll loop."
+value = "End the turn and wait for the completion notification."
+
+[queued_wait.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "tell the agent \"skip queued-wait-guard\""
+
+# ---- wide-search-guard (whole-disk searches, every agent; GH #174) ----------------------------------------
+# Decision logic: engine/logic/wide-search-guard.js over the shared command parser. Unlike the two guards above it judges the main
+# thread as well as subagents: a find or rg rooted at / or ~ wakes Spotlight and the network volumes and pushed the load to 170 once.
+
+[wide_search.sw_allow]
+doc = "On lets every agent run whole-disk searches (default off)."
+value = { section = "guards", key = "allowWideSearch", type = "boolean", env = "ANTIHALL_ALLOW_WIDE_SEARCH", option = "", default = false }
+
+[wide_search.guard_name]
+doc = "The guard id the wide-search guard answers to in skip.json and in its messages."
+value = "wide-search-guard"
+
+[wide_search.summary]
+doc = "One-line description of the wide-search-guard check in the generated reference."
+value = "PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed."
+
+[wide_search.forbidden_roots]
+doc = "Search roots that are blocked when a search starts exactly there (a subdirectory of one is fine). `~`, `$HOME` and `${HOME}` stand for the home directory."
+value = ["/", "~", "/Users", "/Volumes", "/home", "/System/Volumes/Data", "/private"]
+
+[wide_search.allow_paths]
+doc = "Per-path allow list: a search rooted exactly at one of these paths is allowed even though it is a forbidden root (`~` and `$HOME` expand to the home directory). Empty by default."
+value = []
+
+[wide_search.home_aliases]
+doc = "Words that stand for the home directory at the start of a search path."
+value = ["~", "$HOME", "${HOME}"]
+
+[wide_search.cd_commands]
+doc = "Commands that change the working directory for the commands after them (a bare one goes home)."
+value = ["cd", "pushd"]
+
+[wide_search.whole_disk]
+doc = "The root a Spotlight search (mdfind) without a scope flag covers."
+value = "/"
+
+[wide_search.expr_start]
+doc = "Words that end the path list of a find-style command (the start of its expression)."
+value = ["!", "(", ")", ","]
+
+[wide_search.unresolvable_re]
+doc = "A path word the guard cannot resolve (a glob or a variable): it is not judged. Regular expression (Rust syntax)."
+value = '[*?\[\]{}$`]'
+
+[wide_search.commands]
+doc = "The search commands, per command name: `style` is paths-first (find, bfs: paths come first, then the expression; `skip_flags` are leading flags without a value), pattern-first (rg, fd, grep: flags, a pattern, then paths; `value_flags` take the next word, `pattern_flags` supply the pattern so every plain word is a path, `no_pattern_flags` mean there is no pattern; `needs_recursive` with `recursive_re` judges the command only when a recursive flag is present, as for grep) or spotlight (mdfind: `scope_flag` names the directory searched, none means the whole disk)."
+value = { find = { style = "paths-first", skip_flags = ["-H", "-L", "-P"] }, bfs = { style = "paths-first", skip_flags = ["-H", "-L", "-P", "-E", "-X", "-s", "-S"] }, rg = { style = "pattern-first", value_flags = ["-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-j", "--threads", "-M", "--max-columns", "--max-depth", "-d", "--max-filesize", "--ignore-file", "--sort", "--sortr", "-r", "--replace", "--colors", "--color", "--engine", "--path-separator", "--pre", "--pre-glob", "-E", "--encoding", "--type-add", "--type-clear"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = ["--files", "--type-list"] }, fd = { style = "pattern-first", value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "--min-depth", "--exact-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads", "--changed-within", "--changed-before", "-o", "--owner", "--search-path", "--base-directory", "--ignore-file", "--format", "--max-results", "--and"], no_pattern_flags = [] }, fdfind = { style = "pattern-first", value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads"], no_pattern_flags = [] }, ag = { style = "pattern-first", value_flags = ["-G", "--file-search-regex", "-g", "-A", "-B", "-C", "--ignore", "-m", "--max-count", "--depth", "--workers", "-p", "--path-to-ignore", "--color-match", "--color-line-number", "--color-path"], pattern_flags = [], no_pattern_flags = [] }, ack = { style = "pattern-first", value_flags = ["-A", "-B", "-C", "-m", "--max-count", "--type", "--ignore-dir", "--ignore-file", "--pager", "--color-match"], pattern_flags = [], no_pattern_flags = [] }, grep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-d", "--directories", "-D", "--devices", "--include", "--exclude", "--exclude-dir", "--include-dir", "--exclude-from", "--label", "--color", "--colour", "-T"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = [] }, egrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, fgrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ugrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ug = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, mdfind = { style = "spotlight", scope_flag = "-onlyin" } }
+
+[wide_search.msg_what]
+doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches."
+value = "`{cmd}` was stopped: it would scan all of `{root}`."
+
+[wide_search.msg_why]
+doc = "Why whole-disk searches are blocked."
+value = "Scanning a whole disk or home folder takes minutes and can overload this Mac."
+
+[wide_search.msg_instead]
+doc = "What to do instead. Placeholders: {repo} the session's working directory."
+value = "search within the project folder."
+
+[wide_search.msg_instead_no_repo]
+doc = "What to do instead when the session's working directory is itself a forbidden root."
+value = "give the search one project folder."
+
+[wide_search.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "tell the agent \"skip wide-search-guard\" (or set guards.allowWideSearch)."

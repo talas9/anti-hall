@@ -143,7 +143,7 @@ fn run_inner(cmd: &mut Command, input: &[u8], timeout: Duration, max_bytes: usiz
                             over = true;
                             break;
                         }
-                        buf.extend_from_slice(&chunk[..k]);
+                        buf.extend_from_slice(chunk.get(..k).unwrap_or_default());
                     }
                 }
             }

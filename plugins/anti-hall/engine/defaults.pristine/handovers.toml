@@ -146,7 +146,7 @@ doc = "A day directory name."
 value = '^\d{4}-\d{2}-\d{2}$'
 
 [handovers.handover_re]
-doc = "A numbered handover file (group 1 = its sequence number, absent = 1). The same pattern as the Node handover finder (hooks/lib/handover-find.js)."
+doc = "A numbered handover file (group 1 = its sequence number, absent = 1). The same pattern as the Node handover finder."
 value = '^HANDOVER(?:-(\d+))?\.md$'
 
 [handovers.named_re]
@@ -383,15 +383,15 @@ min = 1
 
 [handovers.msg_advisory_what]
 doc = "The advisory's first line. Placeholders: {count} (problems), {days} (days needing a rebuild), {project}."
-value = "{count} handover problem(s), {days} day brief(s) out of date in {project}"
+value = "{count} handover problem(s) and {days} day brief(s) out of date in {project}"
 
 [handovers.msg_advisory_why]
 doc = "Why it matters."
-value = "later searches for changes, work and decisions read the handover briefs; an unindexed or malformed handover is invisible to them"
+value = "Searches for earlier work and decisions read these briefs, and a malformed or unindexed handover is invisible to them."
 
 [handovers.msg_advisory_instead]
 doc = "What to do. Placeholder: {cmd}."
-value = "run `{cmd}` (the scheduled job also repairs the briefs); handover files are never edited by it"
+value = "run the handover maintenance command."
 
 [handovers.cmd_index]
 doc = "The command the advisory tells the owner to run."
@@ -492,7 +492,7 @@ value = "no handover index yet; run `{cmd}` first"
 
 [handovers.msg_script_failed]
 doc = "Printed by the CLI when the handover script could not answer. Placeholder: {why}."
-value = "the handover-hygiene script could not run ({why}); the plugin's engine/logic/handover-hygiene.js is missing, broken or switched off (script.enabled)"
+value = "the handover-hygiene script could not run ({why}); the plugin's handover-hygiene logic file (engine/logic/handover-hygiene) is missing, broken or switched off (script.enabled)"
 
 # ---- rendering ---------------------------------------------------------------------------------------------------
 

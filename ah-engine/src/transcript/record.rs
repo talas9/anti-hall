@@ -17,7 +17,7 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 /// Which of the three transcript shapes carried a task-notification
-/// (`companion/lib/devswarm-idle.js` `notificationTexts`).
+///.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// A `user` entry: `message.content` as a string or as `text` blocks.
@@ -86,7 +86,7 @@ pub struct TaskStatus {
     pub ts_ms: Option<i64>,
 }
 
-/// One tool use found in an entry (`hooks/lib/task-state.js` `collectTU`).
+/// One tool use found in an entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolUse {
     /// The `tool_use` block's `id`, when it has a string one.
@@ -142,7 +142,7 @@ pub struct Assistant {
     pub truncated: bool,
 }
 
-/// The last typed user prompt (`hooks/lib/inference-check.js` `lastUserPrompt`).
+/// The last typed user prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
     /// The prompt text.
@@ -321,12 +321,12 @@ fn collect_tool_uses<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
 
 // ---- task-notifications -----------------------------------------------------------------------------------------
 
-fn block_re() -> &'static Regex {
+fn block_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(r"(?s)<task-notification>(.*?)</task-notification>"))
 }
 
-fn wrapped_re() -> &'static Regex {
+fn wrapped_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(r"<system-reminder>[\s\x{feff}]*<task-notification>"))
 }
@@ -366,7 +366,7 @@ fn notification_texts(e: &Value) -> Vec<(Shape, String)> {
     out
 }
 
-fn final_re() -> &'static Regex {
+fn final_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| {
         let alt = defaults::words("transcript.final_statuses").iter().map(|w| regex::escape(w)).collect::<Vec<_>>().join("|");
@@ -390,7 +390,7 @@ struct TagRes {
     tool_idle: Regex,
 }
 
-fn tag_res() -> &'static TagRes {
+fn tag_res() -> std::sync::Arc<TagRes> {
     static R: crate::defaults::Cache<TagRes> = crate::defaults::Cache::new();
     R.get_or_init(|| TagRes {
         task_raw: tag_re("task-id", false),

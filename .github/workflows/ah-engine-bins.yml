@@ -1,7 +1,7 @@
 name: ah-engine prebuilt binaries
 
 # On each push to engine-proto that changes ah-engine/: build every target and publish a GitHub PRE-RELEASE
-# `ah-engine-dev-<sha8>` (archives + SHA256SUMS + COMMIT + build attestation) that `hooks/ah-update.sh --channel dev` installs.
+# `ah-engine-dev-<sha8>` (archives + SHA256SUMS + COMMIT + build attestation) that `ah-hook update --channel dev` installs.
 # Releases are never deleted: dev pre-releases beyond the newest 5 are only marked superseded (a pre-release is never "latest").
 
 on:
@@ -46,15 +46,26 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install --profile minimal
           rustup target add "$TRIPLE"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: ah-engine
+          workspaces: |
+            ah-engine
+            ah-launcher
           key: bins-${{ matrix.triple }}
           save-if: ${{ github.ref == 'refs/heads/engine-proto' }}
       - name: Build
         env:
           TRIPLE: ${{ matrix.triple }}
         run: scripts/build.sh --target "$TRIPLE"
+      # The thin client (ah-hook, crate ah-launcher; GH #164) ships in the same dev archive, built for the same target.
+      - name: Build ah-hook
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        working-directory: ah-launcher
+        run: |
+          rustup show active-toolchain || rustup toolchain install --profile minimal
+          rustup target add "$TRIPLE"
+          RUSTFLAGS="--remap-path-prefix=$PWD=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" cargo build --release --locked --target "$TRIPLE"
       - name: Smoke test
         env:
           TRIPLE: ${{ matrix.triple }}
@@ -81,10 +92,11 @@ jobs:
           name="ah-engine-dev-${SHORT}-${TRIPLE}"
           mkdir -p "rel/$name"
           cp dist/ah-engine "rel/$name/ah-engine"
+          cp "../ah-launcher/target/$TRIPLE/release/ah-hook" "rel/$name/ah-hook"
           cp ../LICENSE "rel/$name/LICENSE"
           cp README.md "rel/$name/README.md"
           tar -czf "rel/$name.tar.gz" -C rel "$name"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ah-engine-${{ matrix.triple }}-${{ steps.sha.outputs.short }}
           path: |
@@ -92,7 +104,7 @@ jobs:
             ah-engine/dist/ah-engine.sha256
           retention-days: 14
           if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dev-release-${{ matrix.triple }}
           path: ah-engine/rel/*.tar.gz
@@ -117,7 +129,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dev-release-*
           path: dist
@@ -145,7 +157,7 @@ jobs:
           else
             gh release create "$tag" dist/* --target "$GITHUB_SHA" --prerelease --latest=false \
               --title "ah-engine dev ${SHORT}" \
-              --notes "Dev build of engine-proto at ${GITHUB_SHA}. Install: sh hooks/ah-update.sh --channel dev. Assets, SHA256SUMS, COMMIT and build-provenance attestations; verification steps: ah-engine/RELEASING.md."
+              --notes "Dev build of engine-proto at ${GITHUB_SHA}. Install: ah-hook update --channel dev. Assets, SHA256SUMS, COMMIT and build-provenance attestations; verification steps: ah-engine/RELEASING.md."
           fi
       - name: Mark dev pre-releases beyond the newest 5 as superseded (never deleted)
         run: |

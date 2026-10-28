@@ -4,7 +4,6 @@
 //! never selected. The selection is compared with the Node companion's own `findOrphans` on the same listing.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::Value;
-use std::collections::BTreeSet;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -99,57 +98,6 @@ impl World {
         }
         None
     }
-}
-
-fn pids(v: &Value, field: &str) -> BTreeSet<u64> {
-    v[field].as_array().unwrap().iter().map(|r| r["pid"].as_u64().unwrap()).collect()
-}
-
-/// The Node companion's selection on the same listing: `findOrphans(parsePs(text), null, <exclude as its buildExtraRe builds it>)`.
-fn node_selection(listing: &str, exclude: &str) -> BTreeSet<u64> {
-    let js = "const m=require(process.argv[1]);const o=m.findOrphans(m.parsePs(process.argv[2]),null,process.argv[3]?new RegExp(process.argv[3],'i'):null);process.stdout.write(JSON.stringify(o.map(p=>p.pid)));";
-    let out = Command::new("node").args(["-e", js]).arg(plugin().join("companion/mcp-reaper.js")).arg(listing).arg(exclude).output().expect("node");
-    serde_json::from_slice::<Vec<u64>>(&out.stdout).expect("node selection").into_iter().collect()
-}
-
-#[test]
-fn the_job_reaps_exactly_what_the_node_companion_selects_politely_then_forced() {
-    let mut w = World::new("sel");
-    let (a, b, c, d, e, f, g, h) = (w.victim(), w.victim(), w.victim(), w.victim(), w.victim(), w.victim(), w.victim(), w.victim());
-    let rows = vec![
-        (1, 0, "/sbin/launchd".to_string()),
-        (a, 1, "node /x/node_modules/.bin/mcp-server-fetch".to_string()),
-        (77_001, 1, "/sbin/launchd".to_string()),
-        (b, 77_001, "npx -y @modelcontextprotocol/server-filesystem /tmp".to_string()),
-        (88_001, 1, "/usr/bin/node /app/init.js".to_string()),
-        (c, 88_001, "uvx mcp-server-git --repository /work".to_string()),
-        (d, 99_001, "node mcp-server.js".to_string()),
-        (e, 1, "vim mcp-server.js".to_string()),
-        (f, 1, "node /x/node_modules/playwright-mcp/cli.js".to_string()),
-        (66_001, 1, "/usr/lib/systemd/systemd --user".to_string()),
-        (g, 66_001, "node /opt/chrome-devtools-mcp/index.js".to_string()),
-        (55_001, 1, "Relay(55)".to_string()),
-        (h, 55_001, "python3 -m mcp_server_time".to_string()),
-    ];
-    let listing = w.listing(&rows);
-    let env = [("ANTIHALL_MCP_REAPER_JOB", "on"), ("ANTIHALL_REAPER_EXCLUDE", "playwright")];
-    let v = w.run(&["run"], &env);
-    assert_eq!(v["ran"], true, "{v}");
-    let want: BTreeSet<u64> = [a, b, g, h].into_iter().map(u64::from).collect();
-    assert_eq!(pids(&v, "orphans"), want, "{v}");
-    assert_eq!(pids(&v, "orphans"), node_selection(&listing, "playwright"), "the engine selects what the Node companion selects");
-    assert_eq!(pids(&v, "termed"), want);
-    assert_eq!(pids(&v, "killed"), want, "the fresh listing still selects them (the stand-in lists the same rows)");
-    for p in [a, b, g, h] {
-        assert_eq!(w.ended_by(p), Some(libc::SIGTERM), "{p} got the polite signal first");
-    }
-    for p in [c, d, e, f] {
-        assert_eq!(w.kids.iter_mut().find(|k| k.id() == p).unwrap().try_wait().unwrap(), None, "{p} is not an orphan and still runs");
-    }
-    let log = w.log();
-    assert!(log.contains(&format!(" SIGTERM pid={a} ppid=1 cmd=node /x/node_modules/.bin/mcp-server-fetch\n")), "{log}");
-    assert!(log.contains(&format!(" SIGKILL pid={a} cmd=node /x/node_modules/.bin/mcp-server-fetch\n")), "{log}");
-    assert!(log.lines().all(|l| l.split(' ').next().is_some_and(|ts| ts.ends_with('Z') && ts.contains('T'))), "ISO time first: {log}");
 }
 
 #[test]

@@ -84,7 +84,7 @@ fn drain(mut r: impl Read + Send + 'static, cap: usize) -> Drained {
     let buf = Arc::new(Mutex::new((Vec::new(), false)));
     let (tx, rx) = mpsc::channel();
     let shared = buf.clone();
-    std::thread::spawn(move || {
+    let reader = std::thread::Builder::new().name(defaults::text("devswarm_act.pipe_thread_name").to_string()).spawn(move || {
         let mut chunk: Vec<u8> = std::iter::repeat_n(0, defaults::num("devswarm_act.read_chunk_bytes") as usize).collect();
         loop {
             match r.read(&mut chunk) {
@@ -94,13 +94,15 @@ fn drain(mut r: impl Read + Send + 'static, cap: usize) -> Drained {
                     if let Ok(mut g) = shared.lock() {
                         let room = cap.saturating_sub(g.0.len());
                         g.1 |= n > room;
-                        g.0.extend_from_slice(&chunk[..n.min(room)]);
+                        g.0.extend_from_slice(chunk.get(..n.min(room)).unwrap_or_default());
                     }
                 }
             }
         }
         let _sent = tx.send(()); // keep: the receiver is gone only after its own timeout
     });
+    // a thread the system will not start reads nothing: the stream then ends at once for the caller, who takes what was read (nothing)
+    crate::discard::logged_ok("hc_pipe_thread", reader);
     Drained { buf, done: rx }
 }
 
@@ -137,6 +139,10 @@ impl Runner for System {
         let started = Instant::now();
         let limit = Duration::from_millis(spec.timeout_ms);
         let poll = Duration::from_millis(defaults::num("devswarm_act.poll_ms"));
+        // a call that outlives `poll_fast_ms` is a long poll (the ingest monitor waits up to 30 s for a message): checking it every
+        // `poll_ms` was a hundred wake-ups a second per running drain for the whole wait, so past that window it is checked every `poll_slow_ms`
+        let (fast, slow) =
+            (Duration::from_millis(defaults::num("devswarm_act.poll_fast_ms")), Duration::from_millis(defaults::num("devswarm_act.poll_slow_ms")));
         let mut timed_out = false;
         let status = loop {
             match child.try_wait() {
@@ -149,7 +155,9 @@ impl Runner for System {
                 crate::discard::harmless(child.kill()); // keep: the child may have exited between the check and the kill
                 break child.wait().ok();
             }
-            std::thread::sleep(poll);
+            let elapsed = started.elapsed();
+            let nap = if elapsed < fast { poll } else { slow.max(poll) };
+            std::thread::sleep(nap.min(limit.saturating_sub(elapsed)));
         };
         // a grandchild may hold the pipe open: wait a bounded while for what was written
         let grace = poll.saturating_mul(defaults::num("devswarm_act.poll_ms").max(1) as u32);
@@ -200,4 +208,64 @@ pub fn at_least(have: &[u64], want: &[u64]) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sh(script: &str, timeout_ms: u64) -> RunSpec {
+        RunSpec { bin: Some("/bin/sh".into()), args: vec!["-c".into(), script.into()], cwd: None, timeout_ms, cap_bytes: 0, scrub_env: Vec::new() }
+    }
+
+    #[test]
+    fn a_short_call_is_noticed_within_the_fast_poll() {
+        crate::defaults::init().unwrap();
+        let started = Instant::now();
+        let r = System::configured().run(&sh("echo hi; exit 3", 10_000));
+        assert_eq!((r.status, r.stdout.as_str(), r.ok, r.timed_out), (Some(3), "hi\n", false, false));
+        assert!(started.elapsed() < Duration::from_millis(1500), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_long_call_is_noticed_soon_after_it_ends_and_its_output_is_whole() {
+        crate::defaults::init().unwrap();
+        let started = Instant::now();
+        let r = System::configured().run(&sh("sleep 1; echo done", 10_000));
+        assert_eq!((r.status, r.stdout.as_str(), r.ok), (Some(0), "done\n", true));
+        let slow = Duration::from_millis(defaults::num("devswarm_act.poll_slow_ms"));
+        assert!(started.elapsed() < Duration::from_secs(1) + slow + Duration::from_millis(1500), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn the_timeout_still_kills_a_long_call_on_time() {
+        crate::defaults::init().unwrap();
+        let started = Instant::now();
+        let r = System::configured().run(&sh("sleep 30", 800));
+        assert!(r.timed_out && !r.ok, "{r:?}");
+        assert!(
+            started.elapsed() < Duration::from_millis(800) + Duration::from_millis(defaults::num("devswarm_act.poll_slow_ms")) + Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The wait for a long call costs the waiting thread's CPU in proportion to its wake-ups: checked every 10 ms for the whole wait
+    /// it was a hundred wake-ups a second per running drain.
+    #[test]
+    fn waiting_for_a_long_call_wakes_the_thread_far_less_than_polling_it_every_poll_ms() {
+        crate::defaults::init().unwrap();
+        let cpu_of = |slow_ms: u64| {
+            crate::defaults::set_overlay(&[("devswarm_act.poll_slow_ms", json!(slow_ms)), ("devswarm_act.poll_fast_ms", json!(0))]);
+            let before = crate::limits::thread_cpu_us();
+            let r = System::configured().run(&sh("sleep 3", 10_000));
+            assert!(r.ok, "{r:?}");
+            crate::limits::thread_cpu_us().saturating_sub(before)
+        };
+        let polled = cpu_of(10);
+        let backed_off = cpu_of(250);
+        eprintln!("thread CPU while waiting 3 s: every 10 ms {polled} us, every 250 ms {backed_off} us");
+        assert!(backed_off * 2 < polled || polled < 2000, "every 10 ms {polled} us, every 250 ms {backed_off} us");
+    }
 }

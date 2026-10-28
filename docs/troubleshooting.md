@@ -16,20 +16,18 @@ only when they are present.
 |---|---|
 | `/anti-hall:doctor` | Check everything and report. |
 | `/anti-hall:doctor --repair` | Also apply safe fixes, such as adding `.anti-hall/` to `.git/info/exclude`. |
-| `node plugins/anti-hall/hooks/doctor.js --check` | The same check from a clone, without the assistant. |
+| `~/.anti-hall/ah-engine/bin/ah-engine doctor --check` | The same check from a clone, without the assistant. |
 
 ## Common problems
 
 ??? question "Nothing happens. Are the hooks running?"
-    The Rust engine answers hooks; the temporary Node.js compatibility fallback (removed in
-    v1.0) answers the rest. If the engine is not installed and `node` is not on the `PATH`
-    of the shell Claude Code starts hooks from, those hooks are skipped without an error.
-    Run the doctor, check `node --version` (22 or newer, for now), then restart Claude Code
+    The Rust engine answers hooks. If the engine is not installed, the hooks are skipped without an error.
+    Run `ah-hook doctor` (it names what is missing), then restart Claude Code
     so a new session starts.
 
 ??? question "The statusline does not show"
-    It is not installed automatically: run `/anti-hall:install-statusline`. Then restart
-    Claude Code once, because the `statusLine` setting is only read at startup.
+    The anti-hall statusline installer is retired. Use Claude/Codex built-in status
+    surfaces, or run `uninstall-statusline` to clean up an older anti-hall entry.
 
 ??? question "An update did not take effect"
     Run `/reload-plugins` after `/anti-hall:update`. Restart Claude Code only if a hook or
@@ -83,14 +81,15 @@ rather than guessing a fix from the symptom.
 ## Turning a check off { #turning-a-check-off }
 
 **For a few minutes:** tell the assistant, for example "skip the tasklist-guard for now".
-It records your consent in `~/.anti-hall/skip.json`, and the skip expires after 15 minutes
+It records your consent in `~/.anti-hall/skip.json` for the current session only (key
+`<guard>@<session-id>`; `--global` covers all sessions), and the skip expires after 15 minutes
 by default. A skip for `"all"` never covers `git-guard`; that one has to be named.
 
 **For good:** turn off its setting. Say "turn off the speculation guard", or use the
 command line:
 
 ```bash
-node plugins/anti-hall/scripts/settings.js set guards.speculationGuard false
+~/.anti-hall/ah-engine/bin/ah-engine settings set guards.speculationGuard false
 ```
 
 The four `safety.*` guards need confirmation to turn off

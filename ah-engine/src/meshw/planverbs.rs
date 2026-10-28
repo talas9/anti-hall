@@ -3,26 +3,26 @@
 //! `addExtra`, `planKeyForWorktree`). The plan file, its lock, `findPlan`, `finishLabel` and the supervision log are the ones
 //! the heartbeat's `--step` already uses ([`crate::meshw::plan`]).
 //!
-//! Anything the engine cannot treat exactly like JavaScript defers BEFORE the plan is written, and Node then runs the verb:
-//! a `--steps-file` it cannot read (Node reports the operating system's message), a step or note cut that would split a
-//! surrogate pair, a plan whose shape is not the one `devswarm-plan.js` writes (see [`plan`]), a supervision log due for rotation.
-//! The plan write is the first thing this module does to the store; after it nothing defers (the supervision event is best
-//! effort, as in Node).
+//! Where Node's code throws, the verb refuses with the same text before the plan is written: a `--steps-file` it cannot read
+//! (the operating system's message, as Node words it) and a plan holding a `null` step or extra (a TypeError: `{ ok: false, error }`,
+//! exit 2). A step or note cut inside a surrogate pair keeps JavaScript's lone surrogate ([`plan::clip_utf16`]). The supervision log
+//! is rotated by [`plan::record`] when it is due. The plan write is the first thing this module does to the store; after it
+//! nothing can fail (the supervision event is best effort, as in Node).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 use crate::checks::guardkit::ojson::OVal;
-use crate::checks::guardkit::text::{is_js_space, js_trim, slice_utf16};
+use crate::checks::guardkit::text::{is_js_space, js_trim};
 use crate::defaults;
 use crate::meshw::args::Args;
 use crate::meshw::common::{Inv, Obj, n, s};
-use crate::meshw::ident::{R, defer};
+use crate::meshw::ident::R;
 use crate::meshw::idlock::is_safe_id;
 use crate::meshw::plan;
 use crate::meshw::send::{Answer, Effect};
 
 fn answer(code: i32, v: OVal) -> Answer {
-    Answer { code, stdout: format!("{}\n", v.stringify()), effect: Effect::None }
+    Answer { code, stdout: format!("{}\n", plan::stringify(&v)), effect: Effect::None }
 }
 
 /// `{ok:false, action, [sub, id, key, reason,] error}` with exit code 2, fields in the order given.
@@ -83,7 +83,7 @@ fn match_step_line(line: &str) -> Option<(u32, &str)> {
 }
 
 /// `parseSteps(text)`: the first numbered list that runs 1, 2, 3 …; fewer than two items is no plan.
-fn parse_steps(text: &str) -> R<Vec<String>> {
+pub(crate) fn parse_steps(text: &str) -> R<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     let mut expect = 1u32;
     let pieces: Vec<&str> = text.split('\n').collect();
@@ -91,7 +91,7 @@ fn parse_steps(text: &str) -> R<Vec<String>> {
         // `split(/\r?\n/)`: only a CR that a LF follows goes with it
         let line = if i + 1 < pieces.len() { piece.strip_suffix('\r').unwrap_or(piece) } else { piece };
         let Some((num, body)) = match_step_line(line) else { continue };
-        let Some(body) = slice_utf16(js_trim(body), defaults::num("devswarm_cli.plan_max_step_text") as usize) else { return defer("surrogate-cut") };
+        let body = plan::clip_utf16(js_trim(body), defaults::num("devswarm_cli.plan_max_step_text") as usize);
         if num == expect {
             out.push(body);
             expect += 1;
@@ -113,7 +113,7 @@ fn parse_steps(text: &str) -> R<Vec<String>> {
 }
 
 /// `splitGlobs(raw)`.
-fn split_globs(raw: &str) -> Vec<String> {
+pub(crate) fn split_globs(raw: &str) -> Vec<String> {
     let seps = defaults::text("devswarm_cli.plan_glob_seps");
     let mut out: Vec<String> = Vec::new();
     for part in raw.split(|c: char| is_js_space(c) || seps.contains(c)) {
@@ -153,16 +153,24 @@ fn fresh_step(i: usize, text: &str) -> OVal {
     o.done()
 }
 
-/// `newPlan({ key, id, worktreePath, steps, scope, base: null, source, now })`.
-fn new_plan(key: &str, id: &str, wt: Option<&str>, steps: &[String], scope: &[String], source: &str, now: f64) -> OVal {
+/// `newPlan({ key, id, worktreePath, steps, scope, base, source, now })`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn new_plan(key: &str, id: &str, wt: Option<&str>, steps: &[String], scope: &[String], base: Option<&str>, source: &str, now: f64) -> OVal {
+    new_plan_val(key, id, wt.filter(|w| !w.is_empty()).map_or(OVal::Null, s), steps, scope, base, source, now)
+}
+
+/// [`new_plan`] where the worktree path is the descriptor's value as it is (`worktreePath || null`: any truthy value).
+#[allow(clippy::too_many_arguments)]
+fn new_plan_val(key: &str, id: &str, wt: OVal, steps: &[String], scope: &[String], base: Option<&str>, source: &str, now: f64) -> OVal {
+    let wt = if wt.truthy() { wt } else { OVal::Null };
     let mut o = Obj::default();
     o.put("v", n(1.0))
         .put("key", s(key))
         .put("id", s(id))
-        .put("worktreePath", wt.map_or(OVal::Null, s))
+        .put("worktreePath", wt)
         .put("source", s(source))
         .put("created_at", n(now))
-        .put("base", OVal::Null)
+        .put("base", base.map_or(OVal::Null, s))
         .put("steps", OVal::Arr(steps.iter().take(defaults::num("devswarm_cli.plan_max_steps") as usize).enumerate().map(|(i, t)| fresh_step(i, t)).collect()))
         .put("scope_globs", OVal::Arr(scope.iter().take(defaults::num("devswarm_cli.plan_max_globs") as usize).map(|g| s(g)).collect()))
         .put("extras", OVal::Arr(Vec::new()))
@@ -174,12 +182,24 @@ fn new_plan(key: &str, id: &str, wt: Option<&str>, steps: &[String], scope: &[St
     o.done()
 }
 
-/// `replaceSteps(plan, steps, scope, now)` -> changed.
-fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: f64) -> R<bool> {
+/// `replaceSteps(plan, steps, scope, now)` -> changed. `every` reads `s.text` of a step in order up to the first mismatch and
+/// `stepsDone` reads `s.status` of all: a `null` step there is Node's TypeError ([`plan::Throw`]).
+fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: f64) -> Result<bool, plan::Throw> {
     let old: Vec<OVal> = plan::steps_of(p).to_vec();
-    let same = old.len() == steps.len() && old.iter().zip(steps).all(|(x, t)| matches!(x.get("text"), Some(OVal::Str(y)) if y == t));
+    let mut same = old.len() == steps.len();
+    if same {
+        for (x, t) in old.iter().zip(steps) {
+            if matches!(x, OVal::Null) {
+                return Err(plan::null_read(defaults::text("mesh_write.js_prop_text")));
+            }
+            if !matches!(x.get("text"), Some(OVal::Str(y)) if y == t) {
+                same = false;
+                break;
+            }
+        }
+    }
     let current_scope = match p.get("scope_globs") {
-        Some(v) if v.truthy() => v.stringify(),
+        Some(v) if v.truthy() => plan::stringify(v),
         _ => OVal::Arr(Vec::new()).stringify(),
     };
     let wanted_scope = scope.map(|g| OVal::Arr(g.iter().map(|x| s(x)).collect()).stringify());
@@ -188,6 +208,9 @@ fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: 
         return Ok(false);
     }
     if !same {
+        if let Some(thrown) = plan::null_step_throw(p) {
+            return Err(thrown);
+        }
         let before = plan::steps_done(p);
         let kept: Vec<OVal> = steps
             .iter()
@@ -200,7 +223,7 @@ fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: 
             .collect();
         p.set("steps", OVal::Arr(kept));
         p.set("replaced_at", n(now));
-        plan::note_done_drop(p, before)?;
+        plan::note_done_drop(p, before);
         plan::remove(p, "done_reported_at");
     }
     if let Some(g) = scope {
@@ -209,19 +232,26 @@ fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: 
     Ok(true)
 }
 
-/// `addExtra(plan, glob, note, now)` -> changed.
-fn add_extra(p: &mut OVal, glob: &str, note: &str, now: f64) -> R<bool> {
+/// `addExtra(plan, glob, note, now)` -> changed. `extras.find((e) => e.glob === glob)` reads `e.glob` in order up to the first match:
+/// a `null` extra before it is Node's TypeError ([`plan::Throw`]).
+pub(crate) fn add_extra(p: &mut OVal, glob: &str, note: &str, now: f64) -> Result<bool, plan::Throw> {
     if !matches!(p.get("extras"), Some(OVal::Arr(_))) {
         p.set("extras", OVal::Arr(Vec::new()));
     }
-    let Some(n_text) = slice_utf16(note, defaults::num("devswarm_cli.plan_max_note") as usize) else { return defer("surrogate-cut") };
-    let OVal::Obj(fields) = p else { return defer("plan-shape") };
-    let Some((_, OVal::Arr(extras))) = fields.iter_mut().find(|(k, _)| k == "extras") else { return defer("plan-shape") };
-    // `extras.find((e) => e.glob === glob)` throws on an entry that is no object
-    if extras.iter().any(|e| !matches!(e, OVal::Obj(_))) {
-        return defer("plan-shape");
+    let n_text = plan::clip_utf16(note, defaults::num("devswarm_cli.plan_max_note") as usize);
+    let OVal::Obj(fields) = p else { return Ok(false) }; // a plan is an object: findPlan and newPlan only hand over objects
+    let Some((_, OVal::Arr(extras))) = fields.iter_mut().find(|(k, _)| k == "extras") else { return Ok(false) }; // set just above
+    let mut at = None;
+    for (i, e) in extras.iter().enumerate() {
+        if matches!(e, OVal::Null) {
+            return Err(plan::null_read(defaults::text("mesh_write.js_prop_glob")));
+        }
+        if matches!(e.get("glob"), Some(OVal::Str(g)) if g == glob) {
+            at = Some(i);
+            break;
+        }
     }
-    if let Some(existing) = extras.iter_mut().find(|e| matches!(e.get("glob"), Some(OVal::Str(g)) if g == glob)) {
+    if let Some(existing) = at.and_then(|i| extras.get_mut(i)) {
         if matches!(existing.get("note"), Some(OVal::Str(x)) if *x == n_text) {
             return Ok(false);
         }
@@ -245,6 +275,31 @@ fn record(inv: &Inv, typ: &str, fields: Vec<(String, OVal)>) {
     }
 }
 
+/// What Node's `run()` answers when the verb throws: `{ ok: false, error }`, exit 2. The throw is logged where Node logs it.
+fn threw(thrown: &plan::Throw) -> Answer {
+    crate::debug::violated("meshw", &defaults::render("devswarm_cli.msg_plan_threw", &[("error", &thrown.0)]));
+    fail(&[("error", s(&thrown.0))])
+}
+
+/// The key of the plan to write: the found plan's, else the worktree's mesh id (when the descriptor's worktree is a path), else the id.
+fn key_of(found: &Option<plan::Found>, wt: Option<&OVal>, id: &str) -> R<String> {
+    Ok(match (found, wt) {
+        (Some(f), _) => f.key.clone(),
+        (None, Some(OVal::Str(w))) => plan::key_for_worktree(w)?.unwrap_or_else(|| id.to_string()),
+        _ => id.to_string(),
+    })
+}
+
+/// `e.message` of a failed `readFileSync(path, 'utf8')`, by operating system error number.
+fn fs_error_text(e: &std::io::Error, path: &str) -> String {
+    let quoted = format!("'{path}'");
+    let table = defaults::raw("devswarm_cli.plan_fs_errors");
+    match e.raw_os_error().and_then(|n| table.get(&n.to_string())).and_then(defaults::V::as_str) {
+        Some(tpl) => defaults::fill(tpl, &[("path", &quoted)]),
+        None => defaults::render("devswarm_cli.plan_fs_error_other", &[("path", &quoted)]),
+    }
+}
+
 // ---- plan ---------------------------------------------------------------------------------------------------------------
 
 /// `plan set|show <id> ...`.
@@ -262,10 +317,14 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
     let id = id.as_str();
     let now = inv.now as f64;
     let sub_word = || sub.map_or(OVal::Null, s);
-    let wt = plan::plan_ref(inv, id)?;
+    let wt = plan::plan_ref_value(inv, id)?;
     if sub == Some(defaults::text("devswarm_cli.sub_show")) {
         let Some(found) = plan::find(inv, id)? else {
             return Ok(fail(&[("action", action), ("sub", sub_word()), ("id", s(id)), ("reason", s(defaults::text("devswarm_cli.plan_reason_none")))]));
+        };
+        let label = match plan::label_checked(&found.plan, now) {
+            Ok(l) => l,
+            Err(thrown) => return Ok(threw(&thrown)),
         };
         let mut o = Obj::default();
         o.put("ok", OVal::Bool(true))
@@ -273,7 +332,7 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
             .put("sub", sub_word())
             .put("id", s(id))
             .put("key", s(&found.key))
-            .put("label", plan::finish_label(&found.plan, now)?)
+            .put("label", label)
             .put("plan", found.plan);
         return Ok(answer(0, o.done()));
     }
@@ -286,7 +345,10 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
     {
         match std::fs::read(file) {
             Ok(b) => text = Some(String::from_utf8_lossy(&b).into_owned()),
-            Err(_) => return defer("steps-file"),
+            Err(e) => {
+                let error = defaults::render("devswarm_cli.msg_plan_steps_file", &[("why", &fs_error_text(&e, file))]);
+                return Ok(fail(&[("action", action), ("sub", sub_word()), ("id", s(id)), ("error", s(&error))]));
+            }
         }
     }
     let steps = parse_steps(text.as_deref().unwrap_or(""))?;
@@ -295,30 +357,21 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let scope = a.has(defaults::text("devswarm_cli.flag_scope")).then(|| split_globs(&csv_list(a, defaults::text("devswarm_cli.flag_scope")).join(",")));
     let found = plan::find(inv, id)?;
-    let key = match &found {
-        Some(f) => f.key.clone(),
-        None => match wt.as_deref() {
-            Some(w) => plan::key_for_worktree(w)?.unwrap_or_else(|| id.to_string()),
-            None => id.to_string(),
-        },
-    };
-    if plan::log_needs_rotation(inv) {
-        return defer("supervision-rotate");
-    }
+    let key = key_of(&found, wt.as_ref(), id)?;
     let source = defaults::text("devswarm_cli.plan_source_set");
     let done = plan::update_with(inv, &key, |cur| {
         Ok(match cur {
-            Some(mut p) => {
-                let changed = replace_steps(&mut p, &steps, scope.as_deref(), now)?;
-                ((false, changed, p.clone()), changed.then_some(p))
-            }
+            Some(mut p) => match replace_steps(&mut p, &steps, scope.as_deref(), now) {
+                Ok(changed) => (Ok((false, changed, p.clone())), changed.then_some(p)),
+                Err(thrown) => (Err(thrown), None),
+            },
             None => {
-                let p = new_plan(&key, id, wt.as_deref(), &steps, scope.as_deref().unwrap_or(&[]), source, now);
-                ((true, true, p.clone()), Some(p))
+                let p = new_plan_val(&key, id, wt.clone().unwrap_or(OVal::Null), &steps, scope.as_deref().unwrap_or(&[]), None, source, now);
+                (Ok((true, true, p.clone())), Some(p))
             }
         })
     })?;
-    let Some(((created, changed, p), written)) = done else {
+    let Some((outcome, written)) = done else {
         return Ok(fail(&[
             ("action", action),
             ("sub", sub_word()),
@@ -327,6 +380,10 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
             ("reason", s(defaults::text("devswarm_cli.plan_reason_busy"))),
             ("error", s(defaults::text("devswarm_cli.msg_plan_busy"))),
         ]));
+    };
+    let (created, changed, p) = match outcome {
+        Ok(done) => done,
+        Err(thrown) => return Ok(threw(&thrown)),
     };
     if let Some(t) = written {
         crate::meshw::mark_committed();
@@ -386,32 +443,25 @@ pub fn run_scope(inv: &Inv, a: &Args) -> R<Answer> {
             return Ok(fail(&[("action", action), ("sub", sub_word()), ("id", s(id)), ("error", s(defaults::text("devswarm_cli.msg_scope_note_required")))]));
         }
     };
-    let wt = plan::plan_ref(inv, id)?;
+    let wt = plan::plan_ref_value(inv, id)?;
     let found = plan::find(inv, id)?;
-    let key = match &found {
-        Some(f) => f.key.clone(),
-        None => match wt.as_deref() {
-            Some(w) => plan::key_for_worktree(w)?.unwrap_or_else(|| id.to_string()),
-            None => id.to_string(),
-        },
-    };
-    if plan::log_needs_rotation(inv) {
-        return defer("supervision-rotate");
-    }
+    let key = key_of(&found, wt.as_ref(), id)?;
     let source = defaults::text("devswarm_cli.plan_source_scope");
     let done = plan::update_with(inv, &key, |cur| {
         let created = cur.is_none();
-        let mut p = cur.unwrap_or_else(|| new_plan(&key, id, wt.as_deref(), &[], &[], source, now));
+        let mut p = cur.unwrap_or_else(|| new_plan_val(&key, id, wt.clone().unwrap_or(OVal::Null), &[], &[], None, source, now));
         let mut changed = false;
         for g in &globs {
-            if add_extra(&mut p, g, note, now)? {
-                changed = true;
+            match add_extra(&mut p, g, note, now) {
+                Ok(true) => changed = true,
+                Ok(false) => {}
+                Err(thrown) => return Ok((Err(thrown), None)),
             }
         }
         let write = (changed || created).then(|| p.clone());
-        Ok(((changed, p), write))
+        Ok((Ok((changed, p)), write))
     })?;
-    let Some(((changed, p), written)) = done else {
+    let Some((outcome, written)) = done else {
         return Ok(fail(&[
             ("action", action),
             ("sub", sub_word()),
@@ -420,6 +470,10 @@ pub fn run_scope(inv: &Inv, a: &Args) -> R<Answer> {
             ("reason", s(defaults::text("devswarm_cli.plan_reason_busy"))),
             ("error", s(defaults::text("devswarm_cli.msg_plan_busy"))),
         ]));
+    };
+    let (changed, p) = match outcome {
+        Ok(done) => done,
+        Err(thrown) => return Ok(threw(&thrown)),
     };
     if let Some(t) = written {
         crate::meshw::mark_committed();
@@ -438,4 +492,155 @@ pub fn run_scope(inv: &Inv, a: &Args) -> R<Answer> {
         o.put("extras", x.clone());
     }
     Ok(answer(0, o.done()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meshw::args;
+    use crate::meshw::idlock::devswarm_root;
+
+    fn scratch_inv(tag: &str) -> Inv {
+        let home = std::env::temp_dir().join(format!("ah-planverbs-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&home).unwrap();
+        let dir = devswarm_root(&home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("w1.json"), r#"{"id":"w1"}"#).unwrap();
+        Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 2_000_000, stdin: None, store_override: None }
+    }
+
+    fn run(inv: &Inv, argv: &[&str]) -> (i32, String) {
+        let a = args::parse(&argv.iter().map(|x| (*x).to_string()).collect::<Vec<_>>());
+        let ans = if argv[0] == "scope" { run_scope(inv, &a) } else { run_plan(inv, &a) }.expect("the verb answers");
+        (ans.code, ans.stdout)
+    }
+
+    fn plan_path(inv: &Inv, key: &str) -> std::path::PathBuf {
+        devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_plans")).join(format!("{key}.json"))
+    }
+
+    fn put_plan(inv: &Inv, key: &str, json: &str) {
+        let p = plan_path(inv, key);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, json).unwrap();
+    }
+
+    #[test]
+    fn a_step_cut_inside_an_emoji_is_written_as_javascript_writes_it() {
+        let inv = scratch_inv("emoji");
+        let steps = format!("1. {}\u{1F600}tail\n2. second", "a".repeat(199));
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", &steps]);
+        assert_eq!(code, 0, "{out}");
+        let written = std::fs::read_to_string(plan_path(&inv, "w1")).unwrap();
+        assert!(written.contains(&format!("{}\\ud83d\"", "a".repeat(199))), "{written}");
+        // the same list again is a no-op on the very bytes it wrote
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", &steps]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("\"changed\":false"), "{out}");
+        assert_eq!(std::fs::read_to_string(plan_path(&inv, "w1")).unwrap(), written);
+        let (_, shown) = run(&inv, &["plan", "show", "w1"]);
+        assert!(shown.contains("\\ud83d"), "{shown}");
+    }
+
+    #[test]
+    fn an_unreadable_steps_file_is_the_operating_systems_message_in_the_verbs_own_refusal() {
+        let inv = scratch_inv("stepsfile");
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps-file", "/nonexistent/steps.txt"]);
+        assert_eq!(code, 2);
+        assert_eq!(
+            out,
+            "{\"ok\":false,\"action\":\"plan\",\"sub\":\"set\",\"id\":\"w1\",\"error\":\"cannot read --steps-file: ENOENT: no such file or directory, open '/nonexistent/steps.txt'\"}\n"
+        );
+        let dir = std::env::temp_dir();
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps-file", &dir.to_string_lossy()]);
+        assert_eq!(code, 2);
+        assert!(out.contains("EISDIR: illegal operation on a directory, read"), "{out}");
+    }
+
+    #[test]
+    fn a_plan_with_a_null_step_is_refused_with_the_type_error_and_left_alone() {
+        let inv = scratch_inv("nullstep");
+        let bad = r#"{"v":1,"key":"w1","steps":[{"n":1,"text":"a","status":"todo"},null],"extras":[null],"created_at":1}"#;
+        put_plan(&inv, "w1", bad);
+        let status = "{\"ok\":false,\"error\":\"Cannot read properties of null (reading 'status')\"}\n";
+        // a different list: stepsDone reads every status
+        assert_eq!(run(&inv, &["plan", "set", "w1", "--steps", "1. x\n2. y\n3. z"]), (2, status.to_string()));
+        // the same length and a first step that differs: `every` stops before the null, the replacement then reads every status
+        assert_eq!(run(&inv, &["plan", "set", "w1", "--steps", "1. x\n2. y"]), (2, status.to_string()));
+        // the show label reads every status
+        assert_eq!(run(&inv, &["plan", "show", "w1"]), (2, status.to_string()));
+        // an extra that is null is read by `find` before any match
+        let glob = "{\"ok\":false,\"error\":\"Cannot read properties of null (reading 'glob')\"}\n";
+        assert_eq!(run(&inv, &["scope", "add", "w1", "--glob", "src/**", "--note", "asked"]), (2, glob.to_string()));
+        assert_eq!(std::fs::read_to_string(plan_path(&inv, "w1")).unwrap(), bad, "a refused verb writes nothing");
+    }
+
+    #[test]
+    fn a_null_step_after_a_matching_prefix_is_read_for_its_text() {
+        let inv = scratch_inv("nullokay");
+        // same length, the first step already differs: `every` stops at the first mismatch, so the null is never read by it
+        put_plan(&inv, "w1", r#"{"v":1,"key":"w1","steps":[{"n":1,"text":"a","status":"todo"},null],"created_at":1}"#);
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", "1. a\n2. b", "--scope", "src/**"]);
+        // the texts match at 0 and the null is reached at 1: Node throws reading `text`
+        assert_eq!((code, out.as_str()), (2, "{\"ok\":false,\"error\":\"Cannot read properties of null (reading 'text')\"}\n"));
+    }
+
+    #[test]
+    fn a_descriptor_worktree_that_is_a_number_lands_in_the_plan_as_it_is() {
+        let inv = scratch_inv("numwt");
+        let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::write(dir.join("w1.json"), r#"{"id":"w1","worktreePath":5}"#).unwrap();
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", "1. a\n2. b"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("\"key\":\"w1\""), "{out}");
+        assert!(std::fs::read_to_string(plan_path(&inv, "w1")).unwrap().contains("\"worktreePath\":5,"));
+    }
+
+    #[test]
+    fn a_full_supervision_log_is_rotated_by_the_event_not_handed_over() {
+        let inv = scratch_inv("rotate");
+        let log = inv
+            .home
+            .join(defaults::text("mesh_write.dir_anti_hall"))
+            .join(defaults::text("mesh_write.dir_logs"))
+            .join(defaults::text("mesh_write.supervision_log"));
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let row = "{\"ts\":\"2025-10-09T08:00:00.000Z\",\"type\":\"warn\",\"id\":\"w1\",\"signal\":\"stall\",\"repeat\":false}\n";
+        std::fs::write(&log, row.repeat(defaults::num("mesh_write.supervision_max_bytes") as usize / row.len() + 2)).unwrap();
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", "1. a\n2. b"]);
+        assert_eq!(code, 0, "{out}");
+        let fresh = std::fs::read_to_string(&log).unwrap();
+        assert!(fresh.lines().count() == 1 && fresh.contains("\"type\":\"plan\""), "{fresh}");
+        let (code, out) = run(&inv, &["scope", "add", "w1", "--glob", "src/**", "--note", "asked"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2, "an event under the limit just appends");
+    }
+
+    #[test]
+    fn replacing_a_list_keeps_what_did_not_change_and_a_note_cut_inside_an_emoji_keeps_the_half() {
+        let mut p =
+            OVal::parse(r#"{"steps":[{"n":1,"text":"a","status":"done"},{"n":2,"text":"b","status":"todo"}],"extras":[{"glob":"x","note":"n","ts":1}]}"#)
+                .unwrap();
+        assert_eq!(replace_steps(&mut p, &["a".to_string(), "c".to_string()], None, 7.0), Ok(true));
+        assert_eq!(plan::steps_of(&p)[0].get("status"), Some(&s("done")), "an unchanged step keeps its status");
+        assert_eq!(plan::steps_of(&p)[1].get("status"), Some(&s("todo")));
+        // a repeated glob with the same note is a no-op, with a new one an update
+        assert_eq!(add_extra(&mut p, "x", "n", 8.0), Ok(false));
+        assert_eq!(add_extra(&mut p, "x", "m", 8.0), Ok(true));
+        let long = format!("{}\u{1F600}", "e".repeat(299));
+        assert_eq!(add_extra(&mut p, "y", &long, 9.0), Ok(true));
+        assert!(plan::stringify(&p).contains(&format!("{}\\ud83d\"", "e".repeat(299))));
+        // an extra found before a null one never reaches it
+        let mut q = OVal::parse(r#"{"steps":[],"extras":[{"glob":"x","note":"n"},null]}"#).unwrap();
+        assert_eq!(add_extra(&mut q, "x", "n", 1.0), Ok(false));
+    }
+
+    #[test]
+    fn the_operating_systems_read_errors_read_as_javascript_words_them() {
+        let msg = |n: i32| fs_error_text(&std::io::Error::from_raw_os_error(n), "/x");
+        assert_eq!(msg(13), "EACCES: permission denied, open '/x'");
+        assert_eq!(msg(20), "ENOTDIR: not a directory, open '/x'");
+        assert_eq!(msg(9999), "UNKNOWN: unknown error, open '/x'");
+    }
 }

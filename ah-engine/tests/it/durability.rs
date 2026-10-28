@@ -194,6 +194,13 @@ fn kill_9_mid_burst_never_loses_an_acknowledged_write_or_half_applies_one() {
                 std::thread::spawn(move || burst(&d, lp, t, stop, seen))
             })
             .collect();
+        // Let the bursts get a first write acknowledged before the kill: on a loaded machine the first 2-32 ms can pass with nothing
+        // acknowledged yet, which only starves the check below of writes (measured: 4 of 10 runs under load acknowledged 16-46 writes
+        // in total, none lost). Bounded, and the kill still lands inside the bursts.
+        let first_ack = Instant::now();
+        while first_ack.elapsed() < Duration::from_secs(5) && !seen.iter().any(|s| !s.lock().unwrap().puts_acked.is_empty()) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;
@@ -238,6 +245,8 @@ fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
             "src/ops/",
             "the operator command-line tools (settings, defect, statusline, phase, install-statusline) write the very files Node's scripts write, in place or via their own tmp+rename, and the shadow scratch files; the parity tests compare the bytes",
         ),
+        ("src/operator/routine.rs", "staged files renamed into place and disposable validation/probe payloads, not published state"),
+        ("src/operator/sweep.rs", "launchctl listing copied into a new backup file before retiring the old unit"),
         ("src/operator/install_codex.rs", "writes .codex/hooks.json exactly as install-codex.js does; the parity test compares the file"),
         ("src/dssup/witness.rs", "the witness spec file in its scratch directory (never state)"),
         ("src/dssup/recon/mirror.rs", "files of the scratch mirror the reconcile runs against (never the real store)"),

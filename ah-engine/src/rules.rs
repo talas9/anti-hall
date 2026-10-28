@@ -24,7 +24,7 @@ use serde_json::Value;
 #[derive(Deserialize)]
 struct RawFile {
     version: u32,
-    rules: Vec<RawRule>,
+    rules: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +48,12 @@ struct RawRule {
     message: String,
     #[serde(default)]
     paths: Vec<String>,
+    #[serde(default = "enabled_by_default")]
+    enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 /// What a matching rule does.
@@ -88,6 +94,8 @@ pub struct RuleSet {
     pub rules: Vec<Rule>,
     /// The file's `version` field.
     pub version: u32,
+    /// The rules as data, disabled ones included: what the layers merge (`layers.rs`), so a project's rules can be laid over this set.
+    pub sources: Vec<Value>,
 }
 
 /// Evaluation was abandoned because the request's budget ran out.
@@ -115,8 +123,15 @@ impl RuleSet {
         if f.version != 1 {
             return Err(RulesError::Version(f.version));
         }
+        RuleSet::from_values(f.version, f.rules, None)
+    }
+
+    /// Compile rules given as data (the merged result of the layers). A rule with `enabled = false` is kept in `sources` but not
+    /// compiled. `regex_limit` caps a pattern's compiled size (untrusted layers); `None` is the regex crate's default.
+    pub fn from_values(version: u32, values: Vec<Value>, regex_limit: Option<usize>) -> Result<RuleSet, RulesError> {
         let mut rules = Vec::new();
-        for (i, r) in f.rules.into_iter().enumerate() {
+        for (i, v) in values.iter().enumerate() {
+            let r: RawRule = serde_json::from_value(v.clone()).map_err(RulesError::Json)?;
             let action = match r.action.as_str() {
                 "deny" => Action::Deny,
                 "warn" => Action::Warn,
@@ -128,7 +143,14 @@ impl RuleSet {
             {
                 return Err(RulesError::Check { index: i, name: c.clone() });
             }
-            let re = Regex::new(&r.pattern).map_err(|source| RulesError::Pattern { index: i, id: r.id.clone(), source })?;
+            let mut b = regex::RegexBuilder::new(&r.pattern);
+            if let Some(n) = regex_limit {
+                b.size_limit(n);
+            }
+            let re = b.build().map_err(|source| RulesError::Pattern { index: i, id: r.id.clone(), source })?;
+            if !r.enabled {
+                continue;
+            }
             rules.push(Rule {
                 id: r.id,
                 events: r.events,
@@ -142,7 +164,7 @@ impl RuleSet {
                 options: r.options,
             });
         }
-        Ok(RuleSet { rules, version: f.version })
+        Ok(RuleSet { rules, version, sources: values })
     }
 
     /// Read and parse a rules file.

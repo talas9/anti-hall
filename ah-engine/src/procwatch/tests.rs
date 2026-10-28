@@ -55,7 +55,7 @@ impl Host for Fake {
         self.cwds.get(&pid).cloned()
     }
     fn mem(&mut self) -> MemInfo {
-        self.mem.unwrap_or(MemInfo { swap_used: 0, pressure: Pressure::Unknown })
+        self.mem.unwrap_or(MemInfo { swap_used: 0, pressure: Pressure::Unknown, ram_total: 0, ram_free: 0 })
     }
     fn space(&self, path: &Path) -> Option<Space> {
         self.spaces.get(path).copied().or(self.any_space)
@@ -195,7 +195,7 @@ fn unmarked_young_unreadable_and_protected_processes_are_never_candidates() {
     f.rows.push(row(952, 1, 5 * DAY, "/Users/u/.anti-hall/ah-engine-live/bundle/ah-engine serve"));
     f.envs.insert(952, marked(4_000_000));
     f.envs.insert(950, marked(4_000_000));
-    f.rows.push(row(951, 1, 5 * DAY, "/Users/u/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/companion/ingest.js"));
+    f.rows.push(row(951, 1, 5 * DAY, "/Users/u/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall-node/companion/ingest.js"));
     f.envs.insert(951, marked(4_000_000));
     let found = classify_with(&mut f, &h);
     assert!(found.iter().all(|x| x.pid != 950 && x.pid != 951 && x.pid != 952), "the live engine and the plugin's companions are protected");
@@ -330,7 +330,7 @@ fn run_samples(rows_for: impl Fn(u64) -> Vec<ProcRow>, steps: u64, st: &Settings
 }
 
 fn quiet() -> MemInfo {
-    MemInfo { swap_used: 0, pressure: Pressure::Unknown }
+    MemInfo { swap_used: 0, pressure: Pressure::Unknown, ram_total: 0, ram_free: 0 }
 }
 
 #[test]
@@ -391,15 +391,41 @@ fn processes_outside_a_live_session_are_not_measured() {
 fn swap_and_pressure_warn_for_both_platform_shapes() {
     let h = scratch("system-mem");
     let st = settings_for(&h);
-    let mac = MemInfo { swap_used: 10 << 30, pressure: Pressure::MacLevel(4) };
-    let linux = MemInfo { swap_used: 1 << 30, pressure: Pressure::Psi(55.0) };
+    let mac = MemInfo { swap_used: 10 << 30, pressure: Pressure::MacLevel(4), ram_total: 0, ram_free: 0 };
+    let linux = MemInfo { swap_used: 1 << 30, pressure: Pressure::Psi(55.0), ram_total: 0, ram_free: 0 };
     let m = run_samples(|_| session_tree(1.0, 20), 1, &st, mac);
     assert_eq!(m[0].1.iter().map(|w| w.kind).collect::<Vec<_>>(), vec!["swap", "pressure"]);
     let l = run_samples(|_| session_tree(1.0, 20), 1, &st, linux);
     assert_eq!(l[0].1.iter().map(|w| w.kind).collect::<Vec<_>>(), vec!["pressure"], "1 GB of swap is under the threshold");
     assert!(resource::line(&l[0].1[0]).contains("PSI 55%"));
-    let calm = MemInfo { swap_used: 0, pressure: Pressure::MacLevel(1) };
+    let calm = MemInfo { swap_used: 0, pressure: Pressure::MacLevel(1), ram_total: 0, ram_free: 0 };
     assert!(run_samples(|_| session_tree(1.0, 20), 1, &st, calm)[0].1.is_empty());
+}
+
+#[test]
+fn swap_alone_is_not_an_alarm_when_free_ram_is_healthy_and_the_figure_is_printed() {
+    let h = scratch("swap-free-ram");
+    let st = settings_for(&h);
+    let gb = 1u64 << 30;
+    // the field report: 64 GB machine, 9.5 GB swap, 75% of RAM free
+    let healthy = MemInfo { swap_used: 9 * gb + gb / 2, pressure: Pressure::MacLevel(1), ram_total: 64 * gb, ram_free: 48 * gb };
+    assert!(run_samples(|_| session_tree(1.0, 20), 1, &st, healthy)[0].1.is_empty(), "swap beside plenty of free RAM stays silent");
+    // the same swap with RAM nearly used up still warns, and the text carries the free-RAM figure
+    let short = MemInfo { ram_free: 3 * gb, ..healthy };
+    let w = run_samples(|_| session_tree(1.0, 20), 1, &st, short);
+    assert_eq!(w[0].1.iter().map(|w| w.kind).collect::<Vec<_>>(), vec!["swap"]);
+    assert!(resource::line(&w[0].1[0]).contains("free RAM 3072 MB of 65536 MB (4%)"), "{}", resource::line(&w[0].1[0]));
+    // RAM not known: swap alone decides, as before
+    let unknown = MemInfo { ram_total: 0, ram_free: 0, ..healthy };
+    assert_eq!(run_samples(|_| session_tree(1.0, 20), 1, &st, unknown)[0].1.len(), 1);
+    // the owner can turn the free-RAM test off (0 = swap alone decides)
+    write_settings(&h, json!({"resourceWatch": {"freeRamOkPercent": 0}}));
+    let st0 = settings_for(&h);
+    assert_eq!(run_samples(|_| session_tree(1.0, 20), 1, &st0, healthy)[0].1.len(), 1);
+    // the pressure line prints the figure too
+    let crit = MemInfo { pressure: Pressure::MacLevel(4), ..short };
+    let p = run_samples(|_| session_tree(1.0, 20), 1, &st, crit);
+    assert!(p[0].1.iter().any(|w| w.kind == "pressure" && resource::line(w).contains("free RAM 3072 MB")));
 }
 
 #[test]
@@ -476,9 +502,9 @@ fn advise(env: &RequestEnv, event: &str, payload: &Value) -> Verdict {
     v
 }
 
-fn text_of(v: &Verdict) -> String {
+fn text_of(h: &Path, v: &Verdict) -> String {
     match v {
-        Verdict::Advisory(t) | Verdict::Block(t) => t.clone(),
+        Verdict::Advisory(t) | Verdict::Block(t) => t.clone() + &details(h, "procwatch", ""),
         other => panic!("expected an advisory or block, got {other:?}"),
     }
 }
@@ -491,12 +517,12 @@ fn low_disk_adds_an_advisory_with_a_cooldown_and_a_worse_level_breaks_through() 
     publish(&mut disk_host(300.0), &h);
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow);
     publish(&mut disk_host(15.0), &h);
-    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
     assert!(t.contains("Low disk space") && t.contains("warn") && t.contains("nothing was deleted"), "{t}");
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "cooldown: the same level is not repeated");
-    assert!(text_of(&advise(&env, "SessionStart", &json!({"session_id": "s2"}))).contains("Low disk space"), "another session is told once too");
+    assert!(text_of(&h, &advise(&env, "SessionStart", &json!({"session_id": "s2"}))).contains("Low disk space"), "another session is told once too");
     publish(&mut disk_host(2.5), &h);
-    assert!(text_of(&advise(&env, "UserPromptSubmit", &p)).contains("critical"), "a worse level is never held back");
+    assert!(text_of(&h, &advise(&env, "UserPromptSubmit", &p)).contains("critical"), "a worse level is never held back");
 }
 
 #[test]
@@ -509,10 +535,10 @@ fn at_critical_a_heavy_command_is_warned_about_and_blocking_is_an_opt_in() {
     assert_eq!(advise(&env, "PreToolUse", &heavy), Verdict::Allow);
     publish(&mut disk_host(2.5), &h);
     assert_eq!(advise(&env, "PreToolUse", &light), Verdict::Allow, "a light command is not warned about");
-    assert!(text_of(&advise(&env, "PreToolUse", &heavy)).contains("writes a lot of data"));
+    assert!(text_of(&h, &advise(&env, "PreToolUse", &heavy)).contains("writes a lot of data"));
     write_settings(&h, json!({"diskWatch": {"blockAtCritical": true}}));
     let b = advise(&env, "PreToolUse", &heavy);
-    assert!(matches!(&b, Verdict::Block(t) if t.contains("Blocked")), "{b:?}");
+    assert!(matches!(&b, Verdict::Block(t) if t.contains("this command is blocked")), "{b:?}");
     assert_eq!(advise(&env, "PreToolUse", &light), Verdict::Allow);
     write_settings(&h, json!({"diskWatch": {"enabled": false}}));
     assert_eq!(advise(&env, "PreToolUse", &heavy), Verdict::Allow);
@@ -528,13 +554,13 @@ fn orphan_report(h: &Path, pids: &[(u64, &str)]) {
 }
 
 #[test]
-fn an_orphan_is_reported_once_per_session_names_its_project_and_a_new_one_still_is() {
+fn an_orphan_is_counted_once_per_session_and_a_new_one_still_is() {
     let h = scratch("orphan-ack");
     let env = script_env(&h, None);
     let p = json!({"session_id": "s1"});
     orphan_report(&h, &[(111, "adb server")]);
-    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
-    assert!(t.contains("pid 111") && t.contains("/Users/u/Projects/other-app"), "the process and the project that owns it: {t}");
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
+    assert!(t.contains("1 processes remain from ended sessions"), "one unacknowledged process is counted: {t}");
     // the cooldown passing must not repeat an acknowledged process
     let expire = || {
         let state = h.join(".anti-hall").join(crate::defaults::text("paths.state_dir")).join(crate::defaults::text("procwatch.state_rel"));
@@ -547,8 +573,8 @@ fn an_orphan_is_reported_once_per_session_names_its_project_and_a_new_one_still_
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "pid 111 was already shown to this session");
     expire();
     orphan_report(&h, &[(111, "adb server"), (222, "node dev")]);
-    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
-    assert!(t.contains("pid 222") && !t.contains("pid 111"), "only the new process is reported: {t}");
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
+    assert!(t.contains("1 processes remain from ended sessions"), "only the new process is reported: {t}");
 }
 
 #[test]
@@ -617,7 +643,7 @@ fn growth_is_named_in_the_advisory_when_a_volume_is_low() {
     let report = json!({"ts_s": NOW, "orphans": {"count": 0, "listed": []}, "kills": [], "resource": [],
         "disk": {"volumes": [{"path": "/proj", "dev": 7, "free": "2.5 GB", "pct": "1", "level": "critical"}], "growth": [{"path": "/proj/target", "size": "38.0 GB"}]}});
     std::fs::write(dir.join("procwatch-report.json"), report.to_string()).expect("report");
-    let t = text_of(&advise(&script_env(&h, None), "UserPromptSubmit", &json!({"session_id": "s1"})));
+    let t = text_of(&h, &advise(&script_env(&h, None), "UserPromptSubmit", &json!({"session_id": "s1"})));
     assert!(t.contains("/proj/target (38.0 GB)") && t.contains("suggestion only") && t.contains("critical"), "{t}");
 }
 
@@ -629,7 +655,7 @@ fn the_report_resource_warnings_reach_the_right_session_once() {
     publish(&mut f, &h);
     let env = script_env(&h, Some("500"));
     let p = json!({"session_id": "sess-9"});
-    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
     assert!(t.contains("Resource use is high") && t.contains("python3") && t.contains("Nothing was stopped"), "{t}");
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "shown once");
     // another session does not get a process warning that belongs to sess-9
@@ -644,13 +670,16 @@ fn orphans_and_stops_are_summarised_once_per_cooldown() {
     publish(&mut f, &h);
     let env = script_env(&h, None);
     let p = json!({"session_id": "s1"});
-    let t = text_of(&advise(&env, "SessionStart", &p));
-    assert!(t.contains("left behind by ended Claude sessions") && t.contains("vite") && t.contains("dev_server=kill") && t.contains("Stopped 2 orphan"), "{t}");
+    let t = text_of(&h, &advise(&env, "SessionStart", &p));
+    assert!(
+        t.contains("2 processes remain from ended sessions") && t.contains("vite") && t.contains("[dev_server]") && t.contains("Stopped 2 leftover"),
+        "{t}"
+    );
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "not repeated inside the cooldown");
     // report mode: listed, with the way to opt in, and no stop line
     let h2 = scratch("orphan-adv2");
     publish(&mut orphan_fixture(), &h2);
-    let t = text_of(&advise(&script_env(&h2, None), "SessionStart", &p));
+    let t = text_of(&h2, &advise(&script_env(&h2, None), "SessionStart", &p));
     assert!(t.contains("Nothing was stopped") && !t.contains("Stopped "), "{t}");
 }
 
@@ -684,7 +713,8 @@ fn a_silent_agent_of_this_session_is_named_once_and_never_stopped() {
     heartbeat(&h, "done-one", "s1", "done", 90.0);
     heartbeat(&h, "foreign-one", "s2", "running", 90.0);
     let Verdict::Advisory(j) = stuck(&h, "s1") else { panic!("an advisory naming the stuck agent") };
-    assert!(j.contains("stuck-one") && j.contains("no output for 20+ minutes") && j.contains("Nothing was stopped"), "{j}");
+    let j = j + &details(&h, "procwatch", "s1");
+    assert!(j.contains("stuck-one") && j.contains("printed nothing for 20+ minutes") && j.contains("Nothing was stopped"), "{j}");
     assert!(!j.contains("fresh-one") && !j.contains("done-one") && !j.contains("foreign-one"));
     assert_eq!(stuck(&h, "s1"), Verdict::Allow, "the per-agent cooldown holds");
     write_settings(&h, json!({"procwatch": {"enabled": false}}));
@@ -721,7 +751,7 @@ fn macos_style_data_is_handled_where_linux_would_differ() {
     assert!(classify_with(&mut f, &h).iter().all(|x| x.pid != 960));
     // footprint, not resident size, is what a macOS row carries: a compressed process still counts
     let st = settings_for(&h);
-    let out = run_samples(|_| session_tree(1.0, 5000), 1, &st, MemInfo { swap_used: 0, pressure: Pressure::MacLevel(1) });
+    let out = run_samples(|_| session_tree(1.0, 5000), 1, &st, MemInfo { swap_used: 0, pressure: Pressure::MacLevel(1), ram_total: 0, ram_free: 0 });
     assert_eq!(out[0].1[0].kind, "memory");
 }
 
@@ -902,92 +932,6 @@ fn real_machine_smoke_the_host_reads_processes_memory_and_disk() {
     assert!(cost < std::time::Duration::from_secs(5));
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-// shadow: the report-mode decisions against the Node originals that have an equivalent
-// ---------------------------------------------------------------------------------------------------------------------
-
-fn node_available() -> bool {
-    std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success())
-}
-
-#[test]
-fn shadow_stuck_agents_match_the_node_watchdog_on_heartbeats() {
-    if !node_available() {
-        eprintln!("node not installed: shadow comparison skipped");
-        return;
-    }
-    let home = scratch("shadow-hb");
-    let dir = home.join(".anti-hall/agents");
-    std::fs::create_dir_all(&dir).expect("agents dir");
-    let now_ms = crate::checks::agent_scan::now_ms();
-    let min = 60_000.0;
-    // (id, age in minutes, status): the Node watchdog lists everything past the threshold; the engine skips finished statuses
-    let fixtures = [("a-fresh", 3.0, "running"), ("b-stuck", 45.0, "running"), ("c-very-stuck", 300.0, "running"), ("d-edge-under", 19.0, "working")];
-    for (id, age, status) in fixtures {
-        let ts = (now_ms - age * min) as u64;
-        std::fs::write(dir.join(format!("{id}.json")), json!({"id": id, "ts": ts, "status": status, "step": "x", "session": "s1"}).to_string()).expect("hb");
-    }
-    let out = std::process::Command::new("node")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks/agent-watchdog.js"))
-        .arg((20.0 * min).to_string())
-        .env("HOME", &home)
-        .output()
-        .expect("run watchdog");
-    let node: std::collections::BTreeSet<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.strip_prefix("STALE "))
-        .filter_map(|l| l.split_whitespace().next())
-        .map(str::to_string)
-        .collect();
-    // the stuck-agent advisory (the silent-agent-nudge script at UserPromptSubmit) names the agents of this session it finds silent
-    let advisory = match stuck(&home, "s1") {
-        Verdict::Advisory(j) => j,
-        other => panic!("an advisory naming the stuck agents: {other:?}"),
-    };
-    let engine: std::collections::BTreeSet<String> =
-        fixtures.iter().map(|(id, ..)| id.to_string()).filter(|id| advisory.contains(&format!("[{id}]"))).collect();
-    assert_eq!(engine, node, "the engine's stuck set equals the Node watchdog's for running agents of the session");
-    assert_eq!(engine, ["b-stuck", "c-very-stuck"].into_iter().map(str::to_string).collect());
-}
-
-/// Whether the Node session-end reaper (the shadow of the engine's `session-end-mcp-reaper` script) selects `cmd` as an orphaned
-/// MCP server: parent PID 1, an MCP signature, not a test runner or dev server.
-fn node_reaper_selects(cmd: &str) -> bool {
-    let hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks");
-    let js = "const r=require(process.argv[1]+'/session-end-mcp-reaper.js');const m=require(process.argv[1]+'/../companion/mcp-reaper.js');process.stdout.write(String(r.matchesInvariant({pid:10,ppid:1,cmd:process.argv[2]},m,null,null)));";
-    let out = std::process::Command::new("node").args(["-e", js]).arg(&hooks).arg(cmd).output().expect("run node");
-    String::from_utf8_lossy(&out.stdout) == "true"
-}
-
-#[test]
-fn shadow_mcp_orphans_are_a_superset_of_what_the_mcp_reaper_selects() {
-    let h = scratch("shadow-mcp");
-    let cfg = cfg_default(&h);
-    let class = "mcp_server";
-    let cmds = [
-        "node /home/u/.npm/_npx/abc/node_modules/.bin/mcp-server-fetch",
-        "npx -y @modelcontextprotocol/server-filesystem /tmp",
-        "uvx mcp-server-git --repository /work/repo",
-        "node /opt/tools/chrome-devtools-mcp/index.js",
-        "mcp start",
-        "node server-sequential-thinking.js",
-        "node /work/app/vitest.js", // never an MCP server
-        "/usr/bin/vim notes.txt",
-    ];
-    for cmd in cmds {
-        let reaper = node_reaper_selects(cmd);
-        let mut f = Fake { rows: vec![row(1, 0, 9 * DAY, "/sbin/launchd"), row(10, 1, 9 * DAY, cmd)], ..Fake::default() };
-        f.envs.insert(10, marked(4_000_000));
-        let rows = f.rows.clone();
-        let found = orphan::classify(&mut f, &rows, &cfg, &HashSet::new());
-        let ours = found.iter().any(|x| x.class == class);
-        if reaper {
-            assert!(ours, "procwatch must report every process the MCP reaper would select, missed: {cmd}");
-        }
-        assert!(!found.iter().any(|x| x.class == class) || reaper || cmd.contains("mcp"), "{cmd}");
-    }
-}
-
 #[test]
 fn the_shipped_dev_example_classes_parse_and_separate_a_test_daemon_from_the_live_engine() {
     let h = scratch("example");
@@ -1018,4 +962,13 @@ fn the_shipped_dev_example_classes_parse_and_separate_a_test_daemon_from_the_liv
         "the live engine is left alone; a short sleeper is only the catch-all class once it is an hour old"
     );
     assert!(found.iter().all(|x| x.mode == orphan::Mode::Report));
+}
+
+fn details(h: &Path, guard: &str, _session: &str) -> String {
+    let session = crate::defaults::text("guardkit.details_session_default");
+    let p = h
+        .join(crate::defaults::text("paths.base_dir"))
+        .join(crate::defaults::text("guardkit.details_dir"))
+        .join(format!("{guard}-{session}{}", crate::defaults::text("guardkit.details_ext")));
+    std::fs::read_to_string(p).expect("the brief guard saves its complete details")
 }

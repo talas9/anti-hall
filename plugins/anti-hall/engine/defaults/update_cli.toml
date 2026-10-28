@@ -1,5 +1,4 @@
-# ah-engine shipped defaults for the operator commands `update` and `install-codex` (D81, lane L9b): the ports of
-# skills/update/scripts/update.js and codex/install-codex.js. Format: see the header of engine.toml.
+# ah-engine shipped defaults for the operator commands `update` and `install-codex` (D81, lane L9b): the native update and Codex install. Format: see the header of engine.toml.
 #
 # The texts are the Node scripts' own, word for word: tests/operator_parity.rs runs the script and the command on the same seeded
 # scratch home and compares their output and the files they leave behind.
@@ -36,6 +35,10 @@ value = "cache/anti-hall/anti-hall"
 doc = "The harness-owned registry of installed plugins under the plugins root. `update` reads it and never writes it."
 value = "installed_plugins.json"
 
+[update.settings_rel]
+doc = "The user's harness settings file, relative to the plugins root: its `enabledPlugins` says which registered install is the enabled one."
+value = "../settings.json"
+
 [update.plugin_src_rel]
 doc = "The plugin directory inside the marketplace clone."
 value = "plugins/anti-hall"
@@ -52,9 +55,6 @@ value = "CHANGELOG.md"
 doc = "The manifest as git names it on a remote ref (`--check` reads the remote version from it)."
 value = "plugins/anti-hall/.claude-plugin/plugin.json"
 
-[update.node_script_rel]
-doc = "The Node update script inside the plugin directory; its exported stage functions run (bounded) only for the DevSwarm store stages the engine does not answer itself."
-value = "skills/update/scripts/update.js"
 
 [update.max_bytes]
 doc = "Largest manifest, registry or changelog `update` reads; a larger file counts as unread."
@@ -84,10 +84,6 @@ doc = "The post-pull stages' overall budget when the environment does not set on
 value = 90000
 unit = "ms"
 
-[update.reexec_margin_ms]
-doc = "Extra wait for the Node stage run beyond its budget and the harness registration (one overrunning stage plus process start)."
-value = 60000
-unit = "ms"
 
 [update.poll_ms]
 doc = "How often `update` checks a child process it waits for."
@@ -134,8 +130,8 @@ doc = "git arguments to read a file from a ref: the word, then `<ref>:<path>` is
 value = ["show"]
 
 [update.harness_args]
-doc = "The arguments the harness registration runs the Claude binary with."
-value = ["plugin", "update", "anti-hall@anti-hall"]
+doc = "The arguments the harness registration runs the Claude binary with; {key} is the owning install identity."
+value = ["plugin", "update", "{key}"]
 
 [update.git_spawn_error]
 doc = "What a git call that could not start reads as ({code} is ENOENT for a missing binary)."
@@ -182,6 +178,10 @@ value = "(?i)accept-command|sha256"
 [update.confirm_shown]
 doc = "How many UTF-16 units of that reply are shown."
 value = 300
+
+[update.available_re]
+doc = "The start of a `--check` status action that says a newer version exists; the human summary headline then reads as available, not up to date."
+value = "^update available \\("
 
 [update.failed_re]
 doc = "The words in a status action that make the human summary read as a failure."
@@ -293,9 +293,6 @@ value = "copied {version}"
 doc = "Cache sync reason."
 value = "copy failed: {error}"
 
-[update_msg.stage_script_missing]
-doc = "Why a post-pull stage could not run in Node. Placeholder: script."
-value = "{script} is not there"
 
 [update_msg.stage_start]
 doc = "Progress line on stderr before a stage."
@@ -338,6 +335,10 @@ value = "not updated"
 [update_human.state_updated]
 doc = "Head state."
 value = "updated to v{latest}"
+
+[update_human.state_available]
+doc = "Head state: `--check` found a newer version."
+value = "v{latest} available"
 
 [update_human.state_ok]
 doc = "Head state."
@@ -491,7 +492,7 @@ doc = "The Codex configuration file inside it."
 value = "config.toml"
 
 [codex_install.thin_hooks_rel]
-doc = "The generated one-wrapper-call-per-event registration, relative to the plugin directory."
+doc = "The shipped thin-client registration path, relative to the plugin directory (used in diagnostics; installation renders the current dispatch table)."
 value = "codex/hooks/hooks.json"
 
 [codex_install.root_token]
@@ -499,8 +500,8 @@ doc = "The placeholder in that file the installer replaces with the plugin direc
 value = "${PLUGIN_ROOT}"
 
 [codex_install.hook_group_re]
-doc = "A hook command that belongs to anti-hall (after backslashes become slashes): a path under its hooks directory, or its thin trigger."
-value = "/plugins/anti-hall/hooks/|/hooks/ah-hook\\.sh\""
+doc = "An anti-hall hook command (after backslashes become slashes): its legacy hook directory, retired wrapper, or installed Rust thin client. Used by installer replacement and doctor detection."
+value = '/plugins/anti-hall/hooks/|/hooks/ah-hook\.sh["\x27]|/\.anti-hall/ah-engine/bin/ah-hook["\x27]'
 
 [codex_install.features_with_hooks_re]
 doc = "A [features] table that already sets `hooks`."
@@ -592,3 +593,55 @@ value = "install-codex: cannot write {path}: {error}"
 [codex_install.err_home]
 doc = "Printed when --global is asked for and no home directory can be found."
 value = "install-codex: cannot find the home directory"
+
+[update.plugin_root_env]
+doc = "The variable that names the running plugin's root; with several enabled installs the check uses the one whose install path holds it."
+value = "CLAUDE_PLUGIN_ROOT"
+
+[update.cache_dir]
+doc = "The harness plugin cache directory under the plugins root (`<cache>/<marketplace>/<plugin>/<version>`)."
+value = "cache"
+
+[update.marketplaces_dir]
+doc = "The harness marketplaces directory under the plugins root, used when `known_marketplaces.json` has no install location."
+value = "marketplaces"
+
+[update.known_marketplaces]
+doc = "The harness file (under the plugins root) that records each marketplace's source and install location."
+value = "known_marketplaces.json"
+
+[update.directory_source]
+doc = "The `source.source` value of a marketplace that is a local directory: it has no remote, its own plugin manifest is the latest version."
+value = "directory"
+
+[update.harness_check_args]
+doc = "The harness arguments before the install key in the update command a `--check` suggests (`claude plugin update <key>`)."
+value = ["plugin", "update"]
+
+[update.state_available]
+doc = "The `state` of a `--check` status when a newer version exists."
+value = "available"
+
+[update.state_current]
+doc = "The `state` of a `--check` status when the install is the latest."
+value = "current"
+
+[update.state_unknown]
+doc = "The `state` of a `--check` status when the installed or latest version cannot be read."
+value = "unknown"
+
+[update.state_lagging]
+doc = "The `state` of a `--check` status when the version is current but the harness registry and cache disagree."
+value = "lagging"
+
+[update.state_failed]
+doc = "The `state` of a `--check` status when the check itself failed."
+value = "failed"
+
+[update_msg.latest_unknown]
+doc = "`--check` action when the install's marketplace has no readable source version (a local-directory marketplace has no remote)."
+value = "latest version unknown — the {channel} marketplace has no readable source version to compare with"
+
+[update_msg.lag_head]
+doc = "`--check` action head when the version is current but the harness registry and cache disagree (never worded as up to date)."
+value = "version is current but the harness registry and cache disagree"

@@ -208,7 +208,13 @@ pub fn scan(src: &Path) -> BTreeMap<String, Kind> {
     let texts: Vec<(String, String)> = files
         .iter()
         .map(|f| {
-            let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+            let text = match std::fs::read_to_string(f) {
+                Ok(text) => text,
+                Err(e) => {
+                    eprintln!("{}: {e}", f.display());
+                    std::process::exit(1);
+                }
+            };
             // test modules may name keys on purpose, including in negative tests
             let text = text.split("#[cfg(test)]\nmod tests {").next().unwrap_or("").to_string();
             (f.to_string_lossy().replace('\\', "/"), text)

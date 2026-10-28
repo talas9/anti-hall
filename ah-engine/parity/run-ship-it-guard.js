@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Parity of the built-in `ship-it-guard` check against hooks/ship-it-guard.js (PreToolUse on Edit/Write/MultiEdit,
 // Bash and apply_patch).
-//   node run-ship-it-guard.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks
+//   node run-ship-it-guard.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks
 //        [--cmds fpr/cmds.jsonl] [--edits fpr/edits.jsonl] [--mode oneshot|daemon|both] [--real 6000] [--seed 1]
 // Corpus: (1) hand-written cases over many PLAN.md shapes, switch sources and payload shapes, (2) real file paths
 // (Edit/Write targets from local transcripts and path-like tokens from real Bash commands) judged under several

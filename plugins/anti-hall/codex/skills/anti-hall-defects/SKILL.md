@@ -12,7 +12,7 @@ File, list, show, and rule on anti-hall's own defect reports via the durable, ho
 A durable, file-based, two-way channel for reporting bugs found in anti-hall itself back
 to the maintainer, and reading the maintainer's rulings back. It lives at
 `~/.anti-hall/defects/`, home-scoped (works from any repo), and is the SAME script and
-store as the Claude side (`hooks/lib/defect-store.js`, `scripts/defect.js`) — there is no
+store as the Claude side (`defect-store`, `ah-engine defect`) — there is no
 separate Codex implementation to drift from.
 
 ## Resolve the plugin root
@@ -32,7 +32,7 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 
 The Claude port surfaces open/regressed defect counts to the MAINTAINER via a live
 supervisor/monitor path in some contexts. **The Codex port has none of that** — its ONLY
-coverage is the shared `SessionStart` nudge (`hooks/defect-nudge.js`, wired identically
+coverage is the shared `SessionStart` nudge (`defect-nudge`, wired identically
 in `codex/hooks/hooks.json`), which fires once per 24h at session start, same as Claude.
 There is no additional low-latency wake path on Codex; do not imply one. If you need a
 fresher read than the once-per-24h nudge, run `list` directly (below) rather than waiting.
@@ -40,18 +40,18 @@ fresher read than the once-per-24h nudge, run `list` directly (below) rather tha
 ## The five core verbs
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect report \
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect report \
   --class hook-crash --sev p1 \
   --sym "command-guard throws on empty argv" \
   --repro "run command-guard.js with stdin ''" \
   --claimed "should exit 0" --observed "TypeError: Cannot read...stack"
 
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect list --mine --json
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect list --open --json         # status === 'open' only (untriaged)
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect list --unfinished --json   # open + ack + partial + regressed (closed set excluded)
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect show <fp> --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect list --mine --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect list --open --json         # status === 'open' only (untriaged)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect list --unfinished --json   # open + ack + partial + regressed (closed set excluded)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect show <fp> --json
 # rule is MAINTAINER-ONLY:
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect rule <fp> --status fixed --fixed-in 0.79.0 --commit <sha>
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect rule <fp> --status fixed --fixed-in 0.79.0 --commit <sha>
 ```
 
 `--status` (exactly 6, closed vocabulary): `ack`, `fixed`, `partial`, `wontfix`,
@@ -73,10 +73,10 @@ These three verbs turn the channel into a bug history, so the same thing is not 
 in circles. They read every record: reported defects plus fixes imported from git.
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
 ```
 
 - **`backfill`** imports every `fix:` / `fix(scope):` commit as a record with status
@@ -98,8 +98,8 @@ sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" defect similar <symptom words...> [--comp
 Before fixing an anti-hall bug, run `similar` and read the past fixes for that component.
 If the component is a hotspot, fix the class of bug, not just this instance.
 
-Optional fields on `report` and `rule`: `--component <path or module>` (normalized:
-`plugins/anti-hall/hooks/lib/x.js` becomes `hooks/x`), `--cause <class>` and
+Optional fields on `report` and `rule`: `--component <path or module>` (normalized to a short
+module name), `--cause <class>` and
 `--regression-of <fp>`. Records without these fields still load. `--cause` must be one of:
 `archived-or-held-state`, `id-mismatch`, `home-or-state-leak`, `lock-or-race`,
 `timing-or-load-flake`, `transcript-parse`, `blocking-hook-loop`, `fail-open-missing`,

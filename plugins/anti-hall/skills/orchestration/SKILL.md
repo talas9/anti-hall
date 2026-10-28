@@ -100,11 +100,11 @@ L3  Workers
 > workspace-scale work.** If this session is a DevSwarm **Primary** (`DEVSWARM_REPO_ID`
 > set, `DEVSWARM_SOURCE_BRANCH` empty), the top fan-out primitive is a **child
 > workspace**, not an L2 subagent:
-> `node scripts/devswarm.js spawn <branch> -p "<brief>"`.
+> `~/.anti-hall/ah-engine/bin/ah-engine devswarm spawn <branch> -p "<brief>"`.
 >
 > | Work | Tier |
 > |---|---|
-> | A workspace-scale **matter** — a feature, a fix, a deploy: multi-step, wants its own branch + worktree, its own agent session and token budget, its own review/merge | **Child workspace** (`devswarm.js spawn`) |
+> | A workspace-scale **matter** — a feature, a fix, a deploy: multi-step, wants its own branch + worktree, its own agent session and token budget, its own review/merge | **Child workspace** (`ah-engine mesh spawn`) |
 > | A read-only lookup, a single command, a scoped investigation, a review/verify pass, a mechanical transform | Subagent / Explore / Workflow (the L1→L2→L3 hierarchy above) |
 >
 > They **compose, they do not compete**: the Primary splits into workspace-sized chunks;
@@ -245,7 +245,7 @@ The plugin enforces a non-negotiable task-list protocol via two hooks:
 ## DevSwarm mesh-only messaging (when this session runs inside a DevSwarm workspace)
 
 This skill governs subagent/Workflow fan-out WITHIN one workspace (L2) **and** — for a
-DevSwarm **Primary** — the tier above it: spinning child workspaces (`devswarm.js spawn`),
+DevSwarm **Primary** — the tier above it: spinning child workspaces (`ah-engine mesh spawn`),
 see the DevSwarm note under "Swarm topology for larger work". The *doctrine* for that tier
 is shipped (the injected rule W + the guard redirects); there is no mechanical classifier
 that decides scale for you — see the `devswarm` skill. The other place the two intersect: if THIS
@@ -257,7 +257,7 @@ in ALL contexts, including a subagent this skill dispatches — **do not delegat
 message-send to a subagent to work around the block; a delegated send writes the native
 queue identically and is blocked the same way.**
 
-**CLI verb surface** (`node scripts/devswarm.js <verb>`, agent-agnostic):
+**CLI verb surface** (`~/.anti-hall/ah-engine/bin/ah-engine mesh <verb>`, agent-agnostic):
 `send --to-primary --message TEXT [--urgency low|normal|high|urgent]` (direct to the
 Primary) / `send --to <meshId> --message TEXT` (direct to a specific sibling) /
 `send --broadcast --message TEXT` (all-to-all) / `heartbeat <id> --summary TEXT` (status
@@ -270,8 +270,8 @@ under "Swarm topology for larger work" above). Earlier revisions of this skill d
 that ("it doesn't spawn or merge DevSwarm workspaces itself"), which left `subagent` as the
 only decomposition primitive a Primary was ever told about — the drift this note exists to
 stop. A Primary facing a workspace-scale matter runs
-`node scripts/devswarm.js spawn <branch> -p "<brief>"` itself (command-guard exempts it —
-run it inline) and later `node scripts/devswarm.js merge`. A CHILD workspace never spawns
+`~/.anti-hall/ah-engine/bin/ah-engine devswarm spawn <branch> -p "<brief>"` itself (command-guard exempts it —
+run it inline) and later `~/.anti-hall/ah-engine/bin/ah-engine devswarm merge`. A CHILD workspace never spawns
 workspaces: it sends/reports and fans out with subagents internally.
 
 **Role rules:** a CHILD workspace reports to its Primary (`send --to-primary` or
@@ -324,7 +324,7 @@ statusline, and the orchestrator.
 ### Mechanical reminder (silent-agent-nudge.js)
 
 Polling is the orchestrator's own responsibility (below) — nothing forces it.
-As a backstop, `hooks/silent-agent-nudge.js` (Stop, on by default) watches for
+As a backstop, `silent-agent-nudge` (Stop, on by default) watches for
 this mechanically, using a signal the harness ALWAYS produces rather than
 relying on the opt-in heartbeat file: it scans a bounded tail of the main
 transcript for a background Agent launch (`"Async agent launched
@@ -341,18 +341,18 @@ advisory text only, pointing back at the polling pattern below. Off-switch:
 
 ### Detecting stuck agents (agent-watchdog.js)
 
-The orchestrator polls `hooks/agent-watchdog.js` on a scheduled interval
+The orchestrator polls `agent-watchdog` on a scheduled interval
 (ScheduleWakeup or a BACKOFF poll loop) to detect agents that have stopped
 updating their heartbeat:
 
 ```
-node hooks/agent-watchdog.js [threshold_ms]
+~/.anti-hall/ah-engine/bin/ah-engine agents status
 ```
 
 Default threshold: **1 200 000 ms (20 min)**. Override by passing a number.
 
 Run this inline from the coordinator — `command-guard` carves a narrow exception
-for `hooks/agent-watchdog.js` (and `statusline/phase.js`) so these coordinator-owned
+for `agent-watchdog` (and `ah-engine phase`) so these coordinator-owned
 helpers are not forced through subagent delegation. See "Statusline wiring" below.
 
 Output: one `STALE <id> last=<iso> age=<ms>ms status=<status> step=<step>` line
@@ -409,38 +409,35 @@ This prevents a single agent from holding the swarm hostage.
 
 ## Statusline wiring
 
-The orchestrator updates the phase statusline via `statusline/phase.js` so the
+The orchestrator updates the phase statusline via `ah-engine phase` so the
 terminal bar reflects the real run state. Call it from the main thread as phases
 progress (not from inside subagents — subagents report back, the coordinator
 writes state):
 
 ```bash
 # Start a phase
-node statusline/phase.js set PLAN "Planning feature X" 0 3
+~/.anti-hall/ah-engine/bin/ah-engine phase set PLAN "Planning feature X" 0 3
 
 # Advance as sub-steps complete
-node statusline/phase.js advance
+~/.anti-hall/ah-engine/bin/ah-engine phase advance
 
 # Set the current step label
-node statusline/phase.js step "running Reviewer+Critic debate"
+~/.anti-hall/ah-engine/bin/ah-engine phase step "running Reviewer+Critic debate"
 
 # Set active agent count
-node statusline/phase.js agents 4
+~/.anti-hall/ah-engine/bin/ah-engine phase agents 4
 
 # Clear when done
-node statusline/phase.js clear
+~/.anti-hall/ah-engine/bin/ah-engine phase clear
 ```
-
-Path is relative to the plugin root (`CLAUDE_PLUGIN_ROOT`). Use an absolute
-path in practice: `path.join(pluginRoot, 'statusline', 'phase.js')`.
 
 The statusline reads `~/.anti-hall/phase-state.json`. Write from the main
 coordinator only; the file path is consistent across all runners because it
 uses the home directory (not os.tmpdir()).
 
-`command-guard` normally blocks `node <file>.js` in the coordinator context (to
+`command-guard` normally blocks a heavy script run in the coordinator context (to
 push heavy work to subagents), but it carves a narrow LIGHT_EXCEPTION for exactly
-`statusline/phase.js` and `hooks/agent-watchdog.js` — these two helpers are
+`ah-engine phase` and `agent-watchdog` — these two helpers are
 coordinator-owned by design, so running them inline is allowed and does not need
 to be delegated.
 

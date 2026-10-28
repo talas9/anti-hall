@@ -70,7 +70,7 @@ pub enum Ext {
     ReconcileActive,
     /// `auto-archive` (lane dsB).
     AutoArchive,
-    /// `spawn` (lane dsB: the refusals before the create).
+    /// `spawn` / `create` (the option refusals, then the create path).
     Spawn,
     /// `respawn` (lane dsB: the refusals before the plan).
     Respawn,
@@ -132,7 +132,7 @@ pub fn classify(a: &Args) -> Option<Ext> {
         Some(Ext::ReconcileActive)
     } else if is("devswarm_cli.verb_auto_archive") {
         Some(Ext::AutoArchive)
-    } else if is("devswarm_cli.verb_spawn") {
+    } else if is("devswarm_cli.verb_spawn") || is("devswarm_cli.verb_create") {
         Some(Ext::Spawn)
     } else if is("devswarm_cli.verb_respawn") {
         Some(Ext::Respawn)

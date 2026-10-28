@@ -11,6 +11,10 @@
 //! | `meshRegisteredKey(descriptorJson, id)` | `{key}`: the project an id is registered under |
 //! | `meshMessageCount(key, id)` | `{state: "none"}` (no store file) or `{state: "ok", count}`: the messages a partition holds |
 //! | `meshUnion(key, id, inbox, cursor, own, now)` | `{state: "none"}` or `{state: "ok", storeOnly: [row], age}`: the store rows no inbox line covers and the age in ms of the oldest unread row |
+//! | `meshOwnReader(key, id, inbox, cursor, count, now)` | `{reader: false}`, `{reader: true, state: "none"}` or `{reader: true, state: "ok", own, unread?, total?}`: this hook's own reader row on a partition and, with `count`, its unread count and the partition's message count |
+//! | `meshReaderNonce()` | `{nonce}`: the reader nonce of the hook that sent the request (`deriveReaderNonce`), `null` for a headless caller |
+//! | `meshCountFor(key, id, inbox, cursor, now)` | `{state: "nd", unread, known}` (no key or no store: the inbox and its cursor alone) or `{state: "ok", unread, known, age}`: a child's own unread mail counted with its own reader (`countFor`); a store that exists but cannot be read is `{state: "nd", unread: 0, known: false, unknown: true, reason}` |
+//! | `meshContextKey(cwd)` | `{key}`: the project key of the checkout around `cwd` (`resolveContext(cwd, {missingPath: 'ancestor'}).repoKey`), `null` when none |
 //! | `meshAppArchived(id, worktree, cache)` | `{verdict: true \| false \| null, cache: n \| null}`: the app database's archive verdict; `cache` names a cache write owed |
 //! | `meshPerformCache()` | perform every cache write the call's lookups owe |
 //! | `meshSessionAlive(session)` | `{alive}`: a session record of this session names a live process |
@@ -30,11 +34,24 @@ use std::path::Path;
 thread_local! {
     /// The app-cache writes the lookups of this call owe.
     static OWED: RefCell<Vec<crate::meshw::appdb::CacheWrite>> = const { RefCell::new(Vec::new()) };
+    /// The app database's builder states as this call first read them (with the handle of the cache write that read owes), so a
+    /// gate that asks about hundreds of workspaces reads (and parses) the states once, not once per workspace.
+    static APP: RefCell<Option<AppRead>> = const { RefCell::new(None) };
+    /// Repository identity only; mailbox, reader and inbox state are never cached.
+    static IDENT: RefCell<std::collections::HashMap<(String, bool), Result<ident::Ctx, ident::Defer>>> = RefCell::new(std::collections::HashMap::new());
+}
+
+/// One read of the app database's builder states, for the `cache` flag it was made with.
+struct AppRead {
+    cache: bool,
+    found: Option<(Vec<crate::meshw::appdb::State>, Option<usize>)>,
 }
 
 /// A new script call starts: no cache write is owed yet.
 pub(super) fn reset_call() {
     OWED.with(|o| o.borrow_mut().clear());
+    APP.with(|a| *a.borrow_mut() = None);
+    IDENT.with(|i| i.borrow_mut().clear());
 }
 
 /// Why an answer cannot be given exactly.
@@ -69,7 +86,7 @@ fn exists(p: &str) -> bool {
 }
 
 fn read_json(p: &str) -> Result<Option<OVal>, No> {
-    let Ok(bytes) = std::fs::read(p) else { return Ok(None) };
+    let Some(bytes) = ident::read_bounded(Path::new(p)).map_err(|_| No)? else { return Ok(None) };
     let Ok(text) = String::from_utf8(bytes) else { return Err(No) };
     match OVal::parse(&text) {
         Some(v) => Ok(Some(v)),
@@ -78,13 +95,24 @@ fn read_json(p: &str) -> Result<Option<OVal>, No> {
     }
 }
 
+fn context_of(cwd: &str, ancestor: bool) -> Result<ident::Ctx, ident::Defer> {
+    IDENT.with(|i| i.borrow_mut().entry((cwd.to_string(), ancestor)).or_insert_with(|| ident::resolve_context(cwd, ancestor)).clone())
+}
+
+fn repo_key_of(cwd: &str) -> Result<Option<String>, ident::Defer> {
+    if cwd.is_empty() {
+        return Ok(None);
+    }
+    Ok(context_of(cwd, false)?.repo_key)
+}
+
 fn ident_of(cwd: &str) -> Result<Value, No> {
-    let top = ident::resolve_context(cwd, true).map_err(|_| No)?.worktree_root;
+    let top = context_of(cwd, true).map_err(|_| No)?.worktree_root;
     let own = match &top {
         Some(top) => Some(ident::primary_workspace_id(top).map_err(|_| No)?),
         None => None,
     };
-    let key = ident::repo_key_for_worktree(cwd).map_err(|_| No)?;
+    let key = repo_key_of(cwd).map_err(|_| No)?;
     Ok(json!({"top": top, "own": own, "key": key}))
 }
 
@@ -113,25 +141,84 @@ fn open_store(st: &Settings, key: &str) -> Result<Option<crate::mesh::MeshReader
     crate::mesh::MeshReader::open(&db).map(Some).map_err(|_| No)
 }
 
-/// `positions(store, { reader: null, partition, cursorPath, home })` (the floor view) as `(store base, nd base)`.
-fn floor_positions(store: &crate::mesh::MeshReader, home: &str, partition: &str, cursor_path: Option<&str>, own: bool) -> Result<(f64, f64), No> {
+/// The reader key of the hook that sent this request (`readerKey(deriveReaderNonce({ home }))`): its nearest harness ancestor,
+/// walked from the request's sender (the daemon's socket peer) or, in a one-shot `check`, from this process, as the Node hook
+/// walks from itself. A daemon request whose sender the socket did not name has no answer.
+fn own_reader(st: &Settings) -> Result<Option<String>, No> {
+    Ok(crate::meshw::cursors::reader_key(own_nonce(st)?.as_deref()))
+}
+
+/// The reader nonce of the hook that sent this request (`deriveReaderNonce({ home })`), walked as [`own_reader`] walks; `None` for
+/// a headless caller (no harness ancestor).
+fn own_nonce(st: &Settings) -> Result<Option<String>, No> {
+    let start = match st.env.get(defaults::text("request_env.peer_pid_key")) {
+        None => i64::from(std::process::id()),
+        Some(v) => match v.parse::<i64>() {
+            Ok(p) if p > 0 => p,
+            _ => return Err(No),
+        },
+    };
+    Ok(ident::reader_nonce_from(Path::new(&st.home), start))
+}
+
+/// A workspace's own unread mail as a child hook counts it (`openStoreForUnread`, then `countFor` with this hook's own reader, or
+/// `readUnread` when there is no store): `{state: "nd", unread, known}` (no project key or no store: the inbox and its cursor file
+/// alone) or `{state: "ok", unread, known, age}`. `known`: the inbox and its cursor file both read (`readUnread`'s `known`).
+fn count_for(st: &Settings, key: Option<&str>, id: &str, inbox: Option<&str>, cursor: Option<&str>, now: f64) -> Result<Value, No> {
+    let lines = match inbox {
+        Some(p) => crate::meshw::union::non_empty_lines(p).map_err(|_| No)?,
+        None => None,
+    };
+    let position = match (&lines, cursor) {
+        (Some(_), Some(c)) => crate::meshw::union::cursor_position(c).map_err(|_| No)?,
+        _ => None,
+    };
+    let known = lines.is_some() && position.is_some();
+    // a store that exists but cannot be read is an UNKNOWN count, never "0 unread": Node's `countFor` answers `{unknown: true, reason}`
+    let unknown = |reason_key: &str| Ok(json!({"state": "nd", "unread": 0, "known": false, "unknown": true, "reason": defaults::text(reason_key)}));
+    let store = match key {
+        Some(k) => match open_store(st, k) {
+            Ok(s) => s,
+            Err(No) => return unknown("mesh_write.unread_reason_cursors"),
+        },
+        None => None,
+    };
+    let Some(store) = store else {
+        let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: None, store_base: 0.0, nd_base: position.unwrap_or(0.0), now: now as i64 })
+            .map_err(|_| No)?;
+        return Ok(json!({"state": "nd", "unread": if known { u.unread } else { 0 }, "known": known}));
+    };
+    let reader = own_reader(st)?;
+    let Ok((sb, nb)) = floor_positions(&store, &st.home, id, cursor, reader.as_deref()) else { return unknown("mesh_write.unread_reason_cursors") };
+    let Ok(u) = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }) else {
+        return unknown("mesh_write.unread_reason_union");
+    };
+    Ok(json!({"state": "ok", "unread": u.unread, "known": known, "age": u.oldest_unread_age_ms.filter(|a| a.is_finite())}))
+}
+
+/// `positions(store, { reader, partition, cursorPath, home })` as `(store base, nd base)`: the floor view, overlaid by `reader`'s
+/// own rows where it holds any (`reader` None: the floor view alone).
+fn floor_positions(store: &crate::mesh::MeshReader, home: &str, partition: &str, cursor_path: Option<&str>, reader: Option<&str>) -> Result<(f64, f64), No> {
     let rows = store.reader_cursors(partition).map_err(|_| No)?;
     let floor = defaults::text("mesh_write.floor_reader");
-    if own && rows.iter().any(|r| r["reader"].as_str() != Some(floor)) {
-        return Err(No); // this reader's own view: its key comes from the hook's process ancestry
-    }
+    let own_of = |ns: &str| reader.and_then(|r| rows.iter().find(|x| x["ns"] == ns && x["reader"] == r)).and_then(|x| x["value"].as_f64());
+    let (own_store, own_nd) = (own_of(defaults::text("mesh_write.cursor_ns_store")), own_of(defaults::text("mesh_write.cursor_ns_nd")));
     let row_of = |ns: &str| rows.iter().find(|r| r["ns"] == ns && r["reader"] == floor).and_then(|r| r["value"].as_f64());
     let cursors = format!("{}/{}", devswarm_dir(home), defaults::text("devswarm_role.pg_dir_cursors"));
-    let read_cursor = |p: &str| crate::meshw::cursors::read_cursor(Path::new(p));
+    // a cursor file that is a FIFO or device, or over the cap, has no exact answer here (a read could block the worker)
+    let read_cursor = |p: &str| -> Result<f64, No> {
+        ident::read_bounded(Path::new(p)).map_err(|_| No)?;
+        Ok(crate::meshw::cursors::read_cursor(Path::new(p)))
+    };
     let legacy_safe = safe_id(partition) && !partition.contains('#') && !partition.contains(".seen-");
     let store_floor = match row_of(defaults::text("mesh_write.cursor_ns_store")) {
         Some(v) => v,
         None => {
             let base_file = format!("{cursors}/{partition}{}", defaults::text("devswarm_role.pg_base_suffix"));
             let baseline = if legacy_safe && exists(&base_file) {
-                read_cursor(&base_file)
+                read_cursor(&base_file)?
             } else {
-                let json = read_cursor(&format!("{cursors}/{partition}.json"));
+                let json = read_cursor(&format!("{cursors}/{partition}.json"))?;
                 let row = store.cursor(partition).map_err(|_| No)? as f64;
                 json.max(row)
             };
@@ -141,7 +228,7 @@ fn floor_positions(store: &crate::mesh::MeshReader, home: &str, partition: &str,
                 for n in names(&cursors).unwrap_or_default() {
                     let Some(short) = n.strip_prefix(&prefix).and_then(|x| x.strip_suffix(".json")) else { continue };
                     if short.len() == 6 && short.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-                        let v = read_cursor(&format!("{cursors}/{n}"));
+                        let v = read_cursor(&format!("{cursors}/{n}"))?;
                         min = Some(min.map_or(v, |m: f64| m.min(v)));
                     }
                 }
@@ -167,15 +254,18 @@ fn floor_positions(store: &crate::mesh::MeshReader, home: &str, partition: &str,
                     if ident::resolve_abs(c) == ident::resolve_abs(&format!("{cursors}/{partition}.json")) {
                         0.0
                     } else {
-                        read_cursor(c)
+                        read_cursor(c)?
                     }
                 }
             };
             v.max(distinct)
         }
-        None => cp.as_deref().map_or(0.0, read_cursor),
+        None => match cp.as_deref() {
+            Some(c) => read_cursor(c)?,
+            None => 0.0,
+        },
     };
-    Ok((store_floor, nd_floor))
+    Ok((own_store.unwrap_or(store_floor), own_nd.unwrap_or(nd_floor)))
 }
 
 fn message_count(st: &Settings, key: &str, id: &str) -> Result<Value, No> {
@@ -187,23 +277,52 @@ fn message_count(st: &Settings, key: &str, id: &str) -> Result<Value, No> {
 
 fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Option<&str>, own: bool, now: f64) -> Result<Value, No> {
     let Some(store) = open_store(st, key)? else { return Ok(json!({"state": "none"})) };
-    let (sb, nb) = floor_positions(&store, &st.home, id, cursor, own)?;
+    let reader = if own { own_reader(st)? } else { None };
+    let (sb, nb) = floor_positions(&store, &st.home, id, cursor, reader.as_deref())?;
     let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
     let age = u.oldest_unread_age_ms.filter(|a| a.is_finite());
-    Ok(json!({"state": "ok", "storeOnly": u.store_only_unread, "age": age}))
+    Ok(json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r)).collect::<Vec<_>>(), "age": age}))
+}
+
+/// This hook's own reader on partition `id` (`ownReaderDelta` / `ownReaderLiveUnread`): `{reader: false}` when the hook has no
+/// reader key (checked before the store is opened, as Node does), `{reader: true, state: "none"}` when the project has no
+/// store, else `{reader: true, state: "ok", own}` with `own` the value of this reader's own `store` row (`null`: no row, or
+/// not a finite number). With `count` and a row, also `unread` (`countFor` with this reader) and `total` (`messageCount`).
+fn own_view(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Option<&str>, count: bool, now: f64) -> Result<Value, No> {
+    let Some(reader) = own_reader(st)? else { return Ok(json!({"reader": false})) };
+    let Some(store) = open_store(st, key)? else { return Ok(json!({"reader": true, "state": "none"})) };
+    let rows = store.reader_cursors(id).map_err(|_| No)?;
+    let ns = defaults::text("mesh_write.cursor_ns_store");
+    let own = rows.iter().find(|x| x["ns"] == ns && x["reader"] == reader.as_str()).and_then(|x| x["value"].as_f64()).filter(|v| v.is_finite());
+    let Some(value) = own.filter(|_| count) else { return Ok(json!({"reader": true, "state": "ok", "own": own})) };
+    let (sb, nb) = floor_positions(&store, &st.home, id, cursor, Some(&reader))?;
+    let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
+    let total = store.message_count(id).map_err(|_| No)?;
+    Ok(json!({"reader": true, "state": "ok", "own": value, "unread": u.unread, "total": total}))
 }
 
 fn app_archived(st: &Settings, id: &str, worktree: &str, cache: bool) -> Result<Value, No> {
     let now = crate::meshw::common::now_ms();
-    let (verdict, owed) = crate::meshw::appdb::archived_verdict(Path::new(&st.home), &st.env, now, id, Some(worktree), cache).map_err(|_| No)?;
-    let handle = owed.map(|c| {
-        OWED.with(|o| {
-            let mut o = o.borrow_mut();
-            o.push(c);
-            o.len() - 1
-        })
-    });
-    Ok(json!({"verdict": verdict, "cache": handle}))
+    APP.with(|a| {
+        let mut a = a.borrow_mut();
+        if a.as_ref().is_none_or(|r| r.cache != cache) {
+            let found = crate::meshw::appdb::builder_states(Path::new(&st.home), &st.env, now, cache).map_err(|_| No)?;
+            let found = found.map(|f| {
+                let handle = f.cache.map(|c| {
+                    OWED.with(|o| {
+                        let mut o = o.borrow_mut();
+                        o.push(c);
+                        o.len() - 1
+                    })
+                });
+                (f.states, handle)
+            });
+            *a = Some(AppRead { cache, found });
+        }
+        let Some((states, handle)) = a.as_ref().and_then(|r| r.found.as_ref()) else { return Ok(json!({"verdict": null, "cache": null})) };
+        let verdict = crate::meshw::appdb::verdict_in(states, id, Some(worktree)).map_err(|_| No)?;
+        Ok(json!({"verdict": verdict, "cache": handle}))
+    })
 }
 
 fn child_busy(st: &Settings, id: &str, worktree: &str, session: &str, now: f64, fresh: f64) -> Result<Value, No> {
@@ -213,7 +332,7 @@ fn child_busy(st: &Settings, id: &str, worktree: &str, session: &str, now: f64, 
         Err(_) => return Err(No),
     };
     let b = crate::meshw::rostertail::busy_state(&file, now, fresh).map_err(|_| No)?;
-    Ok(json!({"busy": b.busy, "waiting": b.waiting, "question": b.question}))
+    Ok(json!({"busy": b.busy, "waiting": b.waiting, "question": b.question, "seen": b.seen}))
 }
 
 /// Whether the setting described by `entry` has a value anywhere Node looks: its environment variable, the settings file and its
@@ -238,9 +357,19 @@ fn touched(st: &Settings, entry: &defaults::Entry) -> bool {
         .is_some_and(|o| o.get(e.str_field("section")).and_then(Value::as_object).is_some_and(|s| s.contains_key(e.str_field("key"))))
 }
 
+/// `meshAppBuilders()`: the app database's workspaces as JSON `[{id, archived, branch, label}]` (read straight from the database,
+/// never from the cross-process cache, which holds neither branch nor title); `null` when there is no readable database.
+fn app_builders(st: &Settings) -> Option<String> {
+    let file = crate::meshw::ident::app_db_path(Path::new(&st.home), &st.env)?;
+    let states = crate::meshw::appdb::read_states(&file).ok().flatten()?;
+    let rows: Vec<Value> = states.iter().map(|s| json!({"id": s.id, "archived": s.archived, "branch": s.branch, "label": s.label})).collect();
+    Some(Value::Array(rows).to_string())
+}
+
 pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()> {
+    h.set("meshAppBuilders", Function::new(c.clone(), || -> rquickjs::Result<Option<String>> { with_settings(app_builders) })?)?;
     h.set("meshIdent", Function::new(c.clone(), |cwd: String| answer(ident_of(&cwd)))?)?;
-    h.set("meshRepoKey", Function::new(c.clone(), |wt: String| answer(ident::repo_key_for_worktree(&wt).map(|k| json!({"key": k})).map_err(|_| No)))?)?;
+    h.set("meshRepoKey", Function::new(c.clone(), |wt: String| answer(repo_key_of(&wt).map(|k| json!({"key": k})).map_err(|_| No)))?)?;
     h.set("meshCanonicalId", Function::new(c.clone(), |wt: String| answer(ident::canonical_mesh_id(&wt).map(|k| json!({"id": k})).map_err(|_| No)))?)?;
     h.set(
         "meshRegisteredKey",
@@ -258,6 +387,26 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
             Ok(answer(with_settings(|st| union_of(st, &key, &id, inbox.as_deref(), cursor.as_deref(), own, now))?))
         })?,
     )?;
+    h.set(
+        "meshOwnReader",
+        Function::new(
+            c.clone(),
+            |key: String, id: String, inbox: Option<String>, cursor: Option<String>, count: bool, now: f64| -> rquickjs::Result<String> {
+                Ok(answer(with_settings(|st| own_view(st, &key, &id, inbox.as_deref(), cursor.as_deref(), count, now))?))
+            },
+        )?,
+    )?;
+    h.set(
+        "meshReaderNonce",
+        Function::new(c.clone(), || -> rquickjs::Result<String> { Ok(answer(with_settings(|st| own_nonce(st).map(|n| json!({"nonce": n})))?)) })?,
+    )?;
+    h.set(
+        "meshCountFor",
+        Function::new(c.clone(), |key: Option<String>, id: String, inbox: Option<String>, cursor: Option<String>, now: f64| -> rquickjs::Result<String> {
+            Ok(answer(with_settings(|st| count_for(st, key.as_deref(), &id, inbox.as_deref(), cursor.as_deref(), now))?))
+        })?,
+    )?;
+    h.set("meshContextKey", Function::new(c.clone(), |cwd: String| answer(context_of(&cwd, true).map(|c| json!({"key": c.repo_key})).map_err(|_| No)))?)?;
     h.set(
         "meshAppArchived",
         Function::new(c.clone(), |id: String, wt: String, cache: bool| -> rquickjs::Result<String> {
@@ -292,4 +441,65 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         })?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn one_script_call_reads_the_app_database_once_however_many_workspaces_it_asks_about() {
+        defaults::init().unwrap();
+        let t = crate::db::TempDir::new("host-mesh-app");
+        let db = t.0.join("app.db");
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, worktreePath TEXT);").unwrap();
+        for i in 0..50 {
+            c.execute("INSERT INTO builders VALUES (?1, 0, 1, ?2)", rusqlite::params![format!("old-{i}"), format!("/gone/{i}")]).unwrap();
+        }
+        c.execute("INSERT INTO builders VALUES ('live', 1, 0, '/live')", []).unwrap();
+        drop(c);
+        let mut env = HashMap::new();
+        env.insert(defaults::text("mesh_write.env_app_db").to_string(), db.to_string_lossy().into_owned());
+        let st = Settings { home: t.0.to_string_lossy().into_owned(), env };
+        reset_call();
+        let first = app_archived(&st, "old-1", "/gone/1", true).ok().unwrap();
+        for i in 2..50 {
+            let a = app_archived(&st, &format!("old-{i}"), &format!("/gone/{i}"), true).ok().unwrap();
+            assert_eq!(a["verdict"], json!(true));
+        }
+        assert_eq!(first["verdict"], json!(true));
+        assert_eq!(app_archived(&st, "live", "/live", true).ok().unwrap()["verdict"], json!(false));
+        assert_eq!(OWED.with(|o| o.borrow().len()), 1, "the states are read once and one cache write is owed, not one per workspace");
+        // a new call starts from the database again
+        std::fs::remove_file(&db).unwrap();
+        reset_call();
+        assert_eq!(app_archived(&st, "old-1", "/gone/1", true).ok().unwrap()["verdict"], json!(null), "no database, no opinion");
+    }
+    /// Measurement, not a gate: the CPU of 700 `meshAppArchived` lookups in one call over a 700-row app database.
+    #[test]
+    #[ignore = "measurement: cargo test --release --lib -- --ignored --nocapture app_archived_cpu_for_700_workspaces"]
+    fn app_archived_cpu_for_700_workspaces() {
+        defaults::init().unwrap();
+        let t = crate::db::TempDir::new("host-mesh-app-cpu");
+        let db = t.0.join("app.db");
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, worktreePath TEXT);").unwrap();
+        for i in 0..700 {
+            c.execute("INSERT INTO builders VALUES (?1, 0, 1, ?2)", rusqlite::params![format!("old-{i}"), format!("/gone/{i}")]).unwrap();
+        }
+        drop(c);
+        let mut env = HashMap::new();
+        env.insert(defaults::text("mesh_write.env_app_db").to_string(), db.to_string_lossy().into_owned());
+        let st = Settings { home: t.0.to_string_lossy().into_owned(), env };
+        for round in 0..3 {
+            reset_call();
+            let t0 = crate::limits::thread_cpu_us();
+            for i in 0..700 {
+                app_archived(&st, &format!("old-{i}"), &format!("/gone/{i}"), true).ok().unwrap();
+            }
+            eprintln!("APPCPU round {round}: {} ms for 700 lookups", (crate::limits::thread_cpu_us() - t0) / 1000);
+        }
+    }
 }

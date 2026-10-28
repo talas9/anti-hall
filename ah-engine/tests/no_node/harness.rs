@@ -113,12 +113,15 @@ impl World {
         let st = Command::new("cp").arg("-R").arg(plugin_src()).arg(&plugin).status().unwrap();
         assert!(st.success(), "copying the plugin failed");
 
-        // the engine, installed where ah-hook.sh and ah-run.sh look first
+        // the engine and the thin client, installed where the hook command (hooks.json, direct form) looks for them
         let engine_dir = home.join(".anti-hall").join("ah-engine").join("bin");
         fs::create_dir_all(&engine_dir).unwrap();
         let engine = engine_dir.join("ah-engine");
         fs::copy(env!("CARGO_BIN_EXE_ah-engine"), &engine).unwrap();
         fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).unwrap();
+        let client = engine_dir.join("ah-hook");
+        fs::copy(crate::common::launcher_bin(), &client).unwrap();
+        fs::set_permissions(&client, fs::Permissions::from_mode(0o755)).unwrap();
         let state = home.join(".anti-hall").join("ah-engine");
 
         // PATH: symlinks to the system tools minus the exclusions; no Node anywhere
@@ -228,6 +231,9 @@ impl World {
             .env("TMPDIR", std::env::temp_dir())
             .env("CLAUDE_PLUGIN_ROOT", &self.plugin)
             .env("AH_NO_NODE_CASE", tag)
+            // The no-node harness is a serial healthy-daemon contract test. Keep one worker so the readiness probe warms
+            // the same interpreter that later evaluates guard cases; multi-worker cold-start behaviour is covered elsewhere.
+            .env("AH_ENGINE_WORKERS", "1")
             .current_dir(&self.project);
         if let Some(env) = self.cfg.get("env").and_then(|v| v.as_table()) {
             for (k, v) in env {
@@ -251,9 +257,14 @@ impl World {
         let ready = Duration::from_secs(cfg_int(&self.cfg, "timeouts", "daemon_ready_s"));
         let sock = ah_engine::paths::socket_in(&self.state);
         let t = Instant::now();
+        let mut saw_socket = false;
+        let mut last_probe = Outcome { code: None, stdout: String::new(), stderr: String::new(), timed_out: false, elapsed_ms: 0 };
         while t.elapsed() < ready {
             if sock.exists() && common::marker_pid(&self.state).is_some() {
-                return;
+                saw_socket = true;
+                if self.daemon_dispatch_ready("claude", "PreToolUse", &mut last_probe) && self.daemon_dispatch_ready("codex", "PreToolUse", &mut last_probe) {
+                    return;
+                }
             }
             if let Some(st) = self.daemon.as_mut().unwrap().try_wait().unwrap() {
                 panic!(
@@ -261,16 +272,65 @@ impl World {
                     fs::read_to_string(self.dir.join("out").join("daemon.err")).unwrap_or_default()
                 );
             }
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(Duration::from_millis(100));
         }
         panic!(
-            "the harness daemon did not come up within {ready:?}; stderr: {}",
+            "the harness daemon did not answer dispatch within {ready:?} (socket_seen={saw_socket}, last_probe={last_probe:?}); stderr: {}",
             fs::read_to_string(self.dir.join("out").join("daemon.err")).unwrap_or_default()
         );
     }
 
+    /// Warm prompt-only checks immediately before the first measured prompt. PreToolUse readiness does not load them,
+    /// and the intervening events can evict cached checks. A separate session leaves the measured session's first prompt intact.
+    pub fn warm_prompt(&self, host: &str) {
+        let ready = Duration::from_secs(cfg_int(&self.cfg, "timeouts", "daemon_ready_s"));
+        let t = Instant::now();
+        let mut probe = Outcome { code: None, stdout: String::new(), stderr: String::new(), timed_out: false, elapsed_ms: 0 };
+        while t.elapsed() < ready {
+            if self.daemon_dispatch_ready(host, "UserPromptSubmit", &mut probe) {
+                assert!(self.hits_of(&format!("daemon-ready-{host}")).is_empty(), "prompt readiness launched Node");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("the harness daemon did not answer {host} prompt dispatch within {ready:?}: {probe:?}");
+    }
+
     fn out_file(&self, name: &str) -> fs::File {
         fs::File::create(self.dir.join("out").join(name)).unwrap()
+    }
+
+    /// The socket and pid marker only prove the daemon process exists. The no-node hook tests require a healthy daemon
+    /// that can answer guard dispatches inside the client deadline; otherwise the client correctly treats it as unavailable
+    /// and the wrapper fails open before exercising the healthy-daemon contract.
+    fn daemon_dispatch_ready(&self, host: &str, event: &str, last_probe: &mut Outcome) -> bool {
+        let payload = serde_json::json!({
+            "session_id": format!("no-node-ready-{host}"),
+            "transcript_path": self.transcript.to_string_lossy(),
+            "cwd": self.project.to_string_lossy(),
+            "hook_event_name": event,
+            "prompt": "Please list the files in this repo.",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push --force origin main"},
+        });
+        let payload = self.subst(&payload.to_string());
+        let mut cmd = self.command(&self.engine, &format!("daemon-ready-{host}"));
+        cmd.arg("hook").args(["--event", event, "--tool", "Bash", "--host", host, "--fallback-map"]).arg(match host {
+            "codex" => plugin_src().join("../anti-hall-node/hooks").join("ah-fallback.codex.map.json"),
+            _ => plugin_src().join("../anti-hall-node/hooks").join("ah-fallback.map.json"),
+        });
+        if host == "codex" {
+            cmd.env("PLUGIN_ROOT", &self.plugin);
+        }
+        *last_probe = self.run(cmd, Some(&payload), Duration::from_secs(5));
+        if event == "PreToolUse" {
+            last_probe.code == Some(2)
+        } else {
+            // Exit 0 alone also means fail-open: require the daemon's actual prompt answer.
+            last_probe.code == Some(0)
+                && serde_json::from_str::<serde_json::Value>(last_probe.stdout.trim())
+                    .is_ok_and(|v| v["hookSpecificOutput"]["hookEventName"] == event && v["hookSpecificOutput"]["additionalContext"].is_string())
+        }
     }
 
     /// Run `c` (built by `command`) with `stdin`, bounded by `timeout`; the process group is killed on a timeout.
@@ -352,6 +412,14 @@ impl World {
         let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no_node");
         fs::create_dir_all(&d).unwrap();
         d.join(format!("{name}.json"))
+    }
+
+    /// The daemon event log, newest lines last. Used by failed no-node reports to explain scripted deferrals without
+    /// rerunning locally.
+    pub fn event_log_tail(&self) -> Vec<String> {
+        let p = self.state.join(ah_engine::health::log_name());
+        let text = fs::read_to_string(p).unwrap_or_default();
+        text.lines().rev().take(80).map(str::to_string).collect::<Vec<_>>().into_iter().rev().collect()
     }
 
     /// Stop the daemon (and any a client started anyway) before the world is removed.

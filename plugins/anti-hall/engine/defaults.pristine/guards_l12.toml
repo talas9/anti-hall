@@ -4,43 +4,43 @@
 
 [edit_guard.msg_what]
 doc = "Heading of the delegation block ({tool} is the tool name, {who} the next text)."
-value = "{tool} blocked: the {who} does not touch files directly."
+value = "{tool} is not allowed: the {who} does not edit files directly."
 
 [edit_guard.msg_self_edit_what]
 doc = "Heading of the block on an edit of the repository's own edit allowlist ({tool} is the tool name)."
-value = "{tool} of .anti-hall/edit-allow.json is blocked."
+value = "{tool} on .anti-hall/edit-allow.json is not allowed."
 
 [edit_guard.msg_self_edit_why]
 doc = "Why the repository's own edit allowlist is never edited by the main thread."
-value = "That file decides which files the main thread may edit directly, so the main thread never edits it."
+value = "That file decides which files the main thread may edit, so the main thread never edits it."
 
 [edit_guard.msg_self_edit_instead]
 doc = "What to do instead ({sub} names the worker)."
-value = "ask the user to change it (or delegate the change to {sub}), then the user re-trusts it with `node <plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`."
+value = "ask the user to update and re-trust the edit allowlist."
 
 [edit_guard.msg_outside_what]
 doc = "Heading of the block on a handover document outside the project ({tool} is the tool name)."
-value = "{tool} of a session-handover doc outside the project is blocked."
+value = "{tool} on a handover file outside the project is not allowed."
 
 [edit_guard.msg_outside_why]
 doc = "Why a handover document outside the project is blocked."
-value = "Handovers live inside the project, where handover-resume finds them; this path is outside it."
+value = "Handovers live inside the project, where they are found on resume."
 
 [edit_guard.msg_outside_instead]
 doc = "What to do instead ({path} is the canonical handover path)."
-value = "write it yourself (the main thread may; no subagent, no override needed) at {path}."
+value = "write it yourself at {path}; no subagent or override is needed."
 
 [edit_guard.msg_new_what]
 doc = "Heading of the block on a new handover document at the wrong place ({tool} is the tool name)."
-value = "{tool} of a new session-handover doc at this path is blocked."
+value = "a new handover must be written at the session path."
 
 [edit_guard.msg_new_why]
 doc = "Why a new handover document is redirected."
-value = "New handovers belong under .anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (the `handover` skill computes <date>/<session-id>)."
+value = "New handovers belong under .anti-hall/handovers/<date>/<session>/HANDOVER.md."
 
 [edit_guard.msg_new_instead]
 doc = "What to do instead for a new handover document."
-value = "write it under .anti-hall/handovers/** and copy elsewhere afterwards if the project wants one."
+value = "write it at the session handover path."
 
 [edit_guard.msg_new_allowed]
 doc = "What stays allowed next to a redirected handover document."
@@ -48,19 +48,19 @@ value = ".anti-hall/handovers/**."
 
 [edit_guard.msg_new_override]
 doc = "The override line of the handover redirect ({skip} is the skip command)."
-value = "{skip} (~/.anti-hall/skip.json, 15-min TTL), then retry"
+value = "tell the agent \"skip edit-guard\" (lasts 15 minutes)."
 
 [edit_guard.msg_patch_what]
 doc = "Heading of the block on an apply_patch the parser rejects ({error} is the parser's message)."
-value = "this apply_patch could not be parsed ({error}), so its targets cannot be checked."
+value = "this apply_patch could not be read ({error}), so its targets can't be checked."
 
 [edit_guard.msg_patch_why]
 doc = "Why an unparseable patch is blocked on the main thread."
-value = "Edits in the main thread must be checked against the delegation rule."
+value = "Edits in the main thread are checked against the delegation rule."
 
 [edit_guard.msg_patch_instead]
 doc = "What to do instead for an unparseable patch ({sub} names the worker)."
-value = "send a well-formed patch (*** Begin Patch ... *** End Patch), or delegate the edit to {sub}."
+value = "send a well-formed patch."
 
 [edit_guard.handover_parts]
 doc = "The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory."
@@ -91,11 +91,11 @@ doc = "DevSwarm's worktree root under the home directory, as its parts: a workin
 value = [".devswarm", "repos"]
 
 [edit_guard.nudge_setting]
-doc = "Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on)."
+doc = "Where the inline-work advisory's switch is read from."
 value = { section = "devswarm", key = "inlineWorkNudge", env = "ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE", aliases = [], option = "devswarm_inline_work_nudge", default = true }
 
 [edit_guard.nudge_threshold_setting]
-doc = "Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold, default 5, at least 1)."
+doc = "Where the inline-work advisory's call threshold is read from."
 value = { section = "devswarm", key = "inlineWorkNudgeThreshold", env = "ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE_THRESHOLD", aliases = [], option = "devswarm_inline_work_nudge_threshold", default = 5, min = 1 }
 
 [edit_guard.nudge_default_threshold]
@@ -122,7 +122,7 @@ value = 128
 doc = "The writer prefix of the stale-file sweep of the counter files."
 value = "inline-work"
 
-# ---- orch-on-spawn, pending marker (hooks/orch-on-spawn.js, hooks/lib/orch-full-state.js) ----
+# ---- orch-on-spawn, pending marker ----
 
 [orch_on_spawn.lease_ms]
 doc = "How long the first claim of an epoch is held before a second slot may be opened by a spawn that finds no delivered copy (2 minutes)."
@@ -156,3 +156,37 @@ value = "spawn_agent$"
 [orch_on_spawn.default_event]
 doc = "The event name echoed when the payload names none."
 value = "PreToolUse"
+
+[orch_on_spawn.tail_windows]
+doc = "The transcript windows, in bytes, the delivered-copy scan reads in turn (a short tail first, then once wider)."
+value = [262144, 4194304]
+unit = "bytes"
+
+[orch_on_spawn.line_max]
+doc = "Longest transcript line, in bytes, the first-timestamp scan keeps."
+value = 1048576
+unit = "bytes"
+
+[orch_on_spawn.claude_entry_type]
+doc = "The transcript entry type that holds a Claude hook attachment."
+value = "attachment"
+
+[orch_on_spawn.claude_attachment_type]
+doc = "The attachment type that is a delivered hook context."
+value = "hook_additional_context"
+
+[orch_on_spawn.codex_entry_type]
+doc = "The rollout entry type that holds a Codex message."
+value = "response_item"
+
+[orch_on_spawn.codex_payload_type]
+doc = "The rollout payload type of a message."
+value = "message"
+
+[orch_on_spawn.codex_role]
+doc = "The rollout role of a delivered hook context."
+value = "developer"
+
+[edit_guard.nudge_note]
+doc = "The once-per-session note to a DevSwarm Primary that keeps editing inline while actionable tasks are pending and no workspace is live."
+value = "💡 coordinator workload: pending work needs a workspace.\nDo instead: hand the remaining work to a child workspace."

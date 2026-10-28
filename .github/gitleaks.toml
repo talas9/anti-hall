@@ -17,4 +17,6 @@ paths = [
 regexes = [
   '''^AKIAABCDEFGHIJKLMNOP$''',
   '''^sk_live_abcdefghij12$''',
+  # Fixture project id of a mesh test (a placeholder, not a credential).
+  '''^proj-12345678$''',
 ]

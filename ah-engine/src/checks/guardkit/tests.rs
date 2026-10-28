@@ -282,7 +282,7 @@ mod nodelock_tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let out = std::process::Command::new("node")
             .arg("-e")
-            .arg("const L=require('./plugins/anti-hall/companion/lib/lock.js');const h=L.inspect(process.argv[1]);process.stdout.write(JSON.stringify({known:h.known,alive:h.alive,dead:h.dead,pid:h.pid,hasToken:typeof h.token==='string'}))")
+            .arg("const L=require('./plugins/anti-hall-node/companion/lib/lock.js');const h=L.inspect(process.argv[1]);process.stdout.write(JSON.stringify({known:h.known,alive:h.alive,dead:h.dead,pid:h.pid,hasToken:typeof h.token==='string'}))")
             .arg(&p)
             .current_dir(root)
             .env("ANTIHALL_TEST_ISOLATION", "1")

@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+pub mod devswarm_compat;
+
 /// One handled (or skipped) probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Done {
@@ -50,7 +52,12 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     let force = p.rest.iter().any(|a| a == "--force");
     let home = flag(&p.rest, "--home").or_else(|| defaults::env_var("home")).filter(|h| !h.is_empty());
     let Some(home) = home else {
-        eprintln!("{}", defaults::text("refresh.msg_no_home"));
+        let msg = defaults::text("refresh.msg_no_home");
+        if p.json {
+            println!("{}", json!({"error": msg}));
+            return 1;
+        }
+        eprintln!("{msg}");
         return 1;
     };
     let out = match run(Path::new(&home), force) {
@@ -74,7 +81,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
             println!("{}", line(d, ""));
         }
     }
-    0
+    i32::from(out.iter().any(|d| d.outcome == defaults::text("refresh.outcome_failed")))
 }
 
 fn flag(rest: &[String], name: &str) -> Option<String> {
@@ -138,6 +145,18 @@ pub fn run(home: &Path, force: bool) -> Option<Vec<Done>> {
     crate::discard::harmless(write_file(&handled_path, &Value::Object(handled).to_string())); // keep: an unwritten record repeats the probe next tick, nothing worse
     held.release(); // a lock not released (no longer ours, or gone) is left alone; one left behind goes stale and is taken over
     Some(out)
+}
+
+/// True when a refresh request is newer than the handled marker. Used by the scheduler to avoid spawning a no-op job.
+pub fn has_pending(home: &Path) -> bool {
+    let dir = home.join(defaults::text("refresh.request_dir"));
+    let handled = read_object(&dir.join(defaults::text("refresh.handled_file"))).unwrap_or_default();
+    defaults::list("refresh.probes").into_iter().any(|probe| {
+        let req = read_object(&dir.join(format!("{probe}{}", defaults::text("refresh.request_ext"))));
+        let at = req.as_ref().and_then(|r| r.get("requestedAt")).and_then(Value::as_f64).filter(|v| v.is_finite());
+        let last = handled.get(probe).and_then(Value::as_f64).unwrap_or(f64::NEG_INFINITY);
+        at.is_some_and(|a| a > last)
+    })
 }
 
 fn lock_params(stale_ms: u64, steal_dead: bool) -> Params {
@@ -287,7 +306,17 @@ fn probe_cli(home: &Path, bins: Vec<&str>, cache: &str, baseline: &str) -> (&'st
         Some((v, b)) => (Value::from(v.as_str()), Value::from(*b)),
         None => (Value::Null, Value::Null),
     };
-    let text = format!("{{\"installed\":{installed},\"baseline\":{},\"checkedAt\":{now},\"source\":{source}}}", Value::from(baseline));
+    let mut cache_value = read_object(&target).unwrap_or_default();
+    cache_value.insert("installed".into(), installed);
+    cache_value.insert("baseline".into(), json!(baseline));
+    cache_value.insert("checkedAt".into(), json!(now));
+    cache_value.insert("source".into(), source);
+    if cache == defaults::text("session.devswarm_cache")
+        && let Some((version, bin)) = &found
+    {
+        devswarm_compat::refresh(home, bin, version);
+    }
+    let text = Value::Object(cache_value).to_string();
     let shown = target.to_string_lossy().into_owned();
     match write_file(&target, &text) {
         Ok(()) => (defaults::text("refresh.outcome_refreshed"), String::new(), shown, true),

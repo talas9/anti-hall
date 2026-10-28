@@ -1,0 +1,15 @@
+# Thresholds of tests/defaults_overlay_cost.rs (#195): what reading a setting through the owner's config overlay may add to one
+# `defaults::num` call. Tuning is an edit here, never in the test source.
+
+# Settings the overlay holds while measuring (a large hand-written config.toml plus settings.json).
+overlay_entries = 64
+# Calls per timed round, and rounds; the best round of each kind is compared (a preempted round is noise, not cost).
+calls_per_round = 200000
+rounds = 7
+# The most an overlay lookup may add to one call, in nanoseconds (best round with the overlay minus best round without), for an
+# optimized build (`cargo test --release`, the shipped code: the real limit) and for the unoptimized build `cargo test` makes (a
+# coarse guard against a pathological lookup, wide because an unoptimized loop on a loaded runner is noisy).
+# Release: one snapshot load (~30 ns) and a binary search of the overlay; measured +63 ns at 64 entries on a loaded M-series Mac
+# (2026-10-15). 100 catches what a regression looks like here: a linear scan of the overlay (~300 ns) or a lock that queues.
+max_added_ns_release = 100
+max_added_ns_debug = 1500

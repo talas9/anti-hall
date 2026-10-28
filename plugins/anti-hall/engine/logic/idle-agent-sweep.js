@@ -37,25 +37,28 @@ function idMessage(list, codex, now) {
   });
 }
 
-// The advisory text, '' for nothing to say, null for "Node decides".
+// The advisory text, '' for nothing to say (a transcript the scan cannot read exactly counts as nothing to say).
 function idAdvisory(p, now) {
   var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (!tp) return '';
   var prompt = typeof p.prompt === 'string' ? p.prompt.trimStart() : '';
   if (prompt.indexOf(ah.cfg('idle_sweep.notification_tag')) === 0) return '';
-  if (!ah.path.isAbsolute(tp)) return null;
+  tp = hookProc.open(p, tp);
   var codex = cb.codexPayload(p), found, agents;
   if (codex) {
     found = ah.transcript.codexAgents(tp, ah.cfgNum('idle_sweep.scan_bytes'));
     if (found === null) return '';
-    if (found.unsure) return null;
+    if (found.unsure) { ah.unable('idle-agent-sweep:codex_scan_unsure'); return ''; }
     agents = found.agents.map(function (a) { return { id: a.id, label: a.label, idleSinceMs: a.idleSinceMs }; });
   } else {
     found = ah.transcript.teammates(tp, ah.cfgNum('idle_sweep.scan_bytes'));
     if (found === null) return '';
-    if (found.unsure) return null;
+    if (found.unsure) { ah.unable('idle-agent-sweep:teammates_scan_unsure'); return ''; }
     agents = found.teammates.map(function (f) { return { id: f.name, label: f.name, idleSinceMs: f.idleSinceMs }; });
   }
+  // An agent idle past the stale bound is long gone (its stop may have failed as "No task found"), not idle: it drops out.
+  var staleMs = ah.cfgNum('idle_sweep.stale_minutes') * ah.cfgNum('idle_sweep.ms_per_minute');
+  agents = agents.filter(function (a) { return now - a.idleSinceMs < staleMs; });
   agents.sort(function (a, b) { return a.idleSinceMs - b.idleSinceMs; });
   var count = ah.settings.num('idle_sweep.num_count'), minutes = ah.settings.num('idle_sweep.num_minutes');
   var fire = agents.length > 0 && (agents.length >= count || agents.some(function (a) { return now - a.idleSinceMs >= minutes * ah.cfgNum('idle_sweep.ms_per_minute'); }));
@@ -64,10 +67,9 @@ function idAdvisory(p, now) {
 
 function decide(p) {
   if (ah.env.get(ah.cfg('prompt_emit.judge_child_env')) === '1') return 'allow';
-  if (spawn.osHome() === null) return 'defer';
+  if (spawn.osHome() === null) { ah.unable('idle-agent-sweep:no_home', 'abandoned'); return 'allow'; } // no absolute HOME: no dedupe state to keep
   if (!ah.settings.bool('idle_sweep.sw_enabled') || p === null || typeof p !== 'object' || ah.settings.skipped(ah.cfg('idle_sweep.skip_name'))) return 'allow';
   var t = idAdvisory(p, idNow());
-  if (t === null) return 'defer';
   if (t === '') return 'allow';
   var emit = true, home = spawn.stateHome();
   if (home.guarded !== true) {

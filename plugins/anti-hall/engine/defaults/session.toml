@@ -13,7 +13,7 @@ doc = "The only event these hooks run on, and the event name in the advisory env
 value = "SessionStart"
 
 [session.judge_child_env]
-doc = "The environment variable that marks the judge child process, inside which every hook is a silent no-op (judge-child-exit.js)."
+doc = "The environment variable that marks the judge child process, inside which every hook is a silent no-op."
 value = "ANTIHALL_JUDGE_CHILD"
 
 [session.judge_child_on]
@@ -78,11 +78,11 @@ value = { section = "maintenance", key = "progressPrune", env = "", option = "ma
 doc = "Switch: the once-a-day note about the defect channel (context.defectNudge); it has no environment variable."
 value = { section = "context", key = "defectNudge", env = "", option = "context_defect_nudge", default = true }
 
-# ---- version-alert (hooks/version-alert.js) --------------------------------------------------------------------
+# ---- version-alert --------------------------------------------------------------------
 
 [session.version_alert_summary]
 doc = "One-line description of the version-alert check in the generated reference."
-value = "SessionStart advisory: a newer anti-hall release is available or already mirrored locally (port of version-alert.js); a stale remote cache defers to Node, which starts the refresh."
+value = "SessionStart advisory: a newer anti-hall release is available or already mirrored locally; a stale remote cache defers to Node, which starts the refresh."
 
 [session.version_alert_guard]
 doc = "The guard id of version-alert, in its messages and in the skip file."
@@ -159,15 +159,15 @@ value = "v{mirrored} is already downloaded (you are running v{running})."
 
 [session.reload_instead]
 doc = "Advice for that case when the registry does not name a newer build than the running one."
-value = "tell the user now: run /reload-plugins (Claude; restart Claude Code if a hook or skill path still shows the old version afterwards) or restart Codex / start a fresh session (Codex)."
+value = "reload plugins in Claude or restart Codex."
 
 [session.reload_instead_ahead]
 doc = "Advice for that case when the registry already names a newer build than the running one ({running} is the running version)."
-value = "tell the user now: run /reload-plugins to load it (if a hook or skill path still shows v{running} afterwards, restart Claude Code: exit and resume the session). Codex: restart Codex / start a fresh session."
+value = "reload plugins in Claude or restart Codex."
 
 [session.unregistered_what]
 doc = "Headline when a newer release is mirrored but the host has not registered it."
-value = "v{mirrored} is downloaded locally (you are running v{running}) but the Claude Code harness has not registered it yet."
+value = "v{mirrored} is downloaded but not registered in Claude."
 
 [session.unregistered_why]
 doc = "Why line for that case."
@@ -175,7 +175,7 @@ value = "A reload alone will not pick it up until the harness registers it."
 
 [session.unregistered_instead]
 doc = "Advice for that case."
-value = "tell the user now: run /anti-hall:update (Claude; syncs the cache AND the harness registration) or the anti-hall-update skill (Codex), then /reload-plugins (Claude) or restart (Codex)."
+value = "run the anti-hall update skill for your host."
 
 [session.update_what]
 doc = "Headline when the remote-latest cache names a newer release; {latest} and {running} are the two versions."
@@ -183,13 +183,13 @@ value = "v{latest} is available (you are running v{running})."
 
 [session.update_instead]
 doc = "Advice for that case."
-value = "tell the user now: run /anti-hall:update (Claude) or the anti-hall-update skill (Codex), then do what it ends with: /reload-plugins (Claude; restart Claude Code only if a hook or skill path still shows the old version afterwards); restart Codex / start a fresh session (Codex)."
+value = "run the anti-hall update skill for your host."
 
-# ---- devswarm-version (hooks/devswarm-version.js, hooks/lib/devswarm-baseline.js) --------------------------------------
+# ---- devswarm-version --------------------------------------
 
 [session.devswarm_summary]
 doc = "One-line description of the devswarm-version check in the generated reference."
-value = "SessionStart advisory: the DevSwarm CLI drifted by major or minor from the verified version (port of devswarm-version.js); a stale cache defers to Node, which starts the probe."
+value = "SessionStart advisory: the DevSwarm CLI differs from the verified version (including patch releases); a stale cache requests the native refresh and read-only dependency probe."
 
 [session.devswarm_guard]
 doc = "The guard id of devswarm-version, in its messages and in the skip file."
@@ -200,22 +200,22 @@ doc = "The DevSwarm version cache the background probe writes, under the home di
 value = ".anti-hall/devswarm-version.json"
 
 [session.devswarm_baseline]
-doc = "The DevSwarm CLI version anti-hall's integration was verified against (hooks/lib/devswarm-baseline.js); a test keeps the two equal."
+doc = "The DevSwarm CLI version anti-hall's integration was verified against; a test keeps the two equal."
 value = "2.5.1"
 
 [session.devswarm_what]
 doc = "Headline of the DevSwarm drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing)."
-value = "DevSwarm {installed} is installed; anti-hall's integration is verified against {baseline}{newer}."
+value = "DevSwarm {installed} differs from KB baseline {baseline}."
 
 [session.devswarm_instead]
 doc = "Advice of the DevSwarm drift advisory."
 value = "see docs/KB-devswarm-hivecontrol.md."
 
-# ---- claude-cli-version (hooks/claude-cli-version.js, hooks/lib/claude-cli-baseline.js) --------------------------------
+# ---- claude-cli-version --------------------------------
 
 [session.claude_cli_summary]
 doc = "One-line description of the claude-cli-version check in the generated reference."
-value = "SessionStart advisory: the Claude Code CLI drifted by major or minor from the audited version (port of claude-cli-version.js); a stale cache defers to Node, which starts the probe."
+value = "SessionStart advisory: the Claude Code CLI drifted by major or minor from the audited version; a stale cache defers to Node, which starts the probe."
 
 [session.claude_cli_guard]
 doc = "The guard id of claude-cli-version, in its messages and in the skip file."
@@ -226,22 +226,22 @@ doc = "The Claude CLI version cache the background probe writes, under the home 
 value = ".anti-hall/claude-cli-version.json"
 
 [session.claude_cli_baseline]
-doc = "The Claude Code version the harness KB was last audited against (hooks/lib/claude-cli-baseline.js); a test keeps the two equal."
+doc = "The Claude Code version the harness KB was last audited against; a test keeps the two equal."
 value = "2.1.238"
 
 [session.claude_cli_what]
 doc = "Headline of the Claude CLI drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing)."
-value = "Claude Code CLI {installed} is installed; anti-hall's harness KB is audited against {baseline}{newer}."
+value = "Claude CLI {installed} differs from KB baseline {baseline}."
 
 [session.claude_cli_instead]
 doc = "Advice of the Claude CLI drift advisory."
 value = "see docs/KB-claude-code-harness-features.md."
 
-# ---- repo-self-drift (hooks/repo-self-drift.js, hooks/lib/repo-audit-baseline.js) ----------------------------------------
+# ---- repo-self-drift ----------------------------------------
 
 [session.repo_self_drift_summary]
 doc = "One-line description of the repo-self-drift check in the generated reference."
-value = "SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago (port of repo-self-drift.js)."
+value = "SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago."
 
 [session.repo_self_drift_guard]
 doc = "The guard id of repo-self-drift, in the skip file."
@@ -280,11 +280,11 @@ doc = "Regex source (JavaScript syntax) of the skill count docs/KB.md claims; th
 value = 'Claude\s*\n?>?\s*skills:\s*\*\*(\d+)\*\*'
 
 [session.model_kb_audit_date]
-doc = "The UTC date (YYYY-MM-DD) the model KBs were last audited (hooks/lib/repo-audit-baseline.js); a test keeps the two equal."
+doc = "The UTC date (YYYY-MM-DD) the model KBs were last audited; a test keeps the two equal."
 value = "2026-09-03"
 
 [session.staleness_threshold_days]
-doc = "How many days after the audit the model KBs count as stale (hooks/lib/repo-audit-baseline.js); a test keeps the two equal."
+doc = "How many days after the audit the model KBs count as stale; a test keeps the two equal."
 value = 60
 min = 1
 
@@ -308,11 +308,11 @@ value = "; "
 doc = "The model-KB staleness advisory line; {date}, {age} and {threshold} are the audit date and the days."
 value = "anti-hall model KBs last audited {date} ({age}d ago, threshold {threshold}d) — re-verify model lineup/pricing"
 
-# ---- defect-nudge (hooks/defect-nudge.js, hooks/lib/defect-store.js) -------------------------------------------------
+# ---- defect-nudge -------------------------------------------------
 
 [session.defect_nudge_summary]
 doc = "One-line description of the defect-nudge check in the generated reference."
-value = "SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported (port of defect-nudge.js); counts and ages only."
+value = "SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported; counts and ages only."
 
 [session.defect_nudge_guard]
 doc = "The guard id of defect-nudge, in its messages and in the skip file."
@@ -392,11 +392,11 @@ value = "rulings on {count} defects you reported."
 doc = "Advice of the reporter's nudge."
 value = "run /anti-hall:defects mine."
 
-# ---- progress-prune (hooks/progress-prune.js, hooks/lib/gitignore-hint.js) -----------------------------------------------
+# ---- progress-prune -----------------------------------------------
 
 [session.progress_prune_summary]
 doc = "One-line description of the progress-prune check in the generated reference."
-value = "SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/ (port of progress-prune.js)."
+value = "SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/."
 
 [session.progress_state_file]
 doc = "The per-directory prune throttle state, relative to the state directory."

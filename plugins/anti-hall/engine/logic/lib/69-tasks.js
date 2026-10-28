@@ -5,11 +5,84 @@
 var tk = {
   // `String(x).replace(/[^A-Za-z0-9_.-]/g, '_')`, one underscore per UTF-16 unit.
   safeKey: function (s) { return String(s).replace(/[^A-Za-z0-9_.-]/g, '_'); },
-  // The tasks of a transcript tail ('guard' variant): an array of the engine's task records, or null when the Node hook decides.
-  tasks: function (path) {
-    var r = ah.transcript.tasks(path, 'guard', ah.cfgNum('taskstate.tail_bytes'));
-    if (r.unsure) return null;
-    return r.unreadable ? [] : r.tasks;
+  // The tasks of a transcript tail ('guard' variant): an array of the engine's task records; a tail the engine cannot read exactly
+  // (counted) keeps any known records and carries an uncertainty flag.
+  // With a home and a session id the session's task store answers first (the transcript tail of a long session misses the creates, and
+  // an old tail disagrees with the store); the transcript is read only when the session has no readable store.
+  tasks: function (path, home, sid) {
+    var r = tk.tasksOf(home, sid, path, 'guard');
+    if (r.unsure) ah.unable('tasks:tail_unsure');
+    var tasks = r.unreadable ? [] : (r.tasks || []);
+    tasks.unsure = !!r.unsure;
+    return tasks;
+  },
+  // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
+  // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
+  tasksOf: function (home, sid, path, variant) {
+    var st = tk.storeTasks(home, sid);
+    if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
+    if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
+    var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'));
+    r.store = false;
+    return r;
+  },
+  // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none. The
+  // store carries no priority, so every in-progress task counts (the transcript scan only counts the actionable priorities).
+  storeScan: function (home, sid) {
+    var st = tk.storeTasks(home, sid);
+    if (st === null) return null;
+    var ids = [], inProg = 0;
+    tk.withStore([], st).forEach(function (t) {
+      if (!tk.isOpen(t)) return;
+      var s = tk.statusLc(t);
+      if (ah.cfg('taskstate.in_progress_statuses').indexOf(s) >= 0) { ids.push(t.id); inProg++; } else if (ah.cfg('taskstate.pending_statuses').indexOf(s) >= 0) ids.push(t.id);
+    });
+    return { openTaskIds: ids, inProgressCount: inProg };
+  },
+  // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
+  // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
+  // what is done and open; the transcript's tasks only add what the store does not carry.
+  storeTasks: function (home, sid) {
+    if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
+    var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
+    var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
+    for (var i = 0; i < names.length; i++) {
+      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
+      var files = ah.fs.readdir(dir);
+      if (files === null) continue;
+      files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
+      if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
+      var out = [];
+      for (var k = 0; k < files.length; k++) {
+        var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
+        if (raw === null) continue;
+        var rec;
+        try { rec = JSON.parse(raw); } catch (e) { continue; }
+        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+        out.push({
+          id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
+          description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
+          owner: typeof rec.owner === 'string' ? rec.owner.trim() : '',
+          blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
+          blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
+        });
+      }
+      if (out.length > 0) return out;
+    }
+    return null;
+  },
+  // The store's tasks laid over the transcript's: the store is the list (a task it lacks is gone), and for a task both hold the store
+  // gives subject, status, owner and blockers while the transcript keeps its other facts (blockedOn marker, time).
+  withStore: function (tasks, store) {
+    var byId = {};
+    tasks.forEach(function (t) { byId[t.id] = t; });
+    return store.map(function (s) {
+      var t = byId[s.id] || { id: s.id, priority: null, subjectUpdated: false, sinceMs: null };
+      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.blockedBy = s.blockedBy;
+      if (s.blockedOn !== undefined) t.blockedOn = s.blockedOn;
+      t.unknown = null; t.blockUnknown = false;
+      return t;
+    });
   },
   statusLc: function (t) { return (t.status || '').toLowerCase(); },
   isOpen: function (t) { return ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0; },
@@ -17,12 +90,12 @@ var tk = {
   // The blockedOn marker as the owner-blocked test reads it: a string trimmed and lowercased, else empty.
   blockedOnText: function (t) { return typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : ''; },
   // oneLine: control characters become spaces, white space runs collapse, the text is trimmed and cut to `max` UTF-16 units with an
-  // ellipsis; null when the cut would split a surrogate pair (the half cannot cross into the engine).
+  // ellipsis; a cut through a surrogate pair drops the half pair (a Rust string cannot hold one).
   oneLine: function (s, max) {
     var o = jx.replaceAll(ah.cfg('taskkit.control_chars'), '', s, ' ').replace(/\s+/g, ' ').trim();
     if (o.length > max) {
       var cut = o.slice(0, max), last = cut.charCodeAt(cut.length - 1);
-      if (last >= 0xd800 && last <= 0xdbff) return null;
+      if (last >= 0xd800 && last <= 0xdbff) { ah.unable('oneline:pair_cut'); cut = cut.slice(0, -1); }
       return cut.replace(/\s+$/, '') + ah.cfg('taskkit.ellipsis');
     }
     return o;
@@ -31,7 +104,8 @@ var tk = {
   unknownIds: function (tasks) {
     return tasks.filter(function (t) { return t.status === null || (tk.isOpen(t) && t.blockUnknown); }).map(function (t) { return t.id; });
   },
-  // The unknown-state note and the write that goes with saying it: {note, write: function () -> note|''}; null when the Node hook decides.
+  // The unknown-state note and the write that goes with saying it: {note, write: function () -> note|''}. A note file of a shape the
+  // script does not model is read as absent (counted); the next write replaces it.
   unknownNote: function (tasks, home, sessionId, tag) {
     var none = { note: '', write: function () { return ''; } };
     var ids = tk.unknownIds(tasks);
@@ -43,16 +117,16 @@ var tk = {
     var rel = dir + '/' + prefix + '-' + tag + '-' + tk.safeKey(sessionId || 'nosession') + '.json';
     var lastHash = '', lastN = 0;
     var f = jx.read(home + '/' + rel);
-    if (f.big) return null;
+    if (f.big) ah.unable('unknown_note:file_big');
     if (f.text !== undefined) {
       var r = jx.parse(f.text.trim());
-      if (r.unsure) return null;
-      if (!r.invalid && r.v !== null && typeof r.v === 'object') {
+      if (r.unsure) ah.unable('unknown_note:parse_unsure');
+      else if (!r.invalid && r.v !== null && typeof r.v === 'object') {
         var h = r.v.hash;
-        if (h) { if (typeof h === 'object') return null; lastHash = String(h); }
+        if (h) { if (typeof h === 'object') ah.unable('unknown_note:hash_shape'); else lastHash = String(h); }
         var n = r.v.n;
-        if (n !== null && n !== undefined && typeof n === 'object') return null;
-        lastN = Number(n) || 0;
+        if (n !== null && n !== undefined && typeof n === 'object') ah.unable('unknown_note:n_shape');
+        else lastN = Number(n) || 0;
       }
     }
     if (lastHash === hash || lastN >= ah.cfgNum('taskstate.unknown_max_notes')) return none;
@@ -80,21 +154,50 @@ var tk = {
     } else return null;
     return base + '/' + ah.cfg('task_guard.app_db_file').join('/');
   },
-  // True when the answer needs the DevSwarm app database, which only the Node hook reads (`node:sqlite`): without the file Node's
-  // answer is fixed (no record, nothing live).
+  // True when the DevSwarm app database file exists (without it the answers below are fixed: no record, nothing live).
   appDbPresent: function (home) { var p = tk.appDbPath(home); return p !== null && ah.fs.isFile(p); },
+  // `devswarmChildAttended(owner)`: true only when `owner` (a workspace id, branch or title) names a workspace the app database shows
+  // live. A blank, coordinator-like or unknown owner, an archived workspace and an unreadable database all answer false.
+  childAttended: function (owner) {
+    var o = (owner || '').trim();
+    if (!o || jx.re('task_guard.coordinator_owner_re', 'i').test(o)) return false;
+    var id = o.replace(jx.re('task_guard.workspace_prefix_re', 'i'), '').trim();
+    if (!id || !tk.appDbPresent(ah.home())) return false;
+    var verdict = ah.mesh.appArchived(id, '', false).verdict; // null (no verdict, or one the host cannot give: counted) goes on to the builders list
+    if (verdict === false) return true;
+    if (verdict === true) return false;
+    var all = tk.appBuilders();
+    return all !== null && all.some(function (w) { return w.archived === false && (w.branch === id || w.label === id); });
+  },
+  // The app database's workspaces [{id, archived, branch, label}] (read once per call), or null when there is no readable database.
+  appBuilders: function () {
+    if (tk.buildersMemo === undefined || tk.buildersGen !== ah.clock.now()) {
+      var raw = ahHost.meshAppBuilders();
+      tk.buildersMemo = raw === null || raw === undefined ? null : JSON.parse(raw);
+      tk.buildersGen = ah.clock.now();
+    }
+    return tk.buildersMemo;
+  },
+  // `anyLiveDevswarmChildren()`: the database shows at least one workspace that is not archived.
+  anyLiveChildren: function () {
+    if (!tk.appDbPresent(ah.home())) return false;
+    var all = tk.appBuilders();
+    return all !== null && all.some(function (w) { return w.archived !== true; });
+  },
 };
 
 // ---- shared by task-guard (Stop) and task-tracker (UserPromptSubmit): the dispatch demand --------------------------------------------
 // The cap, the per-task cover, the label: `lib/dispatch-demand.js` (`evaluate`, `label`). `wantProven` also computes the Stop block's
-// proven count (it reads output-file times); the per-turn line does not. null defers.
+// proven count (it reads output-file times); the per-turn line does not.
 tk.lastActivity = function (r) {
   var act = NaN, vs = [r.launchedAtMs, r.resumedAtMs === null || r.resumedAtMs === undefined ? NaN : r.resumedAtMs, r.lastSeenMs];
   vs.forEach(function (v) { if (typeof v === 'number' && isFinite(v) && (isNaN(act) || v > act)) act = v; });
   if (r.outputFile) {
-    if (r.outputFile.charAt(0) !== '/') return null;
-    var m = ah.fs.mtimeMs(r.outputFile);
-    if (m !== null && isFinite(m) && (isNaN(act) || m > act)) act = m;
+    if (r.outputFile.charAt(0) !== '/') ah.unable('lastactivity:relative_output'); // Node resolves it against its own directory; here it is not read
+    else {
+      var m = ah.fs.mtimeMs(r.outputFile);
+      if (m !== null && isFinite(m) && (isNaN(act) || m > act)) act = m;
+    }
   }
   return act;
 };
@@ -102,14 +205,13 @@ tk.cap = function () {
   var v = ah.settings.num('task_guard.max_parallel_setting');
   if (isFinite(v) && v > 0) return Math.floor(v);
   var c = ah.sys.cores();
-  if (c === null) return null;
+  if (c === null) { ah.unable('cap:cores_unknown'); c = 0; }
   if (c === 0) c = ah.cfgNum('task_guard.cap_fallback_cores');
   return Math.max(ah.cfgNum('task_guard.cap_floor'), Math.min(ah.cfgNum('task_guard.cap_ceiling'), c - ah.cfgNum('task_guard.cap_reserve')));
 };
 tk.evaluate = function (actionable, tasks, open, running, now, wantProven) {
   if (running === null) return { fire: false, proven: false, unknown: true, dispatch: [], cap: 0 };
   var cap = tk.cap();
-  if (cap === null) return null;
   var known = {}, covered = {}, unmapped = 0, refsOf = [];
   tasks.forEach(function (t) { known[t.id] = true; });
   running.forEach(function (a) {
@@ -130,7 +232,7 @@ tk.evaluate = function (actionable, tasks, open, running, now, wantProven) {
     var min = Infinity;
     for (var i = 0; i < dispatch.length; i++) {
       var s = dispatch[i].sinceMs;
-      if (s === 'unsure') return null;
+      if (s === 'unsure') { ah.unable('evaluate:since_unsure'); return NaN; }
       if (typeof s !== 'number' || !isFinite(s)) return NaN;
       min = Math.min(min, s);
     }
@@ -141,14 +243,12 @@ tk.evaluate = function (actionable, tasks, open, running, now, wantProven) {
   for (var i = 0; i < running.length; i++) {
     if (refsOf[i].length !== 0) continue;
     var r = running[i], act = tk.lastActivity(r);
-    if (act === null) return null;
     var stale = maxAge > 0 && isFinite(act) && now - act > maxAge;
     var l = typeof r.launchedAtMs === 'number' && isFinite(r.launchedAtMs) ? r.launchedAtMs : -Infinity;
     var rs = typeof r.resumedAtMs === 'number' && isFinite(r.resumedAtMs) ? r.resumedAtMs : -Infinity;
     var started = Math.max(l, rs), before = false;
     if (!stale && isFinite(started)) {
       var e = earliest();
-      if (e === null) return null;
       before = isFinite(e) && started < e;
     }
     if (stale || before) uncounted++; else provenUnmapped++;
@@ -159,7 +259,6 @@ tk.evaluate = function (actionable, tasks, open, running, now, wantProven) {
 tk.label = function (t) {
   var src = t.content ? t.content : t.id;
   var subj = tk.oneLine(src.replace(jx.re('task_guard.label_priority_prefix_re', 'i'), ''), ah.cfgNum('task_guard.label_max'));
-  if (subj === null) return null;
   var quoted = JSON.stringify(subj ? subj : t.id);
   if (!/^[0-9]+$/.test(t.id)) return quoted;
   return subj && subj !== t.id ? '#' + t.id + ' ' + quoted : '#' + t.id;
@@ -177,25 +276,26 @@ Object.assign(ah.transcript, {
 ah.jev.cachePeek = function (hash) { var r = ahHost.jevCachePeek(hash); return r === null || r === undefined ? null : JSON.parse(r); };
 
 // ---- the dispatch-tier state file (hooks/lib/dispatch-tier.js readState/writeState), shared by the dispatch-tier hook and task-tracker ----
-// `readState(home)`: the state object with `requested` and `sessions` objects in place; null for a state only the Node hook handles.
+// `readState(home)`: the state object with `requested` and `sessions` objects in place. A file over the read cap, one the script cannot
+// parse exactly, or one whose parts are arrays is read as a fresh state (counted); the next write replaces it (the repair).
 // `readOnly`: the caller only looks things up, so a state whose parts are arrays is read as JavaScript reads it (an array is indexed by
-// the keys that name no element), instead of being left to Node.
+// the keys that name no element).
 tk.tierRead = function (path, readOnly) {
   var s = {};
   var f = jx.read(path);
-  if (f.big) return null;
+  if (f.big) ah.unable('tier:file_big');
   if (f.text !== undefined) {
     var r = jx.parse(f.text);
-    if (r.unsure) return null;
-    if (r.v !== undefined && r.v !== null && typeof r.v === 'object') {
-      if (Array.isArray(r.v) && !readOnly) return null;
-      s = r.v;
+    if (r.unsure) ah.unable('tier:parse_unsure');
+    else if (r.v !== undefined && r.v !== null && typeof r.v === 'object') {
+      if (Array.isArray(r.v) && !readOnly) ah.unable('tier:array_state');
+      else s = r.v;
     }
   }
   var keys = ['requested', 'sessions'];
   for (var i = 0; i < keys.length; i++) {
     var v = s[keys[i]];
-    if (Array.isArray(v) && !readOnly) return null;
+    if (Array.isArray(v) && !readOnly) { ah.unable('tier:array_part'); s[keys[i]] = {}; continue; }
     if (!v || typeof v !== 'object') s[keys[i]] = {};
   }
   return s;

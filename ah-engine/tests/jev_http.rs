@@ -3,6 +3,7 @@
 //! in the Authorization header, a redirect is never followed (so the key and the text stay at the vendor), a proxy named in
 //! the environment is never used, one deadline covers the whole call, and an oversized body cannot grow memory.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
 use ah_engine::jev::Question;
 use ah_engine::jev::assist::{AskRequest, Backend, Jev, Trust};

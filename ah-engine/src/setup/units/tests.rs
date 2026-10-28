@@ -40,7 +40,7 @@ impl Sys for Fake {
 }
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("test-units").join(format!("{tag}-{}", std::process::id()));
+    let d = std::env::temp_dir().join("test-units").join(format!("{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join("home")).unwrap();
     d
@@ -98,6 +98,13 @@ fn launchd_install_writes_an_escaped_agent_loads_it_and_a_rerun_changes_nothing(
     assert!(text.contains("<string>com.anti-hall.engine</string>"), "{text}");
     assert!(text.contains("bin &amp; $x/ah-engine</string>"), "the path is XML-escaped: {text}");
     assert!(text.contains("<string>serve</string>") && text.contains("<integer>300</integer>") && text.contains("<key>RunAtLoad</key>"), "{text}");
+    // the daemon the agent starts gets the allocator tuning in its environment, under each variable the allocator reads
+    let conf = defaults::text("daemon.malloc_conf");
+    assert!(!conf.is_empty());
+    for var in defaults::list("daemon.malloc_conf_vars") {
+        assert!(text.contains(&format!("<key>{var}</key>\n    <string>{conf}</string>")), "{var} missing from the agent's environment: {text}");
+    }
+    assert!(text.contains("<key>EnvironmentVariables</key>") && text.find("</array>") < text.find("<key>EnvironmentVariables</key>"), "{text}");
     let p = plist(&d, "com.anti-hall.engine").display().to_string();
     assert_eq!(sys.calls(), vec![format!("launchctl unload {p}"), format!("launchctl load {p}")]);
     // the same bytes and a loaded label: nothing is written and nothing is loaded again
@@ -121,6 +128,12 @@ fn systemd_install_writes_a_service_and_a_timer_with_quoted_exec_and_enables_the
     let service = std::fs::read_to_string(dir.join("anti-hall-engine.service")).unwrap();
     let e = exe(&d).replace('$', "$$");
     assert!(service.contains(&format!("ExecStart=\"{e}\" \"serve\"")), "{service}");
+    let conf = defaults::text("daemon.malloc_conf");
+    for var in defaults::list("daemon.malloc_conf_vars") {
+        let line = format!("Environment=\"{var}={conf}\"\n");
+        assert!(service.contains(&line), "{var} missing from the service environment: {service}");
+        assert!(service.find(&line) < service.find("ExecStart="), "{service}");
+    }
     let timer = std::fs::read_to_string(dir.join("anti-hall-engine.timer")).unwrap();
     assert!(timer.contains("OnUnitInactiveSec=300") && timer.contains("WantedBy=timers.target"), "{timer}");
     assert_eq!(sys.calls(), vec!["systemctl --user --version", "systemctl --user daemon-reload", "systemctl --user enable --now anti-hall-engine.timer"]);

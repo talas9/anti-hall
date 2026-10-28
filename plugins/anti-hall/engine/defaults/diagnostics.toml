@@ -67,6 +67,36 @@ unit = "bytes"
 doc = "Diagnostic label for an operator-run macOS `MallocStackLogging` repro (`lite` or empty). The engine only accepts and reports it; the OS facility must be enabled in the process environment before start."
 value = ""
 
+[diagnostics.threads_flag]
+doc = "The `ah-engine status` flag that reports the live daemon's per-thread CPU and work counters over a short window (`status --threads [--json]`)."
+value = "--threads"
+
+[diagnostics.threads_ctl]
+doc = "The control request that asks the daemon for one snapshot of every thread's CPU time and the work counters (the client asks twice, the window apart, and reports the difference)."
+value = "threads"
+
+[diagnostics.threads_window_ms]
+doc = "The window of `status --threads`: per-thread CPU % and counters per second are measured over this long."
+value = 1000
+min = 100
+max = 60000
+unit = "ms"
+env = "AH_ENGINE_THREADS_WINDOW_MS"
+
+[diagnostics.threads_proc_dir]
+doc = "Linux: the directory listing this process's threads (each has a `stat` file with its CPU ticks and name)."
+value = "/proc/self/task"
+
+[diagnostics.threads_proc_stat]
+doc = "Linux: the per-thread file holding the CPU ticks (fields 14 and 15) and the name."
+value = "stat"
+
+[diagnostics.threads_name_max]
+doc = "macOS: the size of the buffer a thread name is read into (the OS limit, MAXTHREADNAMESIZE)."
+value = 64
+min = 16
+max = 1024
+
 [files.mem_log]
 doc = "Per-request memory log file name (state directory)."
 value = "mem.ndjson"
@@ -74,3 +104,373 @@ value = "mem.ndjson"
 [files.mem_snapshot]
 doc = "Cap-trip memory snapshot file name (state directory)."
 value = "mem-snapshot.json"
+
+# ---- debug mode (one build, two runtime modes) ---------------------------------------------------------------------------------------
+
+[diagnostics.debug_mode]
+doc = "Debug mode: the same binary also writes verbose per-module logs to the debug log (files.debug_log), checks runtime invariants (a violation is logged and counted, never fatal), samples per-thread CPU every diagnostics.debug_thread_sample_ms and writes a memory line every diagnostics.debug_mem_snapshot_ms. Off in normal use; the cost of the switch while off is one atomic load per call site. The environment variable env.debug or the --debug flag (diagnostics.debug_flag) of `serve` and `hook` turns it on for that process regardless of this setting; this setting is read again on every change of the config files, so a running daemon follows it without a restart."
+value = false
+
+[diagnostics.debug_flag]
+doc = "The command-line flag that turns debug mode on for one `serve` or `hook` process."
+value = "--debug"
+
+[diagnostics.debug_modules]
+doc = "Modules whose debug log lines are written (a module name such as `daemon/queue`, or a prefix ending in a slash such as `daemon/`). An empty list means every module."
+value = []
+
+[diagnostics.debug_log_max_bytes]
+doc = "Size at which the debug log is rotated (the old file is kept once, as <name>.1, replacing the previous one), so it never holds more than twice this."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[diagnostics.debug_thread_sample_ms]
+doc = "In debug mode, how often the watchdog samples every thread's CPU time and logs the busiest threads and the work counters per second over that interval."
+value = 5000
+min = 500
+unit = "ms"
+
+[diagnostics.debug_thread_top]
+doc = "Threads (grouped by name) listed per per-thread CPU sample in the debug log."
+value = 8
+min = 1
+max = 64
+
+[diagnostics.debug_mem_snapshot_ms]
+doc = "In debug mode, how often the watchdog writes a memory line (resident set, footprint, allocator and component sizes) to the debug log; in normal mode memory is only snapshotted when the resident-set cap trips."
+value = 30000
+min = 1000
+unit = "ms"
+
+# ---- resource budgets (reported in `status`, the health event and the health log) ---------------------------------------------------------
+
+[diagnostics.budget_cpu_pct]
+doc = "SOFT CPU limit of the daemon (5 percent of one core, owner decision 2026-10-23; the 10 percent hard bar is web.pulse_cpu_bad_permille). A limit, not a target. CPU budget of the daemon, percent of one core. A breach is reported when the CPU over diagnostics.budget_cpu_windows consecutive daemon.cpu_check_ms windows stays at or above it; 0 turns the CPU budget off."
+value = 5
+min = 0
+unit = "%"
+
+[diagnostics.budget_cpu_hard_pct]
+doc = "HARD CPU limit of the daemon, percent of one core (10, owner decision 2026-10-23), measured over the same daemon.cpu_check_ms windows and the same diagnostics.budget_cpu_windows count as the soft bar (diagnostics.budget_cpu_pct, which only warns and counts). Once it is crossed the daemon sheds OPTIONAL work and nothing else: scheduled and background duties are delayed (the schedule.cpu_backoff_ms backoff, renewed every window), the checks of events that cannot block (everything outside dispatch.guard_events) are not run only when diagnostics.shed_checks is 1 (shipped 0), and Jev is not consulted (every caller gets its baseline). Guards and block decisions never stop. The event is logged and counted (status budget: cpu_hard_breaches, shed_skipped). Shedding ends by itself on the first window under the soft limit. 0 turns the hard limit off."
+value = 10
+min = 0
+unit = "%"
+
+[diagnostics.shed_checks]
+doc = "1 (shipped) = past the HARD CPU limit (diagnostics.budget_cpu_hard_pct) the PURE-ADVICE checks of events that cannot block are not run (their answers are dropped, counted as answers_dropped reason `shed`). Checks listed in diagnostics.shed_never always run, and so do all checks of guard events. 0 = nothing is shed."
+value = 1
+min = 0
+max = 1
+
+[diagnostics.shed_never]
+doc = "Checks that are never shed past the HARD CPU limit, with the reason for each: bookkeeping, recorders and deliveries that later guards or the user's agents depend on (shedding them loses state or messages). Any check of a non-guard event not listed here is pure advice and is shed. #312: the essential reminders (task tracker, task list, workspace inbox and child gate, verify-first) are listed; `status` delivery.essential_shed counts how many answers of the checks listed here were shed anyway (it must stay 0)."
+value = { "merge-side-pick" = "PostToolUse recorder: the merge guard reads what it recorded.", "git-audit" = "PostToolUse audit of git calls (git-guard:audit); later git guards read it.", "output-verify-guard" = "PostToolUse recorder of tool output the verify guard checks later.", "devswarm-parent-reply-tracker" = "Records parent replies; the parent gate decides from them.", "devswarm-child-drain" = "Drains a child's mail; skipping it strands messages.", "coordinator-work-guard" = "PostToolUse half records coordinator work the PreToolUse half judges.", "agent-reminders" = "Delivers the stale-agent nudges and reminders the tracker queued.", "task-tracker" = "Keeps the task state the Stop guards read.", "task-lifecycle-log" = "Task create/complete log other guards read.", "devswarm-parent-inbox" = "Delivers a parent's inbox.", "devswarm-child-turn" = "Per-turn child bookkeeping.", "devswarm-child-role" = "Seats a child in its role.", "auto-handover" = "Triggers the handover at the context threshold.", "handover-resume" = "Restores a session from its handover.", "codex-quota-detect" = "Records the quota state later routing reads.", "dispatch-tier" = "Records the dispatch tier later guards read.", "precompact-snapshot" = "Takes the pre-compaction snapshot.", "session-end-mcp-reaper" = "Cleans up the session's MCP processes.", "emit-dedupe-reset" = "Resets the emit dedupe state of a session.", "progress-prune" = "Prunes progress files; state upkeep.", "repair-on-reload" = "Repairs state after a reload.", "verify-first" = "Per-prompt verify-first reminder (#312: essential, shed 4x in the audit window).", "verify-first-full" = "Session-start verify-first protocol text.", "verify-first-orch" = "Session-start orchestration reminder.", "verify-first-orch-codex" = "Codex session-start orchestration reminder.", "verify-first-subagent" = "Verify-first text a subagent starts with.", "tasklist-guard" = "Task-list Stop guard (a guard event is never shed; listed so the audit counts it as essential).", "devswarm-child-gate" = "Workspace child gate (Stop guard; listed so the audit counts it as essential).", "devswarm-rt-advisory" = "Workspace runtime notice a Primary acts on." }
+
+[diagnostics.deadline_grace_ms]
+doc = "Per check, how many milliseconds PAST the hard request deadline (daemon.request_hard_ms) the check may still start, so a slow request does not drop an essential reminder that is cheap to run (#312: 56 non-guard and 16 guard answers were dropped to shedding or the deadline in the audit window). A check without a row has no grace. Capped by diagnostics.deadline_grace_cap_ms. A scripted check already running is still interrupted at the deadline (script.cut_at_request_deadline)."
+value = { "verify-first" = 400, "task-tracker" = 400, "tasklist-guard" = 400, "devswarm-parent-inbox" = 400, "devswarm-child-gate" = 400, "devswarm-child-turn" = 400, "agent-reminders" = 400 }
+
+[diagnostics.deadline_grace_cap_ms]
+doc = "Upper bound of any diagnostics.deadline_grace_ms row. The hard deadline plus this must stay inside what the client waits for a late reply (client.slow_fallback_max_ms less client.slow_wait_margin_ms), or the grace would only produce a reply nobody reads."
+value = 500
+unit = "ms"
+min = 0
+max = 600
+
+[delivery.stage_decided]
+doc = "Stage label (status delivery, metric delivery_stage): a check answered with a message or a block."
+value = "decided"
+
+[delivery.stage_delivered]
+doc = "Stage label: the reply carrying the answer was written to the hook client in time."
+value = "delivered"
+
+[delivery.stage_complied]
+doc = "Stage label: the agent made one of the check's `delivery.react` tool calls within the window after a delivered answer."
+value = "complied"
+
+[delivery.stage_ignored]
+doc = "Stage label: the window after a delivered answer ended without one of the check's `delivery.react` tool calls."
+value = "ignored"
+
+[delivery.reason_undelivered]
+doc = "Reason label (metric delivery_lost) of an answer the check made but the reply carrying it was not written in time or not at all."
+value = "undelivered"
+
+[delivery.reason_shed]
+doc = "The answers_dropped reason that status delivery reports as `shed` (the others are reported as `lost`). Must equal the reason budget::note_dropped is given when the CPU hard limit sheds a check."
+value = "shed"
+
+[delivery.react_event]
+doc = "The hook event whose tool calls are watched for an agent's reaction to a delivered answer (one call of it is one step of the window)."
+value = "PreToolUse"
+
+[delivery.react]
+doc = "Per check, the tool names whose use within the window counts as the agent reacting to the check's delivered answer (`complied`). Only a check with a row here has a compliance figure; a reaction that is not a tool call (answering in text, changing a plan) cannot be seen, so those checks show null. Tool names are the host's. verify-first: a verification lookup. task-tracker and tasklist-guard: a task-list change. devswarm-parent-inbox and devswarm-child-gate: a message or a mail read."
+value = { "verify-first" = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"], "task-tracker" = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"], "tasklist-guard" = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"], "devswarm-parent-inbox" = ["SendMessage", "Read"], "devswarm-child-gate" = ["SendMessage", "Read"] }
+
+[delivery.react_window_calls]
+doc = "Tool calls of the session after a delivered answer within which a reaction counts. 0 turns compliance tracking off (decided, delivered and lost are still counted)."
+value = 8
+min = 0
+max = 1000
+
+[delivery.react_window_ms]
+doc = "Longest wait for a reaction after a delivered answer; a window older than this ends as `ignored` at the next tool call."
+value = 600000
+unit = "ms"
+min = 1000
+
+[delivery.pending_sessions_max]
+doc = "Sessions whose armed checks the compliance tracker holds; a new session past it makes room by dropping the one armed longest ago (its open windows are not counted)."
+value = 256
+min = 1
+
+[delivery.pending_per_session_max]
+doc = "Armed checks held per session."
+value = 16
+min = 1
+
+[answer_drop.kind_guard]
+doc = "Label of a dropped answer that belongs to a guard event (answers_dropped metric kind, status answers_dropped.this_daemon)."
+value = "guard"
+
+[answer_drop.kind_optional]
+doc = "Label of a dropped answer that belongs to an event that cannot block."
+value = "optional"
+
+[answer_drop.dropped_keys_max]
+doc = "Most distinct kind:reason keys the this-daemon dropped-answer table holds; a further new key is only counted in the lifetime metric."
+value = 32
+min = 4
+
+[diagnostics.budget_cpu_windows]
+doc = "Consecutive daemon.cpu_check_ms windows over the CPU budget that make a breach (one busy window is a burst, not a breach)."
+value = 2
+min = 1
+max = 100
+
+[diagnostics.budget_mem_mb]
+doc = "SOFT memory limit of the daemon (125 MB, owner decision 2026-10-23; hard is mem.global_hard_bytes). Memory budget of the daemon in MB, measured with the figure daemon.mem_metric selects. A breach is reported while the daemon is over it; 0 turns the memory budget off."
+value = 125
+min = 0
+unit = "MB"
+
+[files.debug_log]
+doc = "Debug log file name (state directory): one NDJSON line per debug event, written only in debug mode."
+value = "debug.ndjson"
+
+[diagnostics.mem_log_checks_cap]
+doc = "Most checks whose per-call memory (`check_mem`: check, peak, allocated bytes) one request line of the memory log lists; further checks of the same request are left off the line."
+value = 64
+min = 1
+
+[diagnostics.check_mem]
+doc = "Measure the bytes each check allocates (total, peak growth, kept) from per-thread counters in the counting allocator. Off also stops the counting in the allocator. Cost is a few nanoseconds per allocation."
+value = true
+
+[diagnostics.check_mem_sample_every]
+doc = "Measure every Nth check call (1 = every call). Raise it only if the measured cost of the per-thread counters becomes a problem."
+value = 1
+min = 1
+
+[diagnostics.tally_soft_keys]
+doc = "Soft limit on the labelled work counters `status --threads` carries (and on exited-thread names): past it every further new key adds one to `tally_soft_hits`."
+value = 64
+min = 8
+
+[diagnostics.tally_hard_keys]
+doc = "Hard limit on the labelled work counters (and on exited-thread names): a new key past it is dropped and counted in `tally_dropped`; the existing keys keep counting."
+value = 256
+min = 16
+
+# ---- observability contract (v0.301 W1): switchable profiling, shipped diag verbs, trace ring, uniform accounting, per-site counters ----
+
+[diagnostics.profile]
+doc = "Baseline profiling mode: off (default; the cost is one atomic load per call), sample (record one call in diagnostics.profile_sample_every) or full (record every call). Per-check CPU and allocation spans go to the bounded file diagnostics.profile_file. `ah-engine ctl profile on --for <dur>` raises the mode for a limited time and falls back to this value when the time is up."
+value = "off"
+
+[diagnostics.profile_sample_every]
+doc = "In `sample` mode one check call in this many is recorded."
+value = 10
+min = 1
+
+[diagnostics.profile_on_mode]
+doc = "Mode `ctl profile on` switches to when none is named: sample or full."
+value = "full"
+
+[diagnostics.profile_file]
+doc = "Name (in the state directory) of the profile span file: one JSON line per recorded check call."
+value = "profile.jsonl"
+
+[diagnostics.profile_max_bytes]
+doc = "Size limit of the profile span file. When it is reached recording stops and the mode falls back to off (counted and logged); the file is never rotated or grown past this."
+value = 4194304
+min = 4096
+unit = "bytes"
+
+[diagnostics.profile_max_secs]
+doc = "Longest a runtime `ctl profile on` stays on; a longer `--for` is cut to this, and an `on` without `--for` runs this long."
+value = 600
+min = 1
+unit = "s"
+
+[diagnostics.duration_units]
+doc = "Suffixes the `--for` duration of `ctl profile on` accepts, each with its length in milliseconds (a bare number is seconds)."
+value = { ms = 1, s = 1000, m = 60000, h = 3600000 }
+
+[diagnostics.diag_topics]
+doc = "The topics of `ah-engine diag <topic>`: read-only reports over state the engine already keeps (not feature-gated). `trace` dumps the always-on trace ring."
+value = ["cpu", "mem", "threads", "hooks", "mesh", "jev", "fs", "locks", "trace", "file", "integrity"]
+
+[diagnostics.diag_top]
+doc = "Rows shown per ranking in `diag hooks` and `diag fs`."
+value = 15
+min = 1
+
+[diagnostics.trace_entries]
+doc = "Size of the always-on trace ring (the most recent check, duty, stage and hand-back records kept in memory). Dumped by `diag trace` and written to diagnostics.trace_dump_file when a hard limit trips. Read at daemon start."
+value = 512
+min = 16
+max = 65536
+
+[diagnostics.trace_dump_file]
+doc = "Name (in the state directory) of the file the trace ring is written to when a hard limit trips; each dump replaces the previous one."
+value = "trace-dump.jsonl"
+
+[diagnostics.advisory_counter_kind]
+doc = "The journal kind under which the advisory counters (flagged, asked, confirmed, injected, suppressed, jev_error per advisory kind) are kept in the shared counter journal."
+value = "advisory"
+
+[diagnostics.counters_file]
+doc = "Name (in the state directory) of the shared counter journal: processes that are not the daemon (hook calls, one-shot commands, post-update stages) append their hand-back and accounting counts here, and `status` folds them in. Never created by a read-only command."
+value = "obs-counters.log"
+
+[diagnostics.abandoned_log_interval_ms]
+doc = "Per site, the least time between two event-log lines for an abandoned decision (every one is still counted; the line names the site, the reason and the key inputs, and says how many were counted since the last line). 0 logs every one."
+value = 60000
+min = 0
+
+[diagnostics.abandoned_log_keys_max]
+doc = "How many (site, reason) pairs the abandoned-decision log limiter remembers before it forgets them all (bounds its memory; a forgotten pair logs once more)."
+value = 256
+min = 1
+
+[diagnostics.abandoned_no_reason]
+doc = "The reason shown in the event-log line of an abandoned decision whose site gave none (the site name still says where)."
+value = "the site gave no reason"
+
+[diagnostics.msg_abandoned]
+doc = "The event-log line for an abandoned decision. {site} is the counted site, {why} the reason with its key inputs, {n} how many were counted at the site since the last line."
+value = "abandoned at {site} (x{n}): {why}"
+
+[diagnostics.counters_max_bytes]
+doc = "Size at which the counter journal is folded into one line per counter (atomically, under the journal lock), so it never grows without bound."
+value = 262144
+min = 4096
+unit = "bytes"
+
+[diagnostics.counters_soft_keys]
+doc = "Soft limit on distinct counters (kind, key and outcome) the journal fold keeps; past it each new counter adds one to `counters_soft_hits`."
+value = 512
+min = 8
+
+[diagnostics.counters_hard_keys]
+doc = "Hard limit on distinct counters in the journal fold: a new counter past it is folded into `other` and counted in `counters_dropped`."
+value = 2048
+min = 16
+
+[diagnostics.counters_other_key]
+doc = "The key under which counters past diagnostics.counters_hard_keys are folded."
+value = "other"
+
+[diagnostics.outcome_map]
+doc = "How a duty or stage record's own outcome word maps onto the five accounting outcomes (ok, error, disabled, held, refused). A record that also names a gate is looked up as `<word>+gate`. A word not listed here counts as `error` so a new outcome cannot hide."
+value = { ran = "ok", ok = "ok", "skipped+gate" = "ok", skipped = "disabled", disabled = "disabled", failed = "error", error = "error", held = "held", deferred = "held", refused = "refused" }
+
+
+[diagnostics.counter_name_max]
+doc = "Longest site, duty or stage name kept in the counter journal (characters); longer names are cut. Whitespace and control characters in a name become `_`."
+value = 96
+min = 8
+
+[diagnostics.fd_dir]
+doc = "Directory that lists this process's open file descriptors (`diag fs` counts its entries)."
+value = "/dev/fd"
+
+[diagnostics.trace_dump_min_ms]
+doc = "Shortest time between two automatic trace-ring dumps (a hard limit that trips again inside this time does not rewrite the file)."
+value = 60000
+min = 0
+unit = "ms"
+
+[diagnostics.trace_reason_mem]
+doc = "Reason recorded in a trace-ring dump taken when the memory registry's hard limit trips."
+value = "memory-hard-limit"
+
+[diagnostics.trace_reason_rss]
+doc = "Reason recorded in a trace-ring dump taken when the resident-set cap trips."
+value = "rss-cap"
+
+[diagnostics.trace_reason_cpu]
+doc = "Reason recorded in a trace-ring dump taken when a request trips its CPU budget."
+value = "cpu-budget"
+
+[diagnostics.file_max_bytes]
+doc = "Most bytes `diag file <id>` reads from the end of a file."
+value = 65536
+min = 1024
+
+[diagnostics.file_tail_lines]
+doc = "Most lines `diag file <id>` returns (the last ones), each scrubbed of the home path and secrets."
+value = 200
+min = 1
+
+[diagnostics.file_prefix_state]
+doc = "Id prefix of a file in the state directory (`diag file state:<name>`); the name is a plain file name, never a path, and a database is refused."
+value = "state:"
+
+[diagnostics.file_prefix_defaults]
+doc = "Id prefix of a shipped defaults file (`diag file defaults:<name>.toml`)."
+value = "defaults:"
+
+[diagnostics.file_prefix_transcript]
+doc = "Id prefix of an agent's transcript (`diag file transcript:<agent id>`), found through the tracker state."
+value = "transcript:"
+
+[diagnostics.file_refuse_ext]
+doc = "File name endings `diag file` refuses (databases and their journals, key material)."
+value = [".db", ".db-wal", ".db-shm", ".sock", ".key", ".pem"]
+
+[diagnostics.integrity_stores]
+doc = "The databases `diag integrity <store>` checks, by file name in the state directory."
+value = ["hot.db", "archive.db"]
+
+[diagnostics.msg_file_usage]
+doc = "Usage of `diag file`."
+value = "usage: ah-engine diag file <state:NAME|defaults:NAME.toml|transcript:AGENT>"
+
+[diagnostics.msg_file_refused]
+doc = "Said when `diag file` refuses an id: {why}."
+value = "refused: {why}"
+
+[diagnostics.why_not_plain_name]
+doc = "Reason: the id names a path, not a plain file name."
+value = "the name must be a plain file name"
+
+[diagnostics.why_ext]
+doc = "Reason: the file's kind is never shown."
+value = "this kind of file is never shown"
+
+[diagnostics.why_unknown_id]
+doc = "Reason: the id has no known prefix."
+value = "unknown id"
+
+[diagnostics.why_not_found]
+doc = "Reason: the file does not exist."
+value = "not found"
+
+[diagnostics.msg_integrity_usage]
+doc = "Usage of `diag integrity`: {stores} is diagnostics.integrity_stores."
+value = "usage: ah-engine diag integrity <{stores}>"

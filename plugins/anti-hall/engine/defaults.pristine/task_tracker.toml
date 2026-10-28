@@ -1,4 +1,4 @@
-# ah-engine shipped defaults for the `task-tracker` check (hooks/task-tracker.js): the UserPromptSubmit task-list discipline
+# ah-engine shipped defaults for the `task-tracker` check: the UserPromptSubmit task-list discipline
 # reminder. Format: see the header of engine.toml.
 #
 # The hook injects the full directive on the first prompt of a session and again when its window elapses or the transcript has
@@ -8,7 +8,7 @@
 
 [task_tracker.summary]
 doc = "One-line description of the task-tracker check in the generated reference."
-value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node (port of task-tracker.js)."
+value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node."
 
 [task_tracker.setting]
 doc = "Where the check's on/off switch is read from (context.taskTracker, default on)."
@@ -24,11 +24,11 @@ value = "task-tracker"
 
 [task_tracker.what_full]
 doc = "The first line of the full directive."
-value = "capture EVERY user request as a task (TaskCreate) before starting work, so no request is lost."
+value = "requests need tracking before work starts."
 
 [task_tracker.instead_head]
 doc = "The start of the full directive's 'Do instead' line."
-value = "give each task a priority (metadata.priority: P0/P1/P2) and keep the list sorted highest first; keep statuses current (in_progress when starting, completed when done, deferred if explicitly deprioritized); "
+value = "track each request as a priority-sorted task."
 
 [task_tracker.non_blocking]
 doc = "The clause the compact protocol level leaves out of the directive (the session core already carries it)."
@@ -36,7 +36,7 @@ value = "keep the MAIN thread non-blocking by delegating heavy/long work to back
 
 [task_tracker.instead_tail]
 doc = "The end of the full directive's 'Do instead' line."
-value = "report progress; never finish a turn with a silently dropped request."
+value = ""
 
 [task_tracker.what_short]
 doc = "The short per-turn reminder."
@@ -53,6 +53,10 @@ value = "as an item in your task/plan list "
 [task_tracker.full_level]
 doc = "The protocol level at which the directive keeps the non-blocking clause (any other level drops it)."
 value = "full"
+
+[task_tracker.prune_line]
+doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model. It leads the tracker's text on a line of its own and its first line stays under digest_line_chars, because the prompt digest shows only the first line of an advisory inline. It says plainly that these entries are not user data and names the ledger path (the relative form: the tracker has no cheap bounded way to render the absolute one) so a session that follows a never-delete rule still acts."
+value = "[task-guard] {n} completed/cancelled tasks (> {limit}): not user data; log in .anti-hall/history/<date>/<session>.md, then TaskUpdate status=deleted.\nOnly this session's own task-list entries may be deleted, once logged there; nothing else is exempt from the never-delete rule."
 
 [task_tracker.event]
 doc = "The hook event name in the output."
@@ -99,6 +103,12 @@ unit = "ms"
 doc = "How much the transcript may grow after a full directive before the next prompt injects it again (about 60 thousand tokens, where adherence to an instruction starts to decay)."
 value = 245760
 unit = "bytes"
+
+[task_tracker.growth_min_gap_ms]
+doc = "The least time since the last full directive before transcript growth alone injects it again. In a session whose transcript grows by the growth threshold every turn, growth alone re-sent the whole directive on every prompt; the window (window_ms) still re-sends it on expiry."
+value = 1800000
+unit = "ms"
+min = 0
 
 [task_tracker.future_tolerance_ms]
 doc = "How far ahead of now a stored timestamp may be (clock skew) before it counts as corrupt and the window is treated as expired."
@@ -237,11 +247,11 @@ value = ["Agent", "Task", "Workflow"]
 
 [task_tracker.primary_what]
 doc = "The 'what' line of the DevSwarm Primary dispatch-tier block."
-value = "Primary dispatch tier: classify each task before you dispatch it."
+value = "workspace-sized work needs a child workspace."
 
 [task_tracker.primary_instead]
 doc = "The 'instead' line of the DevSwarm Primary dispatch-tier block."
-value = "a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, own review) gets its own CHILD WORKSPACE: `node scripts/devswarm.js spawn <branch> -p \"<brief>\"`. Only finer-grained work (a lookup, a single command, a scoped investigation, a review pass) goes to a background subagent. Handing a workspace-scale task to a subagent is the same failure as leaving it idle."
+value = "assign the feature, fix or deploy to a child workspace."
 
 [task_tracker.primary_key]
 doc = "The emit-dedupe key of the Primary block, rationed apart from the reminder."
@@ -258,7 +268,7 @@ unit = "chars"
 min = 40
 max = 5000
 
-# ---- the per-turn DISPATCH NOW line (hooks/lib/dispatch-demand.js demandLine) and the running-agent proof -----------------------------
+# ---- the per-turn DISPATCH NOW line and the running-agent proof -----------------------------
 
 [task_tracker.demand_line]
 doc = "The per-turn demand line; `{running}` the running agents, `{cap}` the parallel cap, `{shown}` the labelled tasks, `{more}` the tail for tasks past the shown ones."
@@ -335,7 +345,7 @@ min = 1
 doc = "The counter of per-turn demand lines shown."
 value = "demandsShown"
 
-# ---- the dispatchTier annotation and outcome tracking (hooks/lib/dispatch-tier.js annotator, remember, trackOutcomes) --------------
+# ---- the dispatchTier annotation and outcome tracking  --------------
 
 [task_tracker.tier_names]
 doc = "The tiers a cached Jev verdict may name, in the order of the question."
@@ -413,3 +423,33 @@ value = { dispatched = "dispatched-", followed = "followed", overridden = "overr
 doc = "Agents dispatched for one workflow-tier task at which the dispatch counts as a fan-out."
 value = 3
 min = 1
+
+# ---- prompt-noise cut (#338): what the demand line leaves out, and when the short reminder speaks ----------------
+
+[task_tracker.held_setting]
+doc = "Skips held tasks in DISPATCH NOW. Where the switch is read from that keeps held tasks out of the DISPATCH NOW line (guards.dispatchSkipHeld, default on): a task with any metadata.blockedOn value, or a status that says it waits, is never named."
+value = { section = "guards", key = "dispatchSkipHeld", env = "ANTIHALL_DISPATCH_SKIP_HELD", aliases = [], option = "", default = true }
+
+[task_tracker.held_status_re]
+doc = "JavaScript regex source (case-insensitive) of a task status that means the task waits (on the owner or anything else) and is not dispatchable."
+value = 'blocked|waiting|on[-_ ]?hold|deferred|parked'
+
+[task_tracker.conflict_setting]
+doc = "Skips tasks whose file a running agent holds. Where the switch is read from that keeps a task out of the DISPATCH NOW line when a running agent already works on a file it names (guards.dispatchSkipFileConflict, default on)."
+value = { section = "guards", key = "dispatchSkipFileConflict", env = "ANTIHALL_DISPATCH_SKIP_FILE_CONFLICT", aliases = [], option = "", default = true }
+
+[task_tracker.file_token_re]
+doc = "JavaScript regex source (global) of the words of a task that name a file: a path with a directory, or a name with a known extension."
+value = '(?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:rs|js|ts|tsx|toml|md|json|py|sh|yml|yaml|go|java|kt|swift|dart|css|html)\b'
+
+[task_tracker.stop_setting]
+doc = "Quiets DISPATCH NOW during the spawn stop. Where the switch is read from that silences the DISPATCH NOW line while the weekly-usage spawn stop is active (guards.dispatchQuietSpawnStop, default on)."
+value = { section = "guards", key = "dispatchQuietSpawnStop", env = "ANTIHALL_DISPATCH_QUIET_SPAWN_STOP", aliases = [], option = "", default = true }
+
+[task_tracker.change_setting]
+doc = "Short reminder speaks only on list change. Where the switch is read from that makes the short reminder speak only when the open-task list changed or the list stayed untouched for untracked_prompts prompts (context.taskTrackerChangeOnly, default on). The full directive keeps its window."
+value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
+
+[task_tracker.untracked_prompts]
+doc = "Prompts before the short reminder repeats. Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts)."
+value = { section = "context", key = "taskTrackerUntrackedPrompts", env = "ANTIHALL_TASK_TRACKER_UNTRACKED_PROMPTS", aliases = [], option = "", default = 8, min = 1 }

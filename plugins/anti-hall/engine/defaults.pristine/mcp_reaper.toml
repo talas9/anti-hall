@@ -1,4 +1,4 @@
-# ah-engine shipped defaults for the `session-end-mcp-reaper` check (hooks/session-end-mcp-reaper.js and companion/mcp-reaper.js):
+# ah-engine shipped defaults for the `session-end-mcp-reaper` check:
 # the SessionEnd sweep that terminates orphaned MCP server processes a crashed earlier session left behind. Format: see the
 # header of engine.toml.
 #
@@ -16,7 +16,11 @@
 
 [mcp_reaper.summary]
 doc = "One-line description of the session-end-mcp-reaper check in the generated reference."
-value = "SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js)."
+value = "SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node."
+
+[mcp_reaper.unsure_log_kind]
+doc = "Engine log kind of a session-end-mcp-reaper case the engine cannot reproduce exactly, so it defers (logged, before anything is written or signalled): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or HOME unset with the passwd home being the real one under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), pid_range (a process id at or past hostproc.max_exact_id), ages (process ages only an ambiguous local time gives), managed (service-manager ownership the probe cannot read)."
+value = "mcp_reaper_unsure"
 
 [mcp_reaper.setting]
 doc = "Where the reaper's on/off switch is read from (maintenance.sessionEndReaper, default on; the deprecated environment alias is read too)."
@@ -170,7 +174,7 @@ doc = "The audit log reason for a candidate that is a systemd service."
 value = "systemd-service"
 
 
-# ---- the standalone reaper as an engine schedule job (port of companion/mcp-reaper.js + install-reaper.js) -------------------
+# ---- the standalone reaper as an engine schedule job -------------------
 #
 # The opt-in background reaper the Node companion ran every 60 s from its own launchd / systemd unit is the engine schedule job
 # `mcp_reaper`: the daemon's scheduler runs `ah-engine mcp-reaper run` as a subprocess, and the selection is the plugin script
@@ -181,7 +185,7 @@ value = "systemd-service"
 # again, forced. The log lines are the companion's, in the companion's log file.
 
 [cmd.mcp-reaper]
-doc = "The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line."
+doc = "The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line."
 value = { args = "run [--dry-run]", read_only = false, status = "implemented" }
 
 [job.mcp_reaper]
@@ -211,7 +215,7 @@ doc = "The marker of a carried-over Node opt-in, relative to the home directory:
 value = ".anti-hall/ah-engine/units/mcp-reaper.optin"
 
 [mcp_reaper.job_node_units]
-doc = "The unit files the Node installer (companion/install-reaper.js) writes, relative to the home directory. While one exists the job stands down: the Node reaper still runs, and two reapers never run at once."
+doc = "The unit files the Node installer writes, relative to the home directory. While one exists the job stands down: the Node reaper still runs, and two reapers never run at once."
 value = ["Library/LaunchAgents/com.anti-hall.mcp-reaper.plist", ".config/systemd/user/anti-hall-mcp-reaper.timer", ".config/systemd/user/anti-hall-mcp-reaper.service"]
 
 [env.mcp_reap_dryrun]

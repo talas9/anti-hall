@@ -6,15 +6,33 @@ use crate::cli::Parsed;
 use crate::defaults;
 use serde_json::{Value, json};
 
-fn row(a: &super::Agent, now: u64) -> Value {
+/// The agents each session launched, by the session's id.
+fn children(agents: &[&super::Agent]) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for a in agents.iter().filter(|a| super::is_child(a)) {
+        out.entry(a.parent.clone()).or_default().push(a.id.clone());
+    }
+    out
+}
+
+/// One agent's row. `all` is every tracked agent, for the links of the tree: its parent, its children, the project it works in.
+fn row(a: &super::Agent, now: u64, all: &std::collections::BTreeMap<&str, &super::Agent>, kids: &std::collections::BTreeMap<String, Vec<String>>) -> Value {
+    let roles = defaults::raw("agent_tracker.roles");
+    let mine = kids.get(&a.id).cloned().unwrap_or_default();
+    let session = a.kind == super::kind_name("main") || a.kind == super::kind_name("workspace");
+    let parent = (a.parent != a.id && !a.parent.is_empty()).then(|| a.parent.clone());
+    // a launched agent works in its launcher's project when its own transcript named none
+    let project = if a.cwd.is_empty() { parent.as_deref().and_then(|p| all.get(p)).map(|p| p.cwd.clone()).unwrap_or_default() } else { a.cwd.clone() };
     let last = if a.last_output_ms == 0 { Value::Null } else { json!(now.saturating_sub(a.last_output_ms) / fmtn("ms_per_s")) };
     json!({
         "agent": a.id, "name": a.name, "kind": a.kind, "state": state_of(a), "source": a.source, "host_state": a.host,
         "tokens_in": a.tin, "tokens_out": a.tout, "cache_read": a.tcr, "cache_write": a.tcw, "tool_calls": a.tools,
         "progress": a.progress, "commits": a.commits, "files_edited": a.files.len(), "tests_passed": a.tests_pass, "steps_done": a.steps_done,
-        "errors": a.errors, "step": a.step, "last_output_s": last, "partial": a.partial,
-        "flags": a.flags.iter().map(|(k, f)| json!({"signal": k, "since": f.since, "evidence": f.evidence, "text": f.text, "reminded_at": f.reminded_at, "delivered_at": f.delivered_at})).collect::<Vec<_>>(),
+        "errors": a.errors, "step": a.step, "waste": {"score": a.waste.score.round(), "verdict": a.waste.verdict, "confidence": a.waste.confidence, "source": a.waste.source, "action": a.waste.action, "judge_calls": a.waste.judge_calls, "cell": super::waste::cell(a)}, "last_output_s": last, "partial": a.partial, "no_work": super::signals::no_work_state(a),
+        "flags": a.flags.iter().map(|(k, f)| json!({"signal": k, "since": f.since, "evidence": f.evidence, "text": f.text, "reminded_at": f.reminded_at, "delivered_at": f.delivered_at, "delivered_to": f.delivered_to})).collect::<Vec<_>>(),
         "workspace": a.ws.as_ref().map(|w| json!({"id": w.id, "watcher_armed": w.armed, "step": w.step})),
+        "turn_ended": !a.running && a.pending.is_empty(), "parent": parent, "children": mine, "project": project, "transcript": a.path, "team": a.team, "pid": (a.pid != 0).then_some(a.pid),
+        "role": session.then(|| if mine.is_empty() { roles.str_field("solo") } else { roles.str_field("primary") }),
     })
 }
 
@@ -24,13 +42,34 @@ fn totals_json(t: &Totals) -> Value {
 
 /// The status document.
 pub(crate) fn document(env: &Env, st: &State, l: &super::sources::Listing) -> Value {
-    let mut agents: Vec<&super::Agent> = st.agents.values().collect();
+    // live agents always show; a finished one only while it is recent
+    let states = defaults::raw("agent_tracker.states");
+    let over = |a: &super::Agent| [states.str_field("done"), states.str_field("dead")].contains(&state_of(a));
+    let keep = super::lim("done_keep_ms");
+    let (mut agents, hidden): (Vec<&super::Agent>, Vec<&super::Agent>) =
+        st.agents.values().partition(|a| !over(a) || env.now_ms.saturating_sub(a.last_output_ms) <= keep);
+    let live: Vec<&super::Agent> = agents.iter().copied().filter(|a| !over(a)).collect();
+    let n = |f: &dyn Fn(&super::Agent) -> bool| live.iter().filter(|a| f(a)).count();
+    let kc = defaults::raw("agent_tracker.counts");
+    let counts = json!({
+        kc.str_field("sessions"): n(&|a| a.kind == super::kind_name("main") || a.kind == super::kind_name("workspace")),
+        kc.str_field("subagents"): n(&|a| a.kind == super::kind_name("subagent")),
+        kc.str_field("teammates"): n(&|a| a.kind == super::kind_name("teammate")),
+        kc.str_field("codex"): n(&|a| a.kind == super::kind_name("codex")),
+        kc.str_field("headless"): st.headless.len(),
+        kc.str_field("done_hidden"): hidden.len(),
+        kc.str_field("listed"): agents.len(),
+    });
     agents.sort_by(|a, b| b.flags.len().cmp(&a.flags.len()).then(b.last_output_ms.cmp(&a.last_output_ms)));
     let cli = defaults::raw("agent_tracker.claude_cli");
+    let by_id: std::collections::BTreeMap<&str, &super::Agent> = st.agents.values().map(|a| (a.id.as_str(), a)).collect();
+    let everyone: Vec<&super::Agent> = st.agents.values().collect();
+    let kids = children(&everyone);
     json!({
         "generated_ms": env.now_ms,
+        "summary": counts,
         "claude": {"version": l.cli_version, "agents_json": st.cli_ok, "used": l.cli_used, "verified_on": cli.get("verified").map(|v| v.to_json())},
-        "agents": agents.iter().map(|a| row(a, env.now_ms)).collect::<Vec<_>>(),
+        "agents": agents.iter().map(|a| row(a, env.now_ms, &by_id, &kids)).collect::<Vec<_>>(),
         "today": totals_json(&st.today(env)),
     })
 }
@@ -73,6 +112,7 @@ pub(crate) fn render(doc: &Value) -> String {
             cell(a, "tool_calls"),
             cell(a, "progress"),
             last,
+            a["waste"]["cell"].as_str().unwrap_or("").to_string(),
             flags,
         ]);
     }
@@ -114,6 +154,15 @@ pub(crate) fn render(doc: &Value) -> String {
 pub fn run_cmd(p: &Parsed) -> i32 {
     let sub = p.rest.first().map(String::as_str).unwrap_or("status");
     let Some(mut env) = Env::current() else { return 64 };
+    if sub == defaults::text("agent_tracker.wake_verb") {
+        return super::wake::run(p);
+    }
+    if sub == "send" {
+        return super::ctl::run_send(p);
+    }
+    if sub == defaults::text("agent_nudge.verb") {
+        return super::nudge::run_answer(p);
+    }
     if sub != "status" && sub != "tick" {
         eprintln!("{}", defaults::render("msg.agent_usage", &[]));
         return 64;
@@ -131,4 +180,50 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     let doc = document(&env, &st, &l);
     println!("{}", if p.json { doc.to_string() } else { render(&doc) });
     0
+}
+
+/// The per-agent cost report (GH #270): what each tracked agent spent against what it produced. Outcomes are the countable work
+/// units the tracker keeps (`agent_tracker.cost_outcome_units`): commits, pushes, finished steps, passing test runs and files
+/// edited. Only agents that spent tokens are listed, most tokens first, at most `agent_tracker.cost_limit`.
+pub(crate) fn cost_json(st: &State) -> Value {
+    let per = |tokens: u64, outcomes: u64| tokens.checked_div(outcomes);
+    let mut rows: Vec<(u64, Value)> = st
+        .agents
+        .values()
+        .filter_map(|a| {
+            let tokens = a.tin + a.tout;
+            let outcomes = a.commits + a.pushes + a.shipped + a.steps_done + a.tests_pass + a.files.len() as u64;
+            (tokens > 0).then(|| {
+                (
+                    tokens,
+                    json!({
+                        "agent": a.id, "name": a.name, "kind": a.kind, "parent": a.parent, "project": a.cwd, "tokens": tokens, "commits": a.commits, "pushes": a.pushes, "shipped": a.shipped,
+                        "guard_fires": a.guard_fires, "steps_done": a.steps_done, "tests_passed": a.tests_pass, "files_edited": a.files.len(),
+                        "outcomes": outcomes, "tokens_per_outcome": per(tokens, outcomes),
+                    }),
+                )
+            })
+        })
+        .collect();
+    rows.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+    let sum = |k: &str| rows.iter().map(|(_, r)| r[k].as_u64().unwrap_or(0)).sum::<u64>();
+    let (tokens, outcomes) = (sum("tokens"), sum("outcomes"));
+    let totals = json!({
+        "agents": rows.len(), "tokens": tokens, "commits": sum("commits"), "pushes": sum("pushes"), "guard_fires": sum("guard_fires"),
+        "outcomes": outcomes, "tokens_per_outcome": per(tokens, outcomes),
+    });
+    let limit = defaults::num("agent_tracker.cost_limit") as usize;
+    json!({
+        "outcome_units": defaults::text("agent_tracker.cost_outcome_units"),
+        "totals": totals,
+        "agents": rows.into_iter().take(limit).map(|(_, r)| r).collect::<Vec<_>>(),
+    })
+}
+
+/// The cost report of the running process's tracker state (an empty report when the home directory is unknown).
+pub fn cost_report() -> Value {
+    match Env::current() {
+        Some(env) => cost_json(&load_state(&env)),
+        None => cost_json(&State::default()),
+    }
 }

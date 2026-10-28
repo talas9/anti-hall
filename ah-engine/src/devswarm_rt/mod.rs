@@ -18,7 +18,7 @@ pub mod shadow;
 pub mod sources;
 pub mod state;
 
-pub use detect::{Detection, Mode, detect};
+pub use detect::{Detection, Mode, detect, detect_with};
 pub use reconcile::{Cause, Report, Rt};
 pub use state::{Cfg, Edge, EdgeKind, Snapshot, Workspace};
 
@@ -27,6 +27,11 @@ use std::path::Path;
 
 /// Start the layer: `None` (inert, no state, no I/O beyond the detection probe) when DevSwarm is absent or the mode is off.
 pub fn start(home: &Path, env: &Env) -> Option<Rt> {
-    let d = detect(home, env);
+    start_with(home, env, Mode::configured())
+}
+
+/// [`start`] with the mode the caller resolved.
+pub fn start_with(home: &Path, env: &Env, mode: Mode) -> Option<Rt> {
+    let d = detect_with(home, env, mode);
     d.active().then(|| Rt::new(Cfg::from_defaults(), d))
 }

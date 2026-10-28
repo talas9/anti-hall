@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Parity of the built-in `scan-throttle` check against hooks/scan-throttle.js (PreToolUse on Bash; advisory only).
-//   node run-scan-throttle.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks
+//   node run-scan-throttle.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks
 //        [--cmds fpr/cmds.jsonl] [--mode oneshot|daemon|both] [--real 6000] [--seed 1]
 // The guard matches nothing unless ANTI_HALL_THROTTLE_PATTERNS is set, so every pattern set is its own ctx (its own
 // environment and daemon). Corpus: (1) hand-written command shapes (assignments, subshells, groups, heredocs, quotes,

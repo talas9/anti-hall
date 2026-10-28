@@ -1,17 +1,23 @@
 name: ah-engine
 
-# Self-contained CI for the Rust engine in ah-engine/ (D69). Two tiers:
-# - the gate (push, pull request): fmt, test.sh on ubuntu (the `ci` nextest profile: everything but the memory soak, the
-#   wall-clock benches and the heavy Node parity sweeps; every policy gate stays in), a macOS build + smoke subset, docs;
-# - the full run (the nightly schedule, a manual dispatch, a version tag): the whole suite (`nightly` profile) on both OSes;
-#   a scheduled failure opens or updates one issue.
+# The one CI workflow of the repository (the old test.yml stub and no-node.yml are folded in). Two tiers:
+# - the QUICK gate (a push to dev or engine-proto, a pull request into dev): `fmt`, `lint` (clippy) and `quick` (the `quick` nextest
+#   profile of ah-engine/.config/nextest.toml on one ubuntu job, built with the ci-test profile). Target: a few minutes, with a warm cache;
+# - the FULL pack (a pull request into main, a push to main or a version tag, the nightly schedule, a manual dispatch, or a pull
+#   request into dev carrying the label `full-ci`): fmt, the thin client on both OSes, the `ci` profile gate on ubuntu and macOS (the
+#   `nightly` profile on the schedule, a dispatch and a tag), the no-Node harness on both OSes, doc-check, and the supply-chain audit.
+# A pull request that changes only docs (`docs/**` and `*.md` outside ah-engine/, plugins/ and .github/, except docs/AH-ENGINE.md and
+# docs/DEVELOPMENT.md, which tests read) skips every Rust job. Because the paths are decided by the `changes` job and not by a
+# workflow-level `paths:` filter, the workflow always starts and `tests-passed` (the required check of the dev and main rulesets)
+# always reports: a required check that never runs would leave the pull request pending for ever.
+# `tests-passed` runs even when an earlier job failed or was skipped (`if: always()`), and fails unless every job that SHOULD have run
+# succeeded: a job skipped by mistake does not count as a pass.
 on:
   push:
     branches: [engine-proto, dev, main]
     tags: ['v*']
-    paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
-    paths: ['ah-engine/**', '.github/workflows/ah-engine.yml']
+    types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     - cron: '17 3 * * *' # nightly: the full suite on both OSes
     - cron: '47 4 * * 1' # weekly: the full doc-check on both OSes
@@ -20,79 +26,298 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request cancels the superseded run (a gate takes 30-90 minutes). Scheduled, dispatched and tag
-# runs are never cancelled: the nightly and the release gate must finish.
+# A newer push to the same branch or pull request cancels the superseded run. Scheduled, dispatched and tag runs are never cancelled: the
+# nightly and the release gate must finish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  # the full tier: the nightly schedule, a manual dispatch or a version tag
+  # the nightly-profile tier: the nightly schedule, a manual dispatch or a version tag
   AH_FULL: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
+  # Decides what runs. Outputs: code (any Rust job at all), full (the full pack), devdocs (docs/DEVELOPMENT.md or the doc-check script changed).
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.c.outputs.code }}
+      full: ${{ steps.c.outputs.full }}
+      devdocs: ${{ steps.c.outputs.devdocs }}
+    steps:
+      - id: c
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE: ${{ github.base_ref }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          code=true; full=false; devdocs=false
+          case "$EVENT" in
+            schedule|workflow_dispatch) full=true ;;
+            push) case "$REF" in refs/heads/main|refs/tags/*) full=true ;; esac ;;
+            pull_request)
+              [ "$BASE" = main ] && full=true
+              # current labels, not the event payload: a re-run after adding `full-ci` sees it
+              if gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' | grep -qx 'full-ci'; then full=true; fi
+              gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv' > files.tsv
+              echo "changed files: $(wc -l < files.tsv)"
+              grep -qE '	(docs/DEVELOPMENT\.md|ah-engine/scripts/doc-check\.sh)	' files.tsv && devdocs=true
+              # docs-only: every file is docs/** or *.md outside ah-engine/, plugins/ and .github/, is not read by a test, and was not removed or renamed
+              if ! awk -F'\t' '
+                function docsonly(f) { return f != "" && f !~ /^(ah-engine|ah-launcher|plugins|\.github)\// && f != "docs/AH-ENGINE.md" && f != "docs/DEVELOPMENT.md" && (f ~ /^docs\// || f ~ /\.md$/) }
+                { if ($1 == "removed" || $1 == "renamed" || !docsonly($2) || ($3 != "" && !docsonly($3))) { found = 1 } }
+                END { exit found ? 0 : 1 }' files.tsv; then
+                code=false
+              fi
+              ;;
+          esac
+          echo "code=$code full=$full devdocs=$devdocs"
+          { echo "code=$code"; echo "full=$full"; echo "devdocs=$devdocs"; } >> "$GITHUB_OUTPUT"
+
+  fmt:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && (github.event_name != 'schedule' || github.event.schedule == '17 3 * * *')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - run: cargo fmt --check
+
+  # Quick tier only: clippy with the `[lints]` table of Cargo.toml, every warning an error. (The full tier's `rust` job runs it through test.sh.)
+  lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ah-engine
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  # Quick tier only: the deterministic unit / invariant / golden tests (nextest profile `quick`) on one ubuntu job.
+  quick:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ah-engine
+    env:
+      AH_HOOK_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
+      AH_LAUNCHER_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
+      AH_ENGINE_SCRIPT_TIME_MS: "2000"
+      AH_TEST_TIME_SCALE: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        id: cache
+        with:
+          workspaces: |
+            ah-engine
+            ah-launcher
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - name: Cache result
+        run: echo "rust-cache hit=${{ steps.cache.outputs.cache-hit }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-nextest
+      - name: Build the thin client for hook and install tests
+        working-directory: ah-launcher
+        run: cargo build --release --locked
+      - name: Build the test binaries
+        run: |
+          start=$(date +%s)
+          cargo nextest run --cargo-profile ci-test --profile quick --no-run
+          echo "test build: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Run the quick pack
+        run: cargo nextest run --cargo-profile ci-test --profile quick
+      - name: Upload generated reference on mismatch
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ah-engine-generated-reference-quick
+          path: ${{ runner.temp }}/ah-engine-generated-reference.md
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ---- the full pack ----
+
+  # The thin client (ah-hook, crate ah-launcher; GH #164) is part of every release archive: the full pack builds it on both OSes.
+  launcher:
+    name: ah-hook (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.code == 'true' && (github.event_name != 'schedule' || github.event.schedule == '17 3 * * *')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: ah-launcher
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ah-launcher
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - run: cargo build --release --locked
+
   rust:
     name: rust (${{ matrix.os }})
-    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.code == 'true' && (github.event_name != 'schedule' || github.event.schedule == '17 3 * * *')
     runs-on: ${{ matrix.os }}
     # the gate fits well inside an hour; the full run (soak, benches, heavy sweeps) gets more
     timeout-minutes: ${{ ((github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && 150 || 60 }}
     strategy:
       fail-fast: false
       matrix:
-        # A pull request runs the Linux gate only (the macOS leg is slow and capped at 5 concurrent jobs per account); macOS runs on
-        # push, the nightly, a manual dispatch and a version tag.
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest"]') }}
+        os: [ubuntu-latest, macos-latest]
     defaults:
       run:
         working-directory: ah-engine
     env:
+      # The Rust hook and install contract tests need the thin client in this job's checkout (jobs do not share builds).
+      AH_HOOK_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
+      AH_LAUNCHER_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
       # Headroom for the script CPU limit on a loaded shared runner (the shipped default is sized for an idle machine).
       AH_ENGINE_SCRIPT_TIME_MS: "2000"
       # Wall-clock tests (a transcript answered within the script limit) get the same headroom: 2000 ms x 3.
       AH_TEST_TIME_SCALE: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The Node parity lanes run the Node hooks; with CI=true they fail rather than skip when Node is missing.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
       # Install exactly the toolchain pinned in rust-toolchain.toml (channel, rustfmt and clippy), so CI never drifts from it.
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
           shared-key: engine-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
           cache-on-failure: true
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
+      - name: Check target without jemalloc (macOS x86_64)
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo check --target x86_64-apple-darwin
+      - name: Build the thin client for hook and install tests
+        working-directory: ah-launcher
+        run: cargo build --release --locked
       # The gate on ubuntu: test.sh (release clippy -D warnings, the `ci` profile, doctests, wrapper and bootstrap tests, the
       # daemon-survivor check). Clippy runs only here, once.
       - name: test.sh (gate)
         if: matrix.os == 'ubuntu-latest' && env.AH_FULL != 'true'
         run: ./test.sh
-      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions) and the
-      # wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
+      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions), the
+      # archive-cap retention fixture, and the wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
       - name: build + smoke (macOS gate)
         if: matrix.os == 'macos-latest' && env.AH_FULL != 'true'
         run: |
-          cargo nextest run --release --profile ci --no-run
-          cargo nextest run --release --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
-          sh tests/wrapper.sh && sh tests/bootstrap.sh
+          cargo nextest run --cargo-profile ci-test --profile ci --no-run
+          cargo nextest run --cargo-profile ci-test --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
+          sh tests/wrapper.sh && sh tests/bootstrap.sh && sh tests/plugin-dir-limits.sh
       - name: test.sh (full)
         if: env.AH_FULL == 'true'
         run: ./test.sh
         env:
           AH_TEST_PROFILE: nightly
+      - name: Upload generated reference on mismatch
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ah-engine-generated-reference-${{ matrix.os }}
+          path: ${{ runner.temp }}/ah-engine-generated-reference.md
+          retention-days: 7
+          if-no-files-found: ignore
       - run: cargo doc --no-deps
         if: matrix.os == 'ubuntu-latest'
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # "No Node installed" acceptance harness (v1.0 Node-free plan, lane L01): ah-engine/tests/no_node drives every hook event of both
+  # hosts, every skill and agent command line, the status line, the monitors and the daemon in a scratch HOME whose PATH has no Node.
+  # Node paths that remain are listed in ah-engine/tests/no_node/expected_failures.toml; the job fails on a new one and on a listed one
+  # that is gone. Node is deliberately NOT set up here.
+  no-node:
+    name: no-node (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.code == 'true' && (github.event_name != 'schedule' || github.event.schedule == '17 3 * * *')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS arm64 and Linux x86_64 first (issue checklist); macOS Intel and Linux arm64 follow with the platform lane.
+        os: [macos-latest, ubuntu-latest]
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            ah-engine
+            ah-launcher
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-nextest
+      # Every hook command of both hosts is the thin client (ah-hook); the harness finds it at ah-launcher/target/release.
+      - name: Build the thin client (ah-hook)
+        working-directory: ah-launcher
+        run: cargo build --release --locked
+      - name: No-Node harness
+        run: cargo nextest run --profile ci --test no_node
+        env:
+          # Headroom for the script CPU limit on a loaded shared runner.
+          AH_ENGINE_SCRIPT_TIME_MS: "2000"
+      - name: Upload the harness reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: no-node-reports-${{ matrix.os }}
+          path: ah-engine/target/tmp/no_node/
+          if-no-files-found: warn
 
   # A failed nightly run opens one issue, or comments on the open one, instead of failing silently.
   nightly-report:
@@ -119,7 +344,9 @@ jobs:
   # already runs them); the weekly schedule and a manual dispatch run every block on both OSes.
   doc-check:
     name: doc-check (${{ matrix.os }})
-    if: github.event_name != 'schedule' || github.event.schedule == '47 4 * * 1'
+    needs: changes
+    # the full pack, or a change to the guide / the script itself; the weekly cron and a dispatch run every block on both OSes
+    if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.devdocs == 'true') && (github.event_name != 'schedule' || github.event.schedule == '47 4 * * 1')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -128,14 +355,14 @@ jobs:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
           cache: npm
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
         working-directory: ah-engine
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
           shared-key: engine-${{ runner.os }}
@@ -144,13 +371,16 @@ jobs:
 
   # Supply chain (D84): known vulnerabilities (RustSec) and licence/source policy (ah-engine/deny.toml).
   supply-chain:
+    needs: changes
+    # a new advisory fails every PR at once, whatever it changed: it gates the full pack and the schedules, not the quick gate
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.code == 'true' && (github.event_name != 'schedule' || github.event.schedule == '17 3 * * *')
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-audit,cargo-deny
       # The RustSec database is a git clone that cargo-audit and cargo-deny update on top of; the cache saves the initial clone.
@@ -177,12 +407,12 @@ jobs:
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - run: rustup component add llvm-tools-preview
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
           shared-key: engine-${{ runner.os }}
           save-if: false
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Line coverage summary
@@ -201,12 +431,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
           shared-key: engine-${{ runner.os }}
           save-if: false
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-bloat
       - name: Release size and top crates
@@ -223,3 +453,42 @@ jobs:
             cat /tmp/bloat.txt
             echo '```'
           } | tee "$GITHUB_STEP_SUMMARY"
+
+  # The required check of the dev and main rulesets. It always runs (`if: always()`), so a skipped or cancelled dependency can never
+  # leave the pull request waiting for a check that does not exist, and it never takes a skipped job for a pass: it fails when a job
+  # that this run should have executed did not succeed. Quick tier (dev): fmt, lint, quick. Full pack (main, `full-ci`): fmt,
+  # launcher, rust, no-node, doc-check, supply-chain. A docs-only pull request passes with every Rust job skipped.
+  tests-passed:
+    name: tests-passed
+    needs: [changes, fmt, lint, quick, launcher, rust, no-node, doc-check, supply-chain]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job that should have run succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          CODE: ${{ needs.changes.outputs.code }}
+          FULL: ${{ needs.changes.outputs.full }}
+        run: |
+          set -eu
+          r() { printf '%s' "$NEEDS" | jq -r --arg j "$1" '.[$j].result'; }
+          bad=0
+          [ "$(r changes)" = success ] || { echo "changes: $(r changes)"; bad=1; }
+          for j in fmt lint quick launcher rust no-node doc-check supply-chain; do
+            res=$(r "$j")
+            case "$res" in failure|cancelled) echo "$j: $res"; bad=1 ;; esac
+          done
+          # the schedules and a dispatch have their own jobs and reports; the pull-request / push contract is checked here
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = push ]; then
+            if [ "$CODE" = true ]; then
+              want="fmt"
+              if [ "$FULL" = true ]; then want="$want launcher rust no-node supply-chain"; else want="$want lint quick"; fi
+              for j in $want; do
+                [ "$(r "$j")" = success ] || { echo "$j should have run and succeeded: $(r "$j")"; bad=1; }
+              done
+            fi
+          fi
+          [ "$bad" = 0 ] && echo "all required jobs succeeded (code=$CODE full=$FULL)"
+          exit "$bad"

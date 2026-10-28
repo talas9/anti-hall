@@ -1,2 +1,5 @@
 target/
 /target*/
+# written into the cwd by devswarm_child_turn_parity (scene inbox-relative-path: relative inboxPath/cursorPath)
+/in.cursor
+/in.ndjson

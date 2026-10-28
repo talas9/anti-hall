@@ -54,11 +54,12 @@ impl std::error::Error for DefaultsError {}
 pub struct Data {
     pub(super) root: PathBuf,
     /// In file order (keys sorted within a file).
-    pub(super) entries: &'static [&'static Entry],
+    pub(super) entries: std::sync::Arc<[&'static Entry]>,
     /// Sorted by key, for binary search.
     pub(super) index: Vec<(&'static str, &'static Entry)>,
-    /// Canonical text of each entry's source table, to tell a changed entry from an unchanged one at the next load.
-    canon: HashMap<&'static str, String>,
+    /// Fingerprint of each entry's canonical source table, to tell a changed entry from an unchanged one at the next load
+    /// (the text itself would keep a second copy of every shipped file in memory for the life of the snapshot).
+    canon: HashMap<&'static str, Print>,
     /// What the load fell back on, what to heal and what to keep as last-known-good.
     pub(super) report: Report,
     /// [`files_print`] of the root, taken before the files were read (a change during the load makes the cache stale, not wrong).
@@ -82,8 +83,35 @@ impl Data {
     }
 }
 
+/// A 128-bit fingerprint of a text (two independently keyed SipHash runs; compared only against another from the same process).
+type Print = [u64; 2];
+
+fn print_of(text: &str) -> Print {
+    use std::hash::{Hash, Hasher};
+    let run = |salt: u8| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        salt.hash(&mut h);
+        text.hash(&mut h);
+        h.finish()
+    };
+    [run(0), run(1)]
+}
+
 fn leak_str(s: &str) -> &'static str {
+    crate::mem::note_leak(s.len());
     Box::leak(s.to_string().into_boxed_str())
+}
+
+/// Leak `v` for the life of the process (the values are `'static`), recording its size with the memory registry.
+fn leak_slice<T>(v: Vec<T>) -> &'static [T] {
+    crate::mem::note_leak(v.len() * std::mem::size_of::<T>());
+    Box::leak(v.into_boxed_slice())
+}
+
+/// Leak one entry, recording its size.
+fn leak_entry(e: Entry) -> &'static Entry {
+    crate::mem::note_leak(std::mem::size_of::<Entry>());
+    Box::leak(Box::new(e))
 }
 
 fn to_v(v: &toml::Value) -> Option<V> {
@@ -91,8 +119,8 @@ fn to_v(v: &toml::Value) -> Option<V> {
         toml::Value::Integer(n) => V::Int(*n),
         toml::Value::Boolean(b) => V::Bool(*b),
         toml::Value::String(s) => V::Str(leak_str(s)),
-        toml::Value::Array(a) => V::List(Box::leak(a.iter().map(to_v).collect::<Option<Vec<_>>>()?.into_boxed_slice())),
-        toml::Value::Table(t) => V::Table(Box::leak(t.iter().map(|(k, x)| Some((leak_str(k), to_v(x)?))).collect::<Option<Vec<_>>>()?.into_boxed_slice())),
+        toml::Value::Array(a) => V::List(leak_slice(a.iter().map(to_v).collect::<Option<Vec<_>>>()?)),
+        toml::Value::Table(t) => V::Table(leak_slice(t.iter().map(|(k, x)| Some((leak_str(k), to_v(x)?))).collect::<Option<Vec<_>>>()?)),
         _ => return None,
     })
 }
@@ -102,8 +130,8 @@ fn json_to_v(v: &Json) -> Option<V> {
         Json::Number(n) => V::Int(n.as_i64()?),
         Json::Bool(b) => V::Bool(*b),
         Json::String(s) => V::Str(leak_str(s)),
-        Json::Array(a) => V::List(Box::leak(a.iter().map(json_to_v).collect::<Option<Vec<_>>>()?.into_boxed_slice())),
-        Json::Object(t) => V::Table(Box::leak(t.iter().map(|(k, x)| Some((leak_str(k), json_to_v(x)?))).collect::<Option<Vec<_>>>()?.into_boxed_slice())),
+        Json::Array(a) => V::List(leak_slice(a.iter().map(json_to_v).collect::<Option<Vec<_>>>()?)),
+        Json::Object(t) => V::Table(leak_slice(t.iter().map(|(k, x)| Some((leak_str(k), json_to_v(x)?))).collect::<Option<Vec<_>>>()?)),
         Json::Null => return None,
     })
 }
@@ -337,9 +365,9 @@ fn validate(file: &str, key: &str, e: &toml::Table, kinds: &HashMap<&str, Kind>,
         return Err(DefaultsError::new("type", file, key, format!("the shipped value is {}, this one is {}", s.type_str(), v.type_str())));
     }
     let row_ok =
-        |r: &toml::Value| r.as_table().is_some_and(|t| t.get("id").is_some_and(toml::Value::is_str) && t.get("command").is_some_and(toml::Value::is_str));
+        |r: &toml::Value| r.as_table().is_some_and(|t| t.get("id").is_some_and(toml::Value::is_str) && t.get("command").is_none_or(toml::Value::is_str));
     if key.starts_with(table::key("", "").trim_end_matches('_')) && !v.as_array().is_some_and(|a| a.iter().all(row_ok)) {
-        return Err(DefaultsError::new("dispatch", file, key, "a dispatch row must be a list of entry tables, each with a string id and command"));
+        return Err(DefaultsError::new("dispatch", file, key, "a dispatch row must be a list of entry tables, each with a string id"));
     }
     Ok(())
 }
@@ -466,16 +494,16 @@ fn assemble(d: &Dirs, base: Layer, kinds: &HashMap<&str, Kind>, report: &mut Rep
 /// Build the snapshot from the chosen settings and run the cross-file checks.
 fn finish(root: &Path, picks: Vec<Pick>, prev: Option<&Data>) -> Result<Data, DefaultsError> {
     let mut entries: Vec<&'static Entry> = Vec::new();
-    let mut canon: HashMap<&'static str, String> = HashMap::new();
+    let mut canon: HashMap<&'static str, Print> = HashMap::new();
     for Pick { file, key, e } in picks {
-        let text = format!("{e:?}");
+        let text = print_of(&format!("{e:?}"));
         let reused = prev.and_then(|p| p.find(&key).filter(|old| old.file == file && p.canon.get(old.key).is_some_and(|c| *c == text)));
         let entry: &'static Entry = match reused {
             Some(old) => old,
             None => {
                 let v = e.get("value").ok_or_else(|| DefaultsError::new("value", &file, &key, "no `value`"))?;
                 let value = to_v(v).ok_or_else(|| DefaultsError::new("unsupported", &file, &key, "use integers, booleans, strings, arrays and tables"))?;
-                Box::leak(Box::new(Entry {
+                leak_entry(Entry {
                     key: leak_str(&key),
                     file: leak_str(&file),
                     value,
@@ -484,7 +512,7 @@ fn finish(root: &Path, picks: Vec<Pick>, prev: Option<&Data>) -> Result<Data, De
                     min: e.get("min").and_then(toml::Value::as_integer),
                     max: e.get("max").and_then(toml::Value::as_integer),
                     unit: e.get("unit").and_then(toml::Value::as_str).map(leak_str),
-                }))
+                })
             }
         };
         canon.insert(entry.key, text);
@@ -504,7 +532,7 @@ fn finish(root: &Path, picks: Vec<Pick>, prev: Option<&Data>) -> Result<Data, De
     }
     crate::hookcfg::check_shipped(&entries).map_err(|e| DefaultsError::new("hooks", "", "", e))?;
     check_rows(root, &entries).map_err(|e| DefaultsError::new("dispatch", "", "", e))?;
-    Ok(Data { root: root.to_path_buf(), entries: Box::leak(entries.into_boxed_slice()), index, canon, report: Report::default(), print: String::new() })
+    Ok(Data { root: root.to_path_buf(), entries: entries.into(), index, canon, report: Report::default(), print: String::new() })
 }
 
 /// Read and validate the defaults of the plugin at `root`, falling back per file and per setting to the last-known-good
@@ -595,12 +623,15 @@ pub enum Healed {
         /// The backup taken first, if this was the file's first heal.
         backup: Option<PathBuf>,
     },
-    /// Not written: the plugin root is a version-controlled checkout and the heal was automatic.
+    /// Not written: the heal was automatic and the plugin root is a version-controlled checkout, or a deploy hold (the daemon-down
+    /// marker) is active, when a deploy is replacing the very files a heal would write.
     Skipped {
         /// The file, relative to the defaults directory.
         file: String,
         /// The settings it lacks.
         keys: Vec<String>,
+        /// Skipped because a deploy hold is active (not because of a checkout).
+        held: bool,
     },
     /// Not written.
     Failed {
@@ -698,13 +729,19 @@ fn has_backup(path: &Path) -> bool {
 /// Heal every file of `report.missing` under `root`. An automatic heal (`force` false) never writes into a
 /// version-controlled checkout ([`in_checkout`]); `ah-engine config heal` passes `force`.
 pub fn heal(root: &Path, report: &Report, force: bool) -> Vec<Healed> {
-    let skip = !force && in_checkout(root);
+    heal_with(root, report, force, !force && crate::client::daemon_down_marked())
+}
+
+/// [`heal`] with the deploy-hold reading given: an automatic heal never writes into a plugin root while a hold is active (a deploy is
+/// syncing the root; a heal from the binary that is being replaced would write into the half-synced files).
+pub fn heal_with(root: &Path, report: &Report, force: bool, held: bool) -> Vec<Healed> {
+    let skip = !force && (held || in_checkout(root));
     report
         .missing
         .iter()
         .map(|(file, keys)| {
             if skip {
-                return Healed::Skipped { file: file.clone(), keys: keys.clone() };
+                return Healed::Skipped { file: file.clone(), keys: keys.clone(), held };
             }
             match heal_file(root, file, keys) {
                 Ok(Some((keys, backup))) => Healed::Added { file: file.clone(), keys, backup },
@@ -727,9 +764,11 @@ pub fn heal_line(h: &Healed) -> (&'static str, &'static str, String) {
                 &[("file", file), ("keys", &keys.join(", ")), ("backup", &backup.as_ref().map(|b| b.display().to_string()).unwrap_or_default())],
             ),
         ),
-        Healed::Skipped { file, keys } => {
-            ("defaults_heal_skipped", "missing_key", super::render("defaults_load.msg_heal_skipped", &[("file", file), ("keys", &keys.join(", "))]))
-        }
+        Healed::Skipped { file, keys, held } => (
+            "defaults_heal_skipped",
+            "missing_key",
+            super::render(if *held { "defaults_load.msg_heal_held" } else { "defaults_load.msg_heal_skipped" }, &[("file", file), ("keys", &keys.join(", "))]),
+        ),
         Healed::Failed { file, keys, err } => {
             ("defaults_heal_failed", "io", super::render("defaults_load.msg_heal_failed", &[("file", file), ("keys", &keys.join(", ")), ("err", err)]))
         }
@@ -776,7 +815,7 @@ fn check_rows(root: &Path, entries: &[&'static Entry]) -> Result<(), String> {
     let prefix = prefix.trim_end_matches('_');
     for e in entries.iter().filter(|e| e.key.starts_with(prefix)) {
         if table::rows_of(&e.value).is_none() {
-            return Err(format!("{} must be a list of entry tables, each with a string id and command", e.key));
+            return Err(format!("{} must be a list of entry tables, each with a string id", e.key));
         }
     }
     let lists = get("dispatch.fallback_lists").and_then(V::as_table).ok_or("dispatch.fallback_lists is missing or not a table")?;
@@ -879,12 +918,18 @@ pub fn files_print(root: &Path) -> String {
     d.as_ref()[..12].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The root a cache file records, without reading the rest of it.
+/// The root a cache file records, independent of the writer version, if its defaults index still exists.
 pub fn cache_root(path: &Path) -> Option<PathBuf> {
     let mut head = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(std::fs::File::open(path).ok()?), &mut head).ok()?;
     let mut f = head.trim_end_matches('\n').splitn(4, '\t');
-    (f.next()? == MAGIC && f.next()? == env!("CARGO_PKG_VERSION")).then(|| f.nth(1).map(PathBuf::from).unwrap_or_default())
+    if f.next()? != MAGIC {
+        return None;
+    }
+    let _version = f.next()?;
+    let _print = f.next()?;
+    let root = PathBuf::from(f.next()?);
+    (!root.as_os_str().is_empty() && bootstrap::has_index(&root)).then_some(root)
 }
 
 /// The client's view of the defaults: the cache file, with a line index, parsed one key at a time.
@@ -943,7 +988,7 @@ impl Lazy {
         let (ks, ke, bs, be) = self.lines[i];
         let body: Json = serde_json::from_str(&self.text[bs..be]).ok()?;
         let key = leak_str(&self.text[ks..ke]);
-        Some(Box::leak(Box::new(Entry {
+        Some(leak_entry(Entry {
             key,
             file: "",
             value: json_to_v(body.get("v")?)?,
@@ -952,7 +997,7 @@ impl Lazy {
             min: body.get("n").and_then(Json::as_i64),
             max: body.get("x").and_then(Json::as_i64),
             unit: None,
-        })))
+        }))
     }
 
     pub(super) fn find(&self, key: &str) -> Option<&'static Entry> {
@@ -975,9 +1020,27 @@ impl Lazy {
             .collect()
     }
 
+    /// Find setting descriptors without materializing unrelated cached values (including script sources).
+    pub(super) fn setting_entries(&self, section: &str, name: &str) -> Vec<&'static Entry> {
+        // Cache bodies are compact serde_json objects. These are candidate filters only: inspect the parsed
+        // top-level value too, so nested fields or text cannot masquerade as a descriptor.
+        let section_field = format!("\"section\":{}", Json::from(section));
+        let key_field = format!("\"key\":{}", Json::from(name));
+        self.lines
+            .iter()
+            .filter_map(|(ks, ke, bs, be)| {
+                let body = self.text.get(*bs..*be)?;
+                if !body.contains(&section_field) || !body.contains(&key_field) {
+                    return None;
+                }
+                self.find(self.text.get(*ks..*ke)?).filter(|e| e.value.str_field("section") == section && e.value.str_field("key") == name)
+            })
+            .collect()
+    }
+
     pub(super) fn all(&self) -> &'static [&'static Entry] {
         let all: Vec<&'static Entry> = (0..self.lines.len()).filter_map(|i| self.find(&self.text[self.lines[i].0..self.lines[i].1])).collect();
-        Box::leak(all.into_boxed_slice())
+        leak_slice(all)
     }
 }
 
@@ -1007,7 +1070,12 @@ pub fn log_start_failure(e: &DefaultsError) {
 /// Note why no defaults could be loaded where an operator can find it: the event log needs the very settings that are
 /// missing, so this is one line in `defaults.error` in the state directory (overwritten each time) and the same on stderr.
 pub fn report_unavailable(e: &DefaultsError) {
-    let line = format!("ah-engine: defaults unavailable: {e}");
+    // Defaults are unavailable: diagnostics cannot read configurable limits or texts here.
+    let argv: Vec<String> = std::env::args_os().take(4).map(|a| a.to_string_lossy().chars().take(160).collect()).collect();
+    let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+    // SAFETY: getppid has no arguments or memory-safety preconditions.
+    let ppid = unsafe { libc::getppid() };
+    let line = format!("ah-engine: defaults unavailable: {e}\tpid={} ppid={ppid} argv={argv:?} cwd={cwd:?}", std::process::id());
     crate::discard::harmless(writeln!(std::io::stderr(), "{line}")); // keep: a closed stderr leaves nobody to tell
     if let Some(p) = bootstrap::state_dir().map(|d| d.join(bootstrap::ERROR_FILE)) {
         crate::discard::harmless(crate::limits::ensure_private_dir(p.parent().unwrap_or(Path::new(".")))); // keep: the write that follows fails too and the stderr line stands
@@ -1035,13 +1103,15 @@ mod tests {
                 }
             }
         }
-        let root = std::env::temp_dir().join(format!("ah-defaults-load-{tag}-{}", std::process::id()));
-        crate::discard::harmless(std::fs::remove_dir_all(&root));
+        let base = std::env::temp_dir().join(format!("ah-defaults-load-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&base));
+        let root = base.join("plugin");
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let node = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node");
         cp(&src.join(bootstrap::DEFAULTS_DIR), &root.join(bootstrap::DEFAULTS_DIR));
-        std::fs::create_dir_all(root.join("hooks")).unwrap();
+        std::fs::create_dir_all(base.join("anti-hall-node/hooks")).unwrap();
         for l in ["ah-fallback.list", "ah-fallback.codex.list"] {
-            std::fs::copy(src.join("hooks").join(l), root.join("hooks").join(l)).unwrap();
+            std::fs::copy(node.join("hooks").join(l), base.join("anti-hall-node/hooks").join(l)).unwrap();
         }
         root
     }
@@ -1244,6 +1314,22 @@ mod tests {
     }
 
     #[test]
+    fn an_automatic_heal_never_writes_while_a_deploy_hold_is_active_and_says_so() {
+        let root = plugin_with_pristine("healhold");
+        let p = root.join(bootstrap::DEFAULTS_DIR).join("engine.toml");
+        replace_table(&root, "engine.toml", "daemon.queue", "");
+        let before = std::fs::read_to_string(&p).unwrap();
+        let d = load_from(&root, None, None).unwrap();
+        let done = heal_with(&root, &d.report, false, true);
+        assert!(matches!(&done[..], [Healed::Skipped { held: true, .. }]), "{done:?}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before, "nothing is written under the hold");
+        assert!(heal_line(&done[0]).2.contains("deploy hold"), "the log line names the hold: {}", heal_line(&done[0]).2);
+        let forced = heal_with(&root, &d.report, true, true);
+        assert!(matches!(&forced[..], [Healed::Added { .. }]), "the explicit command still heals: {forced:?}");
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
+    }
+
+    #[test]
     fn a_checkout_is_never_written_automatically_and_a_wrong_value_is_never_overwritten() {
         let root = plugin_with_pristine("healgit");
         std::fs::create_dir_all(root.join(".git")).unwrap();
@@ -1270,6 +1356,32 @@ mod tests {
     }
 
     // ---- the snapshot cache -----------------------------------------------------------------------------------------------
+
+    #[test]
+    fn setting_lookup_keeps_unrelated_cached_defaults_unparsed() {
+        let root = plugin_with_pristine("setting-lookup");
+        let data = load_from(&root, None, None).unwrap();
+        let cache = root.with_extension("state").join("defaults.cache");
+        write_cache(&data, &cache).unwrap();
+        let lazy = Lazy::open(&cache, Some(&root)).unwrap();
+        let section = "devswarm";
+        let name = "supervisorMode";
+        let expected: Vec<_> =
+            data.index.iter().map(|(_, e)| e).filter(|e| e.value.str_field("section") == section && e.value.str_field("key") == name).map(|e| e.key).collect();
+        assert!(!expected.is_empty());
+        let found = lazy.setting_entries(section, name);
+        assert_eq!(found.iter().map(|e| e.key).collect::<Vec<_>>(), expected);
+        assert_eq!(lazy.memo.lock().unwrap().len(), found.len(), "only matching descriptors are decoded");
+        assert!(lazy.setting_entries("no-such-section", "no-such-setting").is_empty());
+        assert_eq!(lazy.memo.lock().unwrap().len(), found.len(), "a missing setting must not decode the cache either");
+        // Every descriptor remains discoverable, including dotted setting names and duplicate definitions.
+        for e in data.index.iter().map(|(_, e)| e) {
+            let (section, name) = (e.value.str_field("section"), e.value.str_field("key"));
+            if !section.is_empty() && !name.is_empty() {
+                assert!(lazy.setting_entries(section, name).iter().any(|x| x.key == e.key), "{}", e.key);
+            }
+        }
+    }
 
     #[test]
     fn the_client_cache_is_stale_once_a_defaults_file_changes() {

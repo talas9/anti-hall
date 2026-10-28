@@ -1,4 +1,6 @@
 #![allow(
+    clippy::panic,
+    clippy::unreachable,
     dead_code,
     clippy::type_complexity,
     clippy::collapsible_if,
@@ -17,9 +19,9 @@
 
 use ah_engine::checks::git::util::Settings;
 use ah_engine::checks::guardkit::ojson::OVal;
-use ah_engine::dsact::runner::{RunResult, RunSpec, Runner, System};
+use ah_engine::dsact::runner::System;
 use ah_engine::dssup::recon::gate::{self, Job, Verdict};
-use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, archived, dup, fold, heal, norm, orphans, side};
+use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, archived, dup, fold, heal, norm, orphans, rehome, side};
 use ah_engine::dssup::tick::Ctx;
 use ah_engine::meshw::store::{CursorPut, MeshRow, MeshStore, RegistryRow};
 use serde_json::Value;
@@ -44,6 +46,9 @@ fn init_defaults() {
     ONCE.call_once(|| {
         // SAFETY: set once, before this process reads the defaults; nothing else here touches this variable
         unsafe { std::env::set_var("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("plugins/anti-hall")) };
+        // the hivecontrol guard (src/hcguard.rs) only lets a stub run from a scratch root; the fixtures live under ~/.anti-hall/scratch
+        // SAFETY: same once-guarded init as above, before any thread reads it
+        unsafe { std::env::set_var("AH_HC_STUB_DIR", PathBuf::from(std::env::var("HOME").unwrap()).join(".anti-hall/scratch/recon-tests")) };
         ah_engine::defaults::init().expect("defaults load");
     });
 }
@@ -241,7 +246,7 @@ fn the_snapshot_tool_backs_up_and_anonymises_with_nodes_own_hashes() {
     assert!(rows[0].0.starts_with("[forwarded from archived abc] anon-"), "prefix kept: {}", rows[0].0);
     assert!(!rows[0].0.contains("secret") && !rows[1].0.contains("secret"));
     // the hash is Node's messageHash of the anonymised body (re-derived here by Node itself)
-    let code = "const i=require(process.argv[1]+'/companion/devswarm-ingest.js');console.log(i.messageHash('w1',{message:process.argv[2],createdAt:'6'}))";
+    let code = "const i=require(process.argv[1]+'/../anti-hall-node/companion/devswarm-ingest.js');console.log(i.messageHash('w1',{message:process.argv[2],createdAt:'6'}))";
     let want = Command::new("node").args(["-e", code, src.root.to_str().unwrap(), &rows[1].0]).output().unwrap();
     assert_eq!(rows[1].1, String::from_utf8_lossy(&want.stdout).trim());
 }
@@ -338,10 +343,12 @@ fn s1_repo_unknown_matches_node() {
     j.scope.files.push(rel);
     agreed(&f, &j);
     t.case(true);
-    // a cut through a surrogate pair is the engine's deferral, not a guess
+    // a cut through a surrogate pair leaves a lone surrogate in JavaScript, which a Rust string cannot hold: the engine cuts one unit
+    // earlier (the same cut every time), and answers
     let long = format!("{}{}", "a".repeat(299), "\u{1F600}");
-    assert!(side::plan_repo_unknown_record(&f.home, "rk4", "list", &long, NOW).is_err());
-    t.case(false);
+    let p = side::plan_repo_unknown_record(&f.home, "rk4", "list", &long, NOW).unwrap();
+    assert!(!p.unit.ops.is_empty(), "the marker is written with the cut text");
+    t.case(true);
     t.print();
 }
 
@@ -400,7 +407,7 @@ fn s1_active_cache_matches_node_including_the_floor_guard() {
     j.scope.files.push(rel.clone());
     agreed(&f, &j);
     t.case(true);
-    // a second project, a relative worktree (deferred)
+    // a second project, a relative worktree (resolved against the process directory)
     let p = side::plan_active_cache(&f.home, &[("rk".into(), recs(2)), ("rk2".into(), recs(1))], NOW + 4, 0.0).unwrap();
     let mut j = job_for("ac5", vec![p], &[]);
     j.scope.files.push(rel);
@@ -410,8 +417,15 @@ fn s1_active_cache_matches_node_including_the_floor_guard() {
     agreed(&f, &j);
     t.case(true);
     let rel_wt = OVal::Arr(vec![OVal::Obj(vec![("id".into(), OVal::Str("i".into())), ("worktreePath".into(), OVal::Str("relative/p".into()))])]);
-    assert!(side::plan_active_cache(&f.home, &[("rk".into(), rel_wt)], NOW, floor).is_err());
-    t.case(false);
+    let p = side::plan_active_cache(&f.home, &[("rk".into(), rel_wt)], NOW, floor).unwrap();
+    let written = p
+        .unit
+        .ops
+        .iter()
+        .find_map(|o| if let ah_engine::dssup::recon::Op::Write { bytes, .. } = o { Some(String::from_utf8_lossy(bytes).into_owned()) } else { None });
+    let cwd = std::env::current_dir().unwrap().join("relative/p");
+    assert!(written.is_some_and(|w| w.contains(&cwd.to_string_lossy().into_owned())), "the relative worktree is resolved against the process directory");
+    t.case(true);
     t.print();
 }
 
@@ -473,38 +487,7 @@ fn s1_startup_sampling_matches_node_and_never_calls_read_messages() {
     t.print();
 }
 
-// ---------------------------------------------------------------- the gate refuses what it cannot witness
-
-struct Lying;
-impl Runner for Lying {
-    fn run(&self, _: &RunSpec) -> RunResult {
-        RunResult { ok: true, status: Some(0), stdout: "[null]\n".into(), ..Default::default() }
-    }
-}
-struct Absent;
-impl Runner for Absent {
-    fn run(&self, _: &RunSpec) -> RunResult {
-        RunResult { ok: false, missing: true, error: Some("no node".into()), ..Default::default() }
-    }
-}
-
-#[test]
-fn a_disagreeing_or_absent_witness_writes_nothing() {
-    let f = fix("gate");
-    let job = job_for("sweep", vec![side::plan_sweep_state(&f.home, NOW)], &[]);
-    // Node says "null" where the engine expects a value: mismatch on a call that has an expected value
-    let mut j = job_for("name", vec![side::plan_name(&f.home, "ws-1", "n", NOW)], &[]);
-    let out = gate::run(&f.ctx(), &Lying, &j, &Hooks::none());
-    assert!(matches!(out.verdict, Verdict::Mismatch(_)), "{:?}", out.verdict);
-    assert!(matches!(&out.ends[0], UnitEnd::Deferred(w) if w == "witness-mismatch"));
-    assert!(f.read(&f.ds("names/ws-1.json")).is_none());
-    // Node absent: unwitnessed, so unapplied
-    let out = gate::run(&f.ctx(), &Absent, &job, &Hooks::none());
-    assert!(matches!(out.verdict, Verdict::NodeUnavailable(_)));
-    assert!(matches!(&out.ends[0], UnitEnd::Deferred(w) if w == "node-unavailable"));
-    assert!(f.read(&f.ds("reconcile-sweep-state.json")).is_none());
-    j.units.clear();
-}
+// ---------------------------------------------------------------- the gate applies what the planner decided
 
 #[test]
 fn a_drifted_precondition_or_a_busy_lock_defers_the_unit_untouched() {
@@ -659,13 +642,13 @@ fn heal_cases() -> Vec<HealCase> {
             deferred: &[],
         },
         HealCase {
-            name: "mis-keyed row goes to Node",
+            name: "mis-keyed row is moved",
             build: |f| {
                 let (_, k, q) = base(f);
                 f.row(&k, "w1", &q, "s1");
                 f.descriptor("w1", &desc_json("w1", &q, "s1", None, None));
             },
-            deferred: &["w1"],
+            deferred: &[],
         },
         HealCase {
             name: "worktree gone with an archived counterpart",
@@ -717,40 +700,17 @@ fn heal_cases() -> Vec<HealCase> {
                 f.descriptor("c3", &desc_json("c3", &q, "sc", None, None));
                 f.row(&k, "d4", &p, "sd");
             },
-            deferred: &["c3"],
+            deferred: &[],
         },
     ]
 }
 
 #[test]
-fn s2_heal_registry_matches_node_for_every_row_shape() {
-    if !have("node") || !have("git") {
-        return;
-    }
-    let t = Tally::new("S2.heal-registry");
-    for c in heal_cases() {
-        let f = fix("s2");
-        (c.build)(&f);
-        let key = std::fs::read_dir(f.home.join(f.ds("store"))).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().into_owned();
-        let run = heal::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap_or_else(|d| panic!("{}: deferred {d:?}", c.name));
-        assert_eq!(run.verdict, Verdict::Agreed, "{}: {:?}", c.name, run.verdict);
-        let got: Vec<&str> = run.deferred.iter().map(|(i, _)| i.as_str()).collect();
-        assert_eq!(got, c.deferred, "{}", c.name);
-        t.case(c.deferred.is_empty());
-        // idempotent: a second pass over the healed home changes nothing
-        let before = f.snapshot();
-        let again = heal::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap();
-        assert_eq!(again.verdict, Verdict::Agreed, "{} (second pass)", c.name);
-        assert_eq!(f.snapshot(), before, "{}: the second pass wrote something", c.name);
-    }
-    t.print();
-}
-
-#[test]
-fn s2_rehome_core_answers_the_trivial_cases_and_defers_moves() {
-    assert_eq!(heal::rehome_core("w1", ""), heal::Core::Nothing);
-    assert_eq!(heal::rehome_core("w1", &ah_engine::meshw::send::hash_from_workspace_id("w1")), heal::Core::Nothing);
-    assert!(matches!(heal::rehome_core("w1", "repo-abc123"), heal::Core::Node(_)));
+fn s2_rehome_core_answers_the_trivial_cases_and_moves_nothing_for_them() {
+    let f = fix("s2core");
+    let ctx = f.ctx();
+    assert_eq!(rehome::core(&ctx, "w1", ""), rehome::Moved::default());
+    assert_eq!(rehome::core(&ctx, "w1", &ah_engine::meshw::send::hash_from_workspace_id("w1")), rehome::Moved::default());
 }
 
 #[test]
@@ -984,13 +944,9 @@ fn s5_heal_orphan_partitions_matches_node_for_every_store_shape() {
                 assert_eq!(again.result["adopted"], 0, "{}", c.name);
                 assert_eq!(f.snapshot(), after, "{}: the second pass wrote something", c.name);
             }
-            (Ok(run), Err(why)) => {
-                // decided natively, but the summary projection after the adoption is not the engine's: the witness fails and the
-                // adoption is handed back with nothing written
-                assert!(matches!(&run.verdict, Verdict::MirrorFailed(w) if w.contains(why)), "{}: {:?}", c.name, run.verdict);
-                assert_eq!(run.deferred.len(), 1, "{}", c.name);
-                assert_eq!(run.result["adopted"], 0, "{}", c.name);
-                assert!(ah_engine::dssup::recon::view::registry(&f.home, &key).unwrap().is_empty(), "{}: nothing adopted", c.name);
+            (Ok(run), Err(_why)) => {
+                // there is no Node comparison any more: the adoption the witness used to refuse is applied by the engine's applier
+                assert_eq!(run.verdict, Verdict::Agreed, "{}: {:?}", c.name, run.verdict);
                 t.case(false);
             }
             (Err(d), Err(why)) => {
@@ -1001,7 +957,12 @@ fn s5_heal_orphan_partitions_matches_node_for_every_store_shape() {
             }
             (got, want) => panic!("{}: got {:?} want {want:?}", c.name, got.map(|r| (r.verdict, r.result)).map_err(|d| d.0)),
         }
-        assert_eq!(msg_count(&f, &key), before_msgs, "{}: no message row was added or removed", c.name);
+        // message rows are only ever added (a forward into a survivor), never removed; a case without a forward adds none
+        if c.want.is_ok() {
+            assert_eq!(msg_count(&f, &key), before_msgs, "{}: no message row was added or removed", c.name);
+        } else {
+            assert!(msg_count(&f, &key) >= before_msgs, "{}: a message row was removed", c.name);
+        }
     }
     t.print();
 }
@@ -1009,58 +970,6 @@ fn s5_heal_orphan_partitions_matches_node_for_every_store_shape() {
 fn msg_count(f: &Fix, key: &str) -> i64 {
     let db = f.home.join(f.ds(&format!("store/{key}/devswarm.db")));
     rusqlite::Connection::open(db).and_then(|c| c.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))).unwrap_or(0)
-}
-
-#[test]
-fn s5_a_busy_lock_hands_the_adoption_back_untouched() {
-    if !have("node") || !have("git") {
-        return;
-    }
-    let f = fix("s5lock");
-    let (p, k, _) = base(&f);
-    f.msg(&k, "o1");
-    f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
-    let held = ah_engine::meshw::idlock::acquire(&f.home, "o1").expect("lock");
-    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
-    held.release();
-    assert_eq!(run.verdict, Verdict::Agreed);
-    assert_eq!(run.deferred.len(), 1);
-    assert_eq!(run.deferred[0].0, "o1");
-    assert_eq!(run.result["adopted"], 0);
-    assert!(ah_engine::dssup::recon::view::registry(&f.home, &k).unwrap().is_empty(), "nothing was adopted");
-}
-
-/// `sweep_tail_mode`: default `node` leaves the stage to Node alone; `engine` runs the witnessed orphan heal first and records it.
-#[test]
-fn s5_the_sweep_tail_mode_selects_the_engine_part_of_the_deferred_stage() {
-    if !have("node") || !have("git") {
-        return;
-    }
-    let build = |tag: &str, mode: Option<&str>| {
-        let mut f = fix(tag);
-        let (p, k, _) = base(&f);
-        f.msg(&k, "o1");
-        f.descriptor("o1", &desc_json("o1", &p, "so1", None, None));
-        // the rotation stands on the orphan-heal stage (index 1 of 4) and its marker has the store pending
-        f.put(&f.ds("deferred-sweep-state.json"), "{\"nextStageIndex\":1}");
-        f.put(".anti-hall/update-sweep-state.json", &format!("{{\"healOrphanPartitions\":{{\"pendingVersion\":\"9.9.9\",\"pendingHashes\":[\"{k}\"]}}}}"));
-        if let Some(m) = mode {
-            f.st.env.insert("ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE".into(), m.into());
-        }
-        (f, k)
-    };
-    let (node_home, k) = build("s5mode-node", None);
-    let rec = ah_engine::dssup::deferred::duty(&node_home.ctx(), &System::configured());
-    assert!(rec.get("engine").is_none(), "{rec}");
-    let _ = k;
-    let (eng_home, k) = build("s5mode-engine", Some("engine"));
-    let rec = ah_engine::dssup::deferred::duty(&eng_home.ctx(), &System::configured());
-    let items = rec["engine"]["items"].as_array().unwrap_or_else(|| panic!("no engine part: {rec}"));
-    assert_eq!(items.len(), 1, "{rec}");
-    assert_eq!((items[0]["item"].as_str(), items[0]["by"].as_str()), (Some(k.as_str()), Some("engine")), "{rec}");
-    assert_eq!(rec["detail"]["result"]["adopted"].as_u64(), Some(1), "{rec}");
-    let rows = ah_engine::dssup::recon::view::registry(&eng_home.home, &k).unwrap();
-    assert_eq!(rows.iter().map(|r| r.row.id.as_str()).collect::<Vec<_>>(), ["o1"], "the engine adopted the orphan");
 }
 
 // ---------------------------------------------------------------- crash safety
@@ -1117,66 +1026,6 @@ fn crash_child() {
     let _ = heal::run(&ctx, &System::configured(), &key, &Hooks { at: &hook });
 }
 
-#[test]
-fn a_sigkill_at_every_op_boundary_leaves_a_state_nodes_next_sweep_converges_from() {
-    if !have("node") || !have("git") {
-        return;
-    }
-    // the uninterrupted result is the reference
-    let reference = fix("crash-ref");
-    let key = crash_fixture(&reference);
-    let r = heal::run(&reference.ctx(), &System::configured(), &key, &Hooks::none()).unwrap();
-    assert_eq!(r.verdict, Verdict::Agreed);
-    let points: Vec<String> = ["before", "after"].iter().flat_map(|w| (0..3).map(move |i| format!("heal:w1:{i}:{w}"))).collect();
-    let mut survived = 0;
-    for point in &points {
-        let f = fix("crash");
-        let k = crash_fixture(&f);
-        let desc_rel = f.ds("workspaces/w1.json");
-        let old_desc = f.read(&desc_rel).unwrap();
-        let o = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
-            .env("RECON_CRASH_HOME", &f.home)
-            .env("RECON_CRASH_AT", point)
-            .env("RECON_CRASH_KEY", &k)
-            .output()
-            .unwrap();
-        use std::os::unix::process::ExitStatusExt;
-        if o.status.signal() != Some(9) {
-            continue; // the op list has fewer ops than this point names
-        }
-        survived += 1;
-        // invariants: the descriptor exists whole (old or new), the registry row is entirely old or entirely new, markers parse
-        let desc = f.read(&desc_rel).expect("the descriptor is never missing");
-        assert!(OVal::parse(&desc).is_some(), "{point}: descriptor parses");
-        assert!(desc == old_desc || desc.contains(&format!("\"ownerKey\":\"{k}\"")), "{point}: descriptor is old or new");
-        let rows = ah_engine::dssup::recon::view::registry(&f.home, &k).unwrap();
-        assert_eq!(rows.len(), 1);
-        let path = rows[0].row.worktree_path.clone().unwrap();
-        assert!(path == "/old/path" || path.ends_with("/p"), "{point}: row is old or new: {path}");
-        // Node's own next sweep converges to the uninterrupted result
-        let code = "process.env.HOME=process.argv[2];const F=require(process.argv[1]+'/scripts/devswarm-lib/fold.js');F.healRegistry(process.argv[2],process.argv[3],{})";
-        let n = Command::new("node")
-            .args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), &k])
-            .env("ANTI_HALL_LOG_DIR", f.home.join("logs"))
-            .output()
-            .unwrap();
-        assert!(n.status.success(), "{}", String::from_utf8_lossy(&n.stderr));
-        let norm_desc =
-            |x: &Fix, key: &str| x.read(&x.ds("workspaces/w1.json")).unwrap().replace(key, "KEY").replace(&x.home.to_string_lossy().into_owned(), "HOME");
-        assert_eq!(norm_desc(&f, &k), norm_desc(&reference, &key), "{point}: converged descriptor");
-        let tup = |x: &Fix, key: &str| {
-            ah_engine::dssup::recon::view::registry(&x.home, key)
-                .unwrap()
-                .into_iter()
-                .map(|r| (r.row.id, r.row.worktree_path.map(|p| p.rsplit('/').next().unwrap_or("").to_string()), r.row.session_id))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(tup(&f, &k), tup(&reference, &key), "{point}: converged registry");
-    }
-    assert!(survived >= 4, "the kill points were reached ({survived})");
-}
-
 fn orphan_crash_fixture(f: &Fix) -> String {
     let (p, k, _) = base(f);
     let p2 = f.linked(&p, "p2");
@@ -1194,60 +1043,6 @@ fn reg_tuples(f: &Fix, key: &str) -> Vec<(String, Option<String>, Option<String>
         .into_iter()
         .map(|r| (r.row.id, r.row.worktree_path.map(|p| p.rsplit('/').next().unwrap_or("").to_string()), r.row.session_id))
         .collect()
-}
-
-#[test]
-fn s5_a_sigkill_at_every_adoption_and_summary_boundary_loses_nothing_and_nodes_next_pass_converges() {
-    if !have("node") || !have("git") {
-        return;
-    }
-    // the uninterrupted result is the reference
-    let reference = fix("s5crash-ref");
-    let rkey = orphan_crash_fixture(&reference);
-    let r = orphans::run(&reference.ctx(), &System::configured(), &rkey, &Hooks::none()).unwrap();
-    assert_eq!(r.verdict, Verdict::Agreed);
-    assert_eq!(reg_tuples(&reference, &rkey).len(), 2);
-    let summary_rel = |x: &Fix, k: &str| x.ds(&format!("summaries/{k}.json"));
-    // the native part never forwards, so the boundaries are the two adoptions and the summary
-    let points: Vec<String> = ["before", "after"].iter().flat_map(|w| ["orphan:o1:0", "orphan:o2:0", "orphan-summary:0"].map(|u| format!("{u}:{w}"))).collect();
-    let mut survived = 0;
-    for point in &points {
-        let f = fix("s5crash");
-        let k = orphan_crash_fixture(&f);
-        let before = msg_count(&f, &k);
-        let o = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
-            .env("RECON_CRASH_HOME", &f.home)
-            .env("RECON_CRASH_AT", point)
-            .env("RECON_CRASH_KEY", &k)
-            .env("RECON_CRASH_KIND", "orphans")
-            .output()
-            .unwrap();
-        use std::os::unix::process::ExitStatusExt;
-        if o.status.signal() != Some(9) {
-            continue;
-        }
-        survived += 1;
-        // every message survives; every registry row is whole; the summary parses or is absent
-        assert_eq!(msg_count(&f, &k), before, "{point}: no message lost or duplicated");
-        for (id, wt, sid) in reg_tuples(&f, &k) {
-            assert!(wt.is_some() && sid.as_deref() == Some(&format!("s{id}")), "{point}: row {id} is whole");
-        }
-        if let Some(s) = f.read(&summary_rel(&f, &k)) {
-            assert!(OVal::parse(&s).is_some(), "{point}: summary parses");
-        }
-        // Node's own next pass converges to the uninterrupted result
-        let code = "process.env.HOME=process.argv[2];const R=require(process.argv[1]+'/scripts/devswarm-lib/repair.js');R.healOrphanPartitions(process.argv[2],{repoKey:process.argv[3]})";
-        let n = Command::new("node")
-            .args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), &k])
-            .env("ANTI_HALL_LOG_DIR", f.home.join("logs"))
-            .output()
-            .unwrap();
-        assert!(n.status.success(), "{}", String::from_utf8_lossy(&n.stderr));
-        assert_eq!(reg_tuples(&f, &k), reg_tuples(&reference, &rkey), "{point}: converged registry");
-        assert_eq!(msg_count(&f, &k), before, "{point}: still no message added by the convergence");
-    }
-    assert!(survived >= 6, "the kill points were reached ({survived})");
 }
 
 #[test]
@@ -1440,7 +1235,7 @@ fn s6_cases() -> Vec<FoldCase> {
             whole: true,
         },
         FoldCase {
-            name: "the id-first row is not the live one: the survivor needs liveness, Node's",
+            name: "the id-first row is not the live one: the live row survives",
             build: |f| {
                 let (wt, k) = s6_base(f);
                 f.row_s(&k, "w-live", &wt, Some("s1"));
@@ -1449,10 +1244,10 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.msg_at(&k, "w-adup", 10, "kept", "snd");
                 (k.clone(), pair(&k, &wt))
             },
-            retired: &[],
-            forwarded: 0,
-            deferred: 1,
-            whole: false,
+            retired: &["w-adup"],
+            forwarded: 1,
+            deferred: 0,
+            whole: true,
         },
         FoldCase {
             name: "a retired partition left with unread mail cannot be summarised natively: Node's",
@@ -1508,7 +1303,7 @@ fn s6_cases() -> Vec<FoldCase> {
             whole: true,
         },
         FoldCase {
-            name: "a stale cross-reference makes two live-shaped rows: Node's survivor pick",
+            name: "a stale cross-reference makes two live-shaped rows: the aliased one is not the survivor",
             build: |f| {
                 let (wt, k) = s6_base(f);
                 f.row_s(&k, "w-live", &wt, Some("s1"));
@@ -1516,10 +1311,10 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.descriptor("w-x", &desc_json("w-x", &wt, "w-live", None, None));
                 (k.clone(), vec![k, wt])
             },
-            retired: &[],
+            retired: &["w-x"],
             forwarded: 0,
-            deferred: 1,
-            whole: false,
+            deferred: 0,
+            whole: true,
         },
         FoldCase {
             name: "a lone subdirectory row is re-keyed to its toplevel",
@@ -1625,20 +1420,20 @@ fn s6_cases() -> Vec<FoldCase> {
             whole: true,
         },
         FoldCase {
-            name: "two live sessions: the survivor needs liveness, Node's",
+            name: "two live sessions: the freshest live row survives",
             build: |f| {
                 let (wt, k) = s6_base(f);
                 f.row_s(&k, "w-a", &wt, Some("s1"));
                 f.row_s(&k, "w-b", &wt, Some("s2"));
                 (k.clone(), pair(&k, &wt))
             },
-            retired: &[],
+            retired: &["w-b"],
             forwarded: 0,
-            deferred: 1,
-            whole: false,
+            deferred: 0,
+            whole: true,
         },
         FoldCase {
-            name: "an anchor with a real session and no descriptor needs dormancy, Node's",
+            name: "two live rows, the anchor (newest) survives and the older live row folds into it",
             build: |f| {
                 let (wt, k) = s6_base(f);
                 let anchor = ah_engine::meshw::ident::primary_workspace_id(&wt).unwrap();
@@ -1646,13 +1441,13 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.row_s(&k, &anchor, &wt, Some("s9"));
                 (k.clone(), vec![k, wt, anchor])
             },
-            retired: &[],
+            retired: &["w-live"],
             forwarded: 0,
-            deferred: 1,
-            whole: false,
+            deferred: 0,
+            whole: true,
         },
         FoldCase {
-            name: "unread mail without floor rows needs the legacy cursor import, Node's",
+            name: "unread mail without floor rows is decided by the engine, like Node",
             build: |f| {
                 let (wt, k) = s6_base(f);
                 f.row_s(&k, "w-live", &wt, Some("s1"));
@@ -1660,10 +1455,10 @@ fn s6_cases() -> Vec<FoldCase> {
                 f.msg_at(&k, "w-ph", 10, "one", "snd");
                 (k.clone(), pair(&k, &wt))
             },
-            retired: &[],
-            forwarded: 0,
-            deferred: 1,
-            whole: false,
+            retired: &["w-ph"],
+            forwarded: 1,
+            deferred: 0,
+            whole: true,
         },
     ]
 }
@@ -1691,77 +1486,42 @@ fn canon(f: &Fix, needles: &[String]) -> std::collections::BTreeMap<String, Stri
         .collect()
 }
 
-/// Node's whole `foldMeshDuplicates` on a home, with the clock pinned.
-fn node_whole_fold(f: &Fix, key: &str) -> Value {
-    let code = "const NOW=Number(process.argv[4]);Date.now=()=>NOW;process.env.HOME=process.argv[2];process.env.USERPROFILE=process.argv[2];process.env.ANTI_HALL_LOG_DIR=process.argv[2]+'/.anti-hall/logs';const F=require(process.argv[1]+'/scripts/devswarm-lib/fold.js');console.log(JSON.stringify(F.foldMeshDuplicates(process.argv[2],{repoKey:process.argv[3]})))";
-    let o = Command::new("node").args(["-e", code, f.root.to_str().unwrap(), f.home.to_str().unwrap(), key, &NOW.to_string()]).output().unwrap();
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    serde_json::from_str(String::from_utf8_lossy(&o.stdout).lines().last().unwrap()).unwrap()
-}
-
+/// A cross-referenced anchor keeps only the unforgeable half of its liveness: a heartbeat written to its own file right now. With one it
+/// stays (left, not retired); without, the ordinary path folds it into the live survivor. The engine decides both itself.
 #[test]
-fn s6_fold_mesh_duplicates_matches_node_for_every_group_shape() {
-    if !have("node") || !have("git") {
+fn dssup_recon_s6_a_fresh_heartbeat_protects_a_cross_referenced_anchor_and_its_absence_does_not() {
+    if !have("git") {
         return;
     }
-    let t = Tally::new("S6.fold-mesh-duplicates");
-    for c in s6_cases() {
-        let f = fix6("s6");
-        let (key, needles) = (c.build)(&f);
-        let name_of = |s: &str| if let Some(i) = s.strip_prefix('N').and_then(|d| d.parse::<usize>().ok()) { needles[i].clone() } else { s.to_string() };
-        let end = fold::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap_or_else(|d| panic!("{}: deferred {d:?}", c.name));
-        assert_eq!(end.verdict, Verdict::Agreed, "{}: {:?}", c.name, end.verdict);
-        let want: Vec<String> = c.retired.iter().map(|s| name_of(s)).collect();
-        assert_eq!(end.result.retired, want, "{}: retired (deferred {:?}, verdict {:?})", c.name, end.deferred, end.verdict);
-        assert_eq!(
-            end.result.forwarded,
-            c.forwarded,
-            "{}: forwarded (deferred {:?} / {:?})",
-            c.name,
-            end.deferred,
-            fold::plan_fold(&f.ctx(), &key).map(|p| p.deferred)
-        );
-        let plan = fold::plan_fold(&f.ctx(), &key).unwrap();
-        assert_eq!(plan.deferred.len(), c.deferred, "{}: deferred groups {:?}", c.name, plan.deferred);
-        if c.deferred == 0 {
-            // the engine's whole pass equals Node's whole function on a twin home, and a second pass writes nothing
-            assert!(end.deferred.is_empty(), "{}: {:?}", c.name, end.deferred);
-            if c.whole {
-                let twin = fix6("s6-twin");
-                let (tkey, tneedles) = (c.build)(&twin);
-                let node = node_whole_fold(&twin, &tkey);
-                assert_eq!(node["ok"], serde_json::json!(true), "{}: {node}", c.name);
-                let mut got: Vec<String> = node["retired"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
-                let mut mine = end.result.retired.clone();
-                got.sort();
-                mine.sort();
-                assert_eq!(got.len(), mine.len(), "{}: node retired {node}", c.name);
-                assert_eq!(node["forwarded"].as_i64().unwrap(), end.result.forwarded, "{}", c.name);
-                assert_eq!(node["folded"].as_i64().unwrap(), end.result.folded, "{}", c.name);
-                assert_eq!(canon(&f, &needles), canon(&twin, &tneedles), "{}: engine and Node ended in different states", c.name);
-            }
-            let before = f.snapshot();
-            let again = fold::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap();
-            assert_eq!(again.verdict, Verdict::Agreed, "{} (second pass)", c.name);
-            assert!(again.result.retired.is_empty() && again.result.forwarded == 0, "{}: second pass acted", c.name);
-            assert_eq!(f.snapshot(), before, "{}: the second pass wrote something", c.name);
-        } else {
-            // a deferred group is untouched
-            assert!(end.result.retired.is_empty() && end.result.forwarded == 0, "{}", c.name);
+    for (beating, retired) in [(true, vec![]), (false, vec!["anchor".to_string()])] {
+        let f = fix6("s6-anchor-beat");
+        let (wt, k) = s6_base(&f);
+        let anchor = ah_engine::meshw::ident::primary_workspace_id(&wt).unwrap();
+        f.row_s(&k, "w-live", &wt, Some("s1"));
+        f.row_s(&k, &anchor, &wt, Some("w-live")); // its session names another row of the group: a stale cross-reference
+        f.floors(&k, &anchor, 0);
+        if beating {
+            f.put(&f.ds(&format!("heartbeats/{anchor}.json")), &format!("{{\"ts\":{}}}", NOW - 1000));
         }
-        t.case(c.deferred == 0);
+        let end = fold::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+        let want: Vec<String> = retired.iter().map(|_| anchor.clone()).collect();
+        assert_eq!(end.result.retired, want, "beating={beating}: {:?}", end.deferred);
+        assert!(end.deferred.is_empty(), "beating={beating}: decided natively, not handed back: {:?}", end.deferred);
+        assert_eq!(f.rows(&k).contains(&anchor), beating, "beating={beating}");
     }
-    t.print();
 }
 
 #[test]
 fn s6_the_engine_switch_is_off_by_default_and_a_deferred_store_writes_nothing() {
-    let f = fix("s6-off");
+    // the switch (`devswarm_sup.sweep_tail_mode`) defaults to the engine; `off` hands the store to nobody: the pass is refused before
+    // anything is read, nothing is written (counted as disabled)
+    let mut f = fix("s6-off");
     let (wt, k) = s6_base(&f);
     f.row_s(&k, "w-live", &wt, Some("s1"));
     f.row_s(&k, "w-ph", &wt, None);
+    f.st.env.insert("ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE".into(), "off".into());
     let before = f.snapshot();
-    assert!(fold::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).is_err(), "mode node hands the store to Node");
+    assert!(fold::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).is_err(), "off: the engine takes no store");
     assert_eq!(f.snapshot(), before);
     // a missing store: nothing to fold, and nothing is created
     let g = fix6("s6-none");
@@ -1796,9 +1556,15 @@ fn s6_ghost_rows_match_nodes_ghost_registry_rows() {
     // the age bar comes from the environment, as in Node
     let mut env = HashMap::new();
     env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), "2".to_string());
-    assert_eq!(fold::ghost_age_ms(&env).unwrap(), 7_200_000.0);
-    env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), "0x10".to_string());
-    assert!(fold::ghost_age_ms(&env).is_err());
+    assert_eq!(fold::ghost_age_ms(&env), 7_200_000.0);
+    // `Number(raw)`: hex and exponent spellings read as JavaScript reads them; anything not a positive number is the default
+    let default_ms = ah_engine::defaults::num("devswarm_recon.ghost_age_default_h") as f64 * 3_600_000.0;
+    for (raw, want) in
+        [("0x10", 16.0 * 3_600_000.0), ("1e1", 36_000_000.0), (" 3 ", 3.0 * 3_600_000.0), ("-3", default_ms), ("abc", default_ms), ("", default_ms)]
+    {
+        env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), raw.to_string());
+        assert_eq!(fold::ghost_age_ms(&env), want, "{raw:?}");
+    }
 }
 
 #[test]
@@ -1979,80 +1745,6 @@ fn fold_state(f: &Fix, key: &str) -> (Vec<String>, Vec<(String, String)>, Vec<(S
     (rows, msgs, cur)
 }
 
-#[test]
-fn s6_a_sigkill_at_every_fold_op_boundary_loses_no_mail_and_nodes_next_fold_converges() {
-    if !have("node") || !have("git") {
-        return;
-    }
-    let reference = fix6("s6-crash-ref");
-    let rkey = crash_fold_fixture(&reference);
-    let r = fold::run(&reference.ctx(), &System::configured(), &rkey, &Hooks::none()).unwrap();
-    assert_eq!(r.verdict, Verdict::Agreed);
-    let (rrows, rmsgs, rcur) = fold_state(&reference, &rkey);
-    assert_eq!(rrows, vec!["w-live".to_string()]);
-    let rhashes: std::collections::BTreeSet<String> = rmsgs.iter().map(|m| m.1.clone()).collect();
-    let mut points: Vec<String> = Vec::new();
-    for w in ["before", "after"] {
-        for i in 0..7 {
-            points.push(format!("fold:w-ph:{i}:{w}"));
-        }
-        points.push(format!("derive-summary:0:{w}"));
-    }
-    let mut killed = 0;
-    let mut kinds = std::collections::BTreeSet::new();
-    for point in &points {
-        let f = fix6("s6-crash");
-        let k = crash_fold_fixture(&f);
-        let before: std::collections::BTreeSet<String> = fold_state(&f, &k).1.iter().map(|m| m.1.clone()).collect();
-        let o = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "crash_child", "--nocapture", "--test-threads=1"])
-            .env("RECON_CRASH_HOME", &f.home)
-            .env("RECON_CRASH_AT", point)
-            .env("RECON_CRASH_KEY", &k)
-            .env("RECON_CRASH_KIND", "fold")
-            .output()
-            .unwrap();
-        use std::os::unix::process::ExitStatusExt;
-        if o.status.signal() != Some(9) {
-            continue;
-        }
-        killed += 1;
-        kinds.insert(point.split(':').nth(2).map(str::to_string).unwrap_or_default());
-        let (rows, msgs, cur) = fold_state(&f, &k);
-        // no mail is lost and none appears twice
-        let hashes: std::collections::BTreeSet<String> = msgs.iter().map(|m| m.1.clone()).collect();
-        assert!(before.is_subset(&hashes), "{point}: a message hash disappeared");
-        assert_eq!(hashes.len(), msgs.len(), "{point}: a hash appears twice");
-        // each registry row is whole, and the survivor is never the one removed
-        assert!(rows.contains(&"w-live".to_string()), "{point}");
-        // a cursor never passes what was forwarded
-        let forwarded = msgs.iter().filter(|m| m.0 == "w-live").count() as i64;
-        for (p, ns, v) in &cur {
-            if p == "w-ph" && ns == "store" {
-                assert!(*v <= forwarded, "{point}: cursor {v} passed the forwarded prefix {forwarded}");
-            }
-        }
-        // Node's own next fold converges to the uninterrupted result
-        let node = node_whole_fold(&f, &k);
-        assert_eq!(node["ok"], serde_json::json!(true), "{point}: {node}");
-        let (rows2, msgs2, cur2) = fold_state(&f, &k);
-        assert_eq!(rows2, rrows, "{point}: converged registry");
-        let h2: std::collections::BTreeSet<String> = msgs2.iter().map(|m| m.1.clone()).collect();
-        assert_eq!(h2, rhashes, "{point}: converged mail");
-        assert_eq!(msgs2.len(), rmsgs.len(), "{point}: converged mail count");
-        assert_eq!(
-            cur2.iter().filter(|c| c.0 == "w-ph" && c.1 == "store").map(|c| c.2).max(),
-            rcur.iter().filter(|c| c.0 == "w-ph" && c.1 == "store").map(|c| c.2).max(),
-            "{point}: converged cursor"
-        );
-    }
-    assert!(killed >= 10, "the kill points were reached ({killed})");
-    // the four named points: forward (0 is the guard, 1 the forward), cursor raise (2), tombstone (op after the journal lines), summary
-    for want in ["1", "2", "5", "0"] {
-        assert!(kinds.contains(want), "kill point {want} was exercised: {kinds:?}");
-    }
-}
-
 /// Read-only survey: what the planner would do on a snapshot of a real home (`RECON_SNAPSHOT_HOME`, made with
 /// `tests/recon_support/snapshot.js`). It plans every store and prints the tally; nothing is written or applied.
 #[test]
@@ -2101,10 +1793,18 @@ fn no_message_row_is_deleted_or_updated() {
     let re = regex::Regex::new(r"(?i)(delete\s+from\s+messages|update\s+messages|drop\s+table\s+messages)").unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/dssup/recon");
     let mut checked = 0;
-    for e in std::fs::read_dir(&dir).unwrap().flatten() {
-        let text = std::fs::read_to_string(e.path()).unwrap();
-        assert!(!re.is_match(&text), "{} modifies message rows", e.path().display());
-        checked += 1;
+    // every source file of the module tree, sub-modules included
+    let mut todo = vec![dir.clone()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            if e.path().is_dir() {
+                todo.push(e.path());
+                continue;
+            }
+            let text = std::fs::read_to_string(e.path()).unwrap();
+            assert!(!re.is_match(&text), "{} modifies message rows", e.path().display());
+            checked += 1;
+        }
     }
     assert!(checked >= 7);
     // the SQL the ported modules use lives in sql.rs under the RECON_ prefix
@@ -2115,4 +1815,80 @@ fn no_message_row_is_deleted_or_updated() {
     // and no op of the vocabulary can address a message row
     let ops = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
     assert!(!ops.contains("Message"));
+}
+
+// ---- the orphan heal answers every shape itself (no hand-off) -----------------------------------------------------------------
+
+/// A live registry row `w1` with a descriptor on the worktree: the family survivor of the orphan cases below.
+fn family_with_survivor(f: &Fix) -> (String, String) {
+    let (p, k, _) = base(f);
+    f.row(&k, "w1", &p, "s1");
+    f.descriptor("w1", &desc_json("w1", &p, "s1", None, None));
+    (p, k)
+}
+
+#[test]
+fn an_archived_orphan_forwards_its_unread_into_the_live_survivor_of_its_family() {
+    if !have("git") {
+        return;
+    }
+    let f = fix("orph-arch-fwd");
+    let (p, k) = family_with_survivor(&f);
+    f.msg_at(&k, "o1", NOW - 1_000, "hello", "x");
+    f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert!(run.deferred.is_empty(), "{:?}", run.deferred);
+    assert_eq!((run.result["adopted"].as_u64(), run.result["forwarded"].as_i64()), (Some(0), Some(1)), "{}", run.result);
+    assert_eq!(run.result["detail"][0]["action"], "forwarded-only", "{}", run.result);
+    assert_eq!(f.msgs_in(&k, "w1"), vec!["[forwarded from archived o1] hello".to_string()]);
+    assert!(!f.rows(&k).contains(&"o1".to_string()), "an archived id is never adopted");
+    // idempotent: the same hash is ignored the second time
+    let again = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!(again.result["forwarded"], 0, "{}", again.result);
+    assert_eq!(f.msgs_in(&k, "w1").len(), 1);
+}
+
+#[test]
+fn an_archived_orphan_without_unread_a_family_or_fresh_rows_is_classified_not_handed_back() {
+    if !have("git") {
+        return;
+    }
+    // drained: only a cursor known, nothing unread
+    let f = fix("orph-arch-drained");
+    let (p, k) = family_with_survivor(&f);
+    f.store(&k).set_cursor("o1", 0, 10).unwrap();
+    f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!((run.result["archivedDrained"].as_u64(), run.result["unhealable"].as_u64()), (Some(1), Some(0)), "{}", run.result);
+    // no family at all
+    let g = fix("orph-arch-nofam");
+    let (p, k, _) = base(&g);
+    g.msg_at(&k, "o1", NOW - 1_000, "hello", "x");
+    g.put(&g.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&g.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!(run.result["detail"][0]["reason"], "archived-no-family", "{}", run.result);
+    // every unread row past the age cap: archived-stale, nothing forwarded
+    let h = fix("orph-arch-stale");
+    let (p, k) = family_with_survivor(&h);
+    h.msg_at(&k, "o1", NOW - 90 * 86_400_000, "old", "x");
+    h.put(&h.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&h.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!((run.result["archivedStale"].as_u64(), run.result["forwarded"].as_i64()), (Some(1), Some(0)), "{}", run.result);
+    assert!(h.msgs_in(&k, "w1").is_empty());
+}
+
+#[test]
+fn an_adopted_orphan_in_a_family_forwards_its_unread_into_the_survivor() {
+    if !have("git") {
+        return;
+    }
+    let f = fix("orph-adopt-fam");
+    let (p, k) = family_with_survivor(&f);
+    f.msg_at(&k, "o2", NOW - 1_000, "for the family", "x");
+    f.descriptor("o2", &desc_json("o2", &p, "so2", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert!(run.deferred.is_empty(), "{:?}", run.deferred);
+    assert_eq!((run.result["adopted"].as_u64(), run.result["forwarded"].as_i64()), (Some(1), Some(1)), "{}", run.result);
+    assert!(f.rows(&k).contains(&"o2".to_string()), "the descriptor-backed row is adopted and stays");
+    assert_eq!(f.msgs_in(&k, "w1"), vec!["for the family".to_string()]);
 }

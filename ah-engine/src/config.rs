@@ -14,8 +14,10 @@ pub struct Config {
     pub read_deadline: Duration,
     /// Time to write a reply.
     pub write_deadline: Duration,
-    /// Per-request thread-CPU budget for rule evaluation, in microseconds.
+    /// Per-request thread-CPU HARD budget for rule evaluation, in microseconds: past it the remaining checks defer (0 = none).
     pub eval_budget_us: u64,
+    /// Per-request thread-CPU SOFT budget: past it the request is warned about and counted, nothing is cut.
+    pub eval_soft_us: u64,
     /// Address-space/data limit applied with setrlimit, in MB (0 = none).
     pub mem_mb: u64,
     /// Resident-set cap in KB; above it the daemon drains and exits cleanly (0 = none).
@@ -26,6 +28,8 @@ pub struct Config {
     pub stuck: Duration,
     /// An accept loop silent for longer than this trips a drain and exit.
     pub stall: Duration,
+    /// How long the daemon may take from its start to the accept loop's first round before the watchdog calls it stalled.
+    pub start_stall: Duration,
     /// How often the watchdog thread wakes to look at heartbeats.
     pub watchdog_tick: Duration,
     /// `nice` increment for the daemon process.
@@ -63,11 +67,13 @@ impl Config {
             read_deadline: millis("daemon.read_ms"),
             write_deadline: millis("daemon.write_ms"),
             eval_budget_us: num("daemon.eval_budget_us"),
+            eval_soft_us: num("daemon.eval_soft_us"),
             mem_mb: num("daemon.mem_mb"),
             rss_cap_kb: num("daemon.rss_cap_kb"),
             rss_check: millis("daemon.rss_check_ms"),
             stuck: millis("daemon.stuck_ms"),
             stall: millis("daemon.stall_ms"),
+            start_stall: millis("daemon.start_stall_ms"),
             watchdog_tick: millis("daemon.watchdog_tick_ms"),
             nice: num("daemon.nice") as i32,
             session_rps: num("daemon.session_rps") as f64,
@@ -101,8 +107,10 @@ pub struct ClientConfig {
     pub crash_window: Duration,
     /// How long respawning stays stopped after a crash loop.
     pub crash_cooldown: Duration,
-    /// Node fallback hook is killed after this long (then plain allow: it is unavailable).
-    pub fallback_timeout: Duration,
+    /// Spawn storm: `spawn_n` daemon starts within `spawn_window` count as a crash loop even when no crash was reported.
+    pub spawn_n: usize,
+    /// Window in which daemon starts are counted.
+    pub spawn_window: Duration,
 }
 
 impl ClientConfig {
@@ -117,7 +125,8 @@ impl ClientConfig {
             crash_n: num("client.crash_n") as usize,
             crash_window: secs("client.crash_window_s"),
             crash_cooldown: secs("client.crash_cooldown_s"),
-            fallback_timeout: millis("client.fallback_ms"),
+            spawn_n: num("client.spawn_n") as usize,
+            spawn_window: secs("client.spawn_window_s"),
         }
     }
 }

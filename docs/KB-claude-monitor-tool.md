@@ -422,7 +422,7 @@ DevSwarm's Primary orchestrator currently wakes via a **CronCreate mailbox-read 
 // when that tick actually found something (see devswarm-wake.js's drainCmd).
 CronCreate({
   expression: '*/30 * * * *',
-  prompt: 'node scripts/devswarm.js inbox read-primary <id> — read-only: after handling the mail run the ackCommand it returns (inbox ack-primary <id> --receipt <rid>)'
+  prompt: '~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read-primary <id> — read-only: after handling the mail run the ackCommand it returns (inbox ack-primary <id> --receipt <rid>)'
 })
 ```
 
@@ -488,7 +488,7 @@ redundant no-ops.
    `unreadTotal > 0` WHILE a Monitor watcher lock file already exists for
    that id appends one line (capped at 1000, oldest rotated out) — a direct,
    measurable count of "cron caught something Monitor should have already
-   delivered." `node hooks/doctor.js --check` reports the line count as one
+   delivered." `~/.anti-hall/ah-engine/bin/ah-engine doctor --check` reports the line count as one
    INFO line. **Decision rule:** if this file stays empty across a week of
    normal use, cron is demonstrably pulling no weight beyond Monitor in that
    environment and becomes a release candidate for removal (of the CADENCE,
@@ -553,7 +553,7 @@ echo '{"systemMessage": "Re-arm the Primary mailbox monitor: check if it is alre
 // schemas reject an unsupported `persistent` field outright (additionalProperties:
 // false) — check what your tool accepts before choosing between these two arms:
 Monitor({
-  command: 'node path/to/companion/lib/devswarm-wake-watch.js',
+  command: '~/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto',
   description: 'Primary workspace mailbox watcher',
   persistent: true // only if your Monitor tool's schema supports this field
 })
@@ -796,7 +796,7 @@ if (!fs.existsSync(lockPath)) {
   // set timeout_ms to its maximum and re-arm on the tool's final/expired event.
   // Never run two watchers at once (the watcher's own lock also guards this).
   Monitor({
-    command: 'node path/to/companion/lib/devswarm-wake-watch.js',
+    command: '~/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto',
     description: 'Primary workspace mailbox watcher',
     persistent: true
   });

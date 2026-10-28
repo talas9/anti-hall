@@ -1,9 +1,9 @@
 //! `ah-engine install-codex [--global] [--dry-run] [--root <plugin dir>]`: the Codex port installer, ported from
 //! `codex/install-codex.js`.
 //!
-//! It merges the plugin's generated hook registration (`codex/hooks/hooks.json`, one thin wrapper call per event, with the
-//! plugin directory filled in) into `<.codex>/hooks.json`: every group of anti-hall's own is replaced, every other group is
-//! kept in place; and it makes sure `<.codex>/config.toml` enables the hooks feature. A file that changes is first copied to
+//! It merges the current dispatch table's generated hook registration (one thin client call per event, with the
+//! plugin directory filled in) into `<.codex>/hooks.json`: anti-hall's own hooks are replaced, while other hooks and their
+//! group metadata stay in place; and it makes sure `<.codex>/config.toml` enables the hooks feature. A file that changes is first copied to
 //! `<file>.bak-<time>`; nothing is deleted. `--dry-run` writes nothing. Running it twice changes nothing the second time.
 //! Engine-only: no Node script is started (v1.0 lane L16); the Node installer stays only as the witness of the parity test.
 use super::{out, t, warn};
@@ -21,10 +21,9 @@ fn rx(key: &str) -> Result<Regex, String> {
     Regex::new(defaults::text(key)).map_err(|e| format!("{key}: {e}"))
 }
 
-/// A hook group is anti-hall's when one of its hook commands (backslashes read as slashes) names its hooks directory or thin trigger.
-fn is_anti_hall_group(re: &Regex, g: &J) -> bool {
-    let Some(J::Arr(hooks)) = g.get("hooks") else { return false };
-    hooks.iter().any(|h| matches!(h.get("command"), Some(J::Str(c)) if re.is_match(&c.replace('\\', "/"))))
+/// An anti-hall hook command (backslashes read as slashes) names its hooks directory or thin client.
+fn is_anti_hall_hook(re: &Regex, h: &J) -> bool {
+    matches!(h.get("command"), Some(J::Str(c)) if re.is_match(&c.replace('\\', "/")))
 }
 
 fn keys(v: &J) -> Vec<String> {
@@ -34,7 +33,7 @@ fn keys(v: &J) -> Vec<String> {
     }
 }
 
-/// The existing registration with anti-hall's groups replaced by the current ones; every other group kept, in place.
+/// The existing registration with anti-hall's hooks replaced by the current ones; foreign hooks and group metadata stay in place.
 fn merge_hooks(re: &Regex, existing: &J, ours: &J) -> J {
     let old = match existing.get("hooks") {
         Some(h @ J::Obj(_)) => h.clone(),
@@ -50,7 +49,19 @@ fn merge_hooks(re: &Regex, existing: &J, ours: &J) -> J {
         .into_iter()
         .map(|event| {
             let mut groups: Vec<J> = match old.get(&event) {
-                Some(J::Arr(a)) => a.iter().filter(|g| !is_anti_hall_group(re, g)).cloned().collect(),
+                Some(J::Arr(a)) => a
+                    .iter()
+                    .filter_map(|g| {
+                        let Some(J::Arr(hooks)) = g.get("hooks") else { return Some(g.clone()) };
+                        let kept: Vec<J> = hooks.iter().filter(|h| !is_anti_hall_hook(re, h)).cloned().collect();
+                        if !hooks.is_empty() && kept.is_empty() {
+                            return None;
+                        }
+                        let mut group = g.clone();
+                        group.set("hooks", J::Arr(kept));
+                        Some(group)
+                    })
+                    .collect(),
                 _ => Vec::new(),
             };
             if let Some(J::Arr(add)) = ours.get(&event) {
@@ -59,7 +70,12 @@ fn merge_hooks(re: &Regex, existing: &J, ours: &J) -> J {
             (event, J::Arr(groups))
         })
         .collect();
-    J::Obj(vec![("hooks".into(), J::Obj(merged))])
+    let mut result = existing.clone();
+    if !matches!(result, J::Obj(_)) {
+        result = J::Obj(Vec::new());
+    }
+    result.set("hooks", J::Obj(merged));
+    result
 }
 
 /// The config text with `hooks = true` under `[features]`, added only when the table has no `hooks` setting yet.
@@ -76,25 +92,32 @@ fn ensure_hooks_feature(toml: &str) -> Result<String, String> {
 }
 
 /// Write `content` to `file` when it differs (a copy of the old file first); `true` when it differs.
-fn write_changed(file: &Path, content: &str, dry_run: bool) -> Result<bool, String> {
+pub(crate) fn write_changed(file: &Path, content: &str, dry_run: bool) -> Result<bool, String> {
     let old = match std::fs::read(file) {
-        Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+        Ok(b) => Some(b),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(write_err(file, &e)),
     };
-    if old.as_deref() == Some(content) {
+    if old.as_deref() == Some(content.as_bytes()) {
         return Ok(false);
     }
     if !dry_run {
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(|e| write_err(file, &e))?;
         }
-        if old.is_some() {
+        let mode = std::fs::metadata(file).ok().map(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()));
+        if let Some(old) = old {
             let stamp = to_iso(now_ms()).unwrap_or_default().replace([':', '.'], "-");
             let name = defaults::render("codex_install.backup_fmt", &[("file", &file.display()), ("stamp", &stamp)]);
-            std::fs::copy(file, name).map_err(|e| write_err(file, &e))?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            if let Some(mode) = mode {
+                std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+            }
+            let mut backup = options.open(name).map_err(|e| write_err(file, &e))?;
+            std::io::Write::write_all(&mut backup, &old).and_then(|_| backup.sync_all()).map_err(|e| write_err(file, &e))?;
         }
-        std::fs::write(file, content).map_err(|e| write_err(file, &e))?;
+        crate::atomic::write_styled(file, content, crate::atomic::Style { mode, ..Default::default() }).map_err(|e| write_err(file, &e))?;
     }
     Ok(true)
 }
@@ -133,20 +156,47 @@ fn go(p: &Parsed) -> Result<(), String> {
     let (hooks_path, config_path) = (target.join(t("codex_install.hooks_file")), target.join(t("codex_install.config_file")));
 
     let thin = root.join(t("codex_install.thin_hooks_rel"));
-    let src = std::fs::read(&thin).map_err(|e| defaults::render("codex_install.err_hooks", &[("path", &thin.display()), ("error", &e)]))?;
+    let src = crate::hooksgen::hooks_json(t("hooks_form.host_codex"));
     let plugin_dir = root.to_string_lossy().replace('\\', "/");
-    let filled = String::from_utf8_lossy(&src).replace(t("codex_install.root_token"), &plugin_dir);
-    let parsed = json::parse(&filled, defaults::num("update.json_max_depth") as usize)
+    let parsed = json::parse(&src, defaults::num("update.json_max_depth") as usize)
         .map_err(|e| defaults::render("codex_install.err_hooks", &[("path", &thin.display()), ("error", &format!("{e:?}"))]))?;
-    let ours = match parsed.get("hooks") {
+    let mut ours = match parsed.get("hooks") {
         Some(h @ J::Obj(_)) => h.clone(),
         _ => return Err(defaults::render("codex_install.err_hooks", &[("path", &thin.display()), ("error", &t("update_msg.remote_json_bad"))])),
     };
+    if let J::Obj(events) = &mut ours {
+        for (_, groups) in events {
+            if let J::Arr(groups) = groups {
+                for group in groups {
+                    if let Some(J::Arr(mut hooks)) = group.get("hooks").cloned() {
+                        for hook in &mut hooks {
+                            if let Some(J::Str(command)) = hook.get("command") {
+                                let command = command.replace(t("codex_install.root_token"), &plugin_dir);
+                                hook.set("command", J::Str(command));
+                            }
+                        }
+                        group.set("hooks", J::Arr(hooks));
+                    }
+                }
+            }
+        }
+    }
 
-    let existing = std::fs::read(&hooks_path)
-        .ok()
-        .and_then(|b| json::parse(&String::from_utf8_lossy(&b), defaults::num("update.json_max_depth") as usize).ok())
-        .unwrap_or_else(|| J::Obj(Vec::new()));
+    let existing = match std::fs::read_to_string(&hooks_path) {
+        Ok(text) => json::parse(&text, defaults::num("update.json_max_depth") as usize)
+            .map_err(|e| defaults::render("codex_install.err_hooks", &[("path", &hooks_path.display()), ("error", &format!("{e:?}"))]))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => J::Obj(Vec::new()),
+        Err(e) => return Err(write_err(&hooks_path, &e)),
+    };
+    let valid = matches!(&existing, J::Obj(_))
+        && match existing.get("hooks") {
+            None => true,
+            Some(J::Obj(events)) => events.iter().all(|(_, groups)| matches!(groups, J::Arr(_))),
+            _ => false,
+        };
+    if !valid {
+        return Err(defaults::render("codex_install.err_hooks", &[("path", &hooks_path.display()), ("error", &t("update_msg.remote_json_bad"))]));
+    }
     let merged = merge_hooks(&rx("codex_install.hook_group_re")?, &existing, &ours);
     let hooks_changed = write_changed(&hooks_path, &format!("{}\n", pretty(&merged)), dry_run)?;
 

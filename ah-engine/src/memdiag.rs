@@ -49,6 +49,49 @@ mod je {
         unsafe { mallctl(key.as_ptr(), (&mut old as *mut u64).cast(), &mut len, (&mut new as *mut u64).cast(), std::mem::size_of::<u64>()) };
     }
 
+    /// `arenas.<key>` / `arena.<ALL>.<key>` hold a signed size (`ssize_t`).
+    fn read_signed(name: &str) -> Option<i64> {
+        let key = std::ffi::CString::new(name).ok()?;
+        let mut v: isize = 0;
+        let mut len = std::mem::size_of::<isize>();
+        // SAFETY: `key` is NUL-terminated, `v` is a writable `isize` of `len` bytes, and no value is written (null, 0).
+        let rc = unsafe { mallctl(key.as_ptr(), (&mut v as *mut isize).cast(), &mut len, std::ptr::null_mut(), 0) };
+        (rc == 0).then_some(v as i64)
+    }
+
+    fn write_signed(name: &str, value: i64) -> Result<(), i32> {
+        let key = std::ffi::CString::new(name).map_err(|_| -1)?;
+        let mut v = value as isize;
+        // SAFETY: `key` is NUL-terminated; `v` is an `isize` of the size passed, as these controls expect; nothing is read back.
+        let rc = unsafe { mallctl(key.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), (&mut v as *mut isize).cast(), std::mem::size_of::<isize>()) };
+        if rc == 0 { Ok(()) } else { Err(rc) }
+    }
+
+    /// `arenas.narenas`, an `unsigned`.
+    fn narenas() -> u32 {
+        let mut v: u32 = 0;
+        let mut len = std::mem::size_of::<u32>();
+        // SAFETY: the key is NUL-terminated, `v` is a writable `u32` of `len` bytes, and no value is written (null, 0).
+        let rc = unsafe { mallctl(c"arenas.narenas".as_ptr(), (&mut v as *mut u32).cast(), &mut len, std::ptr::null_mut(), 0) };
+        if rc == 0 { v } else { 0 }
+    }
+
+    /// The default decay of new arenas for `key`, if the control exists.
+    pub fn default_decay(key: &str) -> Option<i64> {
+        read_signed(&format!("arenas.{key}"))
+    }
+
+    /// Set decay `key` for the defaults of new arenas and for every arena that exists. `arena.<i>.<key>` does not accept the
+    /// all-arenas index (it indexes past the arena table), so each index below `arenas.narenas` is written; one the allocator has
+    /// not created yet refuses (`EFAULT`) and picks up the new default when it is created.
+    pub fn set_decay(key: &str, ms: i64) -> Result<(), i32> {
+        write_signed(&format!("arenas.{key}"), ms)?;
+        for i in 0..narenas() {
+            crate::discard::harmless(write_signed(&format!("arena.{i}.{key}"), ms)); // keep: an arena not created yet refuses and takes the default
+        }
+        Ok(())
+    }
+
     pub fn alloc() -> Option<super::Alloc> {
         if crate::memstat::active_allocator() == crate::memstat::Allocator::System {
             return None;
@@ -66,12 +109,21 @@ mod je {
         for k in ["allocated", "active", "metadata", "resident", "mapped", "retained"] {
             m.insert(k.into(), read(&format!("stats.{k}")).map_or(serde_json::Value::Null, Into::into));
         }
+        for k in crate::defaults::list("daemon.malloc_decay_keys") {
+            m.insert(k.into(), default_decay(k).map_or(serde_json::Value::Null, Into::into));
+        }
         serde_json::json!({"active": crate::memstat::active_allocator().as_str(), "jemalloc": serde_json::Value::Object(m)})
     }
 }
 
 #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu"))))]
 mod je {
+    pub fn default_decay(_: &str) -> Option<i64> {
+        None
+    }
+    pub fn set_decay(_: &str, _: i64) -> Result<(), i32> {
+        Err(-1)
+    }
     pub fn alloc() -> Option<super::Alloc> {
         None
     }
@@ -85,7 +137,7 @@ mod je {
 pub struct Sys {
     /// Bytes handed out and not freed, across all zones.
     pub in_use: u64,
-    /// Bytes the allocator holds from the OS.
+    /// Bytes of address space the allocator reserved from the OS (macOS `size_allocated`; mostly untouched, so not a usage figure).
     pub allocated: u64,
 }
 
@@ -169,6 +221,50 @@ fn sqlite_bytes() -> (i64, i64) {
     unsafe { (rusqlite::ffi::sqlite3_memory_used(), rusqlite::ffi::sqlite3_memory_highwater(0)) }
 }
 
+/// The value of `key` in a jemalloc `malloc_conf` string (`a:1,b:2`); `None` when absent or not an integer.
+pub fn conf_value(conf: &str, key: &str) -> Option<i64> {
+    conf.split(',').find_map(|kv| {
+        let (k, v) = kv.split_once(':')?;
+        (k.trim() == key).then(|| v.trim().parse().ok()).flatten()
+    })
+}
+
+/// A daemon started without the allocator tuning in its environment (a launchd or systemd unit from before the tuning, a test
+/// or replay driver running `serve` directly) gets the decay part of `daemon.malloc_conf` applied through the allocator's
+/// control interface, so its freed pages go back to the OS as they do in a daemon the client started. `narenas` cannot change
+/// once the allocator runs and is skipped. Never fails the daemon: the outcome is one event-log line.
+pub fn apply_decay_if_untuned() {
+    let kind = defaults::text("daemon.malloc_decay_kind");
+    let log = |key: &str, args: &[(&str, &dyn std::fmt::Display)]| crate::health::log_event(kind, "-", &defaults::render(key, args));
+    let conf = defaults::text("daemon.malloc_conf");
+    if conf.is_empty() {
+        return;
+    }
+    if crate::memstat::active_allocator() == crate::memstat::Allocator::System {
+        log("msg.log_malloc_decay_skipped", &[("reason", &defaults::text("daemon.malloc_decay_why_system"))]);
+        return;
+    }
+    if defaults::list("daemon.malloc_conf_vars").into_iter().any(|v| std::env::var_os(v).is_some()) {
+        return; // the allocator read its tuning from the environment at its first allocation
+    }
+    let mut done = Vec::new();
+    for key in defaults::list("daemon.malloc_decay_keys") {
+        let Some(ms) = conf_value(conf, key) else { continue };
+        match je::set_decay(key, ms) {
+            Ok(()) => done.push(format!("{key}={ms}")),
+            Err(rc) => {
+                log("msg.log_malloc_decay_skipped", &[("reason", &defaults::render("daemon.malloc_decay_why_error", &[("key", &key), ("rc", &rc)]))]);
+                return;
+            }
+        }
+    }
+    if done.is_empty() {
+        log("msg.log_malloc_decay_skipped", &[("reason", &defaults::text("daemon.malloc_decay_why_none"))]);
+    } else {
+        log("msg.log_malloc_decay_applied", &[("settings", &done.join(","))]);
+    }
+}
+
 /// `sqlite3_status64` current value of one counter (`SQLITE_STATUS_*`), -1 when the call fails.
 fn sqlite_status(op: i32) -> i64 {
     let (mut cur, mut hi) = (0i64, 0i64);
@@ -211,6 +307,8 @@ fn probe() -> Probe {
 #[derive(Default)]
 struct Note {
     checks: Vec<String>,
+    /// Per check call: its name, the most it grew the heap and the bytes it allocated (`diagnostics.check_mem`).
+    check_mem: Vec<(String, u64, u64)>,
     transcript: Option<String>,
 }
 
@@ -233,6 +331,18 @@ pub fn note_check(id: &str) {
             let mut n = n.borrow_mut();
             if !n.checks.iter().any(|c| c == id) {
                 n.checks.push(id.to_string());
+            }
+        });
+    }
+}
+
+/// A check of the request in progress on this thread allocated `alloc` bytes and grew the heap by at most `peak`.
+pub fn note_check_mem(id: &str, peak: u64, alloc: u64) {
+    if ON.with(Cell::get) {
+        NOTE.with(|n| {
+            let mut n = n.borrow_mut();
+            if n.check_mem.len() < defaults::num("diagnostics.mem_log_checks_cap") as usize {
+                n.check_mem.push((id.to_string(), peak, alloc));
             }
         });
     }
@@ -275,16 +385,16 @@ static LOG_LOCK: Mutex<()> = Mutex::new(());
 
 /// Append the request's line to the log, rotating it past `diagnostics.mem_log_max_bytes`.
 pub fn finish(before: Before, d: &Done) {
-    let (checks, transcript) = NOTE.with(|n| {
+    let (checks, transcript, check_mem) = NOTE.with(|n| {
         let n = n.borrow();
-        (n.checks.clone(), n.transcript.clone())
+        (n.checks.clone(), n.transcript.clone(), n.check_mem.iter().map(|(c, peak, alloc)| json!([c, peak, alloc])).collect::<Vec<_>>())
     });
     let tsize = transcript.as_deref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
     let (b, a) = (&before.0, &d.after.0);
     let al = |x: &Option<Alloc>, f: fn(&Alloc) -> u64| x.as_ref().map_or(Value::Null, |a| json!(f(a)));
     let sy = |x: &Option<Sys>, f: fn(&Sys) -> u64| x.as_ref().map_or(Value::Null, |a| json!(f(a)));
     let line = json!({
-        "ts": crate::health::now_ms(), "kind": d.kind, "event": d.event, "checks": checks,
+        "ts": crate::health::now_ms(), "kind": d.kind, "event": d.event, "checks": checks, "check_mem": check_mem,
         "allocator": crate::memstat::active_allocator().as_str(),
         "rss_kb_before": b.rss_kb, "rss_kb_after": a.rss_kb,
         "footprint_kb_before": b.footprint_kb, "footprint_kb_after": a.footprint_kb,
@@ -292,7 +402,7 @@ pub fn finish(before: Before, d: &Done) {
         "resident_before": al(&b.alloc, |x| x.resident), "resident_after": al(&a.alloc, |x| x.resident),
         "heap_live_before": b.heap_live, "heap_live_after": a.heap_live,
         "sys_in_use_before": sy(&b.sys, |x| x.in_use), "sys_in_use_after": sy(&a.sys, |x| x.in_use),
-        "sys_allocated_before": sy(&b.sys, |x| x.allocated), "sys_allocated_after": sy(&a.sys, |x| x.allocated),
+        "sys_reserved_before": sy(&b.sys, |x| x.allocated), "sys_reserved_after": sy(&a.sys, |x| x.allocated),
         "sqlite_before": b.sqlite, "sqlite_after": a.sqlite,
         "transcript_bytes": tsize, "in_flight": d.in_flight, "busy": d.busy, "proc_ms": d.proc_ms,
     });
@@ -347,25 +457,77 @@ pub fn worker_tick(idx: usize) {
     ARRIVED.notify_all();
 }
 
-/// The memory ledger in MB: the footprint against what each owner holds. QuickJS allocates through the Rust allocator, so it is
-/// part of the jemalloc figure, listed apart to show its share; `unaccounted` is what the owners above do not explain (thread
-/// stacks, code and library data, other anonymous memory: the memory map text in the snapshot breaks it down).
-fn ledger(snap: &Value) -> Value {
-    let mb = |v: &Value| v.as_f64().map_or(0.0, |b| (b / 1048.576).round() / 1000.0);
-    let footprint = snap["footprint_kb"].as_f64().unwrap_or(0.0) * 1024.0;
-    let jemalloc = snap["allocator"]["jemalloc"]["resident"].as_f64().or_else(|| snap["allocator"]["resident"].as_f64()).unwrap_or(0.0);
-    let quickjs: f64 = snap["pools"].as_array().into_iter().flatten().filter_map(|p| p["quickjs_bytes"].as_f64()).sum();
-    let sqlite = snap["sqlite"]["memory_used"].as_f64().unwrap_or(0.0);
-    let zones = snap["system_malloc"]["zones"].as_array();
-    let other_sys: f64 = match zones {
-        Some(z) => z.iter().filter(|x| !x["name"].as_str().unwrap_or("").to_lowercase().contains("jemalloc")).filter_map(|x| x["allocated"].as_f64()).sum(),
-        None => snap["system_malloc"]["total"]["allocated"].as_f64().unwrap_or(0.0),
+/// The memory ledger: the footprint against what each owner holds, in two tiers.
+///
+/// * Process tier, in MB (the flat keys): QuickJS allocates through the Rust allocator, so it is part of the jemalloc figure, listed
+///   apart to show its share; `unaccounted` is what the owners above do not explain (thread stacks, code and library data, other
+///   anonymous memory: the memory map text in the snapshot breaks it down). The C-library zones count what they hold (`in_use`),
+///   never the address space they reserved (`allocated`): a zone reserves tens of MB it never touches.
+/// * Heap tier, in bytes (`heap`, `invariant`): the Rust heap as the counting allocator saw it (`allocated`, the sizes requested,
+///   not jemalloc's rounded-up `allocated_usable`: the two units are never subtracted from each other) against the named holders
+///   of the memory registry; `other` is the part no holder names. `invariant` says whether the holders fit inside the heap
+///   (`mem.ledger_skew_bytes` of slack, since holders and the heap are read at slightly different instants) and, when they do not,
+///   which holders to doubt first.
+pub fn ledger(snap: &Value) -> Value {
+    let num = |ptr: &str| snap.pointer(ptr).and_then(Value::as_f64);
+    let mb = |b: f64| (b / 1048.576).round() / 1000.0;
+    let footprint = num("/footprint_kb").unwrap_or(0.0) * 1024.0;
+    let jemalloc = num("/allocator/jemalloc/resident").or_else(|| num("/allocator/resident")).unwrap_or(0.0);
+    let quickjs: f64 = snap.pointer("/pools").and_then(Value::as_array).into_iter().flatten().filter_map(|p| p.get("quickjs_bytes")?.as_f64()).sum();
+    let sqlite = num("/sqlite/memory_used").unwrap_or(0.0);
+    let other_sys: f64 = match snap.pointer("/system_malloc/zones").and_then(Value::as_array) {
+        Some(z) => z
+            .iter()
+            .filter(|x| !x.get("name").and_then(Value::as_str).unwrap_or("").to_lowercase().contains("jemalloc"))
+            .filter_map(|x| x.get("in_use")?.as_f64())
+            .sum(),
+        None => num("/system_malloc/total/in_use").unwrap_or(0.0),
     };
+    let skew = defaults::num("mem.ledger_skew_bytes") as i64;
+    let allocated = snap
+        .pointer("/counted_heap/live_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| snap.pointer("/counted_heap/live_kb").and_then(Value::as_u64).unwrap_or(0) * 1024);
+    let bytes_of = |h: &Value| h.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+    let mut holders: Vec<Value> = snap
+        .pointer("/memory/budgets/holders")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|h| json!({"name": h.get("name"), "bytes": bytes_of(h), "soft": h.get("soft_bytes"), "hard": h.get("hard_bytes"), "level": h.get("level")}))
+        .collect();
+    holders.sort_by(|a, b| bytes_of(b).cmp(&bytes_of(a)).then_with(|| a.get("name").and_then(Value::as_str).cmp(&b.get("name").and_then(Value::as_str))));
+    let held: u64 = holders.iter().map(bytes_of).sum();
+    let other = allocated as i64 - held as i64;
+    let nonneg = other >= -skew;
+    let overcount: Vec<Value> = if nonneg { Vec::new() } else { holders.iter().map(|h| json!({"name": h.get("name"), "bytes": bytes_of(h)})).collect() };
+    let pct = if allocated == 0 { 0.0 } else { (held as f64 / allocated as f64 * 1000.0).round() / 10.0 };
     json!({
-        "footprint": mb(&json!(footprint)), "jemalloc_resident": mb(&json!(jemalloc)), "of_which_quickjs": mb(&json!(quickjs)),
-        "system_malloc_other_zones": mb(&json!(other_sys)), "of_which_sqlite_in_use": mb(&json!(sqlite)),
-        "unaccounted": mb(&json!(footprint - jemalloc - other_sys)),
+        "footprint": mb(footprint), "jemalloc_resident": mb(jemalloc), "of_which_quickjs": mb(quickjs),
+        "system_malloc_other_zones": mb(other_sys), "of_which_sqlite_in_use": mb(sqlite),
+        "unaccounted": mb(footprint - jemalloc - other_sys),
+        "heap": {"unit": "bytes", "allocated": allocated, "allocated_usable": snap.pointer("/allocator/jemalloc/allocated").and_then(Value::as_u64),
+            "holders": holders, "other": other, "attributed_pct": pct},
+        "invariant": {"other_nonneg": nonneg, "skew_bytes": skew, "overcount_by": overcount},
     })
+}
+
+/// The ledger of the running process now (`status --memory`): the same readings the cap-trip snapshot takes, without the workers'
+/// interpreter figures (QuickJS then reads 0), with `budgets` the memory registry's snapshot.
+pub fn live_ledger(budgets: &Value) -> Value {
+    ledger(&json!({
+        "footprint_kb": crate::limits::footprint_kb(), "allocator": je::detail(), "counted_heap": counted_heap(),
+        "system_malloc": system_malloc(), "sqlite": {"memory_used": sqlite_bytes().0}, "memory": {"budgets": budgets},
+    }))
+}
+
+fn counted_heap() -> Value {
+    let heap = crate::memstat::heap();
+    json!({"live_kb": heap.live / 1024, "live_bytes": heap.live, "peak_kb": heap.peak / 1024, "allocs": heap.allocs})
+}
+
+fn system_malloc() -> Value {
+    json!({"total": sysm::total().map(|t| json!({"in_use": t.in_use, "allocated": t.allocated})), "zones": sysm::zones()})
 }
 
 fn map_text() -> String {
@@ -401,22 +563,29 @@ pub fn capture(memory: Value, workers: usize, rss_cap_kb: u64, uptime_s: u64) {
     pools.sort_by_key(|p| p["worker"].as_u64().unwrap_or(u64::MAX));
     let reported: Vec<u64> = pools.iter().filter_map(|p| p["worker"].as_u64()).collect();
     let missing: Vec<usize> = (0..workers).filter(|i| !reported.contains(&(*i as u64))).collect();
-    let heap = crate::memstat::heap();
     let (tc_entries, tc_bytes) = crate::script::host_transcript::cache_usage();
+    let (sp_entries, sp_bytes) = crate::script::host_spawn::cache_usage();
     let (walks, walk_est, walk_read) = crate::checks::agent_scan::kept_usage();
+    let (ev_entries, ev_bytes) = crate::script::evidence_cache::usage();
+    let (tk_entries, tk_bytes) = crate::script::tasks_cache::usage();
+    let (ew_entries, ew_bytes) = crate::script::evidence_walk::usage();
     let mut snap = json!({
         "ts": crate::health::now_ms(), "pid": std::process::id(), "uptime_s": uptime_s,
         "rss_kb": crate::limits::rss_kb(), "rss_cap_kb": rss_cap_kb, "threads": crate::limits::thread_count(),
-        "counted_heap": {"live_kb": heap.live / 1024, "peak_kb": heap.peak / 1024, "allocs": heap.allocs},
+        "counted_heap": counted_heap(),
         "allocator": je::detail(),
         "footprint_kb": crate::limits::footprint_kb(),
-        "system_malloc": {"total": sysm::total().map(|t| json!({"in_use": t.in_use, "allocated": t.allocated})), "zones": sysm::zones()},
+        "system_malloc": system_malloc(),
         "sqlite": {"memory_used": sqlite_bytes().0, "memory_highwater": sqlite_bytes().1, "pagecache_used": sqlite_status(1)},
         "runtimes": pools.iter().filter_map(|p| p["runtimes"].as_u64()).sum::<u64>(),
         "contexts": pools.iter().filter_map(|p| p["contexts"].as_u64()).sum::<u64>(),
         "pools": pools, "workers_missing": missing,
         "caches": {
             "transcript_tail": {"entries": tc_entries, "bytes": tc_bytes},
+            "spawn_probe": {"entries": sp_entries, "bytes": sp_bytes},
+            "transcript_evidence": {"entries": ev_entries, "bytes": ev_bytes},
+            "transcript_tasks": {"entries": tk_entries, "bytes": tk_bytes},
+            "evidence_walk": {"entries": ew_entries, "bytes": ew_bytes},
             "agent_scan_walks": {"transcripts": walks, "estimated_bytes": walk_est, "transcript_bytes_read": walk_read},
         },
         "memory": memory,
@@ -525,10 +694,11 @@ fn summary_of(text: &str) -> Value {
         all.add(rss, alloc, res);
     }
     let n = defaults::num("diagnostics.summary_top") as usize;
+    let (first, last) = (lines.first().unwrap_or(&Value::Null), lines.last().unwrap_or(&Value::Null));
     json!({
-        "requests": lines.len(), "first_ts": lines[0]["ts"], "last_ts": lines[lines.len() - 1]["ts"],
+        "requests": lines.len(), "first_ts": first.get("ts"), "last_ts": last.get("ts"),
         "allocator": crate::memstat::active_allocator().as_str(),
-        "rss_kb_first": lines[0]["rss_kb_before"], "rss_kb_last": lines[lines.len() - 1]["rss_kb_after"],
+        "rss_kb_first": first.get("rss_kb_before"), "rss_kb_last": last.get("rss_kb_after"),
         "rss_delta_kb_total": all.rss, "alloc_delta_bytes_total": all.alloc,
         "top_events": top(events, n), "top_checks": top(checks, n),
     })
@@ -537,6 +707,85 @@ fn summary_of(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conf_value_reads_an_integer_setting_and_nothing_else() {
+        let conf = "narenas:1,dirty_decay_ms:0,muzzy_decay_ms: 250 ,bad:x,neg:-1";
+        assert_eq!(conf_value(conf, "dirty_decay_ms"), Some(0));
+        assert_eq!(conf_value(conf, "muzzy_decay_ms"), Some(250));
+        assert_eq!(conf_value(conf, "neg"), Some(-1));
+        assert_eq!(conf_value(conf, "bad"), None, "not an integer");
+        assert_eq!(conf_value(conf, "absent"), None);
+        assert_eq!(conf_value(conf, "decay"), None, "a key is matched whole, not as a suffix");
+        assert_eq!(conf_value("garbage,,:,a:", "a"), None);
+        assert_eq!(conf_value("", "dirty_decay_ms"), None);
+    }
+
+    /// The live shape from a daemon with jemalloc: the default zone reserves 58.7 MB of address space but holds 1.95 MB.
+    fn seeded_snapshot() -> Value {
+        json!({
+            "footprint_kb": 93.5 * 1000.0 * 1000.0 / 1024.0,
+            "allocator": {"active": "jemalloc", "jemalloc": {"allocated": 90_500_000u64, "resident": 82_500_000u64}},
+            "system_malloc": {"total": {"in_use": 1_951_296u64, "allocated": 58_687_488u64}, "zones": [
+                {"name": "DefaultMallocZone_0x1", "in_use": 1_951_296u64, "allocated": 58_687_488u64, "blocks": 10},
+                {"name": "jemalloc_zone", "in_use": 0, "allocated": 0, "blocks": 0}]},
+            "counted_heap": {"live_bytes": 71_600_000u64},
+            "sqlite": {"memory_used": 1_000_000u64},
+            "memory": {"budgets": {"holders": [
+                {"name": "regex", "bytes": 20_000_000u64, "soft_bytes": 16_000_000u64, "hard_bytes": 24_000_000u64, "level": "soft"},
+                {"name": "cfg_live", "bytes": 5_000_000u64, "soft_bytes": 8_000_000u64, "hard_bytes": 12_000_000u64, "level": "ok"}]}},
+        })
+    }
+
+    #[test]
+    fn the_ledger_subtracts_what_a_zone_holds_not_the_address_space_it_reserved() {
+        for zones in [true, false] {
+            let mut snap = seeded_snapshot();
+            if !zones {
+                snap["system_malloc"]["zones"] = Value::Null;
+            }
+            let l = ledger(&snap);
+            assert!(l["unaccounted"].as_f64().unwrap() >= 0.0, "zones={zones}: {l}");
+            assert!((l["system_malloc_other_zones"].as_f64().unwrap() - 1.861).abs() < 0.01, "{l}");
+        }
+    }
+
+    #[test]
+    fn the_heap_tier_names_every_holder_and_the_rest_as_other() {
+        let l = ledger(&seeded_snapshot());
+        let h = &l["heap"];
+        assert_eq!(h["allocated"], 71_600_000u64, "requested bytes, never the allocator's usable size");
+        assert_eq!(h["allocated_usable"], 90_500_000u64);
+        let held: u64 = h["holders"].as_array().unwrap().iter().map(|x| x["bytes"].as_u64().unwrap()).sum();
+        assert_eq!(held, 25_000_000);
+        assert_eq!(h["other"].as_i64().unwrap(), 71_600_000 - 25_000_000, "sum of holders + other == allocated");
+        assert_eq!(h["attributed_pct"].as_f64().unwrap().round(), 35.0);
+        assert_eq!(h["holders"][0]["soft"], 16_000_000u64);
+        assert_eq!(h["holders"][0]["level"], "soft");
+        assert_eq!(l["invariant"]["other_nonneg"], true);
+        assert!(l["invariant"]["overcount_by"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn holders_that_sum_past_the_heap_are_flagged_unless_within_the_skew() {
+        let mut snap = seeded_snapshot();
+        snap["counted_heap"]["live_bytes"] = json!(24_000_000u64);
+        let l = ledger(&snap);
+        assert_eq!(l["heap"]["other"].as_i64().unwrap(), -1_000_000);
+        assert_eq!(l["invariant"]["other_nonneg"], false);
+        assert_eq!(l["invariant"]["overcount_by"][0]["name"], "regex", "the biggest holder is named first");
+        snap["counted_heap"]["live_bytes"] = json!(24_999_000u64);
+        assert_eq!(ledger(&snap)["invariant"]["other_nonneg"], true, "1 KB over is inside mem.ledger_skew_bytes");
+    }
+
+    #[test]
+    fn a_system_allocator_run_has_no_jemalloc_figure_and_still_balances() {
+        let mut snap = seeded_snapshot();
+        snap["allocator"] = json!({"active": "system", "jemalloc": "n/a"});
+        let l = ledger(&snap);
+        assert!(l["heap"]["allocated_usable"].is_null());
+        assert!(l["heap"]["allocated"].as_u64().unwrap() > 0);
+    }
 
     #[test]
     fn the_summary_ranks_events_and_checks_by_total_growth() {

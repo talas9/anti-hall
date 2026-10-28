@@ -19,7 +19,7 @@ value = "codex-availability"
 
 [codex_handover.avail_instead]
 doc = "Advice line of the availability tip."
-value = "Workflow scripts have no filesystem and cannot read this fact, so pass args.codexAvailable=true into ship-it/deadly-loop Workflow invocations (same pattern as args.fableAvailable) so the Critic seat attempts agentType:'codex:codex-rescue' first. Outside a Workflow, prefer agentType:'codex:codex-rescue' for the deadly-loop/ship-it Critic seat and for everyday correctness-review plus a share of implementation load; coordinators there should read ~/.anti-hall/codex-availability.json instead of re-probing."
+value = "use Codex for correctness review."
 
 [codex_handover.avail_note_instead]
 doc = "Advice of the unavailability warning; {tier} is where to route the review."
@@ -35,7 +35,7 @@ value = "path-probe"
 
 [codex_handover.avail_summary]
 doc = "One-line description of the codex-availability check in the generated reference."
-value = "SessionStart: probes PATH for a real codex executable, records it, folds a Codex job-log usage-limit error into the quota record and tells the session (port of codex-availability.js)."
+value = "SessionStart: probes PATH for a real codex executable, records it, folds a Codex job-log usage-limit error into the quota record and tells the session."
 
 [codex_handover.avail_tier_claude]
 doc = "Where a Claude session routes review while Codex is unavailable."
@@ -115,13 +115,17 @@ value = "trials.md"
 doc = "Separator of the detail file names in the resume steps."
 value = " / "
 
+[codex_handover.detect_echo_min_chars]
+doc = "A line of the agent's own prompt at least this long (trimmed, in UTF-16 units) is removed from its result before the quota search, as is its JSON-escaped form: a result that quotes the brief back (a brief that mentions a quota limit) is not a quota message."
+value = 8
+
 [codex_handover.detect_scan_cap]
 doc = "How much of a Codex result is searched for a quota message, in UTF-16 units."
 value = 20000
 
 [codex_handover.detect_summary]
 doc = "One-line description of the codex-quota-detect check in the generated reference."
-value = "Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:codex-rescue Agent result, once, in the shared availability file (port of codex-quota-detect.js)."
+value = "Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:codex-rescue Agent result, once, in the shared availability file."
 
 [codex_handover.git_binary]
 doc = "The git executable the hooks run."
@@ -290,7 +294,7 @@ value = "codex-nudge"
 
 [codex_handover.nudge_instead]
 doc = "Advice line of the Codex nudge."
-value = "before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:rescue) on the diff; keep planning/architecture review on Opus."
+value = "request a Codex review of the diff."
 
 [codex_handover.nudge_jev_id]
 doc = "The Jev integration the Codex nudge consults."
@@ -375,7 +379,7 @@ value = "codex-nudge-state"
 
 [codex_handover.nudge_summary]
 doc = "One-line description of the codex-nudge check in the generated reference."
-value = "Stop: one soft nudge to get a Codex second opinion after several substantial code edits with no Codex review; defers when Jev is enabled for it (port of codex-nudge.js)."
+value = "Stop: one soft nudge to get a Codex second opinion after several substantial code edits with no Codex review; defers when Jev is enabled for it."
 
 [codex_handover.nudge_tail_bytes]
 doc = "How much of the end of the transcript the Codex nudge reads."
@@ -384,7 +388,7 @@ unit = "bytes"
 
 [codex_handover.nudge_what]
 doc = "Headline of the Codex nudge; {edits} edits across {files} files, {names} the first file names and {more} the sign of more."
-value = "this session made {edits} substantial code edit(s) across {files} file(s) ({names}{more}) with no Codex second opinion (advisory)."
+value = "{edits} edits across {files} files have no Codex review."
 
 [codex_handover.nudge_why]
 doc = "Reason line of the Codex nudge."
@@ -413,7 +417,7 @@ value = "PRECOMPACT-"
 
 [codex_handover.precompact_summary]
 doc = "One-line description of the precompact-snapshot check in the generated reference."
-value = "PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it (port of precompact-snapshot.js)."
+value = "PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it."
 
 [codex_handover.prefix_continuation]
 doc = "Lead-in of the resume pointer after a clear or compaction."
@@ -527,7 +531,7 @@ value = "handover-resume-state-"
 
 [codex_handover.resume_summary]
 doc = "One-line description of the handover-resume check in the generated reference."
-value = "SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js)."
+value = "SessionStart: points a fresh or compacted session at the newest handover with git facts measured now."
 
 [codex_handover.resume_writer]
 doc = "The writer-kept-running line; {sid}, {min} and {iso}."
@@ -707,11 +711,11 @@ value = " · "
 
 [codex_handover.snaponly_instead]
 doc = "Advice line when only a snapshot exists."
-value = "read it fully before trusting the compact summary; once state is re-established, write a real handover with the anti-hall handover skill."
+value = "read the snapshot before continuing."
 
 [codex_handover.snaponly_what]
 doc = "Headline when only a snapshot exists; {path} and {written}."
-value = "no HANDOVER*.md was written for this session, but a pre-compaction snapshot exists: {path} (written {written})."
+value = "a snapshot exists, but no session handover was saved."
 
 [codex_handover.snaponly_why]
 doc = "Reason line when only a snapshot exists."
@@ -846,6 +850,14 @@ value = ["status", "--porcelain"]
 [codex_handover.argv_super]
 doc = "The git arguments that print the superproject checkout of a repository; {root} is the repository."
 value = ["-C", "{root}", "rev-parse", "--show-superproject-working-tree"]
+
+[codex_handover.precompact_unsure_log_kind]
+doc = "Engine log kind of a precompact-snapshot case the engine cannot reproduce exactly, so it defers (logged, before anything is written): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or HOME unset with the passwd home being the real one under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), relative_cwd (a relative working directory), local_date (a request time zone other than UTC), repo_root (a checkout the resolver cannot classify exactly), seq_digits (a PRECOMPACT sequence number longer than codex_handover.seq_max_digits)."
+value = "precompact_unsure"
+
+[codex_handover.nudge_unsure_log_kind]
+doc = "Engine log kind of a codex-nudge case the engine cannot reproduce exactly, so it defers (logged, before anything is written): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or the real home under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), relative_transcript, relative_cwd, relative_path (a relative path with no absolute payload cwd), repo_root (a checkout the resolver cannot classify exactly), transcript_line, job_logs, quota, state_parse (a transcript line, Codex job log, quota record or nudge state only V8 reads exactly), state_big (the nudge state over script.read_max_bytes), stale_link (a stale linked nudge state file Node's sweep would unlink; the host never removes a link)."
+value = "codex_nudge_unsure"
 
 [codex_handover.tz_var]
 doc = "The environment variable that sets the time zone; a request whose value differs from this process's has its local-time conversions left to the Node hook."

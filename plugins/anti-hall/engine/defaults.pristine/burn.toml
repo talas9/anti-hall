@@ -1,0 +1,145 @@
+# Burn breaker (GH #270): tokens spent versus outcome. The agent tracker (src/agents/signals.rs) counts the tokens an agent spent since its
+# last outcome (a commit, a finished step, a passing check, a new file) inside the waste window. Soft line: warn the agent through its
+# next tool-call context and notify the coordinator's wake feed. Hard line: the `burn-breaker` check (engine/logic/burn-breaker.js,
+# PreToolUse on every tool, subagents only) blocks the subagent's tool calls except commit, push, status and its report. An outcome
+# resets the count. Every number, list, pattern and text is here (D88).
+
+[burn.sw]
+doc = "Switch agents.burnBreaker (default on): off raises no burn signal and lets the burn-breaker check allow every call."
+value = { section = "agents", key = "burnBreaker", env = "ANTIHALL_BURN_BREAKER", option = "", default = true }
+
+[burn.guard_name]
+doc = "The guard id the burn-breaker check answers to in skip.json and in its messages."
+value = "burn-breaker"
+
+[burn.summary]
+doc = "One-line description of the burn-breaker check in the generated reference."
+value = "PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag (tokens spent since the last commit, finished step, passing check or new file past burn.hard_tokens_no_outcome) blocks every call except commit, push, status commands and SendMessage (the report)."
+
+[burn.soft_tokens_no_outcome]
+doc = "Soft line: tokens (cache reads weighted by agent_tracker.limits.cache_read_pct) spent since the last outcome, within agent_tracker.limits.waste_window_ms, at which the agent is warned and the coordinator notified. 0 = no soft line. Chosen from the 2026-10-23 incident (alerts of 1.5M to 7.7M per 30 minutes with no commit)."
+value = 1500000
+
+[burn.hard_tokens_no_outcome]
+doc = "Hard line: tokens spent since the last outcome, within the waste window, at which the subagent's tool calls are blocked (see burn.allowed_tools and burn.allowed_bash_re). 0 = no hard line."
+value = 3000000
+
+[burn.marker_dir]
+doc = "Directory under the tracker directory that holds one marker file per agent while its hard flag is up."
+value = "breaker"
+
+[burn.marker_ext]
+doc = "Extension of a marker file."
+value = ".json"
+
+[burn.marker_ttl_ms]
+doc = "A marker older than this is ignored by the check and removed by the tracker. The tracker rewrites a standing marker on every tick, so an old one means the flag is no longer being kept up (the engine stopped, or the agent left the state without clearing it): the block lifts by itself."
+value = 900000
+
+[burn.agent_field]
+doc = "Hook payload field that names a subagent; a call without it is the main session and is never blocked."
+value = "agent_id"
+
+[burn.allowed_tools]
+doc = "Tools a blocked subagent may still call: SendMessage carries its final report."
+value = ["SendMessage"]
+
+[burn.report_tools]
+doc = "Tools whose write into a report path (burn.report_path_res) passes while the breaker blocks, and lifts it: writing the report is the outcome the block asks for."
+value = ["Write", "Edit"]
+
+[burn.report_path_field]
+doc = "The tool-input field that holds the path a report tool writes."
+value = "file_path"
+
+[burn.report_path_res]
+doc = "Where a blocked subagent may still write its report: a scratchpad directory, a reports directory, the anti-hall handover, history and progress notes. Regular expressions (Rust syntax) tested on the path; a path holding `..` never passes."
+value = [
+  '''(?:^|/)scratchpad/[^\s]+\.(?:md|txt|json|log)$''',
+  '''(?:^|/)reports?/[^\s]+\.(?:md|txt|json)$''',
+  '''(?:^|/)\.anti-hall/(?:handovers|history|progress)/[^\s]+\.md$''',
+]
+
+[burn.report_bash_re]
+doc = "The one Bash line a blocked subagent may use to write a report: `cat|echo|printf|tee` with a redirect (`>` or `>>`) into one path, optionally followed by a heredoc opener. Group 1 is the path (checked against burn.report_path_res), group 2 the heredoc opener when present. JavaScript syntax; no pipe, `;`, `&`, backtick, `$` or parenthesis before the redirect."
+value = '''^\s*(?:cat|echo|printf|tee)\b[^|&;`$()<>]*>>?\s*["\x27]?([^\s"\x27|&;`$()<>]+)["\x27]?\s*(<<-?\s*[\x27"][A-Za-z_][A-Za-z0-9_]*[\x27"])?\s*$'''
+
+[burn.report_heredoc_re]
+doc = "A heredoc opener with a QUOTED delimiter (its body is inert data, nothing expands). JavaScript syntax; tested on the first line of a report-writing command that has a body; group 2 is the delimiter, which must end the body with nothing after it."
+value = '''<<-?\s*([\x27"])([A-Za-z_][A-Za-z0-9_]*)\1\s*$'''
+
+[burn.send_bash_re]
+doc = "A mesh or agents send, which a blocked subagent may always run (the escalation to the parent and every mesh send): the engine binary (or the old launcher name) with `mesh` or `agents`, then `send`. Regular expression (Rust syntax), tested on the first line of the command."
+value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*/)?(?:ah-(?:engine|hook)\s+(?:mesh|agents)\s+send|(?:\.anti-hall/bin|scripts)/devswarm\.js\s+send)\b'''
+
+[burn.send_chain_re]
+doc = "What chains a second command onto a send line (after quoted text is blanked and a heredoc opener removed): `;`, `&`, a pipe, a backtick, `$(` or a redirect. Regular expression (Rust syntax)."
+value = '''[;&|`<>]|\$\('''
+
+[burn.send_heredoc_opener_re]
+doc = "A heredoc opener with a QUOTED delimiter at the end of a send line. Regular expression (Rust syntax)."
+value = '''\s*<<-?\s*(["'])[A-Za-z_][A-Za-z0-9_]*\1\s*$'''
+
+[burn.bash_tools]
+doc = "Tools whose command text is checked against burn.allowed_bash_re while the breaker blocks."
+value = ["Bash"]
+
+[burn.allowed_bash_re]
+doc = "A segment of a command a blocked subagent may still run. Git (optionally with any number of -C <dir> and -c <key=value> options) followed by commit, add, push, status, log, diff, show, rev-parse or branch; read-only GitHub status (gh pr|run|issue checks, view, status, list, diff); a compile or check (cargo build|check|clippy, optionally behind lockf <file> and nice -n N), which is a step outcome when it finishes; and removing the agent's own build output (rm -rf <dir>/target). Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
+value = '''^\s*(?:git(?:\s+-[Cc]\s+\S+)*\s+(?:commit|add|push|status|log|diff|show|rev-parse|branch)|gh\s+(?:pr|run|issue)\s+(?:checks|view|status|list|diff)|(?:lockf\s+\S+\s+)?(?:nice\s+-n\s+\d+\s+)?cargo\s+(?:build|check|clippy)|rm\s+-[rf]+\s+\S*/target/?)(?:\s|$)'''
+
+[burn.allowed_cd_re]
+doc = "The other segment a blocked subagent may run: `cd <dir>` (so `cd <dir> && git ...` passes). Regular expression (Rust syntax), tested like burn.allowed_bash_re."
+value = '''^\s*cd\s+\S+\s*$'''
+
+[burn.separator_re]
+doc = "What splits a command into segments that are judged one by one: `&&` and `;`. Every segment must be allowed (burn.allowed_bash_re or burn.allowed_cd_re) for the command to pass. Regular expression (Rust syntax)."
+value = '''&&|;'''
+
+[burn.allowed_suffix_re]
+doc = "A harmless tail of a segment, removed before the segment is judged: `2>&1`, optionally piped into tail or head with a line count. Any other pipe or redirect stays forbidden. Regular expression (Rust syntax)."
+value = '''\s+2>&1(?:\s*\|\s*(?:tail|head)(?:\s+-n?\s*\d+)?)?\s*$'''
+
+[burn.forbidden_bash_re]
+doc = "What makes an otherwise allowed segment a hidden command: a pipe, lone `&` (background), redirect, backtick, newline or dollar-paren outside quoted text. (`&&` and `;` are separators, see burn.separator_re.) Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
+value = '''[&|`<>\n\r]|\$\('''
+
+[burn.quoted_re]
+doc = "Quoted text that cannot run anything (a single-quoted string, or a double-quoted one with no $ or backtick): replaced by \"\" before the two patterns above are tested, so a commit message may contain `;` or `&`. Regular expression (Rust syntax)."
+value = '''(?:'[^']*')|(?:"(?:[^"\\$`]|\\.)*")'''
+
+[burn.msg_soft]
+doc = "Soft advisory, delivered to the agent at its next tool call and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}."
+value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window} with no commit, finished step, passing check or new file. Commit what works or finish a step soon; otherwise its tool calls will be paused."
+
+[burn.msg_hard]
+doc = "Hard advisory, delivered to the agent and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}."
+value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window} with no commit, finished step, passing check or new file. Its tool calls are paused except commit, push, status and its report: commit what works, report, stop."
+
+[burn.msg_what]
+doc = "Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome."
+value = "this tool call is paused after work with no recorded outcome."
+
+[burn.msg_what_waste]
+doc = "Heading of the block when the waste sensor (agent_waste.toml) holds the hard mark rather than the token line. Placeholders: {score} the waste score (thousands of tokens per outcome unit), {hard} the hard threshold, {tokens} the tokens of the window, {reason} the sensor's own reason."
+value = "this tool call is paused after repeated work with no outcome."
+
+[burn.lift_bash_re]
+doc = "A segment that lifts the block at once: a git commit or push (optionally with `-C <dir>` / `-c k=v`). A commit is the outcome the block asks for; the tracker counts it on its next tick and raises the flag again only if the hard condition still holds. Regular expression (Rust syntax), tested like burn.allowed_bash_re."
+value = '''^\s*git(?:\s+-[Cc]\s+\S+)*\s+(?:commit|push)\b'''
+
+[burn.msg_why]
+doc = "Why the breaker blocks."
+value = "Tokens spent with nothing to show for them are wasted budget; running agents in parallel is fine."
+
+[burn.msg_instead]
+doc = "What to do instead: the exact actions that lift the block, with the allowed command forms."
+value = "save a report of the outcome and stop."
+
+[burn.msg_allowed]
+doc = "Allowed line of the block: what stays possible while the breaker holds."
+value = "git commit/add/push/status/log/diff, read-only gh checks, cargo build/check/clippy, report writes."
+
+[burn.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "tell the agent \"skip burn-breaker\" (or turn off agents.burnBreaker)."

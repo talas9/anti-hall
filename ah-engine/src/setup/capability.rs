@@ -6,13 +6,14 @@
 //! installer's own `LABEL` and `UNIT` constants are read from its source (Node `require`s the installer; the engine has
 //! no JavaScript to run, so it reads the two `const` lines the installers declare). Pending state migrations are
 //! detected without writing: a legacy progress or history file that has no identical copy in `.anti-hall/history/legacy`.
-use super::jsfmt::{js_string, obj};
-use super::{SetupError, cwd, home_dir, io_err, list_dir, out, read_capped, read_text_or_warn, take_root, text_of, warn, what};
+use super::jsfmt::obj;
+use super::{SetupError, cwd, home_dir, io_err, list_dir, out, read_capped, take_root, text_of, warn, what};
 use crate::checks::guardkit::paths::{join, resolve, resolve_abs};
-use crate::checks::jsport::json::{self, J, stringify};
+use crate::checks::jsport::json::{J, stringify};
 use crate::cli::Parsed;
 use crate::defaults;
 use crate::jev::settings::Env;
+use crate::setup::read_text_or_warn;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -215,38 +216,6 @@ fn bool_active(b: bool) -> Active {
     if b { Active::Yes } else { Active::No }
 }
 
-/// A JSON file as a value; `None` for a missing, unreadable or malformed file (the Node probe treats all three as "no
-/// answer"; an unreadable one is said on stderr).
-fn read_json(p: &str) -> Option<J> {
-    let text = read_text_or_warn(Path::new(p))?;
-    json::parse(&text, defaults::num("setup.json_max_depth") as usize).ok()
-}
-
-/// The effective status-line scope: project-local, then project, then user; the first with a command wins.
-fn statusline(cwd: &str, home: &str) -> Active {
-    let mut scopes: Vec<String> = defaults::list("setup.cap_status_project_files").into_iter().map(|f| join(cwd, f)).collect();
-    scopes.extend(defaults::list("setup.cap_status_user_files").into_iter().map(|f| join(home, f)));
-    for p in &scopes {
-        let Some(v) = read_json(p) else { continue };
-        let Some(cmd) = v.get(defaults::text("setup.cap_status_key")).and_then(|s| s.get(defaults::text("setup.cap_status_command_key"))) else { continue };
-        let truthy = match cmd {
-            J::Null => false,
-            J::Bool(b) => *b,
-            J::Num(n) => *n != 0.0 && !n.is_nan(),
-            J::Str(s) => !s.is_empty(),
-            J::Arr(_) | J::Obj(_) => true,
-        };
-        if truthy {
-            let text = match cmd {
-                J::Str(s) => s.clone(),
-                other => js_string(other),
-            };
-            return bool_active(text.contains(defaults::text("setup.cap_statusline_marker")));
-        }
-    }
-    Active::No
-}
-
 /// True when `path` is valid UTF-8, checked in chunks (a character may straddle two chunks).
 fn valid_utf8(path: &Path) -> Result<bool, SetupError> {
     let mut f = std::fs::File::open(path).map_err(io_err(what("setup.what_read", &path.display())))?;
@@ -257,7 +226,7 @@ fn valid_utf8(path: &Path) -> Result<bool, SetupError> {
         if n == 0 {
             return Ok(carry.is_empty());
         }
-        carry.extend_from_slice(&chunk[..n]);
+        carry.extend_from_slice(chunk.get(..n).unwrap_or_default());
         match std::str::from_utf8(&carry) {
             Ok(_) => carry.clear(),
             Err(e) if e.error_len().is_some() => return Ok(false),
@@ -337,11 +306,7 @@ fn scan(root: &str, home: &str, cwd: &str) -> Result<Vec<Capability>, SetupError
         let active = companion_active(&join(root, &format!("{}/{file}", defaults::text("setup.cap_companion_dir"))), home, &plat);
         caps.push(Capability { name, active, how: defaults::render("setup.cap_how_companion", &[("file", &file)]) });
     }
-    caps.push(Capability {
-        name: defaults::text("setup.cap_name_statusline").to_string(),
-        active: statusline(cwd, home),
-        how: defaults::text("setup.cap_how_statusline").to_string(),
-    });
+    // Node intentionally no longer advertises the retired statusline installer as an enableable capability.
     caps.push(Capability {
         name: defaults::text("setup.cap_name_migrations").to_string(),
         active: bool_active(!migrations_pending(cwd, home)?),

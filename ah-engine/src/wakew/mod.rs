@@ -22,15 +22,17 @@
 //! reads, so mail is announced within the layer's debounce instead of the poll interval. An early wake only happens while the
 //! reads are healthy, so the error back-off, which counts ticks, is exactly Node's.
 //!
-//! # What stays with Node
+//! # What the engine does not do
 //!
-//! Anything the engine cannot answer exactly as Node does is decided before a single line is printed or file is written, and
-//! the verb answers exit 75 (the launcher then runs the Node script): a checkout nested in another one, a settings file the
-//! engine cannot parse as JavaScript does, and a Primary with no live child (Node prints its one idle line and records the
-//! metric). After the first line nothing defers; every later failure takes the fail-open path Node takes.
+//! Anything the engine cannot answer exactly as the Node script did is decided before a single line is printed or file is
+//! written, and the verb says why on stderr and answers exit 75 (nothing written; no Node script is run for it): a checkout
+//! nested in another one, a settings file the engine cannot parse as JavaScript does, and a Primary with no live child (it prints
+//! its one idle line and records the metric). After the first line nothing stops the run; every later failure takes the fail-open
+//! path.
 pub mod arch;
 pub mod edge;
 pub mod read;
+pub mod rebin;
 pub mod stale;
 pub mod who;
 
@@ -78,8 +80,6 @@ struct Shared {
     state: State,
     lock: Option<Held>,
     cleaned: bool,
-    /// The pid of a handed-off successor: signals are forwarded to it instead of ending this process.
-    child: Option<i32>,
 }
 
 type Cell = Arc<Mutex<Shared>>;
@@ -142,12 +142,6 @@ fn install_signals(c: &Cell) {
             if n <= 0 {
                 return;
             }
-            let child = locked(&c).child;
-            if let Some(pid) = child {
-                // SAFETY: forwards the signal we received to the successor we started.
-                unsafe { libc::kill(pid, i32::from(b)) };
-                continue;
-            }
             cleanup(&c, false);
             std::process::exit(0);
         }
@@ -173,11 +167,7 @@ fn parent_gone(start_ppid: i32) -> bool {
 
 // ---- the run ----------------------------------------------------------------------------------------------------------------
 
-fn defer_exit() -> i32 {
-    defaults::num("ops.defer_exit") as i32
-}
-
-/// What a startup step may do: carry on, or end the run with an exit code (a deferral is exit 75, nothing written).
+/// What a startup step may do: carry on, or end the run with an exit code.
 enum Start {
     Go(Box<Armed>),
     Exit(i32),
@@ -194,23 +184,21 @@ fn reason(key: &str) -> &'static str {
     text(key)
 }
 
-/// `main()` up to the lock: the checks in Node's order; every deferral happens here, before anything is printed or written.
+/// `main()` up to the lock: the checks in Node's order. Every Node step that can throw falls through (see each step).
 fn start(p: &Proc, auto: bool) -> Start {
     let refuse_quietly = |why: &str| {
         if !auto {
             emit(&edge::refusal_line(why));
         }
     };
-    if crate::checks::guardkit::settings::unreadable_settings_file(&p.st.home) {
-        return Start::Exit(defer_exit());
-    }
+    // Node (devswarm-wake-watch.js main(), `wakeWatchOn`): an unreadable settings file is a caught throw, so the watcher arms.
     if p.switched_off("wake_watch.set_enabled") {
         refuse_quietly(reason("wake_watch.reason_disabled"));
         return Start::Exit(0);
     }
     match who::gate(p) {
-        Err(_) => return Start::Exit(defer_exit()),
-        Ok(false) => {
+        // Node's isDevswarmActiveGate catches every tier's throw and falls through to `false`.
+        Ok(false) | Err(_) => {
             diag(text("wake_watch.diag_not_devswarm"));
             refuse_quietly(reason("wake_watch.reason_not_devswarm"));
             return Start::Exit(0);
@@ -218,9 +206,9 @@ fn start(p: &Proc, auto: bool) -> Start {
         Ok(true) => {}
     }
     let id = match who::resolve_identity(p) {
-        Err(_) => return Start::Exit(defer_exit()),
         Ok(Some(i)) => i,
-        Ok(None) => {
+        // Node's resolveIdentity catches every tier's throw and ends at `null`
+        Ok(None) | Err(_) => {
             diag(&defaults::render("wake_watch.diag_no_identity", &[("cwd", &p.cwd)]));
             emit(&edge::refusal_line(reason("wake_watch.reason_identity")));
             return Start::Exit(1);
@@ -229,13 +217,18 @@ fn start(p: &Proc, auto: bool) -> Start {
     // an idle Primary: Node prints its one line and records the metric; nothing is written before this decision
     if id.primary {
         match arch::idle_skip(p) {
-            Err(_) => return Start::Exit(defer_exit()),
-            Ok(arch::IdleSkip::Applies) => return Start::Exit(defer_exit()),
+            // Node (main(), the idle-skip try/catch): "any surprise here arms exactly as before #39"
+            Err(_) => {}
+            // Node's own outcome: one line (it wakes the session), exit 0, nothing armed and nothing written
+            Ok(arch::IdleSkip::Applies) => {
+                emit(text("wake_watch.line_idle_skip"));
+                return Start::Exit(0);
+            }
             Ok(arch::IdleSkip::NotApplicable) => {}
         }
     }
-    let hashes = if id.primary { who::primary_hashes(&p.cwd) } else { who::child_hashes(&p.cwd, &id.id) };
-    let Ok(hashes) = hashes else { return Start::Exit(defer_exit()) };
+    // Node's resolve{Primary,Child}Hashes catch every throw and answer null (no summary buckets to read)
+    let hashes = if id.primary { who::primary_hashes(&p.cwd) } else { who::child_hashes(&p.cwd, &id.id) }.unwrap_or(None);
     let root = devswarm_root(&p.home);
     let inbox = id
         .descriptor
@@ -317,7 +310,6 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         state: state.clone(),
         lock: Some(held),
         cleaned: false,
-        child: None,
     }));
     install_signals(&cell);
     let poll = Duration::from_millis(p.poll_ms());
@@ -336,6 +328,7 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         last_restamp_ok: Instant::now(),
         restamp_err_logged: false,
         recheck: archived_recheck(p),
+        bin: (defaults::num("wake_watch.rebin_enabled") != 0).then(rebin::watched_path).flatten().and_then(|path| rebin::ident(&path).map(|i| (path, i))),
     };
     let code = run.run_loop(&watcher);
     cleanup(&cell, false);
@@ -381,6 +374,8 @@ struct Run<'a> {
     last_restamp_ok: Instant,
     restamp_err_logged: bool,
     recheck: Duration,
+    /// The engine binary this process was started from: its path and identity at start (see [`rebin`]).
+    bin: Option<(PathBuf, rebin::Ident)>,
 }
 
 /// What one tick decided.
@@ -463,6 +458,9 @@ impl Run<'_> {
         if let Some(flow) = self.stale_check() {
             return flow;
         }
+        if let Some(flow) = self.binary_check() {
+            return flow;
+        }
         let mut snap = if a.id.primary {
             let d = read::read_direct(&p.home, a.hashes.as_ref(), &a.id.id);
             Snapshot { ok: d.ok, error: d.error, total: d.total, ..Snapshot::default() }
@@ -497,15 +495,14 @@ impl Run<'_> {
         let (p, a) = (self.p, self.a);
         let s = stale::check(p, self.own_version.as_deref())?;
         let role = a.id.role();
-        if let Some(script) = s.script.as_ref() {
-            let script_s = script.to_string_lossy().into_owned();
+        if let Some(root) = s.root.as_ref() {
             let stamp = p.env.get(text("wake_watch.env_handoff")).map(String::as_str);
             let own = self.own_version.clone().unwrap_or_default();
             if stale::can_handoff(&own, &s.newest, stamp) {
-                return Some(self.handoff(&s, &script_s));
+                return Some(self.handoff(&s, root));
             }
             // the guards refused the handoff: the original print-the-re-arm-line-and-exit
-            emit(&stale::stale_line(role, &a.id.id, self.own_version.as_deref(), &s.newest, &script_s));
+            emit(&stale::stale_line(role, &a.id.id, self.own_version.as_deref(), &s.newest, &p.home));
             cleanup(self.cell, false);
             return Some(Flow::Stop(0));
         }
@@ -518,40 +515,51 @@ impl Run<'_> {
         None
     }
 
-    /// `attemptHandoff`: release the lock, start the newer build's watcher with our stdio, mirror its exit.
-    fn handoff(&mut self, s: &stale::Stale, script: &str) -> Flow {
+    /// The engine binary on disk is a different file than the one this process started from (a deploy or an update replaced it):
+    /// release the lock and replace this process with the new binary, same arguments, same pid, same stdio. The successor takes the
+    /// lock itself. When the exec fails the lock is already gone, so a line is printed and the watcher ends: never a silent stale one.
+    fn binary_check(&mut self) -> Option<Flow> {
+        use std::os::unix::process::CommandExt;
+        let (path, start) = self.bin.clone()?;
+        if !rebin::changed(&path, Some(start)) {
+            return None;
+        }
+        if let Some(l) = locked(self.cell).lock.take() {
+            l.release();
+        }
+        cleanup(self.cell, true);
+        emit(&defaults::render("wake_watch.line_rebin", &[("path", &path.display())]));
+        let err =
+            std::process::Command::new(&path).args(std::env::args().skip(1)).env(text("wake_watch.env_rebin"), ((now_ms() / 1000.0) as u64).to_string()).exec(); // only returns on failure
+        diag(&defaults::render("wake_watch.diag_rebin_failed", &[("path", &path.display()), ("why", &err)]));
+        Some(Flow::Stop(1))
+    }
+
+    /// `attemptHandoff`: release the lock and replace this process with the engine running the newer build's plugin root
+    /// (same pid, same stdio, no interpreter and no second process). The successor takes the lock itself. If the exec fails
+    /// the lock is already gone, so the refusal line is printed and the watcher ends: never a silent stale watcher.
+    fn handoff(&mut self, s: &stale::Stale, root: &Path) -> Flow {
+        use std::os::unix::process::CommandExt;
         let role = self.a.id.role();
         // the successor takes the lock itself, so there is never a moment two processes believe they hold it
         if let Some(l) = locked(self.cell).lock.take() {
             l.release();
         }
-        let mut cmd = std::process::Command::new(text("wake_watch.node_bin"));
-        cmd.arg(script).env(text("wake_watch.env_handoff"), &s.newest);
-        match cmd.spawn() {
-            Ok(mut child) => {
-                locked(self.cell).child = i32::try_from(child.id()).ok();
-                // the successor owns the lock and the cursors now: ours are stale and must never overwrite its fresher ones
-                cleanup(self.cell, true);
-                emit(&stale::handoff_line(&s.newest, s.registered, s.registered_version.as_deref()));
-                let code = match child.wait() {
-                    Ok(st) => exit_code_of(&st),
-                    Err(_) => 1,
-                };
-                Flow::Stop(code)
-            }
-            Err(_) => {
-                cleanup(self.cell, true);
-                emit(&stale::stale_line(role, &self.a.id.id, self.own_version.as_deref(), &s.newest, script));
-                Flow::Stop(1)
-            }
-        }
+        let Ok(exe) = std::env::current_exe() else {
+            emit(&stale::stale_line(role, &self.a.id.id, self.own_version.as_deref(), &s.newest, &self.p.home));
+            cleanup(self.cell, false);
+            return Flow::Stop(0);
+        };
+        // the successor owns the lock and the cursors now: ours are stale and must never overwrite its fresher ones
+        cleanup(self.cell, true);
+        emit(&stale::handoff_line(&s.newest, s.registered, s.registered_version.as_deref()));
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(std::env::args().skip(1)).env(text("wake_watch.env_handoff"), &s.newest).env(defaults::env_name("plugin_root"), root);
+        let err = cmd.exec(); // only returns on failure
+        diag(&format!("{err}\n"));
+        emit(&stale::stale_line(role, &self.a.id.id, self.own_version.as_deref(), &s.newest, &self.p.home));
+        Flow::Stop(1)
     }
-}
-
-/// `handoffExitCode`: the child's own code, or 128 + the signal number.
-fn exit_code_of(st: &std::process::ExitStatus) -> i32 {
-    use std::os::unix::process::ExitStatusExt;
-    st.code().or_else(|| st.signal().map(|s| 128 + s)).unwrap_or(0)
 }
 
 /// The verb. `rest` is what follows `wake-watch` on the command line.
@@ -562,10 +570,17 @@ pub fn run(rest: &[String]) -> i32 {
     // the settings chain reads the whole environment (the Monitor's, not an allowlisted copy)
     let home = env.get(defaults::env_name("home")).or_else(|| env.get(defaults::env_name("home_alt"))).cloned().unwrap_or_default();
     let st = Settings { home, env: env.clone() };
-    if st.home.is_empty() {
-        return defer_exit();
+    // Node's `resolveHome` is `os.homedir()` and `process.cwd()` throws when the directory is gone: both are an uncaught exception (exit 1)
+    let fatal = |key: &str| {
+        diag(text(key));
+        1
+    };
+    let home = if st.home.is_empty() { std::env::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default() } else { st.home.clone() };
+    if home.is_empty() {
+        return fatal("wake_watch.diag_no_home");
     }
-    let Ok(cwd) = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()) else { return defer_exit() };
+    let st = Settings { home, ..st };
+    let Ok(cwd) = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()) else { return fatal("wake_watch.diag_no_cwd") };
     let root = crate::ops::plugin_root(&env.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
     let p = Proc { home: PathBuf::from(&st.home), cwd, env, st, root };
     let auto = rest.iter().any(|a| a == text("wake_watch.flag_auto"));

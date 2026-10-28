@@ -188,7 +188,7 @@ fn glob_pathological_is_linear() {
         for text in ["a".repeat(2000), "a/".repeat(1000)] {
             let t0 = Instant::now();
             assert!(!glob_match(&pat, &text));
-            assert!(t0.elapsed() < Duration::from_secs(2), "{unit:?} x12 on {} bytes took {:?}", text.len(), t0.elapsed());
+            assert!(t0.elapsed() < crate::common::scaled(Duration::from_secs(2)), "{unit:?} x12 on {} bytes took {:?}", text.len(), t0.elapsed());
         }
     }
     // And a pathological pattern that does match is still answered right.

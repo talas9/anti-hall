@@ -1,49 +1,66 @@
 //! The compiled-regex cache behind `ah.re.*`: ONE cache for the whole process, bounded by estimated BYTES with
 //! least-recently-used eviction.
 //!
-//! Before, each worker thread kept its own cache (cleared only when it held `script.regex_cache_max` patterns), so every
+//! Before, each worker thread kept its own cache (cleared only when it held `mem.regex_max_entries` patterns), so every
 //! worker compiled and held its own copy of the same patterns: measured 139 distinct patterns = 3.3 MB of compiled
 //! programs per copy, four copies. A compiled `Regex` is `Send + Sync` and keeps its per-thread search state inside, so the
 //! program is shared through an `Arc` and each thread adds only its own scratch space.
 //!
-//! The `regex` crate does not report a compiled program's size, so an entry's weight is an estimate: a fixed part plus a
-//! part per byte of the translated source (`script.regex_entry_base_bytes`, `script.regex_bytes_per_src_byte`, calibrated
-//! against measured programs). The compile itself is bounded too: `script.regex_size_limit` caps a program and
+//! The `regex` crate does not report a compiled program's size, so an entry's weight is the heap its build kept, measured with
+//! the counting allocator's per-thread counters (`diagnostics.check_mem`); where that is off, or the build freed more than it
+//! kept, the weight is an estimate: a fixed part plus a part per byte of the translated source (`script.regex_entry_base_bytes`,
+//! `script.regex_bytes_per_src_byte`). The estimate was calibrated at 87 KB for a program that measures 15 KB on average (85 shipped
+//! programs: 3.8 MB estimated, 1.25 MB measured), so it is the fallback, not the rule. The compile itself is bounded too: `script.regex_size_limit` caps a program and
 //! `script.regex_dfa_size_limit` caps the lazy-DFA scratch each thread may grow for it.
 //!
-//! The lock is held for the lookup and the bookkeeping only, never for a compile or a match; two threads that miss on the
-//! same pattern at once both compile it and the second insert replaces the first (identical programs).
+//! That scratch (lazy-DFA transition tables and caches) lives per thread inside the compiled pattern and the crate cannot report
+//! its size, but it is real heap: about 21 MB beside 3 MB of programs on the real-payload replay. So an entry also weighs
+//! `daemon.workers` times `script.regex_scratch_bytes` (a calibrated typical use per pattern and thread; the cap
+//! `script.regex_dfa_size_limit` is the worst case). Evicting a pattern drops the `Arc`, and its scratch goes with it.
+//!
+//! The cache is a [`crate::mem::BoundedCache`] registered as `regex`: soft and hard limits are `mem.regex_*`. The lock is held
+//! for the lookup and the bookkeeping only, never for a compile or a match; two threads that miss on the same pattern at once
+//! both compile it and the second insert replaces the first (identical programs). A refused insert (hard limit) still returns
+//! the compiled pattern: the script is served, the pattern is just not kept.
 
 use super::host::err;
 use crate::checks::guardkit::jsre;
 use crate::defaults;
+use crate::mem::{BoundedCache, Spec};
 use regex::{Regex, RegexBuilder};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
-struct Entry {
-    re: Arc<Regex>,
-    weight: usize,
-    used: u64,
+type Cache = BoundedCache<(String, String), Arc<Regex>>;
+
+fn cache() -> &'static Cache {
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        BoundedCache::new(
+            crate::mem::global(),
+            Spec::new("regex", "mem.regex_soft_bytes", "mem.regex_hard_bytes", "mem.regex_low_water_pct").with_entries("mem.regex_max_entries"),
+        )
+    })
 }
 
-#[derive(Default)]
-struct Cache {
-    map: HashMap<(String, String), Entry>,
-    bytes: usize,
-    tick: u64,
-}
-
-static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
-
-fn lock() -> std::sync::MutexGuard<'static, Option<Cache>> {
-    CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// (patterns held, estimated bytes held) for the memory snapshot.
+/// (patterns held, bytes held by the cache's own weights) for the memory snapshot.
 pub fn usage() -> (usize, usize) {
-    lock().as_ref().map_or((0, 0), |c| (c.map.len(), c.bytes))
+    let c = cache();
+    (c.len(), c.bytes())
 }
+
+/// What every compile so far weighed, two ways: (programs compiled, estimated bytes, measured bytes of those that were measured,
+/// how many were measured). The estimate is what the cache weighs an entry by; the measurement is the heap the build kept, from the
+/// per-thread counters of the counting allocator (off with `diagnostics.check_mem`). The pair is the calibration of
+/// `script.regex_entry_base_bytes` and `script.regex_bytes_per_src_byte`.
+pub fn compiled_totals() -> (u64, u64, u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (COMPILED.load(Relaxed), EST_BYTES.load(Relaxed), MEASURED_BYTES.load(Relaxed), MEASURED.load(Relaxed))
+}
+
+static COMPILED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static EST_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MEASURED_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MEASURED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Translate and compile `src` for `flags`; the estimated weight of the result. `None` when the pattern is not valid.
 fn compile(src: &str, flags: &str) -> Option<(Regex, usize)> {
@@ -55,49 +72,40 @@ fn compile(src: &str, flags: &str) -> Option<(Regex, usize)> {
     } else {
         jsre::translate(src, flags.contains('i'))
     };
-    let re = RegexBuilder::new(&pattern)
-        .size_limit(defaults::num("script.regex_size_limit") as usize)
-        .dfa_size_limit(defaults::num("script.regex_dfa_size_limit") as usize)
-        .build()
-        .ok()?;
-    let weight = (defaults::num("script.regex_entry_base_bytes") as usize)
+    let (built, kept) = crate::mem::measure(|| {
+        RegexBuilder::new(&pattern)
+            .size_limit(defaults::num("script.regex_size_limit") as usize)
+            .dfa_size_limit(defaults::num("script.regex_dfa_size_limit") as usize)
+            .build()
+    });
+    let re = built.ok()?;
+    let estimate = (defaults::num("script.regex_entry_base_bytes") as usize)
         .saturating_add((defaults::num("script.regex_bytes_per_src_byte") as usize).saturating_mul(pattern.len()));
-    Some((re, weight))
+    // the heap the build kept, where the counting allocator measured it (a negative net is the build freeing memory that was held
+    // before it: no measure); the estimate otherwise
+    let measured = kept.map(|d| d.retained).filter(|r| *r > 0).map(|r| r as usize);
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        COMPILED.fetch_add(1, Relaxed);
+        EST_BYTES.fetch_add(estimate as u64, Relaxed);
+        if let Some(m) = measured {
+            MEASURED.fetch_add(1, Relaxed);
+            MEASURED_BYTES.fetch_add(m as u64, Relaxed);
+        }
+    }
+    Some((re, measured.unwrap_or(estimate).saturating_add(scratch_estimate())))
+}
+
+/// What the per-thread search scratch of one cached pattern is assumed to hold: every worker may grow its own.
+pub(super) fn scratch_estimate() -> usize {
+    (defaults::num("daemon.workers") as usize).saturating_mul(defaults::num("script.regex_scratch_bytes") as usize)
 }
 
 /// The compiled pattern for `(src, flags)`, from the shared cache or compiled now.
 pub(super) fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Regex>> {
     let key = (src.to_string(), flags.to_string());
-    {
-        let mut g = lock();
-        if let Some(c) = g.as_mut() {
-            c.tick += 1;
-            let t = c.tick;
-            if let Some(e) = c.map.get_mut(&key) {
-                e.used = t;
-                return Ok(e.re.clone());
-            }
-        }
-    }
-    let (re, weight) = compile(src, flags).ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
-    let re = Arc::new(re);
-    let (budget, max_entries) = (defaults::num("script.regex_cache_bytes") as usize, defaults::num("script.regex_cache_max") as usize);
-    let mut g = lock();
-    let c = g.get_or_insert_with(Cache::default);
-    if let Some(old) = c.map.remove(&key) {
-        c.bytes = c.bytes.saturating_sub(old.weight);
-    }
-    // least recently used first, until the new entry fits both bounds; an entry larger than the whole budget is not kept
-    while !c.map.is_empty() && (c.bytes.saturating_add(weight) > budget || c.map.len() >= max_entries) {
-        let Some(oldest) = c.map.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()) else { break };
-        if let Some(e) = c.map.remove(&oldest) {
-            c.bytes = c.bytes.saturating_sub(e.weight);
-        }
-    }
-    if weight <= budget {
-        c.tick += 1;
-        c.bytes += weight;
-        c.map.insert(key, Entry { re: re.clone(), weight, used: c.tick });
-    }
-    Ok(re)
+    cache().get_or_compute(&key, || {
+        let (re, weight) = compile(src, flags).ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
+        Ok((Arc::new(re), weight))
+    })
 }

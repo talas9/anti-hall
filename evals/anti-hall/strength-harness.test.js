@@ -602,7 +602,7 @@ test('make-seed: dry-run plan, workspace consistency, handover placement, offlin
   // offline PRECOMPACT snapshot (deterministic, no model) with HOME isolated
   const transcript = path.join(ws, 't.jsonl');
   fs.writeFileSync(transcript, JSON.stringify({ type: 'user', message: { role: 'user', content: 'remember the port is 8081' } }) + '\n');
-  const status = Seed.runPrecompactSnapshot({ pluginDir: path.join(__dirname, '..', '..', 'plugins', 'anti-hall'), home, cwd: ws, sessionId: 'sid9', transcriptPath: transcript });
+  const status = Seed.runPrecompactSnapshot({ pluginDir: path.join(__dirname, '..', '..', 'plugins', 'anti-hall-node'), home, cwd: ws, sessionId: 'sid9', transcriptPath: transcript });
   assert.strictEqual(status, 0);
   const snaps = [];
   (function walk(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/PRECOMPACT-\d+\.md$/.test(e.name)) snaps.push(p); } })(path.join(ws, '.anti-hall'));

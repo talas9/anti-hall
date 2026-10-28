@@ -70,6 +70,11 @@ impl Dirty {
         due
     }
 
+    /// The time of the oldest change still waiting.
+    pub fn oldest(&self) -> Option<i64> {
+        self.set.lock().unwrap_or_else(|e| e.into_inner()).values().min().copied()
+    }
+
     /// Whether anything is waiting.
     pub fn pending(&self) -> usize {
         self.set.lock().unwrap_or_else(|e| e.into_inner()).len()
@@ -80,6 +85,11 @@ impl Act<'_> {
     /// Whether the event trigger is on in the settings (the sweep then leaves the archive of a plain edge to the event path).
     pub fn event_trigger_on(&self) -> bool {
         self.settings().event_trigger
+    }
+
+    /// How long a dirty workspace must be quiet before the event path archives it.
+    pub fn event_debounce_ms(&self) -> i64 {
+        self.settings().event_debounce_ms
     }
 
     /// The telemetry handle of this layer (share it with the next run to keep the totals).

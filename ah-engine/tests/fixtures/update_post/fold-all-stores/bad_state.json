@@ -1,0 +1,132 @@
+{
+  "answer": {
+    "attempted": true,
+    "budgetExhausted": false,
+    "detail": "fold-all-stores: folded 2 duplicate mesh row(s) into their canonical survivor across 2 store(s) (forwarded 4 message(s))",
+    "errors": 0,
+    "folded": 2,
+    "forwarded": 4,
+    "pending": 0,
+    "pendingRows": 0,
+    "retired": 2,
+    "stores": 2
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/cursor-log/": "755",
+    ".anti-hall/devswarm/cursor-log/1deba442.ndjson": "644 {\"ts\":0,\"id\":\"w-ph\",\"partition\":\"w-ph\",\"callerId\":null,\"ns\":\"reader_cursors:store\",\"from\":0,\"to\":3,\"delivered\":null,\"X\":0,\"nonce\":null,\"gate\":\"lockstep\",\"verb\":\"fold\",\"cwd\":null,\"ok\":true}\n{\"ts\":0,\"id\":\"w-ph\",\"partition\":\"w-ph\",\"callerId\":null,\"ns\":\"store\",\"from\":0,\"to\":3,\"delivered\":null,\"X\":0,\"nonce\":null,\"gate\":\"lockstep\",\"verb\":\"fold\",\"cwd\":null,\"ok\":true}\n{\"ts\":0,\"id\":\"w-ph\",\"partition\":\"w-ph\",\"callerId\":null,\"ns\":\"reader_cursors:store\",\"from\":0,\"to\":1,\"delivered\":null,\"X\":0,\"nonce\":null,\"gate\":\"lockstep\",\"verb\":\"fold\",\"cwd\":null,\"ok\":true}\n{\"ts\":0,\"id\":\"w-ph\",\"partition\":\"w-ph\",\"callerId\":null,\"ns\":\"store\",\"from\":0,\"to\":1,\"delivered\":null,\"X\":0,\"nonce\":null,\"gate\":\"lockstep\",\"verb\":\"fold\",\"cwd\":null,\"ok\":true}",
+    ".anti-hall/devswarm/cursors/": "755",
+    ".anti-hall/devswarm/cursors/w-ph.json": "644 3",
+    ".anti-hall/devswarm/retired/": "755",
+    ".anti-hall/devswarm/retired/w-ph.json": "644 {\"retiredTo\":\"w-live\",\"at\":0}",
+    ".anti-hall/devswarm/summaries/": "755",
+    ".anti-hall/devswarm/summaries/proj-a1b2c3.json": "644 {\"generatedAt\":0,\"requiredGates\":[\"done\",\"merged\",\"tests_passed\"],\"workspaces\":{\"w-live\":{\"id\":\"w-live\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"total\":1,\"cursor\":0,\"unread\":1,\"directTotalFromOthers\":1,\"directUnread\":1,\"oldestDirectUnreadTs\":1790000000000,\"oldestDirectUnreadSender\":\"sender\",\"broadcastUnread\":0,\"broadcastUnreadFromOthers\":0,\"urgencyMax\":\"normal\",\"broadcastUrgencyMax\":null,\"working_on\":null,\"gates\":{},\"archive_ready\":false,\"archive_requested\":false,\"archive_request_only_unread\":false,\"pendingQuestions\":[]}},\"recent\":[],\"archivedRegistryRows\":[]}",
+    ".anti-hall/devswarm/summaries/{REPOKEY}.json": "644 {\"generatedAt\":0,\"requiredGates\":[\"done\",\"merged\",\"tests_passed\"],\"workspaces\":{\"w-live\":{\"id\":\"w-live\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"total\":3,\"cursor\":0,\"unread\":3,\"directTotalFromOthers\":3,\"directUnread\":3,\"oldestDirectUnreadTs\":1790000000000,\"oldestDirectUnreadSender\":\"sender\",\"broadcastUnread\":0,\"broadcastUnreadFromOthers\":0,\"urgencyMax\":\"normal\",\"broadcastUrgencyMax\":null,\"working_on\":null,\"gates\":{},\"archive_ready\":false,\"archive_requested\":false,\"archive_request_only_unread\":false,\"pendingQuestions\":[]}},\"recent\":[],\"archivedRegistryRows\":[]}",
+    ".anti-hall/update-sweep-state.json": "644 {\"foldAllStores\":{\"completedVersion\":\"0.1.0\",\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null,\"completedTs\":0}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [
+        {
+          "value": 1,
+          "workspace_id": "w-ph"
+        }
+      ],
+      "messages": [
+        {
+          "hash": "proj-a1b2c3-m0",
+          "workspace_id": "w-ph"
+        },
+        {
+          "hash": "mesh:6ba054f986dd501e0f0e04c041b109b7aa8aa10c3705c1c0fdfcdb5bd13a3fad",
+          "workspace_id": "w-live"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "w-ph",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "w-ph",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": "<now>",
+          "value": 1
+        }
+      ],
+      "registry": [
+        {
+          "id": "w-live",
+          "session_id": "s1",
+          "worktree_path": "{REPO}"
+        }
+      ]
+    },
+    "{REPOKEY}": {
+      "cursors": [
+        {
+          "value": 3,
+          "workspace_id": "w-ph"
+        }
+      ],
+      "messages": [
+        {
+          "hash": "{REPOKEY}-m0",
+          "workspace_id": "w-ph"
+        },
+        {
+          "hash": "{REPOKEY}-m1",
+          "workspace_id": "w-ph"
+        },
+        {
+          "hash": "{REPOKEY}-m2",
+          "workspace_id": "w-ph"
+        },
+        {
+          "hash": "mesh:6ba054f986dd501e0f0e04c041b109b7aa8aa10c3705c1c0fdfcdb5bd13a3fad",
+          "workspace_id": "w-live"
+        },
+        {
+          "hash": "mesh:f90285fe6624ff568a5f72c5e48640d70924bb05ac9b720d223e74ef9f0f234b",
+          "workspace_id": "w-live"
+        },
+        {
+          "hash": "mesh:cee173a75ab90887a4308e93b1960d7549fce61ea93693b6242063dd8d7d1d9b",
+          "workspace_id": "w-live"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "w-ph",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "w-ph",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": "<now>",
+          "value": 3
+        }
+      ],
+      "registry": [
+        {
+          "id": "w-live",
+          "session_id": "s1",
+          "worktree_path": "{REPO}"
+        }
+      ]
+    }
+  }
+}

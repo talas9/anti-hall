@@ -1,0 +1,17 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "wake-monitor shipped but NOT live for child ws-wake — arm it: call the `Monitor` tool with command `node {ROOT}/home/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall-node/companion/lib/devswarm-wake-watch.js`, arming it with persistent: true if your Monitor tool supports that field — otherwise set timeout_ms to its maximum and re-arm when the tool emits its final/expired event (never run two watchers; the watcher's own lock also guards this, and the cron job stays the fallback either way) (or run that command yourself in a background terminal).",
+    "live": false,
+    "shipped": true,
+    "stateDirEnsured": true
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/wake/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/ws-wake.json": "644 {\"id\":\"ws-wake\",\"worktreePath\":\"{ROOT}/home\",\"sessionId\":\"s-wake\"}"
+  },
+  "stores": {}
+}

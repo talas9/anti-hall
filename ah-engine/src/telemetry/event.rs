@@ -274,7 +274,7 @@ impl fmt::Display for Token {
 /// replaced by `_`. `None` for empty input.
 pub fn sanitize_name(b: &[u8]) -> Option<String> {
     let cap = defaults::num("telemetry.token_max_len") as usize;
-    let b = &b[..b.len().min(cap)];
+    let b = b.get(..b.len().min(cap)).unwrap_or_default();
     if b.is_empty() {
         return None;
     }
@@ -316,6 +316,10 @@ pub struct Route {
 /// The result of a spawn: the model it actually ran on and what it used (D77).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spawn {
+    /// Observed background launch timestamp, retained when the completion repairs the row.
+    pub started_ms: Option<u64>,
+    /// Hashed session and child identity, when the host exposes one.
+    pub agent_key: Option<Token>,
     /// The key of the route event this spawn belongs to.
     pub spawn_key: Token,
     /// The model the agent ran on.
@@ -486,7 +490,7 @@ const FIXED: &[&str] = &["ts", "k", "h", "e", "o", "ms", "ib"];
 fn extra_fields(kind: Kind) -> Vec<&'static str> {
     let fixed: &[&'static str] = match kind {
         Kind::Route => &["requested_model", "parent_model", "task_class", "recommended_tier", "selected_model", "outcome", "spawn_key"],
-        Kind::Spawn => &["spawn_key", "actual_model", "in", "out", "cr", "cw"],
+        Kind::Spawn => &["started_ms", "agent_key", "spawn_key", "actual_model", "in", "out", "cr", "cw"],
         Kind::Jev => &["integration", "mode", "verdict", "cost_uc"],
         Kind::Spill => &["bytes"],
         Kind::Delegate => &["spawn_key", "requested_model", "selected_model", "task_class"],
@@ -529,6 +533,12 @@ impl Event {
                 m.insert("spawn_key".into(), json!(r.spawn_key.as_str()));
             }
             Extras::Spawn(s) => {
+                if let Some(start) = s.started_ms {
+                    m.insert("started_ms".into(), json!(start));
+                }
+                if let Some(key) = &s.agent_key {
+                    m.insert("agent_key".into(), json!(key.as_str()));
+                }
                 m.insert("spawn_key".into(), json!(s.spawn_key.as_str()));
                 m.insert("actual_model".into(), json!(s.actual_model.as_str()));
                 m.insert("in".into(), json!(s.usage.input));
@@ -596,6 +606,8 @@ impl Event {
                 Extras::Route(Route { requested_model, parent_model, task_class, recommended_tier, selected_model, outcome, spawn_key: tok("spawn_key")? })
             }
             Kind::Spawn => Extras::Spawn(Spawn {
+                started_ms: m.get("started_ms").map(|v| v.as_u64().ok_or(TelemetryError::Field("started_ms"))).transpose()?,
+                agent_key: m.get("agent_key").map(|_| tok("agent_key")).transpose()?,
                 spawn_key: tok("spawn_key")?,
                 actual_model: tok("actual_model")?,
                 usage: Usage { input: num("in")?, output: num("out")?, cache_read: num("cr")?, cache_write: num("cw")? },
@@ -687,7 +699,16 @@ mod tests {
         assert_eq!(Event::from_json(&e.to_json()).unwrap(), e);
         let usage = Usage { input: 1, output: 2, cache_read: 3, cache_write: 4 };
         for (kind, ex) in [
-            (Kind::Spawn, Extras::Spawn(Spawn { spawn_key: Token::new("k1").unwrap(), actual_model: Token::new("haiku").unwrap(), usage })),
+            (
+                Kind::Spawn,
+                Extras::Spawn(Spawn {
+                    started_ms: None,
+                    agent_key: None,
+                    spawn_key: Token::new("k1").unwrap(),
+                    actual_model: Token::new("haiku").unwrap(),
+                    usage,
+                }),
+            ),
             (
                 Kind::Jev,
                 Extras::Jev(Jev {

@@ -2,7 +2,7 @@
 # auto-handover, auto-handover-pause-nag, compact-advice-guard) and the helpers they share (D17, D30, D74).
 #
 # Every file name, setting name, limit and message of these checks lives here. The settings tables
-# (`ctxbudget.set_*`) describe one entry of hooks/lib/settings-schema.js each: `kind` is bool, num or enum; `env` and
+# (`ctxbudget.set_*`) describe one settings entry each: `kind` is bool, num or enum; `env` and
 # `aliases` are the environment names; `option` is the plugin option name (empty: none); `manifest_default` is the text
 # a stored plugin option must equal to count as "never touched" (the default the plugin manifest or the schema carries);
 # `default` is the schema default; `min`/`max` clamp a number, `values` lists the words of an enum. Format of the file:
@@ -11,16 +11,12 @@
 # ---- shared ---------------------------------------------------------------------------------------------------
 
 [ctxbudget.judge_child_env]
-doc = "Environment variable the judge child sets to 1 so that every hook is a no-op (hooks/lib/judge-child-exit.js)."
+doc = "Environment variable the judge child sets to 1 so that every hook is a no-op."
 value = "ANTIHALL_JUDGE_CHILD"
 
 [ctxbudget.judge_child_on]
 doc = "The value of the judge child variable that turns the hooks into no-ops."
 value = "1"
-
-[ctxbudget.home_env]
-doc = "Environment variable that holds the home directory (Node's os.homedir() reads it first on POSIX)."
-value = "HOME"
 
 [ctxbudget.ups_empty]
 doc = "The exact stdout line of a UserPromptSubmit hook that injects nothing (an empty additionalContext), newline included."
@@ -39,12 +35,12 @@ doc = "The skip-file name of the compact-advice-guard."
 value = "compact-advice-guard"
 
 [ctxbudget.tail_bytes]
-doc = "How many bytes of the end of a transcript the guards read (hooks/lib/transcript-tail.js MAX_TAIL_BYTES)."
+doc = "How many bytes of the end of a transcript the guards read."
 value = 1572864
 unit = "bytes"
 
 [ctxbudget.session_tag_max]
-doc = "Characters of a session id kept in a state file tag (hooks/lib/auto-handover-state.js sessionTag)."
+doc = "Characters of a session id kept in a state file tag."
 value = 64
 
 [ctxbudget.state_root]
@@ -90,18 +86,18 @@ value = "token_count"
 doc = "Substring that a Claude transcript line must hold to be parsed as an assistant usage reading."
 value = '"usage"'
 
-# ---- limit-conserve-inject (hooks/limit-conserve-inject.js, hooks/limit-conserve.js) -------------------------
+# ---- limit-conserve-inject -------------------------
 
 [ctxbudget.summary_limit_conserve]
 doc = "One-line description of the limit-conserve-inject check in the generated reference."
-value = "UserPromptSubmit: injects the limit-conservation directive while conservation is on or a usage bucket is at the threshold (account-switch guard and emit-dedupe as in Node), else an empty context; defers only what JavaScript could read differently (port of limit-conserve-inject.js)."
+value = "UserPromptSubmit: injects the limit-conservation directive while conservation is on or a usage bucket is at the threshold (account-switch guard and emit-dedupe as in Node), else an empty context; defers only what JavaScript could read differently."
 
 [ctxbudget.usage_cache]
 doc = "The OMC usage cache file, relative to the home directory."
 value = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json"
 
 [ctxbudget.usage_max_stale_ms]
-doc = "Snapshot age beyond which a bucket without a usable reset time counts as 0 percent (hooks/limit-conserve.js MAX_STALE_MS)."
+doc = "Snapshot age beyond which a bucket without a usable reset time counts as 0 percent."
 value = 21600000
 unit = "ms"
 
@@ -122,7 +118,7 @@ doc = "The host file whose top-level userID names the logged-in account, relativ
 value = ".claude.json"
 
 [ctxbudget.account_state]
-doc = "The account-switch state file of limit conservation, relative to the home directory (hooks/limit-conserve.js ACCOUNT_STATE_FILE)."
+doc = "The account-switch state file of limit conservation, relative to the home directory."
 value = ".anti-hall/limit-conserve-account.json"
 
 [ctxbudget.lc_account_json]
@@ -150,7 +146,7 @@ doc = "The directive reason when the mode setting forces conservation on."
 value = "manual-on"
 
 [ctxbudget.lc_guard]
-doc = "The guard name the limit-conservation directive carries (hooks/lib/block-message.js guard)."
+doc = "The guard name the limit-conservation directive carries ."
 value = "limit-conserve"
 
 [ctxbudget.lc_dedupe_key]
@@ -172,7 +168,7 @@ value = "Usage is near a plan limit."
 
 [ctxbudget.lc_instead]
 doc = "The start of the Do instead line of the directive (the reset clause and the downshift text follow)."
-value = "route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet, or Haiku for trivial work, uses less of the shared Claude pool; no Claude model is a separate bucket); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff)."
+value = "route routine execution to Codex or cheaper Claude helpers."
 
 [ctxbudget.lc_resets_at]
 doc = "The reset clause when a tripped bucket states its reset time ({at}, rounded per ctxbudget.lc_reset_round)."
@@ -187,7 +183,7 @@ doc = "The reset clause when no tripped bucket states a reset time."
 value = " Defer non-urgent heavy work until the next reset."
 
 [ctxbudget.lc_downshift]
-doc = "The main-model downshift text at the end of the directive (limit-conserve-inject.js DOWNSHIFT_DIRECTIVE)."
+doc = "The main-model downshift text at the end of the directive."
 value = "Main-model downshift: if the main agent is on the flagship model (Claude Opus or Codex frontier category), switch it to the cheaper 1M-context variant to use less of the shared Claude pool (a cheaper model draws it down more slowly) — Claude → Sonnet (1M context), Codex → the workhorse category's 1M-context model (resolve the slug from the live catalog; never pin one). NEVER downshift to a smaller-context model (e.g. a fast-category model may have well under 1M context) — check the catalog's context window first. Keep the flagship for delegated hard-reasoning subagents and on-demand escalation. The agent cannot self-switch models (/model is a user action) — SURFACE this recommendation to the user; under an orchestration layer that can set the model (OMC/OMX), route main accordingly."
 
 [ctxbudget.ups_line]
@@ -198,11 +194,11 @@ value = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"addit
 
 [ctxbudget.summary_auto_handover]
 doc = "One-line description of the auto-handover check in the generated reference."
-value = "UserPromptSubmit: the threshold fire, the soft advisory, the milestone nag, the latch re-arm and the post-handover gate with its backstop, latch and inferred-window writes as in Node; defers the gate on a prompt with text (Node logs a Jev decision row there) and what JavaScript could read differently (port of auto-handover.js)."
+value = "UserPromptSubmit: the threshold fire, the soft advisory, the milestone nag, the latch re-arm and the post-handover gate with its backstop, latch and inferred-window writes as in Node; defers the gate on a prompt with text (Node logs a Jev decision row there) and what JavaScript could read differently."
 
 [ctxbudget.summary_pause_nag]
 doc = "One-line description of the auto-handover-pause-nag check in the generated reference."
-value = "Stop: the Stop-side fire with the decisive good-point line, the pause nag (step, quiet window, open tasks, recent spawns, handover freshness) and the re-arm, latch writes as in Node; defers only what JavaScript could read differently (port of auto-handover-pause-nag.js)."
+value = "Stop: the Stop-side fire with the decisive good-point line, the pause nag (step, quiet window, open tasks, recent spawns, handover freshness) and the re-arm, latch writes as in Node; defers only what JavaScript could read differently."
 
 [ctxbudget.env_pct_off]
 doc = "Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express)."
@@ -214,11 +210,11 @@ value = { section = "autoHandover", key = "enabled", kind = "bool", env = "", al
 
 [ctxbudget.set_ah_pct]
 doc = "The autoHandover.pct setting: the context percent that triggers the handover."
-value = { section = "autoHandover", key = "pct", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_PCT", aliases = [], option = "auto_handover_pct", manifest_default = "85", default = 85, min = 1, max = 99 }
+value = { section = "autoHandover", key = "pct", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_PCT", aliases = [], option = "auto_handover_pct", manifest_default = "93", default = 93, min = 1, max = 99 }
 
 [ctxbudget.set_ah_max_tokens]
 doc = "The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none)."
-value = { section = "autoHandover", key = "maxTokens", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", aliases = [], option = "auto_handover_max_tokens", manifest_default = "0", default = 0, min = 0 }
+value = { section = "autoHandover", key = "maxTokens", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", aliases = [], option = "auto_handover_max_tokens", manifest_default = "500000", default = 500000, min = 0 }
 
 [ctxbudget.set_ah_nag]
 doc = "The autoHandover.nag setting: remind when a handover is due."
@@ -272,8 +268,32 @@ value = { section = "autoHandover", key = "decisivePrompt", kind = "bool", env =
 doc = "The autoHandover.gateHousekeepingMarkers setting: extra comma-separated housekeeping prompt markers (a text)."
 value = { section = "autoHandover", key = "gateHousekeepingMarkers", kind = "str", env = "", aliases = [], option = "", manifest_default = "", default = "" }
 
+[ctxbudget.set_h_task_budget]
+doc = "Most active tasks the session task list may hold at a handover."
+value = { section = "handover", key = "taskListBudget", kind = "num", env = "", aliases = [], option = "", manifest_default = "12", default = 12, min = 1 }
+
+[ctxbudget.set_h_task_subject]
+doc = "Longest task subject (characters) allowed at a handover."
+value = { section = "handover", key = "taskSubjectMax", kind = "num", env = "", aliases = [], option = "", manifest_default = "60", default = 60, min = 1 }
+
+[ctxbudget.set_h_task_enforce]
+doc = "The handover.taskListEnforce setting: what happens when a created task subject is over handover.taskSubjectMax or the open-task count is over handover.taskListBudget. off = silent, advisory = one line with the numbers, block = the TaskCreate/TaskUpdate call is refused."
+value = { section = "handover", key = "taskListEnforce", kind = "enum", values = ["off", "advisory", "block"], env = "", aliases = [], option = "", manifest_default = "advisory", default = "advisory" }
+
+[ctxbudget.set_h_task_done_note]
+doc = "The handover.taskDoneNote setting: when a task is marked completed, tell the agent once, in one line, that the session's task entries are not user data: record the outcome in the named history ledger path (.anti-hall/history/<date>/<session>.md), then delete the task from the session list."
+value = { section = "handover", key = "taskDoneNote", kind = "bool", env = "", aliases = [], option = "", manifest_default = "true", default = true }
+
+[ctxbudget.set_h_mem_lines]
+doc = "Most lines the MEMORY.md index may hold at a handover."
+value = { section = "handover", key = "memoryIndexMaxLines", kind = "num", env = "", aliases = [], option = "", manifest_default = "100", default = 100, min = 1 }
+
+[ctxbudget.set_h_mem_chars]
+doc = "Most characters the MEMORY.md index may hold at a handover."
+value = { section = "handover", key = "memoryIndexMaxChars", kind = "num", env = "", aliases = [], option = "", manifest_default = "12000", default = 12000, min = 1 }
+
 [ctxbudget.ah_housekeeping]
-doc = "The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate (auto-handover-gate.js HOUSEKEEPING_MARKERS)."
+doc = "The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate."
 value = ["inbox tick", "peer check", "BROADCAST bug sweep"]
 
 [ctxbudget.ah_marker_seps]
@@ -281,7 +301,7 @@ doc = "The characters that separate the extra housekeeping markers of the settin
 value = [",", ":"]
 
 [ctxbudget.ah_mtime_slack_ms]
-doc = "How much older than the fire a handover file may be and still count as this arm's handover (auto-handover-gate.js MTIME_SLACK_MS)."
+doc = "How much older than the fire a handover file may be and still count as this arm's handover."
 value = 2000
 unit = "ms"
 
@@ -295,7 +315,7 @@ value = 120000
 unit = "ms"
 
 [ctxbudget.ah_freshness_grace_ms]
-doc = "How much later than the handover file the last counted work may be and the handover still count as fresh (handover-freshness.js MTIME_GRACE_MS)."
+doc = "How much later than the handover file the last counted work may be and the handover still count as fresh."
 value = 1000
 unit = "ms"
 
@@ -409,7 +429,7 @@ value = "context is now ~{pct}% (handover already saved earlier this session)."
 
 [ctxbudget.ah_nag_instead]
 doc = "The milestone nag's instructions; {bloat} the bloat sentence, {reset} the reset commands."
-value = "{bloat} Mention {reset} to the user again when convenient."
+value = "remind the user to {reset}."
 
 [ctxbudget.ah_soft_what]
 doc = "The soft advisory's first line; {pct} is the rounded percent."
@@ -421,7 +441,7 @@ value = "This session's exact context window could not be determined, so treat t
 
 [ctxbudget.ah_soft_instead]
 doc = "The soft advisory's instructions; {bloat} the bloat sentence."
-value = "consider checking with the user about writing a handover and compacting/clearing soon. {bloat}"
+value = "offer to save a handover."
 
 [ctxbudget.ah_pause_what]
 doc = "The pause nag's first line; {pct} is the rounded percent."
@@ -429,7 +449,7 @@ value = "good stopping point: context is still ~{pct}% and a handover is already
 
 [ctxbudget.ah_pause_instead]
 doc = "The pause nag's instructions; {bloat} the bloat sentence, {reset} the reset commands."
-value = "{bloat} Mention {reset} to the user now."
+value = "tell the user to {reset}."
 
 [ctxbudget.ah_clear_claude]
 doc = "The command that starts a fresh session on Claude."
@@ -481,7 +501,7 @@ value = "ask the user to choose between two options"
 
 [ctxbudget.ah_gate_what]
 doc = "The gate's first line; {pct} context percent, {hp} handover percent, {budget} the budget label."
-value = "post-handover new-work gate (context ~{pct}%, handover saved at ~{hp}%; budget {budget})."
+value = "new work exceeds the post-handover budget ({budget})."
 
 [ctxbudget.ah_gate_why]
 doc = "The gate's Why line."
@@ -489,7 +509,7 @@ value = "Before starting this request, judge YOURSELF whether it needs more than
 
 [ctxbudget.ah_gate_instead]
 doc = "The gate's instructions; {ask} how to ask, {reset} the reset commands."
-value = "if it is bigger than the budget, do not start it; {ask}: (a) add it to the task list and the handover, then start it after {reset}; (b) proceed now anyway."
+value = "ask whether to save the work for after {reset}."
 
 [ctxbudget.ah_gate_allowed]
 doc = "The gate's Allowed line."
@@ -501,11 +521,11 @@ value = "if the user has explicitly insisted on proceeding, proceed"
 
 [ctxbudget.ah_backstop_what]
 doc = "The backstop's first line; {pct} context percent, {b} budget, {hp} handover percent."
-value = "post-handover budget exceeded: context is ~{pct}%, more than {b} points past the ~{hp}% at which the handover was saved."
+value = "context is ~{pct}%, past the post-handover budget."
 
 [ctxbudget.ah_backstop_instead]
 doc = "The backstop's instructions; {skill} the handover skill, {reset} the reset commands."
-value = "refresh the handover now ({skill}: write the next HANDOVER-<n>.md) so it covers the work since, then offer the user to park the rest in the task list + handover and continue after {reset}. This reminder fires once per handover."
+value = "refresh the handover with {skill}."
 
 [ctxbudget.ah_parts_sep]
 doc = "What joins the parts of one auto-handover context (backstop, gate, nag)."
@@ -520,7 +540,7 @@ doc = "The stdout line of a Stop hook that blocks with {reason} (already JSON-qu
 value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
 
 [ctxbudget.ah_hash_tag_len]
-doc = "Hex digits of the transcript path's SHA-1 that tag a session without a usable id (auto-handover-state.js sessionTag)."
+doc = "Hex digits of the transcript path's SHA-1 that tag a session without a usable id."
 value = 16
 
 [ctxbudget.ah_via_pct]
@@ -564,7 +584,7 @@ min = 100
 
 [ctxbudget.summary_compact_advice]
 doc = "One-line description of the compact-advice-guard check in the generated reference."
-value = "Stop: blocks, once per declaration, a final reply that recommends compacting at low context or just after a compact (phrase analysis, latch exception and record as in Node); defers a text with a line terminator other than LF and what JavaScript could read differently (port of compact-advice-guard.js)."
+value = "Stop: blocks, once per declaration, a final reply that recommends compacting at low context or just after a compact (phrase analysis, latch exception and record as in Node); defers a text with a line terminator other than LF and what JavaScript could read differently."
 
 [ctxbudget.set_compact_advice_guard]
 doc = "The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or just after a compact."
@@ -576,6 +596,14 @@ value = { section = "guards", key = "compactAdviceMarginPct", kind = "num", env 
 [ctxbudget.set_ca_recent]
 doc = "The guards.compactAdviceRecentTurns setting: a compact boundary within this many turns makes a /compact recommendation a block (0: off)."
 value = { section = "guards", key = "compactAdviceRecentTurns", kind = "num", env = "", aliases = [], option = "guards_compact_advice_recent_turns", manifest_default = "10", default = 10, min = 0, max = 100 }
+
+[ctxbudget.ah_unsure_log_kind]
+doc = "Engine log kind of an auto-handover, auto-handover-pause-nag or limit-conserve-inject case the engine cannot reproduce exactly, so it is decided on the stated stand-in (logged and counted as native_unable): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or HOME unset with the passwd home being the real one under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), relative_transcript, relative_cwd (a relative path with no absolute payload cwd: Node resolves it against its own directory), local_date (a request time zone other than UTC), repo_root (a checkout the resolver cannot classify exactly), fresh_line, fresh_timestamp, fresh_path (a transcript line or work timestamp only V8 reads, a relative written path with no cwd), handover_big, spawn_log_big, usage_big, claude_json_big, account_big (a file over script.read_max_bytes), task_line (a task line only V8 parses), resets_object (a reset time that is an object: V8's legacy date parser reads its text), dedupe_unsure (an emit-dedupe transcript timestamp only V8 reads)."
+value = "ctxbudget_unsure"
+
+[ctxbudget.ca_unsure_log_kind]
+doc = "Engine log kind of a compact-advice-guard Stop decided without Node's exact reading. Deferred (the justified failure paths of a blocking guard, never weaker than Node): home_relative (a HOME that is set but relative or empty: libuv takes it as it is and Node resolves every state path against its own process directory), relative_transcript (a relative transcript path with no absolute payload cwd), transcript_line (a transcript line the interpreter cannot parse as V8 does), compact_timestamp (the latch comparison needs a compact boundary time that neither jx.isoMs nor jx.dateParse reads). Allowed, as the Node hook ends with an error that never blocks: home_none (neither HOME nor the passwd entry gives a home), home_test_guard (the real home under a spawn_ctx.test_markers variable), refused as the test-home guard does)."
+value = "compact_advice_unsure"
 
 [ctxbudget.ca_guard]
 doc = "The guard name of the compact-advice block."
@@ -623,7 +651,7 @@ value = '"No background agents running" is necessary, not sufficient; only the a
 
 [ctxbudget.ca_instead]
 doc = "The block's instructions; {ctx} is the context clause."
-value = 'retract it in one line, e.g. "RETRACT SAFE TO COMPACT: context is {ctx}; no need to compact", then continue or end the turn.'
+value = "retract the compact advice and continue."
 
 [ctxbudget.ca_ctx_pct]
 doc = "The context clause of the instructions when the percent is known ({pct} rounded)."
@@ -632,6 +660,50 @@ value = "{pct}%"
 [ctxbudget.ca_ctx_low]
 doc = "The context clause of the instructions when the percent is unknown."
 value = "low"
+
+[ctxbudget.hb_done_statuses]
+doc = "Task statuses that count as finished: a finished task still in the session task list at a restart-ready declaration is over budget."
+value = ["completed", "deleted"]
+
+[ctxbudget.hb_mem_dir]
+doc = "The directory beside the session transcript that holds the project's memory files."
+value = "memory"
+
+[ctxbudget.hb_mem_file]
+doc = "The memory index file inside hb_mem_dir."
+value = "MEMORY.md"
+
+[ctxbudget.hb_tasks_over]
+doc = "Reason: the session task list holds {n} active tasks, more than the {max} budget (handover.taskListBudget)."
+value = "the task list holds {n} active tasks (budget {max})"
+
+[ctxbudget.hb_tasks_done]
+doc = "Reason: {n} finished tasks are still in the session task list."
+value = "{n} finished tasks are still in the task list"
+
+[ctxbudget.hb_subjects_over]
+doc = "Reason: {n} task subjects are longer than {max} characters (handover.taskSubjectMax)."
+value = "{n} task subjects exceed {max} characters"
+
+[ctxbudget.hb_mem_lines_over]
+doc = "Reason: the MEMORY.md index has {n} lines, more than {max} (handover.memoryIndexMaxLines)."
+value = "the MEMORY.md index has {n} lines (budget {max})"
+
+[ctxbudget.hb_mem_chars_over]
+doc = "Reason: the MEMORY.md index has {n} characters, more than {max} (handover.memoryIndexMaxChars)."
+value = "the MEMORY.md index has {n} characters (budget {max})"
+
+[ctxbudget.hb_what]
+doc = "The first line of the handover-budget block; {phrase} is the declaration, {why} the breaches."
+value = 'your reply declares ready to compact/restart ("{phrase}") but the handover is not consolidated: {why}.'
+
+[ctxbudget.hb_why]
+doc = "The Why line of the handover-budget block."
+value = "A restart-ready declaration needs a consolidated task list and memory index, or the next session inherits the clutter."
+
+[ctxbudget.hb_instead]
+doc = "The instructions of the handover-budget block."
+value = "consolidate the task list and the MEMORY.md index within the budgets (handover skill, step 3), then declare again."
 
 [ctxbudget.advice_needs_safe]
 doc = "Words that, together with the word safe, can form a compact recommendation (safe to compact, safe to /clear, safe for a reset or /new); a final text with none of the pairs holds no recommendation."

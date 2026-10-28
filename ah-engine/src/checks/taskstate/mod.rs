@@ -67,7 +67,7 @@ pub struct Task {
     pub id: String,
     /// The subject (`String(content)`).
     pub content: String,
-    /// The description (the state variant only; empty otherwise).
+    /// The description, including owner-decision markers used by the guard.
     pub description: String,
     /// The status; `None` is JavaScript's `undefined` (unknown).
     pub status: Option<String>,
@@ -314,16 +314,37 @@ pub fn blocked_by_after_update(existing: &[String], inp: &Value) -> R<Vec<String
     Ok(out)
 }
 
-/// A status field read with `||`: `None` when falsy, the string when truthy; a truthy non-string is [`Unsure`] (the Node
-/// code would call `.toLowerCase()` on it and throw).
-pub fn truthy_status(v: Option<&Value>) -> R<Option<String>> {
+/// Marks a status the reconstruction holds as JavaScript holds it, a truthy value that is not a string (`inp.status || ...` keeps a
+/// number, boolean, object or array as it is). Node only throws on it where it lowercases the status of a task still in the final
+/// map, so it is carried through the scan (a later create, update or list reset can replace it) and only a task that keeps it to
+/// the end makes the reconstruction [`Unsure`]. A string status that itself starts with the mark is [`Unsure`] at once, so the mark
+/// never stands for a real status.
+pub const NON_STRING_STATUS: char = '\u{1}';
+
+/// A status field read with `||` as the reconstruction keeps it: `None` when falsy, the string when it is one, else
+/// [`NON_STRING_STATUS`] (see there).
+pub fn kept_status(v: Option<&Value>) -> R<Option<String>> {
     match v {
         Some(x) if truthy(x) => match x {
+            Value::String(s) if s.starts_with(NON_STRING_STATUS) => Err(Unsure),
             Value::String(s) => Ok(Some(s.clone())),
-            _ => Err(Unsure),
+            _ => Ok(Some(NON_STRING_STATUS.to_string())),
         },
         _ => Ok(None),
     }
+}
+
+/// `String(inp.status || '')`: the text the since-status pattern is tested against.
+pub fn status_text(v: Option<&Value>) -> R<String> {
+    match v {
+        Some(x) if truthy(x) => scalar_string(x),
+        _ => Ok(String::new()),
+    }
+}
+
+/// Whether a status is a kept non-string value ([`NON_STRING_STATUS`]).
+pub fn is_non_string_status(s: Option<&str>) -> bool {
+    s.is_some_and(|s| s.starts_with(NON_STRING_STATUS))
 }
 
 /// `inp.blockedOn` or `inp.metadata.blockedOn` as the TaskCreate record reads it:

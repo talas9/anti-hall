@@ -92,8 +92,61 @@ pub fn scan(ctx: &Ctx) -> Scan {
     out
 }
 
+/// What makes a store unsupported legacy for the engine: a journal backend (pinned by the `BACKEND` marker, or no SQLite data and
+/// `.ndjson` segments in `journal/`) or a split store (SQLite data AND `.ndjson` segments). Read-only, by what is on disk (a forced
+/// backend in the environment does not change what a store IS).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Legacy {
+    Journal,
+    Split,
+}
+
+fn legacy_kind(dir: &Path) -> Option<Legacy> {
+    let has_ndjson = std::fs::read_dir(dir.join(defaults::text("migrate.store_journal_dir")))
+        .is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().ends_with(defaults::text("doctor.journal_segment_ext"))));
+    let has_db = std::fs::metadata(dir.join(defaults::text("doctor.store_db"))).is_ok_and(|m| m.len() > 0);
+    let marker = std::fs::read_to_string(dir.join(defaults::text("doctor.backend_marker"))).map(|t| t.trim().to_lowercase()).unwrap_or_default();
+    if marker == defaults::text("doctor.backend_journal") || (!has_db && has_ndjson) {
+        return Some(Legacy::Journal);
+    }
+    (has_db && has_ndjson).then_some(Legacy::Split)
+}
+
+/// The warning for DevSwarm stores the engine does not support (journal backend, split journal+SQLite store). Silent when the
+/// `doctor.legacy_stores_report` switch is 0 or no store is legacy. Reports only; nothing is moved or changed.
+fn legacy_section(doc: &mut Doc, ctx: &Ctx) {
+    if defaults::num("doctor.legacy_stores_report") != 1 {
+        return;
+    }
+    let mut journal: Vec<String> = Vec::new();
+    let mut split: Vec<String> = Vec::new();
+    for hash in migrate::list_store_hashes(ctx) {
+        match legacy_kind(&store_dir(ctx, &hash)) {
+            Some(Legacy::Journal) => journal.push(hash),
+            Some(Legacy::Split) => split.push(hash),
+            None => {}
+        }
+    }
+    if journal.is_empty() && split.is_empty() {
+        return;
+    }
+    let cap = defaults::num("doctor.leaks_examples") as usize;
+    let names = |v: &[String]| {
+        let more = if v.len() > cap { defaults::render("doctor_msg.leak_more", &[("n", &(v.len() - cap))]) } else { String::new() };
+        format!("{}{more}", v.iter().take(cap).cloned().collect::<Vec<_>>().join(", "))
+    };
+    doc.head(defaults::text("doctor_msg.head_legacy_stores"));
+    if !journal.is_empty() {
+        doc.warnl(defaults::render("doctor_msg.legacy_journal", &[("count", &journal.len()), ("shown", &names(&journal))]));
+    }
+    if !split.is_empty() {
+        doc.warnl(defaults::render("doctor_msg.legacy_split", &[("count", &split.len()), ("shown", &names(&split))]));
+    }
+}
+
 /// The always-on report of leaked fixture stores; silent when there are none.
 pub fn detect_section(doc: &mut Doc, ctx: &Ctx) {
+    legacy_section(doc, ctx);
     let found = scan(ctx);
     if found.leaks.is_empty() {
         return;

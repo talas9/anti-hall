@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Parity of the built-in `merge-side-pick` check against hooks/merge-side-pick.js (PreToolUse + PostToolUse).
-//   node run-merge-side-pick.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks
+//   node run-merge-side-pick.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks
 //        [--cmds fpr/cmds.jsonl] [--mode oneshot|daemon|both] [--conc 8] [--show 15] [--real 6000] [--seed 1]
 // Corpus: (1) the guard's own test cases and settings/skip variants, (2) windows of real sessions from the field
 // data (every command as a Pre then a Post step, in order), (3) real pushes preceded by an injected side-pick (so the

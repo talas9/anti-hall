@@ -1,8 +1,9 @@
 // check = "auto-handover" (UserPromptSubmit). The threshold fire, the soft advisory, the milestone nag, the latch re-arm and the
 // post-handover new-work gate with its backstop. The hooks share one per-session latch (<home>/.anti-hall/auto-handover/<tag>.json);
-// it is read and written in Node's shape. Every write is collected while deciding and done at the end, so a case that must defer
-// (a request without an absolute HOME, a relative transcript path or working directory, a time zone of the request's own, a
-// repository root the host cannot settle) defers before anything is written. A prompt with text on an armed gate also asks the
+// it is read and written in Node's shape. Every write is collected while deciding and done at the end. The home is Node's os.homedir() (hookProc.adoptHome: HOME unset adopts the passwd home); a relative
+// transcript path is opened from the payload cwd or the stand-in directory. What the engine cannot reproduce exactly adds nothing
+// (counted, native_unable): no home, the real home under a test marker, a relative cwd, a request time zone other than UTC, a checkout
+// the resolver cannot classify. A prompt with text on an armed gate also asks the
 // postHandoverGate Jev integration without waiting. Mirrors hooks/auto-handover.js and lib/auto-handover-*.js, lib/context-pct.js
 // (lib/75-ctxbudget.js). Keys and texts: ctxbudget.toml (ctxbudget.*).
 'use strict';
@@ -19,15 +20,27 @@ function ahConsultJev(p, cfg, result) {
     state: p.prompt.slice(0, ah.cfgNum('ctxbudget.ah_jev_state_chars')), trust: 'advisory', baseline: null,
   };
   if (p.session_id) spec.sessionId = String(p.session_id);
-  if (typeof p.transcript_path === 'string' && p.transcript_path) spec.turnRefFrom = p.transcript_path;
+  if (typeof p.transcript_path === 'string' && p.transcript_path) spec.turnRefFrom = hookProc.openKnown(p, p.transcript_path) || p.transcript_path;
   ah.jev.ask(spec);
+}
+
+// Node's os.homedir() for this call: false when there is none or it is the real home under a test marker (Node's own guard then writes
+// nothing); a relative HOME is resolved against the stand-in directory (counted).
+function ahAdopt(p) {
+  var why = hookProc.adoptHome();
+  if (why === null) return true;
+  ah.unable('auto-handover:' + why);
+  if (why !== 'relative_home') return false;
+  var h = hookProc.home(p);
+  if (h === null) return false;
+  ah.useHome(h);
+  return true;
 }
 
 function decide(p) {
   if (ah.env.get(ah.cfg('ctxbudget.judge_child_env')) === ah.cfg('ctxbudget.judge_child_on')) return 'allow';
   if (!p || typeof p !== 'object' || ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; })) return ahEmpty();
-  var home = ah.env.get(ah.cfg('ctxbudget.home_env'));
-  if (home === null || !ah.path.isAbsolute(home)) return 'defer';
+  if (!ahAdopt(p)) return ahEmpty();
   if (ah.settings.skipped(ah.cfg('ctxbudget.skip_auto_handover'))) return ahEmpty();
   var cfg = cb.resolveEffective(), tag = cb.sessionTag(p);
   if (!tag) return ahEmpty();
@@ -37,8 +50,8 @@ function decide(p) {
     return ahEmpty();
   }
   var tp = typeof p.transcript_path === 'string' ? p.transcript_path : null;
-  var result = cb.getContextPct(tp, p.session_id, w);
-  if (result === 'defer') return 'defer';
+  if (tp && hookProc.openKnown(p, tp) === null) ah.unable('auto-handover:relative_transcript');
+  var result = cb.getContextPct(tp ? hookProc.open(p, tp) : tp, p.session_id, w);
   if (result && isFinite(result.pct)) {
     var now = ah.clock.now(), over = cb.overThreshold(result, cfg);
     if (!over) {
@@ -48,7 +61,6 @@ function decide(p) {
         if (latch.softFired !== true) { out = cb.soft(result.pct); w.latch = Object.assign({}, latch, { softFired: true, lastNagAt: now }); }
       } else {
         var hp = cb.expectedHandoverPath(p);
-        if (hp === false) return 'defer';
         out = cb.fire(result, over, p, cfg.maxTokens, hp);
         w.latch = { fired: true, firedAt: now, firedPct: result.pct, firedVia: over, lastNagPct: result.pct, lastNagAt: now, softFired: false };
       }
@@ -56,7 +68,6 @@ function decide(p) {
       var cur = latch, dirty = false, parts = [], backstop = false, housekeeping = cb.isHousekeeping(p.prompt, cfg.gateHousekeepingMarkers);
       if (cfg.gateNewWork && !housekeeping) {
         var noted = cb.noteHandover(cur, p, result.pct, now);
-        if (noted === 'defer') return 'defer';
         if (noted) { cur = noted; dirty = true; }
         if (cb.isArmed(cfg, cur)) {
           if (cb.backstopDue(cfg, cur, result.pct)) {

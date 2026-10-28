@@ -1,6 +1,6 @@
 //! Helpers shared by the task checks ported from Node (task-lifecycle-log, dispatch-tier, task-tracker, task-guard,
 //! tasklist-guard): JavaScript string conversion of a JSON value, the ledger text sanitizer, the UTC clock text and the
-//! project root resolver (`hooks/lib/handover-find.js` `repoRoot`).
+//! project root resolver.
 //!
 //! Every function either answers exactly as the Node original does or says it cannot (`None`); the caller then defers
 //! the whole call to the Node hook, so an input these helpers cannot judge never becomes a silent decision (D74).
@@ -73,7 +73,7 @@ pub fn sanitize_text(s: &Value, max: usize) -> Option<String> {
     Some(out)
 }
 
-/// `detectPlatform(payload) === 'codex'` (`hooks/lib/auto-handover-text.js`): a `turn_id` string, or a transcript path that is a
+/// `detectPlatform(payload) === 'codex'`: a `turn_id` string, or a transcript path that is a
 /// Codex rollout or lives under a `.codex` directory.
 pub fn is_codex_platform(p: &Value) -> bool {
     if !p.is_object() && !p.is_array() {
@@ -84,7 +84,7 @@ pub fn is_codex_platform(p: &Value) -> bool {
     }
     let tp = jsval::get(p, "transcript_path").and_then(Value::as_str).unwrap_or("");
     static RE: crate::defaults::Cache<(regex::Regex, regex::Regex)> = crate::defaults::Cache::new();
-    let (rollout, dotcodex) =
-        RE.get_or_init(|| (jsre::compile(defaults::text("taskkit.codex_rollout"), false), jsre::compile(defaults::text("taskkit.codex_dir"), false)));
+    let res = RE.get_or_init(|| (jsre::compile(defaults::text("taskkit.codex_rollout"), false), jsre::compile(defaults::text("taskkit.codex_dir"), false)));
+    let (rollout, dotcodex) = &*res;
     rollout.is_match(tp) || dotcodex.is_match(tp)
 }

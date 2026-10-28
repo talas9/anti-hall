@@ -2,16 +2,18 @@
 //! launchd / systemd / cron job every 60-120 s) does besides auto-archive, taken over by the engine's scheduler so the Node job
 //! can be switched off as a whole and poke / escalate can move to the engine without a second actor.
 //!
-//! * [`Owner`] is the switch (`devswarm_sup.mode`): `witness` (default) leaves every duty to Node and runs none; `engine` runs the
-//!   duties of `devswarm_sup.duties` from the scheduler job `devswarm_supervisor` ([`tick`]) and makes the `auto` executor of
-//!   poke / escalate mean the engine.
+//! * [`Owner`] is the switch (`devswarm_sup.mode`): `engine` (default) runs the duties of `devswarm_sup.duties` from the scheduler
+//!   job `devswarm_supervisor` ([`tick`]) and makes the `auto` executor of poke / escalate mean the engine; anything else is off
+//!   (the diagnostic switch: no duty runs, the tick is counted as `disabled`). A single duty is switched off by naming it in
+//!   `devswarm_sup.duties_off`.
 //! * The double-run guard ([`node_running`]): while the Node supervisor's log is fresh the engine's duties and its poke /
 //!   escalate stand down. The shared sweep lock (`locks/sweep.lock`, Node's file and protocol) makes a Node sweep exit while a
 //!   tick runs, and Node's own cool-down state files are read and left as Node writes them.
-//! * Duties are native (log rotation) or run Node's own function for the duty in a bounded subprocess ([`tick`]): the engine
-//!   owns schedule, gate, lock, bound and record; the function keeps writing the files it writes today, so every shared file
-//!   is Node's byte for byte. [`verdict`] mirrors an engine poke / escalation into the liveness verdict and recovery log in
-//!   Node's exact shape. [`recover`] is the on-demand kill-and-resume, gated by the engine and executed by Node's CLI.
+//! * Every duty is native ([`tick`]): the engine owns schedule, gate, lock and record and writes the files Node wrote, byte for
+//!   byte. A step it cannot decide is `held` ([`tick::held`]: counted `native_unable`, nothing written, tried again); no Node is
+//!   launched and no Node witness is asked. [`verdict`] mirrors an engine poke / escalation into the liveness verdict and recovery
+//!   log in Node's exact shape. [`recover`] is the on-demand kill-and-resume, which the engine always `refused`: it never kills or
+//!   resumes a session (owner decision F; there is no rollback of a kill).
 //! * Reusable by the CLI verbs (each is a plain function over a home directory, no scheduler needed): the liveness model
 //!   ([`liveness`]), the app database snapshot and its queries ([`appsync::snap::read`], `workspace_for`, `focused`,
 //!   `brief_status`, [`appsync::snap::finish_signal`], [`appsync::snap::transcript_cwd_matches`]), the archived-marker planner
@@ -30,16 +32,19 @@
 pub mod appsync;
 pub mod cli;
 pub mod deferred;
+pub mod gate;
 pub mod housekeep;
 pub mod ingest;
+pub mod jevnotes;
 pub mod kill;
 pub mod liveness;
 pub mod recon;
 pub mod recover;
 pub mod retention;
+pub mod suplog;
+pub mod tail;
 pub mod tick;
 pub mod verdict;
-pub mod witness;
 
 use crate::checks::git::util::Settings;
 use crate::defaults;
@@ -66,6 +71,13 @@ impl Owner {
 /// The configured owner (environment, settings.json, shipped default).
 pub fn owner() -> Owner {
     Owner::parse(&crate::dswire::effective_text("devswarm_sup.mode"))
+}
+
+/// A step of a duty that could not complete (an I/O or SQL error, a refused value), with the reason that is logged and shown. The error
+/// type is the one the mesh verbs share (`meshw::ident::Defer`) so a verb can pass the reason along with `?`; it is a failure of this
+/// step, never a hand-off to anything else.
+pub(crate) fn failure(why: impl Into<String>) -> crate::meshw::ident::Defer {
+    crate::meshw::ident::Defer(why.into())
 }
 
 /// A settings entry of `devswarm_sup.toml` (`key` is its full name), resolved the way Node's settings reader does (environment,

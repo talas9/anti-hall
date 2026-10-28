@@ -132,8 +132,6 @@ fn exec(args: &[String]) {
 
 /// `phase <set|advance|step|agents|update|clear> ...`
 pub fn run(p: &Parsed) -> i32 {
-    let plan = super::shadow::begin(defaults::text("ops.verb_phase"), defaults::text("ops.script_phase"), &p.raw, None);
     exec(&p.raw);
-    super::shadow::end(plan, 0);
     0
 }
