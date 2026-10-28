@@ -5,7 +5,7 @@ name: nightly
 # On failure ONE issue titled "Nightly test failure" is opened or commented on.
 on:
   schedule:
-    - cron: '23 3 * * *'
+    - cron: '23 5 * * *'
   workflow_dispatch:
 
 permissions:
@@ -30,6 +30,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
+          shared-key: engine-${{ runner.os }}
+          save-if: false
       - name: hardening bar (scripts/soak.sh)
         run: ./scripts/soak.sh target/hardening/report.md
       - name: bar report
