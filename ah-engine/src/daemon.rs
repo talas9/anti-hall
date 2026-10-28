@@ -2759,6 +2759,27 @@ mod tests {
     }
 
     #[test]
+    fn busy_replies_are_split_by_reason() {
+        let mut cfg = Config::from_env();
+        cfg.session_rps = 0.001;
+        cfg.session_burst = 1.0;
+        let rs = RuleSet::parse(r#"{"version":1,"rules":[]}"#).unwrap();
+        let sh = Shared::new(cfg, "1", rs, "/x".into());
+        let q = |b: &str| handle_request(format!("V 1\n{b}").as_bytes(), &sh).0;
+        q(r#"{"hook_event_name":"Stop","session_id":"a"}"#);
+        assert_eq!(q(r#"{"hook_event_name":"Stop","session_id":"a"}"#), Reply::Busy);
+        assert_eq!(q(r#"{"hook_event_name":"Stop","session_id":"a"}"#), Reply::Busy);
+        let split = serde_json::from_str::<serde_json::Value>(&sh.status()).unwrap()["busy_by_reason"].clone();
+        assert_eq!(split[defaults::text("busy_reason.session")], 2, "{split}");
+        assert_eq!(split[defaults::text("busy_reason.queue")], 0);
+        assert_eq!(split[defaults::text("busy_reason.project")], 0);
+        assert_eq!(sh.stats.busy.load(SeqCst), 2);
+        note_busy_reason(&sh, BusyWhy::Queue);
+        note_busy_reason(&sh, BusyWhy::Project);
+        assert_eq!(sh.stats.busy_queue.load(SeqCst) + sh.stats.busy_project.load(SeqCst), 2);
+    }
+
+    #[test]
     fn busy_and_malformed_requests_are_recorded_as_skip_and_error() {
         let mut cfg = Config::from_env();
         cfg.session_rps = 0.001;
