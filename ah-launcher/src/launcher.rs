@@ -231,6 +231,41 @@ impl L {
         );
     }
 
+    /// #368: the installed engine (the installer's marker) is older than the release the plugin pins (`ah-engine.lock`): one notice per
+    /// session names the fix and the hook still runs. Unreadable or unparsable files, a missing marker (a local build) and an engine at
+    /// or above the pin say nothing. Off with launcher.stale_notice_on.
+    fn stale_engine_notice(&self) {
+        if self.s.num("launcher.stale_notice_on") == 0 || self.state_dir.as_os_str().is_empty() {
+            return;
+        }
+        let Some(root) = self.plugin_root.as_ref() else {
+            return;
+        };
+        let pinned = std::fs::read_to_string(root.join(self.key("launcher.engine_lock_file")))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| {
+                v.get("version")
+                    .and_then(|x| x.as_str().map(str::to_string))
+            })
+            .unwrap_or_default();
+        let have = std::fs::read_to_string(self.state_dir.join(self.key("install.file_marker")))
+            .ok()
+            .and_then(|t| t.split_whitespace().next().map(str::to_string))
+            .unwrap_or_default();
+        if pinned.is_empty() || have.is_empty() {
+            return;
+        }
+        let floor = self.key("launcher.legacy_scheme_floor");
+        if crate::compat::component_cmp(&floor, &have, &pinned) == Some(std::cmp::Ordering::Less) {
+            self.session_notice(
+                "msg.launcher_stale_engine",
+                "files.launcher_stale_notice",
+                &[("have", &have), ("want", &pinned)],
+            );
+        }
+    }
+
     /// The engine is unreachable (not installed, crashed, timed out, marked down, handed the call back): the call passes
     /// through unchecked and the session hears it once (msg.engine_unreachable_notice).
     fn unreachable_notice_for(&self, why_key: &str) {
@@ -1133,6 +1168,8 @@ pub fn run() -> i32 {
         .knob("launcher.knob_fallback_list")
         .map(PathBuf::from)
         .unwrap_or_else(|| l.hooks_dir.join(l.key(&host_key("fallback_list"))));
+
+    l.stale_engine_notice();
 
     // budgets: the test knobs, else the shipped client deadline + slack + wrapper margin
     let knob_s = l.knob("launcher.knob_timeout_s");

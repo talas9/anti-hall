@@ -7,6 +7,7 @@
 
 pub const NUMS: &[(&str, u64)] = &[
     ("launcher.stdin_idle_ms", 1000),
+    ("launcher.stale_notice_on", 1),
     ("launcher.write_timeout_ms", 1000),
     ("launcher.connect_timeout_ms", 50),
     ("launcher.spawn_retry_max", 2),
@@ -277,6 +278,12 @@ pub const STRS: &[(&str, &str)] = &[
     ("files.crashloop_until", "crashloop.until"),
     ("files.cold_guard_notice", "cold-guard.notice"),
     ("files.unreachable_notice", "unreachable.notice"),
+    ("files.launcher_stale_notice", "stale-engine.notice"),
+    (
+        "msg.launcher_stale_engine",
+        "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install` (or the anti-hall setup skill) to update it.",
+    ),
+    ("install.file_marker", "bootstrap.installed"),
     ("client.cold_guard_kick_event", "ColdStartKick"),
     (
         "msg.cold_guard_notice",

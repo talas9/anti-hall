@@ -198,6 +198,10 @@ value = "daemon.run"
 doc = "Holds the session id that already got the engine-unreachable notice, so the notice is shown once per session (the next session overwrites it)."
 value = "unreachable.notice"
 
+[files.launcher_stale_notice]
+doc = "Holds the session id that already got the stale-engine notice (the installed engine is older than the plugin's pin), so the notice is shown once per session (the next session overwrites it)."
+value = "stale-engine.notice"
+
 [files.cold_guard_notice]
 doc = "Holds the session id that already got the cold-start notice, so the notice is shown once per session (the next session overwrites it)."
 value = "cold-guard.notice"
@@ -2314,6 +2318,12 @@ value = "--builtin"
 [launcher.engine_lock_file]
 doc = "File name, in the plugin root, of the engine lock: when present the session start may bootstrap the engine."
 value = "ah-engine.lock"
+
+[launcher.stale_notice_on]
+doc = "1 (default): the thin client tells the session once, on stderr, when the installed engine (the installer's marker) is older than the version the plugin pins in ah-engine.lock, naming `ah-hook install`; the hook still runs. 0: say nothing. Notice only: nothing is downloaded."
+value = 1
+min = 0
+max = 1
 
 [launcher.legacy_scheme_floor]
 doc = "The first version of the OLD numbering. Builds made while the engine, hook client and web server carried the plugin's number report 0.300.x / 0.301.x (`0.301.1+<branch>.<sha>`); each component now has its own version (0.2.0, ...). An engine, hook client or web server at or above this floor counts as OLDER than any version below it, in every comparison: the install routine's downgrade check, the Updates page and `ah-hook doctor`. So nobody needs --force to go from 0.301.1 to 0.2.0. Plugin versions are never compared through this floor."

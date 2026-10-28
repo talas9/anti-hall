@@ -361,6 +361,10 @@ value = "the engine could not be started"
 doc = "The {why} of the engine-unreachable notice when the client could not reach the engine's daemon (down, breaker open, crash-loop stop)."
 value = "the engine daemon could not be reached"
 
+[msg.launcher_stale_engine]
+doc = "Printed once per session on stderr by the thin client when the installed engine is older than the version the plugin pins (ah-engine.lock): guards written for the newer engine may not run. Placeholders: {have} (installed), {want} (pinned)."
+value = "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install` (or the anti-hall setup skill) to update it."
+
 [msg.cold_guard_notice]
 doc = "Printed once per session on stderr when a guard event gave up waiting for a cold-starting daemon and was let through unchecked; {event} is the event name."
 value = "anti-hall: the engine was still starting, so this {event} was not checked; the guards apply again once it is up"
