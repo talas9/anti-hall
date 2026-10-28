@@ -100,22 +100,23 @@ fn measuring_a_check_adds_nothing_measurable_to_its_call() {
     let subject = Subject { event: "PreToolUse", tool: Some("Bash"), cwd: None, tool_input: &Value::Null, prompt: None };
     let (payload, opts) = (json!({}), json!({}));
     const N: u32 = 10_000;
-    let run = |on: bool| {
+    // One timed round of N calls with the knob on or off.
+    let round = |on: bool| {
         memstat::configure_measure(on, 1);
-        (0..3)
-            .map(|_| {
-                let t = std::time::Instant::now();
-                for _ in 0..N {
-                    black_box(run_env_guarded(&Small, &subject, &payload, &opts, &env));
-                    black_box(load::take_check_mem());
-                }
-                t.elapsed()
-            })
-            .min()
-            .unwrap()
+        let t = std::time::Instant::now();
+        for _ in 0..N {
+            black_box(run_env_guarded(&Small, &subject, &payload, &opts, &env));
+            black_box(load::take_check_mem());
+        }
+        t.elapsed()
     };
-    let _ = run(true);
-    let (off, on) = (run(false), run(true));
+    // Off and on rounds alternate so a noisy stretch on a shared runner hits both sides; the per-side minimum over 7 rounds drops it.
+    let _ = round(true);
+    let (mut off, mut on) = (std::time::Duration::MAX, std::time::Duration::MAX);
+    for _ in 0..7 {
+        off = off.min(round(false));
+        on = on.min(round(true));
+    }
     let ns = |d: std::time::Duration| d.as_nanos() as f64 / f64::from(N);
     println!("run_env_guarded per call: knob off {:.0} ns, on {:.0} ns, extra {:.0} ns", ns(off), ns(on), ns(on) - ns(off));
     assert!(ns(on) - ns(off) < 5_000.0, "measuring adds {:.0} ns per check", ns(on) - ns(off));
