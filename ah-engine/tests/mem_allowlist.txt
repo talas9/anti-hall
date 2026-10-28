@@ -10,6 +10,7 @@ gitcache/mod.rs | GitCache.repos | gitcache.max_repos, idle entries expire after
 hookcfg/session.rs | SessionCore.slots | registered as mem.hook_sessions_*; expired counters are pruned even without SessionEnd | per-session hook condition counters
 limits.rs | BucketCore.map | registered through aggregate mem.buckets_* holder | daemon session/project rate buckets
 limits.rs | BucketOwners.buckets | weak references to live registered bucket maps, stale entries removed on access | aggregate owner list for mem.buckets_*
+defaults/load.rs | SEEN | grows only by a config string not seen before in this process (reload of unchanged defaults adds nothing; the same changed text adds once); every member is a leaked &'static str already counted by mem.defaults_leak, so it cannot be evicted without re-leaking. NOT capped: unbounded across arbitrarily many distinct config edits, limited in practice by the distinct config values ever loaded and the engine restart on plugin update | defaults reload dedup of leaked config text (#171); proven by tests/defaults_reload_leak.rs
 load.rs | Load.minutes | newest load.minutes_kept buckets, each bucket capped | per-minute request load
 tier.rs | Bus.subs | max_channels channels and a bounded queue per subscriber | pub/sub channels
 transcript/registry.rs | Indexes.slots | `max` slots, entries expire after ttl_ms (cfg) | transcript index slots; registry follow-up (transcript caches belong to another job)

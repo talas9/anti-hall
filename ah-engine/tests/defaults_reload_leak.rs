@@ -49,4 +49,22 @@ fn a_changed_integer_entry_leaks_only_its_own_entry_not_a_second_copy_of_its_tex
     let grew = ah_engine::mem::leaked_bytes() - before;
     let entry = std::mem::size_of::<ah_engine::defaults::Entry>();
     assert!(grew <= entry, "one changed integer entry leaked {grew} B; its own Entry is {entry} B, the rest is a repeated copy of its unchanged text");
+    // The dedup set (load.rs SEEN) only ever holds strings that were leaked, so leaked_bytes() moves exactly when it grows:
+    // reloads of unchanged defaults add nothing, and re-applying text already seen (flip back and forth) adds no new text.
+    let steady = ah_engine::mem::leaked_bytes();
+    for _ in 0..50 {
+        ah_engine::defaults::reload(None).unwrap();
+    }
+    assert_eq!(ah_engine::mem::leaked_bytes(), steady, "50 reloads of unchanged defaults must leak nothing");
+    for _ in 0..20 {
+        for v in [2001, 2002] {
+            set_gc_every_calls(&plugin, v);
+            ah_engine::defaults::reload(None).unwrap();
+        }
+    }
+    let flip = ah_engine::mem::leaked_bytes() - steady;
+    assert!(
+        flip <= 40 * entry,
+        "40 flips between two already-seen values leaked {flip} B; only the {entry} B Entry per applied reload may grow, never a string"
+    );
 }
