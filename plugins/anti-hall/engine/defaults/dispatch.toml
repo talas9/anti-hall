@@ -218,8 +218,8 @@ doc = "The directory under the state dir that holds the over-cap context files (
 value = "context-spill"
 
 [dispatch.spill_file]
-doc = "File name of one spilled context. Placeholders: {event} (letters and digits of the hook event), {ts} (milliseconds), {pid}."
-value = "{event}-{ts}-{pid}.txt"
+doc = "File name of one spilled context. Placeholders: {event} (letters and digits of the hook event), {ts} (milliseconds), {pid}, {seq} (a per-process counter: the daemon dispatches on several threads, so two same-millisecond spills never share a name)."
+value = "{event}-{ts}-{pid}-{seq}.txt"
 
 [dispatch.spill_stale_s]
 doc = "Age at which a spilled context file is removed. A session reads its file soon after it starts, so a week is generous; the file only holds text the hooks print again at the next start."

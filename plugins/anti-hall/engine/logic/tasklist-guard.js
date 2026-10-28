@@ -609,6 +609,8 @@ function decide(p, opts) {
   var t = ah.transcript.tasks(transcript, 'scan', tlN('window_bytes'), tlN('wide_window_bytes'));
   if (t.unsure) ah.unable('tasklist-guard:tasks_unsure'); // keep known work and task facts when a line cannot be reconstructed
   if (t.quiet) return 'allow';
+  var stored = tk.storeScan(home, rawSid); // the session's task store, when it has one, is the list; the transcript only says whether tasks were used
+  if (stored !== null) { t.openTaskIds = stored.openTaskIds; t.inProgressCount = stored.inProgressCount; }
   var scan = {
     work: work.work, lastWork: work.lastWork, lastProgressWrite: work.lastProgressWrite,
     sawTaskActivity: !!t.sawTaskActivity, taskStoreReset: !!t.taskStoreReset, inProgressCount: t.inProgressCount || 0, openTaskIds: t.openTaskIds || [],
