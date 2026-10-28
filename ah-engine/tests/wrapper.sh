@@ -82,10 +82,10 @@ check() {
   fi
 }
 
-# only_notice <err-file>: the file is empty, or holds exactly the one engine-unreachable notice line (the wrapper passes the
-# call through unchecked and says so once per session; with an unwritable HOME it cannot remember, so it says so every time).
+# only_notice <err-file>: the file holds EXACTLY the one engine-unreachable notice line (the wrapper passes the call through
+# unchecked and says so once per session; with an unwritable HOME it cannot remember, so it says so on every call). Empty stderr
+# is a failure: a broken engine must never be silent.
 only_notice() {
-  [ ! -s "$1" ] && return 0
   [ "$(wc -l <"$1" | tr -d ' ')" -eq 1 ] && grep -q '^anti-hall: the engine did not answer this ' "$1"
 }
 
@@ -347,6 +347,43 @@ test_missing_binary_fallback() {
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/missing.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
   [ ! -s "$out" ] && only_notice "$err"
 }
+
+# #183 matrix: for each broken-engine shape the first call of a session exits 0 with empty stdout and exactly ONE notice, and a
+# repeat call in the same session (writable HOME, so it can remember) stays silent; a new session hears it again.
+test_broken_engine_notice_once_per_session() {
+  rp=$tmp/once-payload.json
+  printf '{"tool_name":"Bash","session_id":"sess-A"}' >"$rp"
+  rp2=$tmp/once-payload2.json
+  printf '{"tool_name":"Bash","session_id":"sess-B"}' >"$rp2"
+  : >"$tmp/once.list"
+  for mode in missing exit126 exit127 signal hang; do
+    rh=$tmp/once-home-$mode
+    mkdir -p "$rh"
+    if [ "$mode" = missing ]; then e=/no/such/engine; else e=$(make_engine "once-$mode" "$mode"); fi
+    to=$large_timeout
+    [ "$mode" = hang ] && to=$short_timeout
+    for round in first repeat other; do
+      in=$rp
+      [ "$round" = other ] && in=$rp2
+      out=$tmp/once-$mode-$round.out
+      err=$tmp/once-$mode-$round.err
+      set +e
+      HOME="$rh" AH_STARTED="$tmp/once-$mode.started" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/once.list" AH_HOOK_TIMEOUT_S="$to" sh "$wrapper" PreToolUse --tool-from-payload <"$in" >"$out" 2>"$err"
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ] || [ -s "$out" ]; then
+        printf 'once[%s/%s]: rc=%s out=[%s]\n' "$mode" "$round" "$rc" "$(cat "$out")" >&2
+        return 1
+      fi
+      if [ "$round" = repeat ]; then
+        [ ! -s "$err" ] || { printf 'once[%s/repeat]: repeat notice [%s]\n' "$mode" "$(cat "$err")" >&2; return 1; }
+      else
+        only_notice "$err" || { printf 'once[%s/%s]: want exactly one notice, got [%s]\n' "$mode" "$round" "$(cat "$err")" >&2; return 1; }
+      fi
+    done
+  done
+}
+
 
 test_signal_fallback() {
   h=$(hook_script sig 'printf signal')
@@ -813,6 +850,7 @@ check hooks_own_exit_code_passes_through_after_done_mark test_a_hooks_own_exit_c
 check engine_exit_without_done_mark_is_a_failure test_an_engine_exit_code_without_the_done_mark_is_an_engine_failure
 check exit_75_fallback test_exit_75_fallback
 check missing_binary_fallback test_missing_binary_fallback
+check broken_engine_notice_once_per_session test_broken_engine_notice_once_per_session
 check signal_fallback test_signal_fallback
 check engine_odd_exits_fallback test_engine_odd_exits_fallback
 check timeout_fallback test_timeout_fallback

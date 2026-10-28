@@ -647,6 +647,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cache_drops_the_previous_generation_when_the_defaults_change() {
+        use std::sync::Weak;
+        let cache: Cache<u8> = Cache::new();
+        let first = cache.get_or_init(|| 1);
+        let weak: Weak<u8> = Arc::downgrade(&first);
+        assert!(Arc::ptr_eq(&first, &cache.get_or_init(|| 2)), "same generation: the built value is reused");
+        drop(first);
+        assert!(weak.upgrade().is_some(), "the cache still holds the current generation");
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        let second = cache.get_or_init(|| 3);
+        assert_eq!(*second, 3, "rebuilt after the generation moved");
+        assert!(weak.upgrade().is_none(), "the previous generation is released, not kept beside the new one");
+    }
+
+    #[test]
     fn every_setting_has_a_value_and_a_sentence_doc() {
         assert!(all().len() > 100, "defaults are not being enumerated: {}", all().len());
         for e in all().iter().copied() {
