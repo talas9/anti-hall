@@ -12,11 +12,31 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 - "Engine-only" means Rust primitives plus the QuickJS logic files in `plugins/anti-hall/engine/logic/` plus TOML values. Nothing tunable is compiled into the engine binary.
 - Branches proven merged are deleted at the end of R1. Old GitHub release pages are deleted at 1.0; git tags are always kept.
 
-## Shipped and current state (2026-10-25)
+## Status as of 2026-10-28
 
-- Engine **0.2.1** and plugin **0.301.1** are released; the R0 milestone (engine back online) is superseded by these releases. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`.
-- Fixes merged into `dev` but **not yet deployed live**: [#308](https://github.com/talas9/anti-hall/issues/308) Codex hook launchers rewritten to `ah-hook` (PR #320), [#309](https://github.com/talas9/anti-hall/issues/309) block caps reset per owner turn (PR #319), [#317](https://github.com/talas9/anti-hall/issues/317) false blocks on read-only remote commands and owner-wait tasks (PR #321).
-- The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
+Engine **0.2.1** and plugin **0.301.1** are released. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. All PRs are merged and none is open; the `dev` head is `e575549a`. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
+
+**Completed on `dev`** (PR numbers):
+
+- [#308](https://github.com/talas9/anti-hall/issues/308) Codex hook launchers rewritten to `ah-hook` (PR #320); [#309](https://github.com/talas9/anti-hall/issues/309) block caps reset per owner turn (PR #319); [#317](https://github.com/talas9/anti-hall/issues/317) false blocks on read-only remote commands and owner-wait tasks (PR #321).
+- Token waste ([#338](https://github.com/talas9/anti-hall/issues/338)): PRs #342, #343, #345, #348, #358, #359. Guard false positives ([#336](https://github.com/talas9/anti-hall/issues/336)): PRs #321, #342, #343, #348. Delivery counts and priority-ordered output ([#312](https://github.com/talas9/anti-hall/issues/312), [#311](https://github.com/talas9/anti-hall/issues/311)): PR #337. Rules for uncovered classes 1 and 4, Claude port only ([#313](https://github.com/talas9/anti-hall/issues/313)): PR #339.
+- CI hygiene ([#328](https://github.com/talas9/anti-hall/issues/328)): fuzz build triple fix (#205), #189, and the `dev` short gate (#346) is green. Memory sentinel fix for [#21](https://github.com/talas9/anti-hall/issues/21): PR #356. Dependabot fix PR #298.
+
+**R1 exit-gate status: not met.** Counted from the 2026-10-28 audit of the open P0/P1 issues (33 issues: 4 P0, 29 P1):
+
+| Audit verdict | Count |
+|---|---|
+| Resolved (fix merged, issue open until the release train reaches `main`; two held open for a test pass) | 3 |
+| Partial | 17 |
+| Still open | 8 |
+| Cannot tell (no linked commit or PR found) | 5 |
+| Total | 33 |
+
+So 33 of 33 P0/P1 issues are still open; none meets the "0 open P0/P1" gate. GitHub closes issues only from the default branch, so issues whose fix is on `dev` stay open until the release train reaches `main`.
+
+**Still open at the head of the list:** runaway token burn ([#270](https://github.com/talas9/anti-hall/issues/270), guards shipped, effect not yet measured); guards that fail open ([#201](https://github.com/talas9/anti-hall/issues/201)); no/broken engine passes through ([#183](https://github.com/talas9/anti-hall/issues/183)); code-scanning alerts ([#224](https://github.com/talas9/anti-hall/issues/224), [#329](https://github.com/talas9/anti-hall/issues/329)); Codex parity gaps ([#314](https://github.com/talas9/anti-hall/issues/314)); work-method review ([#341](https://github.com/talas9/anti-hall/issues/341)); late hook replies ([#22](https://github.com/talas9/anti-hall/issues/22)); memory growth ([#21](https://github.com/talas9/anti-hall/issues/21)); runtime cutover ([#76](https://github.com/talas9/anti-hall/issues/76)).
+
+**CI:** `main` is 159 commits behind `dev`, so the scheduled nightly and fuzz runs on `main` are still red; the fixes (such as #205) are on `dev` only. This is expected to clear when the release train (dev to main) lands. Pending before or with that train: a release version mismatch fix and a timing fix for the `check_mem` test. Nightly failures are tracked in [#360](https://github.com/talas9/anti-hall/issues/360) and [#163](https://github.com/talas9/anti-hall/issues/163).
 
 ### Priority scale
 
@@ -29,7 +49,7 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 
 ### Current order
 
-1. Deploy the merged fixes, then run the live checks.
+1. Run the release train from `dev` to `main`, then confirm the scheduled CI turns green and the live checks pass.
 2. [#310](https://github.com/talas9/anti-hall/issues/310) → [#312](https://github.com/talas9/anti-hall/issues/312) → [#311](https://github.com/talas9/anti-hall/issues/311) → [#313](https://github.com/talas9/anti-hall/issues/313) → [#314](https://github.com/talas9/anti-hall/issues/314) → [#316](https://github.com/talas9/anti-hall/issues/316) → [#225](https://github.com/talas9/anti-hall/issues/225) → [#315](https://github.com/talas9/anti-hall/issues/315)
 3. The issue groups below, highest priority first.
 
