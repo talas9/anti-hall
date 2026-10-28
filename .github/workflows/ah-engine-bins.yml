@@ -52,6 +52,7 @@ jobs:
             ah-engine
             ah-launcher
           key: bins-${{ matrix.triple }}
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' }}
       - name: Build
         env:
           TRIPLE: ${{ matrix.triple }}

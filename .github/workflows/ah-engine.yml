@@ -20,16 +20,17 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     - cron: '17 3 * * *' # nightly: the full suite on both OSes
-    - cron: '17 4 * * 1' # weekly: the full doc-check on both OSes
+    - cron: '47 4 * * 1' # weekly: the full doc-check on both OSes
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push to the same pull request supersedes the older run. Pushes, tags and schedules are never cancelled.
+# A newer push to the same branch or pull request cancels the superseded run. Scheduled, dispatched and tag runs are never cancelled: the
+# nightly and the release gate must finish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   # the nightly-profile tier: the nightly schedule, a manual dispatch or a version tag
@@ -112,7 +113,7 @@ jobs:
         with:
           workspaces: ah-engine
           cache-on-failure: true
-          save-if: ${{ github.event_name != 'schedule' }}
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - run: cargo clippy --locked --all-targets -- -D warnings
 
   # Quick tier only: the deterministic unit / invariant / golden tests (nextest profile `quick`) on one ubuntu job.
@@ -140,7 +141,7 @@ jobs:
             ah-engine
             ah-launcher
           cache-on-failure: true
-          save-if: ${{ github.event_name != 'schedule' }}
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - name: Cache result
         run: echo "rust-cache hit=${{ steps.cache.outputs.cache-hit }}" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
@@ -189,7 +190,7 @@ jobs:
         with:
           workspaces: ah-launcher
           cache-on-failure: true
-          save-if: ${{ github.event_name != 'schedule' }}
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - run: cargo build --release --locked
 
   rust:
@@ -222,8 +223,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
+          shared-key: engine-${{ runner.os }}
           cache-on-failure: true
-          save-if: ${{ github.event_name != 'schedule' }}
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest
@@ -296,7 +298,7 @@ jobs:
             ah-engine
             ah-launcher
           cache-on-failure: true
-          save-if: ${{ github.event_name != 'schedule' }}
+          save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest
@@ -344,7 +346,7 @@ jobs:
     name: doc-check (${{ matrix.os }})
     needs: changes
     # the full pack, or a change to the guide / the script itself; the weekly cron and a dispatch run every block on both OSes
-    if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.devdocs == 'true') && (github.event_name != 'schedule' || github.event.schedule == '17 4 * * 1')
+    if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.devdocs == 'true') && (github.event_name != 'schedule' || github.event.schedule == '47 4 * * 1')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -356,9 +358,15 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+          cache: npm
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
         working-directory: ah-engine
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ah-engine
+          shared-key: engine-${{ runner.os }}
+          save-if: false
       - run: ah-engine/scripts/doc-check.sh ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '' || '--fast' }}
 
   # Supply chain (D84): known vulnerabilities (RustSec) and licence/source policy (ah-engine/deny.toml).
@@ -375,6 +383,12 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-audit,cargo-deny
+      # The RustSec database is a git clone that cargo-audit and cargo-deny update on top of; the cache saves the initial clone.
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cargo/advisory-db
+          key: advisory-db-${{ runner.os }}-${{ hashFiles('ah-engine/Cargo.lock') }}
+          restore-keys: advisory-db-${{ runner.os }}-
       - run: cargo audit
       - run: cargo deny check
 
@@ -382,7 +396,7 @@ jobs:
   # a manual dispatch runs them too, a push or pull request does not.
   coverage:
     name: coverage (informational)
-    if: (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 1') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' && github.event.schedule == '47 4 * * 1') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     continue-on-error: true
     defaults:
@@ -396,6 +410,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
+          shared-key: engine-${{ runner.os }}
+          save-if: false
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-llvm-cov,cargo-nextest
@@ -405,7 +421,7 @@ jobs:
   # Binary size report: total release size and the biggest crates (cargo-bloat). Informational; compare to ah-engine/RELEASING.md.
   size:
     name: size report (informational)
-    if: (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 1') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' && github.event.schedule == '47 4 * * 1') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     continue-on-error: true
     defaults:
@@ -418,6 +434,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
+          shared-key: engine-${{ runner.os }}
+          save-if: false
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-bloat
