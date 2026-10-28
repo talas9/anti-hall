@@ -6,7 +6,8 @@
 // claim ledger) counts the tool calls of the turn, and the host's tool-use scan (ah.transcript.toolUseScan) names the commands of
 // the last N of them. A reply that labels itself honest (not verified, CI pending, earlier run) is never held; the same reply is
 // held once, at most max_blocks times per owner turn (blockCap, as the speculation guard); stop_hook_active, subagents, Codex
-// payloads (the evidence walk reads Claude transcripts only) and a script failure allow. mode = log writes the hit and allows.
+// payloads (the evidence walk reads Claude transcripts only) and a script failure allow. A claim is judged per sentence: one that
+// is negated, future/conditional or reported from someone else's words (its own clause, neg_res/future_res/reported_res) is not a claim. mode = log writes the hit and allows.
 // Every pattern, list, number and text: claim_evidence.toml.
 'use strict';
 
@@ -31,6 +32,44 @@ function ceCommands(tp, n) {
     for (var j = 0; j < u.length; j++) uses.push(typeof u[j][2] === 'string' ? u[j][2] : '');
   }
   return uses.slice(Math.max(0, uses.length - n));
+}
+
+// The reply cut into sentences at claim_evidence.sentence_end_re (a hit that consumes nothing ends the cut).
+function ceSentences(t) {
+  var re = ah.cfg('claim_evidence.sentence_end_re'), out = [], rest = t;
+  for (;;) {
+    var m = ah.re.find(re, 'i', rest);
+    if (!m || m[1] <= 0) break;
+    out.push(rest.slice(0, m[0]));
+    rest = rest.slice(m[1]);
+  }
+  out.push(rest);
+  return out;
+}
+
+// The text of `sent` that governs a claim found at [a, b]: from the last clause break before it (or `win` chars back, the nearer) to its end.
+function ceContext(sent, a, b) {
+  var br = ah.cfg('claim_evidence.clause_break_re'), before = sent.slice(0, a), from = 0, off = 0;
+  for (;;) {
+    var m = ah.re.find(br, 'i', before.slice(off));
+    if (!m || m[1] <= m[0]) break;
+    from = off + m[1];
+    off = from;
+  }
+  return sent.slice(Math.max(from, a - ah.cfgNum('claim_evidence.skip_window')), b);
+}
+
+// The first claim of the reply that is stated as fact: a hit whose own clause is negated, future/conditional or reported speech is passed over.
+function ceFindClaim(scan) {
+  var rows = ah.cfg('claim_evidence.claims'), sents = ceSentences(scan);
+  var skip = [].concat(ah.cfg('claim_evidence.neg_res'), ah.cfg('claim_evidence.future_res'), ah.cfg('claim_evidence.reported_res'));
+  for (var k = 0; k < sents.length; k++) {
+    for (var i = 0; i < rows.length; i++) {
+      var hit = ah.re.find(rows[i].re, 'i', sents[k]);
+      if (hit && ceAny(skip, ceContext(sents[k], hit[0], hit[1])) === null) return { row: rows[i], quote: sents[k].slice(hit[0], hit[1]) };
+    }
+  }
+  return null;
 }
 
 function ceAnyCmd(list, cmds) {
@@ -70,11 +109,7 @@ function decide(p) {
   // the cheap gate: the reply alone, with quoted text and code removed
   var scan = ah.text.maskQuoted(reply), claim = null, done = false;
   if (r1) {
-    var rows = ah.cfg('claim_evidence.claims');
-    for (var i = 0; i < rows.length && claim === null; i++) {
-      var hit = ah.re.find(rows[i].re, 'i', scan);
-      if (hit) claim = { row: rows[i], quote: scan.slice(hit[0], hit[1]) };
-    }
+    claim = ceFindClaim(scan);
     if (claim !== null && ceAny(ah.cfg('claim_evidence.ack_res'), scan) !== null) claim = null;
   }
   if (r2) done = ceAny(ah.cfg('claim_evidence.done_res'), scan) !== null && ceAny(ah.cfg('claim_evidence.ack_pushed_res'), scan) === null;

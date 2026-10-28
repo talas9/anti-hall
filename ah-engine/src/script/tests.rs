@@ -2333,6 +2333,80 @@ mod claim_evidence_guard {
         assert_eq!(stop("ce-sw1", &lines(&[], claim), claim, &[("ANTIHALL_CLAIM_EVIDENCE", "false")], json!({})).0, ALLOW);
     }
 
+    /// A reply with no tool call at all: Some(held) when the guard blocks it.
+    fn bare(tag: &str, reply: &str) -> bool {
+        let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[])];
+        blocked(&stop(tag, &lines, reply, &[], json!({})).0).is_some()
+    }
+
+    #[test]
+    fn a_negated_claim_is_not_held_but_an_affirmative_one_beside_it_still_is() {
+        for (i, r) in [
+            "Nothing is merged this turn.",
+            "PR #12 is not merged yet.",
+            "The release was never deployed to prod.",
+            "No, it is not fixed.",
+            "Tests are not passing on main.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(!bare(&format!("ce-neg{i}"), r), "must allow: {r}");
+        }
+        assert!(bare("ce-neg-mixed", "Nothing is deployed to staging. PR #12 is merged."), "the affirmative sentence still holds");
+        assert!(bare("ce-neg-far", "Not a big change, and PR #12 is merged."), "a negation in another clause does not excuse it");
+    }
+
+    #[test]
+    fn a_future_or_conditional_claim_is_not_held() {
+        for (i, r) in [
+            "Once #373 and #374 are merged, I will rebase.",
+            "After it is merged the docs go out.",
+            "It will be merged when review ends.",
+            "The fix needs to be verified before release.",
+            "If CI is green the change is merged by the bot.",
+            "Waiting until the PR is merged.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(!bare(&format!("ce-fut{i}"), r), "must allow: {r}");
+        }
+        assert!(bare("ce-fut-after", "After the fix, all tests pass."), "a time word in an earlier clause does not excuse a claim");
+        assert!(bare("ce-fut-past", "The change is deployed."));
+    }
+
+    #[test]
+    fn a_claim_reported_from_someone_elses_text_is_not_held() {
+        for (i, r) in
+            ["The bot reported that all tests pass.", "According to the PR body the change is merged.", "The old comment said it is fixed and was wrong."]
+                .iter()
+                .enumerate()
+        {
+            assert!(!bare(&format!("ce-rep{i}"), r), "must allow: {r}");
+        }
+    }
+
+    #[test]
+    fn a_claim_backed_by_an_api_call_or_another_runner_of_this_turn_passes_and_a_bare_one_is_held() {
+        let mk = |cmd: &str, reply: &str| {
+            vec![
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                assistant("m1", "", &[cmd]),
+                result("{\"merged\": true, \"state\": \"closed\"}"),
+                assistant("m2", reply, &[]),
+            ]
+        };
+        let r = "PR #12 is merged.";
+        assert_eq!(stop("ce-ev-curl", &mk("curl -s https://api.example.test/repos/o/r/pulls/12", r), r, &[], json!({})).0, ALLOW);
+        assert_eq!(stop("ce-ev-git", &mk("git log origin/main --oneline -3", r), r, &[], json!({})).0, ALLOW);
+        let t = "11 passed.";
+        assert_eq!(stop("ce-ev-dotnet", &mk("dotnet test", t), t, &[], json!({})).0, ALLOW);
+        assert!(blocked(&stop("ce-ev-ls", &mk("ls -la", r), r, &[], json!({})).0).is_some(), "an unrelated command does not back it");
+        assert!(bare("ce-ev-bare-merged", "PR #12 is merged."));
+        assert!(bare("ce-ev-bare-passed", "11 passed."));
+    }
+
     #[test]
     fn a_stop_with_no_claim_stays_inside_the_stop_latency_bar() {
         let reply = "Renamed the function and updated its two callers.";
