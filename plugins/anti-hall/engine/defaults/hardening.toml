@@ -78,6 +78,29 @@ value = 40
 doc = "Words (case-insensitive) that mark a daemon log line as explaining an exit: only those lines are copied into the report."
 value = ["exit", "drain", "orphan", "watchdog", "rss", "panic", "restart", "start_fail", "budget_hard", "cpu_hard"]
 
+[common.progress_every_calls]
+doc = "A long bar (load, memory soak) prints one progress line (elapsed, calls, daemon alive, RSS, restarts, control-socket status) every this many calls."
+value = 1000
+
+[common.progress_every_s]
+doc = "...and at least this often by wall clock, so a slow or hung bar still shows a line in the CI log."
+value = 60
+unit = "s"
+
+[common.progress_poll_ms]
+doc = "How often the progress watcher thread wakes to check whether a line or a stall report is due."
+value = 1000
+unit = "ms"
+
+[common.stall_report_s]
+doc = "No completed call for this long writes the gone-daemon report at once (to the log and next to the bar's fragment) instead of at the end of the bar."
+value = 300
+unit = "s"
+
+[common.progress_status_chars]
+doc = "Longest control-socket status text a progress line carries (longer text is cut)."
+value = 120
+
 # ---- crash loop -------------------------------------------------------------------------------------------------------
 
 [crash.n]

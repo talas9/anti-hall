@@ -664,6 +664,143 @@ fn a_killed_daemon_is_explained_in_the_report() {
     assert!(r.notes.iter().filter(|l| l.starts_with("log: ")).count() <= n("common.gone_log_lines") as usize);
 }
 
+// ---- live progress and stall reporting (long bars) ----------------------------------------------------------------------
+
+/// One bounded progress line: elapsed seconds, calls done, daemon pid alive, RSS (KB), restarts, control-socket status.
+fn progress_line(elapsed_s: u64, calls: u64, alive: bool, rss_kb: Option<u64>, restarts: Option<u64>, ctl: &str, max_chars: usize) -> String {
+    let num = |v: Option<u64>| v.map_or("?".to_string(), |v| v.to_string());
+    let ctl: String = ctl.chars().take(max_chars).collect();
+    format!("progress: {elapsed_s}s calls={calls} alive={} rss_kb={} restarts={} ctl={ctl}", if alive { "yes" } else { "no" }, num(rss_kb), num(restarts))
+}
+
+/// A progress line is due after `every_calls` more calls or `every_s` more seconds, whichever comes first.
+fn progress_due(calls: u64, last_calls: u64, now_s: u64, last_s: u64, every_calls: u64, every_s: u64) -> bool {
+    calls.saturating_sub(last_calls) >= every_calls || now_s.saturating_sub(last_s) >= every_s
+}
+
+/// Fires once per stall: the call count has not moved for `limit_s`; moving again re-arms it.
+struct Stall {
+    calls: u64,
+    since_s: u64,
+    fired: bool,
+    limit_s: u64,
+}
+
+impl Stall {
+    fn new(limit_s: u64) -> Stall {
+        Stall { calls: 0, since_s: 0, fired: false, limit_s }
+    }
+    fn observe(&mut self, calls: u64, now_s: u64) -> bool {
+        if calls != self.calls {
+            (self.calls, self.since_s, self.fired) = (calls, now_s, false);
+            return false;
+        }
+        if !self.fired && now_s.saturating_sub(self.since_s) >= self.limit_s {
+            self.fired = true;
+            return true;
+        }
+        false
+    }
+}
+
+/// Watches a running bar from its own thread (so it still speaks while a call hangs): progress lines, and the gone-daemon
+/// report the moment the daemon is gone or the calls stall.
+struct Watch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub calls: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Watch {
+    fn start(lab: &Lab, pid: u32, key: &'static str, order: u32) -> Watch {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let calls = std::sync::Arc::new(AtomicU64::new(0));
+        let (stop2, calls2) = (stop.clone(), calls.clone());
+        let (sock, log_path) = (lab.sock(), lab.eng().join("ah-engine.log"));
+        let (every_calls, every_s, poll) = (n("common.progress_every_calls"), n("common.progress_every_s"), ms("common.progress_poll_ms"));
+        let (max_chars, ready) = (n("common.progress_status_chars") as usize, ms("common.ready_ms"));
+        let words: Vec<String> = val("common.gone_log_filter").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+        let (log_lines, mut stall) = (n("common.gone_log_lines") as usize, Stall::new(n("common.stall_report_s")));
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            let (mut last_calls, mut last_s, mut gone_reported) = (0u64, 0u64, false);
+            while !stop2.load(Relaxed) {
+                std::thread::sleep(poll);
+                let (now_s, done) = (start.elapsed().as_secs(), calls2.load(Relaxed));
+                let alive = common::alive(pid as i32);
+                let reply = exchange(&sock, b"CTL status\n", ready);
+                let (st, ctl) = match reply {
+                    Exch::Reply(Kind::Ok, body) => (serde_json::from_str::<serde_json::Value>(&body).ok(), "ok".to_string()),
+                    other => (None, format!("{other:?}")),
+                };
+                if progress_due(done, last_calls, now_s, last_s, every_calls, every_s) {
+                    (last_calls, last_s) = (done, now_s);
+                    let rss = st.as_ref().and_then(|s| s["memory"]["rss_kb"].as_u64());
+                    let restarts = st.as_ref().and_then(|s| s["restarts"].as_u64());
+                    eprintln!("{key} {}", progress_line(now_s, done, alive, rss, restarts, &ctl, max_chars));
+                }
+                let gone = !alive || st.is_none();
+                let stalled = stall.observe(done, now_s);
+                if (gone && !gone_reported) || stalled {
+                    gone_reported |= gone;
+                    let why = if stalled { format!("no call completed for {} s", n("common.stall_report_s")) } else { "daemon gone".to_string() };
+                    let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+                    let mut out = format!("{key} {why} at {now_s}s after {done} calls: pid {pid} alive: {alive}; control socket: {ctl}\n");
+                    for l in filter_log(&log, &words, log_lines) {
+                        out.push_str(&format!("log: {l}\n"));
+                    }
+                    eprint!("{out}");
+                    if let Some(dir) = std::env::var_os("AH_HARDENING_REPORT_DIR") {
+                        let dir = PathBuf::from(dir);
+                        ah_engine::discard::harmless(std::fs::create_dir_all(&dir));
+                        ah_engine::discard::harmless(std::fs::write(dir.join(format!("{order:02}-{key}-live-gone.txt")), &out));
+                        ah_engine::discard::harmless(std::fs::write(dir.join(format!("{order:02}-{key}-live-daemon.log")), &log));
+                    }
+                }
+            }
+        });
+        Watch { stop, calls, handle: Some(handle) }
+    }
+    fn tick(&self) {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.calls.clone()
+    }
+    fn end(mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            ah_engine::discard::harmless(h.join());
+        }
+    }
+}
+
+#[test]
+fn progress_line_is_bounded_and_stall_detector_fires_once_per_stall() {
+    let line = progress_line(61, 2000, true, Some(31000), Some(0), "ok", 120);
+    assert_eq!(line, "progress: 61s calls=2000 alive=yes rss_kb=31000 restarts=0 ctl=ok");
+    let gone = progress_line(5, 1, false, None, None, &"x".repeat(500), 10);
+    assert_eq!(gone, "progress: 5s calls=1 alive=no rss_kb=? restarts=? ctl=xxxxxxxxxx");
+    assert!(progress_due(1000, 0, 1, 0, 1000, 60));
+    assert!(progress_due(5, 0, 60, 0, 1000, 60));
+    assert!(!progress_due(999, 0, 59, 0, 1000, 60));
+    let mut s = Stall::new(300);
+    assert!(!s.observe(10, 0));
+    assert!(!s.observe(10, 299));
+    assert!(s.observe(10, 300));
+    assert!(!s.observe(10, 900), "fires once per stall");
+    assert!(!s.observe(11, 901), "progress re-arms");
+    assert!(!s.observe(11, 1000));
+    assert!(s.observe(11, 1201));
+}
+
 // ---- load and memory: the dispatcher's own request, straight to the daemon ----------------------------------------------
 
 /// A transcript in the shape of a real one (prompts, task and Bash tool uses, results, text) of about `kb` KB.
@@ -850,8 +987,10 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let up = lab.wait_for(|| lab.pid() == Some(d.id()));
     r.check("daemon up", up, true, up);
     let sock = lab.sock();
+    let watch = Watch::start(&lab, d.id(), "load", 60);
     for i in 0..n("load.warmup_calls") {
         timed_call(&sock, &traffic.request(i), deadline);
+        watch.tick();
     }
     let pid = lab.pid();
     // sustained: clients paced so that together they make sustained_rps calls per second
@@ -863,7 +1002,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let mut sustained = Phase::default();
     let ws: Vec<_> = (0..clients)
         .map(|c| {
-            let (traffic, sock) = (traffic.clone(), sock.clone());
+            let (traffic, sock, ticks) = (traffic.clone(), sock.clone(), watch.counter());
             std::thread::spawn(move || {
                 let mut p = Phase::default();
                 let start = Instant::now();
@@ -873,6 +1012,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
                         std::thread::sleep(w);
                     }
                     p.add(timed_call(&sock, &traffic.request(1000 + c * per_client + k), deadline));
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 p
             })
@@ -903,12 +1043,13 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let mut burst = Phase::default();
     let ws: Vec<_> = (0..n("load.burst_clients"))
         .map(|c| {
-            let (traffic, sock, gate) = (traffic.clone(), sock.clone(), gate.clone());
+            let (traffic, sock, gate, ticks) = (traffic.clone(), sock.clone(), gate.clone(), watch.counter());
             std::thread::spawn(move || {
                 let mut p = Phase::default();
                 gate.wait();
                 for k in 0..n("load.burst_calls_per_client") {
                     p.add(timed_call(&sock, &traffic.request(500_000 + c * 1000 + k), deadline));
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 p
             })
@@ -931,6 +1072,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
         n("load.burst_calls_per_client"),
         loadavg()
     ));
+    watch.end();
     let same = lab.pid() == pid;
     r.check("same daemon throughout (no restart)", same, true, same);
     r.check("busy replies (load shedding)", st["busy_replies"].clone(), 0, st["busy_replies"].as_u64() == Some(0));
@@ -959,8 +1101,10 @@ fn memory_soak_stays_in_the_rss_band_under_the_cap_with_no_recycle() {
     let mut gone_at = None;
     let pid = lab.pid();
     let start = Instant::now();
+    let watch = Watch::start(&lab, d.id(), "memory", 70);
     for i in 0..total {
         let (_, ok, _) = timed_call(&sock, &traffic.request(i), deadline);
+        watch.tick();
         fallbacks += u64::from(!ok);
         if i + 1 >= warm && (i + 1 - warm) % every == 0 {
             let Some(st) = lab.try_status() else {
@@ -970,6 +1114,7 @@ fn memory_soak_stays_in_the_rss_band_under_the_cap_with_no_recycle() {
             samples.push((i + 1, st["memory"]["rss_kb"].as_u64().unwrap_or(0), st["memory"]["heap_live_kb"].as_u64().unwrap_or(0)));
         }
     }
+    watch.end();
     r.check("daemon alive for the whole soak", gone_at.map_or("yes".to_string(), |c| format!("gone by call {c}")), "yes", gone_at.is_none());
     if gone_at.is_some() {
         lab.diagnose_gone(&mut r, &mut d);
