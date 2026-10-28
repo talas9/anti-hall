@@ -97,9 +97,19 @@ fn print_of(text: &str) -> Print {
     [run(0), run(1)]
 }
 
+/// Leak `s` once per distinct text: a reload that changes an entry re-reads its unchanged key, file, doc, env and unit, and
+/// those are the allocations already held, not a second copy (#171). Only text not seen before counts as leaked.
 fn leak_str(s: &str) -> &'static str {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashSet<&'static str>>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let set = g.get_or_insert_with(Default::default);
+    if let Some(have) = set.get(s) {
+        return have;
+    }
     crate::mem::note_leak(s.len());
-    Box::leak(s.to_string().into_boxed_str())
+    let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
+    set.insert(leaked);
+    leaked
 }
 
 /// Leak `v` for the life of the process (the values are `'static`), recording its size with the memory registry.
