@@ -1529,11 +1529,13 @@ fn queue_overflow_answers_busy_and_the_guard_event_follows_its_failure_mode() {
     let (mut out, mut err, mut code, mut dt) = (String::new(), String::new(), 0, Duration::ZERO);
     while t.elapsed() < common::scaled(Duration::from_secs(6)) {
         (out, err, code, dt) = e.hook(DENY_IN, true);
+        eprintln!("DBG t={:?} code={code} out={} err={:?} dt={dt:?}", t.elapsed(), out.len(), err);
         if code == 2 && out.is_empty() && err.contains("could not run the guards") && dt < common::scaled(Duration::from_secs(1)) {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    for ent in std::fs::read_dir(e.eng()).unwrap().flatten() { let n = ent.file_name().to_string_lossy().to_string(); if n.contains("log") || n.contains("event") || n.contains("down") { eprintln!("DBGFILE {n}: {}", std::fs::read_to_string(ent.path()).unwrap_or_default().lines().rev().take(12).collect::<Vec<_>>().join("\n")); } }
     assert_eq!((out.as_str(), code), ("", 2), "overflow must be refused at once and follow the failure mode: {err:?}");
     assert!(err.contains("could not run the guards"), "the engine's own line: {err:?}");
     // a refused hook is answered at once: far below the sleepers' 8 s, with an allowance for a loaded machine
