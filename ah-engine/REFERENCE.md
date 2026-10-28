@@ -635,6 +635,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `files.launcher_log` | `launcher.log` |  |  | The launcher's bounded failure log, inside the state directory. |
 | `files.launcher_spawn_lock` | `launcher.spawn.lock` |  |  | Lock file that lets only one launcher at a time ask for a cold daemon start, inside the state directory. |
 | `files.launcher_spawn_log` | `launcher.spawns` |  |  | Times (epoch ms, one per line) of the daemon starts the launcher asked for, inside the state directory; the crash-loop window counts them. |
+| `files.launcher_stale_notice` | `stale-engine.notice` |  |  | Holds the session id that already got the stale-engine notice (the installed engine is older than the plugin's pin), so the notice is shown once per session (the next session overwrites it). |
 | `files.log` | `ah-engine.log` |  |  | Event log file name (state directory). |
 | `files.reaped_prefix` | `daemon.run.reaped.` |  |  | Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended). |
 | `files.rollback_last` | `rollback.last` |  |  | One line the integrity check writes when it rolls the engine binary back (time, reason, which binary was set aside). Shown by status and doctor. |
@@ -861,6 +862,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `launcher.spawn_jitter_pct` | `50` |  | percent | Random share (percent) taken off each retry wait so concurrent launchers do not retry in step. |
 | `launcher.spawn_retry_max` | `2` |  | count | How many times the launcher retries starting the engine when the start itself failed for a transient reason (resource exhaustion, binary busy). Never after the engine was started. |
 | `launcher.spool_max_bytes` | `67108864` |  | bytes | Most of a payload larger than launcher.payload_prefix_bytes that the launcher copies to a private file in its run directory, so the shell fallback runner can be given the whole payload if the engine defers. Past it the payload is still streamed to the engine but cannot be replayed to the fallback runner. |
+| `launcher.stale_notice_on` | `1` |  |  | 1 (default): the thin client tells the session once, on stderr, when the installed engine (the installer's marker) is older than the version the plugin pins in ah-engine.lock, naming `ah-hook install`; the hook still runs. 0: say nothing. Notice only: nothing is downloaded. |
 | `launcher.stats_env` | `AH_LAUNCHER_STATS` |  |  | Environment variable through which the launcher hands its counters to the engine (sent inside the request, never written per call). |
 | `launcher.stdin_hard_bytes` | `536870912` |  | bytes | Hard limit on the payload size: the launcher stops reading there, closes the engine's input and counts it. |
 | `launcher.stdin_idle_ms` | `1000` |  | ms | How long the launcher waits for the host to deliver more of the hook payload before it stops reading and hands the engine what it has. |
@@ -13539,6 +13541,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.launcher_st_ver_empty` | Selftest reason: the engine's version check printed nothing. |
 | `msg.launcher_st_ver_exit` | Selftest reason: the engine's version check failed with exit code {code}. |
 | `msg.launcher_st_ver_timeout` | Selftest reason: the engine's version check did not finish in {ms} ms. |
+| `msg.launcher_stale_engine` | Printed once per session on stderr by the thin client when the installed engine is older than the version the plugin pins (ah-engine.lock): guards written for the newer engine may not run. Placeholders: {have} (installed), {want} (pinned). |
 | `msg.launcher_unreachable_why_down` | The {why} of the engine-unreachable notice when the daemon-down marker is fresh. |
 | `msg.launcher_unreachable_why_handed_back` | The {why} of the engine-unreachable notice when the engine handed the call back. |
 | `msg.launcher_unreachable_why_missing` | The {why} of the engine-unreachable notice when no engine is installed. |
