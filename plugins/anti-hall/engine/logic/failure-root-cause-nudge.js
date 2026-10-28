@@ -1,6 +1,7 @@
 // check = "failure-root-cause-nudge" (PostToolUseFailure on Bash; advisory only, never blocks). When a Bash call fails, one short
 // line points at the root-cause skill. The noise filter (guards.failureNudgeFilter, default on) stays silent for an interrupt, a
-// harness refusal, an expected exit 1 from a predicate command, and for every nudge after the first in one turn (the state is the
+// harness refusal, an expected exit 1 from a predicate command, a shell glob/echo artefact beside output that printed fine
+// (guards.failureNudgeHarmless), and for every nudge after the first in one turn (the state is the
 // file the Node hook keeps). A request without a home directory shows the nudge (the gate cannot persist).
 // Mirrors hooks/failure-root-cause-nudge.js, hooks/lib/expected-failure.js and hooks/lib/turn-gate.js (lib/70-guardkit.js).
 // Tables, patterns and texts: small_guards.toml (failure_nudge.*, expected_failure.*, turn_gate.*).
@@ -75,6 +76,23 @@ function fnExitCodeOf(errorText) {
 
 function fnIsHarnessRefusal(errorText) { return typeof errorText === 'string' && gk.re('expected_failure.refusal').test(errorText); }
 
+// A failure whose real output printed fine: the shell's own glob complaint (zsh `no matches found`, a glob or an echo of one that
+// matched nothing) is the only error text, and everything else the call printed is non-empty and free of error words. The patterns are
+// failure_nudge.artifact_line and failure_nudge.error_marker; the exit-code line is not output.
+function fnIsHarmlessArtifact(errorText) {
+  if (typeof errorText !== 'string') return false;
+  var art = gk.re('failure_nudge.artifact_line'), mark = gk.re('failure_nudge.error_marker', 'i'), exit = gk.re('expected_failure.exit_code');
+  var lines = errorText.split('\n'), sawArtifact = false, real = 0;
+  for (var i = 0; i < lines.length; i++) {
+    var l = lines[i].trim();
+    if (l === '' || exit.test(l)) continue;
+    if (art.test(l)) { sawArtifact = true; continue; }
+    if (mark.test(l)) return false;
+    real++;
+  }
+  return sawArtifact && real >= ah.cfgNum('failure_nudge.min_output_lines');
+}
+
 function fnIsExpectedNonzero(command, errorText) {
   try {
     if (typeof command !== 'string' || !command.trim()) return false;
@@ -116,6 +134,7 @@ function decide(p) {
   if (ah.settings.bool('failure_nudge.filter_setting')) {
     var errorText = typeof p.error === 'string' ? p.error : '';
     if (p.is_interrupt === true || fnIsHarnessRefusal(errorText) || fnIsExpectedNonzero(cmd, errorText)) return 'allow';
+    if (ah.settings.bool('failure_nudge.harmless_setting') && fnIsHarmlessArtifact(errorText)) return 'allow';
     // with no home for the gate's state the gate cannot persist and shows the nudge, as the Node gate does
     if (!turnGate.firstThisTurn({
       sessionId: p.session_id, agentId: typeof p.agent_id === 'string' ? p.agent_id : '', transcriptPath: p.transcript_path,

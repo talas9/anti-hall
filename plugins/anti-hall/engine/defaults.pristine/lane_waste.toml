@@ -61,7 +61,7 @@ doc = "Setting guards.testPolicy (none, targeted or suites; default targeted): n
 value = { section = "guards", key = "testPolicy", env = "ANTIHALL_TEST_POLICY", aliases = [], option = "", default = "targeted", values = ["none", "targeted", "suites"] }
 
 [lane_test.sw_policy_main]
-doc = "Switch guards.testPolicyMainThread (default off): on makes testPolicy none apply to the main session as well, not only to subagents."
+doc = "On makes testPolicy none apply to the main session too (default off)."
 value = { section = "guards", key = "testPolicyMainThread", type = "boolean", env = "ANTIHALL_TEST_POLICY_MAIN", option = "", default = false }
 
 [lane_test.policy_none]
@@ -266,7 +266,7 @@ value = "tell the agent \"skip queued-wait-guard\""
 # thread as well as subagents: a find or rg rooted at / or ~ wakes Spotlight and the network volumes and pushed the load to 170 once.
 
 [wide_search.sw_allow]
-doc = "Switch guards.allowWideSearch (default off): on lets every agent run whole-disk searches (the wide-search-guard stands aside)."
+doc = "On lets every agent run whole-disk searches (default off)."
 value = { section = "guards", key = "allowWideSearch", type = "boolean", env = "ANTIHALL_ALLOW_WIDE_SEARCH", option = "", default = false }
 
 [wide_search.guard_name]

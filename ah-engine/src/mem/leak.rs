@@ -325,18 +325,7 @@ pub fn due(uptime_s: u64, now_s: u64) -> bool {
 
 /// Read the process now.
 pub fn collect(now_s: u64) -> Sample {
-    let holders = crate::mem::global().snapshot()["holders"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|h| HolderReading {
-                    name: h["name"].as_str().unwrap_or_default().to_string(),
-                    bytes: h["bytes"].as_u64().unwrap_or(0),
-                    soft: h["soft_bytes"].as_u64().unwrap_or(0),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let holders = readings(&crate::mem::global().snapshot());
     Sample { t_s: now_s, footprint: crate::limits::mem_kb() * 1024, heap: crate::memstat::heap().live, holders }
 }
 
@@ -425,4 +414,21 @@ pub fn status() -> Value {
         }
         None => json!({"enabled": enabled, "state": Level::Ok.name(), "samples": 0, "slope_mb_per_h": 0.0, "top": null, "holders": [], "warming_up": true}),
     }
+}
+
+/// The holders of a registry snapshot as sentinel readings. An instance holder reports the SUM of its instances against a
+/// limit that applies to each one, so its soft limit is scaled by the live instance count (else it always reads as over).
+pub(crate) fn readings(snapshot: &Value) -> Vec<HolderReading> {
+    snapshot["holders"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|h| HolderReading {
+                    name: h["name"].as_str().unwrap_or_default().to_string(),
+                    bytes: h["bytes"].as_u64().unwrap_or(0),
+                    soft: h["soft_bytes"].as_u64().unwrap_or(0).saturating_mul(h["instances"].as_u64().unwrap_or(1).max(1)),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }

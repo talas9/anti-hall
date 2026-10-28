@@ -303,3 +303,80 @@ fn a_non_guard_events_budget_accounts_for_every_entry_exactly_once() {
     assert_eq!(e.plan("ran").len(), POST_BASH.len(), "a budget that is not reached skips nothing");
     assert!(e.plan("skipped_budget").is_empty());
 }
+
+/// A daemon that answers every PreToolUse request with an OK reply holding `body`, until the returned flag is cleared: the late-reply
+/// case where the daemon answered some checks and dropped the rest.
+fn serve_replies(sock: &Path, body: String) -> (std::sync::Arc<std::sync::atomic::AtomicBool>, std::thread::JoinHandle<()>) {
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(sock).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flag = std::sync::Arc::clone(&alive);
+    let server = std::thread::spawn(move || {
+        use std::io::Read;
+        while flag.load(std::sync::atomic::Ordering::Acquire) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut req = Vec::new();
+                    ah_engine::discard::harmless(stream.read_to_end(&mut req));
+                    ah_engine::discard::harmless(stream.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Ok, &body)));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+    });
+    (alive, server)
+}
+
+/// Measurement (a), issue #336 item 1: a Write whose daemon reply is missing only non-safety checks (burn-breaker and the like) and has
+/// no runnable Node command. Before (`guards.failOpenNonSafety` off) the Write is BLOCKED; after (the default) it is allowed with one notice
+/// per session, and the pass is counted per check. A safety guard that goes unanswered still blocks in both.
+#[test]
+fn a_write_with_a_late_daemon_answer_is_blocked_before_and_allowed_with_one_notice_after() {
+    let e = Env::new("fail-open-write");
+    let payload = serde_json::json!({"session_id": "fo1", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Write",
+        "tool_input": {"file_path": e.dir.join("a.txt"), "content": "x"}});
+    let entries = ah_engine::dispatch::table::select_guarded("claude", "PreToolUse", &payload, Some("Write"));
+    let closed = |check: &str| ah_engine::script::failure_mode(check) == "closed";
+    let (safety, other): (Vec<_>, Vec<_>) = entries.iter().partition(|en| en.check.as_deref().is_some_and(closed));
+    assert!(!other.is_empty() && !safety.is_empty(), "a Write has both kinds of guard: safety {} other {}", safety.len(), other.len());
+    // the daemon answers the safety guards (an allow each) and drops the rest
+    let body = serde_json::Value::Array(safety.iter().map(|en| serde_json::json!([en.id, 0, "", ""])).collect()).to_string();
+    let sock = ah_engine::paths::socket_in(&e.state());
+    let (alive, server) = serve_replies(&sock, body);
+    let payload = payload.to_string();
+    let off = [("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("ANTIHALL_FAIL_OPEN_NON_SAFETY", "0")];
+    let on = [("AH_ENGINE_DISPATCH_IN_PROCESS", "0")];
+    let before = e.run("PreToolUse", &payload, &off);
+    let after = e.run("PreToolUse", &payload, &on);
+    let again = e.run("PreToolUse", &payload, &on);
+    alive.store(false, std::sync::atomic::Ordering::Release);
+    ah_engine::discard::harmless(server.join());
+    eprintln!("MEASURE a: before exit={} stderr={:?}", before.0, before.2.trim());
+    eprintln!("MEASURE a: after  exit={} stdout={:?}", after.0, after.1.trim());
+    eprintln!("MEASURE a: retry  exit={} stdout={:?}", again.0, again.1.trim());
+    assert_eq!(before.0, 2, "before: blocked rather than allowed unguarded: {before:?}");
+    assert!(before.2.contains("could not run the guards"), "{before:?}");
+    assert_eq!(after.0, 0, "after: allowed: {after:?}");
+    assert!(after.1.contains("systemMessage") && after.1.contains("could not run"), "after: one notice line: {after:?}");
+    assert_eq!(again.0, 0, "{again:?}");
+    assert!(!again.1.contains("systemMessage"), "the notice is told once per session: {again:?}");
+    let log = e.log();
+    assert!(log.contains("dispatch_fail_open") && log.contains("burn-breaker"), "the pass is on record per check: {log}");
+    let journal = std::fs::read_to_string(e.state().join(ah_engine::defaults::text("diagnostics.counters_file"))).unwrap_or_default();
+    assert!(journal.lines().any(|l| l.contains("fail_open") && l.contains("burn-breaker")), "counted per check: {journal}");
+}
+
+/// A safety guard (git) that goes unanswered keeps failing closed with the setting on.
+#[test]
+fn an_unanswered_safety_guard_still_blocks_with_fail_open_on() {
+    let e = Env::new("fail-open-safety");
+    let payload = serde_json::json!({"session_id": "fo2", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}});
+    let sock = ah_engine::paths::socket_in(&e.state());
+    let (alive, server) = serve_replies(&sock, "[]".to_string());
+    let r = e.run("PreToolUse", &payload.to_string(), &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0")]);
+    alive.store(false, std::sync::atomic::Ordering::Release);
+    ah_engine::discard::harmless(server.join());
+    assert_eq!(r.0, 2, "no answer from the git/command guards: blocked: {r:?}");
+}

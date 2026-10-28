@@ -103,7 +103,7 @@ doc = "The task tools whose text changes the hook classifies."
 value = ["TaskCreate", "TaskUpdate"]
 
 [dispatch_tier.owner_marker_setting]
-doc = "Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
+doc = "Owner-blocked marker switch. Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
 value = { section = "guards", key = "taskGuardOwnerBlockedMarker", env = "ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER", aliases = [], option = "guards_task_guard_owner_blocked_marker", default = true }
 
 [dispatch_tier.owner_values]
@@ -161,6 +161,28 @@ max = 100000
 [taskstate.tail_bytes]
 doc = "How much of the end of a transcript the task reconstruction reads (the Node `MAX_TAIL_BYTES`, 1.5 MiB)."
 value = 1572864
+min = 1
+
+[taskstate.store_base]
+doc = "Path parts, under the home directory, of Claude Code's own task store: one directory per task list, one `<id>.json` per task. It is the authoritative list when it exists (the transcript tail of a long session no longer holds the creates). Codex has no such store, so it keeps the transcript reconstruction."
+value = [".claude", "tasks"]
+
+[taskstate.store_dir_names]
+doc = "Candidate directory names of a session's task list under the store, tried in order, the first that exists wins. `{sid}` is the session id, `{sid8}` its first 8 characters (the list id the `session-<8>` convention uses). A session id with a character outside `[A-Za-z0-9_-]` is not looked up."
+value = ["session-{sid8}", "{sid}"]
+
+[taskstate.store_file_suffix]
+doc = "Suffix of the task files in a store directory (the lock and high-water-mark files lack it)."
+value = ".json"
+
+[taskstate.store_max_files]
+doc = "Most task files read from one store directory; a larger directory is read as absent and the transcript reconstruction answers (fail-open, bounded hook latency)."
+value = 1000
+min = 1
+
+[taskstate.store_file_max_bytes]
+doc = "Largest task file read; a bigger one is skipped."
+value = 65536
 min = 1
 
 [taskstate.re_created]
@@ -270,7 +292,7 @@ doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
 value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
 
 [task_guard.prune_setting]
-doc = "How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)."
+doc = "Completed or cancelled tasks kept before the task tracker (UserPromptSubmit) suggests pruning."
 value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
 
 [task_guard.state_prefix]
@@ -281,10 +303,6 @@ value = "last-stop-taskset-"
 doc = "How many hex characters of the transcript path hash name a session that has no id."
 value = 16
 min = 1
-
-[task_guard.prune_advisory]
-doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
-value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"
 
 [task_guard.note_line]
 doc = "The line that carries the unknown-state note; `{note}` is the note."
@@ -379,7 +397,7 @@ value = 2
 min = 0
 
 [task_guard.min_priority_setting]
-doc = "The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
+doc = "Priority floor of the idle-neglect block. The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
 value = { section = "guards", key = "idleNeglectMinPriority", type = "enum", values = ["p0", "p1", "p2", "p3"], env = "ANTIHALL_IDLE_NEGLECT_MIN_PRIORITY", aliases = [], default = "p1" }
 
 [task_guard.dispatch_demand_setting]
@@ -387,11 +405,11 @@ doc = "Whether running agents are counted per task from this session's transcrip
 value = { section = "guards", key = "dispatchDemand", env = "ANTIHALL_DISPATCH_DEMAND", aliases = [], default = true }
 
 [task_guard.proven_only_setting]
-doc = "Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
+doc = "Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
 value = { section = "guards", key = "idleNeglectProvenOnly", env = "ANTIHALL_IDLE_NEGLECT_PROVEN_ONLY", aliases = [], default = true }
 
 [task_guard.agent_max_age_setting]
-doc = "Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
+doc = "Max age of an agent counted as cover. Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
 value = { section = "guards", key = "idleNeglectAgentMaxAgeMin", env = "ANTIHALL_IDLE_NEGLECT_AGENT_MAX_AGE_MIN", aliases = [], min = 0, default = 30 }
 
 [task_guard.agent_max_age_default_min]
@@ -1058,7 +1076,7 @@ doc = "The session summary Jev judges; the fields are the work count, threshold,
 value = "workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgress={stale} progressFresh={fresh} openTaskCount={open}"
 
 [tasklist_guard.no_task_tools_setting]
-doc = "The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
+doc = "Nag form when task tools are missing. The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
 value = { section = "guards", key = "tasklistNoTaskTools", type = "enum", env = "ANTIHALL_TASKLIST_NO_TASK_TOOLS", aliases = [], option = "", default = "reduced", values = ["reduced", "full", "skip"] }
 
 [tasklist_guard.protocol_setting]
@@ -1253,7 +1271,7 @@ value = "verify the handover and record the result."
 
 [tasklist_hygiene.summary]
 doc = "One-line description of the tasklist-hygiene check in the generated reference."
-value = "Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line to log the outcome to the history ledger and delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
+value = "Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
 
 [tasklist_hygiene.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -1273,11 +1291,11 @@ value = ["completed"]
 
 [tasklist_hygiene.msg_done]
 doc = "What the done line says; {id} is the task id."
-value = "task {id} done: log its outcome to the history ledger, then delete it."
+value = "task {id} done: task-list entries of this session are not user data; log its outcome in .anti-hall/history/<date>/<session>.md, then delete it."
 
 [tasklist_hygiene.instead_done]
 doc = "What to do, in the done line."
-value = "TaskUpdate status=deleted; the list holds open tasks only."
+value = "TaskUpdate status=deleted once logged there; the list holds open tasks only. Nothing else is exempt from the never-delete rule."
 
 [tasklist_hygiene.msg_subject]
 doc = "The subject breach; {n} is the subject length and {max} handover.taskSubjectMax."

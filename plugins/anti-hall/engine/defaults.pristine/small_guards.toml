@@ -648,7 +648,7 @@ doc = "Regex (global) of quoted text in a brief: a single-quoted span that opens
 value = '''(^|[^\w'])'[^']{1,1000}'|"[^"]{1,1000}"'''
 
 [model_routing.explore_exec_setting]
-doc = "Where the switch is read from that withholds the row-6 Explore hint when the brief writes a file or report or runs a script or shell commands (guards.exploreHintExec, default on): an Explore agent cannot write files."
+doc = "Withholds the Explore hint for file-writing briefs. Where the switch is read from that withholds the row-6 Explore hint when the brief writes a file or report or runs a script or shell commands (guards.exploreHintExec, default on): an Explore agent cannot write files."
 value = { section = "guards", key = "exploreHintExec", env = "ANTIHALL_EXPLORE_HINT_EXEC", aliases = [], option = "", default = true }
 
 [model_routing.exec_report_re]
@@ -1171,7 +1171,7 @@ value = '^\s*This (?:agent|session) is isolated in the worktree\b'
 
 [failure_nudge.summary]
 doc = "One-line description of the failure-root-cause-nudge check in the generated reference."
-value = "Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals and repeats within a turn."
+value = "Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals, a shell glob/echo artefact beside output that printed fine, and repeats within a turn."
 
 [failure_nudge.guard_name]
 doc = "The skip.json key that silences this hook."
@@ -1188,6 +1188,24 @@ value = { section = "guards", key = "failureRootCauseNudge", env = "ANTIHALL_FAI
 [failure_nudge.filter_setting]
 doc = "Where the noise-filter switch is read from (guards.failureNudgeFilter, default on)."
 value = { section = "guards", key = "failureNudgeFilter", env = "ANTIHALL_FAILURE_NUDGE_FILTER", aliases = [], option = "", default = true }
+
+[failure_nudge.harmless_setting]
+doc = "Where the harmless-failure switch is read from (guards.failureNudgeHarmless, default on): stay silent when the only error text is a shell glob or echo artefact and the call's real output printed fine."
+value = { section = "guards", key = "failureNudgeHarmless", env = "ANTIHALL_FAILURE_NUDGE_HARMLESS", aliases = [], option = "", default = true }
+
+[failure_nudge.artifact_line]
+doc = "Regex source (JavaScript syntax) of a line that is only the shell's complaint about a glob that matched nothing (zsh `no matches found`, `no match`), not a failure of the command itself. A failure whose error text holds such a line, other non-empty output and no error_marker word printed fine."
+value = '^(?:-?(?:zsh|bash|sh|ksh|dash)):\s*(?:\d+:\s*)?(?:no matches found|no match)\b'
+
+[failure_nudge.error_marker]
+doc = "Regex source (JavaScript syntax, case-insensitive) of the words that make a line of output an error: a failure whose other output holds one is not harmless and is nudged."
+value = '\b(?:error|errors|fatal|failed|failure|traceback|exception|panic|panicked|denied|not found|no such|cannot|can.t|unable|segfault|segmentation|aborted|killed|refused|timed out|timeout|invalid|illegal)\b'
+
+[failure_nudge.min_output_lines]
+doc = "Non-empty lines of output, besides the glob complaint, a failure must have printed to count as harmless."
+value = 1
+min = 1
+max = 100
 
 [failure_nudge.gate_key]
 doc = "The turn-gate key under which the once-per-turn state of this advisory is kept."
@@ -1246,7 +1264,7 @@ doc = "Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns
 value = { section = "guards", key = "coordinatorWorkWindowMinutes", env = "ANTIHALL_COORDINATOR_WORK_WINDOW_MINUTES", default = 10, min = 0 }
 
 [coordinator_work.nudge_setting]
-doc = "Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory."
+doc = "Work calls that trigger the advisory. Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory."
 value = { section = "guards", key = "coordinatorWorkNudgeAt", env = "ANTIHALL_COORDINATOR_WORK_NUDGE_AT", default = 4, min = 0 }
 
 [coordinator_work.block_setting]

@@ -682,7 +682,7 @@ doc = "How long a poke stays in effect before the sweep decides again. Node: dev
 value = { type = "number", section = "devswarm", key = "nudgeWindowSec", env = "ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC", min = 1, max = 100000000, default = 180 }
 
 [devswarm_sup.set_dry_run_verdicts]
-doc = "Dry run of the native liveness sweep: it computes every verdict and reports what it would write, but writes nothing and starts no Node work. Use it to look at the engine's decisions before it acts."
+doc = "Dry run of the liveness sweep: computes verdicts, reports them, writes nothing. Use it to preview the engine's decisions."
 value = { type = "bool", section = "devswarm_sup", key = "dryRun.verdicts", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_VERDICTS", default = false }
 
 [devswarm_sup.lv_ms_per_sec]
@@ -865,7 +865,7 @@ doc = "Time budget of one store's tombstoning batches (environment only, as in N
 value = { type = "number", section = "devswarm_sup_env", key = "retention_budget_ms", env = "ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS", min = 0, default = 5000, exact = true }
 
 [devswarm_sup.set_dry_run_retention]
-doc = "Dry run of the native retention: it plans and compares with Node's planner, logs what it would tombstone and writes nothing (no archive, no tombstone, no state)."
+doc = "Dry run of retention: plans and logs what it would tombstone, writes nothing."
 value = { type = "bool", section = "devswarm_sup", key = "dryRun.retention", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_RETENTION", default = false }
 
 

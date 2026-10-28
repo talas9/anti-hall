@@ -69,6 +69,24 @@ cargo build --release --locked
 ah-engine/scripts/build.sh --checks
 ```
 
+### Faster local builds
+
+Measured on one Apple-silicon machine (16 cores, `-j4`, single runs, so read differences under about 5 s as noise). Build times of the `ah-engine` crate with its 36 test executables:
+
+| Build | Wall-clock |
+|---|---|
+| `cargo test --no-run`, dev profile, empty target dir | 57-68 s |
+| the same after a one-line edit | 26-30 s |
+| `cargo test --profile ci-test --no-run`, empty target dir | 104 s |
+| `cargo test --release --no-run`, empty target dir (what the ubuntu gate builds) | 388 s |
+
+- **Use the dev profile while you iterate.** It already sets `debug = "line-tables-only"`; setting `debug = false` or full debuginfo instead measured the same (57 s each, cold). Do not expect a gain from tuning it further.
+- **`CARGO_INCREMENTAL=0`** did not make the local dev build faster or slower here (53 s cold and 26 s after an edit, against 57 s and 26-30 s with incremental on). It matters for a compiler cache: the sccache documentation says incrementally compiled crates cannot be cached, so set it when you use sccache. I did not measure sccache.
+- **One target directory per clone.** Cargo locks the whole build directory: two builds in one `CARGO_TARGET_DIR` run one after the other (the second prints `Blocking waiting for file lock on build directory`), while two builds in separate target dirs ran in parallel (6.4 s each against 6.5 s plus 4.5 s of waiting, in a small test crate). So do not point several clones or agents at one shared `CARGO_TARGET_DIR`; keep the default `ah-engine/target` in each clone. Give it room: a dev test build is about 3 GB.
+- **`SCCACHE_BASEDIRS`** (sccache documentation, not measured here): sccache keys include absolute paths, so clones in different directories only share cache hits when `SCCACHE_BASEDIRS` names their common parent. Set `RUSTC_WRAPPER=sccache` and `SCCACHE_BASEDIRS=<parent of your clones>` in your shell, never in a committed `.cargo/config.toml`. The crate you are editing is rebuilt either way; the cache saves the dependencies.
+- **Release builds are the slow ones.** The `ci-test` profile builds the same test binaries 3.7 times faster than `--release`. Tests that need a release build (`mem_reload`, the latency budgets) still need `--release`.
+- **Regenerate the generated files with one command**, `cargo run -q --bin ah-regen` (from `ah-engine/`): it rewrites `REFERENCE.md`, the hook files and the engine skills, and lists what changed. `--check` only lists them and exits 1 when a file is stale.
+
 ## Run the tests
 
 | Suite | Command | Where |
@@ -338,7 +356,7 @@ New capability goes into the engine, not into new Node code in the plugin (D80).
 
 ## Branches and pull requests
 
-- `dev` is the working branch. Pushes to `dev` run no CI, so run `cargo check` and a release build of what you touched before pushing.
+- `dev` is the working branch. Pushes to `dev` run only the path-filtered `ah-engine` workflow and `privacy-scan`, so run `cargo check` and a release build of what you touched before pushing.
 - `main` is what users and the plugin directory install from. It changes only through a pull request from `dev`; a ruleset blocks direct pushes. A pull request to `main` from any other branch fails the required `dev-only` check.
 - **Contributors open pull requests against `dev`.** The engine prototype lives on `engine-proto` and goes to `dev` by pull request when a phase is done and tested (D55).
 - Never force-push. Commit messages are conventional (`fix(area): ...`, `feat(area): ...`, `docs: ...`) with no AI-credit lines ([CONTRIBUTING.md](../CONTRIBUTING.md)).
@@ -349,6 +367,56 @@ git push origin dev
 gh pr create --base dev --fill
 gh pr checks
 ```
+
+## Working method for features and fixes
+
+How parallel contributors or agents work on `dev` without blocking each other. Later changes add their own subsections here.
+
+### Merge model
+
+| Branch | Required to merge | Source |
+|---|---|---|
+| `dev` | `tests-passed`, `privacy-scan` | ruleset "dev: required checks" |
+| `main` | `dev-only`, `tests-passed`, `privacy-scan`, plus a pull request (merge commits only) | ruleset "main protection" |
+
+- Every other job (`rust`, `ah-hook`, `doc-check`, `no-node`, `pr-title`, and so on) is **informational**: read it, but it does not block the merge.
+- `tests-passed` is currently a placeholder job in `.github/workflows/test.yml` that only prints a line (the Node suite it once gated is retired). The engine suite is the `rust` job in `.github/workflows/ah-engine.yml`. A green `tests-passed` therefore does not prove the engine tests passed: read `rust` too.
+- Merge as soon as the required checks pass. Open a follow-up only when an informational job points at the pull request's own code.
+- Merge commits, never squash. `dev` reaches `main` by pull request only.
+
+### Workflow rules
+
+1. Before a batch, read once: the required checks (above), the CI timings of the last runs (`gh run list`) and local capacity (cores, free disk).
+2. At most 2-3 concurrent builders, on disjoint files. A builder never edits files another builder owns.
+3. Generated files are regenerated once, by one integrator, after the merges. Never hand-merge them; take either side and regenerate:
+
+   | Generated | Regenerate (from `ah-engine/`) |
+   |---|---|
+   | `REFERENCE.md` | `cargo run -q --locked -- docs --format md > REFERENCE.md` |
+   | Hook files per host (`hooks.json`, `hooks.registry.json`, fallback list) | `cargo run --bin ah-gen-fallback-list -- --repo ..` |
+   | `anti-hall:engine*` skills (Claude and Codex) | `scripts/gen-engine-skills.sh` |
+
+4. Before the first push run `cargo fmt`, `cargo check --tests --locked` and the fast drift tests (see "Local pre-push gate").
+5. Commit early. Push as soon as it builds. Do not wait on CI; read it when it finishes.
+6. Verify a delegated worker's "done" yourself, from the API or the test output, not from its report.
+7. Put only verified facts in a task brief. An unchecked claim in a brief is copied as truth.
+8. A timing-flaky test is fixed or quarantined through an issue, not re-run in a loop until it passes.
+
+### Local pre-push gate
+
+Run from `ah-engine/`, one test runner at a time, `nice -n 10`, `-j 2` where a command takes it.
+
+| Step | Command |
+|---|---|
+| Format | `cargo fmt` (CI runs `cargo fmt --check`) |
+| Compiles, tests included | `cargo check --tests --locked` |
+| Fast drift tests (generated files, docs, policy) | `cargo test --locked --test it -- reference:: hooks_files:: roles:: docs_coverage:: no_hardcoded_tunables:: defaults_keys::` |
+| Touched module plus policy gates | `scripts/lane-tests.sh <module>` |
+| Lint | `cargo clippy --all-targets --locked -- -D warnings` |
+| Before a live deploy | `cargo nextest run -j 2 --profile dev` |
+| Everything CI runs on the engine | `./test.sh` |
+
+The CI quick profile and change-detection job are described in their own subsection once merged.
 
 ## Releases
 

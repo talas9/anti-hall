@@ -245,7 +245,7 @@ fn task_guard_advisories_never_share_stdout_with_the_answer() {
     assert_eq!(code, 0, "answered by the engine");
     assert_stdout_is_json_or_empty(&out, "live agents");
     assert!(err.contains("[task-guard] open tasks remain but live agents are active"), "the advisory is kept on stderr: {err:?}");
-    // the prune advisory next to a block: stdout is exactly the block, the advisory on stderr
+    // a block with many done tasks: stdout is exactly the block, and no prune note rides the Stop
     std::fs::remove_file(w.path("home/.anti-hall/agents/a.json")).unwrap();
     let line = |v: serde_json::Value| format!("{v}\n");
     let mut t = String::new();
@@ -267,7 +267,10 @@ fn task_guard_advisories_never_share_stdout_with_the_answer() {
     assert_eq!(code, 0, "answered by the engine");
     assert_stdout_is_json_or_empty(&out, "prune advisory + block");
     assert!(out.contains("\"decision\":\"block\""), "the block reaches the host: {out:?}");
-    assert!(err.contains("[task-guard] 2 completed/cancelled tasks"), "the prune advisory is kept on stderr: {err:?}");
+    assert!(
+        !err.contains("completed/cancelled tasks"),
+        "the prune advisory moved to the UserPromptSubmit task tracker (a Stop stderr never reaches the model): {err:?}"
+    );
 }
 
 #[test]
