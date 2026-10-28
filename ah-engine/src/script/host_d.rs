@@ -107,18 +107,16 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
         };
     }
     let v = if variant == "state" { Variant::State } else { Variant::Guard };
-    // the task lines kept since the last call when there are any, else the window read afresh
-    let kept_lines = if kept { super::tasks_cache::lines(path, window) } else { None };
-    let data;
-    let (lines, truncated): (Vec<&str>, bool) = match &kept_lines {
-        Some((k, truncated)) => (k.iter().map(String::as_str).collect(), *truncated),
+    // the reconstruction of the task lines kept since the last call when there are any, else the window read afresh
+    let kept_facts = if kept { super::tasks_cache::facts(path, window, v) } else { None };
+    let (built, truncated) = match kept_facts {
+        Some((facts, truncated)) => (facts, truncated),
         None => {
-            let Some((d, truncated)) = read_tail(path, window) else { return json!({"tasks": [], "unreadable": true}).to_string() };
-            data = d;
-            (lines_of(&data, truncated), truncated)
+            let Some((data, truncated)) = read_tail(path, window) else { return json!({"tasks": [], "unreadable": true}).to_string() };
+            (reconstruct(&lines_of(&data, truncated), v), truncated)
         }
     };
-    let Ok(mut facts) = reconstruct(&lines, v) else { return unsure() };
+    let Ok(mut facts) = built else { return unsure() };
     if truncated && backfill(&mut facts, path, window).is_err() {
         facts.unsure = true;
     }
