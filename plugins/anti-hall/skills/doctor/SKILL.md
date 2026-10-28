@@ -148,13 +148,6 @@ never a reason to fail anti-hall's own exit code); additive `UserPromptSubmit`/
 are ever reported — never a full command string (which can carry a local
 username/path) or file contents.
 
-**Plugin-name clash (engine doctor, PL-10):** Claude Code 2.1.296 skips the hooks of a
-plugin when another enabled plugin shares its name. `ah-engine doctor` reads
-`~/.claude/plugins/installed_plugins.json` plus the `enabledPlugins` of the settings files
-(read-only) and warns when an enabled plugin under a different registry key declares the
-plugin name `anti-hall` in its manifest. Two enabled `anti-hall@…` keys are the separate
-PL-04 finding. Fix: `/plugin disable <key>`, then `/reload-plugins`.
-
 **After a fix that changes the plugin set:** since Claude Code 2.1.299, `/reload-plugins`
 also picks up plugins installed from another terminal (`claude plugin install …`), so no
 restart is needed to see them; re-run the doctor afterwards.

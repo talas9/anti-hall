@@ -169,30 +169,6 @@ pub fn thin_section(doc: &mut Doc, root: &Path) {
     }
 }
 
-/// PL-10: an enabled plugin under another registry key whose manifest names it `anti-hall`. Claude Code 2.1.296 skips the hooks
-/// of a plugin when another enabled plugin shares its name, so such a clash silently silences anti-hall (or the other plugin).
-/// Keys that carry the anti-hall prefix are PL-04's business and are not repeated here.
-fn name_clash(doc: &mut Doc, plugins: &Value, enabled: &BTreeMap<String, (bool, String)>, prefix: &str) {
-    let name = defaults::text("doctor.plugin_name");
-    let manifest = defaults::text("doctor.plugin_manifest_file");
-    for (key, entries) in plugins.as_object().into_iter().flatten().filter(|(k, _)| !k.starts_with(prefix)) {
-        if !enabled.get(key).is_some_and(|e| e.0) {
-            continue;
-        }
-        for e in entries.as_array().into_iter().flatten() {
-            let path = e.get("installPath").and_then(Value::as_str).unwrap_or("");
-            if path.is_empty() {
-                continue;
-            }
-            if read_json(&Path::new(path).join(manifest)).ok().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string)).as_deref() == Some(name)
-            {
-                doc.warnl(defaults::render("doctor_msg.plugin_name_clash", &[("key", key), ("name", &name), ("path", &path)]));
-                break;
-            }
-        }
-    }
-}
-
 /// PL-02..09: the plugin registry and its enablement.
 pub fn registry_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>, version: &str) {
     doc.head(defaults::text("doctor_msg.head_plugin"));
@@ -219,7 +195,6 @@ pub fn registry_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>, version: 
             installs.push((key.clone(), PathBuf::from(path), e.get("version").and_then(Value::as_str).unwrap_or("").to_string()));
         }
     }
-    name_clash(doc, plugins, &enabled, prefix);
     let file = reg_file.display().to_string();
     if installs.is_empty() {
         doc.warnl(defaults::render("doctor_msg.plugin_not_registered", &[("file", &file)]));
@@ -284,47 +259,6 @@ mod tests {
         let (n, first) = thin_diff(&legacy, "claude");
         assert!(n == 1 && first.contains("PreToolUse") && first.contains("git-guard.js"), "{n} {first}");
         assert!(thin_diff(&serde_json::json!({}), "claude").0 >= 1);
-    }
-
-    fn fixture(tag: &str, reg: &str, settings: &str, manifests: &[(&str, &str)]) -> (Doc, std::path::PathBuf) {
-        crate::defaults::init().unwrap();
-        let home = std::env::temp_dir().join(format!("ah-plugin-clash-{tag}-{}", std::process::id()));
-        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a test scratch directory
-        std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
-        for (dir, name) in manifests {
-            std::fs::create_dir_all(home.join(dir).join(".claude-plugin")).unwrap();
-            std::fs::write(home.join(dir).join(".claude-plugin/plugin.json"), format!("{{\"name\":\"{name}\"}}")).unwrap();
-        }
-        let reg = reg.replace("{H}", &home.display().to_string());
-        std::fs::write(home.join(".claude/plugins/installed_plugins.json"), reg).unwrap();
-        std::fs::write(home.join(".claude/settings.json"), settings).unwrap();
-        let ctx = Ctx::new(home.display().to_string(), home.display().to_string(), Default::default(), true, None, None);
-        let mut doc = Doc::default();
-        registry_section(&mut doc, &ctx, None, "1.0.0");
-        (doc, home)
-    }
-
-    const REG: &str = r#"{"plugins":{"anti-hall@anti-hall":[{"installPath":"{H}/a","version":"1.0.0"}],"other@mkt":[{"installPath":"{H}/o","version":"1"}]}}"#;
-
-    #[test]
-    fn an_enabled_plugin_whose_manifest_name_is_anti_hall_is_a_name_clash() {
-        let on = r#"{"enabledPlugins":{"anti-hall@anti-hall":true,"other@mkt":true}}"#;
-        let (doc, home) = fixture("on", REG, on, &[("a", "anti-hall"), ("o", "anti-hall")]);
-        let body = doc.body();
-        assert!(body.contains("other@mkt") && body.contains("shares the plugin name"), "{body}");
-        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: a test scratch directory
-    }
-
-    #[test]
-    fn a_disabled_or_differently_named_plugin_is_no_name_clash() {
-        let off = r#"{"enabledPlugins":{"anti-hall@anti-hall":true,"other@mkt":false}}"#;
-        let (doc, home) = fixture("off", REG, off, &[("a", "anti-hall"), ("o", "anti-hall")]);
-        assert!(!doc.body().contains("shares the plugin name"), "{}", doc.body());
-        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: a test scratch directory
-        let on = r#"{"enabledPlugins":{"anti-hall@anti-hall":true,"other@mkt":true}}"#;
-        let (doc, home) = fixture("diff", REG, on, &[("a", "anti-hall"), ("o", "other")]);
-        assert!(!doc.body().contains("shares the plugin name"), "{}", doc.body());
-        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: a test scratch directory
     }
 
     #[test]
