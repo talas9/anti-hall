@@ -1549,6 +1549,29 @@ fn queue_overflow_answers_busy_and_the_guard_event_follows_its_failure_mode() {
     assert!(e.status()["busy_replies"].as_u64().unwrap() >= 1);
 }
 
+/// A daemon that writes the BUSY frame and drops the connection without reading the request (the overflow path) must still be
+/// read as a BUSY reply by the client, not as a failed exchange (macOS answers SO_RCVTIMEO on a closed peer with EINVAL).
+#[test]
+fn busy_reply_then_close_is_read_as_busy_not_as_a_failed_exchange() {
+    let dir = std::env::temp_dir().join(format!("ah-busyclose-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("b.sock");
+    let _ = std::fs::remove_file(&sock);
+    let l = UnixListener::bind(&sock).unwrap();
+    let srv = std::thread::spawn(move || {
+        for _ in 0..300 {
+            let (mut s, _) = l.accept().unwrap();
+            s.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Busy, "")).unwrap();
+        }
+    });
+    for i in 0..300 {
+        let r = ah_engine::client::exchange(&sock, b"HOOK x\n", Duration::from_secs(5));
+        assert!(matches!(r, ah_engine::client::Exch::Reply(ah_engine::frame::Kind::Busy, _)), "exchange {i}: {r:?}");
+    }
+    srv.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn accept_loop_survives_a_hundred_client_flood_with_silent_peers() {
     let e = Env::new(
