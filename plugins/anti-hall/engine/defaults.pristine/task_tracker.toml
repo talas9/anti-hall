@@ -56,7 +56,7 @@ value = "full"
 
 [task_tracker.prune_line]
 doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model. It leads the tracker's text on a line of its own and its first line stays under digest_line_chars, because the prompt digest shows only the first line of an advisory inline. It says plainly that these entries are not user data and names the ledger path (the relative form: the tracker has no cheap bounded way to render the absolute one) so a session that follows a never-delete rule still acts."
-value = "[task-guard] {n} completed/cancelled tasks (> {limit}): not user data; log in .anti-hall/history/<date>/<session>.md, then TaskUpdate status=deleted.\nOnly this session's own task-list entries may be deleted, once logged there; nothing else is exempt from the never-delete rule."
+value = "[task-guard] REQUIRED NOW, before other work: delete your {n} completed tasks (limit {limit}) with TaskUpdate status=deleted. Not optional.\nThey are not user data; log them first in .anti-hall/history/<date>/<session>.md. It is your owner's setting (guards.pruneCompletedTasksAfter): do not ignore it, and do not postpone it. Only this session's own task entries may be deleted; nothing else is exempt from the never-delete rule."
 
 [task_tracker.event]
 doc = "The hook event name in the output."

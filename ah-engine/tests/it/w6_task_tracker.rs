@@ -128,11 +128,12 @@ fn the_prune_advisory_reaches_the_model_on_the_prompt_once_per_list_change() {
     let first = prune_context(&home, &dir);
     let second = prune_context(&home, &dir);
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
-    assert!(first.contains("2 completed/cancelled tasks (> 1)"), "the prune advisory must be model-visible context on the prompt: {first}");
-    assert!(!second.contains("completed/cancelled tasks ("), "an unchanged list must not repeat it: {second}");
-    let line = first.lines().find(|l| l.contains("completed/cancelled tasks (> 1)")).expect("the prune line");
-    assert!(line.contains("not user data"), "the prune line must say task entries are not user data: {line}");
-    assert!(line.contains(".anti-hall/history/<date>/<session>.md"), "the prune line must name the ledger path: {line}");
+    assert!(first.contains("delete your 2 completed tasks (limit 1)"), "the prune advisory must be model-visible context on the prompt: {first}");
+    assert!(!second.contains("completed tasks (limit"), "an unchanged list must not repeat it: {second}");
+    let line = first.lines().find(|l| l.contains("delete your 2 completed tasks (limit 1)")).expect("the prune line");
+    assert!(first.contains("not user data"), "the prune advisory must say task entries are not user data: {line}");
+    assert!(first.contains("REQUIRED NOW"), "the prune advisory must be phrased as required: {line}");
+    assert!(first.contains(".anti-hall/history/<date>/<session>.md"), "the prune advisory must name the ledger path: {first}");
     assert!(line.chars().count() < 150, "the first line of the prune advisory must stay under the 150-char digest cut: {} chars: {line}", line.chars().count());
 }
 
@@ -181,7 +182,7 @@ fn a_long_session_whose_transcript_tail_lacks_the_creates_reads_its_list_from_th
     assert!(std::fs::metadata(&transcript).unwrap().len() > 1_572_864 + 100_000, "the creates must lie outside the tail window");
     let ctx = prompt_context(&home, &dir, sid, &transcript, "10");
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
-    assert!(ctx.contains("11 completed/cancelled tasks (> 10)"), "the prune advisory must count the store's done tasks: {ctx}");
+    assert!(ctx.contains("delete your 11 completed tasks (limit 10)"), "the prune advisory must count the store's done tasks: {ctx}");
     assert!(ctx.contains("open tasks: 2"), "the open-task line must count the pending task the tail never mentions: {ctx}");
 }
 
@@ -242,5 +243,5 @@ fn the_prune_advisory_survives_the_prompt_digest_inline() {
     let ctx = v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).unwrap_or("").to_string();
     assert!(ctx.contains("(full text: "), "the stand-ins must make the digest spill, else this test proves nothing: {ctx}");
     let inline = ctx.split("(full text: ").next().unwrap_or("");
-    assert!(inline.contains("12 completed/cancelled tasks (> 10)"), "the prune advisory must be in the inline digest, not only the spill file: {ctx}");
+    assert!(inline.contains("delete your 12 completed tasks (limit 10)"), "the prune advisory must be in the inline digest, not only the spill file: {ctx}");
 }

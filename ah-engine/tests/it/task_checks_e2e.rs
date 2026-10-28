@@ -268,7 +268,7 @@ fn task_guard_advisories_never_share_stdout_with_the_answer() {
     assert_stdout_is_json_or_empty(&out, "prune advisory + block");
     assert!(out.contains("\"decision\":\"block\""), "the block reaches the host: {out:?}");
     assert!(
-        !err.contains("completed/cancelled tasks"),
+        !err.contains("completed tasks (limit"),
         "the prune advisory moved to the UserPromptSubmit task tracker (a Stop stderr never reaches the model): {err:?}"
     );
 }
