@@ -33,9 +33,8 @@ const VER: &str = "0.1.0";
 const RULES: &str = r#"{"version":1,"rules":[{"id":"force","events":["PreToolUse"],"tools":["Bash"],"field":"command","pattern":"git push --force","action":"deny","message":"engine-blocked"}]}"#;
 const DENY_IN: &str =
     r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
-/// What the engine's answer to `DENY_IN` contains, and what the fallback stand-in prints.
+/// What the engine's answer to `DENY_IN` contains.
 const ENGINE_MARK: &str = "engine-blocked";
-const FALLBACK_MARK: &str = "NODE-FALLBACK";
 
 // ---- the bar's settings -------------------------------------------------------------------------------------------------
 
@@ -131,8 +130,9 @@ fn pct(sorted: &[u64], p: u64) -> u64 {
 enum Answer {
     /// The engine answered.
     Engine,
-    /// The fallback stand-in answered (it allows: exit 0).
-    Fallback,
+    /// The thin client answered itself because no engine could: the call passes through (exit 0, no engine verdict), with the
+    /// one-time unreachable notice on stderr. There is no Node fallback any more (client change f6bef325, #229).
+    Client,
     /// Anything else: a silent allow, a block the engine did not decide, a crash.
     Other,
 }
@@ -148,8 +148,8 @@ impl Call {
     fn answer(&self) -> Answer {
         if self.out.contains(ENGINE_MARK) {
             Answer::Engine
-        } else if self.out.contains(FALLBACK_MARK) && self.code == 0 {
-            Answer::Fallback
+        } else if self.code == 0 && self.out.is_empty() {
+            Answer::Client
         } else {
             Answer::Other
         }
@@ -168,8 +168,6 @@ impl Lab {
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("rules.json"), RULES).unwrap();
-        // the fallback stand-in allows (exit 0) and says so, so a call it answered is told from a silent allow
-        std::fs::write(dir.join("fb.sh"), format!("cat >/dev/null\necho {FALLBACK_MARK}\nexit 0\n")).unwrap();
         // a recording hivecontrol stand-in: the daemon must never reach a real one
         let hc = dir.join("hivecontrol");
         std::fs::write(&hc, format!("#!/bin/sh\necho \"$@\" >> {}\nexit 1\n", dir.join("hivecontrol.calls").display())).unwrap();
@@ -204,13 +202,10 @@ impl Lab {
         }
         c
     }
-    /// One `ah-engine hook` call, with the fallback stand-in given or not.
-    fn hook_with(&self, input: &str, fallback: bool, extra: &[(&str, &str)]) -> Call {
+    /// One `ah-engine hook` call.
+    fn hook_with(&self, input: &str, extra: &[(&str, &str)]) -> Call {
         let mut c = self.cmd();
         c.arg("hook");
-        if fallback {
-            c.env("AH_ENGINE_NODE", "/bin/sh").arg("--fallback").arg(self.dir.join("fb.sh"));
-        }
         for (k, v) in extra {
             c.env(k, v);
         }
@@ -226,7 +221,7 @@ impl Lab {
         }
     }
     fn hook(&self, input: &str) -> Call {
-        self.hook_with(input, true, &[])
+        self.hook_with(input, &[])
     }
     /// A control request straight to the socket (never spawns a daemon).
     fn ctl(&self, verb: &str) -> Option<String> {
@@ -345,10 +340,10 @@ fn crash_loop_repeated_daemon_death_trips_the_marker_and_recovers_after_the_cool
         d.wait().unwrap(); // reaped: a zombie would still count as alive
     }
     r.check("daemons started and killed", rounds_up, n("crash.n"), rounds_up == n("crash.n"));
-    // the next calls find the daemon dead n times: no respawn, the fallback answers, quickly
+    // the next calls find the daemon dead n times: no respawn, the client answers itself, quickly
     let calls: Vec<Call> = (0..n("crash.tripped_calls")).map(|_| lab.hook(DENY_IN)).collect();
-    let fallback = calls.iter().filter(|c| c.answer() == Answer::Fallback).count();
-    r.check("calls answered by the fallback while tripped", fallback, calls.len(), fallback == calls.len());
+    let fallback = calls.iter().filter(|c| c.answer() == Answer::Client).count();
+    r.check("calls answered by the client itself while tripped", fallback, calls.len(), fallback == calls.len());
     let slowest = calls.iter().map(|c| c.dt).max().unwrap_or_default();
     r.check("slowest call while tripped (ms)", slowest.as_millis(), ceiling.as_millis(), slowest <= ceiling);
     r.check("crash-loop marker written", lab.eng().join("crashloop.until").exists(), true, lab.eng().join("crashloop.until").exists());
@@ -366,8 +361,8 @@ fn crash_loop_repeated_daemon_death_trips_the_marker_and_recovers_after_the_cool
     let mut recovered = None;
     while Instant::now() < recover_by {
         let c = lab.hook(DENY_IN);
-        if !matches!(c.answer(), Answer::Engine | Answer::Fallback) {
-            r.check("call during the cooldown", format!("{:?} {} {}", c.code, c.out, c.err), "engine or fallback", false);
+        if !matches!(c.answer(), Answer::Engine | Answer::Client) {
+            r.check("call during the cooldown", format!("{:?} {} {}", c.code, c.out, c.err), "engine or client", false);
             break;
         }
         if c.answer() == Answer::Engine {
@@ -403,31 +398,27 @@ fn breaker_failures_open_it_calls_follow_the_no_engine_policy_and_a_half_open_pr
     fake_server(&lab, || None); // a hung daemon
     let until = lab.eng().join("breaker.until");
     // n failures open it; each waited out the deadline
-    let failing: Vec<Call> = (0..n("breaker.n")).map(|_| lab.hook_with(DENY_IN, true, &nospawn)).collect();
-    let fb = failing.iter().filter(|c| c.answer() == Answer::Fallback).count();
-    r.check("failing calls answered by the fallback", fb, failing.len(), fb == failing.len());
+    let failing: Vec<Call> = (0..n("breaker.n")).map(|_| lab.hook_with(DENY_IN, &nospawn)).collect();
+    let fb = failing.iter().filter(|c| c.answer() == Answer::Client).count();
+    r.check("failing calls answered by the client itself", fb, failing.len(), fb == failing.len());
     r.check("breaker open after n failures", until.exists(), true, until.exists());
     let opened = lab.log_count("breaker_open");
     r.check("breaker_open logged", opened, 1, opened == 1);
     // open: calls skip the engine (faster than any call that waited) and follow the no-engine policy
     let fastest_wait = failing.iter().map(|c| c.dt).min().unwrap();
-    let open: Vec<Call> = (0..n("breaker.open_calls")).map(|_| lab.hook_with(DENY_IN, true, &nospawn)).collect();
-    let fb = open.iter().filter(|c| c.answer() == Answer::Fallback).count();
-    r.check("open-breaker calls answered by the fallback", fb, open.len(), fb == open.len());
+    let open: Vec<Call> = (0..n("breaker.open_calls")).map(|_| lab.hook_with(DENY_IN, &nospawn)).collect();
+    let fb = open.iter().filter(|c| c.answer() == Answer::Client).count();
+    r.check("open-breaker calls answered by the client itself", fb, open.len(), fb == open.len());
     let slowest = open.iter().map(|c| c.dt).max().unwrap();
     r.check("slowest open-breaker call (ms)", slowest.as_millis(), format!("< {}", fastest_wait.as_millis()), slowest < fastest_wait);
-    // with no fallback to hand over to, a guard event defers (never a silent allow)
-    let bare = lab.hook_with(DENY_IN, false, &nospawn);
-    let defer = engine_num("dispatch.defer_exit") as i32;
-    r.check("guard event with no fallback: exit", bare.code, defer, bare.code == defer && bare.out.is_empty());
     // half-open, failing: after the cooldown one failure re-opens it at once (the earlier ones are still in the window)
     let first_until = std::fs::read_to_string(&until).unwrap();
     std::thread::sleep(Duration::from_secs(n("breaker.cooldown_s")) + ms("common.poll_ms") * 4);
     let open_now = lab.client_status()["breaker"].as_str().unwrap_or("").to_string();
     r.check("breaker after its cooldown", open_now.clone(), "closed", open_now == "closed");
-    let probe = lab.hook_with(DENY_IN, true, &nospawn);
+    let probe = lab.hook_with(DENY_IN, &nospawn);
     let reopened = std::fs::read_to_string(&until).unwrap_or_default();
-    r.check("failed half-open probe answered by the fallback", format!("{:?}", probe.answer()), "Fallback", probe.answer() == Answer::Fallback);
+    r.check("failed half-open probe answered by the client itself", format!("{:?}", probe.answer()), "Client", probe.answer() == Answer::Client);
     r.check("failed half-open probe re-opens it", reopened != first_until, true, reopened != first_until && lab.client_status()["breaker"] != "closed");
     // half-open, healthy: the hung stand-in is replaced by a running engine (started and awaited before the cooldown ends:
     // a daemon still loading would miss this run's short deadline and count as one more failure); after the cooldown the
@@ -494,8 +485,8 @@ fn corrupt_socket_garbage_frames_and_a_non_socket_fall_back_never_allow() {
         let garbage = t("corrupt.garbage").into_bytes();
         fake_server(&lab, move || Some(garbage.clone()));
         let cs: Vec<Call> = (0..calls).map(|_| lab.hook(DENY_IN)).collect();
-        let fb = cs.iter().filter(|c| c.answer() == Answer::Fallback).count();
-        r.check("garbage frames: calls answered by the fallback", fb, calls, fb as u64 == calls);
+        let fb = cs.iter().filter(|c| c.answer() == Answer::Client).count();
+        r.check("garbage frames: calls answered by the client itself", fb, calls, fb as u64 == calls);
         let slowest = cs.iter().map(|c| c.dt).max().unwrap();
         r.check("garbage frames: slowest call (ms)", slowest.as_millis(), call_ceiling(deadline).as_millis(), slowest <= call_ceiling(deadline));
         let failed = lab.log_count("client_fail");
@@ -513,8 +504,8 @@ fn corrupt_socket_garbage_frames_and_a_non_socket_fall_back_never_allow() {
         std::fs::set_permissions(lab.eng(), std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(lab.sock(), "precious").unwrap();
         let cs: Vec<Call> = (0..calls).map(|_| lab.hook(DENY_IN)).collect();
-        let fb = cs.iter().filter(|c| c.answer() == Answer::Fallback).count();
-        r.check("non-socket: calls answered by the fallback", fb, calls, fb as u64 == calls);
+        let fb = cs.iter().filter(|c| c.answer() == Answer::Client).count();
+        r.check("non-socket: calls answered by the client itself", fb, calls, fb as u64 == calls);
         let slowest = cs.iter().map(|c| c.dt).max().unwrap();
         r.check("non-socket: slowest call (ms)", slowest.as_millis(), call_ceiling(deadline).as_millis(), slowest <= call_ceiling(deadline));
         let kept = std::fs::read_to_string(lab.sock()).unwrap_or_default() == "precious";
@@ -558,14 +549,14 @@ fn kill_mid_call_never_blocks_a_tool_and_never_reads_as_an_allow() {
     d.wait().unwrap();
     let calls: Vec<Call> = workers.into_iter().flat_map(|w| w.join().unwrap()).collect();
     let other: Vec<&Call> = calls.iter().filter(|c| c.answer() == Answer::Other).collect();
-    r.check("calls that were neither the engine's nor the fallback's answer", other.len(), 0, other.is_empty());
+    r.check("calls that were neither the engine's nor the client's own answer", other.len(), 0, other.is_empty());
     if let Some(c) = other.first() {
         r.note(format!("first such call: exit {} out {:?} err {:?}", c.code, c.out, c.err));
     }
     let slowest = calls.iter().map(|c| c.dt).max().unwrap_or_default();
     r.check("slowest call (ms)", slowest.as_millis(), call_ceiling(deadline).as_millis(), slowest <= call_ceiling(deadline));
-    let fb = calls.iter().filter(|c| c.answer() == Answer::Fallback).count();
-    r.note(format!("{} calls: {} by the engine, {fb} by the fallback", calls.len(), calls.iter().filter(|c| c.answer() == Answer::Engine).count()));
+    let fb = calls.iter().filter(|c| c.answer() == Answer::Client).count();
+    r.note(format!("{} calls: {} by the engine, {fb} by the client", calls.len(), calls.iter().filter(|c| c.answer() == Answer::Engine).count()));
     r.finish();
 }
 

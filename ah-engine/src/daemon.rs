@@ -2158,7 +2158,9 @@ pub fn serve(start_reason: &str) {
         // running daemon must not leave it running for hours with nothing that can reach or stop it
         let non_live = !live_state_dir(&paths::dir());
         let sock_footing = non_live.then(|| std::fs::symlink_metadata(&sock).ok().map(|m| (sock.clone(), m.ino()))).flatten();
-        let parent = non_live.then_some(initial_parent);
+        // only a hand-started serve is bound to its launcher: the engine's own detached spawns (a hook client, the installer)
+        // exit right after starting the daemon, so their parent going away says nothing about the daemon's footing
+        let parent = (non_live && start_reason == crate::health::starts::reason("manual")).then_some(initial_parent);
         let footing = Footing {
             dir: paths::dir(),
             lock: lock_path.clone(),
