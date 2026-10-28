@@ -463,3 +463,73 @@ fn tasklist_guard_counts_the_work_inside_a_window_smaller_than_the_transcript() 
     assert_eq!(code, 0);
     assert!(!out.contains("\"decision\":\"block\""), "work before the window is not counted: {out}");
 }
+
+/// A transcript with one task per `(subject, status)`: created, then set to its status.
+fn task_list(rows: &[(&str, &str)]) -> String {
+    let mut out = String::new();
+    for (i, (subject, status)) in rows.iter().enumerate() {
+        let n = i + 1;
+        let create = serde_json::json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": subject}}]}});
+        let result = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: {subject}")}]}});
+        let update = serde_json::json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": status}}]}});
+        out.push_str(&format!("{create}\n{result}\n{update}\n"));
+    }
+    out
+}
+
+fn enforce_stop(w: &World, rows: &[(&str, &str)], advisory_shown: bool) -> String {
+    std::fs::write(w.path("t.jsonl"), task_list(rows)).unwrap();
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let adv = w.path("home/.anti-hall/advisory-state-s1.json");
+    if advisory_shown {
+        std::fs::write(&adv, r#"{"kinds":{"task_guard_prune":{"n":1,"seen":0,"hash":"x","t":1,"fb":0}}}"#).unwrap();
+    } else {
+        ah_engine::discard::harmless(std::fs::remove_file(&adv)); // a state a previous call of the same world left behind is not "never shown"
+    }
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let (code, out, err) = stop_run_env(w, "task-guard", &payload, &[]);
+    assert_eq!(code, 0, "the engine answers; the Node hook must not run: {err}");
+    out
+}
+
+#[test]
+fn an_ignored_prune_advisory_blocks_the_stop_up_to_the_cap_then_lets_it_through() {
+    let w = World::new("prune-block");
+    let done: Vec<(&str, &str)> = (0..12).map(|_| ("[P2] old", "completed")).collect();
+    let first = enforce_stop(&w, &done, true);
+    assert!(first.contains("\"decision\":\"block\"") && first.contains("12 completed tasks"), "{first}");
+    let second = enforce_stop(&w, &done, true);
+    assert!(second.contains("\"decision\":\"block\""), "cap 2: the second block is made: {second}");
+    let third = enforce_stop(&w, &done, true);
+    assert!(!third.contains("\"decision\":\"block\""), "the cap is reached: the Stop passes: {third}");
+}
+
+#[test]
+fn the_prune_block_is_silent_under_the_limit_and_before_the_advisory_was_shown() {
+    let w = World::new("prune-quiet");
+    let few: Vec<(&str, &str)> = (0..5).map(|_| ("[P2] old", "completed")).collect();
+    assert!(!enforce_stop(&w, &few, true).contains("block"), "under the limit");
+    let many: Vec<(&str, &str)> = (0..12).map(|_| ("[P2] old", "completed")).collect();
+    assert!(!enforce_stop(&w, &many, false).contains("block"), "the advisory was never shown");
+    // the twin: the very same list and session DOES block once the advisory was shown, so the two silences above are the guard's decision
+    assert!(enforce_stop(&w, &many, true).contains("12 completed tasks"), "the guard ran and blocks over the limit");
+}
+
+#[test]
+fn a_free_text_priority_tag_blocks_the_stop_capped_and_p0_to_p3_pass() {
+    let w = World::new("prio-block");
+    let ok = enforce_stop(&w, &[("T-1 [P2] fine", "completed"), ("T-2 [p1] fine", "completed")], false);
+    assert!(!ok.contains("block"), "P0-P3 (any case) and finished tasks pass: {ok}");
+    // an open task draws the open-task block first; the same set is not blocked twice, so the priority check speaks on the retry
+    let rows = [("T-3 [Owner/blocked] wait", "pending")];
+    let open = enforce_stop(&w, &rows, false);
+    assert!(open.contains("\"decision\":\"block\"") && !open.contains("P0-P3"), "{open}");
+    for n in 1..=2 {
+        let o = enforce_stop(&w, &rows, false);
+        assert!(o.contains("P0-P3") && o.contains("[Owner/blocked]"), "block {n}: {o}");
+    }
+    let capped = enforce_stop(&w, &rows, false);
+    assert!(!capped.contains("block"), "the cap is reached: the Stop passes: {capped}");
+    let good = enforce_stop(&w, &[("T-3 [P1] Owner/blocked wait", "pending")], false);
+    assert!(!good.contains("P0-P3"), "a P-tag with the label in the text is not flagged: {good}");
+}

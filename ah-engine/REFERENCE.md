@@ -1216,7 +1216,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.agent_markers` | `agent_id, agent_type` |  |  | The payload fields that mark a subagent. |
 | `command.allow_file_rel` | `.anti-hall/command-allow.json` |  |  | The per-project command allowlist file. |
 | `command.allow_list_key` | `patterns` |  |  | The key of the command allowlist file that holds the patterns. |
-| `command.allow_subagent_mailbox_setting` | `7 entries` |  |  | guards.allowSubagentMailbox: a one-off allow of the subagent mailbox verbs (default off). |
+| `command.allow_subagent_mailbox_setting` | `7 entries` |  |  | a one-off allow of the subagent mailbox verbs (default off). |
 | `command.allow_trust_file_rel` | `.anti-hall/trusted-command-allow.json` |  |  | The record of trusted command allowlists, relative to the home directory. |
 | `command.anti_hall_cli_patterns` | `(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]dev...` |  |  | Segments that run anti-hall's own CLI (the plugin-relative old devswarm.js shim entry, still recognised; the stable launchers are built from the request's home directories). |
 | `command.audit_file` | `command-allow.ndjson` |  |  | The audit log of allowlisted commands. |
@@ -1251,7 +1251,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.edit_guard_name` | `edit-guard` |  |  | The skip.json id of edit-guard, whose verdict the Bash edit parity applies. |
 | `command.edit_list_key` | `paths` |  |  | The key of the edit allowlist file that holds the paths. |
 | `command.edit_trust_file_rel` | `.anti-hall/trusted-edit-allow.json` |  |  | The record of trusted edit allowlists, relative to the home directory. |
-| `command.eg_allow_setting` | `6 entries` |  |  | guards.editGuardAllow: extra file globs edit-guard allows (comma or colon separated, empty by default). |
+| `command.eg_allow_setting` | `6 entries` |  |  | extra file globs edit-guard allows (comma or colon separated, empty by default). |
 | `command.eg_claude_dir` | `.claude` |  |  | The host's configuration directory under the home directory. |
 | `command.eg_default_allow` | `12 items` |  |  | Files and globs edit-guard always allows. |
 | `command.eg_edit_allow_file` | `.anti-hall/edit-allow.json` |  |  | The repository-relative path of the edit allowlist, which no one edits through the guard. |
@@ -1401,18 +1401,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.script_shells` | `sh, bash, zsh, dash` |  |  | Shells whose script run counts as work. |
 | `command.script_value_flags` | `12 items` |  |  | Interpreter options whose next word is their value, not the script. |
 | `command.setting_allow_bg_scratch` | `7 entries` |  |  | Allowance for background scratch scripts (default on). |
-| `command.setting_allow_gcloud_reads` | `7 entries` |  |  | guards.allowGcloudReads: the narrow read-only Google Cloud access (default on). |
-| `command.setting_allow_plain_push` | `7 entries` |  |  | guards.allowPlainPush: the plain git push chain allowance (default on). |
-| `command.setting_allow_read_only_verify` | `7 entries` |  |  | guards.allowReadOnlyVerify: the bounded single-target verification allowance (default on). |
-| `command.setting_allow_read_only_verify_scripts` | `7 entries` |  |  | guards.allowReadOnlyVerifyScripts: the script form of that allowance (default on). |
-| `command.setting_bash_edit_parity` | `7 entries` |  |  | guards.bashEditParity: edit-guard's verdict applied to Bash writes (default on). |
-| `command.setting_project_command_allow` | `7 entries` |  |  | guards.projectCommandAllow: the per-project command allowlist (default on). |
-| `command.setting_project_edit_allow` | `7 entries` |  |  | guards.projectEditAllow: the per-project edit allowlist (default on). |
+| `command.setting_allow_gcloud_reads` | `7 entries` |  |  | the narrow read-only Google Cloud access (default on). |
+| `command.setting_allow_plain_push` | `7 entries` |  |  | the plain git push chain allowance (default on). |
+| `command.setting_allow_read_only_verify` | `7 entries` |  |  | the bounded single-target verification allowance (default on). |
+| `command.setting_allow_read_only_verify_scripts` | `7 entries` |  |  | the script form of that allowance (default on). |
+| `command.setting_bash_edit_parity` | `7 entries` |  |  | edit-guard's verdict applied to Bash writes (default on). |
+| `command.setting_project_command_allow` | `7 entries` |  |  | the per-project command allowlist (default on). |
+| `command.setting_project_edit_allow` | `7 entries` |  |  | the per-project edit allowlist (default on). |
 | `command.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument or heredoc body is itself a script. |
 | `command.sqlite_dangerous` | `(?i)(^\|[\s;])\.(shell\|system\|output\|once\|import\|save)\b\|\bATTACH\b` |  |  | sqlite3 dot-commands and SQL that write despite -readonly. |
 | `command.stash_global_value_opts` | `-C, -c, --git-dir, --work-tree, --namespace, --exec-path` |  |  | git global options that take a value, skipped to find the subcommand (git-stash guard). |
 | `command.stash_guard` | `git-stash-guard` |  |  | The skip id and message id of the git stash guard. |
-| `command.stash_guard_setting` | `7 entries` |  |  | guards.stashGuard: arms the git stash guard for every repository (default off). |
+| `command.stash_guard_setting` | `7 entries` |  |  | arms the git stash guard for every repository (default off). |
 | `command.stash_marker_rel` | `.anti-hall/protected-stashes` |  |  | The per-repository file that arms the stash guard, relative to the toplevel. |
 | `command.stash_mutating_subs` | `push, pop, drop, clear, apply, save` |  |  | git stash subcommands the guard blocks. |
 | `command.stash_push_value_flags` | `-m, --message` |  |  | git stash push flags that take a value. |
@@ -3909,7 +3909,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_ceiling.msg_more` | ` and {n} more` |  |  | The remainder clause when more agents run than are listed; {n} is how many are not listed. |
 | `spawn_ceiling.msg_what` | `{n} agents are running (limit {ceiling}).` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
 | `spawn_ceiling.msg_why` | `More agents rarely add results, and each one costs tokens whether or not it f...` |  |  | Why the ceiling block applies. |
-| `spawn_ceiling.setting` | `6 entries` |  |  | The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op. |
+| `spawn_ceiling.setting` | `6 entries` |  |  | On by default; off makes the fan-out ceiling a no-op. |
 | `spawn_ceiling.step_pct` | `70, 85, 92` |  |  | Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce. |
 | `spawn_ceiling.step_reduce` | `3, 6, 9` |  |  | How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies). |
 | `spawn_ceiling.unnamed` | `(unnamed)` |  |  | The name of a running agent with no description. |
@@ -3931,7 +3931,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_usage.msg_soft_instead` | `use cheaper models for routine work.` |  |  | What to do instead, in the soft advice. |
 | `spawn_usage.msg_soft_what` | `the {limit} usage limit is at {pct}% ({resets}).` |  |  | What the soft advice says; {limit}, {pct} and {resets} as in msg_block_what. |
 | `spawn_usage.msg_soft_why` | `Headroom is getting short; avoid spending tokens that produce no commit, fini...` |  |  | Why the soft advice applies. |
-| `spawn_usage.setting` | `6 entries` |  |  | The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op. |
+| `spawn_usage.setting` | `6 entries` |  |  | On by default; off makes usage-aware dispatch a no-op. |
 | `spawn_usage.soft_pct` | `75` |  |  | Soft threshold: at or above this usage percent a spawn is allowed with advice to use cheaper models and fewer agents. |
 
 ### spawn_guards.toml / swarm_guard
@@ -4377,6 +4377,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.devswarm_hint` | ` If a DevSwarm workspace has it, set the owner ({upd} owner) to that workspac...` |  |  | The DevSwarm sentence added to the idle-neglect block's do-instead line while the app database shows a live workspace; `{upd}` is the task update tool. |
 | `task_guard.dispatch_demand_setting` | `5 entries` |  |  | Whether running agents are counted per task from this session's transcript (guards.dispatchDemand, default on); off restores the legacy rule (any fresh agent heartbeat silences the idle-neglect block). |
 | `task_guard.dispatch_list_max` | `12` |  |  | Most tasks the idle-neglect block names. |
+| `task_guard.enforce_state_prefix` | `tasklist-enforce-` |  |  | Prefix of the per-session file that counts the prune and priority Stop blocks (`<prefix><session>`). |
 | `task_guard.generic_allowed` | `a task that is truly blocked: mark it with {upd} (blockedBy an open task, or ...` |  |  | The allowed-here line of the generic block; `{upd}` is the task update tool. |
 | `task_guard.generic_instead` | `finish the pending tasks before stopping.` |  |  | The do-instead line of the generic block; `{upd}` is the task update tool. |
 | `task_guard.generic_what` | `open tasks remain unfinished.` |  |  | The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail. |
@@ -4427,12 +4428,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.owner_match_min` | `4` |  | chars | The shortest task owner text that counts as naming a running agent by a part of its description (an owner of fewer characters matches only the agent's id or its whole description). A task owned by a running agent is attended and is not listed by the generic block. |
 | `task_guard.owner_name_key` | `name` |  |  | The field of the Agent call that launched a running agent which names it (its `name`). A task whose owner is that name is attended, like one owned by the agent's id or description. |
 | `task_guard.pending_status` | `pending` |  |  | The status (lowercase) of a task that can be dispatched now. |
+| `task_guard.priority_block_text` | `🏷️ [task-guard] priority tag must be P0-P3 (found {list}): rename the task, e...` |  |  | The reason of the priority-tag Stop block; `{list}` names the offending tags. |
+| `task_guard.priority_check_max_setting` | `6 entries` |  |  | Max priority-tag Stop blocks per tag set. |
+| `task_guard.priority_check_setting` | `5 entries` |  |  | Stop check for non-P0-P3 priority tags. |
 | `task_guard.priority_default_rank` | `1` |  |  | The rank of a task with no priority or an unrecognised one (fail-open: it counts as P1). |
+| `task_guard.priority_list_max` | `3` |  |  | Most offending tags named in the priority block message. |
 | `task_guard.priority_low` | `low, deferred` |  |  | Priority words (lowercase) that rank below the default. |
 | `task_guard.priority_low_rank` | `2` |  |  | The rank of a low or deferred task. |
+| `task_guard.priority_ok_re` | `^P[0-3]$` |  |  | JavaScript regex source (case-insensitive) a priority slot must match whole: P0 to P3. |
 | `task_guard.priority_rank_re` | `^p([0-9]+)$` |  |  | JavaScript regex source of a priority label with a rank (`p0`, `p1`, ...), matched on the trimmed lowercase label. |
+| `task_guard.priority_slot_re` | `^\s*(?:T-\d+\s+)?\[([^\]]*)\]` |  |  | JavaScript regex source of the priority slot of a task subject: an optional `T-<n>` id, then a bracketed tag; group 1 is the tag text. |
 | `task_guard.prompt_id_key` | `prompt_id` |  |  | The Stop payload field that names the prompt. |
 | `task_guard.proven_only_setting` | `5 entries` |  |  | Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on). |
+| `task_guard.prune_block_max_setting` | `6 entries` |  |  | Max prune Stop blocks per completed-task count. |
+| `task_guard.prune_block_setting` | `5 entries` |  |  | Capped Stop block after an ignored prune advisory. |
+| `task_guard.prune_block_text` | `🧹 [task-guard] {n} completed tasks (> {limit}) still listed: log them in the ...` |  |  | The reason of the prune Stop block; `{n}` is the completed/cancelled count and `{limit}` the limit (guards.pruneCompletedTasksAfter). |
 | `task_guard.prune_setting` | `6 entries` |  |  | Completed or cancelled tasks kept before the task tracker suggests pruning. |
 | `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
 | `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
@@ -5005,7 +5015,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `lane_test.policy_suites` | `suites` |  |  | The testPolicy value under which every test run is allowed (the suite check stands aside). |
 | `lane_test.rules` | `7 items` |  |  | Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message. |
 | `lane_test.summary` | `PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo t...` |  |  | One-line description of the lane-test-guard check in the generated reference. |
-| `lane_test.sw` | `6 entries` |  |  | Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands. |
+| `lane_test.sw` | `6 entries` |  |  | Default on; off lets a subagent run suite-scale test commands. |
 | `lane_test.sw_allow_suites` | `6 entries` |  |  | Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside). |
 | `lane_test.sw_policy` | `7 entries` |  |  | Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run. |
 | `lane_test.sw_policy_main` | `6 entries` |  |  | On makes testPolicy none apply to the main session too (default off). |
@@ -5043,7 +5053,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
 | `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
 | `queued_wait.summary` | `PreToolUse on Bash, subagents only: blocks a build or test command started wi...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
-| `queued_wait.sw` | `6 entries` |  |  | Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops. |
+| `queued_wait.sw` | `6 entries` |  |  | Default on; off lets a subagent run heavy commands in the background and poll with sleep loops. |
 
 ### lane_waste.toml / wide_search
 
@@ -5399,7 +5409,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `378 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `382 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7813,7 +7823,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `378 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `382 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 

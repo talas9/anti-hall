@@ -34,17 +34,17 @@ What the automatic guards check and how to read a block.
 
 ## Switches
 
-- `guards.allowSubagentMailbox` = false: guards.allowSubagentMailbox: a one-off allow of the subagent mailbox verbs (default off)
-- `guards.editGuardAllow` = "": guards.editGuardAllow: extra file globs edit-guard allows (comma or colon separated, empty by...
+- `guards.allowSubagentMailbox` = false: a one-off allow of the subagent mailbox verbs (default off)
+- `guards.editGuardAllow` = "": extra file globs edit-guard allows (comma or colon separated, empty by default)
 - `guards.allowBackgroundScratchScripts` = true: Allowance for background scratch scripts (default on)
-- `guards.allowGcloudReads` = true: guards.allowGcloudReads: the narrow read-only Google Cloud access (default on)
-- `guards.allowPlainPush` = true: guards.allowPlainPush: the plain git push chain allowance (default on)
-- `guards.allowReadOnlyVerify` = true: guards.allowReadOnlyVerify: the bounded single-target verification allowance (default on)
-- `guards.allowReadOnlyVerifyScripts` = true: guards.allowReadOnlyVerifyScripts: the script form of that allowance (default on)
-- `guards.bashEditParity` = true: guards.bashEditParity: edit-guard's verdict applied to Bash writes (default on)
-- `guards.projectCommandAllow` = true: guards.projectCommandAllow: the per-project command allowlist (default on)
-- `guards.projectEditAllow` = true: guards.projectEditAllow: the per-project edit allowlist (default on)
-- `guards.stashGuard` = false: guards.stashGuard: arms the git stash guard for every repository (default off)
+- `guards.allowGcloudReads` = true: the narrow read-only Google Cloud access (default on)
+- `guards.allowPlainPush` = true: the plain git push chain allowance (default on)
+- `guards.allowReadOnlyVerify` = true: the bounded single-target verification allowance (default on)
+- `guards.allowReadOnlyVerifyScripts` = true: the script form of that allowance (default on)
+- `guards.bashEditParity` = true: edit-guard's verdict applied to Bash writes (default on)
+- `guards.projectCommandAllow` = true: the per-project command allowlist (default on)
+- `guards.projectEditAllow` = true: the per-project edit allowlist (default on)
+- `guards.stashGuard` = false: arms the git stash guard for every repository (default off)
 - `guards.apiGuard` = true: Where the guard's own on/off switch is read from (guards.apiGuard, default on)
 - `guards.shellWriteChecks` = true: Where the switch for checking the code a shell write puts in a file is read from...
 - `guards.apiGuardThirdparty` = false: Where the switch for also verifying installed third-party packages is read from...
@@ -64,14 +64,18 @@ What the automatic guards check and how to read a block.
 - `context.shrinkInline` = true: Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every...
 - `guards.pushedNotDone` = true: Pushed work is not done switch
 - `guards.allowNestedSpawns` = false: On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them
-- `guards.spawnCeiling` = true: The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op
-- `guards.usageAwareDispatch` = true: The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op
+- `guards.spawnCeiling` = true: On by default; off makes the fan-out ceiling a no-op
+- `guards.usageAwareDispatch` = true: On by default; off makes usage-aware dispatch a no-op
+- `guards.priorityTagBlockMax` = 2: Max priority-tag Stop blocks per tag set
+- `guards.priorityTagCheck` = true: Stop check for non-P0-P3 priority tags
+- `guards.pruneStopBlockMax` = 2: Max prune Stop blocks per completed-task count
+- `guards.pruneStopBlock` = true: Capped Stop block after an ignored prune advisory
 - `guards.pruneCompletedTasksAfter` = 10: Completed or cancelled tasks kept before the task tracker suggests pruning
-- `guards.laneTestGuard` = true: Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands
+- `guards.laneTestGuard` = true: Default on; off lets a subagent run suite-scale test commands
 - `guards.allowTestSuites` = false: Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands...
 - `guards.testPolicy` = "targeted": Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY...
 - `guards.testPolicyMainThread` = false: On makes testPolicy none apply to the main session too (default off)
-- `guards.queuedWaitGuard` = true: Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the...
+- `guards.queuedWaitGuard` = true: Default on; off lets a subagent run heavy commands in the background and poll with sleep loops
 - `guards.allowWideSearch` = false: On lets every agent run whole-disk searches (default off)
 - `guards.broadKill` = true: Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill,...
 - `guards.uncommittedWork` = true: Off lets a subagent leave work uncommitted (default on)

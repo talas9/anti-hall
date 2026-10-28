@@ -425,7 +425,7 @@ value = "serialize them or give each its own scratch clone."
 # and blocks a spawn past the ceiling, naming them. The ceiling shrinks in steps as the 5-hour or weekly limit nears.
 
 [spawn_ceiling.setting]
-doc = "The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op."
+doc = "On by default; off makes the fan-out ceiling a no-op."
 value = { section = "guards", key = "spawnCeiling", type = "boolean", env = "ANTIHALL_SPAWN_CEILING", option = "", default = true }
 
 [spawn_ceiling.guard_name]
@@ -505,7 +505,7 @@ value = "wait for a running agent to finish."
 # Hard (block_pct): block the spawn, naming the limit near and its reset.
 
 [spawn_usage.setting]
-doc = "The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op."
+doc = "On by default; off makes usage-aware dispatch a no-op."
 value = { section = "guards", key = "usageAwareDispatch", type = "boolean", env = "ANTIHALL_USAGE_AWARE_DISPATCH", option = "", default = true }
 
 [spawn_usage.guard_name]
