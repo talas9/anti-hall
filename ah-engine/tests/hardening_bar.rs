@@ -91,6 +91,14 @@ impl Report {
     fn note(&mut self, line: impl Into<String>) {
         self.notes.push(line.into());
     }
+    /// Keep a file beside the bar's fragment (only when a report dir is set), for the workflow to print on failure.
+    fn keep_file(&self, suffix: &str, body: &str) {
+        if let Some(dir) = std::env::var_os("AH_HARDENING_REPORT_DIR") {
+            let dir = PathBuf::from(dir);
+            ah_engine::discard::harmless(std::fs::create_dir_all(&dir));
+            ah_engine::discard::harmless(std::fs::write(dir.join(format!("{:02}-{}-{suffix}", self.order, self.key)), body));
+        }
+    }
     /// Write the fragment (when a report dir is set), then fail with every missed check.
     fn finish(self) {
         let cols: Vec<String> = val("report.columns").as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
@@ -225,9 +233,13 @@ impl Lab {
     }
     /// A control request straight to the socket (never spawns a daemon).
     fn ctl(&self, verb: &str) -> Option<String> {
+        self.ctl_result(verb).ok()
+    }
+    /// `ctl`, keeping the reason a request got no OK reply (absent, failed, slow, a non-OK frame) as text.
+    fn ctl_result(&self, verb: &str) -> Result<String, String> {
         match exchange(&self.sock(), format!("CTL {verb}\n").as_bytes(), ms("common.ready_ms")) {
-            Exch::Reply(Kind::Ok, body) => Some(body),
-            _ => None,
+            Exch::Reply(Kind::Ok, body) => Ok(body),
+            other => Err(format!("{other:?}")),
         }
     }
     fn pid(&self) -> Option<u32> {
@@ -239,13 +251,24 @@ impl Lab {
     fn try_status(&self) -> Option<serde_json::Value> {
         serde_json::from_str(&self.ctl("status")?).ok()
     }
-    /// The end of the daemon's event log, into the report (why a daemon went away).
-    fn note_log_tail(&self, r: &mut Report) {
+    /// Why a daemon is gone, into the report: whether its process still runs, its exit status (it is our child), the control
+    /// socket's error, and the end of its own log filtered to the lines that explain an exit. The whole log is also kept
+    /// next to the report (the lab dir is removed when the bar ends).
+    fn diagnose_gone(&self, r: &mut Report, d: &mut Child) {
+        let pid = d.id();
+        let state = match d.try_wait() {
+            Ok(Some(st)) => format!("exited ({st})"),
+            Ok(None) => format!("still running (pid alive: {})", common::alive(pid as i32)),
+            Err(e) => format!("unknown (try_wait failed: {e})"),
+        };
+        r.note(format!("daemon process {pid}: {state}"));
+        r.note(format!("control socket status: {}", self.ctl_result("status").err().unwrap_or_else(|| "answered OK now".to_string())));
         let log = self.log();
-        let lines: Vec<&str> = log.lines().collect();
-        for l in &lines[lines.len().saturating_sub(n("common.log_tail_lines") as usize)..] {
-            r.note(format!("log: {}", l.split('\t').skip(1).collect::<Vec<_>>().join(" ")));
+        let words: Vec<String> = val("common.gone_log_filter").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+        for l in filter_log(&log, &words, n("common.gone_log_lines") as usize) {
+            r.note(format!("log: {l}"));
         }
+        r.keep_file("daemon.log", &log);
     }
     /// `ah-engine status --json`: the client-side view (breaker, crash loop), with or without a daemon.
     fn client_status(&self) -> serde_json::Value {
@@ -283,6 +306,19 @@ impl Drop for Lab {
         });
         ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
+}
+
+/// The last `max` lines of `log` containing any of `words` (case-insensitive), the daemon's tab-separated timestamp column kept.
+fn filter_log(log: &str, words: &[String], max: usize) -> Vec<String> {
+    let hits: Vec<String> = log
+        .lines()
+        .filter(|l| {
+            let low = l.to_lowercase();
+            words.iter().any(|w| low.contains(&w.to_lowercase()))
+        })
+        .map(|l| l.split('\t').collect::<Vec<_>>().join(" "))
+        .collect();
+    hits[hits.len().saturating_sub(max)..].to_vec()
 }
 
 fn kill9(pid: u32) {
@@ -598,6 +634,36 @@ fn kill_mid_call_never_blocks_a_tool_and_never_reads_as_an_allow() {
     r.finish();
 }
 
+// ---- the gone-daemon diagnostics (fast; runs with the ordinary tests) -------------------------------------------------------
+
+#[test]
+fn log_filter_keeps_only_exit_explaining_lines_and_is_bounded() {
+    let words: Vec<String> = val("common.gone_log_filter").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+    let log = "1\tping\tok\n2\texit\torphaned parent gone\n3\tclient_slow\t5\n4\twatchdog\tstall\n5\tRSS over cap\n";
+    assert_eq!(filter_log(log, &words, 10), ["2 exit orphaned parent gone", "4 watchdog stall", "5 RSS over cap"]);
+    assert_eq!(filter_log(log, &words, 1), ["5 RSS over cap"]);
+    assert!(filter_log("1\tping\tok\n", &words, 10).is_empty());
+}
+
+#[test]
+fn a_killed_daemon_is_explained_in_the_report() {
+    let lab = Lab::new("gone", &[]);
+    let mut r = Report::new(90, "kill_mid_call");
+    let mut d = lab.serve();
+    assert!(lab.wait_for(|| lab.pid() == Some(d.id())), "scratch daemon did not come up");
+    kill9(d.id());
+    d.wait().unwrap();
+    // the control socket must now fail (the same condition the soak calls "gone"), and the report must say why
+    assert!(lab.wait_for(|| lab.try_status().is_none()), "daemon still answering after SIGKILL");
+    lab.diagnose_gone(&mut r, &mut d);
+    let notes = r.notes.join("\n");
+    assert!(notes.contains(&format!("daemon process {}: exited", d.id())), "no exit status in: {notes}");
+    assert!(notes.contains("signal: 9"), "exit status lacks the kill signal: {notes}");
+    assert!(notes.contains("control socket status: "), "no socket error in: {notes}");
+    assert!(!notes.contains("answered OK now"), "dead daemon reported as answering: {notes}");
+    assert!(r.notes.iter().filter(|l| l.starts_with("log: ")).count() <= n("common.gone_log_lines") as usize);
+}
+
 // ---- load and memory: the dispatcher's own request, straight to the daemon ----------------------------------------------
 
 /// A transcript in the shape of a real one (prompts, task and Bash tool uses, results, text) of about `kb` KB.
@@ -817,7 +883,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     }
     let Some(st) = lab.try_status() else {
         r.check("daemon alive after the sustained phase", false, true, false);
-        lab.note_log_tail(&mut r);
+        lab.diagnose_gone(&mut r, &mut d);
         common::stop_child(&lab.sock(), &mut d);
         return r.finish();
     };
@@ -853,7 +919,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     }
     let Some(st) = lab.try_status() else {
         r.check("daemon alive after the burst phase", false, true, false);
-        lab.note_log_tail(&mut r);
+        lab.diagnose_gone(&mut r, &mut d);
         common::stop_child(&lab.sock(), &mut d);
         return r.finish();
     };
@@ -906,7 +972,7 @@ fn memory_soak_stays_in_the_rss_band_under_the_cap_with_no_recycle() {
     }
     r.check("daemon alive for the whole soak", gone_at.map_or("yes".to_string(), |c| format!("gone by call {c}")), "yes", gone_at.is_none());
     if gone_at.is_some() {
-        lab.note_log_tail(&mut r);
+        lab.diagnose_gone(&mut r, &mut d);
         common::stop_child(&lab.sock(), &mut d);
         r.finish();
         return;

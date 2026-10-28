@@ -70,9 +70,13 @@ doc = "Poll interval of the harness's waits."
 value = 25
 unit = "ms"
 
-[common.log_tail_lines]
-doc = "Lines of the daemon's event log a failing bar copies into the report (why a daemon went away)."
-value = 20
+[common.gone_log_lines]
+doc = "Most lines of the daemon's own log a failing bar copies into the report when the daemon is reported gone (after the filter)."
+value = 40
+
+[common.gone_log_filter]
+doc = "Words (case-insensitive) that mark a daemon log line as explaining an exit: only those lines are copied into the report."
+value = ["exit", "drain", "orphan", "watchdog", "rss", "panic", "restart", "start_fail", "budget_hard", "cpu_hard"]
 
 # ---- crash loop -------------------------------------------------------------------------------------------------------
 
