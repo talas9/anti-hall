@@ -48,7 +48,7 @@ function dtTask(p, tool) {
   var base = { content: '', description: '', blockedOn: undefined };
   var tp = p.transcript_path;
   if (tp) {
-    var r = typeof tp === 'string' ? ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes')) : { unreadable: true }; // a path that is not a string reads nothing
+    var r = typeof tp === 'string' ? tk.tasksOf(ah.home(), p.session_id, tp, 'state') : { unreadable: true }; // a path that is not a string reads nothing
     if (typeof tp !== 'string') ah.unable('dispatch-tier:transcript_type');
     if (r.unsure) { ah.unable('dispatch-tier:tasks_unsure'); r = { unreadable: true }; }
     if (!r.unreadable) {

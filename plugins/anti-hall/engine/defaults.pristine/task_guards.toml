@@ -209,6 +209,14 @@ value = ["content", "message", "messages", "tool_uses", "parts"]
 doc = "The tool names a task reconstruction reacts to (a call that creates, updates, lists or reads tasks, or rewrites the whole list). The kept task lines (transcript.tasks_cache_*) hold every line that names one; a name a reconstruction acts on that is missing here would make its kept answer differ from a fresh read."
 value = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]
 
+[taskstate.in_progress_statuses]
+doc = "Statuses (lowercase) that count a task as in progress (a subset of the open statuses); the open-task facts the Stop gate reads from the session task store use it."
+value = ["in_progress", "in-progress"]
+
+[taskstate.pending_statuses]
+doc = "Statuses (lowercase) that count an open task as waiting to start; with the in-progress statuses they make up the open ids the Stop gate reads from the session task store."
+value = ["pending"]
+
 [taskstate.open_statuses]
 doc = "Statuses (lowercase) that make a task open."
 value = ["pending", "in_progress", "in-progress"]
@@ -292,7 +300,7 @@ doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
 value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
 
 [task_guard.prune_setting]
-doc = "Completed or cancelled tasks kept before the task tracker (UserPromptSubmit) suggests pruning."
+doc = "Completed or cancelled tasks kept before the task tracker suggests pruning."
 value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
 
 [task_guard.state_prefix]

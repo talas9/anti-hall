@@ -67,7 +67,10 @@ pub fn apply(event: &str, results: &[HookResult], joined_out: &str, cap: usize) 
     }
     let dir = dir();
     crate::limits::ensure_private_dir(&dir).ok()?;
-    let name = defaults::render("dispatch.spill_file", &[("event", &label(event)), ("ts", &health::now_ms()), ("pid", &std::process::id())]);
+    // the daemon dispatches on several threads of one process: the sequence number keeps two same-millisecond files apart
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = defaults::render("dispatch.spill_file", &[("event", &label(event)), ("ts", &health::now_ms()), ("pid", &std::process::id()), ("seq", &seq)]);
     let path = dir.join(name);
     let total: usize = ctxs.iter().map(|c| c.chars().count()).sum::<usize>() + joiner.chars().count() * ctxs.len().saturating_sub(1);
     let pointer_for = |kept: usize, rest: usize| {

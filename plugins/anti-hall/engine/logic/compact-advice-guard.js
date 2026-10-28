@@ -54,9 +54,9 @@ function caBlock(reason) { return { exact: { code: 0, out: text.render(cb.c('ctx
 
 // The handover budgets a "safe to compact/restart" declaration must meet: the session task list (open tasks, subject length, no
 // finished task left in it) and the MEMORY.md index that sits beside the transcript. Returns the breaches as text (empty: within budget).
-function caOverBudget(tp) {
+function caOverBudget(tp, sid) {
   var out = [], done = cb.c('ctxbudget.hb_done_statuses');
-  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'));
+  var r = tk.tasksOf(ah.home(), sid, tp, 'state');
   if (r && !r.unsure && !r.unreadable && Array.isArray(r.tasks)) {
     var live = r.tasks.filter(function (t) { return done.indexOf(String(t.status)) < 0; });
     var finished = r.tasks.length - live.length, budget = ah.settings.num('ctxbudget.set_h_task_budget'), maxSubject = ah.settings.num('ctxbudget.set_h_task_subject');
@@ -124,7 +124,7 @@ function decide(p) {
   if (!found.length) return 'allow';
   var last = found[found.length - 1];
   if (cadv.lastRetraction(finalText) > last.index) return 'allow';
-  var over = caOverBudget(tp);
+  var over = caOverBudget(tp, p.session_id);
   if (over.length) {
     return caBlock(text.message('block', cb.c('ctxbudget.ca_guard'), {
       what: cb.r('ctxbudget.hb_what', { phrase: last.phrase, why: over.join(cb.c('ctxbudget.ca_why_join')) }),

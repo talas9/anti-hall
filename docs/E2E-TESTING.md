@@ -9,8 +9,9 @@ in four steps:
 4. A live check: use the hook for real and read the result with `ah-hook doctor --check`, `ah-hook status` and
    `ah-hook diag hooks`.
 
-The engine's own Rust tests run in `.github/workflows/ah-engine.yml` (job `rust`). The `tests-passed` job in `test.yml` only
-keeps the check name that the repository rulesets require.
+The engine's own Rust tests run in `.github/workflows/ah-engine.yml`: the `quick` job on a pull request into `dev`, the full pack
+(job `rust` and the rest) on a pull request into `main`, a push to `main`, the nightly, a dispatch, or a `dev` pull request labelled
+`full-ci`. Its `tests-passed` job is the check the repository rulesets require.
 
 > Hooks reference: the official Claude Code hooks contract is documented at
 > <https://code.claude.com/docs/en/hooks>.

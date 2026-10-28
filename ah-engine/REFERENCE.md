@@ -2875,7 +2875,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.root_vars` | `2 entries` |  |  | Per host, the environment variables that hold the plugin root, first set one wins; the host exports them to hook commands, a command naming an unset one cannot run, and a built-in check gets the root as its plugin_root. |
 | `dispatch.shell` | `/bin/sh, -c` |  |  | The shell a Node hook command runs under, with its command flag (hooks.json commands are shell-form strings). |
 | `dispatch.spill_dir` | `context-spill` |  |  | The directory under the state dir that holds the over-cap context files (mode 0600, one per spilled event). |
-| `dispatch.spill_file` | `{event}-{ts}-{pid}.txt` |  |  | File name of one spilled context. Placeholders: {event} (letters and digits of the hook event), {ts} (milliseconds), {pid}. |
+| `dispatch.spill_file` | `{event}-{ts}-{pid}-{seq}.txt` |  |  | File name of one spilled context. Placeholders: {event} (letters and digits of the hook event), {ts} (milliseconds), {pid}, {seq} (a per-process counter: the daemon dispatches on several threads, so two same-millisecond spills never share a name). |
 | `dispatch.spill_label` | `dispatcher` |  |  | Telemetry label (kind spill, status delivery.spills_by_event) of an over-cap spill whose file holds only context below dispatch.context_pin_priority. |
 | `dispatch.spill_over_cap` | `1` | `AH_ENGINE_SPILL_OVER_CAP` |  | 1 = a SessionStart (or any event that cannot block) whose joined additionalContext is over dispatch.context_cap is delivered natively: the hooks' contexts that fit stay inline whole and in priority order (dispatch.context_priority), the rest is written to a file under dispatch.spill_dir and a pointer line (dispatch.msg_spill_pointer) names it, so nothing is cut and no Node hook runs. The host would spill an over-cap value itself but keeps only about 2000 characters of it inline. 0 = deliver the join and let the host spill it. Used only when the join is exactly the hooks' contexts joined by dispatch.context_joiner and the file can be written; otherwise the previous answer stands. |
 | `dispatch.spill_pinned_label` | `dispatcher-pinned` |  |  | Telemetry label of an over-cap spill whose file holds a context at or above dispatch.context_pin_priority (counted in status delivery.pinned_spills). |
@@ -4427,7 +4427,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.priority_rank_re` | `^p([0-9]+)$` |  |  | JavaScript regex source of a priority label with a rank (`p0`, `p1`, ...), matched on the trimmed lowercase label. |
 | `task_guard.prompt_id_key` | `prompt_id` |  |  | The Stop payload field that names the prompt. |
 | `task_guard.proven_only_setting` | `5 entries` |  |  | Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on). |
-| `task_guard.prune_setting` | `6 entries` |  |  | Completed or cancelled tasks kept before the task tracker (UserPromptSubmit) suggests pruning. |
+| `task_guard.prune_setting` | `6 entries` |  |  | Completed or cancelled tasks kept before the task tracker suggests pruning. |
 | `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
 | `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
 | `task_guard.state_blocks_key` | `blocks` |  |  | The loop state file's field for the number of blocks made in the current cap_scope window. |
@@ -4622,8 +4622,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `taskstate.backfill_prefix_scan_bytes` | `8388608` |  |  | How far past the window start the backfill looks for the end of the line that straddles it. |
 | `taskstate.done_statuses` | `completed, done, cancelled, canceled` |  |  | Statuses (lowercase) that count as completed for the completed-task advisory. |
 | `taskstate.id_keys` | `taskId, id, task_id` |  |  | The input fields a task tool call may name its task id in, in order: the harness's `taskId`, then `id`, then `task_id`. |
+| `taskstate.in_progress_statuses` | `in_progress, in-progress` |  |  | Statuses (lowercase) that count a task as in progress (a subset of the open statuses); the open-task facts the Stop gate reads from the session task store use it. |
 | `taskstate.js_parse_max_depth` | `2000` |  |  | The deepest bracket nesting of a transcript line the engine reads the way JSON.parse does when serde_json's 128-level limit rejects it (JavaScript's own stack ends far past it). A deeper line cannot be read and leaves the scan unsure. |
 | `taskstate.open_statuses` | `pending, in_progress, in-progress` |  |  | Statuses (lowercase) that make a task open. |
+| `taskstate.pending_statuses` | `pending` |  |  | Statuses (lowercase) that count an open task as waiting to start; with the in-progress statuses they make up the open ids the Stop gate reads from the session task store. |
 | `taskstate.prune_stamp_prefix` | `.prune-stamp-` |  |  | Prefix of the stamp file that throttles one prefix's sweep. |
 | `taskstate.prune_throttle_hours` | `6` |  |  | The sweep of one file prefix runs at most once per this many hours. |
 | `taskstate.prune_ttl_days` | `7` |  |  | Per-session state files older than this many days are removed by the opportunistic sweep. |

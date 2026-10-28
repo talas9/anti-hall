@@ -362,7 +362,7 @@ function decide(p) {
   var sessionId = given === '' ? ah.sha1(transcript).slice(0, ah.cfgNum('task_guard.session_hash_len')) : given;
   var safeSession = tk.safeKey(sessionId);
   var stateRel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.state_prefix') + safeSession;
-  var tasks = tk.tasks(transcript);
+  var tasks = tk.tasks(transcript, home, given === '' ? undefined : given);
   // the prune-the-list advisory is NOT here: a Stop hook's stderr at exit 0 never reaches the model (KB-claude-code-hooks.md, Stop row), so
   // it is delivered by task-tracker on UserPromptSubmit (additionalContext) instead
   var out = '';
