@@ -1902,8 +1902,8 @@ doc = "A hook command in the direct form: run the installed thin client, else th
 value = "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" {event}{host_args} || exec sh \"{prefix}/hooks/install.sh\" {event}{host_args}"
 
 [hooks_form.installer_first_template]
-doc = "The direct form of a hook command for the events listed in hooks_form.installer_first_events: the plugin's installer (fresh with every plugin update) runs first and hands over to the installed thin client, so an install whose client is too old to know a newer notice still hears it. Falls back to the client itself when the installer file is missing. Placeholders as hooks_form.template."
-value = "[ -f \"{prefix}/hooks/install.sh\" ] && exec sh \"{prefix}/hooks/install.sh\" {event}{host_args} || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" {event}{host_args}"
+doc = "The direct form of a hook command for the events listed in hooks_form.installer_first_events: the plugin's installer (fresh with every plugin update) runs first and hands over to the installed thin client, so an install whose client is too old to know a newer notice still hears it. The command names the client in AH_CLIENT so the installer can still hand over to it if it cannot read its own configuration. Falls back to the client itself when the installer file is missing. Placeholders as hooks_form.template."
+value = "[ -f \"{prefix}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"{prefix}/hooks/install.sh\" {event}{host_args} || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" {event}{host_args}"
 
 [hooks_form.installer_first_events]
 doc = "The events whose hook command uses hooks_form.installer_first_template instead of hooks_form.template. Every other event runs the installed thin client first."

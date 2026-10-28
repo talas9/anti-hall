@@ -394,115 +394,115 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "verify-first-full"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "verify-first-orch:host=claude"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "devswarm-child-role"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "version-alert"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "fable-availability"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "codex-availability"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "devswarm-version"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "claude-cli-version"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "repo-self-drift"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "progress-prune"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "handover-resume"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "handover-hygiene"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "jev-weekly-scorecard"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "jev-review-reminder"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "emit-dedupe-reset"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "defect-nudge"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "repair-on-reload"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "procwatch-advisory"
           },
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" SessionStart || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart",
             "timeout": 10,
             "id": "engine-role-note"
           }

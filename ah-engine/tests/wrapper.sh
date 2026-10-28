@@ -1230,6 +1230,57 @@ test_sessionstart_without_the_client_keeps_the_old_install_behaviour() {
 }
 check sessionstart_without_the_client_keeps_the_old_install_behaviour test_sessionstart_without_the_client_keeps_the_old_install_behaviour
 
+test_sessionstart_unreadable_defaults_still_runs_the_client() {
+  ss_make nocfg 0.2.1 0.2.0 || return 1
+  chmod 000 "$ssd/plugin/engine/defaults/engine.toml"
+  ss_run || { chmod 600 "$ssd/plugin/engine/defaults/engine.toml"; return 1; }
+  chmod 600 "$ssd/plugin/engine/defaults/engine.toml"
+  [ "$ss_rc" -eq 0 ] && ss_ran_binary
+}
+check sessionstart_unreadable_defaults_still_runs_the_client test_sessionstart_unreadable_defaults_still_runs_the_client
+
+test_sessionstart_missing_messages_file_still_runs_the_client() {
+  ss_make nomsgs 0.2.1 0.2.0 || return 1
+  rm -f "$ssd/plugin/engine/defaults/messages.toml"
+  ss_run || return 1
+  [ "$ss_rc" -eq 0 ] && ss_ran_binary
+}
+check sessionstart_missing_messages_file_still_runs_the_client test_sessionstart_missing_messages_file_still_runs_the_client
+
+test_sessionstart_unreadable_lock_is_silent_and_runs_the_client() {
+  ss_make nolockread 0.2.1 0.2.0 || return 1
+  chmod 000 "$ssd/plugin/ah-engine.lock"
+  ss_run || { chmod 600 "$ssd/plugin/ah-engine.lock"; return 1; }
+  chmod 600 "$ssd/plugin/ah-engine.lock"
+  [ "$ss_rc" -eq 0 ] && ss_ran_binary && [ ! -s "$ssd/err" ]
+}
+check sessionstart_unreadable_lock_is_silent_and_runs_the_client test_sessionstart_unreadable_lock_is_silent_and_runs_the_client
+
+test_sessionstart_failing_awk_still_runs_the_client() {
+  ss_make noawk 0.2.1 0.2.0 || return 1
+  mkdir -p "$ssd/fakebin"
+  printf '#!/bin/sh\nexit 1\n' >"$ssd/fakebin/awk"
+  chmod +x "$ssd/fakebin/awk"
+  cmd=$(hook_command_of "$repo/plugins/anti-hall/hooks/hooks.json" SessionStart) || return 1
+  set +e
+  PATH=$ssd/fakebin:$PATH HOME=$ssd/h CLAUDE_PLUGIN_ROOT=$ssd/plugin sh -c "$cmd" <"$payload" >"$ssd/out" 2>"$ssd/err"
+  ss_rc=$?
+  set -e
+  [ "$ss_rc" -eq 0 ] && ss_ran_binary
+}
+check sessionstart_failing_awk_still_runs_the_client test_sessionstart_failing_awk_still_runs_the_client
+
+test_sessionstart_unset_home_with_a_derivable_client_still_runs_it() {
+  # the command line names the client by path; if the installer cannot work that out itself it still hands over
+  ss_make nohome 0.2.1 0.2.0 || return 1
+  set +e
+  env -u HOME AH_CLIENT=$ssd/h/.anti-hall/ah-engine/bin/ah-hook sh "$ssd/plugin/hooks/install.sh" SessionStart <"$payload" >"$ssd/out" 2>"$ssd/err"
+  ss_rc=$?
+  set -e
+  [ "$ss_rc" -eq 0 ] && ss_ran_binary
+}
+check sessionstart_unset_home_with_a_derivable_client_still_runs_it test_sessionstart_unset_home_with_a_derivable_client_still_runs_it
+
 test_sessionstart_with_a_missing_install_sh_still_runs_the_client() {
   ss_make noinst 0.2.1 0.2.0 || return 1
   rm -f "$ssd/plugin/hooks/install.sh"
@@ -1248,7 +1299,7 @@ test_only_sessionstart_differs_from_the_direct_form_of_every_other_event() {
       n=$((n + 1))
       if [ "$ev" = SessionStart ]; then
         [ "$cmd" != "$old" ] || return 1
-        case "$cmd" in "[ -f \"$var/hooks/install.sh\" ] && exec sh \"$var/hooks/install.sh\" SessionStart$extra || "*) : ;; *) return 1 ;; esac
+        case "$cmd" in "[ -f \"$var/hooks/install.sh\" ] && AH_CLIENT="*" exec sh \"$var/hooks/install.sh\" SessionStart$extra || "*) : ;; *) return 1 ;; esac
       else
         [ "$cmd" = "$old" ] || return 1
       fi

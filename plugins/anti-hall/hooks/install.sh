@@ -16,12 +16,21 @@
 # Test-only knobs (honoured ONLY with AH_WRAPPER_TEST=1): AH_ENGINE_RELEASE_BASE (http and file allowed), AH_BOOTSTRAP_UNAME_S / _M /
 # _R, AH_BOOTSTRAP_LIBC (gnu|musl).
 
-here=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
+# Hook mode must never lose the hook: the command line names the installed thin client in AH_CLIENT, so when anything below this
+# point cannot be worked out (unreadable defaults, no HOME, a broken tool) the call is still handed to that client, stdin intact.
+# Without AH_CLIENT (or while the client is not installed) a failure ends quietly with exit 0, as before.
+bail() {
+  case "${1:-}" in --download) exit 0 ;; esac
+  if [ -n "${AH_CLIENT:-}" ] && [ -x "$AH_CLIENT" ]; then exec "$AH_CLIENT" "$@"; fi
+  exit 0
+}
+
+here=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || bail "$@"
 root=${AH_ENGINE_PLUGIN_ROOT:-"$here/.."}
 cfg=$root/engine/defaults/engine.toml
 msgs=$root/engine/defaults/messages.toml
-[ -f "$cfg" ] && [ -f "$msgs" ] || exit 0
-[ -n "${HOME:-}" ] || exit 0
+[ -f "$cfg" ] && [ -r "$cfg" ] && [ -f "$msgs" ] && [ -r "$msgs" ] || bail "$@"
+[ -n "${HOME:-}" ] || bail "$@"
 
 # the value of [KEY] in FILE: a string without its quotes, or the first token of a number
 toml_value() { # toml_value FILE KEY
@@ -39,7 +48,7 @@ state=$base/$(c paths.state_dir)
 bindir=$state/bin
 engine_name=$(c install.member_engine)
 hook_name=$(c install.member_hook)
-[ -n "$engine_name" ] && [ -n "$hook_name" ] && [ -n "$(c paths.base_dir)" ] || exit 0
+[ -n "$engine_name" ] && [ -n "$hook_name" ] && [ -n "$(c paths.base_dir)" ] || bail "$@"
 test_mode=0
 [ "${AH_WRAPPER_TEST:-}" = 1 ] && test_mode=1
 
