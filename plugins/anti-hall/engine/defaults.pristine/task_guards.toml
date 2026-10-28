@@ -1324,3 +1324,46 @@ value = "keep subjects as `T-<n> [P] title`, details in the history ledger; dele
 [tasklist_hygiene.instead_block]
 doc = "What to do, in the block message."
 value = "shorten the subject and delete finished tasks first; put details in the history ledger."
+
+# ---- task-list enforcement at Stop: capped prune block + P0-P3 priority slot ----
+
+[task_guard.prune_block_setting]
+doc = "On/off for the capped Stop block that follows an ignored prune advisory (guards.pruneStopBlock, default on)."
+value = { section = "guards", key = "pruneStopBlock", env = "ANTIHALL_PRUNE_STOP_BLOCK", aliases = [], default = true }
+
+[task_guard.prune_block_max_setting]
+doc = "Most Stop blocks per session for one completed-task count (guards.pruneStopBlockMax); once reached the Stop passes. A changed count starts a new window."
+value = { section = "guards", key = "pruneStopBlockMax", env = "ANTIHALL_PRUNE_STOP_BLOCK_MAX", aliases = [], min = 1, default = 2 }
+
+[task_guard.prune_block_text]
+doc = "The reason of the prune Stop block; `{n}` is the completed/cancelled count and `{limit}` the limit (guards.pruneCompletedTasksAfter)."
+value = "🧹 [task-guard] {n} completed tasks (> {limit}) still listed: log them in the history ledger, then TaskUpdate status=deleted."
+
+[task_guard.priority_check_setting]
+doc = "On/off for the priority-slot check at Stop (guards.priorityTagCheck, default on)."
+value = { section = "guards", key = "priorityTagCheck", env = "ANTIHALL_PRIORITY_TAG_CHECK", aliases = [], default = true }
+
+[task_guard.priority_check_max_setting]
+doc = "Most Stop blocks per session for one set of bad priority tags (guards.priorityTagBlockMax); once reached the Stop passes."
+value = { section = "guards", key = "priorityTagBlockMax", env = "ANTIHALL_PRIORITY_TAG_BLOCK_MAX", aliases = [], min = 1, default = 2 }
+
+[task_guard.priority_slot_re]
+doc = "JavaScript regex source of the priority slot of a task subject: an optional `T-<n>` id, then a bracketed tag; group 1 is the tag text."
+value = '^\s*(?:T-\d+\s+)?\[([^\]]*)\]'
+
+[task_guard.priority_ok_re]
+doc = "JavaScript regex source (case-insensitive) a priority slot must match whole: P0 to P3."
+value = '^P[0-3]$'
+
+[task_guard.priority_list_max]
+doc = "Most offending tags named in the priority block message."
+value = 3
+min = 1
+
+[task_guard.priority_block_text]
+doc = "The reason of the priority-tag Stop block; `{list}` names the offending tags."
+value = "🏷️ [task-guard] priority tag must be P0-P3 (found {list}): rename the task, e.g. `[P1] Owner/blocked: …`, label goes in the text."
+
+[task_guard.enforce_state_prefix]
+doc = "Prefix of the per-session file that counts the prune and priority Stop blocks (`<prefix><session>`)."
+value = "tasklist-enforce-"

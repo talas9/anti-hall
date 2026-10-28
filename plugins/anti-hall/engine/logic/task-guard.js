@@ -343,7 +343,7 @@ function tgQuiet(out, tasks, home, sessionId) {
   return tgExact(out);
 }
 
-function decide(p) {
+function tgDecideCore(p) {
   if (ah.env.get(ah.cfg('task_guard.judge_child_env')) === '1') return 'allow';
   if (!ah.settings.bool('task_guard.setting') || ah.settings.skipped(ah.cfg('task_guard.guard_name'))) return 'allow';
   if (p === null || typeof p !== 'object') p = {};
@@ -437,4 +437,72 @@ function decide(p) {
   var note = plan.write();
   if (note) reason += '\n' + note;
   return tgExact(out, text.render(ah.cfg('task_guard.block_json'), { reason: JSON.stringify(reason) }));
+}
+
+// ---- the task-list enforcement at Stop: a capped block for an ignored prune advisory, and for a priority slot that is not P0-P3 ----
+// State: one small file per session, {prune: {n, blocks}, prio: {hash, blocks}}; a changed count or tag set starts a new window. A state
+// that cannot be written or read exactly lets the Stop through (fail-open: a block that cannot be counted could never end).
+function tgEnforce(p, out) {
+  var pruneOn = ah.settings.bool('task_guard.prune_block_setting'), prioOn = ah.settings.bool('task_guard.priority_check_setting');
+  if (!pruneOn && !prioOn) return null;
+  var transcript = p.transcript_path, home = ah.home();
+  if (!transcript || typeof transcript !== 'string' || !home) return null;
+  var given = p.session_id ? String(p.session_id) : '';
+  var sessionId = given === '' ? ah.sha1(transcript).slice(0, ah.cfgNum('task_guard.session_hash_len')) : given;
+  var tasks = tk.tasks(transcript, home, given === '' ? undefined : given);
+  if (tasks.unsure) return null;
+  var stateRel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.enforce_state_prefix') + tk.safeKey(sessionId);
+  var st = { prune: { n: -1, blocks: 0 }, prio: { hash: '', blocks: 0 } }, raw = null;
+  try { raw = ah.state.readText(stateRel); } catch (e) { raw = null; }
+  if (raw !== null) {
+    var r = jx.parse(raw);
+    if (r.unsure) return null;
+    if (!r.invalid && jx.isObj(r.v)) {
+      if (jx.isObj(r.v.prune)) st.prune = { n: Number(r.v.prune.n), blocks: Number(r.v.prune.blocks) || 0 };
+      if (jx.isObj(r.v.prio)) st.prio = { hash: String(r.v.prio.hash || ''), blocks: Number(r.v.prio.blocks) || 0 };
+    }
+  }
+  var reason = '';
+  if (pruneOn) {
+    var limit = ah.settings.num('task_guard.prune_setting'), done = tasks.filter(tk.isDone).length;
+    var shown = adv.load(sessionId).kinds[ah.cfg('advisory.kind_task_guard_prune')];
+    var wasShown = jx.isObj(shown) && typeof shown.n === 'number' && shown.n > 0;
+    if (isFinite(limit) && limit > 0 && done > limit && wasShown) {
+      if (st.prune.n !== done) st.prune = { n: done, blocks: 0 };
+      if (st.prune.blocks < ah.settings.num('task_guard.prune_block_max_setting')) {
+        st.prune.blocks++;
+        reason = text.render(ah.cfg('task_guard.prune_block_text'), { n: done, limit: String(limit) });
+      }
+    }
+  }
+  if (reason === '' && prioOn) {
+    var slotRe = jx.re('task_guard.priority_slot_re'), okRe = jx.re('task_guard.priority_ok_re', 'i'), bad = [];
+    tasks.filter(tk.isOpen).forEach(function (t) {
+      var m = slotRe.exec(String(t.content || ''));
+      if (m && !okRe.test(m[1].trim()) && bad.indexOf(m[1].trim()) < 0) bad.push(m[1].trim());
+    });
+    if (bad.length > 0) {
+      var hash = ah.sha1(bad.slice().sort().join('\n'));
+      if (st.prio.hash !== hash) st.prio = { hash: hash, blocks: 0 };
+      if (st.prio.blocks < ah.settings.num('task_guard.priority_check_max_setting')) {
+        st.prio.blocks++;
+        var lmax = ah.cfgNum('task_guard.priority_list_max');
+        reason = text.render(ah.cfg('task_guard.priority_block_text'), { list: bad.slice(0, lmax).map(function (x) { return '[' + x + ']'; }).join(', ') });
+      }
+    }
+  }
+  if (reason === '') return null;
+  var wrote = false;
+  try { wrote = ah.state.writeAtomic(stateRel, JSON.stringify(st)); } catch (e) { wrote = false; }
+  if (!wrote) return null; // a block that cannot be counted is never made
+  return tgExact(out, text.render(ah.cfg('task_guard.block_json'), { reason: JSON.stringify(reason) }));
+}
+
+function decide(p) {
+  var r = tgDecideCore(p);
+  if (r !== 'allow' && !(jx.isObj(r) && r.exact && !r.exact.out)) return r; // the open-task block stands first
+  if (ah.env.get(ah.cfg('task_guard.judge_child_env')) === '1' || ah.settings.skipped(ah.cfg('task_guard.guard_name'))) return r;
+  if (!ah.settings.bool('task_guard.setting')) return r;
+  var e = tgEnforce(jx.isObj(p) ? p : {}, r === 'allow' ? '' : r.exact.err);
+  return e === null ? r : e;
 }
