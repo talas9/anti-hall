@@ -15,7 +15,7 @@ function thLen(s) { return Array.from(String(s)).length; }
 function thLive(p) {
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return null;
-  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'));
+  var r = tk.tasksOf(ah.home(), p.session_id, tp, 'state');
   if (!r || r.unsure || r.unreadable || !Array.isArray(r.tasks)) return null;
   var done = cb.c('ctxbudget.hb_done_statuses');
   return r.tasks.filter(function (t) { return done.indexOf(String(t.status)) < 0; });

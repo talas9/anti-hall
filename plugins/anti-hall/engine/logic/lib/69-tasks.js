@@ -7,12 +7,37 @@ var tk = {
   safeKey: function (s) { return String(s).replace(/[^A-Za-z0-9_.-]/g, '_'); },
   // The tasks of a transcript tail ('guard' variant): an array of the engine's task records; a tail the engine cannot read exactly
   // (counted) keeps any known records and carries an uncertainty flag.
-  tasks: function (path) {
-    var r = ah.transcript.tasks(path, 'guard', ah.cfgNum('taskstate.tail_bytes'));
+  // With a home and a session id the session's task store answers first (the transcript tail of a long session misses the creates, and
+  // an old tail disagrees with the store); the transcript is read only when the session has no readable store.
+  tasks: function (path, home, sid) {
+    var r = tk.tasksOf(home, sid, path, 'guard');
     if (r.unsure) ah.unable('tasks:tail_unsure');
     var tasks = r.unreadable ? [] : (r.tasks || []);
     tasks.unsure = !!r.unsure;
     return tasks;
+  },
+  // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
+  // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
+  tasksOf: function (home, sid, path, variant) {
+    var st = tk.storeTasks(home, sid);
+    if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
+    if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
+    var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'));
+    r.store = false;
+    return r;
+  },
+  // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none. The
+  // store carries no priority, so every in-progress task counts (the transcript scan only counts the actionable priorities).
+  storeScan: function (home, sid) {
+    var st = tk.storeTasks(home, sid);
+    if (st === null) return null;
+    var ids = [], inProg = 0;
+    tk.withStore([], st).forEach(function (t) {
+      if (!tk.isOpen(t)) return;
+      var s = tk.statusLc(t);
+      if (ah.cfg('taskstate.in_progress_statuses').indexOf(s) >= 0) { ids.push(t.id); inProg++; } else if (ah.cfg('taskstate.pending_statuses').indexOf(s) >= 0) ids.push(t.id);
+    });
+    return { openTaskIds: ids, inProgressCount: inProg };
   },
   // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
   // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
@@ -39,6 +64,7 @@ var tk = {
           description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
           owner: typeof rec.owner === 'string' ? rec.owner.trim() : '',
           blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
+          blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
         });
       }
       if (out.length > 0) return out;
@@ -53,6 +79,7 @@ var tk = {
     return store.map(function (s) {
       var t = byId[s.id] || { id: s.id, priority: null, subjectUpdated: false, sinceMs: null };
       t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.blockedBy = s.blockedBy;
+      if (s.blockedOn !== undefined) t.blockedOn = s.blockedOn;
       t.unknown = null; t.blockUnknown = false;
       return t;
     });
