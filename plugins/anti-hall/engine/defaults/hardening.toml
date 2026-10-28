@@ -288,3 +288,57 @@ unit = "KB"
 doc = "Largest least-squares RSS growth per 1,000 calls after the reference sample on system-allocator targets."
 value = 256
 unit = "KB"
+
+# ---- honest diagnostics: what "gone" means, and why a call was not answered by the daemon ------------------------------------
+
+[diag.label_gone]
+doc = "Report words for a daemon whose process is dead (not running, or an unreaped zombie). Only this state may be called gone."
+value = "daemon gone"
+
+[diag.label_unreachable]
+doc = "Report words for a control-socket status read that failed while the daemon process is still alive."
+value = "control socket unreachable (pid alive)"
+
+[diag.zombie_states]
+doc = "First letters of a `ps -o stat=` value that mean the process is dead although its pid still exists (a zombie not yet reaped by its parent)."
+value = ["Z"]
+
+[diag.ps_path]
+doc = "The `ps` binary the harness asks for a process state."
+value = "/bin/ps"
+
+[diag.reason_engine]
+doc = "Breakdown label: calls the daemon answered."
+value = "daemon"
+
+[diag.reason_busy]
+doc = "Breakdown label: calls the daemon shed with BUSY (queue overflow or a rate limit; the daemon's own busy_by_reason splits them)."
+value = "busy"
+
+[diag.reason_err]
+doc = "Breakdown label: calls the daemon answered ERR."
+value = "err"
+
+[diag.reason_slow]
+doc = "Breakdown label: calls with no reply inside the wait window (slow timeout)."
+value = "slow-timeout"
+
+[diag.reason_hung]
+doc = "Breakdown label: calls the client gave up on because the daemon heartbeat was stale."
+value = "hung"
+
+[diag.reason_transport]
+doc = "Breakdown label: calls that failed in transport (no listener, refused, unsafe socket, bad or truncated frame, I/O error such as a reset)."
+value = "transport"
+
+[diag.breakdown_prefix]
+doc = "Report note prefix of the per-reason answer breakdown. Placeholder: {bar}."
+value = "{bar} answers by reason"
+
+[diag.transport_sample_max]
+doc = "Most distinct transport-failure texts a breakdown quotes (the first ones seen)."
+value = 3
+
+[diag.daemon_busy_prefix]
+doc = "Report note prefix of the daemon's own split of its BUSY replies (status busy_by_reason)."
+value = "daemon busy_by_reason"

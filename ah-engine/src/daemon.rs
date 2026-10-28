@@ -79,6 +79,12 @@ pub struct Stats {
     pub requests: AtomicU64,
     /// Requests answered BUSY.
     pub busy: AtomicU64,
+    /// Of `busy`: shed because the request queue was full.
+    pub busy_queue: AtomicU64,
+    /// Of `busy`: shed by the per-session rate limit.
+    pub busy_session: AtomicU64,
+    /// Of `busy`: shed by the per-project rate limit.
+    pub busy_project: AtomicU64,
     /// Requests answered ERR.
     pub errors: AtomicU64,
     /// Evaluations cut off by the CPU budget.
@@ -593,6 +599,11 @@ impl Shared {
             "workers": cfg.workers,
             "requests": self.stats.requests.load(SeqCst),
             "busy_replies": self.stats.busy.load(SeqCst),
+            "busy_by_reason": {
+                defaults::text("busy_reason.queue"): self.stats.busy_queue.load(SeqCst),
+                defaults::text("busy_reason.session"): self.stats.busy_session.load(SeqCst),
+                defaults::text("busy_reason.project"): self.stats.busy_project.load(SeqCst),
+            },
             "bucket_untracked": crate::limits::bucket_untracked(),
             "errors": self.stats.errors.load(SeqCst),
             "budget_trips": self.stats.budget_trips.load(SeqCst),
@@ -984,6 +995,42 @@ fn record_budget_trip(sh: &Shared, project: &str, detail: &str) {
     crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_cpu"));
 }
 
+/// Why a request was shed (answered BUSY).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BusyWhy {
+    /// The request queue was full.
+    Queue,
+    /// The per-session rate limit.
+    Session,
+    /// The per-project rate limit.
+    Project,
+}
+
+/// The rate limit that sheds this request, if any. Both limiters are consulted in the same order as before (session, then
+/// project, the project one only when the session one passed), so a shed request charges exactly the buckets it did.
+fn rate_limited(sh: &Shared, session: &str, pkey: &str) -> Option<BusyWhy> {
+    if !lk(&sh.sessions).allow(session) {
+        Some(BusyWhy::Session)
+    } else if !lk(&sh.projects).allow(pkey) {
+        Some(BusyWhy::Project)
+    } else {
+        None
+    }
+}
+
+/// Count one shed request under its reason (`status` -> `busy_by_reason`), and say the reason in the daemon log.
+fn note_busy_reason(sh: &Shared, why: BusyWhy) {
+    let (counter, key) = match why {
+        BusyWhy::Queue => (&sh.stats.busy_queue, "busy_reason.queue"),
+        BusyWhy::Session => (&sh.stats.busy_session, "busy_reason.session"),
+        BusyWhy::Project => (&sh.stats.busy_project, "busy_reason.project"),
+    };
+    let n = counter.fetch_add(1, SeqCst) + 1;
+    if n == 1 || n.is_power_of_two() {
+        crate::health::log_event(defaults::text("busy_reason.log_kind"), defaults::text(key), &defaults::render("busy_reason.log_detail", &[("count", &n)]));
+    }
+}
+
 fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) -> Reply {
     let started = Instant::now();
     let Ok(p) = serde_json::from_str::<serde_json::Value>(body) else {
@@ -999,8 +1046,9 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
-    if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
+    if let Some(why) = rate_limited(sh, session, &pkey) {
         sh.stats.busy.fetch_add(1, SeqCst);
+        note_busy_reason(sh, why);
         sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
         sh.telemetry.fallback("busy", &phash);
         sh.telemetry.record_hook(
@@ -1059,8 +1107,9 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
-    if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
+    if let Some(why) = rate_limited(sh, session, &pkey) {
         sh.stats.busy.fetch_add(1, SeqCst);
+        note_busy_reason(sh, why);
         sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
         sh.telemetry.fallback("busy", &phash);
         return Reply::Busy;
@@ -1190,6 +1239,7 @@ fn project_op(cwd: &str, body: &str, sh: &Shared) -> Reply {
     let key = project_key(sh, cwd);
     if !lk(&sh.projects).allow(&key) {
         sh.stats.busy.fetch_add(1, SeqCst);
+        note_busy_reason(sh, BusyWhy::Project);
         sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
         return Reply::Busy;
     }
@@ -2395,6 +2445,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             if q.len() >= sh.cfg().queue {
                 drop(q);
                 sh.stats.busy.fetch_add(1, SeqCst);
+                note_busy_reason(sh, BusyWhy::Queue);
                 sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
                 crate::failopen::note(defaults::text("fail_open.reason_busy"), defaults::text("fail_open.check_none"), defaults::text("msg.reply_busy_detail"));
                 crate::failopen::drain_into(&sh.telemetry);
