@@ -656,7 +656,9 @@ fn check(what: &str, row: &Row, want: Want, r: &Run) {
     if r.code == 2 {
         assert!(!r.err.is_empty(), "exit 2 without a message: {ctx}");
     }
-    let closed = r.code == 2 && r.err.contains("could not run the guards");
+    // fail-closed = a block that says the guards could not answer: the dispatcher's infra block, or a CLOSED check's own failure policy
+    // (script.msg_fail_closed with script.msg_unanswered as the reason); no Node hook is launched to decide instead
+    let closed = r.code == 2 && (r.err.contains("could not run the guards") || r.err.contains(&format!("({})", ah_engine::defaults::text("script.msg_unanswered"))));
     // every hook the dispatcher starts runs, whatever another one says: a skipped second guard is not an allow
     if !closed && !matches!(want, Want::Quiet | Want::Open | Want::Closed | Want::Defer | Want::InfraDefer) && r.second_expected {
         assert!(r.marked2 || r.timed_out2, "the second hook never ran: {ctx}");
