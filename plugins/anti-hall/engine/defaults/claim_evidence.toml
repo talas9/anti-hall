@@ -59,13 +59,50 @@ value = [
   '\b(?:expected|supposed|meant|intended)\s+to\s+(?:pass|work|be)\b',
 ]
 
+[claim_evidence.sentence_end_re]
+doc = "Where a sentence of the reply ends (a claim is judged inside its own sentence). Rust regular expression."
+value = '[.!?]+\s|\n+'
+
+[claim_evidence.clause_break_re]
+doc = "Where a clause ends inside a sentence: negation, tense and attribution words only govern a claim in the same clause. Rust regular expression."
+value = '[,;:()]|\s[-\u2013\u2014]\s|\b(?:but|and then|however|although)\b'
+
+[claim_evidence.skip_window]
+doc = "Most characters before a claim (inside its clause) that are searched for neg_res, future_res and reported_res."
+value = 60
+min = 10
+max = 400
+
+[claim_evidence.neg_res]
+doc = "A claim in a negated clause is not a claim (rule 1): 'nothing is merged', 'is not deployed', 'was never released'. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
+value = [
+  '\b(?:not|never|nothing|none|neither|nor|no\s+\w+\s+(?:is|are|was|were)|nobody|without|cannot)\b',
+  '\b(?:is|are|was|were|has|have|had|does|do|did|can|could|will|would|should)n.t\b',
+]
+
+[claim_evidence.future_res]
+doc = "A claim in a future, conditional or pending clause is not a claim (rule 1): 'once #1 and #2 are merged', 'after it is merged', 'if CI is green', 'to be verified'. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
+value = [
+  '\b(?:once|after|when|whenever|if|until|unless|before|as soon as|assuming|provided)\b',
+  '\b(?:will|would|shall|going to|gonna|should|might|may)\b',
+  '\b(?:to be|needs?\s+to be|ready to be|waiting to be|yet to be|about to be|can be|could be)\b',
+]
+
+[claim_evidence.reported_res]
+doc = "A claim that reports someone else's words or an earlier text is not a claim of this turn's work (rule 1): 'the bot reported that tests pass', 'according to the PR body it is merged'. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
+value = [
+  '\b(?:says?|said|saying|reports?|reported|reporting|claims?|claimed|states?|stated|wrote|writes|written|mentions?|mentioned|shows?|showed|reads?|quotes?|quoted|asserts?|asserted)\b',
+  '\baccording to\b',
+  '\b(?:old|previous|earlier|original|stale)\s+(?:line|text|message|comment|claim|note|doc|docs|output|log)\b',
+]
+
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------
 
 [claim_evidence.claims]
 doc = "The result claims rule 1 looks for, in order; the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. With no tool call at all this turn, every row fires."
 value = [
-  { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|\S*test\S*\.(?:sh|js|py))\b'] },
-  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
+  { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|\S*test\S*\.(?:sh|js|py))\b'] },
+  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
   { id = "verified", re = '\b(?:verified|confirmed)\b', needs = [] },
   { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', needs = [] },
   { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', needs = [] },
