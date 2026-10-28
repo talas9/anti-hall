@@ -71,5 +71,5 @@ var hookProc = {
   },
   // `t` with every lone surrogate (which a Node string may hold and a host call cannot take) replaced by U+FFFD: the same length in
   // UTF-16 units, so offsets the host returns index the original text.
-  usv: function (t) { return t.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd'); },
+  usv: function (t) { return t.toWellFormed(); }, // the interpreter's own native pass (a script regex over a 200 KB output cost ~8 ms)
 };
