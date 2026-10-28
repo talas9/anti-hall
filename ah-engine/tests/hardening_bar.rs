@@ -528,7 +528,12 @@ fn corrupt_socket_garbage_frames_and_a_non_socket_fall_back_never_allow() {
         // the breaker opens once the default threshold of malformed replies is reached (corrupt.calls >= client.breaker_n)
         let (opened, open_file) = (lab.log_count("breaker_open"), lab.eng().join("breaker.until").exists());
         let should_open = calls >= engine_num("client.breaker_n");
-        r.check("garbage frames: breaker opened at the threshold", opened, u64::from(should_open), opened as u64 == u64::from(should_open) && open_file == should_open);
+        r.check(
+            "garbage frames: breaker opened at the threshold",
+            opened,
+            u64::from(should_open),
+            opened as u64 == u64::from(should_open) && open_file == should_open,
+        );
     }
     {
         // a regular file where the socket should be: never deleted, never mistaken for a daemon
