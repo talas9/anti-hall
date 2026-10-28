@@ -480,13 +480,15 @@ fn task_list(rows: &[(&str, &str)]) -> String {
 fn enforce_stop(w: &World, rows: &[(&str, &str)], advisory_shown: bool) -> String {
     std::fs::write(w.path("t.jsonl"), task_list(rows)).unwrap();
     std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let adv = w.path("home/.anti-hall/advisory-state-s1.json");
     if advisory_shown {
-        std::fs::write(w.path("home/.anti-hall/advisory-state-s1.json"), r#"{"kinds":{"task_guard_prune":{"n":1,"seen":0,"hash":"x","t":1,"fb":0}}}"#).unwrap();
+        std::fs::write(&adv, r#"{"kinds":{"task_guard_prune":{"n":1,"seen":0,"hash":"x","t":1,"fb":0}}}"#).unwrap();
+    } else {
+        ah_engine::discard::harmless(std::fs::remove_file(&adv)); // a state a previous call of the same world left behind is not "never shown"
     }
     let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
     let (code, out, err) = stop_run_env(w, "task-guard", &payload, &[]);
-    eprintln!("DBG err={err}");
-    assert_eq!(code, 0, "the engine answers; the Node hook must not run");
+    assert_eq!(code, 0, "the engine answers; the Node hook must not run: {err}");
     out
 }
 
@@ -509,6 +511,8 @@ fn the_prune_block_is_silent_under_the_limit_and_before_the_advisory_was_shown()
     assert!(!enforce_stop(&w, &few, true).contains("block"), "under the limit");
     let many: Vec<(&str, &str)> = (0..12).map(|_| ("[P2] old", "completed")).collect();
     assert!(!enforce_stop(&w, &many, false).contains("block"), "the advisory was never shown");
+    // the twin: the very same list and session DOES block once the advisory was shown, so the two silences above are the guard's decision
+    assert!(enforce_stop(&w, &many, true).contains("12 completed tasks"), "the guard ran and blocks over the limit");
 }
 
 #[test]
