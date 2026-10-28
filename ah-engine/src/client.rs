@@ -112,13 +112,24 @@ fn connect_checked(sock: &Path) -> Result<UnixStream, Exch> {
     }
 }
 
+/// Arm the read timeout. macOS refuses `SO_RCVTIMEO` with EINVAL on a socket whose peer has already closed (the daemon's BUSY
+/// reply is written and the connection dropped at once), so a reply that is already buffered would be read as a failed exchange
+/// and mark a healthy daemon down. A closed peer cannot block a read (buffered bytes, then end-of-stream), so that one error
+/// is not fatal; every other error still is.
+fn set_read_timeout_if_open(s: &UnixStream, t: Duration) -> std::io::Result<()> {
+    match s.set_read_timeout(Some(t)) {
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
+        r => r,
+    }
+}
+
 fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Duration) -> Exch {
     let mut s = match connect_checked(sock) {
         Ok(s) => s,
         Err(e) => return e,
     };
     let io = |r: std::io::Result<()>, what: &str| r.map_err(|e| Exch::Failed(defaults::render("msg.client_io", &[("what", &what), ("err", &e)])));
-    if let Err(e) = io(s.set_read_timeout(Some(deadline)), defaults::text("msg.client_what_timeout"))
+    if let Err(e) = io(set_read_timeout_if_open(&s, deadline), defaults::text("msg.client_what_timeout"))
         .and_then(|_| io(s.set_write_timeout(Some(deadline)), defaults::text("msg.client_what_timeout")))
         .and_then(|_| io(s.write_all(payload), "write"))
         .and_then(|_| io(s.shutdown(std::net::Shutdown::Write), "shutdown"))
@@ -206,7 +217,7 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
     let written = Instant::now();
     let (mut buf, mut chunk) = (Vec::new(), vec![0u8; defaults::num("io.small_chunk_bytes") as usize]);
     let mut acked: Option<Instant> = None;
-    if let Err(e) = io(s.set_read_timeout(Some(defaults::millis("wire.ack_timeout_ms").min(window))), defaults::text("msg.client_what_timeout")) {
+    if let Err(e) = io(set_read_timeout_if_open(&s, defaults::millis("wire.ack_timeout_ms").min(window)), defaults::text("msg.client_what_timeout")) {
         return Once::Done(e);
     }
     // ACK(req) first (the reply may follow in the same read, or an error frame may come instead of an ack)
@@ -237,7 +248,7 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
     // acked: never resend from here; wait for the reply up to the hard window (the original read loop's rules)
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply") as usize);
     let mut late = false;
-    if let Err(e) = io(s.set_read_timeout(Some(deadline)), defaults::text("msg.client_what_timeout")) {
+    if let Err(e) = io(set_read_timeout_if_open(&s, deadline), defaults::text("msg.client_what_timeout")) {
         return Once::Done(e);
     }
     let mut fo_checked = false;
