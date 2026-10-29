@@ -29,9 +29,23 @@ if cargo nextest --version >/dev/null 2>&1; then
   # The memory soak is in the `soak` test group, which the default profile leaves out (its default-filter): locally it runs
   # with `--profile soak` once per release train; CI runs it (and the benches) in the nightly profile, not the PR gate.
   timed='binary(telemetry_overhead) | binary(script_latency) | test(/^memory_soak::/) | test(/^reliability::/) | test(/^spool::/) | test(/^schedule::/)'
-  cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
-  rc=$?
-  cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass -E "$timed" "$@" || rc=1
+  # AH_TEST_CARGO_PROFILE=<cargo profile> (CI's full macOS pack sets `ci-test`) builds and runs the bulk of the suite on that profile
+  # (Cargo.toml: release speed, no fat LTO, 16 codegen units), because LTO-linking ~36 test binaries took 106-111 min on the macOS
+  # runner. The wall-clock tests (`$timed`, the benches and the DevSwarm scale budget) stay on the real release profile with their
+  # budgets unchanged; only the targets that hold them are built there (the lib's unit tests carry schedule:: / spool::, `it`
+  # carries reliability:: / memory_soak::). Unset, everything runs on release as before.
+  fast="${AH_TEST_CARGO_PROFILE:-}"
+  if [ -n "$fast" ]; then
+    timed="$timed | binary(watch_bench) | test(the_thread_stays_inside_its_budget_at_scale)"
+    cargo nextest run --cargo-profile "$fast" --profile "$profile" -E "not ($timed)" "$@"
+    rc=$?
+    cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass --lib --test it --test script_latency \
+      --test telemetry_overhead --test watch_bench -E "$timed" "$@" || rc=1
+  else
+    cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
+    rc=$?
+    cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass -E "$timed" "$@" || rc=1
+  fi
   if [ "$rc" -eq 0 ]; then
     cargo test --release --doc
     rc=$?
