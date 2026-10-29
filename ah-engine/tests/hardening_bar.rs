@@ -366,6 +366,17 @@ impl Lab {
                 c.env(k, v);
             }
         }
+        // The production client hands the daemon `daemon.malloc_conf` under each of `daemon.malloc_conf_vars` (src/client.rs);
+        // the lab starts the daemon with a cleared environment, so it applies the same configured value, or the soak would
+        // measure an untuned allocator. A variable the caller set (an override above) wins, as in the client.
+        let conf = ah_engine::defaults::text("daemon.malloc_conf");
+        if !conf.is_empty() {
+            for var in ah_engine::defaults::list("daemon.malloc_conf_vars") {
+                if std::env::var_os(var).filter(|v| !v.is_empty()).is_none() {
+                    c.env(var, conf);
+                }
+            }
+        }
         for (k, v) in &self.extra {
             c.env(k, v);
         }
