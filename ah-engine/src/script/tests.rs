@@ -2373,6 +2373,14 @@ mod claim_evidence_guard {
 
     /// One Stop of a fresh session: the transcript is `lines`, the reply is `reply`. Returns the verdict and the home.
     fn stop(tag: &str, lines: &[Value], reply: &str, extra: &[(&str, &str)], payload_extra: Value) -> (Option<Option<Verdict>>, String) {
+        let _shared = COUNTS.read().unwrap_or_else(|e| e.into_inner());
+        stop_unlocked(tag, lines, reply, extra, payload_extra)
+    }
+
+    /// Every Stop counts into the process-wide metric table; the counter test holds the write side so nothing else counts meanwhile.
+    static COUNTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+    fn stop_unlocked(tag: &str, lines: &[Value], reply: &str, extra: &[(&str, &str)], payload_extra: Value) -> (Option<Option<Verdict>>, String) {
         let h = home(tag);
         let t = format!("{h}/t.jsonl");
         let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
@@ -2618,6 +2626,68 @@ mod claim_evidence_guard {
         for (i, r) in ["The criteria require that PR #405 is merged.", "Safe to remove only when PR #405 is merged."].iter().enumerate() {
             assert!(!bare(&format!("ce-crit{i}"), r), "must allow: {r}");
         }
+    }
+
+    #[test]
+    fn a_requirement_does_not_reach_a_claim_that_follows_a_causal_or_temporal_connector() {
+        for (i, r) in [
+            "We must hurry because PR #405 is merged.",
+            "We must celebrate because CI is green.",
+            "We must stop waiting because the suite is passing.",
+            "We must hurry now that PR #405 is merged.",
+            "The criterion requires that records be retained since PR #405 is merged.",
+            "The criterion requires that checks be documented because CI is green.",
+            "We must ship today as CI is green.",
+            "We must move on since all tests pass.",
+            "We must note that PR #405 is merged.",
+            "The policy requires that we ship so PR #405 is merged.",
+            "The service is live.",
+            "The criteria require review given that PR #405 is merged.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(bare(&format!("ce-cause{i}"), r), "must hold: {r}");
+        }
+        for (i, r) in [
+            "The checklist requires that CI is green.",
+            "Each clone must be merged into main.",
+            "The rule requires that all tests pass.",
+            "Ready once a NAS that has it is deployed.",
+            "The release is not live yet.",
+            "The report said \"the service is live\" but I have not checked.",
+            "The criteria require that PR #405 is merged.",
+            "Safe to remove only when PR #405 is merged.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(!bare(&format!("ce-req{i}"), r), "must allow: {r}");
+        }
+    }
+
+    #[test]
+    fn the_guard_counts_what_it_holds_and_what_it_lets_pass_and_the_switch_turns_it_off() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |name: &str, labels: &[(&str, &str)]| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter(name, labels)
+        };
+        let lines = |r: &str| [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", r, &[])];
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let r = "The criteria require that PR #405 is merged.";
+        let (v, _) = stop_unlocked("ce-cnt-sup", &lines(r), r, &[], json!({}));
+        assert!(blocked(&v).is_none());
+        assert_eq!(count("claim_evidence_suppressed", &[("reason", "criterion")]), 1, "a suppressed hit is counted with its reason");
+        let r = "We must hurry because PR #405 is merged.";
+        let (v, _) = stop_unlocked("ce-cnt-fire", &lines(r), r, &[], json!({}));
+        assert!(blocked(&v).is_some());
+        assert_eq!(count("claim_evidence_fired", &[("rule", "claim")]), 1, "a held reply is counted with its rule");
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let (v, _) = stop_unlocked("ce-cnt-off", &lines(r), r, &[("ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", "0")], json!({}));
+        assert!(blocked(&v).is_some(), "the switch never changes the decision");
+        assert_eq!(count("claim_evidence_fired", &[("rule", "claim")]), 0, "off: nothing is counted");
     }
 
     #[test]

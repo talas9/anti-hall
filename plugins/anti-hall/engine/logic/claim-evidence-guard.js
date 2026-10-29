@@ -47,8 +47,8 @@ function ceSentences(t) {
   return out;
 }
 
-// The text of `sent` that governs a claim found at [a, b]: from the last clause break before it (or `win` chars back, the nearer) to its end.
-function ceContext(sent, a, b) {
+// Where the text of `sent` that governs a claim found at `a` starts: after the last clause break before it (or `win` chars back, the nearer).
+function ceStart(sent, a) {
   var br = ah.cfg('claim_evidence.clause_break_re'), before = sent.slice(0, a), from = 0, off = 0;
   for (;;) {
     var m = ah.re.find(br, 'i', before.slice(off));
@@ -56,13 +56,29 @@ function ceContext(sent, a, b) {
     from = off + m[1];
     off = from;
   }
-  return sent.slice(Math.max(from, a - ah.cfgNum('claim_evidence.skip_window')), b);
+  return Math.max(from, a - ah.cfgNum('claim_evidence.skip_window'));
 }
 
-// Why a claim hit is not a claim: the id of the first suppress list (claim_evidence.suppress) that matches the clause governing it, else null.
+// The end offset in `t` of the last hit of any pattern of `list`, else 0.
+function ceLastEnd(list, t) {
+  var end = 0;
+  for (var i = 0; i < list.length; i++) {
+    var all = ah.re.findAll(list[i], 'i', t);
+    for (var j = 0; j < all.length; j++) if (all[j][1] > end) end = all[j][1];
+  }
+  return end;
+}
+
+// Why a claim hit is not a claim: the reason of the first suppress row (claim_evidence.suppress) whose list matches the clause governing it, else null.
+// A row with `cut` judges only the words after the last connector (that list) before the claim: a requirement does not reach a claim that
+// follows 'because' / 'since' / 'now that' (the claim is then stated as fact, not as the object of the requirement).
 function ceReason(sent, hit) {
-  var sup = ah.cfg('claim_evidence.suppress'), ctx = ceContext(sent, hit[0], hit[1]);
-  for (var i = 0; i < sup.length; i++) if (ceAny(ah.cfg(sup[i].list), ctx) !== null) return sup[i].reason;
+  var sup = ah.cfg('claim_evidence.suppress'), start = ceStart(sent, hit[0]);
+  for (var i = 0; i < sup.length; i++) {
+    var from = start;
+    if (sup[i].cut) from += ceLastEnd(ah.cfg(sup[i].cut), sent.slice(start, hit[0]));
+    if (ceAny(ah.cfg(sup[i].list), sent.slice(from, hit[1])) !== null) return sup[i].reason;
+  }
   return null;
 }
 
@@ -88,6 +104,21 @@ function ceFindClaim(scan, seen) {
 function ceLogSuppressed(seen) {
   var n = Math.min(seen.length, ah.cfgNum('claim_evidence.max_suppress_logs'));
   for (var i = 0; i < n; i++) ah.log(ah.cfg('claim_evidence.log_kind'), text.render(ah.cfg('claim_evidence.msg_suppressed'), { reason: seen[i][0], claim: seen[i][2], quote: text.clean(seen[i][1]) }));
+}
+
+// Counters (guards.claimEvidenceTelemetry): the registered metrics and the advisory counters of `status`. A lost count never changes a decision.
+function ceCountSuppressed(seen) {
+  if (!ah.settings.bool('claim_evidence.sw_telemetry')) return;
+  for (var i = 0; i < seen.length; i++) {
+    ah.metric('claim_evidence_suppressed', ['reason', seen[i][0]]);
+    ah.advisory('claim_evidence', 'suppressed_' + seen[i][0]);
+  }
+}
+
+function ceCountFired(rule) {
+  if (!ah.settings.bool('claim_evidence.sw_telemetry')) return;
+  ah.metric('claim_evidence_fired', ['rule', rule]);
+  ah.advisory('claim_evidence', 'fired_' + rule);
 }
 
 function ceAnyCmd(list, cmds) {
@@ -136,6 +167,7 @@ function decide(p) {
       if (rawClaim !== null) seen.push([ah.cfg('claim_evidence.quoted_reason'), rawClaim.quote, rawClaim.row.id]);
     }
     ceLogSuppressed(seen);
+    ceCountSuppressed(seen);
   }
   if (r2) done = ceAny(ah.cfg('claim_evidence.done_res'), scan) !== null && ceAny(ah.cfg('claim_evidence.ack_pushed_res'), scan) === null;
   if (claim === null && !done) return 'allow';
@@ -162,6 +194,7 @@ function decide(p) {
   if (what === null) return 'allow';
   var instead = what === ah.cfg('claim_evidence.msg_pushed_what') ? ah.cfg('claim_evidence.msg_pushed_instead') : ah.cfg('claim_evidence.msg_claim_instead');
   ah.log(ah.cfg('claim_evidence.log_kind'), what);
+  ceCountFired(what === ah.cfg('claim_evidence.msg_pushed_what') ? 'pushed' : 'claim');
   if (ah.cfg('claim_evidence.mode') !== 'block') return 'allow';
 
   // loop safety: the same reply once, a bounded number of holds per owner turn

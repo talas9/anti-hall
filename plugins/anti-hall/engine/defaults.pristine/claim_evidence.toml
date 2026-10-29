@@ -16,6 +16,18 @@ value = { section = "guards", key = "claimEvidence", type = "boolean", env = "AN
 doc = "Pushed work is not done switch. Switch guards.pushedNotDone (default on): off lets a reply call pushed work done without a look at CI or the merge state."
 value = { section = "guards", key = "pushedNotDone", type = "boolean", env = "ANTIHALL_PUSHED_NOT_DONE", option = "", default = true }
 
+[claim_evidence.sw_telemetry]
+doc = "Switch guards.claimEvidenceTelemetry (default on): off stops the claim-evidence fired / suppressed counters (metrics claim_evidence_fired, claim_evidence_suppressed; advisory counters in status); the guard's decisions do not change."
+value = { section = "guards", key = "claimEvidenceTelemetry", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", option = "", default = true }
+
+[metric.claim_evidence_fired]
+doc = "Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed)."
+value = { kind = "counter", unit = "replies", labels = ["rule"] }
+
+[metric.claim_evidence_suppressed]
+doc = "Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted)."
+value = { kind = "counter", unit = "claims", labels = ["reason"] }
+
 [claim_evidence.guard_name]
 doc = "The guard id this check answers to in skip.json and in its messages."
 value = "claim-evidence-guard"
@@ -102,16 +114,22 @@ value = [
   '\b(?:requires?|requiring)\s+that\b',
   '\b(?:criteria|criterion)\s+(?:\w+\s+){0,5}?(?:requires?|that)\b',
   '\b(?:safe|ok|okay|allowed)\s+to\s+\w+(?:\s+\w+){0,3}\s+(?:only\s+)?(?:if|when)\b',
-  '\bmust\b',
+  '\bmust\s+(?:(?:also|first|already|all|both|then)\s+)*(?:be|have\s+been|get)\b',
+]
+
+[claim_evidence.criterion_break_re]
+doc = "Where a requirement stops governing the words after it: a causal or temporal connector ('because', 'since', 'now that', 'as', 'so', 'given that'). The criterion list is matched only against the text after the last such connector that comes BEFORE the claim, so 'the criterion requires that records be retained since PR #405 is merged' states the merge as a fact (the requirement ends at 'since'), while 'requires that PR #405 is merged' keeps the merge as the object of the requirement. Used by the suppress rows that name it (cut). Rust regular expressions, case-insensitive, matched against the clause text before the claim."
+value = [
+  '\b(?:because(?:\s+of)?|since|as|so(?:\s+that)?|now\s+that|given(?:\s+that)?|seeing\s+that|considering(?:\s+that)?|which\s+means|therefore|thus|hence)\b',
 ]
 
 [claim_evidence.suppress]
-doc = "Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause governing the hit). The first list that matches names the reason."
+doc = "Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause governing the hit), cut = optional config key of a connector list: the clause is first cut after the last connector before the hit, so the list judges only the words the claim directly follows. The first list that matches names the reason."
 value = [
   { reason = "negated", list = "claim_evidence.neg_res" },
   { reason = "future", list = "claim_evidence.future_res" },
   { reason = "reported", list = "claim_evidence.reported_res" },
-  { reason = "criterion", list = "claim_evidence.criterion_res" },
+  { reason = "criterion", list = "claim_evidence.criterion_res", cut = "claim_evidence.criterion_break_re" },
 ]
 
 [claim_evidence.ack_reason]
