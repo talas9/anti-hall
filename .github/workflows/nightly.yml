@@ -7,12 +7,25 @@ on:
   schedule:
     - cron: '23 5 * * *'
   workflow_dispatch:
+    inputs:
+      allocator:
+        description: 'AH_ENGINE_ALLOCATOR for the daemon (jemalloc|system); empty = engine default'
+        required: false
+        default: ''
+      malloc_conf:
+        description: 'jemalloc conf string (_RJEM_MALLOC_CONF); empty = jemalloc defaults'
+        required: false
+        default: ''
+      bars:
+        description: 'soak.sh BARS filter (space-separated bar prefixes); empty = all bars'
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:
@@ -33,6 +46,10 @@ jobs:
           shared-key: engine-${{ runner.os }}
           save-if: false
       - name: hardening bar (scripts/soak.sh)
+        env:
+          AH_ENGINE_ALLOCATOR: ${{ inputs.allocator }}
+          _RJEM_MALLOC_CONF: ${{ inputs.malloc_conf }}
+          BARS: ${{ inputs.bars }}
         run: ./scripts/soak.sh target/hardening/report.md
       - name: bar report
         if: always()
