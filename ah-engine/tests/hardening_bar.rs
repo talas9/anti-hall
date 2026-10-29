@@ -360,6 +360,12 @@ impl Lab {
             .env("ANTIHALL_INGEST_DRY_RUN", "1")
             .env("ANTIHALL_DEVSWARM_HIVECONTROL", self.dir.join("hivecontrol"))
             .current_dir(&self.dir);
+        // allocator experiments (nightly workflow inputs): forward the allocator choice and the jemalloc conf when set
+        for k in ["AH_ENGINE_ALLOCATOR", "_RJEM_MALLOC_CONF"] {
+            if let Some(v) = std::env::var_os(k).filter(|v| !v.is_empty()) {
+                c.env(k, v);
+            }
+        }
         for (k, v) in &self.extra {
             c.env(k, v);
         }
