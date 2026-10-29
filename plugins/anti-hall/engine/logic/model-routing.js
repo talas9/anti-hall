@@ -209,6 +209,27 @@ function mrJevRelaxes(corpus, p) {
   return r === false;
 }
 
+// The advisor-mode review rule: the block verdict, or null (rule off, no advisor tool, not review-shaped, flagship or unknown model,
+// already blocked once for this spawn, a Stop continuation). Fails open.
+function mrAdvisorReview(p, model, omitted, description, subagentType, flagship) {
+  try {
+    if (!ah.settings.bool('advisor.sw_review') || p.stop_hook_active === true) return null;
+    var dTokens = mrTokenize(description + ' ' + subagentType);
+    if (!(mrSig(dTokens, new Set(dTokens), 'advisor.review_signals') > 0)) return null; // the description and agent type only: a brief that merely mentions a review is no review
+    var tier = omitted ? mrInheritedTier(p) : model;
+    if (omitted) { if (tier === null || ah.cfg('model_routing.flagship_models').indexOf(tier) >= 0) return null; }
+    else if (flagship) return null;
+    var scan = advisorKit.scan(p);
+    if (!advisorKit.present(p, scan)) return null;
+    var key = typeof p.session_id === 'string' ? p.session_id : '';
+    if (!advisorKit.gate('advisor.kind_review', p, key + '|' + (typeof p.agent_id === 'string' ? p.agent_id : '') + '|' + description)) return null;
+    var shown = omitted ? ah.cfg('advisor.unknown_model_label') : model;
+    return mrBlock(text.message('block', ah.cfg('advisor.guard_name'), {
+      what: text.render(ah.cfg('advisor.msg_review_what'), { model: shown }), why: ah.cfg('advisor.msg_why'), instead: ah.cfg('advisor.msg_review_instead'), override: '',
+    }));
+  } catch (e) { return null; }
+}
+
 function decide(p) {
   if (ah.settings.skipped(ah.cfg('model_routing.guard_name'))) return 'allow';
   if (p === null || typeof p !== 'object') p = {};
@@ -245,6 +266,10 @@ function decide(p) {
   var generic = subagentType === '' || subagentType === ah.cfg('model_routing.generic_type');
   var custom = subagentType !== '' && subagentType !== ah.cfg('model_routing.generic_type');
   var flagship = ah.cfg('model_routing.flagship_models').indexOf(model) >= 0;
+
+  // Advisor mode (GH #404): a review-shaped spawn on a non-flagship model is blocked once when the session has an advisor tool.
+  var advisorReview = mrAdvisorReview(p, model, omitted, description, subagentType, flagship);
+  if (advisorReview !== null) return mrRouted(advisorReview, p, input, 'planning', tierOpus, 'up');
 
   var suppressHaiku = false;
   var floorName = ah.settings.enum('model_routing.deploy_floor_setting');
