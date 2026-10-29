@@ -91,6 +91,14 @@ impl Report {
     fn note(&mut self, line: impl Into<String>) {
         self.notes.push(line.into());
     }
+    /// Keep a file beside the bar's fragment (only when a report dir is set), for the workflow to print on failure.
+    fn keep_file(&self, suffix: &str, body: &str) {
+        if let Some(dir) = std::env::var_os("AH_HARDENING_REPORT_DIR") {
+            let dir = PathBuf::from(dir);
+            ah_engine::discard::harmless(std::fs::create_dir_all(&dir));
+            ah_engine::discard::harmless(std::fs::write(dir.join(format!("{:02}-{}-{suffix}", self.order, self.key)), body));
+        }
+    }
     /// Write the fragment (when a report dir is set), then fail with every missed check.
     fn finish(self) {
         let cols: Vec<String> = val("report.columns").as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
@@ -121,6 +129,159 @@ fn pct(sorted: &[u64], p: u64) -> u64 {
         return 0;
     }
     sorted[((sorted.len() as u64 * p).div_ceil(100) as usize).clamp(1, sorted.len()) - 1]
+}
+
+// ---- honest diagnostics ------------------------------------------------------------------------------------------------
+
+/// What a failed control read means about the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gone {
+    /// The process is dead: only this may be reported as a gone daemon.
+    Dead,
+    /// The status read failed but the process is alive: the socket (or the daemon's accept path) is the problem.
+    Unreachable,
+}
+
+/// `Some` when a process-state / control-read pair is a problem. A dead process is `Dead` whatever the read said.
+fn classify_gone(process_dead: bool, status_ok: bool) -> Option<Gone> {
+    if process_dead {
+        Some(Gone::Dead)
+    } else if !status_ok {
+        Some(Gone::Unreachable)
+    } else {
+        None
+    }
+}
+
+fn gone_label(g: Gone) -> String {
+    t(match g {
+        Gone::Dead => "diag.label_gone",
+        Gone::Unreachable => "diag.label_unreachable",
+    })
+}
+
+/// True when `state` (a `ps -o stat=` value) is one of the dead-but-not-reaped states.
+fn is_zombie_state(state: &str, zombie: &[String]) -> bool {
+    let s = state.trim();
+    !s.is_empty() && zombie.iter().any(|z| s.starts_with(z.as_str()))
+}
+
+/// True when the process is dead: gone from the process table, or a zombie (kill(pid, 0) still succeeds on those).
+fn process_dead(pid: u32) -> bool {
+    if !common::alive(pid as i32) {
+        return true;
+    }
+    let zombie: Vec<String> = val("diag.zombie_states").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+    let out = Command::new(t("diag.ps_path")).args(["-o", "stat=", "-p", &pid.to_string()]).output();
+    match out {
+        Ok(o) if o.status.success() => is_zombie_state(&String::from_utf8_lossy(&o.stdout), &zombie),
+        _ => false,
+    }
+}
+
+/// How one measured call ended, from the client's side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Outcome {
+    Engine,
+    Busy,
+    Err,
+    Slow,
+    Hung,
+    /// No listener, refused, unsafe socket, bad frame, I/O error: the text says which.
+    Transport(String),
+}
+
+fn outcome_of(e: &Exch) -> Outcome {
+    match e {
+        Exch::Reply(Kind::Ok, _) => Outcome::Engine,
+        Exch::Reply(Kind::Busy, _) => Outcome::Busy,
+        Exch::Reply(Kind::Err, _) => Outcome::Err,
+        Exch::Slow(_) => Outcome::Slow,
+        Exch::Hung(..) => Outcome::Hung,
+        Exch::Absent => Outcome::Transport("absent".into()),
+        Exch::Failed(m) => Outcome::Transport(m.clone()),
+    }
+}
+
+/// Per-reason count of how calls were answered; the non-daemon part is the whole-event fallbacks.
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+struct Breakdown {
+    engine: u64,
+    busy: u64,
+    err: u64,
+    slow: u64,
+    hung: u64,
+    transport: u64,
+    /// The first distinct transport failure texts seen.
+    samples: Vec<String>,
+}
+
+impl Breakdown {
+    fn add(&mut self, o: &Outcome, sample_max: usize) {
+        match o {
+            Outcome::Engine => self.engine += 1,
+            Outcome::Busy => self.busy += 1,
+            Outcome::Err => self.err += 1,
+            Outcome::Slow => self.slow += 1,
+            Outcome::Hung => self.hung += 1,
+            Outcome::Transport(m) => {
+                self.transport += 1;
+                if self.samples.len() < sample_max && !self.samples.contains(m) {
+                    self.samples.push(m.clone());
+                }
+            }
+        }
+    }
+    fn merge(&mut self, o: Breakdown, sample_max: usize) {
+        self.engine += o.engine;
+        self.busy += o.busy;
+        self.err += o.err;
+        self.slow += o.slow;
+        self.hung += o.hung;
+        self.transport += o.transport;
+        for m in o.samples {
+            if self.samples.len() < sample_max && !self.samples.contains(&m) {
+                self.samples.push(m);
+            }
+        }
+    }
+    fn fallbacks(&self) -> u64 {
+        self.busy + self.err + self.slow + self.hung + self.transport
+    }
+    /// `daemon 44950, busy 127, err 0, slow-timeout 0, hung 0, transport 3 [first: ...]`
+    fn line(&self) -> String {
+        let mut s = format!(
+            "{} {}, {} {}, {} {}, {} {}, {} {}, {} {}",
+            t("diag.reason_engine"),
+            self.engine,
+            t("diag.reason_busy"),
+            self.busy,
+            t("diag.reason_err"),
+            self.err,
+            t("diag.reason_slow"),
+            self.slow,
+            t("diag.reason_hung"),
+            self.hung,
+            t("diag.reason_transport"),
+            self.transport
+        );
+        if !self.samples.is_empty() {
+            s.push_str(&format!(" (transport: {})", self.samples.join(" | ")));
+        }
+        s
+    }
+}
+
+fn sample_max() -> usize {
+    n("diag.transport_sample_max") as usize
+}
+
+/// Print the breakdown (always, daemon alive or not) and the daemon's own split of its BUSY replies when it can be read.
+fn report_breakdown(r: &mut Report, bar: &str, b: &Breakdown, st: Option<&serde_json::Value>) {
+    r.note(format!("{}: {}", t("diag.breakdown_prefix").replace("{bar}", bar), b.line()));
+    if let Some(split) = st.and_then(|s| s.get("busy_by_reason")) {
+        r.note(format!("{}: {split}", t("diag.daemon_busy_prefix")));
+    }
 }
 
 // ---- the lab: one isolated engine -------------------------------------------------------------------------------------
@@ -225,9 +386,13 @@ impl Lab {
     }
     /// A control request straight to the socket (never spawns a daemon).
     fn ctl(&self, verb: &str) -> Option<String> {
+        self.ctl_result(verb).ok()
+    }
+    /// `ctl`, keeping the reason a request got no OK reply (absent, failed, slow, a non-OK frame) as text.
+    fn ctl_result(&self, verb: &str) -> Result<String, String> {
         match exchange(&self.sock(), format!("CTL {verb}\n").as_bytes(), ms("common.ready_ms")) {
-            Exch::Reply(Kind::Ok, body) => Some(body),
-            _ => None,
+            Exch::Reply(Kind::Ok, body) => Ok(body),
+            other => Err(format!("{other:?}")),
         }
     }
     fn pid(&self) -> Option<u32> {
@@ -239,13 +404,34 @@ impl Lab {
     fn try_status(&self) -> Option<serde_json::Value> {
         serde_json::from_str(&self.ctl("status")?).ok()
     }
-    /// The end of the daemon's event log, into the report (why a daemon went away).
-    fn note_log_tail(&self, r: &mut Report) {
-        let log = self.log();
-        let lines: Vec<&str> = log.lines().collect();
-        for l in &lines[lines.len().saturating_sub(n("common.log_tail_lines") as usize)..] {
-            r.note(format!("log: {}", l.split('\t').skip(1).collect::<Vec<_>>().join(" ")));
+    /// Why a daemon is gone, into the report: whether its process still runs, its exit status (it is our child), the control
+    /// socket's error, and the end of its own log filtered to the lines that explain an exit. The whole log is also kept
+    /// next to the report (the lab dir is removed when the bar ends).
+    fn diagnose_gone(&self, r: &mut Report, d: &mut Child) {
+        let pid = d.id();
+        let exited = d.try_wait();
+        let dead = process_dead(pid) || matches!(exited, Ok(Some(_)));
+        let state = match exited {
+            Ok(Some(st)) => format!("exited ({st})"),
+            Ok(None) => format!("still running (pid alive: {})", common::alive(pid as i32)),
+            Err(e) => format!("unknown (try_wait failed: {e})"),
+        };
+        let status = self.ctl_result("status");
+        r.note(format!("daemon process {pid}: {state}"));
+        r.note(format!("control socket status: {}", status.as_ref().err().cloned().unwrap_or_else(|| "answered OK now".to_string())));
+        if let Some(g) = classify_gone(dead, status.is_ok()) {
+            r.note(gone_label(g));
         }
+        self.keep_log(r);
+        let log = self.log();
+        let words: Vec<String> = val("common.gone_log_filter").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+        for l in filter_log(&log, &words, n("common.gone_log_lines") as usize) {
+            r.note(format!("log: {l}"));
+        }
+    }
+    /// Keep the daemon's whole log next to the report, whether or not it survived (the lab dir is removed when the bar ends).
+    fn keep_log(&self, r: &Report) {
+        r.keep_file("daemon.log", &self.log());
     }
     /// `ah-engine status --json`: the client-side view (breaker, crash loop), with or without a daemon.
     fn client_status(&self) -> serde_json::Value {
@@ -283,6 +469,19 @@ impl Drop for Lab {
         });
         ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
+}
+
+/// The last `max` lines of `log` containing any of `words` (case-insensitive), the daemon's tab-separated timestamp column kept.
+fn filter_log(log: &str, words: &[String], max: usize) -> Vec<String> {
+    let hits: Vec<String> = log
+        .lines()
+        .filter(|l| {
+            let low = l.to_lowercase();
+            words.iter().any(|w| low.contains(&w.to_lowercase()))
+        })
+        .map(|l| l.split('\t').collect::<Vec<_>>().join(" "))
+        .collect();
+    hits[hits.len().saturating_sub(max)..].to_vec()
 }
 
 fn kill9(pid: u32) {
@@ -598,6 +797,221 @@ fn kill_mid_call_never_blocks_a_tool_and_never_reads_as_an_allow() {
     r.finish();
 }
 
+// ---- the gone-daemon diagnostics (fast; runs with the ordinary tests) -------------------------------------------------------
+
+#[test]
+fn log_filter_keeps_only_exit_explaining_lines_and_is_bounded() {
+    let words: Vec<String> = val("common.gone_log_filter").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+    let log = "1\tping\tok\n2\texit\torphaned parent gone\n3\tclient_slow\t5\n4\twatchdog\tstall\n5\tRSS over cap\n";
+    assert_eq!(filter_log(log, &words, 10), ["2 exit orphaned parent gone", "4 watchdog stall", "5 RSS over cap"]);
+    assert_eq!(filter_log(log, &words, 1), ["5 RSS over cap"]);
+    assert!(filter_log("1\tping\tok\n", &words, 10).is_empty());
+}
+
+#[test]
+fn a_killed_daemon_is_explained_in_the_report() {
+    let lab = Lab::new("gone", &[]);
+    let mut r = Report::new(90, "kill_mid_call");
+    let mut d = lab.serve();
+    assert!(lab.wait_for(|| lab.pid() == Some(d.id())), "scratch daemon did not come up");
+    kill9(d.id());
+    d.wait().unwrap();
+    // the control socket must now fail (the same condition the soak calls "gone"), and the report must say why
+    assert!(lab.wait_for(|| lab.try_status().is_none()), "daemon still answering after SIGKILL");
+    lab.diagnose_gone(&mut r, &mut d);
+    let notes = r.notes.join("\n");
+    assert!(notes.contains(&format!("daemon process {}: exited", d.id())), "no exit status in: {notes}");
+    assert!(notes.contains("signal: 9"), "exit status lacks the kill signal: {notes}");
+    assert!(notes.contains("control socket status: "), "no socket error in: {notes}");
+    assert!(!notes.contains("answered OK now"), "dead daemon reported as answering: {notes}");
+    assert!(r.notes.iter().filter(|l| l.starts_with("log: ")).count() <= n("common.gone_log_lines") as usize);
+}
+
+// ---- live progress and stall reporting (long bars) ----------------------------------------------------------------------
+
+/// One bounded progress line: elapsed seconds, calls done, daemon pid alive, RSS (KB), restarts, control-socket status.
+fn progress_line(elapsed_s: u64, calls: u64, alive: bool, rss_kb: Option<u64>, restarts: Option<u64>, ctl: &str, max_chars: usize) -> String {
+    let num = |v: Option<u64>| v.map_or("?".to_string(), |v| v.to_string());
+    let ctl: String = ctl.chars().take(max_chars).collect();
+    format!("progress: {elapsed_s}s calls={calls} alive={} rss_kb={} restarts={} ctl={ctl}", if alive { "yes" } else { "no" }, num(rss_kb), num(restarts))
+}
+
+/// A progress line is due after `every_calls` more calls or `every_s` more seconds, whichever comes first.
+fn progress_due(calls: u64, last_calls: u64, now_s: u64, last_s: u64, every_calls: u64, every_s: u64) -> bool {
+    calls.saturating_sub(last_calls) >= every_calls || now_s.saturating_sub(last_s) >= every_s
+}
+
+/// Fires once per stall: the call count has not moved for `limit_s`; moving again re-arms it.
+struct Stall {
+    calls: u64,
+    since_s: u64,
+    fired: bool,
+    limit_s: u64,
+}
+
+impl Stall {
+    fn new(limit_s: u64) -> Stall {
+        Stall { calls: 0, since_s: 0, fired: false, limit_s }
+    }
+    fn observe(&mut self, calls: u64, now_s: u64) -> bool {
+        if calls != self.calls {
+            (self.calls, self.since_s, self.fired) = (calls, now_s, false);
+            return false;
+        }
+        if !self.fired && now_s.saturating_sub(self.since_s) >= self.limit_s {
+            self.fired = true;
+            return true;
+        }
+        false
+    }
+}
+
+/// Watches a running bar from its own thread (so it still speaks while a call hangs): progress lines, and the gone-daemon
+/// report the moment the daemon is gone or the calls stall.
+struct Watch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub calls: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Watch {
+    fn start(lab: &Lab, pid: u32, key: &'static str, order: u32) -> Watch {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let calls = std::sync::Arc::new(AtomicU64::new(0));
+        let (stop2, calls2) = (stop.clone(), calls.clone());
+        let (sock, log_path) = (lab.sock(), lab.eng().join("ah-engine.log"));
+        let (every_calls, every_s, poll) = (n("common.progress_every_calls"), n("common.progress_every_s"), ms("common.progress_poll_ms"));
+        let (max_chars, ready) = (n("common.progress_status_chars") as usize, ms("common.ready_ms"));
+        let words: Vec<String> = val("common.gone_log_filter").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+        let (log_lines, mut stall) = (n("common.gone_log_lines") as usize, Stall::new(n("common.stall_report_s")));
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            let (mut last_calls, mut last_s, mut gone_reported) = (0u64, 0u64, None::<Gone>);
+            while !stop2.load(Relaxed) {
+                std::thread::sleep(poll);
+                let (now_s, done) = (start.elapsed().as_secs(), calls2.load(Relaxed));
+                let dead = process_dead(pid);
+                let alive = !dead;
+                let reply = exchange(&sock, b"CTL status\n", ready);
+                let (st, ctl) = match reply {
+                    Exch::Reply(Kind::Ok, body) => (serde_json::from_str::<serde_json::Value>(&body).ok(), "ok".to_string()),
+                    other => (None, format!("{other:?}")),
+                };
+                if progress_due(done, last_calls, now_s, last_s, every_calls, every_s) {
+                    (last_calls, last_s) = (done, now_s);
+                    let rss = st.as_ref().and_then(|s| s["memory"]["rss_kb"].as_u64());
+                    let restarts = st.as_ref().and_then(|s| s["restarts"].as_u64());
+                    eprintln!("{key} {}", progress_line(now_s, done, alive, rss, restarts, &ctl, max_chars));
+                }
+                let verdict = classify_gone(dead, st.is_some());
+                let gone = verdict.is_some();
+                let stalled = stall.observe(done, now_s);
+                if (gone && gone_reported != verdict) || stalled {
+                    if gone {
+                        gone_reported = verdict;
+                    }
+                    let why =
+                        if stalled { format!("no call completed for {} s", n("common.stall_report_s")) } else { gone_label(verdict.unwrap_or(Gone::Dead)) };
+                    let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+                    let mut out = format!("{key} {why} at {now_s}s after {done} calls: pid {pid} alive: {alive}; control socket: {ctl}\n");
+                    for l in filter_log(&log, &words, log_lines) {
+                        out.push_str(&format!("log: {l}\n"));
+                    }
+                    eprint!("{out}");
+                    if let Some(dir) = std::env::var_os("AH_HARDENING_REPORT_DIR") {
+                        let dir = PathBuf::from(dir);
+                        ah_engine::discard::harmless(std::fs::create_dir_all(&dir));
+                        ah_engine::discard::harmless(std::fs::write(dir.join(format!("{order:02}-{key}-live-gone.txt")), &out));
+                        ah_engine::discard::harmless(std::fs::write(dir.join(format!("{order:02}-{key}-live-daemon.log")), &log));
+                    }
+                }
+            }
+        });
+        Watch { stop, calls, handle: Some(handle) }
+    }
+    fn tick(&self) {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.calls.clone()
+    }
+    fn end(mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            ah_engine::discard::harmless(h.join());
+        }
+    }
+}
+
+#[test]
+fn progress_line_is_bounded_and_stall_detector_fires_once_per_stall() {
+    let line = progress_line(61, 2000, true, Some(31000), Some(0), "ok", 120);
+    assert_eq!(line, "progress: 61s calls=2000 alive=yes rss_kb=31000 restarts=0 ctl=ok");
+    let gone = progress_line(5, 1, false, None, None, &"x".repeat(500), 10);
+    assert_eq!(gone, "progress: 5s calls=1 alive=no rss_kb=? restarts=? ctl=xxxxxxxxxx");
+    assert!(progress_due(1000, 0, 1, 0, 1000, 60));
+    assert!(progress_due(5, 0, 60, 0, 1000, 60));
+    assert!(!progress_due(999, 0, 59, 0, 1000, 60));
+    let mut s = Stall::new(300);
+    assert!(!s.observe(10, 0));
+    assert!(!s.observe(10, 299));
+    assert!(s.observe(10, 300));
+    assert!(!s.observe(10, 900), "fires once per stall");
+    assert!(!s.observe(11, 901), "progress re-arms");
+    assert!(!s.observe(11, 1000));
+    assert!(s.observe(11, 1201));
+}
+
+#[test]
+fn gone_is_only_a_dead_process_a_failed_read_with_a_live_pid_is_unreachable() {
+    assert_eq!(classify_gone(true, false), Some(Gone::Dead));
+    assert_eq!(classify_gone(true, true), Some(Gone::Dead));
+    assert_eq!(classify_gone(false, false), Some(Gone::Unreachable));
+    assert_eq!(classify_gone(false, true), None);
+    assert!(gone_label(Gone::Dead).contains("gone"));
+    assert!(!gone_label(Gone::Unreachable).contains("gone"));
+    assert!(gone_label(Gone::Unreachable).contains("pid alive"));
+    let z = vec!["Z".to_string()];
+    assert!(is_zombie_state(" Z+\n", &z));
+    assert!(!is_zombie_state("S\n", &z));
+    assert!(!is_zombie_state("", &z));
+    // a real, live process (this test) is not dead; a pid that cannot exist is
+    assert!(!process_dead(std::process::id()));
+    assert!(process_dead(i32::MAX as u32));
+}
+
+#[test]
+fn breakdown_counts_every_reason_and_formats_it_bounded() {
+    let max = 2;
+    let mut a = Breakdown::default();
+    for o in [Outcome::Engine, Outcome::Engine, Outcome::Busy, Outcome::Err, Outcome::Slow, Outcome::Hung] {
+        a.add(&o, max);
+    }
+    a.add(&Outcome::Transport("reset by peer".into()), max);
+    a.add(&Outcome::Transport("reset by peer".into()), max);
+    a.add(&Outcome::Transport("absent".into()), max);
+    a.add(&Outcome::Transport("third kind".into()), max);
+    assert_eq!((a.engine, a.busy, a.err, a.slow, a.hung, a.transport), (2, 1, 1, 1, 1, 4));
+    assert_eq!(a.fallbacks(), 8);
+    assert_eq!(a.samples, ["reset by peer", "absent"], "distinct, first ones, bounded");
+    assert_eq!(a.line(), "daemon 2, busy 1, err 1, slow-timeout 1, hung 1, transport 4 (transport: reset by peer | absent)");
+    let mut b = Breakdown::default();
+    b.add(&Outcome::Busy, max);
+    b.merge(a, max);
+    assert_eq!((b.engine, b.busy, b.transport, b.fallbacks()), (2, 2, 4, 9));
+    assert_eq!(Breakdown::default().line(), "daemon 0, busy 0, err 0, slow-timeout 0, hung 0, transport 0");
+    assert_eq!(outcome_of(&Exch::Reply(Kind::Busy, String::new())), Outcome::Busy);
+    assert_eq!(outcome_of(&Exch::Absent), Outcome::Transport("absent".into()));
+    assert_eq!(outcome_of(&Exch::Slow("x".into())), Outcome::Slow);
+}
+
 // ---- load and memory: the dispatcher's own request, straight to the daemon ----------------------------------------------
 
 /// A transcript in the shape of a real one (prompts, task and Bash tool uses, results, text) of about `kb` KB.
@@ -693,32 +1107,28 @@ impl Traffic {
     }
 }
 
-/// One measured call: client wall time in microseconds, and whether the daemon answered it (anything else is a
-/// whole-event fallback: BUSY, ERR, a timeout, a failed exchange, no daemon).
-fn timed_call(sock: &Path, req: &[u8], deadline: Duration) -> (u64, bool, bool) {
+/// One measured call: client wall time in microseconds, and how it ended. Anything but `Outcome::Engine` is a whole-event
+/// fallback (BUSY, ERR, a timeout, a failed exchange, no daemon).
+fn timed_call(sock: &Path, req: &[u8], deadline: Duration) -> (u64, Outcome) {
     let start = Instant::now();
     let e = exchange(sock, req, deadline);
-    let us = start.elapsed().as_micros() as u64;
-    (us, matches!(e, Exch::Reply(Kind::Ok, _)), matches!(e, Exch::Slow(_)))
+    (start.elapsed().as_micros() as u64, outcome_of(&e))
 }
 
 #[derive(Default)]
 struct Phase {
     wall_us: Vec<u64>,
-    fallbacks: u64,
-    timeouts: u64,
+    how: Breakdown,
 }
 
 impl Phase {
-    fn add(&mut self, (us, ok, slow): (u64, bool, bool)) {
+    fn add(&mut self, (us, o): (u64, Outcome)) {
         self.wall_us.push(us);
-        self.fallbacks += u64::from(!ok);
-        self.timeouts += u64::from(slow);
+        self.how.add(&o, sample_max());
     }
     fn merge(&mut self, o: Phase) {
         self.wall_us.extend(o.wall_us);
-        self.fallbacks += o.fallbacks;
-        self.timeouts += o.timeouts;
+        self.how.merge(o.how, sample_max());
     }
 }
 
@@ -758,7 +1168,7 @@ fn phase_checks(r: &mut Report, name: &str, p: &mut Phase, st: &serde_json::Valu
         budget.as_millis(),
         pct(&p.wall_us, 100) <= budget.as_micros() as u64 + ms("common.call_slack_ms").as_micros() as u64,
     );
-    r.check(&format!("{name}: whole-event fallbacks"), p.fallbacks, n("load.fallbacks_max"), p.fallbacks <= n("load.fallbacks_max"));
+    r.check(&format!("{name}: whole-event fallbacks"), p.how.fallbacks(), n("load.fallbacks_max"), p.how.fallbacks() <= n("load.fallbacks_max"));
     r.check(&format!("{name}: late replies (daemon slow_replies)"), late, n("load.late_max"), late <= n("load.late_max"));
     let (wait, proc_p95, over) = daemon_stages(st, since_ms);
     r.note(format!(
@@ -769,8 +1179,9 @@ fn phase_checks(r: &mut Report, name: &str, p: &mut Phase, st: &serde_json::Valu
         pct(&p.wall_us, 100) as f64 / 1000.0,
         wait as f64 / 1000.0,
         proc_p95 as f64 / 1000.0,
-        p.timeouts,
+        p.how.slow,
     ));
+    report_breakdown(r, name, &p.how, Some(st));
 }
 
 #[test]
@@ -784,8 +1195,10 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let up = lab.wait_for(|| lab.pid() == Some(d.id()));
     r.check("daemon up", up, true, up);
     let sock = lab.sock();
+    let watch = Watch::start(&lab, d.id(), "load", 60);
     for i in 0..n("load.warmup_calls") {
         timed_call(&sock, &traffic.request(i), deadline);
+        watch.tick();
     }
     let pid = lab.pid();
     // sustained: clients paced so that together they make sustained_rps calls per second
@@ -797,7 +1210,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let mut sustained = Phase::default();
     let ws: Vec<_> = (0..clients)
         .map(|c| {
-            let (traffic, sock) = (traffic.clone(), sock.clone());
+            let (traffic, sock, ticks) = (traffic.clone(), sock.clone(), watch.counter());
             std::thread::spawn(move || {
                 let mut p = Phase::default();
                 let start = Instant::now();
@@ -807,6 +1220,7 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
                         std::thread::sleep(w);
                     }
                     p.add(timed_call(&sock, &traffic.request(1000 + c * per_client + k), deadline));
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 p
             })
@@ -816,8 +1230,9 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
         sustained.merge(w.join().unwrap());
     }
     let Some(st) = lab.try_status() else {
-        r.check("daemon alive after the sustained phase", false, true, false);
-        lab.note_log_tail(&mut r);
+        report_breakdown(&mut r, "sustained", &sustained.how, None);
+        r.check("daemon status readable after the sustained phase", false, true, false);
+        lab.diagnose_gone(&mut r, &mut d);
         common::stop_child(&lab.sock(), &mut d);
         return r.finish();
     };
@@ -837,12 +1252,13 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let mut burst = Phase::default();
     let ws: Vec<_> = (0..n("load.burst_clients"))
         .map(|c| {
-            let (traffic, sock, gate) = (traffic.clone(), sock.clone(), gate.clone());
+            let (traffic, sock, gate, ticks) = (traffic.clone(), sock.clone(), gate.clone(), watch.counter());
             std::thread::spawn(move || {
                 let mut p = Phase::default();
                 gate.wait();
                 for k in 0..n("load.burst_calls_per_client") {
                     p.add(timed_call(&sock, &traffic.request(500_000 + c * 1000 + k), deadline));
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 p
             })
@@ -852,8 +1268,9 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
         burst.merge(w.join().unwrap());
     }
     let Some(st) = lab.try_status() else {
-        r.check("daemon alive after the burst phase", false, true, false);
-        lab.note_log_tail(&mut r);
+        report_breakdown(&mut r, "burst", &burst.how, None);
+        r.check("daemon status readable after the burst phase", false, true, false);
+        lab.diagnose_gone(&mut r, &mut d);
         common::stop_child(&lab.sock(), &mut d);
         return r.finish();
     };
@@ -865,10 +1282,12 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
         n("load.burst_calls_per_client"),
         loadavg()
     ));
+    watch.end();
     let same = lab.pid() == pid;
     r.check("same daemon throughout (no restart)", same, true, same);
     r.check("busy replies (load shedding)", st["busy_replies"].clone(), 0, st["busy_replies"].as_u64() == Some(0));
     r.check("hivecontrol stand-in calls", lab.hivecontrol_calls(), 0, lab.hivecontrol_calls() == 0);
+    lab.keep_log(&r);
     common::stop_child(&sock, &mut d);
     r.finish();
 }
@@ -889,13 +1308,15 @@ fn memory_soak_stays_in_the_rss_band_under_the_cap_with_no_recycle() {
     let sock = lab.sock();
     let (total, warm, every) = (n("memory.calls"), n("memory.warmup_calls"), n("memory.sample_every"));
     let mut samples: Vec<(u64, u64, u64)> = Vec::new(); // (calls, rss_kb, heap_live_kb)
-    let mut fallbacks = 0u64;
+    let mut how = Breakdown::default();
     let mut gone_at = None;
     let pid = lab.pid();
     let start = Instant::now();
+    let watch = Watch::start(&lab, d.id(), "memory", 70);
     for i in 0..total {
-        let (_, ok, _) = timed_call(&sock, &traffic.request(i), deadline);
-        fallbacks += u64::from(!ok);
+        let (_, o) = timed_call(&sock, &traffic.request(i), deadline);
+        watch.tick();
+        how.add(&o, sample_max());
         if i + 1 >= warm && (i + 1 - warm) % every == 0 {
             let Some(st) = lab.try_status() else {
                 gone_at = Some(i + 1);
@@ -904,15 +1325,20 @@ fn memory_soak_stays_in_the_rss_band_under_the_cap_with_no_recycle() {
             samples.push((i + 1, st["memory"]["rss_kb"].as_u64().unwrap_or(0), st["memory"]["heap_live_kb"].as_u64().unwrap_or(0)));
         }
     }
-    r.check("daemon alive for the whole soak", gone_at.map_or("yes".to_string(), |c| format!("gone by call {c}")), "yes", gone_at.is_none());
+    watch.end();
+    r.check("daemon status readable for the whole soak", gone_at.map_or("yes".to_string(), |c| format!("gone by call {c}")), "yes", gone_at.is_none());
     if gone_at.is_some() {
-        lab.note_log_tail(&mut r);
+        report_breakdown(&mut r, "memory", &how, None);
+        lab.diagnose_gone(&mut r, &mut d);
         common::stop_child(&lab.sock(), &mut d);
         r.finish();
         return;
     }
     let st = lab.status();
     let cap = engine_num("daemon.rss_cap_kb");
+    let fallbacks = how.fallbacks();
+    report_breakdown(&mut r, "memory", &how, Some(&st));
+    lab.keep_log(&r);
     r.check("calls answered by the daemon", total - fallbacks, total, fallbacks == 0);
     r.check("cap in force (daemon.rss_cap_kb)", st["rss_cap_kb"].clone(), cap, st["rss_cap_kb"].as_u64() == Some(cap) && cap > 0);
     let same = lab.pid() == pid && pid.is_some();
