@@ -4937,6 +4937,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_reason_default` | `inbox status could not be confirmed` |  |  | Label of an unknown-inbox reason not in reason_labels. |
 | `devswarm_role.pg_reason_labels` | `13 entries` |  |  | The label of each unknown-inbox reason (reasonLabel). |
 | `devswarm_role.pg_reason_parked_only` | `DevSwarm Stop gate.` |  |  | The block reason body when only a parked escalation holds the turn (no family, question or truncation). |
+| `devswarm_role.pg_repeat_step` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh inbox peek-primary <id>`; if it sh...` |  |  | The concrete next step the repeated-block hint adds once to a repeated parent-gate block (repeat.allowed_keys). |
 | `devswarm_role.pg_repos_root_marker` | `/.devswarm/repos/` |  |  | A worktree under this path segment is a DevSwarm-app workspace the supervisor active-list cache can archive (DEVSWARM_REPOS_ROOT_RE). |
 | `devswarm_role.pg_set_busy_fresh` | `5 entries` |  |  | Setting devswarm.parentGateBusyFreshMin: minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default. |
 | `devswarm_role.pg_set_busy_max_age` | `5 entries` |  |  | Setting devswarm.parentGateBusyMaxAgeMin: minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default. |
@@ -4967,6 +4968,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_stray_seen_sep` | `#` |  |  | Joins a straying signal's key and episode number in its shown-set key. |
 | `devswarm_role.pg_stray_step` | `: step ` |  |  | Between a warned workspace's title and its step number on the straying line. |
 | `devswarm_role.pg_stray_tail` | ` — advisory (Jev notes are recommendations; your call); `~/.anti-hall/ah-engi...` |  |  | Ends the straying advisory line. |
+| `devswarm_role.pg_sw_shared_count` | `6 entries` |  |  | Switch devswarm.parentGateSharedCount (default on): the parent gate counts the Primary's own unread mail with the ONE shared count `mesh inbox peek-primary` reports (own-family sends and wake rows left out, re-checked live even with no own reader row), and leaves a partition's own-family sends out of the descriptor count (GH #384). Off restores the old `max(countFor, messageCount - own)` projection, which can block on a stale count peek shows as 0. |
 | `devswarm_role.pg_tail` | `If this is intentional, say so explicitly. Escape hatch: the user may direct ...` |  |  | The closing sentence of the reason. |
 | `devswarm_role.pg_title_fmt` | `{name} ({short})` |  |  | A workspace's display name: {name}, {short} (the id's first characters). |
 | `devswarm_role.pg_twin_more` | ` and {n} more` |  |  | More twins than shown: {n}. |
@@ -7926,7 +7928,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `386 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `388 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -13059,6 +13061,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.dir_broadcast_seen` | `parent-inbox-broadcast-seen` |  |  | The per-session broadcast seen-state (parent-inbox-broadcast-seen/<session>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_locks` | `locks` |  |  | The lock files directory, under the DevSwarm directory. |
 | `devswarm_parent.dir_notice_cursor` | `maintainer-notice-cursor` |  |  | The per-project maintainer-notice cursors (maintainer-notice-cursor/<repoKey>.json), under the DevSwarm directory. |
+| `devswarm_parent.dir_orphans_seen` | `orphans-seen` |  |  | The directory (under the devswarm state dir) of the per-session orphaned-mesh warning records. |
 | `devswarm_parent.dir_reply_state` | `parent-gate` |  |  | The per-project reply records (parent-gate/<repoKey>-replies.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_stray` | `stray` |  |  | The per-plan straying records (stray/<key>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_token_usage` | `token-usage` |  |  | The per-plan token burn records (token-usage/<key>.json), under the DevSwarm directory. |
@@ -13165,6 +13168,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.stale_build_message` | `stale anti-hall {version}: run /reload-plugins (restart only if it persists) ...` |  |  | The text for a child that runs an older anti-hall build than the machine's newest. Placeholders: {version}, {cmd}. |
 | `devswarm_parent.stale_registry_head` | `⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree...` |  |  | The segment for registry rows whose worktree is gone but that still hold unread. Placeholders: {count}, {shown}, {extra}. |
 | `devswarm_parent.stuck_statuses` | `stale, nudged, escalated` |  |  | Supervisor verdicts that mean a child is wedged (STUCK_STATUSES). |
+| `devswarm_parent.sw_orphans_once` | `6 entries` |  |  | Switch devswarm.orphanWarningOnce (default on): the orphaned-mesh warning is shown once per session per set of orphaned partition ids, not again on every keepalive or unread-count change (GH #419). Off restores the keepalive repeat. |
 | `devswarm_parent.table_activity_token` | `live` |  |  | What the activity-only status labels are replaced with before the table is hashed. |
 | `devswarm_parent.table_head` | `💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):\...` |  |  | The head of the live workspace table: the title line and the column header. |
 | `devswarm_parent.table_row` | `\| {workspace} \| {label} \| {finish} \| {unread} \| {last} \|` |  |  | One table row. Placeholders: {workspace}, {label}, {finish}, {unread}, {last}. |
@@ -13487,7 +13491,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `repeat.allowed_keys` | `6 entries` |  |  | Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line. |
+| `repeat.allowed_keys` | `7 entries` |  |  | Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line. |
 | `repeat.guard_names` | `3 entries` |  |  | Checks whose public guard names differ, for per-guard threshold overrides and allowed-form hints. All other checks use their own names. |
 | `repeat.max_keys` | `512` |  |  | Most (session, guard) pairs the learner remembers; the oldest are dropped past it. |
 | `repeat.min_blocks` | `2` |  |  | How many blocks by one guard of one session inside the window make a repeat. |
@@ -14160,6 +14164,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
+| `devswarm_parent_gate_count_mismatch` | counter | counts |  | Parent-gate own-mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384). |
+| `devswarm_parent_gate_fired` | counter | blocks | kind | Stop blocks the DevSwarm parent gate answered, by kind (block, escalation). |
+| `devswarm_parent_gate_suppressed` | counter | passes | reason | Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send). |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |
@@ -14195,6 +14202,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 | `dssup_appdb_date_unread` | counter | dates |  | Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full). |
 | `ingest_drops` | counter | paths | reason | Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason. |
+| `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds
 

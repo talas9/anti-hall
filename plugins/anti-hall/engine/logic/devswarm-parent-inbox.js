@@ -818,6 +818,21 @@ function piBroadcastKey(r) {
   return who + '\0' + (r && r.ts != null ? r.ts : '') + '\0' + (r && r.summary != null ? r.summary : '');
 }
 
+// The once-per-session record of the orphaned-mesh warning (devswarm.orphanWarningOnce, GH #419): the warning is shown again only
+// when the SET of orphaned partition ids changes, never because an unread count moved or the keepalive ran out.
+function piOrphansSeenRel(sessionRaw) {
+  var safe = String(sessionRaw || ah.cfg('devswarm_parent.broadcast_no_session')).replace(/[^A-Za-z0-9_.-]/g, '_');
+  return piRel(ah.cfg('devswarm_parent.dir_orphans_seen') + '/' + safe + '.json');
+}
+function piOrphansSig(list) {
+  return ah.sha1(list.filter(function (o) { return o && o.id != null; }).map(function (o) { return String(o.id); }).sort().join(','));
+}
+function piOrphansSeen(sessionRaw, sig) {
+  var raw = ah.state.readText(piOrphansSeenRel(sessionRaw));
+  if (raw === null) return false;
+  try { var j = JSON.parse(raw); return !!j && j.sig === sig; } catch (e) { return false; }
+}
+
 function piBroadcastSeenRel(sessionRaw) {
   var safe = String(sessionRaw || ah.cfg('devswarm_parent.broadcast_no_session')).replace(/[^A-Za-z0-9_.-]/g, '_');
   return piRel(ah.cfg('devswarm_parent.dir_broadcast_seen') + '/' + safe + '.json');
@@ -1247,7 +1262,7 @@ function piDecide(p, opts) {
   var now = ah.clock.now();
   var every = ah.settings.num('verify_first.num_repeat_every');
   var repeat = isFinite(every) && every > 0 ? every : 0;
-  var noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownUrgency = null, orphansSeg = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
+  var noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
   if (top !== null) {
     var cli = piCli(opts, home);
     if (cli === null) return piDefer('cli');
@@ -1296,7 +1311,18 @@ function piDecide(p, opts) {
     }
     noticeSeg = /^[A-Za-z0-9._-]+$/.test(key) ? piNotices(home, key, now) : null;
     if (summary !== null) {
-      if (Array.isArray(summary.orphans) && summary.orphans.length) orphansSeg = piIssueSegment(summary.orphans, 'devswarm_parent.orphans_head');
+      if (Array.isArray(summary.orphans) && summary.orphans.length) {
+        orphansSeg = piIssueSegment(summary.orphans, 'devswarm_parent.orphans_head');
+        if (orphansSeg !== null && ah.settings.bool('devswarm_parent.sw_orphans_once') === true) {
+          orphansSig = piOrphansSig(summary.orphans);
+          if (piOrphansSeen(jx.isObj(p) ? p.session_id : undefined, orphansSig)) {
+            orphansSeg = null;
+            orphansSig = null;
+            ah.metric('devswarm_orphans_warning_suppressed', ['reason', 'seen_this_session']);
+            ah.advisory('devswarm_parent_inbox', 'orphans_suppressed_seen');
+          }
+        }
+      }
       if (Array.isArray(summary.staleRegistryPartitions) && summary.staleRegistryPartitions.length) {
         var visible = summary.staleRegistryPartitions.filter(function (row) {
           if (!row || row.id == null) return true;
@@ -1396,6 +1422,7 @@ function piDecide(p, opts) {
   if (syncNotes !== null) syncNotes.writes.forEach(function (w) { ah.state.writeAtomic(w.rel, JSON.stringify({ at: now, ids: w.ids })); });
   if (broadcastRows !== null && broadcastRows.seen !== null) ah.state.writeAtomic(piBroadcastSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ keys: broadcastRows.seen.slice(-ah.cfgNum('devswarm_parent.broadcast_seen_max')) }));
   if (derived !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_role.pg_dir_summaries') + '/' + key + '.json'), derived);
+  if (orphansSig !== null) ah.state.writeAtomic(piOrphansSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ sig: orphansSig, at: now })); // shown once per id set per session
   if (noticeSeg !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_notice_cursor') + '/' + key + '.json'), JSON.stringify({ lastSeenId: noticeSeg.lastId })); // shown once, marked seen
   var emitted = [];
   pending.forEach(function (s) {
