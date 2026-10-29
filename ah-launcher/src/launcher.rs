@@ -285,7 +285,9 @@ impl L {
         );
     }
 
-    /// One stderr notice per session: the state dir remembers the session id that already got the notice named by `file_key`.
+    /// One stderr notice per session: the marker file named by `file_key` holds the most recent session ids (one per
+    /// line, at most `launcher.notice_sessions_max`) that already got the notice, so interleaved sessions no longer
+    /// overwrite each other's record (#231). The oldest id is dropped once the cap is passed.
     fn session_notice(&self, text_key: &str, file_key: &str, subs: &[(&str, &str)]) {
         let text = self.key(text_key);
         if text.is_empty() {
@@ -295,11 +297,18 @@ impl L {
         let name = self.key(file_key);
         if !name.is_empty() && !self.state_dir.as_os_str().is_empty() {
             let p = self.state_dir.join(name);
-            if std::fs::read_to_string(&p).is_ok_and(|s| s.trim_end() == sid) {
+            let cap = (self.s.num("launcher.notice_sessions_max") as usize).max(1);
+            let mut seen: Vec<String> = std::fs::read_to_string(&p)
+                .map(|t| t.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(String::from).collect())
+                .unwrap_or_default();
+            if seen.iter().any(|s| *s == sid) {
                 return;
             }
+            seen.push(sid);
+            let drop = seen.len().saturating_sub(cap);
+            seen.drain(..drop);
             let _ = std::fs::create_dir_all(&self.state_dir);
-            let _ = std::fs::write(&p, format!("{sid}\n"));
+            let _ = std::fs::write(&p, seen.join("\n") + "\n");
         }
         say(&fill(&text, subs));
     }

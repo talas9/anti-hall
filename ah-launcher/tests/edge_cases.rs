@@ -542,3 +542,20 @@ fn many_launchers_at_once_do_not_corrupt_each_other() {
     }
     std::thread::sleep(Duration::from_millis(100));
 }
+
+/// #231: interleaved sessions each hear the unreachable notice once; B no longer overwrites A's record.
+#[test]
+fn interleaved_sessions_each_hear_the_unreachable_notice_once() {
+    let env = Env::new("e-interleave");
+    let pay = |s: &str| format!("{{\"session_id\":\"{s}\",\"tool_name\":\"Bash\",\"tool_input\":{{\"command\":\"ls\"}}}}");
+    let says = |s: &str| env.run("PreToolUse", pay(s).as_bytes(), None, &[]).err.contains("went through unchecked");
+    assert!(says("sess-a"), "A first failure is told");
+    assert!(says("sess-b"), "B first failure is told");
+    assert!(!says("sess-a"), "A second failure stays silent after B interleaved");
+    assert!(!says("sess-b"), "B second failure stays silent");
+    // the set is bounded: with a cap of 2, a third session pushes the oldest out
+    env.set("launcher.notice_sessions_max", "2");
+    assert!(says("sess-c"), "C is told");
+    assert!(says("sess-a"), "A was evicted by the cap, so it hears the notice again");
+    assert!(!says("sess-c"), "C is still remembered");
+}
