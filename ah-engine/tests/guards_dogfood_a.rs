@@ -76,7 +76,7 @@ fn worker_commits_integrated_by_the_session_do_not_block_stop_and_are_counted() 
     let before = advisory("tasklist_integration_skipped", "suppressed");
     let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[]));
     assert!(!blocked, "integration-only commands must not block: {out}");
-    assert_eq!(advisory("tasklist_integration_skipped", "suppressed"), before + 1);
+    assert!(advisory("tasklist_integration_skipped", "suppressed") > before, "counted (other tests share the process counter)");
     // the off switch restores the old count: the same integration commands block again
     let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0")]));
     assert!(blocked, "with the switch off the integration commands count again: {out}");
@@ -144,7 +144,7 @@ fn a_chain_with_one_heavy_part_names_it_and_still_blocks() {
     assert!(blocked, "the heavy part still blocks the chain: {out}");
     assert!(out.contains("Heavy: node tests/x.test.js"), "names the heavy segment: {out}");
     assert!(out.contains("are fine alone"), "says the rest is fine: {out}");
-    assert_eq!(advisory("command_heavy_segment_named", "flagged"), before + 1);
+    assert!(advisory("command_heavy_segment_named", "flagged") > before, "counted");
 }
 
 #[test]
@@ -160,4 +160,32 @@ fn the_segment_note_has_an_off_switch_and_the_block_stays() {
     let h = home("cg-off");
     let (out, blocked) = command_with(&h, "git status && npm test", &[("ANTIHALL_COMMAND_NAME_SEGMENT", "0")]);
     assert!(blocked && !out.contains("Heavy: "), "{out}");
+}
+
+// Shipped defaults (no switch pinned): commands that restore or resolve real file content are work; pure integration is not.
+#[test]
+fn restoring_or_resolving_file_content_is_counted_with_the_shipped_defaults() {
+    let rows = [
+        "git checkout HEAD -- src/a.js",
+        "git checkout HEAD -- src/a.js ",
+        "git checkout  HEAD -- src/a.js",
+        "git checkout --ours -- src/a.js",
+        "git merge --continue",
+        "git checkout src/a.js",
+        "git cherry-pick --continue",
+    ];
+    for row in rows {
+        let h = home("tl-row");
+        let proj = project(&h);
+        let lines: Vec<String> = (0..3).map(|i| bash_use(i, row)).collect();
+        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[]));
+        assert!(blocked, "must count: {row}: {out}");
+    }
+    for row in ["git checkout dev", "git switch -c fix/x", "git merge fix/a", "git merge --no-ff fix/b", "git cherry-pick abc123", "git checkout release/1.2"] {
+        let h = home("tl-row");
+        let proj = project(&h);
+        let lines: Vec<String> = (0..3).map(|i| bash_use(i, row)).collect();
+        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[]));
+        assert!(!blocked, "must not count: {row}: {out}");
+    }
 }

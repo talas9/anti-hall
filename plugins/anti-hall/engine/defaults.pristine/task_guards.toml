@@ -1374,8 +1374,8 @@ doc = "Prefix of the per-session file that counts the prune and priority Stop bl
 value = "tasklist-enforce-"
 
 [workdetect.integration_work]
-doc = "JavaScript regex source (case-insensitive, global) of the git commands that only integrate what someone else committed (merge, cherry-pick, checkout, switch). With guards.tasklistIntegrationSkip on, a command whose only work is one of these does not count toward tasklist-guard's work count: the files were changed by a delegated worker, not by this session's own edits. A command that also edits, commits or redirects still counts."
-value = '\bgit\s+(?:merge|cherry-pick|checkout|switch)\b'
+doc = "JavaScript regex source (case-insensitive, global) of the PURE integration forms of git: a branch or ref checkout/switch (one ref argument, no `--` pathspec, no flag, no file-like argument) and a merge/cherry-pick that brings in committed work (not --continue, --skip, --abort or --quit, which resolve or undo file content). With guards.tasklistIntegrationSkip on, a command whose only work is one of these does not count toward tasklist-guard's work count: the files were changed by a delegated worker. Anything else (`checkout HEAD -- path`, `checkout --ours`, `merge --continue`, restore, reset) still counts."
+value = '\bgit\s+(?:checkout|switch)(?:\s+-[bBcC])?\s+(?!-)\w[\w/-]*(?:\.\d[\w.-]*)*(?=\s*(?:$|[;&|)\n]))|\bgit\s+(?:merge|cherry-pick)(?:\s+(?!--(?:continue|skip|abort|quit)(?:\s|$))[^\s;&|]+)+'
 
 [tasklist_guard.integration_skip_setting]
 doc = "Off switch (guards.tasklistIntegrationSkip, default on): git commands that only integrate worker commits (workdetect.integration_work) are not counted as this session's own work."
