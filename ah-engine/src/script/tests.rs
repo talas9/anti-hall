@@ -2355,6 +2355,81 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     assert!(details.contains("c-1"), "{details}");
 }
 
+/// GH #384: the parent gate counts the Primary's own mailbox with the shared peek-primary count, driven through the shipped gate
+/// script and the shipped defaults. Cursor 6 / total 8 with the two rows past the cursor the Primary's own sends reads 0 and does
+/// not block; one real inbound row after that blocks and names the peek-primary step; the escalation text names peek-primary
+/// first and `defect` second.
+#[test]
+fn the_parent_gate_does_not_block_on_own_sends_and_still_blocks_on_a_real_unread() {
+    use crate::meshw::ident;
+    use crate::meshw::store::{CursorPut, MeshStore, RegistryRow};
+    let esc = defaults::text("devswarm_role.pg_escalation");
+    let (peek, defect) = (esc.find("peek-primary"), esc.find("defect"));
+    assert!(peek.is_some() && defect.is_some() && peek < defect, "the escalation names the peek-primary step, then defect: {esc}");
+    let case = golden::lay(&json!({
+        "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
+        "event": "Stop", "opts": {"payload_sha1": "gate-384"},
+        "payload": {"hook_event_name": "Stop", "session_id": "gate-384", "cwd": "{HOME}/repo"},
+        "files": {}
+    }));
+    let repo = format!("{}/repo", case.home);
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q", &repo]).status().unwrap().success());
+    let ctx = ident::resolve_context(&repo, true).expect("a git work tree resolves");
+    let top = ctx.worktree_root.clone().expect("a work tree root");
+    let key = ctx.repo_key.clone().expect("a project key");
+    let own = ident::primary_workspace_id(&top).unwrap();
+    let dir = crate::meshw::union::store_dir(Path::new(&case.home), &key);
+    std::fs::create_dir_all(&dir).unwrap();
+    let w = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+    let row = RegistryRow {
+        id: own.clone(),
+        worktree_path: Some(top.clone()),
+        session_id: Some("s-p".into()),
+        inbox_path: None,
+        cursor_path: None,
+        nudge_command: None,
+    };
+    assert!(w.upsert_registry(&row, 1, |_, _| true).unwrap());
+    for i in 0..6 {
+        w.append_message_from(&own, 10 + i, Some(&format!("in-{i}")), "from a child", Some("child-a")).unwrap();
+    }
+    for i in 0..2 {
+        w.append_message_from(&own, 20 + i, Some(&format!("own-{i}")), "my own send", Some(&own)).unwrap();
+    }
+    let put = CursorPut {
+        partition: own.clone(),
+        ns: defaults::text("mesh_write.cursor_ns_store").to_string(),
+        reader: defaults::text("mesh_write.floor_reader").to_string(),
+        value: 6,
+        retired_line: None,
+        updated_at: 1,
+    };
+    w.reader_cursor_txn(&[put]).unwrap();
+    // a hook runs under a harness process: this test process stands in for it (a session record names its pid), so the gate has a reader key
+    let sess = Path::new(&case.home).join(defaults::text("mesh_write.claude_dir")).join(defaults::text("mesh_write.sessions_dir"));
+    std::fs::create_dir_all(&sess).unwrap();
+    let pid = std::process::id();
+    std::fs::write(sess.join(format!("{pid}{}", defaults::text("mesh_write.json_suffix"))), json!({"pid": pid, "startedAt": 1}).to_string()).unwrap();
+    let summary = |unread: u32, total: u32| {
+        json!({"workspaces": {own.clone(): {"id": own, "worktreePath": top, "unread": unread, "cursor": 6, "total": total}}}).to_string()
+    };
+    let sum_path = format!("{}/.anti-hall/devswarm/summaries/{key}.json", case.home);
+    std::fs::create_dir_all(Path::new(&sum_path).parent().unwrap()).unwrap();
+    std::fs::write(&sum_path, summary(2, 8)).unwrap();
+    let got = golden::run_case("devswarm-parent-gate", &case, 1).expect("a shipped gate");
+    let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap_or_default();
+    assert!(matches!(got, Some(Verdict::Allow)), "cursor 6 / total 8 own sends only (peek 0) must not block: {got:?} {details}");
+    w.append_message_from(&own, 30, Some("real"), "a real question", Some("child-a")).unwrap();
+    std::fs::write(&sum_path, summary(1, 9)).unwrap();
+    let got = golden::run_case("devswarm-parent-gate", &case, 1).expect("a shipped gate");
+    let Some(Verdict::Exact(out)) = got else { panic!("a real unread must block: {got:?}") };
+    let answer: Value = serde_json::from_str(&out.out).expect("Stop decision JSON");
+    assert_eq!(answer["decision"], "block");
+    let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap();
+    assert!(details.contains("1 unread") && details.contains("peek-primary") && details.contains("defect"), "{details}");
+}
+
 // ---- claim-evidence-guard (GH #313): a claim needs a tool call of this turn; pushed is not done ----
 
 mod claim_evidence_guard {
