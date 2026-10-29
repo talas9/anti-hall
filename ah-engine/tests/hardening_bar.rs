@@ -842,6 +842,16 @@ fn a_killed_daemon_is_explained_in_the_report() {
     assert!(r.notes.iter().filter(|l| l.starts_with("log: ")).count() <= n("common.gone_log_lines") as usize);
 }
 
+#[test]
+fn proc_report_reads_data_segment_fields() {
+    let status = "Name:\tah\nVmSize:\t  900000 kB\nVmData:\t  409600 kB\nVmRSS:\t  110000 kB\nThreads:\t9\n";
+    let limits = "Limit                     Soft Limit           Hard Limit           Units\nMax data size             536870912            unlimited            bytes\n";
+    let fields: Vec<String> = ["VmData:", "VmSize:", "VmRSS:", "Threads:"].iter().map(|s| s.to_string()).collect();
+    let r = proc_report(status, limits, Some(7), &fields, "Max data size", "fds");
+    assert_eq!(r, "VmData=409600 VmSize=900000 VmRSS=110000 Threads=9 fds=7 Max_data_size=536870912");
+    assert_eq!(proc_report("", "", None, &fields, "Max data size", "fds"), "");
+}
+
 // ---- live progress and stall reporting (long bars) ----------------------------------------------------------------------
 
 /// One bounded progress line: elapsed seconds, calls done, daemon pid alive, RSS (KB), restarts, control-socket status.
@@ -849,6 +859,37 @@ fn progress_line(elapsed_s: u64, calls: u64, alive: bool, rss_kb: Option<u64>, r
     let num = |v: Option<u64>| v.map_or("?".to_string(), |v| v.to_string());
     let ctl: String = ctl.chars().take(max_chars).collect();
     format!("progress: {elapsed_s}s calls={calls} alive={} rss_kb={} restarts={} ctl={ctl}", if alive { "yes" } else { "no" }, num(rss_kb), num(restarts))
+}
+
+/// The Linux process view of a daemon, one bounded text: each `fields` entry of `/proc/<pid>/status` (kB), the fd count and the
+/// `limit_label` row of `/proc/<pid>/limits` (the soft limit). Empty where /proc has no such process (macOS, or already gone).
+fn proc_report(status: &str, limits: &str, fds: Option<usize>, fields: &[String], limit_label: &str, fd_label: &str) -> String {
+    let mut out: Vec<String> = fields
+        .iter()
+        .filter_map(|f| {
+            let v = ah_engine::limits::status_field_kb(status, f)?;
+            Some(format!("{}={v}", f.trim_end_matches(':')))
+        })
+        .collect();
+    if let Some(n) = fds {
+        out.push(format!("{fd_label}={n}"));
+    }
+    if let Some(row) = limits.lines().find_map(|l| l.strip_prefix(limit_label)) {
+        out.push(format!("{}={}", limit_label.replace(' ', "_"), row.split_whitespace().next().unwrap_or("?")));
+    }
+    out.join(" ")
+}
+
+/// Samples `/proc/<pid>` (Linux only; empty elsewhere), the field names and labels coming from hardening.toml.
+fn proc_sample(pid: u32) -> String {
+    if !cfg!(target_os = "linux") {
+        return String::new();
+    }
+    let fields: Vec<String> = val("common.proc_fields").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let limits = std::fs::read_to_string(format!("/proc/{pid}/limits")).unwrap_or_default();
+    let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).ok().map(|d| d.count());
+    proc_report(&status, &limits, fds, &fields, &t("common.proc_limit_label"), &t("common.proc_fd_label"))
 }
 
 /// A progress line is due after `every_calls` more calls or `every_s` more seconds, whichever comes first.
@@ -909,11 +950,16 @@ impl Watch {
         let handle = std::thread::spawn(move || {
             let start = Instant::now();
             let (mut last_calls, mut last_s, mut gone_reported) = (0u64, 0u64, None::<Gone>);
+            let mut last_proc = String::new();
             while !stop2.load(Relaxed) {
                 std::thread::sleep(poll);
                 let (now_s, done) = (start.elapsed().as_secs(), calls2.load(Relaxed));
                 let dead = process_dead(pid);
                 let alive = !dead;
+                let sample = proc_sample(pid);
+                if !sample.is_empty() {
+                    last_proc = sample;
+                }
                 let reply = exchange(&sock, b"CTL status\n", ready);
                 let (st, ctl) = match reply {
                     Exch::Reply(Kind::Ok, body) => (serde_json::from_str::<serde_json::Value>(&body).ok(), "ok".to_string()),
@@ -923,7 +969,7 @@ impl Watch {
                     (last_calls, last_s) = (done, now_s);
                     let rss = st.as_ref().and_then(|s| s["memory"]["rss_kb"].as_u64());
                     let restarts = st.as_ref().and_then(|s| s["restarts"].as_u64());
-                    eprintln!("{key} {}", progress_line(now_s, done, alive, rss, restarts, &ctl, max_chars));
+                    eprintln!("{key} {} {last_proc}", progress_line(now_s, done, alive, rss, restarts, &ctl, max_chars));
                 }
                 let verdict = classify_gone(dead, st.is_some());
                 let gone = verdict.is_some();
@@ -935,7 +981,9 @@ impl Watch {
                     let why =
                         if stalled { format!("no call completed for {} s", n("common.stall_report_s")) } else { gone_label(verdict.unwrap_or(Gone::Dead)) };
                     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-                    let mut out = format!("{key} {why} at {now_s}s after {done} calls: pid {pid} alive: {alive}; control socket: {ctl}\n");
+                    let mut out = format!(
+                        "{key} {why} at {now_s}s after {done} calls: pid {pid} alive: {alive}; control socket: {ctl}; last /proc sample: {last_proc}\n"
+                    );
                     for l in filter_log(&log, &words, log_lines) {
                         out.push_str(&format!("log: {l}\n"));
                     }

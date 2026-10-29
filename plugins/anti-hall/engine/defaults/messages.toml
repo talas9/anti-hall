@@ -257,6 +257,14 @@ value = "loop stalled"
 doc = "Drain reason for a stuck worker."
 value = "worker stuck"
 
+[msg.log_data]
+doc = "Log detail when the data segment nears the setrlimit ceiling. Placeholders: {data}, {limit}, {pct}."
+value = "data segment {data} KB reached {pct} % of the {limit} KB limit; restarting cleanly"
+
+[msg.exit_reason_data]
+doc = "Drain reason for nearing the data-segment limit."
+value = "data limit"
+
 [msg.exit_reason_rss]
 doc = "Drain reason for exceeding the memory cap."
 value = "rss cap"

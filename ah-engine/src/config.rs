@@ -20,6 +20,8 @@ pub struct Config {
     pub eval_soft_us: u64,
     /// Address-space/data limit applied with setrlimit, in MB (0 = none).
     pub mem_mb: u64,
+    /// Percent of `mem_mb` at which the daemon recycles itself instead of waiting for the data-segment wall (0 = never).
+    pub mem_recycle_pct: u64,
     /// Resident-set cap in KB; above it the daemon drains and exits cleanly (0 = none).
     pub rss_cap_kb: u64,
     /// How often the watchdog samples resident memory.
@@ -69,6 +71,7 @@ impl Config {
             eval_budget_us: num("daemon.eval_budget_us"),
             eval_soft_us: num("daemon.eval_soft_us"),
             mem_mb: num("daemon.mem_mb"),
+            mem_recycle_pct: num("daemon.mem_recycle_pct"),
             rss_cap_kb: num("daemon.rss_cap_kb"),
             rss_check: millis("daemon.rss_check_ms"),
             stuck: millis("daemon.stuck_ms"),

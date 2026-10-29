@@ -97,6 +97,18 @@ doc = "No completed call for this long writes the gone-daemon report at once (to
 value = 300
 unit = "s"
 
+[common.proc_fields]
+doc = "Keys of /proc/<pid>/status (Linux) a progress line and the gone report carry for the daemon: the data segment (what RLIMIT_DATA caps), the virtual size, the resident set and the thread count."
+value = ["VmData:", "VmSize:", "VmRSS:", "Threads:"]
+
+[common.proc_limit_label]
+doc = "Row of /proc/<pid>/limits whose soft value the report carries (the data-segment ceiling the daemon runs under)."
+value = "Max data size"
+
+[common.proc_fd_label]
+doc = "Label of the open-descriptor count (entries of /proc/<pid>/fd) in the report."
+value = "fds"
+
 [common.progress_status_chars]
 doc = "Longest control-socket status text a progress line carries (longer text is cut)."
 value = 120
