@@ -821,7 +821,8 @@ pub fn exec(prog: &str, args: &[String], cwd: Option<&str>, env_pairs: &[String]
         return Ok("null".into());
     }
     let base = with_settings(|st| st.env.clone())?;
-    let mut cmd = std::process::Command::new(prog);
+    let path = env_pairs.as_chunks::<2>().0.iter().rev().find(|kv| kv[0] == "PATH").map(|kv| kv[1].as_str()).or(base.get("PATH").map(String::as_str));
+    let mut cmd = std::process::Command::new(crate::proc::resolve_git(prog, path));
     cmd.args(args).env_clear();
     if let Some(c) = cwd {
         cmd.current_dir(c);
