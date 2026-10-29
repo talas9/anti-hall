@@ -1,55 +1,67 @@
 // check = "burn-breaker" (PreToolUse on every tool; engine-only, no Node twin). GH #270: tokens spent versus outcome. The agent tracker
 // (ah-engine, src/agents/signals.rs) keeps the hard burn flag of an agent that spent burn.hard_tokens_no_outcome tokens since its last
 // commit, finished step, passing check or new file, and mirrors it in <state>/agent-tracker/breaker/<agent key>.json. While that marker
-// is fresh this check blocks the SUBAGENT's tool calls except commit (a heredoc message too), push, status and read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (its report); the main
+// is fresh this check blocks the SUBAGENT's tool calls except commit (`git commit -m '<plain text>'` or `-F <file>`), push, status and read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (its report); the main
 // session is never blocked (no agent_id in its payload). The marker is removed by the tracker when the agent produces an outcome, and at once by this check when the agent runs an allowed git commit.
 // Every name, number, pattern and text is in burn.toml. A failure of this script allows (script.failure_mode_by_check).
 'use strict';
 
-// Reduces plain quoted strings to "" so a commit message may hold `;` or `&`, splits the command on `&&` and `;`, and judges each segment:
-// a harmless tail (2>&1, | tail -N) is dropped, then the segment must be an allowed git command or a cd, with nothing hidden in it.
-function bbAllowedBash(cmd) {
-  var plain = cmd.replace(new RegExp(ah.cfg('burn.quoted_re'), 'g'), '""');
-  var parts = plain.split(new RegExp(ah.cfg('burn.separator_re'))), seen = 0;
-  for (var i = 0; i < parts.length; i++) {
-    var seg = parts[i].replace(new RegExp(ah.cfg('burn.allowed_suffix_re')), '');
-    if (seg.replace(/\s+/g, '') === '') continue;
-    if (ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', seg)) return false;
-    if (ah.re.test(ah.cfg('burn.deny_re'), 'r', seg)) return false;
-    if (!ah.re.test(ah.cfg('burn.allowed_bash_re'), 'r', seg) && !ah.re.test(ah.cfg('burn.allowed_readonly_re'), 'r', seg) && !ah.re.test(ah.cfg('burn.allowed_cd_re'), 'r', seg)) return false;
-    seen++;
+// Every Bash decision here fails CLOSED: a command is allowed only when every check below passes, and any error inside them means "not allowed".
+// The command is screened as a whole first (length bound, printable ASCII only, no backslash, backtick, `$` or heredoc: burn.max_cmd_chars,
+// burn.charset_re, burn.reject_re) and burn.deny_res runs on the RAW text, before any quote handling. What is left has no escape, no
+// expansion and no second line, so a quoted string is inert and can be blanked to split the command on `&&` and `;`.
+function bbScreen(cmd) {
+  if (cmd === '' || cmd.length > ah.cfg('burn.max_cmd_chars')) return false;
+  if (!ah.re.test(ah.cfg('burn.charset_re'), 'r', cmd)) return false;
+  if (ah.re.test(ah.cfg('burn.reject_re'), 'r', cmd)) return false;
+  var deny = ah.cfg('burn.deny_res');
+  for (var i = 0; i < deny.length; i++) if (ah.re.test(deny[i], 'r', cmd)) return false;
+  return true;
+}
+
+// The command with each quoted string (quotes included) blanked to `x`, same length, or null when a stray quote is left (an unbalanced quote is not judged).
+function bbBlank(cmd) {
+  var spans = ah.re.findAll(ah.cfg('burn.quoted_re'), 'r', cmd), out = '', at = 0;
+  for (var i = 0; i < spans.length; i++) {
+    out += cmd.slice(at, spans[i][0]) + new Array(spans[i][1] - spans[i][0] + 1).join('x');
+    at = spans[i][1];
   }
-  return seen > 0;
+  out += cmd.slice(at);
+  return ah.re.test(ah.cfg('burn.quote_char_re'), 'r', out) ? null : out;
 }
 
-// A commit whose message is a quoted-delimiter heredoc in a command substitution (`git commit -m "$(cat <<'EOF'` ... `EOF` `)"`) spans lines, which the
-// segment judge forbids. The body is inert data, so it is reduced to "" when the shape is exact: the opener is the first line, the first line equal to
-// the delimiter is followed by a closing line `)"` (+ optional tail) and nothing else, and the prefix holds no unbalanced quote. Returns the single-line
-// command, or null when the command is not that shape (it is then judged as written and fails on its newline).
-function bbMaskCommitHeredoc(cmd) {
-  var nl = cmd.indexOf('\n');
-  if (nl < 0) return null;
-  var open = new RegExp(ah.cfg('burn.commit_heredoc_open_re')).exec(cmd.slice(0, nl));
-  if (open === null) return null;
-  var lines = cmd.slice(nl + 1).split('\n'), end = -1;
-  for (var i = 0; i < lines.length && end < 0; i++) if (lines[i].replace(/^\t+/, '') === open[2]) end = i;
-  if (end < 0) return null;
-  var rest = lines.slice(end + 1);
-  while (rest.length > 0 && rest[rest.length - 1].trim() === '') rest.pop();
-  if (rest.length !== 1) return null;
-  var close = new RegExp(ah.cfg('burn.commit_heredoc_close_re')).exec(rest[0]);
-  if (close === null) return null;
-  var prefix = open[1].replace(new RegExp(ah.cfg('burn.quoted_re'), 'g'), '""');
-  if (new RegExp(ah.cfg('burn.quote_char_re')).test(prefix)) return null;
-  return open[1] + '""' + close[1];
+// Splits on `&&` and `;` outside quotes. Returns [{raw, plain}] (the segment and its blanked twin, tails already cut) or null.
+function bbSegments(cmd) {
+  var blank = bbBlank(cmd);
+  if (blank === null) return null;
+  var seps = ah.re.findAll(ah.cfg('burn.separator_re'), 'r', blank), out = [], at = 0;
+  for (var i = 0; i <= seps.length; i++) {
+    var end = i < seps.length ? seps[i][0] : cmd.length;
+    var raw = cmd.slice(at, end), plain = blank.slice(at, end);
+    var tail = ah.re.find(ah.cfg('burn.allowed_suffix_re'), 'r', plain);
+    if (tail !== null) { raw = raw.slice(0, tail[0]); plain = plain.slice(0, tail[0]); }
+    if (plain.replace(/\s+/g, '') !== '') out.push({ raw: raw, plain: plain });
+    at = i < seps.length ? seps[i][1] : at;
+  }
+  return out.length > 0 ? out : null;
 }
 
-// True when some segment of the command is a git commit (burn.lift_bash_re): the outcome the block asks for.
-function bbCommits(cmd) {
-  var plain = cmd.replace(new RegExp(ah.cfg('burn.quoted_re'), 'g'), '""');
-  var parts = plain.split(new RegExp(ah.cfg('burn.separator_re')));
-  for (var i = 0; i < parts.length; i++) if (ah.re.test(ah.cfg('burn.lift_bash_re'), 'r', parts[i])) return true;
-  return false;
+function bbSegmentAllowed(seg) {
+  if (ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', seg.plain)) return false;
+  if (ah.re.test(ah.cfg('burn.commit_re'), 'r', seg.raw)) return true;
+  return ah.re.test(ah.cfg('burn.allowed_bash_re'), 'r', seg.plain) || ah.re.test(ah.cfg('burn.allowed_readonly_re'), 'r', seg.plain) || ah.re.test(ah.cfg('burn.allowed_cd_re'), 'r', seg.plain);
+}
+
+// Returns {commits} when every segment is allowed (commits: some segment is a git commit/push, burn.lift_bash_re), else null.
+function bbAllowedBash(cmd) {
+  if (!bbScreen(cmd)) return null;
+  var segs = bbSegments(cmd), commits = false;
+  if (segs === null) return null;
+  for (var i = 0; i < segs.length; i++) {
+    if (!bbSegmentAllowed(segs[i])) return null;
+    if (ah.re.test(ah.cfg('burn.lift_bash_re'), 'r', segs[i].plain)) commits = true;
+  }
+  return { commits: commits };
 }
 
 // True when `path` is a report location (burn.report_path_res: a scratchpad, a reports directory, the handover/history/progress notes) with no `..`.
@@ -60,34 +72,29 @@ function bbReportPath(path) {
   return false;
 }
 
-// True when the command only writes a report file: one `cat|echo|printf|tee ... > <report path>` line, optionally followed by the body of a
-// QUOTED heredoc (inert data), and nothing else (burn.report_bash_re captures the target path).
+// One screened line that only writes a report file: burn.report_bash_re, the target after the last `>` in burn.report_path_res, no `#` or chain
+// outside quotes (burn.forbidden_bash_re on the blanked line, minus the one redirect).
 function bbReportWrite(cmd) {
-  var nl = cmd.indexOf('\n'), first = nl < 0 ? cmd : cmd.slice(0, nl);
-  var m = new RegExp(ah.cfg('burn.report_bash_re')).exec(first);
-  if (m === null || !bbReportPath(m[1])) return false;
-  if (nl < 0) return m[2] === undefined;
-  return bbHeredocClosed(cmd, first, nl, m[2] !== undefined);
+  if (!bbScreen(cmd) || !ah.re.test(ah.cfg('burn.report_bash_re'), 'r', cmd)) return false;
+  var blank = bbBlank(cmd), at = cmd.lastIndexOf('>');
+  if (blank === null || at < 0 || blank.charAt(at) !== '>') return false;
+  var chars = blank.split('');
+  chars[at] = ' ';
+  if (at > 0 && chars[at - 1] === '>') chars[at - 1] = ' ';
+  if (ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', chars.join(''))) return false;
+  return bbReportPath(cmd.slice(at + 1).trim());
 }
 
-// True when a first line that opens a QUOTED heredoc is followed by a body that ends at its delimiter with only blank lines after it.
-function bbHeredocClosed(cmd, first, nl, opens) {
-  var h = opens ? new RegExp(ah.cfg('burn.report_heredoc_re')).exec(first) : null;
-  if (h === null) return false;
-  var lines = cmd.slice(nl + 1).split('\n'), end = -1;
-  for (var i = 0; i < lines.length && end < 0; i++) if (lines[i].replace(/^\t+/, '') === h[2]) end = i;
-  return end >= 0 && lines.slice(end + 1).every(function (l) { return l.trim() === ''; });
-}
-
-// True when the command is one mesh/agents `send` (the escalation to the parent and the other mesh sends): burn.send_bash_re on the first
-// line, quoted text blanked first so a message may hold `;` or `|`, nothing chained, and a heredoc body only if quoted and closed.
+// One screened line that is a mesh/agents `send` (the escalation to the parent and the other mesh sends): burn.send_bash_re, nothing chained.
 function bbSend(cmd) {
-  var nl = cmd.indexOf('\n'), first = nl < 0 ? cmd : cmd.slice(0, nl);
-  var masked = first.replace(new RegExp(ah.cfg('burn.send_heredoc_opener_re')), '').replace(new RegExp(ah.cfg('burn.quoted_re'), 'g'), '""');
-  if (new RegExp(ah.cfg('burn.send_chain_re')).test(masked)) return false;
-  if (!new RegExp(ah.cfg('burn.send_bash_re')).test(first)) return false;
-  if (nl < 0) return true;
-  return bbHeredocClosed(cmd, first, nl, new RegExp(ah.cfg('burn.send_heredoc_opener_re')).test(first));
+  if (!bbScreen(cmd) || !ah.re.test(ah.cfg('burn.send_bash_re'), 'r', cmd)) return false;
+  var blank = bbBlank(cmd);
+  return blank !== null && !ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', blank) && !ah.re.test(ah.cfg('burn.separator_re'), 'r', blank);
+}
+
+// Runs a Bash judge and fails closed: an error means not allowed.
+function bbSafely(fn, cmd) {
+  try { return fn(cmd); } catch (e) { return null; }
 }
 
 function decide(p) {
@@ -104,18 +111,17 @@ function decide(p) {
     ah.state.remove(rel);
     return 'allow';
   }
-  if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0 && typeof ti.command === 'string' && bbSend(ti.command)) return 'allow'; // escalation and mesh sends always get through
-  if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0 && typeof ti.command === 'string' && bbReportWrite(ti.command)) {
-    ah.state.remove(rel);
-    return 'allow';
-  }
-  if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0) {
-    var cmd = p.tool_input && typeof p.tool_input.command === 'string' ? p.tool_input.command : '';
-    var masked = bbMaskCommitHeredoc(cmd);
-    if (masked !== null) cmd = masked;
-    if (cmd !== '' && bbAllowedBash(cmd)) {
+  if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0 && typeof ti.command === 'string') {
+    var cmd = ti.command;
+    if (bbSafely(bbSend, cmd) === true) return 'allow'; // escalation and mesh sends always get through
+    if (bbSafely(bbReportWrite, cmd) === true) {
+      ah.state.remove(rel);
+      return 'allow';
+    }
+    var ok = bbSafely(bbAllowedBash, cmd);
+    if (ok !== null && ok !== undefined) {
       // a commit is the outcome the block asks for: lift it now; the tracker counts the commit on its next tick and raises it again only if the hard condition still holds
-      if (bbCommits(cmd)) ah.state.remove(rel);
+      if (ok.commits) ah.state.remove(rel);
       return 'allow';
     }
   }
