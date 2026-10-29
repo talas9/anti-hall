@@ -85,7 +85,7 @@ fn locked<T>(home: &str, f: impl FnOnce() -> T) -> T {
     if let Some(h) = held
         && !h.release()
     {
-        err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &"lock already released")]) + "\n"));
+        err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &defaults::text("afk.msg_lock_released"))]) + "\n"));
     }
     r
 }

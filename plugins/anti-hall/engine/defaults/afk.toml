@@ -274,6 +274,10 @@ value = "usage: ah-engine afk on|off|status | ah-engine back"
 doc = "Printed when the flag file cannot be written. Placeholders: {path}, {why}."
 value = "afk: cannot write {path}: {why}"
 
+[afk.msg_lock_released]
+doc = "The `why` placeholder of afk.msg_write_failed when the flag lock was already released before the command finished."
+value = "lock already released"
+
 [afk.msg_idle_ended]
 doc = "Context injected on the owner's prompt that ends an idle-entered AFK."
 value = "AFK (idle) ended: the owner is back. Type `progress` to see the digest."

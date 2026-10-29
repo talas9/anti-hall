@@ -3744,6 +3744,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.how_manual` | `manual` |  |  | The `how` value of an AFK entered with `ah-engine afk on`. |
 | `afk.how_prompt` | `prompt` |  |  | The `how` value of an AFK entered by the owner typing an afk.words_on prompt. |
 | `afk.line_max_bytes` | `1048576` |  |  | Longest transcript line parsed for usage (a longer line is skipped; its tokens are not counted). |
+| `afk.lock_boot_slop_s` | `5` |  | s | Two boot times closer than this many seconds are the same boot (flag lock holder liveness). |
+| `afk.lock_file` | `afk.json.lock` |  |  | The cross-process lock file (under the per-user state directory) every read-modify-write of the flag file takes: hooks and `ah-engine afk` / `back` re-read the flag under it, so a stale ON copy never overwrites a newer OFF. A hook that cannot take it writes nothing. |
+| `afk.lock_reclaim_stale_ms` | `5000` |  | ms | A takeover marker of the flag lock older than this is taken over. |
+| `afk.lock_release_step_ms` | `10` |  | ms | The pause between those tries. |
+| `afk.lock_release_tries` | `5` |  |  | How many times a release of the flag lock tries to take the takeover marker. |
+| `afk.lock_stale_ms` | `5000` |  | ms | A flag lock older than this is taken over, whatever its holder. |
+| `afk.lock_step_ms` | `5` |  | ms | The pause between two tries for the flag lock. |
+| `afk.lock_wait_ms` | `300` |  | ms | How long a hook or the CLI waits for the flag lock (a hook then writes nothing; the CLI writes anyway: the owner's command wins). |
+| `afk.mark_prefix` | `afk-mark-` |  |  | Prefix of the per-session watermark file (under the per-user state directory; the sanitised session id and the JSON extension follow): {owner, advisor} = the hook clock's time of the session's last real owner prompt (UserPromptSubmit) and of its own last advisor call (PostToolUse of an advisor.tool_names tool, never a subagent's). ExitPlanMode is approved only when the advisor call (this mark, or the transcript entry's own timestamp) is newer than the owner prompt. |
 | `afk.marker_prefix` | `<!-- afk:` |  |  | Start of the AFK marker line in a progress file; the digest is every line after the LAST marker. |
 | `afk.marker_text` | `\n<!-- afk:{epoch} -->\n## AFK since {iso} ({how})\n` |  |  | The marker block appended to the session's progress file when AFK starts. Placeholders: {epoch}, {iso}, {how}. |
 | `afk.max_blocks` | `1` |  |  | Most Stop holds of overlong replies per session per AFK period, after the one nudge. A hold makes the model answer again, so it is kept small. |
@@ -3760,6 +3769,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.msg_idle_ended` | `AFK (idle) ended: the owner is back. Type `progress` to see the digest.` |  |  | Context injected on the owner's prompt that ends an idle-entered AFK. |
 | `afk.msg_ladder_deny` | `AFK: the owner is away; questions are not allowed. Instead: (1) decide from t...` |  |  | Reason of the AFK question-tool deny (the question ladder). |
 | `afk.msg_ladder_stop` | `AFK: your turn ended on a question the owner cannot answer. Do not ask: decid...` |  |  | Reason of the Stop hold of an AFK turn that ends on a plain-text question. |
+| `afk.msg_lock_released` | `lock already released` |  |  | The `why` placeholder of afk.msg_write_failed when the flag lock was already released before the command finished. |
 | `afk.msg_needs_owner_head` | `NEEDS OWNER ({n}):` |  |  | Heading of the NEEDS OWNER list printed first by back / progress. Placeholders: {n}. |
 | `afk.msg_no_sessions` | `AFK digest: no session progress file recorded for this AFK period` |  |  | Printed by `back` / `progress` when no session recorded a progress file for this AFK period. |
 | `afk.msg_not_on` | `AFK was not on.` |  |  | First line printed by `back` when AFK was not on. |
@@ -3768,7 +3778,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.msg_on` | `AFK on ({how}). Agents work silently and log milestones to their progress fil...` |  |  | Reply to the owner (typed command or CLI) when AFK starts. Placeholders: {how}. |
 | `afk.msg_pct` | `Progress: {pct}% ({done}/{total} checklist bullets since the AFK marker are [x])` |  |  | The progress line of a digest. Placeholders: {pct}, {done}, {total}. |
 | `afk.msg_pct_na` | `Progress: n/a (no [ ] / [x] checklist bullets since the AFK marker)` |  |  | The progress line when the digest has no checklist bullets. |
-| `afk.msg_plan_approved` | `AFK: plan approved by anti-hall (the owner is away; an advisor review follows...` |  |  | permissionDecisionReason of the AFK ExitPlanMode approval. |
+| `afk.msg_plan_approved` | `AFK: plan approved by anti-hall (the owner is away; an advisor call is newer ...` |  |  | permissionDecisionReason of the AFK ExitPlanMode approval. |
 | `afk.msg_status_off` | `AFK off` |  |  | `afk status` while off. |
 | `afk.msg_status_on` | `AFK on ({how}, since {since})` |  |  | `afk status` while on. Placeholders: {how}, {since}. |
 | `afk.msg_usage` | `usage: ah-engine afk on\|off\|status \| ah-engine back` |  |  | Usage line of the `afk` verb. |
@@ -3788,7 +3798,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.reminder_max` | `6` |  |  | Most reminders per session per AFK period. |
 | `afk.reminder_text` | `AFK: no narration, no status prose, never ask (plan -> advisor -> park as a N...` |  |  | The short reminder injected during long AFK turns. |
 | `afk.result_approved` | `approved` |  |  | afk_plan_autoapproved result label: ExitPlanMode approved by the hook. |
-| `afk.result_no_advisor` | `no_advisor` |  |  | afk_plan_autoapproved result label: no advisor call since the owner's last message, the normal approval ran. |
+| `afk.result_no_advisor` | `no_advisor` |  |  | afk_plan_autoapproved result label: no advisor call newer than the owner's last prompt, the normal approval ran. |
 | `afk.rule_text` | `AFK MODE: the owner is away. Until told otherwise: (1) no narration between t...` |  |  | The AFK rule, injected once per session per AFK period. Placeholders: {progress} (the session's progress file). |
 | `afk.session_id_unsafe` | `[^A-Za-z0-9_.-]` |  |  | Characters removed from a session id before it becomes part of a file name (regular expression, JavaScript syntax). |
 | `afk.session_prefix` | `afk-sess-` |  |  | Prefix of the per-session AFK state file under the per-user state directory (the sanitised session id and the JSON extension follow). `ah-engine back` reads these to find each session's progress file. |
