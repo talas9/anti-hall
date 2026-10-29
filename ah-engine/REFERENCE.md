@@ -12738,9 +12738,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `mem.agent_scan_walk_hard_bytes` | `33554432` |  | bytes | Bytes of retained transcript agent-scan walks at which an insert is refused and the cache is recycled. |
+| `mem.agent_scan_walk_hard_bytes` | `67108864` |  | bytes | Bytes of retained transcript agent-scan walks at which an insert is refused and the cache is recycled. |
 | `mem.agent_scan_walk_low_water_pct` | `80` |  |  | Percent of mem.agent_scan_walk_soft_bytes the retained walk cache is evicted down to when the soft limit is reached. |
-| `mem.agent_scan_walk_soft_bytes` | `16777216` |  | bytes | Bytes of retained transcript agent-scan walks held before the least recently used are dropped down to the low-water mark. |
+| `mem.agent_scan_walk_soft_bytes` | `33554432` |  | bytes | Bytes of retained transcript agent-scan walks held before the least recently used are dropped down to the low-water mark. One long transcript is kept once per scan window (the 1.5 MiB, 12 MiB and 64 MiB windows of the Stop checks): a 20 MB transcript measured about 9 MB, 5.5 MB and 0.7 MB estimated, so a limit under their sum made every Stop rebuild the walks it had just dropped (about 57 ms a rebuild instead of about 2 ms a reuse). |
 | `mem.buckets_hard_bytes` | `1048576` |  | bytes | Estimated bytes of daemon session and project token-bucket keys at which unknown keys are refused and recoverable buckets are recycled. |
 | `mem.buckets_low_water_pct` | `80` |  |  | Percent of mem.buckets_soft_bytes token buckets are evicted down to when the soft limit is reached. |
 | `mem.buckets_soft_bytes` | `262144` |  | bytes | Estimated bytes of daemon session and project token-bucket keys held before idle/full buckets are evicted down to the low-water mark. |

@@ -24,7 +24,9 @@ fn line_plain(i: u64) -> String {
             r#"{{"type":"user","timestamp":"{ts}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t{}","content":"Task #{i} created successfully: task"}}]}}}}"#,
             i - 2
         ),
-        _ => format!(r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(300)),
+        _ => {
+            format!(r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(300))
+        }
     }
 }
 
@@ -39,20 +41,24 @@ fn line(i: u64) -> String {
         ),
         2 => format!(
             r#"{{"type":"user","timestamp":"{ts}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"a{}","content":"Async agent launched successfully.\nagentId: {:016x}\noutput_file: /nonexistent/tasks/{:016x}.output"}}]}}}}"#,
-            i - 1, i, i
+            i - 1,
+            i,
+            i
         ),
         // most agents finish; the notice names them
-        3 if (i / 40) % 8 != 0 => format!(
+        3 if !(i / 40).is_multiple_of(8) => format!(
             r#"{{"type":"user","timestamp":"{ts}","message":{{"role":"user","content":"<task-notification><task-id>{:016x}</task-id><status>completed</status></task-notification>"}}}}"#,
             i - 1
         ),
-        k if k % 5 == 0 => format!(
-            r#"{{"type":"user","uuid":"u{i}","timestamp":"{ts}","message":{{"role":"user","content":"prompt number {i} about the engine"}}}}"#
-        ),
+        k if k.is_multiple_of(5) => {
+            format!(r#"{{"type":"user","uuid":"u{i}","timestamp":"{ts}","message":{{"role":"user","content":"prompt number {i} about the engine"}}}}"#)
+        }
         k if k % 5 == 1 => format!(
             r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"b{i}","name":"Bash","input":{{"command":"cargo test --lib module_{i}"}}}}]}}}}"#
         ),
-        _ => format!(r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(300)),
+        _ => {
+            format!(r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(300))
+        }
     }
 }
 
