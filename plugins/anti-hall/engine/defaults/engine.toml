@@ -509,7 +509,7 @@ min = 0
 unit = "ms"
 
 [daemon.skip_when_client_gone]
-doc = "Stop running the remaining checks of a request once its client has closed the connection (an ack-mode client keeps it open until it has the verdict, so an end-of-stream means it gave up and nobody reads the reply). Off runs them all."
+doc = "Stop work on a request whose client has closed the connection and nobody reads the reply: the remaining checks of a request being served (an ack-mode client keeps it open until it has the verdict, so an end-of-stream means it gave up), and a request still queued when its client hung up (a legacy client that timed out and dropped its socket; counted in the daemon stats as gone_skipped). A client that is still waiting, including one waiting out client.slow_fallback_max_ms, is always served. Off runs them all."
 value = true
 
 [daemon.accept_poll_ms]
