@@ -1754,7 +1754,10 @@ fn rss_over_cap_restarts_cleanly_and_next_client_respawns() {
     drop(probe.ctl("stop"));
     ah_engine::discard::harmless(probe_daemon.wait());
 
-    let cap_num = startup_mem + 4096;
+    // #344: a fixed margin flaked on CI (the second daemon started 5.4 MB above the probe; local runs vary -0.4..+1.8 MB). Startup
+    // RSS variance scales with the footprint, so the margin is half the probe's own startup memory. The cap stays far below
+    // the scenario's allocation (cap - before + 64 MB), so a wider margin does not weaken what the test proves.
+    let cap_num = startup_mem + startup_mem / 2;
     let cap = cap_num.to_string();
     let e = Env::new_no_prime("rss", &[("AH_ENGINE_RSS_CAP_KB", cap.as_str()), ("AH_ENGINE_RSS_CHECK_MS", "200"), ("AH_ENGINE_WATCHDOG_TICK_MS", "100")]);
     std::fs::write(e.dir.join("rules.json"), rules_text).unwrap();
@@ -2383,4 +2386,19 @@ fn an_engine_fail_open_reaches_the_ack_client_the_counters_and_the_degraded_stat
     assert_eq!(st["degraded"], true, "{}", st["fail_open"]);
     assert_eq!(st["fail_open"]["state"], "degraded");
     assert!(e.health_log().contains("\tfail_open\tinternal_error\t"), "one health-log line per fail-open: {}", e.health_log());
+}
+
+/// #204: SIGINT starts the same graceful drain as SIGTERM (it used to be ignored) and the daemon exits cleanly.
+#[test]
+fn sigint_drains_and_exits_like_sigterm() {
+    let e = Env::new("sigint", &[]);
+    e.warm();
+    let pid = e.pid().unwrap();
+    signal(pid, libc::SIGINT);
+    let gone = wait_for(|| !alive(pid));
+    if !gone {
+        signal(pid, libc::SIGKILL);
+    }
+    assert!(gone, "SIGINT must end the daemon{}", e.diag());
+    assert!(e.health_log().contains("\texit\tclean\t"), "the drain ends in a clean exit: {}", e.health_log());
 }

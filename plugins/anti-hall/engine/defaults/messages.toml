@@ -277,6 +277,10 @@ value = "idle"
 doc = "Drain reason for SIGTERM."
 value = "SIGTERM"
 
+[msg.exit_reason_sigint]
+doc = "Drain reason for SIGINT."
+value = "SIGINT"
+
 # ---- daemon replies -----------------------------------------------------------------------------------
 
 [msg.reply_unknown_request]

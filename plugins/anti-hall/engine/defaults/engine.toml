@@ -195,7 +195,7 @@ doc = "Written while a daemon runs; a leftover one with a dead pid is logged as 
 value = "daemon.run"
 
 [files.unreachable_notice]
-doc = "Holds the session id that already got the engine-unreachable notice, so the notice is shown once per session (the next session overwrites it)."
+doc = "Holds the recent session ids (see launcher.notice_sessions_max) that already got the engine-unreachable notice, so the notice is shown once per session."
 value = "unreachable.notice"
 
 [files.launcher_stale_notice]
@@ -2199,6 +2199,12 @@ doc = "Most of a payload larger than launcher.payload_prefix_bytes that the laun
 value = 67108864
 min = 0
 unit = "bytes"
+
+[launcher.notice_sessions_max]
+doc = "Most session ids a once-per-session notice marker (engine-unreachable, cold-start, stale-engine) remembers. Sessions interleaving within this many others are told once each; past it the oldest session is forgotten and may hear the notice again."
+value = 64
+min = 1
+unit = "sessions"
 
 [launcher.run_done_file]
 doc = "Name, inside a per-call run directory, of the file the engine creates when it has dispatched the event."
