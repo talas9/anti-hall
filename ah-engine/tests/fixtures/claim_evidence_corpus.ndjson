@@ -79,3 +79,55 @@
 {"text": "CI is green and I won't wait.", "expect": "block", "source": "coordinator"}
 {"text": "CI is green.", "expect": "block", "source": "coordinator"}
 {"text": "I have not run the e2e suite. PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "No doubt it is merged.", "expect": "block", "source": "review-round4-leak"}
+{"text": "No wonder it is live.", "expect": "block", "source": "review-round4-leak"}
+{"text": "No question it is deployed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "No kidding it is fixed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "No doubt CI is passing.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Once again CI is passing.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Once more CI is green.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Once again it is merged.", "expect": "block", "source": "review-round4-leak"}
+{"text": "If asked it is deployed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "If anything CI is green.", "expect": "block", "source": "review-round4-leak"}
+{"text": "If needed it is fixed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Until today it is live.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Until now CI is passing.", "expect": "block", "source": "review-round4-leak"}
+{"text": "After all it is merged.", "expect": "block", "source": "review-round4-leak"}
+{"text": "After all CI is green.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Whether acknowledged or not CI is green.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Not only is it deployed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "\"It is merged.\"", "expect": "block", "source": "review-round4-leak"}
+{"text": "CI is \"green\".", "expect": "block", "source": "review-round4-leak"}
+{"text": "The service is 'live'.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Once again it is fixed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "If CI is green the change is merged by the bot.", "expect": "allow", "source": "review-round4-overblock"}
+{"text": "According to the PR body the change is merged.", "expect": "allow", "source": "review-round4-overblock"}
+{"text": "Tests pass in my head but I did not run them; unverified.", "expect": "allow", "source": "review-round4-overblock"}
+{"text": "PR #405 must be merged first.", "expect": "allow", "source": "review-round4-allow"}
+{"text": "once a NAS that has it is deployed", "expect": "allow", "source": "review-round4-allow"}
+{"text": "The release is not live yet.", "expect": "allow", "source": "review-round4-allow"}
+{"text": "whether that version is live", "expect": "allow", "source": "review-round4-allow"}
+{"text": "I won't merge until CI is green.", "expect": "allow", "source": "review-round4-allow"}
+{"text": "No problem the service is live.", "expect": "block", "source": "round5-adversarial"}
+{"text": "No surprise CI is green.", "expect": "block", "source": "round5-adversarial"}
+{"text": "Once more the release is live.", "expect": "block", "source": "round5-adversarial"}
+{"text": "If so it is merged.", "expect": "block", "source": "round5-adversarial"}
+{"text": "Until then CI is green.", "expect": "block", "source": "round5-adversarial"}
+{"text": "In the end CI is green.", "expect": "block", "source": "round5-adversarial"}
+{"text": "\"All tests pass,\" and they do.", "expect": "block", "source": "round5-adversarial"}
+{"text": "The build is “green”.", "expect": "block", "source": "round5-adversarial"}
+{"text": "The bug is ‘fixed’.", "expect": "block", "source": "round5-adversarial"}
+{"text": "Without question the fix is deployed.", "expect": "block", "source": "round5-adversarial"}
+{"text": "If anyone asks the service is live.", "expect": "block", "source": "round5-adversarial"}
+{"text": "Once again, CI is green.", "expect": "block", "source": "round5-adversarial"}
+{"text": "If the build is green the release is published by the pipeline.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Once CI is green the PR is merged automatically.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Tests pass locally; unverified.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "The log shows \"all tests pass\" from the nightly job.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "The bot wrote 'CI is green' on the PR.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "No PR is merged yet.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Until CI is green nothing is merged.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "According to the release notes v2 is live.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "If the tests pass the change is merged by the queue.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Unless CI is green, it is not merged.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "PR #12 must be merged before the release.", "expect": "allow", "source": "round5-adversarial"}

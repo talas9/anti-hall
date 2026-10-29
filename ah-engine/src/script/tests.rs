@@ -2456,8 +2456,12 @@ mod claim_evidence_guard {
             stop("ce-honest", &lines, reply, &[], extra).0
         };
         assert_eq!(t("Tests pass (unverified).", json!({})), ALLOW);
-        // a label covers only a claim within claim_evidence.reach_label words of it: a second clause between them ends its reach
-        assert!(blocked(&t("Tests pass in my head but I did not run them; unverified.", json!({}))).is_some());
+        // a label that closes the sentence as its own clause covers the claims before it (claim_evidence.trailing_label_re)
+        assert_eq!(t("Tests pass in my head but I did not run them; unverified.", json!({})), ALLOW);
+        // any other label covers only a claim within claim_evidence.reach_label words of it: a second clause between them ends its reach
+        assert!(blocked(&t("Tests pass in my head but I did not run the linter.", json!({}))).is_some());
+        // a claim in bare quotes is a claim: quote marks alone cover nothing (claim_evidence.quote_mark_re)
+        assert!(blocked(&t("CI is \"green\".", json!({}))).is_some());
         assert_eq!(t("The rename is in; nothing was run.", json!({})), ALLOW);
         assert_eq!(t("The old line said \"all tests pass\" and was wrong.", json!({})), ALLOW);
         assert_eq!(t("All tests pass.", json!({"agent_id": "a1", "agent_type": "worker"})), ALLOW);
@@ -2547,8 +2551,12 @@ mod claim_evidence_guard {
         }
         assert!(bare("ce-fut-after", "After the fix, all tests pass."), "a time word in an earlier clause does not excuse a claim");
         assert!(bare("ce-fut-past", "The change is deployed."));
-        // the opener reaches only its own clause: 'is green' is a second predicate before 'the change is merged'
-        assert!(bare("ce-fut-second", "If CI is green the change is merged by the bot."));
+        // a claim right after a claim the opener covered is its consequent (suppress chain, reach_consequent) ...
+        assert!(!bare("ce-fut-second", "If CI is green the change is merged by the bot."));
+        // ... but an opener whose own clause holds no claim covers nothing past its second predicate, and an idiom opener nothing at all
+        assert!(bare("ce-fut-wait", "If we wait for review the change is merged."));
+        assert!(bare("ce-fut-idiom", "Once again CI is green."));
+        assert!(bare("ce-fut-idiom2", "Once again CI is green the change is merged."));
     }
 
     #[test]
@@ -2559,8 +2567,9 @@ mod claim_evidence_guard {
         {
             assert!(!bare(&format!("ce-rep{i}"), r), "must allow: {r}");
         }
-        // 'according to X' is a phrase, not an opener of the claim's clause: a second phrase before the claim ends its reach
-        assert!(bare("ce-rep-pp", "According to the PR body the change is merged."));
+        // 'according to' opens the claim's clause only with a named source (reported_res); 'according to plan' names none
+        assert!(!bare("ce-rep-pp", "According to the PR body the change is merged."));
+        assert!(bare("ce-rep-plan", "According to plan the service is live."));
     }
 
     #[test]
@@ -2674,7 +2683,8 @@ mod claim_evidence_guard {
     /// expected verdict. A suppressor covers a claim only when it is local to it (claim_evidence.suppress reach).
     #[test]
     fn every_row_of_the_claim_corpus_gets_its_expected_verdict() {
-        let corpus = include_str!("../../tests/fixtures/claim_evidence_corpus.ndjson");
+        let corpus = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claim_evidence_corpus.ndjson"))
+            .expect("the corpus file is readable");
         let mut wrong: Vec<String> = Vec::new();
         let mut n = 0;
         for (i, line) in corpus.lines().filter(|l| !l.trim().is_empty()).enumerate() {

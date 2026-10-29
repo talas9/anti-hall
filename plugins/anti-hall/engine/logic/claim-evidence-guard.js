@@ -7,7 +7,8 @@
 // the last N of them. The same reply is held once, at most max_blocks times per owner turn (blockCap, as the speculation guard); stop_hook_active, subagents, Codex
 // payloads (the evidence walk reads Claude transcripts only) and a script failure allow. A claim is judged per sentence: one that
 // is negated, future/conditional, a rule or criterion statement, reported from someone else's words, or labelled honest is not a claim, but only
-// when the suppressor is local to the claim (claim_evidence.suppress reach, reach_label): a second predicate between them ends its reach. mode = log writes the hit and allows.
+// when the suppressor is local to the claim (claim_evidence.suppress reach, reach_label): a second predicate between them ends its reach,
+// an idiom ('once again', 'no doubt') covers nothing, and quote marks alone cover nothing. mode = log writes the hit and allows.
 // Every pattern, list, number and text: claim_evidence.toml.
 'use strict';
 
@@ -72,11 +73,15 @@ function ceGapWords(gap) {
   return n;
 }
 
-// True when some hit of a pattern of `list` in `head` ends within `reach` counted words of the end of `head` (where the claim starts).
-function ceInReach(list, head, reach) {
+// True when some hit of a pattern of `list` in `head` ends within `reach` counted words of the end of `head` (where the claim starts)
+// and the text after it is not an idiom (`idiom`, a regex or null: 'Once again ...', 'No doubt ...' cover nothing).
+function ceInReach(list, head, reach, idiom) {
   for (var i = 0; i < list.length; i++) {
     var all = ah.re.findAll(list[i], 'i', head);
-    for (var j = 0; j < all.length; j++) if (ceGapWords(head.slice(all[j][1])) <= reach) return true;
+    for (var j = 0; j < all.length; j++) {
+      var gap = head.slice(all[j][1]);
+      if (ceGapWords(gap) <= reach && (idiom === null || !ah.re.find(idiom, 'i', gap))) return true;
+    }
   }
   return false;
 }
@@ -91,16 +96,25 @@ function ceLabelled(sent, hit) {
       if (ceGapWords(gap) <= reach) return true;
     }
   }
-  return false;
+  // a label that closes the sentence as its own clause covers every claim before it ('...; unverified.')
+  var tail = ah.re.find(ah.cfg('claim_evidence.trailing_label_re'), 'i', sent);
+  return !!tail && tail[0] >= hit[1];
 }
 
-// Why a claim hit is not a claim, else null. A suppressor covers a claim only when it is LOCAL to it: a row of claim_evidence.suppress
-// whose list hits the claim's clause within that row's reach (counted words between the hit and the claim), or an honest label next to
-// the claim in its own sentence. A second predicate, an unknown connector or a second phrase between them ends the reach.
-function ceReason(sent, hit) {
-  var sup = ah.cfg('claim_evidence.suppress'), head = sent.slice(ceStart(sent, hit[0]), hit[0]);
-  for (var i = 0; i < sup.length; i++) if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach))) return sup[i].reason;
-  if (ceLabelled(sent, hit)) return ah.cfg('claim_evidence.ack_reason');
+// Why a claim hit is not a claim, else null, as {reason, chain}. A suppressor covers a claim only when it is LOCAL to it: a row of
+// claim_evidence.suppress whose list hits the claim's clause within that row's reach (counted words between the hit and the claim) and
+// not as an idiom, the consequent of a claim a chain row covered (`prev`: {end, start} of that claim and of its clause), or an honest
+// label next to the claim in its own sentence. A second predicate, an unknown connector or a second phrase between them ends the reach.
+function ceReason(sent, hit, prev) {
+  var sup = ah.cfg('claim_evidence.suppress'), from = ceStart(sent, hit[0]), head = sent.slice(from, hit[0]);
+  for (var i = 0; i < sup.length; i++) {
+    var idiom = sup[i].idiom ? ah.cfg(sup[i].idiom) : null;
+    if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach), idiom)) return { reason: sup[i].reason, chain: sup[i].chain === true };
+  }
+  if (prev !== null && prev.start === from && prev.end <= hit[0] && ceGapWords(sent.slice(prev.end, hit[0])) <= ah.cfgNum('claim_evidence.reach_consequent')) {
+    return { reason: prev.reason, chain: true };
+  }
+  if (ceLabelled(sent, hit)) return { reason: ah.cfg('claim_evidence.ack_reason'), chain: false };
   return null;
 }
 
@@ -110,16 +124,33 @@ function ceReason(sent, hit) {
 function ceFindClaim(scan, seen) {
   var rows = ah.cfg('claim_evidence.claims'), sents = ceSentences(scan);
   for (var k = 0; k < sents.length; k++) {
+    // every hit of every row, in text order, so a consequent follows the condition it depends on
+    var hits = [];
     for (var i = 0; i < rows.length; i++) {
       var all = ah.re.findAll(rows[i].re, 'i', sents[k]);
-      for (var j = 0; j < all.length; j++) {
-        var why = ceReason(sents[k], all[j]), quote = sents[k].slice(all[j][0], all[j][1]);
-        if (why === null) return { row: rows[i], quote: quote };
-        seen.push([why, quote, rows[i].id]);
-      }
+      for (var j = 0; j < all.length; j++) hits.push([all[j][0], all[j][1], i]);
+    }
+    hits.sort(function (x, y) { return x[0] - y[0] || x[2] - y[2]; });
+    var prev = null;
+    for (var h = 0; h < hits.length; h++) {
+      var why = ceReason(sents[k], hits[h], prev), quote = sents[k].slice(hits[h][0], hits[h][1]), row = rows[hits[h][2]];
+      if (why === null) return { row: row, quote: quote };
+      seen.push([why.reason, quote, row.id]);
+      if (why.chain && (prev === null || hits[h][1] > prev.end)) prev = { end: hits[h][1], start: ceStart(sents[k], hits[h][0]), reason: why.reason };
     }
   }
   return null;
+}
+
+// The reply with its quote marks (claim_evidence.quote_mark_re) blanked, so a claim in quotes is judged like any other; an apostrophe
+// inside a word stays.
+function ceUnquote(t) {
+  var all = ah.re.findAll(ah.cfg('claim_evidence.quote_mark_re'), 'i', t), out = '', at = 0;
+  for (var i = 0; i < all.length; i++) {
+    out += t.slice(at, all[i][0]) + ' ';
+    at = all[i][1];
+  }
+  return out + t.slice(at);
 }
 
 // Telemetry: one engine-log line (claim_evidence.log_kind) per suppressed hit, at most claim_evidence.max_suppress_logs per reply.
@@ -180,10 +211,12 @@ function decide(p) {
   // the cheap gate: the reply alone, with quoted text and code removed
   var scan = ah.text.maskQuoted(reply), claim = null, done = false;
   if (r1) {
-    var seen = [];
-    claim = ceFindClaim(scan, seen);
-    // a claim that exists only inside quoted text or code is suppressed too (the masked scan cannot see it)
-    if (claim === null && scan !== reply) {
+    // rule 1 reads quoted text too (quote marks out, code, fences and blockquotes still masked): a quote is covered only by a
+    // reporting verb that opens its clause, never by its quote marks alone
+    var seen = [], scan1 = ah.text.maskQuoted(ceUnquote(reply));
+    claim = ceFindClaim(scan1, seen);
+    // a claim that exists only inside code, a fence or a blockquote is suppressed (the masked scan cannot see it)
+    if (claim === null && scan1 !== reply) {
       var raw = [], rawClaim = ceFindClaim(reply, raw);
       if (rawClaim !== null) seen.push([ah.cfg('claim_evidence.quoted_reason'), rawClaim.quote, rawClaim.row.id]);
     }
