@@ -1351,6 +1351,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.msg_heavy_plain` | `a heavy command` |  |  | The kind of any other heavy command. |
 | `command.msg_heavy_remote` | `a command that changes a shared remote` |  |  | The kind of a state-changing remote command. |
 | `command.msg_heavy_remote_why` | `Pushes, pulls and gh calls touch a shared remote and can stall on network or ...` |  |  | Why a remote git or gh call (push, pull, fetch, a gh read or write that is not on command.remote_block) is blocked in the main thread. |
+| `command.msg_heavy_segment` | ` Heavy: {seg}. The other {n} are fine alone.` |  |  | Added to the heavy-command block of a chain; {seg} is the heavy segment (whitespace collapsed, cut), {n} the number of other segments. The block is all-or-nothing: the hook cannot run part of a command. |
 | `command.msg_heavy_what` | `{kind}{detail} can't run in the main thread.` |  |  | Heading of the heavy-command block ({kind} and {detail} are the next two texts). |
 | `command.msg_heavy_why` | `Its raw output would flood the main conversation.` |  |  | Why a heavy command is blocked. |
 | `command.msg_mailbox_allowed` | ``inbox count`, `inbox peek-primary`, `mesh read --peek`, plain `roster`.` |  |  | What stays allowed. |
@@ -1376,6 +1377,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.msg_stash_scope_subagent` | `a subagent (workers must never touch the coordinator's working tree via stash)` |  |  | Scope text for a subagent. |
 | `command.msg_stash_what` | ``git stash {sub}` is blocked for {scope}.` |  |  | Heading of the git stash block ({sub} is the subcommand, {scope} the next two texts). |
 | `command.msg_stash_why` | `A stash can swallow another agent's protected WIP (defect b08b26566b92).` |  |  | Why a stash is blocked. |
+| `command.name_segment_setting` | `7 entries` |  |  | Off switch (guards.commandNameSegment, default on): a heavy-command block in a chain names the heavy segment and says the other segments are fine to run on their own. |
 | `command.nice_value_flags` | `-n, --adjustment` |  |  | nice options that take a value. |
 | `command.node_eval_deny` | `8 items` |  |  | Patterns that make a `node -e` payload unsafe (command-guard.js NODE_EVAL_UNSAFE_RE, NODE_EVAL_BRACKET_ACCESS_RE and the inline denials of isSafeNodeEvalPayload). |
 | `command.node_eval_flags` | `-e, --eval` |  |  | node options whose next word is inline code. |
@@ -1413,6 +1415,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.script_not_a_run_flag` | `4 entries` |  |  | Per interpreter family, the flag pattern that means the command is not a script-file run: inline code, module, syntax check or stdin. |
 | `command.script_shells` | `sh, bash, zsh, dash` |  |  | Shells whose script run counts as work. |
 | `command.script_value_flags` | `12 items` |  |  | Interpreter options whose next word is their value, not the script. |
+| `command.segment_ellipsis` | `...` |  |  | Appended to a cut segment. |
+| `command.segment_label_max` | `24` |  |  | Longest text (characters) of the named heavy segment; a longer one is cut (the visible block text holds 115 characters). |
 | `command.setting_allow_bg_scratch` | `7 entries` |  |  | Allowance for background scratch scripts (default on). |
 | `command.setting_allow_gcloud_reads` | `7 entries` |  |  | the narrow read-only Google Cloud access (default on). |
 | `command.setting_allow_plain_push` | `7 entries` |  |  | the plain git push chain allowance (default on). |
@@ -4537,8 +4541,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.append_codex` | `append with a one-line `>>`, never overwrite it` |  |  | How to append to the history file (Codex wording). |
 | `tasklist_guard.budget_setting` | `6 entries` |  |  | guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off). |
 | `tasklist_guard.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
+| `tasklist_guard.carry_setting` | `6 entries` |  |  | Off switch (guards.tasklistCarryProgress, default on): a session that crossed midnight keeps using its progress file under the earlier date instead of being asked for a new one under today's date. |
 | `tasklist_guard.codex_fields` | `turn_id, model` |  |  | Payload fields that, all non-empty strings, mark a Codex payload (isCodexPayload). |
 | `tasklist_guard.codex_tool` | `apply_patch` |  |  | A tool name only Codex payloads carry (isCodexPayload). |
+| `tasklist_guard.counted_ellipsis` | `...` |  |  | Appended to a cut label. |
+| `tasklist_guard.counted_label_max` | `20` |  |  | Longest label (characters) of one named action; a longer one is cut. |
+| `tasklist_guard.counted_max` | `3` |  |  | How many counted actions the block message names (the visible block text holds 115 characters). |
+| `tasklist_guard.counted_more` | ` (+{n} more)` |  |  | {n} further counted actions that are not named. |
+| `tasklist_guard.counted_sep` | `; ` |  |  | Separator between the named actions. |
+| `tasklist_guard.counted_text` | ` Counted: {list}{more}.` |  |  | Added to the block reason; {list} is the named counted actions, {more} the counted_more text when there are others. |
+| `tasklist_guard.date_dir_re` | `^\d{4}-\d{2}-\d{2}$` |  |  | Regex source of a progress date directory name. |
 | `tasklist_guard.details_dir` | `block-details` |  |  | Directory of the tasklist-guard details file under the anti-hall state directory. |
 | `tasklist_guard.details_ext` | `.md` |  |  | File extension of the tasklist-guard details file. |
 | `tasklist_guard.details_head` | `Task list and progress file: what to do` |  |  | First line of the tasklist-guard details file. |
@@ -4568,6 +4580,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.instead_reset` | `restore the open tasks, then stop again.` |  |  | Lead of what to do instead after a task store reset (Claude wording). |
 | `tasklist_guard.instead_reset_codex` | `restore the open tasks, then stop again.` |  |  | Lead of what to do instead after a task store reset (Codex wording). |
 | `tasklist_guard.instead_stalled` | `assign an agent to each stalled task.` |  |  | What to do about tasks stalled in progress. |
+| `tasklist_guard.integration_skip_setting` | `6 entries` |  |  | Off switch (guards.tasklistIntegrationSkip, default on): git commands that only integrate worker commits (workdetect.integration_work) are not counted as this session's own work. |
 | `tasklist_guard.jev_false` | `a small bounded chore — task tracking would be overhead, not help` |  |  | What a false answer means. |
 | `tasklist_guard.jev_id` | `tasklistTrivial` |  |  | The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it). |
 | `tasklist_guard.jev_instructions` | `This session is about to be nudged to track its work as tasks / refresh its p...` |  |  | The question put to Jev (a noul question). |
@@ -4575,6 +4588,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.jev_true` | `genuinely non-trivial — multi-part, benefits from task tracking` |  |  | What a true answer means. |
 | `tasklist_guard.low_priorities` | `p2, low, deferred` |  |  | Priorities (lowercase) below the actionable floor for the stalled-in-progress count. |
 | `tasklist_guard.max_blocks` | `3` |  |  | Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-signal dedupe remains independent; the separate once-per-session reduced-nag budget is unchanged. |
+| `tasklist_guard.name_counted_setting` | `6 entries` |  |  | Off switch (guards.tasklistNameCounted, default on): the block message names the first counted actions. |
 | `tasklist_guard.no_task_tools_setting` | `8 entries` |  |  | Nag form when task tools are missing. The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip). |
 | `tasklist_guard.omc_fresh_ms` | `7200000` |  |  | How recent a loop state's timestamp must be for the loop to count as active. |
 | `tasklist_guard.omc_kill_env` | `DISABLE_OMC` |  |  | Environment variable that disables oh-my-claudecode (value 1). |
@@ -4697,6 +4711,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `workdetect.dev_null` | `\/dev\/null` |  |  | Regex source of the null device, a redirect target that never counts as a write. |
 | `workdetect.devswarm_housekeeping` | `^\s*(?:node\s+)?(?:\S*[\\/])?devswarm\.js\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*(?:i...` |  |  | Regex source (case-insensitive) of a command segment that is only DevSwarm mesh housekeeping through the stable launcher: an inbox, heartbeat, send, relay, notice, nudge, roster or wake-directive verb. |
 | `workdetect.heredoc_delimiter` | `^<<-?\s*((?:[^\s;&\|()<>'"\\]\|'[^'\n]*'\|"[^"\n]*"\|\\[^\n])+)` |  |  | Regex source of a heredoc operator and its delimiter word, which may be partly quoted or escaped; group 1 is the word. |
+| `workdetect.integration_work` | `\bgit\s+(?:merge\|cherry-pick\|checkout\|switch)\b` |  |  | JavaScript regex source (case-insensitive, global) of the git commands that only integrate what someone else committed (merge, cherry-pick, checkout, switch). With guards.tasklistIntegrationSkip on, a command whose only work is one of these does not count toward tasklist-guard's work count: the files were changed by a delegated worker, not by this session's own edits. A command that also edits, commits or redirects still counts. |
 | `workdetect.mutating_tools` | `Edit, Write, MultiEdit, NotebookEdit` |  |  | File-mutating tools: each call counts as work unless it targets an excluded path. |
 | `workdetect.never_work_tools` | `Agent, Task, CronCreate, CronDelete` |  |  | Tools that start or schedule work and never change a file themselves. |
 | `workdetect.request_path_re` | `(?:^\|[\s"'`(=:,<>])(?:((?:~\|\.{1,2})?\/[\w.@+~-]+(?:\/[\w.@+~-]+)*)\|([\w.@+-]...` |  |  | Regex source (global) of a path named in a user request: an absolute, `~`, `./` or `../` path (group 1), or a relative one with at least one `/` (group 2). A write under such a path in a session with exactly ONE user request is the requested output, not untracked work. |
@@ -14025,6 +14040,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 
 | Name | Kind | Unit | Labels | What it counts |
 |---|---|---|---|---|
+| `command_heavy_segment_named` | counter | blocks | kind | Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own. |
 | `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
 | `agent_scan_kept` | counter | lookups | result | Kept-walk lookups of the agent scan (silent-agent-nudge and the agent gates): hit (the walk resumed from where the last scan stopped) or miss. |
 | `agent_scan_kept_miss` | counter | lookups | reason | Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised). |
@@ -14119,6 +14135,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
+| `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
+| `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |

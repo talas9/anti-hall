@@ -207,6 +207,19 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
         .and_then(Value::as_object)
         .map(|o| o.iter().map(|(k, v)| (k.clone(), fill(v.as_str().unwrap_or_default(), &home, &real, now))).collect())
         .unwrap_or_default();
+    // The frozen corpora come from the Node hooks. Fixes that deliberately differ from them (dogfood #417, #420, #421) are switched off
+    // here so the corpora keep proving parity for everything else; each fix has its own test (tests/guards_dogfood_a.rs).
+    let mut env = env;
+    for (k, v) in [
+        ("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0"),
+        ("ANTIHALL_TASKLIST_CARRY_PROGRESS", "0"),
+        ("ANTIHALL_TASKLIST_NAME_COUNTED", "0"),
+        ("ANTIHALL_COMMAND_NAME_SEGMENT", "0"),
+    ] {
+        if !env.iter().any(|(ek, _)| ek == k) {
+            env.push((k.to_string(), v.to_string()));
+        }
+    }
     Laid {
         payload: sub(case.get("payload").unwrap_or(&Value::Null), &home, &real, now),
         opts: sub(case.get("opts").unwrap_or(&Value::Null), &home, &real, now),
