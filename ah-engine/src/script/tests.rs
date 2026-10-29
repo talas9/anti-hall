@@ -2706,7 +2706,11 @@ mod afk_mode {
         let m = drained();
         assert_eq!(m.counter("afk_entered", &[("how", "prompt")]), 1);
         // a manual period from the CLI (counted=false) is counted once by the next hook
-        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": false, "pending_digest": 3}).to_string()).unwrap();
+        std::fs::write(
+            format!("{h}/.anti-hall/afk.json"),
+            json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": false, "pending_digest": 3}).to_string(),
+        )
+        .unwrap();
         run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
         run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
         let m = drained();

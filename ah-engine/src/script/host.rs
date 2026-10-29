@@ -649,7 +649,8 @@ pub fn metric_add(name: &str, labels: &str, by: f64) {
         return;
     }
     let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(labels).unwrap_or_default();
-    let order = defaults::raw(&format!("metric.{name}")).get("labels").map(|v| v.strings().into_iter().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+    let order =
+        defaults::raw(&format!("metric.{name}")).get("labels").map(|v| v.strings().into_iter().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
     let pairs: Vec<(String, String)> = order.iter().filter_map(|l| obj.get(l).and_then(|v| v.as_str()).map(|v| (l.clone(), v.to_string()))).collect();
     let refs: Vec<(&str, &str)> = pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     crate::metrics::bump_by(name, &refs, by as u64);

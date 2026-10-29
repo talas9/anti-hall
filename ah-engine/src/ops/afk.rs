@@ -100,8 +100,8 @@ fn turn_on(p: &Parsed, home: &str) -> i32 {
 /// The progress files the sessions of the current AFK period recorded (their `afk-sess-*` state files), bounded.
 fn session_files(home: &str, epoch: &str) -> Vec<Value> {
     let prefix = defaults::text("afk.session_prefix");
-    let max_files = defaults::num("afk.digest_max_files").max(0) as usize;
-    let max_bytes = defaults::num("afk.read_max_bytes").max(0) as u64;
+    let max_files = defaults::num("afk.digest_max_files") as usize;
+    let max_bytes = defaults::num("afk.read_max_bytes");
     let mut names: Vec<String> = std::fs::read_dir(state_dir(home))
         .map(|rd| rd.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(prefix)).collect())
         .unwrap_or_default();
@@ -139,7 +139,8 @@ fn tail_text(path: &Path, max: u64) -> Value {
 
 /// The digest text and entry count of the AFK period `epoch` (the plugin script renders it).
 pub(crate) fn digest(home: &str, epoch: &str) -> (String, u64) {
-    let cfg: Map<String, Value> = defaults::with_prefix("afk.").into_iter().filter_map(|e| e.key.strip_prefix("afk.").map(|k| (k.to_string(), e.value.to_json()))).collect();
+    let cfg: Map<String, Value> =
+        defaults::with_prefix("afk.").into_iter().filter_map(|e| e.key.strip_prefix("afk.").map(|k| (k.to_string(), e.value.to_json()))).collect();
     let input = json!({"cfg": Value::Object(cfg), "files": session_files(home, epoch)});
     match super::opcli_call("back", "afk-mode", "afkDigest", &input) {
         Some(v) => (v.get("text").and_then(Value::as_str).unwrap_or_default().to_string(), v.get("entries").and_then(Value::as_u64).unwrap_or_default()),
@@ -154,7 +155,11 @@ fn turn_off(p: &Parsed, home: &str, print_digest: bool) -> i32 {
         return 0;
     };
     let was_on = is_on(Some(&f));
-    let head = if was_on { defaults::render("afk.msg_off", &[("how", &field(&f, "how")), ("since", &since(&f))]) } else { defaults::text("afk.msg_not_on").to_string() };
+    let head = if was_on {
+        defaults::render("afk.msg_off", &[("how", &field(&f, "how")), ("since", &since(&f))])
+    } else {
+        defaults::text("afk.msg_not_on").to_string()
+    };
     f.insert("on".into(), Value::Bool(false));
     if was_on {
         f.insert("ended".into(), json!(now_ms()));
@@ -187,7 +192,11 @@ pub fn cmd_afk(p: &Parsed) -> i32 {
         Some("status") => {
             let f = read_json(&flag_path(&home));
             match f.as_ref().filter(|f| is_on(Some(f))) {
-                Some(f) => say(p, &defaults::render("afk.msg_status_on", &[("how", &field(f, "how")), ("since", &since(f))]), json!({"on": true, "how": field(f, "how")})),
+                Some(f) => say(
+                    p,
+                    &defaults::render("afk.msg_status_on", &[("how", &field(f, "how")), ("since", &since(f))]),
+                    json!({"on": true, "how": field(f, "how")}),
+                ),
                 None => say(p, defaults::text("afk.msg_status_off"), json!({"on": false})),
             }
             0
