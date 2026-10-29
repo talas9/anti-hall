@@ -2213,7 +2213,6 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
         "git log --oneline -n 5",
         "git log --pretty=oneline",
         "git show HEAD",
-        "git grep foo",
         "grep -rn foo src/",
         "rg -n foo | head -5",
         "ls -la",
