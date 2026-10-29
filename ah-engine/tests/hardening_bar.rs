@@ -353,6 +353,8 @@ impl Lab {
             .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
             .env("AH_ENGINE_VERSION", VER)
             .env("AH_ENGINE_TEST_HOOKS", "1")
+            // a panic or abort message in the daemon names its frames (the daemon's stderr is kept: see `serve`)
+            .env("RUST_BACKTRACE", "full")
             .env("AH_ENGINE_PLUGIN_ROOT", plugin())
             .env("CLAUDE_PLUGIN_ROOT", plugin())
             .env("ANTIHALL_INGEST_DRY_RUN", "1")
@@ -423,6 +425,14 @@ impl Lab {
             r.note(gone_label(g));
         }
         self.keep_log(r);
+        let errtxt = std::fs::read_to_string(self.stderr_path()).unwrap_or_default();
+        r.keep_file("daemon.stderr", &errtxt);
+        let lines: Vec<&str> = errtxt.lines().collect();
+        let keep = n("common.gone_log_lines") as usize;
+        r.note(format!("daemon stderr: {} lines (kept as daemon.stderr), last {}:", lines.len(), lines.len().min(keep)));
+        for l in &lines[lines.len().saturating_sub(keep)..] {
+            r.note(format!("stderr: {l}"));
+        }
         let log = self.log();
         let words: Vec<String> = val("common.gone_log_filter").as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
         for l in filter_log(&log, &words, n("common.gone_log_lines") as usize) {
@@ -439,7 +449,12 @@ impl Lab {
         serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("status is not JSON ({e}): {}", String::from_utf8_lossy(&o.stdout)))
     }
     fn serve(&self) -> Child {
-        self.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+        // stderr goes to a file (appended: a bar may start several daemons) so a crash message or backtrace survives the daemon
+        let err = std::fs::OpenOptions::new().create(true).append(true).open(self.stderr_path()).unwrap();
+        self.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(err).spawn().unwrap()
+    }
+    fn stderr_path(&self) -> PathBuf {
+        self.dir.join("daemon.stderr")
     }
     fn log(&self) -> String {
         std::fs::read_to_string(self.eng().join("ah-engine.log")).unwrap_or_default()

@@ -40,7 +40,7 @@ jobs:
       - name: failing bar's daemon log (tail 200)
         if: failure()
         run: |
-          for f in target/hardening/fragments/*-daemon.log; do
+          for f in target/hardening/fragments/*-daemon.log target/hardening/fragments/*-daemon.stderr; do
             [ -f "$f" ] && { echo "== $f"; tail -n 200 "$f"; }
           done
           true
