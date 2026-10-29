@@ -363,6 +363,12 @@
             "type": "command",
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
+            "id": "reply-length-guard"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
             "id": "devswarm-parent-gate"
           },
           {
