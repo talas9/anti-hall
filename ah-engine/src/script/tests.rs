@@ -3218,6 +3218,30 @@ mod afk_mode {
     }
 
     #[test]
+    fn on_codex_stop_only_holds_a_question_never_the_length_or_the_measurement() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-codex-stop");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let codex = |msg: &str| json!({"turn_id": "t1", "model": "gpt-5", "last_assistant_message": msg});
+        std::fs::write(
+            format!("{h}/t.jsonl"),
+            format!("{}\n", json!({"type": "assistant", "message": {"id": "m", "usage": {"output_tokens": 9}, "content": []}})),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            assert!(out(&run(&h, "Stop", codex(&"line\n".repeat(10)), &[])).is_empty(), "no length hold on Codex");
+        }
+        let o = out(&run(&h, "Stop", codex("Which option do you want?"), &[]));
+        assert!(o.contains("\"decision\":\"block\"") && o.contains("NEEDS OWNER"), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_turns", &[]), 0);
+        assert_eq!(m.counter("afk_output_tokens", &[("mode", "afk")]), 0);
+        assert_eq!(m.counter("afk_overlong_turns", &[("action", "nudge")]), 0);
+        assert_eq!(m.counter("afk_question_parked", &[("action", "nudged")]), 1);
+    }
+
+    #[test]
     fn the_digest_lists_needs_owner_bullets_first() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
         let h = home("afk-needs");
