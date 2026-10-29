@@ -302,3 +302,44 @@ fn orchestration_rules_are_sent_whole_once_then_short_after_compaction() {
         assert!(ctx(&out).contains("ORCHESTRATION DISCIPLINE"), "protocolOnce=false sends the whole rules at {source}");
     }
 }
+
+/// Twenty consecutive prompts of one session: the recurring context blocks are sent on the first and not again (the model already
+/// holds them); the total injected chars of the sequence are printed against the every-turn baseline (`ANTIHALL_EMIT_DEDUPE=0`).
+#[test]
+fn twenty_consecutive_prompts_inject_the_recurring_blocks_once() {
+    let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall");
+    let run = |dedupe_off: bool| -> Vec<usize> {
+        let e = Env::new(if dedupe_off { "twenty-off" } else { "twenty-on" });
+        let map = e.map("UserPromptSubmit", "none");
+        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+        let mut env = vec![("DEVSWARM_REPO_ID", "r1"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+        if dedupe_off {
+            env.push(("ANTIHALL_EMIT_DEDUPE", "0"));
+            env.push(("ANTIHALL_INJECT_GATE", "0"));
+            env.push(("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"));
+        }
+        let mut sizes: Vec<usize> = (0..20)
+            .map(|i| {
+                let (code, out, err) = e.run(&args, true, &ups("tw", &format!("prompt {i}"), None), &env);
+                assert_eq!(code, 0, "{out} {err}");
+                ctx(&out).len()
+            })
+            .collect();
+        // a compaction loses the blocks: the next prompt re-sends them
+        let smap = e.map("SessionStart", "none");
+        let sargs = ["hook", "--event", "SessionStart", "--fallback-map", smap.to_str().unwrap()];
+        let sp = serde_json::json!({"session_id": "tw", "cwd": "/tmp", "hook_event_name": "SessionStart", "source": "compact"}).to_string();
+        e.run(&sargs, true, &sp, &env);
+        let (_, out, _) = e.run(&args, true, &ups("tw", "after compaction", None), &env);
+        sizes.push(ctx(&out).len());
+        sizes
+    };
+    let on = run(false);
+    let off = run(true);
+    println!("twenty prompts, chars per turn with emit-on-change: {on:?} (total {})", on.iter().sum::<usize>());
+    println!("twenty prompts, chars per turn every turn:          {off:?} (total {})", off.iter().sum::<usize>());
+    assert!(on[0] > 0, "the first prompt carries the blocks");
+    assert!(on[1..20].iter().all(|n| *n == 0), "the second to twentieth prompt re-send nothing while the state is unchanged: {on:?}");
+    assert!(on[20] > 0, "a compaction (changed state) re-sends the blocks: {on:?}");
+    assert!(on.iter().sum::<usize>() < off.iter().sum::<usize>(), "emit-on-change injects less than every turn");
+}
