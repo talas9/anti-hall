@@ -95,6 +95,27 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
         Some(slot.value.clone())
     }
 
+    /// Remove and return the active value for `k` without cloning it (counts as a hit, or as a miss when absent or expired).
+    pub fn take(&mut self, k: &K, now_ms: u64) -> Option<V> {
+        let expired = match self.map.get(k) {
+            None => {
+                self.misses += 1;
+                return None;
+            }
+            Some(s) => s.expires_ms.is_some_and(|e| e <= now_ms),
+        };
+        let s = self.map.remove(k)?;
+        self.order.remove(&s.tick);
+        self.bytes -= s.size;
+        if expired {
+            self.expired += 1;
+            self.misses += 1;
+            return None;
+        }
+        self.hits += 1;
+        Some(s.value)
+    }
+
     /// True when `k` is held (expired or not), without touching its recency.
     pub fn contains(&self, k: &K) -> bool {
         self.map.contains_key(k)
