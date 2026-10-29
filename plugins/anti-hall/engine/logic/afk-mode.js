@@ -1,8 +1,10 @@
-// check = "afk-mode" (UserPromptSubmit, PostToolUse, Stop on Claude; SessionStart, UserPromptSubmit, PostToolUse on Codex; engine-only,
+// check = "afk-mode" (UserPromptSubmit, PreToolUse, PostToolUse, Stop on Claude; SessionStart, UserPromptSubmit, PostToolUse, Stop on Codex; engine-only,
 // no Node twin; GH #425). AFK mode: a machine-wide flag (afk.flag_file) set by `ah-engine afk on`, by the owner typing `afk`, or by
 // idle detection; the rule injected once per session per AFK period plus capped reminders; an AFK marker in the session progress
 // file, whose checklist bullets are the digest `back` / `progress` print; a capped Stop hold of overlong AFK replies; output tokens
-// per turn split AFK vs present. Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
+// per turn split AFK vs present; no blocking questions (the question tool denied with the ladder every time, a capped Stop hold of
+// a turn ending on a plain-text question, NEEDS OWNER bullets listed first); ExitPlanMode approved (allow + updatedInput) after an
+// advisor review since the owner's last message. Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
 // the `ah-engine back` command and the typed `back` share it.
 'use strict';
 
@@ -13,7 +15,7 @@ function afkDigestCfg() {
     msg_digest_head: ah.cfg('afk.msg_digest_head'), msg_digest_none: ah.cfg('afk.msg_digest_none'), msg_digest_more: ah.cfg('afk.msg_digest_more'),
     msg_pct: ah.cfg('afk.msg_pct'), msg_pct_na: ah.cfg('afk.msg_pct_na'), msg_no_sessions: ah.cfg('afk.msg_no_sessions'),
     marker_prefix: ah.cfg('afk.marker_prefix'), bullet_re: ah.cfg('afk.bullet_re'), done_re: ah.cfg('afk.done_re'), open_re: ah.cfg('afk.open_re'),
-    digest_max_entries: ah.cfgNum('afk.digest_max_entries'),
+    digest_max_entries: ah.cfgNum('afk.digest_max_entries'), needs_owner_re: ah.cfg('afk.needs_owner_re'), msg_needs_owner_head: ah.cfg('afk.msg_needs_owner_head'),
   };
 }
 function afkR(s, vars) { return String(s).replace(/\{(\w+)\}/g, function (m, k) { return Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m; }); }
@@ -21,39 +23,44 @@ function afkR(s, vars) { return String(s).replace(/\{(\w+)\}/g, function (m, k) 
 // The digest of one progress file's text: { lines: [...], entries: n }. `C` is the afk.* table without the prefix.
 function afkDigestOne(C, path, txt) {
   var head = afkR(afkC(C, 'msg_digest_head'), { path: path });
-  if (typeof txt !== 'string') return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0 };
+  if (typeof txt !== 'string') return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0, parked: [] };
   var at = txt.lastIndexOf(afkC(C, 'marker_prefix'));
-  if (at < 0) return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0 };
+  if (at < 0) return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0, parked: [] };
   var rest = txt.slice(at).split('\n').slice(1);
   var bullet = new RegExp(afkC(C, 'bullet_re')), done = new RegExp(afkC(C, 'done_re')), open = new RegExp(afkC(C, 'open_re'));
-  var bullets = [], nDone = 0, nOpen = 0;
+  var needs = new RegExp(afkC(C, 'needs_owner_re'));
+  var bullets = [], parked = [], nDone = 0, nOpen = 0;
   for (var i = 0; i < rest.length; i++) {
     var l = rest[i];
     if (!bullet.test(l)) continue;
-    bullets.push(l.replace(/^\s+/, ''));
+    if (needs.test(l)) parked.push(l.replace(/^\s+/, '')); // listed first by afkDigest, never cut
+    else bullets.push(l.replace(/^\s+/, ''));
     if (done.test(l)) nDone++;
     else if (open.test(l)) nOpen++;
   }
-  if (bullets.length === 0) return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0 };
+  if (bullets.length === 0 && parked.length === 0) return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0, parked: [] };
   var max = Number(afkC(C, 'digest_max_entries')), out = [head], cut = Math.max(0, bullets.length - max);
   if (cut > 0) out.push(afkR(afkC(C, 'msg_digest_more'), { n: cut }));
   for (var j = cut; j < bullets.length; j++) out.push('  ' + bullets[j]);
   var total = nDone + nOpen;
   out.push(total > 0 ? afkR(afkC(C, 'msg_pct'), { pct: Math.round((nDone * 100) / total), done: nDone, total: total }) : afkC(C, 'msg_pct_na'));
-  return { lines: out, entries: bullets.length - cut };
+  return { lines: out, entries: bullets.length - cut + parked.length, parked: parked };
 }
 
-// `afkDigest({cfg, files: [{path, text}]})` -> {text, entries}: called by the engine's `back` command (cfg = the afk.* table).
+// `afkDigest({cfg, files: [{path, text}]})` -> {text, entries, parked}: called by the engine's `back` command (cfg = the afk.*
+// table). The NEEDS OWNER bullets of every file come first (parked = their count).
 function afkDigest(input) {
   var C = input && input.cfg ? input.cfg : afkDigestCfg(), files = input && Array.isArray(input.files) ? input.files : [];
-  if (files.length === 0) return { text: afkC(C, 'msg_no_sessions'), entries: 0 };
-  var lines = [], n = 0;
+  if (files.length === 0) return { text: afkC(C, 'msg_no_sessions'), entries: 0, parked: 0 };
+  var lines = [], n = 0, parked = [];
   for (var i = 0; i < files.length; i++) {
     var d = afkDigestOne(C, String(files[i].path), files[i].text);
     lines = lines.concat(d.lines);
     n += d.entries;
+    parked = parked.concat(d.parked);
   }
-  return { text: lines.join('\n'), entries: n };
+  if (parked.length > 0) lines = [afkR(afkC(C, 'msg_needs_owner_head'), { n: parked.length })].concat(parked.map(function (b) { return '  ' + b; }), lines);
+  return { text: lines.join('\n'), entries: n, parked: parked.length };
 }
 
 // ---- state ----------------------------------------------------------------------------------------------------------------
@@ -88,6 +95,10 @@ function afkFlush(f) {
   if (typeof f.pending_digest === 'number' && f.pending_digest > 0) {
     afkMetric('digest_entries', {}, f.pending_digest);
     f.pending_digest = 0; changed = true;
+  }
+  if (typeof f.pending_parked === 'number' && f.pending_parked > 0) {
+    afkMetric('afk_question_parked', { action: ah.cfg('afk.action_listed') }, f.pending_parked);
+    f.pending_parked = 0; changed = true;
   }
   if (changed) afkSetFlag(f);
   return f;
@@ -176,6 +187,7 @@ function afkPrompt(p, f, now) {
         if (afkOn(f)) { f.on = false; f.ended = now; afkSetFlag(f); }
       }
       afkMetric('digest_entries', {}, d.entries);
+      if (d.parked > 0) afkMetric('afk_question_parked', { action: ah.cfg('afk.action_listed') }, d.parked);
       reply = (head ? head + '\n' : '') + d.text;
     }
   }
@@ -207,12 +219,28 @@ function afkTurnTokens(tp) {
   return t;
 }
 
+// A turn that ends on a plain-text question while AFK: held with the ladder at most afk.question_max_holds times (null = not held).
+function afkQuestionHold(p, f, now, reply) {
+  if (!ah.settings.bool('afk.set_no_questions')) return null;
+  var last = reply.split('\n').filter(function (l) { return l.trim() !== ''; }).pop();
+  if (last === undefined || !new RegExp(ah.cfg('afk.question_re')).test(last)) return null;
+  var se = afkSession(p, f, now);
+  if (se === null) return null;
+  var held = typeof se.s.qholds === 'number' ? se.s.qholds : 0;
+  if (held >= ah.cfgNum('afk.question_max_holds')) { afkMetric('afk_question_parked', { action: ah.cfg('afk.action_capped') }); return null; }
+  se.s.qholds = held + 1;
+  if (!afkWrite(se.rel, se.s)) return null; // the cap cannot be recorded: never hold
+  afkMetric('afk_question_parked', { action: ah.cfg('afk.action_nudged') });
+  return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(ah.cfg('afk.msg_ladder_stop')) }), err: '' } };
+}
+
 function afkStop(p, f, now) {
   if (p.stop_hook_active === true) return 'allow';
+  var codex = coordinator.isCodexPayload(p);
   if (ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; })) return 'allow';
   var on = afkOn(f), tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
-  if (on) afkMetric('afk_turns', {});
-  if (tp && ah.settings.bool('afk.set_measure')) {
+  if (on && !codex) afkMetric('afk_turns', {});
+  if (tp && !codex && ah.settings.bool('afk.set_measure')) {
     var tok = afkTurnTokens(hookProc.open(p, tp));
     if (tok !== null) {
       var mode = on ? ah.cfg('afk.mode_afk') : ah.cfg('afk.mode_present');
@@ -220,8 +248,11 @@ function afkStop(p, f, now) {
       afkMetric('afk_turns_measured', { mode: mode });
     }
   }
-  if (!on || !ah.settings.bool('afk.set_enforce') || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+  if (!on || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
   var reply = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
+  var q = afkQuestionHold(p, f, now, reply);
+  if (q !== null) return q;
+  if (codex || !ah.settings.bool('afk.set_enforce')) return 'allow'; // Codex: Stop only holds a question
   var lines = reply.split('\n').filter(function (l) { return l.trim() !== ''; }).length;
   var maxC = ah.cfgNum('afk.max_reply_chars'), maxL = ah.cfgNum('afk.max_reply_lines');
   if (reply.length <= maxC && lines <= maxL) return 'allow';
@@ -239,6 +270,26 @@ function afkStop(p, f, now) {
   if (!afkWrite(se.rel, se.s)) return 'allow'; // the cap cannot be recorded: never hold
   afkMetric('afk_overlong_turns', { action: ah.cfg('afk.action_block') });
   return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(afkR(ah.cfg('afk.msg_block'), vars)) }), err: '' } };
+}
+
+// PreToolUse while AFK: the question tool is denied every time with the ladder; ExitPlanMode is approved (allow WITH updatedInput,
+// the documented shape) when an advisor call follows the owner's last message, else left to the normal approval.
+function afkPre(p, f) {
+  if (!afkOn(f) || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+  var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
+  if (ah.cfg('afk.question_tools').indexOf(tool) >= 0) {
+    if (!ah.settings.bool('afk.set_no_questions')) return 'allow';
+    afkMetric('afk_question_denied', { tool: tool });
+    return { exact: { code: 0, out: afkR(ah.cfg('afk.pre_deny'), { reason: JSON.stringify(ah.cfg('afk.msg_ladder_deny')) }), err: '' } };
+  }
+  if (ah.cfg('afk.plan_tools').indexOf(tool) < 0 || !ah.settings.bool('afk.set_plan_autoapprove') || !jx.isObj(p.tool_input)) return 'allow';
+  var scan = advisorKit.scan(p);
+  if (scan === null || !advisorKit.present(p, scan) || scan.lastAdvisor <= scan.lastUser) {
+    afkMetric('afk_plan_autoapproved', { result: ah.cfg('afk.result_no_advisor') });
+    return 'allow';
+  }
+  afkMetric('afk_plan_autoapproved', { result: ah.cfg('afk.result_approved') });
+  return { exact: { code: 0, out: afkR(ah.cfg('afk.pre_allow_input'), { reason: JSON.stringify(ah.cfg('afk.msg_plan_approved')), input: JSON.stringify(p.tool_input) }), err: '' } };
 }
 
 // The rule once per session per period, a pending nudge, else a reminder at the capped interval.
@@ -276,6 +327,7 @@ function decide(p) {
   }
   f = afkFlush(afkIdleTrip(f, now));
   if (ev === 'Stop') return afkStop(p, f, now);
+  if (ev === 'PreToolUse') return afkPre(p, f);
   if (ev === 'PostToolUse' && afkOn(f)) return afkInject(p, f, now, ev);
   return 'allow';
 }

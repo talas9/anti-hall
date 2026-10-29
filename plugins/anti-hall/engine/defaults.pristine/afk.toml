@@ -1,5 +1,6 @@
 # AFK mode (GH #425): silent work with a bullet digest while the owner is away. One check, `afk-mode` (engine-only, no Node twin),
-# runs on UserPromptSubmit, PostToolUse and Stop (Claude) and on SessionStart, UserPromptSubmit and PostToolUse (Codex):
+# runs on UserPromptSubmit, PreToolUse, PostToolUse and Stop (Claude) and on SessionStart, UserPromptSubmit, PostToolUse and Stop
+# (Codex; there Stop only holds a question):
 #   1. signals: the machine-wide flag file (afk.flag_file under the per-user state directory) is set by `ah-engine afk on`, by the
 #      owner typing `afk`, or by idle detection (no owner prompt for afk.idleMinutes); it lasts until `back` (`ah-engine back` or the
 #      owner typing `back`); an idle-entered AFK also ends on the owner's next prompt;
@@ -9,7 +10,13 @@
 #      one checklist bullet per milestone after it; `back` / `progress` print the bullets since the marker with a percentage;
 #   4. enforcement (owner decision, overrides #425 (d) "no blocking guard"): while AFK, a Stop whose final reply is over the limits
 #      is nudged once, then held at most afk.max_blocks times per AFK period and session (never on stop_hook_active, fail-open);
-#   5. measurement: output tokens per turn from the transcript usage fields, split AFK vs present (afk_output_tokens{mode}).
+#   5. measurement: output tokens per turn from the transcript usage fields, split AFK vs present (afk_output_tokens{mode});
+#   6. no blocking questions (owner requirement on #425): while AFK a PreToolUse hook denies the harness question tool
+#      (afk.question_tools) EVERY time with the question ladder (afk.msg_ladder_deny; no cap, only a hook error lets it through), and
+#      a turn that ends on a plain-text question is held at Stop with the ladder (capped, afk.question_max_holds); `back` / `progress`
+#      list NEEDS OWNER bullets first;
+#   7. plan approval: while AFK, ExitPlanMode is approved by the hook (permissionDecision allow WITH updatedInput, the documented
+#      shape; allow alone is not enough for this tool) only when an advisor call follows the owner's last message in the transcript.
 # Logic: engine/logic/afk-mode.js. Every phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax.
 
 [afk.set_enabled]
@@ -40,13 +47,21 @@ value = { section = "afk", key = "measure", kind = "bool", env = "", aliases = [
 doc = "The afk.conciseCodex setting: on Codex (no output styles), inject the concise reply rule (afk.concise_text) once at session start. On Claude the shipped output style `concise` (force-for-plugin) carries the same rule."
 value = { section = "afk", key = "conciseCodex", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
 
+[afk.set_no_questions]
+doc = "The afk.noQuestions setting: while AFK, deny the harness question tool (afk.question_tools) every time with the question ladder, and hold (at most afk.question_max_holds times) a turn that ends on a plain-text question. Off = questions pass as usual."
+value = { section = "afk", key = "noQuestions", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.set_plan_autoapprove]
+doc = "The afk.planAutoApprove setting: while AFK, approve ExitPlanMode from the hook (allow with updatedInput) when an advisor call follows the owner's last message; otherwise the normal plan approval runs."
+value = { section = "afk", key = "planAutoApprove", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
 [afk.guard_name]
 doc = "The guard id this check answers to in skip.json and in its messages."
 value = "afk-mode"
 
 [afk.summary]
 doc = "One-line description of the afk-mode check in the generated reference."
-value = "UserPromptSubmit, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse (Codex): AFK mode. Machine-wide flag (ah-engine afk on|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file, a capped Stop hold of overlong AFK replies, output tokens per turn AFK vs present (afk.*)."
+value = "UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse, Stop (Codex): AFK mode. Machine-wide flag (ah-engine afk on|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file (NEEDS OWNER bullets first), a capped Stop hold of overlong AFK replies, no blocking questions (AskUserQuestion denied with the question ladder, a capped hold of a turn ending on a question), ExitPlanMode approved after an advisor review, output tokens per turn AFK vs present (afk.*)."
 
 [afk.flag_file]
 doc = "The machine-wide AFK flag file, under the per-user state directory (replykit.state_dir). JSON {on, how, since, epoch, counted, pending_digest}."
@@ -204,11 +219,11 @@ value = "AFK (idle) ended: the owner is back. Type `progress` to see the digest.
 
 [afk.rule_text]
 doc = "The AFK rule, injected once per session per AFK period. Placeholders: {progress} (the session's progress file)."
-value = "AFK MODE: the owner is away. Until told otherwise: (1) no narration between tool calls and no status prose; (2) decide, do not ask: pick the reversible default and note it; still never do anything destructive or irreversible without the owner; (3) end each turn with at most ONE short line; (4) after each milestone append ONE checklist bullet to {progress}: `- [x] <what is done, evidence>` or `- [ ] <what is open/blocked>` (it is the owner's digest). Guards are unchanged."
+value = "AFK MODE: the owner is away. Until told otherwise: (1) no narration between tool calls and no status prose; (2) NEVER ask the owner a question (the question tool is denied): decide from the plan and context; if unsure, ask the advisor; only if still unclear AND not implied by the plan AND the choice is destructive/irreversible or would wreck the work if made the other way: park that ONE item, append `- [ ] NEEDS OWNER: <question, options, your default>` to {progress}, and CONTINUE the other parts of the plan (very rare); never do anything destructive or irreversible without the owner; (3) end each turn with at most ONE short line; (4) after each milestone append ONE checklist bullet to {progress}: `- [x] <what is done, evidence>` or `- [ ] <what is open/blocked>` (it is the owner's digest). Guards are unchanged."
 
 [afk.reminder_text]
 doc = "The short reminder injected during long AFK turns."
-value = "AFK: no narration, no status prose, decide don't ask, one line at end of turn, one checklist bullet per milestone in the progress file."
+value = "AFK: no narration, no status prose, never ask (plan -> advisor -> park as a NEEDS OWNER bullet and continue), one line at end of turn, one checklist bullet per milestone in the progress file."
 
 [afk.reminder_interval_s]
 doc = "Seconds between two AFK reminders in one session (PostToolUse)."
@@ -247,6 +262,68 @@ value = "AFK: your last reply was {chars} chars / {lines} lines (limit {max_char
 [afk.msg_block]
 doc = "Reason of a Stop hold of an overlong AFK reply (one line). Placeholders: {chars}, {lines}, {max_chars}, {max_lines}."
 value = "AFK: reply over limit ({chars} chars / {lines} lines, limit {max_chars} / {max_lines}). End the turn now with ONE short line; no recap."
+
+[afk.question_tools]
+doc = "Harness tools that ask the owner a blocking question: denied every time while AFK (afk.noQuestions). The dispatch entry afk-mode:pre must match them."
+value = ["AskUserQuestion"]
+
+[afk.plan_tools]
+doc = "Harness tools that ask the owner to approve a plan: approved by the hook while AFK after an advisor review (afk.planAutoApprove). The dispatch entry afk-mode:pre must match them."
+value = ["ExitPlanMode"]
+
+[afk.pre_deny]
+doc = "The stdout line of a PreToolUse that denies the tool call with {reason} (JSON-quoted)."
+value = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":{reason}}}\n"
+
+[afk.pre_allow_input]
+doc = "The stdout line of a PreToolUse that approves the tool call: permissionDecision allow WITH updatedInput ({input}, the tool's whole input, JSON), the documented shape for ExitPlanMode (code.claude.com/docs/en/hooks: AskUserQuestion and ExitPlanMode need updatedInput paired with allow; allow alone is not sufficient). {reason} is JSON-quoted."
+value = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":{reason},\"updatedInput\":{input}}}\n"
+
+[afk.msg_ladder_deny]
+doc = "Reason of the AFK question-tool deny (the question ladder)."
+value = "AFK: the owner is away; questions are not allowed. Instead: (1) decide from the plan and context; (2) still unsure: ask the advisor; (3) only if still unclear AND not implied by the plan AND the choice is destructive/irreversible or would wreck the work if made the other way: park that ONE item, append `- [ ] NEEDS OWNER: <question, options, your default>` to your progress file, and CONTINUE the other parts of the plan (very rare)."
+
+[afk.msg_ladder_stop]
+doc = "Reason of the Stop hold of an AFK turn that ends on a plain-text question."
+value = "AFK: your turn ended on a question the owner cannot answer. Do not ask: decide from the plan and context, or ask the advisor; only a destructive/irreversible or work-wrecking choice not implied by the plan is parked as `- [ ] NEEDS OWNER: <question>` in your progress file. Then continue the other parts of the plan."
+
+[afk.msg_plan_approved]
+doc = "permissionDecisionReason of the AFK ExitPlanMode approval."
+value = "AFK: plan approved by anti-hall (the owner is away; an advisor review follows the owner's last message)."
+
+[afk.question_re]
+doc = "A final reply whose last non-empty line matches this is a plain-text question (regular expression)."
+value = "\\?\\s*[*_`)\\]]*\\s*$"
+
+[afk.question_max_holds]
+doc = "Most Stop holds of a turn ending on a plain-text question, per session per AFK period (then it is let through, counted capped)."
+value = 2
+min = 0
+max = 10
+
+[afk.needs_owner_re]
+doc = "A digest bullet that parks an item for the owner: listed first by back / progress (regular expression)."
+value = "NEEDS OWNER"
+
+[afk.msg_needs_owner_head]
+doc = "Heading of the NEEDS OWNER list printed first by back / progress. Placeholders: {n}."
+value = "NEEDS OWNER ({n}):"
+
+[afk.result_approved]
+doc = "afk_plan_autoapproved result label: ExitPlanMode approved by the hook."
+value = "approved"
+
+[afk.result_no_advisor]
+doc = "afk_plan_autoapproved result label: no advisor call since the owner's last message, the normal approval ran."
+value = "no_advisor"
+
+[afk.action_nudged]
+doc = "afk_question_parked action label: a turn ending on a plain-text question was held with the ladder."
+value = "nudged"
+
+[afk.action_listed]
+doc = "afk_question_parked action label: NEEDS OWNER bullets printed by back / progress."
+value = "listed"
 
 [afk.concise_text]
 doc = "The concise reply rule injected at session start on Codex (Claude gets it from the shipped output style `concise`)."
@@ -317,6 +394,18 @@ value = { kind = "counter", unit = "events", labels = [] }
 [metric.afk_overlong_turns]
 doc = "Overlong AFK replies, by action (nudge, block, capped)."
 value = { kind = "counter", unit = "events", labels = ["action"] }
+
+[metric.afk_question_denied]
+doc = "AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap)."
+value = { kind = "counter", unit = "events", labels = ["tool"] }
+
+[metric.afk_question_parked]
+doc = "AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook)."
+value = { kind = "counter", unit = "events", labels = ["action"] }
+
+[metric.afk_plan_autoapproved]
+doc = "AFK ExitPlanMode calls, by result: approved (allow with updatedInput after an advisor review) or no_advisor (the normal approval ran)."
+value = { kind = "counter", unit = "events", labels = ["result"] }
 
 [metric.afk_output_tokens]
 doc = "Output tokens of main-session turns (transcript usage, deduplicated by message id), by mode (afk, present). Divide by afk_turns_measured for the per-turn average."

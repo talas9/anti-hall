@@ -29,7 +29,14 @@ next prompt. A manual AFK lasts until `back`.
 - Each session gets the AFK rule once: no narration between tool calls, no status prose, decide instead of asking (never
   anything destructive), at most one line at the end of a turn, one checklist bullet per milestone in its progress file
   `.anti-hall/progress/<date>/<session>.md` (`- [x] done ...` / `- [ ] open ...`). A short reminder repeats in long turns.
-- The digest is the bullets after the session's AFK marker; the percentage is `[x]` bullets / all checklist bullets.
+- The digest (NEEDS OWNER bullets first) is the bullets after the session's AFK marker; the percentage is `[x]` bullets / all checklist bullets.
+- No blocking questions: `AskUserQuestion` is denied EVERY time with the ladder below, and a turn that ends on a plain-text
+  question is held at Stop with the ladder (at most `afk.question_max_holds` times).
+- Plan approval: `ExitPlanMode` is approved by the hook (allow + `updatedInput`) only when an advisor call follows the owner's
+  last message; otherwise the normal approval runs.
+- Question ladder: decide from the plan and context; ask the advisor; only if still unclear AND not implied by the plan AND the
+  choice is destructive/irreversible or would wreck the work if made the other way: park that ONE item as
+  `- [ ] NEEDS OWNER: <question>` in the progress file and continue the other parts of the plan (very rare).
 - A final reply over `afk.max_reply_chars` / `afk.max_reply_lines` is nudged once, then held at most `afk.max_blocks` times
   (never in a loop). All other guards are unchanged.
 
@@ -44,13 +51,16 @@ next prompt. A manual AFK lasts until `back`.
 | `afk.enforce` | true | Nudge and capped hold of overlong AFK replies |
 | `afk.measure` | true | Output tokens per turn, AFK vs present |
 | `afk.conciseCodex` | true | Concise reply rule at Codex session start |
+| `afk.noQuestions` | true | Deny the question tool and hold a turn ending on a question, while AFK |
+| `afk.planAutoApprove` | true | Approve ExitPlanMode after an advisor review, while AFK (Claude) |
 
 Texts, limits and patterns: `engine/defaults/afk.toml`.
 
 ## Telemetry
 
 `ah-engine metrics` shows `afk_entered{how}`, `afk_turns`, `digest_entries`, `idle_trips`, `afk_overlong_turns{action}`,
-`afk_output_tokens{mode}` and `afk_turns_measured{mode}` (tokens / turns = output tokens per turn, AFK vs present).
+`afk_output_tokens{mode}`, `afk_turns_measured{mode}` (tokens / turns = output tokens per turn, AFK vs present),
+`afk_question_denied{tool}`, `afk_question_parked{action}` (nudged, capped, listed) and `afk_plan_autoapproved{result}`.
 
 ## Concise style
 

@@ -3131,6 +3131,113 @@ mod afk_mode {
         assert_eq!(m.counter("afk_output_tokens", &[("mode", "afk")]), 80);
     }
 
+    fn transcript(h: &str, lines: &[Value]) {
+        std::fs::write(format!("{h}/t.jsonl"), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+    }
+
+    #[test]
+    fn ask_user_question_is_denied_every_time_while_afk_with_the_ladder() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-ask");
+        drained();
+        let ask = json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Which one?"}]}});
+        assert!(out(&run(&h, "PreToolUse", ask.clone(), &[])).is_empty(), "not AFK: the question passes");
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        for _ in 0..5 {
+            let o = out(&run(&h, "PreToolUse", ask.clone(), &[]));
+            let v: Value = serde_json::from_str(o.trim()).unwrap_or_else(|e| panic!("{o}: {e}"));
+            assert_eq!(v["hookSpecificOutput"]["hookEventName"], json!("PreToolUse"));
+            assert_eq!(v["hookSpecificOutput"]["permissionDecision"], json!("deny"), "denied every time, no cap: {o}");
+            let why = v["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap_or_default();
+            assert!(why.contains("advisor") && why.contains("NEEDS OWNER"), "{why}");
+        }
+        assert_eq!(drained().counter("afk_question_denied", &[("tool", "AskUserQuestion")]), 5);
+        // the rule injected at AFK start states the ladder
+        let o = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert!(o.contains("NEEDS OWNER"), "{o}");
+        // the setting off: the question passes
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"noQuestions": false}}).to_string()).unwrap();
+        assert!(out(&run(&h, "PreToolUse", ask, &[])).is_empty());
+        drained();
+    }
+
+    #[test]
+    fn exit_plan_mode_is_auto_approved_with_updated_input_only_after_an_advisor_review_since_the_owner() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan");
+        drained();
+        let user = json!({"type": "user", "message": {"role": "user", "content": "build it"}});
+        let adv = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "server_tool_use", "name": "advisor", "id": "a"}]}});
+        let plan = json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "1. do X\n2. do Y", "allowedPrompts": []}});
+        transcript(&h, &[user.clone(), adv.clone()]);
+        assert!(out(&run(&h, "PreToolUse", plan.clone(), &[])).is_empty(), "not AFK: the normal approval");
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let o = out(&run(&h, "PreToolUse", plan.clone(), &[]));
+        let v: Value = serde_json::from_str(o.trim()).unwrap_or_else(|e| panic!("{o}: {e}"));
+        let hso = &v["hookSpecificOutput"];
+        assert_eq!(hso["hookEventName"], json!("PreToolUse"));
+        assert_eq!(hso["permissionDecision"], json!("allow"));
+        assert_eq!(hso["updatedInput"], plan["tool_input"], "updatedInput is the whole input, unchanged");
+        // the owner wrote after the advisor call: the normal approval
+        transcript(&h, &[adv, user]);
+        assert!(out(&run(&h, "PreToolUse", plan.clone(), &[])).is_empty());
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[("result", "approved")]), 1);
+        assert_eq!(m.counter("afk_plan_autoapproved", &[("result", "no_advisor")]), 1);
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"planAutoApprove": false}}).to_string()).unwrap();
+        transcript(
+            &h,
+            &[
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "server_tool_use", "name": "advisor", "id": "b"}]}}),
+            ],
+        );
+        assert!(out(&run(&h, "PreToolUse", plan, &[])).is_empty(), "setting off");
+        drained();
+    }
+
+    #[test]
+    fn a_turn_ending_on_a_plain_text_question_while_afk_is_held_with_the_ladder_capped() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-q-stop");
+        drained();
+        let q = json!({"last_assistant_message": "Shall I proceed?"});
+        assert!(out(&run(&h, "Stop", q.clone(), &[])).is_empty(), "not AFK");
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        assert!(out(&run(&h, "Stop", json!({"last_assistant_message": "Done."}), &[])).is_empty());
+        let mut q2 = q.clone();
+        q2["stop_hook_active"] = json!(true);
+        assert!(out(&run(&h, "Stop", q2, &[])).is_empty(), "never on stop_hook_active");
+        let o = out(&run(&h, "Stop", q.clone(), &[]));
+        assert!(o.contains("\"decision\":\"block\"") && o.contains("NEEDS OWNER"), "{o}");
+        run(&h, "Stop", q.clone(), &[]);
+        assert!(out(&run(&h, "Stop", q, &[])).is_empty(), "capped at afk.question_max_holds (2)");
+        let m = drained();
+        assert_eq!(m.counter("afk_question_parked", &[("action", "nudged")]), 2);
+        assert_eq!(m.counter("afk_question_parked", &[("action", "capped")]), 1);
+    }
+
+    #[test]
+    fn the_digest_lists_needs_owner_bullets_first() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-needs");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        let p = progress(&h);
+        let mut text = std::fs::read_to_string(&p).unwrap();
+        text.push_str("- [x] built A\n- [ ] NEEDS OWNER: drop table x? (destructive)\n- [x] built B\n");
+        std::fs::write(&p, &text).unwrap();
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "progress"}), &[]));
+        let v: Value = serde_json::from_str(o.trim()).unwrap();
+        let r = v["reason"].as_str().unwrap_or_default();
+        let (n, a) = (r.find("NEEDS OWNER").unwrap_or(usize::MAX), r.find("built A").unwrap_or(0));
+        assert!(n < a, "NEEDS OWNER first: {r}");
+        assert_eq!(r.matches("NEEDS OWNER: drop").count(), 1, "listed once: {r}");
+        assert!(r.contains("67% (2/3"), "{r}");
+        assert_eq!(drained().counter("afk_question_parked", &[("action", "listed")]), 1);
+    }
+
     #[test]
     fn the_master_switch_off_leaves_prompts_alone() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());

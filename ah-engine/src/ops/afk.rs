@@ -137,14 +137,18 @@ fn tail_text(path: &Path, max: u64) -> Value {
     Value::String(String::from_utf8_lossy(&b).into_owned())
 }
 
-/// The digest text and entry count of the AFK period `epoch` (the plugin script renders it).
-pub(crate) fn digest(home: &str, epoch: &str) -> (String, u64) {
+/// The digest text, entry count and NEEDS OWNER bullet count of the AFK period `epoch` (the plugin script renders it).
+pub(crate) fn digest(home: &str, epoch: &str) -> (String, u64, u64) {
     let cfg: Map<String, Value> =
         defaults::with_prefix("afk.").into_iter().filter_map(|e| e.key.strip_prefix("afk.").map(|k| (k.to_string(), e.value.to_json()))).collect();
     let input = json!({"cfg": Value::Object(cfg), "files": session_files(home, epoch)});
     match super::opcli_call("back", "afk-mode", "afkDigest", &input) {
-        Some(v) => (v.get("text").and_then(Value::as_str).unwrap_or_default().to_string(), v.get("entries").and_then(Value::as_u64).unwrap_or_default()),
-        None => (defaults::text("afk.msg_no_sessions").to_string(), 0),
+        Some(v) => (
+            v.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
+            v.get("entries").and_then(Value::as_u64).unwrap_or_default(),
+            v.get("parked").and_then(Value::as_u64).unwrap_or_default(),
+        ),
+        None => (defaults::text("afk.msg_no_sessions").to_string(), 0, 0),
     }
 }
 
@@ -166,9 +170,11 @@ fn turn_off(p: &Parsed, home: &str, print_digest: bool) -> i32 {
     }
     let mut text = head;
     if print_digest {
-        let (d, n) = digest(home, &field(&f, "epoch"));
+        let (d, n, parked) = digest(home, &field(&f, "epoch"));
         let pending = f.get("pending_digest").and_then(Value::as_u64).unwrap_or_default();
         f.insert("pending_digest".into(), json!(pending + n));
+        let pending_parked = f.get("pending_parked").and_then(Value::as_u64).unwrap_or_default();
+        f.insert("pending_parked".into(), json!(pending_parked + parked));
         text = format!("{text}\n{d}");
     }
     if (was_on || print_digest) && !write_flag(home, &f) {
