@@ -157,9 +157,9 @@ var blockCap = {
       var at = jx.isoMs(e.timestamp);
       if (typeof at !== 'number' || !isFinite(at)) at = null;
       for (var j = 0; j < ids.length; j++) {
-        if (typeof e[ids[j]] === 'string' && e[ids[j]]) return { id: e[ids[j]], at: at };
+        if (typeof e[ids[j]] === 'string' && e[ids[j]]) return { id: e[ids[j]], at: at, text: t };
       }
-      return { id: ah.sha1(lines[i]), at: at };
+      return { id: ah.sha1(lines[i]), at: at, text: t };
     }
     return null;
   },
