@@ -173,7 +173,7 @@ appear when the discipline has slipped.
 Claude Code's own TaskCreate reminder re-prints the **whole** task list — completed
 tasks included — every few turns; that cost grows with the session's completed-task
 count for no benefit. Once completed/cancelled tasks exceed
-`guards.pruneCompletedTasksAfter` (default **10**), `task-guard.js` emits a **one-line
+`guards.pruneCompletedTasksAfter` (default **3**), `task-guard.js` emits a **one-line
 advisory** at Stop (never a block): after recording them in the session's
 `.anti-hall/history/<date>/<session-id>.md` ledger (step 4 above), prune them with
 `TaskUpdate status=deleted` so the harness reminder stops re-printing them. This is

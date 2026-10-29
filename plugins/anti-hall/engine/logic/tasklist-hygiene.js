@@ -62,11 +62,12 @@ function decide(p, opts, event) {
     var reason = text.message('block', guard, { what: bp, instead: ah.cfg('tasklist_hygiene.instead_block') }, sid);
     return { exact: { code: 2, out: text.blockJson(reason), err: '' } };
   }
-  var whats = [], instead = '';
+  var whats = [], instead = '', doneNote = false;
   if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.settings.bool('ctxbudget.set_h_task_done_note') && ah.cfg('tasklist_hygiene.done_trigger').indexOf(String(inp.status)) >= 0) {
     var id = inp.taskId === undefined || inp.taskId === null ? '' : String(inp.taskId);
     whats.push(text.render(ah.cfg('tasklist_hygiene.msg_done'), { id: id }));
     instead = ah.cfg('tasklist_hygiene.instead_done');
+    doneNote = true;
   }
   if (mode !== 'off') {
     var content = thCompose(thBreach(p, tool, false));
@@ -76,5 +77,5 @@ function decide(p, opts, event) {
     }
   }
   if (whats.length === 0) return 'allow';
-  return { advisory: text.advisoryJson('PostToolUse', text.message('tip', guard, { what: whats.join(ah.cfg('tasklist_hygiene.join')), instead: instead }, sid)) };
+  return { advisory: text.advisoryJson('PostToolUse', text.message('tip', guard, { what: whats.join(ah.cfg('tasklist_hygiene.join')), instead: instead, extra: doneNote ? [ah.cfg('tasklist_hygiene.detail_done')] : [], details: doneNote }, sid)) };
 }

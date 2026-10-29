@@ -129,7 +129,7 @@ function main() {
     if (s === 'completed' || s === 'done' || s === 'cancelled' || s === 'canceled') completedCount++;
   }
   try {
-    const pruneAfter = require('./lib/settings.js').getWithEnv('guards', 'pruneCompletedTasksAfter', 10, process.env);
+    const pruneAfter = require('./lib/settings.js').getWithEnv('guards', 'pruneCompletedTasksAfter', 3, process.env);
     if (Number.isFinite(pruneAfter) && pruneAfter > 0 && completedCount > pruneAfter) {
       // stderr: stdout must stay empty or ONE JSON object (a later block printed after this line would be read as plain
       // text and lost, and the engine dispatcher cannot merge plain stdout with another Stop hook's JSON)
