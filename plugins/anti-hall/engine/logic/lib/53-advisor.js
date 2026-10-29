@@ -22,7 +22,7 @@ var advisorKit = {
     var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
     if (!tp || !ah.path.isAbsolute(tp)) return null;
     var r = ah.transcript.tailEntries(tp, ah.cfgNum('advisor.window_bytes'), ah.cfgNum('advisor.line_max_bytes'),
-      [['type'], ['message', 'content']], ah.cfgNum('advisor.max_lines'));
+      [['type'], ['message', 'content'], ['message', 'content', '*', 'type'], ['message', 'content', '*', 'name']], ah.cfgNum('advisor.max_lines'));
     if (r === null || !r.lines) return null;
     var names = ah.cfg('advisor.tool_names'), types = ah.cfg('advisor.block_types');
     var out = { lastAdvisor: -1, lastUser: -1, any: false };

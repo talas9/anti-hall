@@ -386,6 +386,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
 | `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on). |
 | `wide-search-guard` | PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
+| `advisor-guard` | PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure on Bash, only when the session has an advisor tool: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build with no advisor call in between (guards.advisorRetry). The review rule lives in model-routing. |
 | `switch-notice` | Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
 | `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
@@ -2818,9 +2819,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.generated_files` | `2 entries` |  |  | Per host and kind of generated file (hooks, registry, list), its path relative to the repository root. `tests/hooks_files.rs` requires each committed file to equal what `gen-hooks` prints and `ah-gen-fallback-list` writes them. |
 | `dispatch.guard_events` | `PreToolUse, PermissionRequest, Stop, SubagentStop` |  |  | Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call (Claude ignores exit 2 on PermissionRequest, so a fail-closed exit 2 there is harmless, and the event stays listed so a hook registered on it later is guarded from the start), Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74). |
 | `dispatch.hooks_claude_PostToolUse` | `10 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
-| `dispatch.hooks_claude_PostToolUseFailure` | `4 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PostToolUseFailure` | `4 entries, 4 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `4 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_claude_PreToolUse` | `31 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PreToolUse` | `32 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `4 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `19 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `13 items` |  |  | The claude Stop hook entries, in dispatch order. |
@@ -4707,7 +4708,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `advisory.cap_hard_by_kind` | `2 entries` |  |  | Per-kind override of advisory.cap_hard_default. |
+| `advisory.cap_hard_by_kind` | `5 entries` |  |  | Per-kind override of advisory.cap_hard_default. |
 | `advisory.cap_hard_default` | `30` |  |  | The per-session hard cap of an advisory kind: past it the advisory is suppressed (counted as suppressed). |
 | `advisory.cap_soft_by_kind` | `2 entries` |  |  | Per-kind override of advisory.cap_soft_default. |
 | `advisory.cap_soft_default` | `8` |  |  | The per-session soft cap of an advisory kind: past it the advisory still fires and the kind is counted as over its soft cap. |
@@ -5098,6 +5099,41 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wide_search.unresolvable_re` | `[*?\[\]{}$`]` |  |  | A path word the guard cannot resolve (a glob or a variable): it is not judged. Regular expression (Rust syntax). |
 | `wide_search.whole_disk` | `/` |  |  | The root a Spotlight search (mdfind) without a scope flag covers. |
 
+### advisor.toml / advisor
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `advisor.block_types` | `tool_use, server_tool_use` |  |  | Transcript content-block types that are a tool call (the advisor is a server tool, so its block may be server_tool_use). |
+| `advisor.edit_tools` | `Write, Edit, MultiEdit` |  |  | Tool names whose file_path is an edit target. |
+| `advisor.guard_name` | `advisor-guard` |  |  | The skip.json key and block label of the advisor rules. |
+| `advisor.kind_plan` | `advisor_plan` |  |  | Advisory kind (counters and cap) of the plan rule. |
+| `advisor.kind_retry` | `advisor_retry` |  |  | Advisory kind (counters and cap) of the retry rule. |
+| `advisor.kind_review` | `advisor_review` |  |  | Advisory kind (counters and cap) of the review rule. |
+| `advisor.line_max_bytes` | `1048576` |  | bytes | A transcript line longer than this is skipped when looking for advisor calls. |
+| `advisor.max_lines` | `4000` |  |  | Most transcript lines read from the tail. |
+| `advisor.msg_plan_instead` | `Call the advisor on this plan first, then write it.` |  |  | What to do instead for the plan rule. |
+| `advisor.msg_plan_what` | `A plan is being written with no advisor call since the task began.` |  |  | Block text of the plan rule. |
+| `advisor.msg_retry_instead` | `Consult the advisor on the failure before editing again.` |  |  | What to do instead for the retry rule. |
+| `advisor.msg_retry_what` | `{file} is being edited again after a failed test or build, with no advisor ca...` |  |  | Block text of the retry rule. Placeholder: {file}. |
+| `advisor.msg_review_instead` | `Use an Opus, Fable or Codex agent for the review, or call the advisor yoursel...` |  |  | What to do instead for the review rule. |
+| `advisor.msg_review_what` | `A review-shaped agent on {model} is not allowed while the advisor is available.` |  |  | Block text of the review rule. Placeholder: {model}. |
+| `advisor.msg_why` | `Hard decisions (review, plan, retry after a failure) belong to the advisor mo...` |  |  | The reason line shared by the three rules. |
+| `advisor.payload_tool_keys` | `tools, available_tools, allowed_tools` |  |  | Hook payload fields that may list the tools available to the session (an array of names or of objects with a name); the advisor counts as available when one names it. |
+| `advisor.plan_file_re` | `(?i)(?:^\|/)PLAN\.md$\|(?:^\|/)(?:\.omc/plans\|\.claude/plans\|\.anti-hall/plans\|p...` |  |  | Regular expression (Rust syntax) of a file path that is a plan file: PLAN.md anywhere, or a markdown file in a plans directory. |
+| `advisor.plan_tools` | `ExitPlanMode` |  |  | Tool names that always count as writing a plan. |
+| `advisor.review_signals` | `review, reviewer, audit, auditor, critique, critic` |  |  | Token phrases that make an agent spawn review-shaped (matched against its description and prompt like model_routing.complex). |
+| `advisor.session_safe_max` | `64` |  |  | Longest session-id part kept in a state file name. |
+| `advisor.state_ext` | `.json` |  |  | File-name extension of the per-session retry state. |
+| `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
+| `advisor.summary` | `PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure on Bas...` |  |  | One-line description of the advisor-guard check in the generated reference. |
+| `advisor.sw_plan` | `6 entries` |  |  | Switch guards.advisorPlan (default on, active only when an advisor tool is present): block writing a plan with no advisor call since the task began, once. |
+| `advisor.sw_retry` | `6 entries` |  |  | Switch guards.advisorRetry (default on, active only when an advisor tool is present): block a second edit of the same file after a failed test or build with no advisor call in between, once. |
+| `advisor.sw_review` | `6 entries` |  |  | Switch guards.advisorReview (default on, active only when an advisor tool is present): block a review-shaped agent spawn on a non-flagship model once. |
+| `advisor.test_cmd_re` | `\b(?:cargo\s+(?:\+\S+\s+)?(?:test\|nextest\|build\|check\|clippy)\|npm\s+(?:run\s+...` |  |  | Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run. |
+| `advisor.tool_names` | `advisor` |  |  | Names of the advisor tool, in a transcript tool_use block or in the payload's tool list. |
+| `advisor.unknown_model_label` | `the inherited model` |  |  | Label shown in the review block when the model is inherited. |
+| `advisor.window_bytes` | `4194304` |  | bytes | Bytes of the transcript tail read to find advisor calls and the last user message. |
+
 ### broad_kill.toml / broad_kill
 
 | Key | Default | Env override | Unit | What it is |
@@ -5436,7 +5472,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `382 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `385 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7479,7 +7515,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.check_scope` | `(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : u...` |  |  | How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB. |
 | `script.cut_at_request_deadline` | `1` | `AH_ENGINE_SCRIPT_CUT_AT_DEADLINE` |  | 1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry takes its check's failure policy while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up). Not counted as a script error. A check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline (the Node parity harness sets AH_ENGINE_SCRIPT_CUT_AT_DEADLINE=0 so its daemon answers every case, however loaded the machine). |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `81 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
+| `script.engine_only_checks` | `82 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -7488,7 +7524,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.exec_timeout_max_ms` | `5000` |  | ms | Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit. |
 | `script.exec_timeout_scale` | `1` | `AH_ENGINE_SCRIPT_EXEC_SCALE` |  | Multiplier on the time every `ah.exec` run and every process listing a script asks for may take (the limit a script asks for, and the longest one, are both multiplied). 1 in production; a test build on a loaded machine raises it so a slow child process is not read as a failure. |
 | `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
-| `script.failure_mode_by_check` | `26 entries` |  |  | Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
+| `script.failure_mode_by_check` | `27 entries` |  |  | Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
 | `script.failure_mode_closed` | `closed` |  |  | The failure-mode value that blocks on a guard event (any other value allows). |
 | `script.failure_mode_default` | `open` |  |  | Failure mode of a check not listed in script.failure_mode_by_check. |
 | `script.fingerprint_ttl_ms` | `1000` |  | ms | How long the listing of the shared lib files (names, sizes, modification times) of the logic directories is reused by all checks before it is read again. A check call checks whether its scripts changed by comparing this fingerprint, and listing the library directory and stating every lib file on every call cost about 40 file operations per check (live: the workers' file work was most of the daemon's CPU). An edited, added or removed lib file takes effect within this interval; the check's own script file is still stat-ed on every call. 0 = list on every call. |
@@ -7850,7 +7886,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `382 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `385 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 

@@ -10,6 +10,7 @@ mod broad_kill;
 mod common;
 mod deploy_defaults_gate;
 mod event_budgets;
+mod advisor_mode;
 mod lane_waste;
 mod replies;
 mod roles;
