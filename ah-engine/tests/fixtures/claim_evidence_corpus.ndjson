@@ -131,3 +131,17 @@
 {"text": "If the tests pass the change is merged by the queue.", "expect": "allow", "source": "round5-adversarial"}
 {"text": "Unless CI is green, it is not merged.", "expect": "allow", "source": "round5-adversarial"}
 {"text": "PR #12 must be merged before the release.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Never mind CI is green.", "expect": "block", "source": "review-round4-pass"}
+{"text": "No, CI is passing.", "expect": "block", "source": "review-round4-pass"}
+{"text": "I think it is live.", "expect": "block", "source": "review-round4-pass"}
+{"text": "I believe it is fixed.", "expect": "block", "source": "review-round4-pass"}
+{"text": "Per worker CI is green.", "expect": "block", "source": "review-round4-pass"}
+{"text": "Per worker it is merged.", "expect": "block", "source": "review-round4-pass"}
+{"text": "Until now CI was red but CI is passing.", "expect": "block", "source": "review-round4-pass"}
+{"text": "Not today and it is merged.", "expect": "block", "source": "review-round4-pass"}
+{"text": "If asked: it is fixed.", "expect": "block", "source": "review-round4-pass"}
+{"text": "I'll merge once all PRs are merged.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Merge when all checks are green.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Ping me if needed once CI is green.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "When needed the fix is deployed.", "expect": "block", "source": "round5-adversarial"}
+{"text": "I will merge after all PRs are merged.", "expect": "allow", "source": "round5-adversarial"}

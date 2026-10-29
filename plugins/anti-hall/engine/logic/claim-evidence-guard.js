@@ -74,13 +74,12 @@ function ceGapWords(gap) {
 }
 
 // True when some hit of a pattern of `list` in `head` ends within `reach` counted words of the end of `head` (where the claim starts)
-// and the text after it is not an idiom (`idiom`, a regex or null: 'Once again ...', 'No doubt ...' cover nothing).
+// and is not an idiom (`idiom`, a regex or null, matched against the hit and the text after it: 'Once again ...', 'No doubt ...' cover nothing).
 function ceInReach(list, head, reach, idiom) {
   for (var i = 0; i < list.length; i++) {
     var all = ah.re.findAll(list[i], 'i', head);
     for (var j = 0; j < all.length; j++) {
-      var gap = head.slice(all[j][1]);
-      if (ceGapWords(gap) <= reach && (idiom === null || !ah.re.find(idiom, 'i', gap))) return true;
+      if (ceGapWords(head.slice(all[j][1])) <= reach && (idiom === null || !ah.re.find(idiom, 'i', head.slice(all[j][0])))) return true;
     }
   }
   return false;

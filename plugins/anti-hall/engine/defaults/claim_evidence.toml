@@ -99,8 +99,8 @@ doc = "'no' before the claim's subject (rule 1): 'no PR is merged'. Reach claim_
 value = ['\bno\b']
 
 [claim_evidence.no_idiom_re]
-doc = "The words after a 'no' (neg_subject_res) that make it a certainty idiom, not a negated subject: 'No doubt it is merged', 'No wonder it is live' stay claims. Rust regular expression, case-insensitive, matched against the text between the 'no' and the claim."
-value = '^\W*(?:doubt|doubts|wonder|question|questions|kidding|way|problem|problems|worries|surprise|joke|matter|need|denying)\b'
+doc = "The words after a 'no' (neg_subject_res) that make it a certainty idiom, not a negated subject: 'No doubt it is merged', 'No wonder it is live' stay claims. Rust regular expression, case-insensitive, matched against the 'no' and the text after it up to the claim."
+value = '^no\s+(?:doubt|doubts|wonder|question|questions|kidding|way|problem|problems|worries|surprise|joke|matter|need|denying)\b'
 
 [claim_evidence.modal_res]
 doc = "A modal or future marker on the claim's own verb (rule 1): 'must have been merged', 'will have been deployed'. Reach claim_evidence.reach_verb, so 'We must hurry because PR #405 is merged' and 'We will celebrate given that ...' stay claims. Regular expressions, case-insensitive, matched against the clause before the claim."
@@ -114,8 +114,8 @@ doc = "A conditional, temporal or 'whether' word that opens the claim's own clau
 value = ['\b(?:once|after|when|whenever|if|until|unless|before|as soon as|assuming|provided|whether|in case)\b']
 
 [claim_evidence.opener_idiom_re]
-doc = "The words after a clause opener (future_res) that make it an idiom, not a condition on the claim: 'Once again CI is green', 'If anything', 'If needed', 'Until now', 'After all', 'whether ... or not' stay claims. Only an opener followed by the claim's own subject covers it. Rust regular expression, case-insensitive, matched against the text between the opener and the claim."
-value = '^\W*(?:again|more|asked|anything|needed|necessary|possible|so|then|now|today|tonight|yesterday|all|ever|usual|expected|before|anyway|nothing)\b|\bor\s+(?:not|no)\b'
+doc = "The words after a clause opener (future_res) that make it an idiom, not a condition on the claim: 'Once again CI is green', 'If anything', 'If needed', 'Until now', 'After all', 'whether ... or not' stay claims, while 'once all PRs are merged' is a condition. Each idiom is paired with its opener. Only an opener followed by the claim's own subject covers it. Rust regular expression, case-insensitive, matched against the opener and the text after it up to the claim."
+value = '^(?:once\s+(?:again|more)|(?:if|when|whenever)\s+(?:asked|anything|needed|necessary|possible|so|ever)|until\s+(?:now|today|tonight|then|yesterday|recently)|after\s+all\s+(?:it|this|that|they|we|the|everything)|before\s+(?:now|today))\b|^after\s+all\W*$|^whether\b.*\bor\s+(?:not|no)\b'
 
 [claim_evidence.reported_res]
 doc = "A reporting verb, or 'according to' a named source, that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed', 'according to the PR body the change is merged' ('according to plan' names no source). Quoted text is a claim like any other unless one of these opens its clause. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
