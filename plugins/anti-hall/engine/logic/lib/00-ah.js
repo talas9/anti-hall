@@ -43,9 +43,16 @@ var ah = {
   },
   cfgNum: function (key) { return ahHost.cfgNum(key); },
   unable: function (site, kind) { ahUnableCount(site, kind); },
+  // Add `by` (default 1) to the registered counter `name` ([metric.<name>] in a defaults file); `labels` = {label: value} or
+  // [label, value, ...]. A lost count never changes a decision.
+  metric: function (name, labels, by) {
+    try {
+      var o = labels || {};
+      if (Array.isArray(o)) { o = {}; for (var i = 0; i + 1 < labels.length; i += 2) o[String(labels[i])] = String(labels[i + 1]); }
+      ahHost.metric(name, JSON.stringify(o), by === undefined ? 1 : by);
+    } catch (e) { /* telemetry only */ }
+  },
   // One advisory event of `kind` (flagged, asked, confirmed, injected, suppressed, jev_error) under `metric`; a lost count never changes a decision.
-  // Add `by` (default 1) to the registered counter `name` with `labels` ({label: value}); a lost count never changes a decision.
-  metric: function (name, labels, by) { try { ahHost.metric(name, JSON.stringify(labels || {}), by === undefined ? 1 : by); } catch (e) { /* telemetry only */ } },
   advisory: function (kind, metric) { try { ahHost.advisory(kind, metric); } catch (e) { /* telemetry only */ } },
   // The hook's own environment (the request's, never the daemon's); null when a variable is unset.
   env: {

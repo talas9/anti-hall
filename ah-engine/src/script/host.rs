@@ -41,6 +41,7 @@
 //! | `tailLines(path, windowBytes, lineMax)` | the last lines of a file with their byte offsets, bounded: see [`tail_lines`] |
 //! | `tailEntries(path, windowBytes, lineMax, keep, maxLines)` | the newest lines parsed by the engine, cut down to the paths `keep` names: see [`tail_entries`] |
 //! | `pruneState(prefix, keep)` | the state-file retention sweep of one writer prefix in the state directory (stale files older than the TTL, throttled; `keep` is never removed) |
+//! | `metric(name, labels)` | add one to the registered counter `name` (`[metric.<name>]` in a defaults file); `labels` is a flat `[label, value, ...]` array; an unregistered name is ignored |
 //! | `log(kind, text)` | one line in the engine's event log (rate-limited by the engine) |
 //! | `now()` | milliseconds since the epoch from the engine's one clock (injectable for tests): see [`now_ms`] |
 //! | `stateRead(rel)`, `stateRemove(rel)`, `stateSweep(dir, prefix, maxAgeMs, maxRemove)` | scoped read, single-file delete and bounded prefix/age sweep under the state root: see [`state_read`], [`state_remove`], [`state_sweep`] |
