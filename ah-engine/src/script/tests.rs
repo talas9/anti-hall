@@ -2087,13 +2087,177 @@ fn burn_breaker_blocks_a_flagged_subagent_except_commit_push_status_and_its_repo
     assert!(blocked(bash("git commit -m x; rm -rf y")));
     assert!(blocked(bash("git status | tee out")));
     assert!(blocked(bash("git commit -m \"$(rm -rf y)\"")));
-    for ok in ["git commit -m \"a; b & c\"", "git -C /w push origin v301/x", "git status --short", "git add -A"] {
+    for bad in [
+        "git commit -m x && rm -rf y",
+        "npm test",
+        "grep foo f | sh",
+        "cat f > g",
+        "rg --pre ./evil foo",
+        "git diff --output=/tmp/o",
+        "git -c core.pager=evil log",
+        "ls $(rm -rf y)",
+        "find . -exec rm {} +",
+        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+        "git commit -m \"a; b & c\"",
+        "git commit -m 'x $HOME'",
+        "git commit",
+    ] {
+        assert!(blocked(bash(bad)), "{bad}");
+    }
+    for tool in ["Write", "Edit", "Grep", "Agent"] {
+        assert!(blocked(json!({"tool_name": tool, "agent_id": "a1", "tool_input": {"file_path": "/src/main.rs"}})), "{tool}");
+    }
+    for ok in [
+        "git status",
+        "git diff HEAD~1 | head -50",
+        "git log --oneline -n 5",
+        "grep -rn foo src/",
+        "rg foo src | wc -l",
+        "ls -la",
+        "cat src/lib.rs | head -20",
+        "cd /w && git add -A && git commit -m 'msg (a, b)' 2>&1",
+    ] {
+        assert!(!blocked(bash(ok)), "{ok}");
+    }
+    for ok in ["git commit -m \"a b\"", "git -C /w push origin v301/x", "git status --short", "git add -A"] {
         assert!(!blocked(bash(ok)), "{ok}");
     }
     assert!(!blocked(json!({"tool_name": "SendMessage", "agent_id": "a1", "tool_input": {"to": "main"}})), "the report goes through");
     assert!(!blocked(json!({"tool_name": "Read", "tool_input": {}})), "the main session is never blocked");
     assert!(!blocked(json!({"tool_name": "Read", "agent_id": "other", "tool_input": {}})), "no marker, no block");
     assert!(!blocked(json!({"tool_name": "Read", "agent_id": "old", "tool_input": {}})), "a stale marker is ignored");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// burn-breaker (GH #270), security review of PR #397: every string that once chained, wrote or ran another program while the breaker held is
+/// blocked; the plain forms a worker needs (commit, add, status, diff, log, show, read-only tools, a `| head` tail, a report, a send) pass;
+/// an oversized command is refused fast; and the breaker lifts only on a real commit.
+#[test]
+fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
+    let h = home("burn-breaker-bypass");
+    let e = env(&h);
+    let dir = format!("{h}/.anti-hall/agent-tracker/breaker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = format!("{dir}/a1.json");
+    let raise = || {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        std::fs::write(&marker, json!({"ts": now, "tokens": 3_500_000u64, "agent": "a1"}).to_string()).unwrap();
+    };
+    let blocked = |c: &str| {
+        raise();
+        let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": c}});
+        matches!(run_forced("burn-breaker", &p, &e), Some(Some(Verdict::Exact(x))) if x.code == 2)
+    };
+    let spaces = format!("touch x{}y", " ".repeat(40_000));
+    let bypasses: Vec<String> = [
+        "ls # \"$(cat <<'EOF'\ntouch /x\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\r\nEOF\r\n)\"\ntouch /x\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+        "rg '--pre=./evil' foo",
+        "git diff '--output=/abs/f'",
+        "ls \\'; touch /x; \\'",
+        "git status \\'; touch /x; \\'",
+        "git -c core.fsMonitor=./e status",
+        "git -c core.hooksPath=/t commit -m x",
+        "git -c core.sshCommand=./e push",
+        "git -c credential.helper=!./e push",
+        "git -c gpg.program=./e commit -S -m x",
+        "git -c diff.external=./e diff",
+        "git -C /w -c core.pager=./e log",
+        "git push --exec=./e ../r",
+        "git -c protocol.ext.allow=always push 'ext::sh -c touch% /x' HEAD",
+        "git push 'ext::sh -c touch% /x' HEAD",
+        "GIT_SSH_COMMAND=./e git push",
+        "file -C -m out",
+        "cat > /w/scratchpad/r.md <<'EOF'\r\nEOF\r\ntouch /x\nEOF",
+        "echo # > /w/scratchpad/r.md <<'EOF'\ntouch /x\nEOF",
+        "cat > /w/scratchpad/r.md <<'EOF'\nbody\nEOF",
+        "echo hi > /w/scratchpad/../r.md",
+        "tee /etc/x > /w/scratchpad/r.md",
+        "DYLD_INSERT_LIBRARIES=/tmp/x.dylib ah-engine mesh send lead hi",
+        "/tmp/ah-engine mesh send lead hi",
+        "ah-engine mesh send lead hi; touch /x",
+        "ah-engine mesh send lead hi # x",
+        "ah-engine mesh send lead \"$(touch /x)\"",
+        "git commit -m 'a\rb'",
+        "git commit -m 'a`id`b'",
+        "git commit -m 'a\\b'",
+        "git commit -m \"a${HOME}b\"",
+        "git commit -m 'x' ; touch /x",
+        "git commit -F /w/msg.txt && touch /x",
+        "git commit -F ../../x\u{0}y",
+        "git commit -m 'unbalanced",
+        "ls \"unbalanced",
+        "cat <(touch /x)",
+        "ls\u{e9}",
+        "rm -rf a/target /Users/victim",
+        "rm -rf /target ~",
+        "rm -rf /target",
+        "rm -rf a/target ~",
+        "rm -rf a/target*",
+        "rm -rf ../target",
+        "git commit -m 'x' && rm -rf a/target ~",
+        "cd /w && git -c core.pager=./e log",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain([spaces.clone()])
+    .collect();
+    for bad in &bypasses {
+        assert!(blocked(bad), "must be blocked: {:?}", &bad[..bad.len().min(120)]);
+    }
+    for ok in [
+        "git commit -m 'x'",
+        "git commit -m \"x y\"",
+        "git commit -a -m 'fix(x): y (z) #12'",
+        "git commit --allow-empty -m 'x'",
+        "git commit -F notes/msg.txt",
+        "git commit -F /w/scratchpad/msg.txt",
+        "git -C /w commit -m 'x'",
+        "git add -A",
+        "git commit -m 'a' -m 'b'",
+        "git commit -m 'fix -c thing'",
+        "git log -c",
+        "rm -rf a/target",
+        "rm -rf /w/work/target/",
+        "git status",
+        "git diff",
+        "git diff HEAD~1 | head",
+        "git log --oneline -n 5",
+        "git log --pretty=oneline",
+        "git show HEAD",
+        "grep -rn foo src/",
+        "rg -n foo | head -5",
+        "ls -la",
+        "cat a.rs",
+        "head -5 a.rs",
+        "tail -n 5 a.rs",
+        "wc -l a.rs",
+        "echo 'done' > /w/scratchpad/r.md",
+        "cat a.txt b.txt > /w/scratchpad/r.md",
+        "ah-engine mesh send lead 'done; all good'",
+        "ah-engine agents send lead done",
+    ] {
+        assert!(!blocked(ok), "must be allowed: {ok}");
+    }
+    // the length bound refuses 40,000 spaces fast
+    raise();
+    let t = std::time::Instant::now();
+    assert!(blocked(&spaces));
+    assert!(t.elapsed().as_millis() < 50, "oversized input took {:?}", t.elapsed());
+    // lifts only on a real commit: reads, status and a refused commit leave the marker; a plain commit and a report write remove it
+    for keep in ["git status", "git diff", "ls", "git commit -m \"a; b\"", "git commit -m 'x'; touch /x"] {
+        raise();
+        let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": keep}});
+        let _ = run_forced("burn-breaker", &p, &e);
+        assert!(std::path::Path::new(&marker).exists(), "{keep} must not lift the breaker");
+    }
+    for lift in ["git commit -m 'x'", "git commit -F notes/m.txt", "git add -A && git commit -m 'x'", "echo hi > /w/scratchpad/r.md"] {
+        raise();
+        let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": lift}});
+        let _ = run_forced("burn-breaker", &p, &e);
+        assert!(!std::path::Path::new(&marker).exists(), "{lift} must lift the breaker");
+    }
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
