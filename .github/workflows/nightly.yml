@@ -19,7 +19,7 @@ jobs:
   hardening:
     name: engine hardening bar
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: ah-engine
@@ -37,11 +37,21 @@ jobs:
       - name: bar report
         if: always()
         run: cat target/hardening/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: failing bar's daemon log (tail 200)
+        if: failure()
+        run: |
+          for f in target/hardening/fragments/*-daemon.log; do
+            [ -f "$f" ] && { echo "== $f"; tail -n 200 "$f"; }
+          done
+          true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: hardening-report
-          path: ah-engine/target/hardening/report.md
+          path: |
+            ah-engine/target/hardening/report.md
+            ah-engine/target/hardening/fragments/*-daemon.log
+            ah-engine/target/hardening/**
 
   report:
     name: nightly failure issue

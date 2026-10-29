@@ -12847,6 +12847,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mem.transcript_tail_max_entries` | `256` |  |  | Transcript-tail answers the cache keeps at most; past it the least recently used is dropped first. |
 | `mem.transcript_tail_soft_bytes` | `4194304` |  | bytes | Bytes of cached transcript-tail answers (`transcriptDedupeTail`) held before the least recently used are dropped down to the low-water mark. |
 
+### wire.toml / busy_reason
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `busy_reason.log_detail` | `shed so far: {count}` |  |  | Detail of that log line. Placeholder: {count} (sheds of this reason so far). |
+| `busy_reason.log_kind` | `busy_shed` |  |  | Kind of the daemon-log line that names why requests are being shed (logged for the 1st shed of a reason and each power of two after, so the log stays bounded). |
+| `busy_reason.project` | `rate_limit_project` |  |  | Label of a request shed by the per-project rate limit. |
+| `busy_reason.queue` | `queue_full` |  |  | Label of a request shed because the request queue was full (status `busy_by_reason`, daemon log). |
+| `busy_reason.session` | `rate_limit_session` |  |  | Label of a request shed by the per-session rate limit. |
+
 ### wire.toml / fail_open
 
 | Key | Default | Env override | Unit | What it is |

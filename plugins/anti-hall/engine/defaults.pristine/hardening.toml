@@ -70,9 +70,36 @@ doc = "Poll interval of the harness's waits."
 value = 25
 unit = "ms"
 
-[common.log_tail_lines]
-doc = "Lines of the daemon's event log a failing bar copies into the report (why a daemon went away)."
-value = 20
+[common.gone_log_lines]
+doc = "Most lines of the daemon's own log a failing bar copies into the report when the daemon is reported gone (after the filter)."
+value = 40
+
+[common.gone_log_filter]
+doc = "Words (case-insensitive) that mark a daemon log line as explaining an exit: only those lines are copied into the report."
+value = ["exit", "drain", "orphan", "watchdog", "rss", "panic", "restart", "start_fail", "budget_hard", "cpu_hard"]
+
+[common.progress_every_calls]
+doc = "A long bar (load, memory soak) prints one progress line (elapsed, calls, daemon alive, RSS, restarts, control-socket status) every this many calls."
+value = 1000
+
+[common.progress_every_s]
+doc = "...and at least this often by wall clock, so a slow or hung bar still shows a line in the CI log."
+value = 60
+unit = "s"
+
+[common.progress_poll_ms]
+doc = "How often the progress watcher thread wakes to check whether a line or a stall report is due."
+value = 1000
+unit = "ms"
+
+[common.stall_report_s]
+doc = "No completed call for this long writes the gone-daemon report at once (to the log and next to the bar's fragment) instead of at the end of the bar."
+value = 300
+unit = "s"
+
+[common.progress_status_chars]
+doc = "Longest control-socket status text a progress line carries (longer text is cut)."
+value = 120
 
 # ---- crash loop -------------------------------------------------------------------------------------------------------
 
@@ -261,3 +288,57 @@ unit = "KB"
 doc = "Largest least-squares RSS growth per 1,000 calls after the reference sample on system-allocator targets."
 value = 256
 unit = "KB"
+
+# ---- honest diagnostics: what "gone" means, and why a call was not answered by the daemon ------------------------------------
+
+[diag.label_gone]
+doc = "Report words for a daemon whose process is dead (not running, or an unreaped zombie). Only this state may be called gone."
+value = "daemon gone"
+
+[diag.label_unreachable]
+doc = "Report words for a control-socket status read that failed while the daemon process is still alive."
+value = "control socket unreachable (pid alive)"
+
+[diag.zombie_states]
+doc = "First letters of a `ps -o stat=` value that mean the process is dead although its pid still exists (a zombie not yet reaped by its parent)."
+value = ["Z"]
+
+[diag.ps_path]
+doc = "The `ps` binary the harness asks for a process state."
+value = "/bin/ps"
+
+[diag.reason_engine]
+doc = "Breakdown label: calls the daemon answered."
+value = "daemon"
+
+[diag.reason_busy]
+doc = "Breakdown label: calls the daemon shed with BUSY (queue overflow or a rate limit; the daemon's own busy_by_reason splits them)."
+value = "busy"
+
+[diag.reason_err]
+doc = "Breakdown label: calls the daemon answered ERR."
+value = "err"
+
+[diag.reason_slow]
+doc = "Breakdown label: calls with no reply inside the wait window (slow timeout)."
+value = "slow-timeout"
+
+[diag.reason_hung]
+doc = "Breakdown label: calls the client gave up on because the daemon heartbeat was stale."
+value = "hung"
+
+[diag.reason_transport]
+doc = "Breakdown label: calls that failed in transport (no listener, refused, unsafe socket, bad or truncated frame, I/O error such as a reset)."
+value = "transport"
+
+[diag.breakdown_prefix]
+doc = "Report note prefix of the per-reason answer breakdown. Placeholder: {bar}."
+value = "{bar} answers by reason"
+
+[diag.transport_sample_max]
+doc = "Most distinct transport-failure texts a breakdown quotes (the first ones seen)."
+value = 3
+
+[diag.daemon_busy_prefix]
+doc = "Report note prefix of the daemon's own split of its BUSY replies (status busy_by_reason)."
+value = "daemon busy_by_reason"

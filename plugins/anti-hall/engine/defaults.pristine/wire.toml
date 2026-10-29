@@ -242,3 +242,25 @@ value = [
 [fail_open.effect_default]
 doc = "{effect} text for a fail_open reason that has no fail_open.effects entry (and for an empty window)."
 value = "some requests got no verdict from the engine"
+
+# ---- why a request was shed (BUSY) ------------------------------------------------------------------------------------
+
+[busy_reason.queue]
+doc = "Label of a request shed because the request queue was full (status `busy_by_reason`, daemon log)."
+value = "queue_full"
+
+[busy_reason.session]
+doc = "Label of a request shed by the per-session rate limit."
+value = "rate_limit_session"
+
+[busy_reason.project]
+doc = "Label of a request shed by the per-project rate limit."
+value = "rate_limit_project"
+
+[busy_reason.log_kind]
+doc = "Kind of the daemon-log line that names why requests are being shed (logged for the 1st shed of a reason and each power of two after, so the log stays bounded)."
+value = "busy_shed"
+
+[busy_reason.log_detail]
+doc = "Detail of that log line. Placeholder: {count} (sheds of this reason so far)."
+value = "shed so far: {count}"
