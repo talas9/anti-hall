@@ -116,8 +116,17 @@ fn code_only(text: &str) -> String {
             string = true;
             out.push(' ');
         } else if c == '\'' {
-            char_lit = true;
-            out.push(' ');
+            // A char literal is `'\<escape>...'` or `'<one char>'`; anything else
+            // (`'static`, `&'a`, `'outer:`) is a lifetime or label and stays code.
+            let mut ahead = it.clone();
+            let first = ahead.next();
+            let is_char = first == Some('\\') || (first.is_some() && ahead.next() == Some('\''));
+            if is_char {
+                char_lit = true;
+                out.push(' ');
+            } else {
+                out.push(c);
+            }
         } else if c == 'r' {
             let mut clone = it.clone();
             let mut hashes = 0_usize;
@@ -167,8 +176,10 @@ fn indexing_slicing_count_only_goes_down() {
         let text = code_only(&non_test_text(&file));
         count += indexing_sites(&text);
     }
-    // Rebaseline the existing audit for the deliberate 0.2 engine additions.
-    assert!(count <= 1738, "indexing/slicing ratchet is {count}, expected <= 1738");
+    // Rebaselined after the code_only lifetime fix: 1738 -> 2111 is the TRUE count.
+    // The old scanner mis-handled lifetimes and under-counted by 373 sites (hidden
+    // debt, not new code). The ratchet only goes down from here.
+    assert!(count <= 2111, "indexing/slicing ratchet is {count}, expected <= 2111");
 }
 
 fn indexing_sites(text: &str) -> usize {
@@ -186,4 +197,42 @@ fn indexing_sites(text: &str) -> usize {
         }
     }
     count
+}
+
+#[cfg(test)]
+mod scanner_tests {
+    use super::{code_only, indexing_sites};
+
+    #[test]
+    fn lifetime_does_not_start_a_char_literal() {
+        let src = "fn f<'a>(x: &'a str) -> impl Read + 'static { v[0] } // it's a[9]\nlet y = w[1];\n";
+        let out = code_only(src);
+        assert!(!out.contains("it's"), "comment must be blanked: {out:?}");
+        assert_eq!(indexing_sites(&out), 2, "{out:?}");
+    }
+
+    #[test]
+    fn comment_after_lifetime_is_still_a_comment() {
+        let out = code_only("let r: &'static str = a; // don't a[0]\nlet z = b[0];\n");
+        assert_eq!(indexing_sites(&out), 1, "{out:?}");
+    }
+
+    #[test]
+    fn char_literals_and_escapes_are_blanked() {
+        let out = code_only("let a = ['x', '\\n', '\\'', '\\u{41}', '[', b'[', '\"'];\nlet q = v[0];\n");
+        assert_eq!(indexing_sites(&out), 1, "{out:?}");
+        assert!(!out.contains("'x'"));
+    }
+
+    #[test]
+    fn label_is_code() {
+        let out = code_only("'outer: loop { break 'outer; } // a[0]\n");
+        assert!(out.contains("'outer:") && !out.contains("a[0]"), "{out:?}");
+    }
+
+    #[test]
+    fn raw_strings_and_strings_are_blanked() {
+        let out = code_only("let s = r#\"a[0] \" b[1]\"#; let t = \"c[2]\"; let u = d[3];\n");
+        assert_eq!(indexing_sites(&out), 1, "{out:?}");
+    }
 }
