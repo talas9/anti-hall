@@ -37,7 +37,7 @@ done
 {
   echo "# $TITLE"
   echo
-  echo "Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(uname -sm), commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)."
+  echo "Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(uname -sm), $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo ?) cores, commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)."
   echo
   cat "$FRAG"/*.md 2>/dev/null
 } > "$OUT"

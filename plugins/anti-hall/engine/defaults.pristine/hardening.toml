@@ -232,6 +232,18 @@ unit = "s"
 doc = "Concurrent clients of the sustained phase (each paced at sustained_rps / sustained_clients)."
 value = 4
 
+[load.profile_env]
+doc = "Environment variable (a nightly dispatch input passed through, like the allocator choice) that turns the daemon profiler on for the load bar when it is set to a non-empty value other than 0 or false."
+value = "AH_HARDENING_PROFILE"
+
+[load.profile_verb]
+doc = "Control request that turns the daemon profiler on for the load bar: `profile on`, a mode (`full` records every check call) and a duration of 0 (the longest the engine allows)."
+value = "profile on full for=0"
+
+[report.cores_note]
+doc = "Note under the load bar naming the runner's core count and the daemon's effective worker count ({cores}, {workers}); both are also kept as files beside the fragment."
+value = "runner cores: {cores}; daemon.workers: {workers}"
+
 [load.settle_ms]
 doc = "Pause between the sustained and burst phases, so the per-project bucket refills (`daemon.project_burst` at `daemon.project_rps`)."
 value = 5000
