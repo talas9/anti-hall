@@ -55,7 +55,7 @@ value = [
   '\b(?:no|zero)\s+(?:tests?|checks?|runs?)\s+(?:were\s+|was\s+)?(?:run|ran|executed)\b',
   '\b(?:from|in|per|as of)\s+(?:the\s+)?(?:earlier|previous|prior|last|preceding)\s+(?:turn|run|session|check|result|message|commit)',
   '\b(?:earlier|previously|before)\s+(?:i\s+|we\s+)?(?:ran|verified|checked|confirmed|tested)\b',
-  '\b(?:pending|awaiting|waiting for|once)\s+(?:ci|review|the run|the check)',
+  '\b(?:pending|awaiting|waiting for)\s+(?:ci|review|the run|the check)',
   '\b(?:expected|supposed|meant|intended)\s+to\s+(?:pass|work|be)\b',
 ]
 
@@ -96,6 +96,12 @@ value = [
   '\b(?:old|previous|earlier|original|stale)\s+(?:line|text|message|comment|claim|note|doc|docs|output|log)\b',
 ]
 
+[claim_evidence.criterion_res]
+doc = "A claim inside a rule or criterion is not a claim of this turn's work (rule 1): 'SAFE-TO-REMOVE requires that the branch is merged or fully pushed', 'a clone must be merged'. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
+value = [
+  '\b(?:requires?|required|requiring|requirements?|criteria|criterion|must|means\s+that|safe\s+to|ok\s+to|allowed\s+to)\b',
+]
+
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------
 
 [claim_evidence.claims]
@@ -103,7 +109,7 @@ doc = "The result claims rule 1 looks for, in order; the first row that matches 
 value = [
   { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|\S*test\S*\.(?:sh|js|py))\b'] },
   { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
-  { id = "verified", re = '\b(?:verified|confirmed)\b', needs = [] },
+  { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|the|it|this|all|both)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', needs = [] },
   { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', needs = [] },
   { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', needs = [] },
 ]

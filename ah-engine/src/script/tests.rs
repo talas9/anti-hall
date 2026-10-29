@@ -2552,6 +2552,53 @@ mod claim_evidence_guard {
     }
 
     #[test]
+    fn live_false_positives_are_allowed_and_genuine_claims_beside_them_are_still_held() {
+        let mut wrongly_held: Vec<&str> = Vec::new();
+        for (i, r) in [
+            // (a) a future condition on CI
+            "I'll merge once CI is green.",
+            "Merge only if CI is green.",
+            "I will merge it as soon as the build is green, then clean up.",
+            // (b) a criterion inside a rule
+            "SAFE-TO-REMOVE requires that the branch is merged or fully pushed.",
+            "A clone is safe to remove only when its work is merged or fully pushed.",
+            // (c) the word, not a claim
+            "Understood. That is your explicit go-ahead, so I treat it as confirmed permission.",
+            "The word 'verified' in that description is a label, and the word \"confirmed\" is too.",
+            // (d) a negated claim
+            "I haven't verified any of this.",
+            "I haven\u{2019}t verified or confirmed any of this.",
+            "None of this is verified yet.",
+            // (e) pending / not confirmed
+            "Waiting on tests-passed from the runner.",
+            "CI is not confirmed green.",
+            "Still waiting on CI to be green before the merge.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            if bare(&format!("ce-live{i}"), r) {
+                wrongly_held.push(*r);
+            }
+        }
+        assert!(wrongly_held.is_empty(), "must allow: {wrongly_held:#?}");
+        for (i, r) in [
+            "PR #405 is merged.",
+            "All tests pass.",
+            "CI is green.",
+            "I verified the fix.",
+            "Confirmed: the fix works.",
+            "It is verified and deployed to prod.",
+            "I'll merge once CI is green. PR #405 is merged.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(bare(&format!("ce-genuine{i}"), r), "must hold: {r}");
+        }
+    }
+
+    #[test]
     fn a_claim_backed_by_an_api_call_or_another_runner_of_this_turn_passes_and_a_bare_one_is_held() {
         let mk = |cmd: &str, reply: &str| {
             vec![

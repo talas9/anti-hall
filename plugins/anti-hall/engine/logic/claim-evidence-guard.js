@@ -7,7 +7,7 @@
 // the last N of them. A reply that labels itself honest (not verified, CI pending, earlier run) is never held; the same reply is
 // held once, at most max_blocks times per owner turn (blockCap, as the speculation guard); stop_hook_active, subagents, Codex
 // payloads (the evidence walk reads Claude transcripts only) and a script failure allow. A claim is judged per sentence: one that
-// is negated, future/conditional or reported from someone else's words (its own clause, neg_res/future_res/reported_res) is not a claim. mode = log writes the hit and allows.
+// is negated, future/conditional, a rule or criterion, or reported from someone else's words (its own clause, neg_res/future_res/criterion_res/reported_res) is not a claim. mode = log writes the hit and allows.
 // Every pattern, list, number and text: claim_evidence.toml.
 'use strict';
 
@@ -62,7 +62,7 @@ function ceContext(sent, a, b) {
 // The first claim of the reply that is stated as fact: a hit whose own clause is negated, future/conditional or reported speech is passed over.
 function ceFindClaim(scan) {
   var rows = ah.cfg('claim_evidence.claims'), sents = ceSentences(scan);
-  var skip = [].concat(ah.cfg('claim_evidence.neg_res'), ah.cfg('claim_evidence.future_res'), ah.cfg('claim_evidence.reported_res'));
+  var skip = [].concat(ah.cfg('claim_evidence.neg_res'), ah.cfg('claim_evidence.future_res'), ah.cfg('claim_evidence.reported_res'), ah.cfg('claim_evidence.criterion_res'));
   for (var k = 0; k < sents.length; k++) {
     for (var i = 0; i < rows.length; i++) {
       var hit = ah.re.find(rows[i].re, 'i', sents[k]);
