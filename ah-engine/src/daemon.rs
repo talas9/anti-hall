@@ -2407,34 +2407,66 @@ static SHED_DRAINING: AtomicU64 = AtomicU64::new(0);
 /// started, the connection is closed at once as before (fail-open, additive).
 fn shed_close_gracefully(s: UnixStream) {
     let (limit, bytes) = (defaults::millis("daemon.shed_drain_ms"), defaults::num("daemon.shed_drain_bytes"));
+    let (cap, chunk) = (defaults::num("daemon.shed_drain_threads"), defaults::num("io.small_chunk_bytes") as usize);
+    shed_drain_in_background(s, limit, bytes, cap, chunk, &SHED_DRAINING);
+}
+
+/// The body of [`shed_close_gracefully`] with its limits passed in. True when a drain thread took the connection; false when it
+/// was closed at once (zero `limit`, write half-close failed, `cap` drains already running, or no thread could be started).
+fn shed_drain_in_background(s: UnixStream, limit: Duration, bytes: u64, cap: u64, chunk: usize, used: &'static AtomicU64) -> bool {
     if limit.is_zero() || s.shutdown(std::net::Shutdown::Write).is_err() {
-        return;
+        return false;
     }
-    if SHED_DRAINING.fetch_add(1, SeqCst) >= defaults::num("daemon.shed_drain_threads") {
-        SHED_DRAINING.fetch_sub(1, SeqCst);
-        return;
+    if !shed_slot_take(used, cap) {
+        return false;
     }
     let spawned = std::thread::Builder::new().name("ah-shed-drain".into()).spawn(move || {
         let mut s = s;
-        let (end, mut left) = (Instant::now() + limit, bytes);
-        let mut chunk = vec![0u8; defaults::num("io.small_chunk_bytes") as usize];
-        while left > 0 {
-            let Some(wait) = end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { break };
-            if s.set_nonblocking(false).is_err() || s.set_read_timeout(Some(wait)).is_err() {
-                break;
-            }
-            match s.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => left = left.saturating_sub(n as u64),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
-            }
-        }
-        SHED_DRAINING.fetch_sub(1, SeqCst);
+        shed_drain(
+            |buf, wait| {
+                s.set_nonblocking(false)?;
+                s.set_read_timeout(Some(wait))?;
+                s.read(buf)
+            },
+            limit,
+            bytes,
+            chunk,
+        );
+        used.fetch_sub(1, SeqCst);
     });
     if spawned.is_err() {
-        SHED_DRAINING.fetch_sub(1, SeqCst); // the closure (and the socket) is dropped: closed at once
+        used.fetch_sub(1, SeqCst); // the closure (and the socket) is dropped: closed at once
+        return false;
     }
+    true
+}
+
+/// Take one drain slot out of `cap`; false (nothing taken) when all are in use. The caller gives it back with `fetch_sub(1)`.
+fn shed_slot_take(used: &AtomicU64, cap: u64) -> bool {
+    if used.fetch_add(1, SeqCst) >= cap {
+        used.fetch_sub(1, SeqCst);
+        return false;
+    }
+    true
+}
+
+/// Discard up to exactly `bytes` bytes via `read(buf, wait)` (which must give up after `wait`), reading at most `chunk` bytes at
+/// a time and never more than the budget left, for at most `limit` in total. Stops at EOF, an error, the byte budget or the time
+/// budget. Returns the number of bytes discarded.
+fn shed_drain(mut read: impl FnMut(&mut [u8], Duration) -> std::io::Result<usize>, limit: Duration, bytes: u64, chunk: usize) -> u64 {
+    let (end, mut left) = (Instant::now() + limit, bytes);
+    let mut buf = vec![0u8; chunk.max(1)];
+    while left > 0 {
+        let Some(wait) = end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { break };
+        let take = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+        match read(&mut buf[..take], wait) {
+            Ok(0) => break,
+            Ok(n) => left = left.saturating_sub(n as u64),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    bytes - left
 }
 
 fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
@@ -2884,5 +2916,129 @@ mod tests {
         assert_eq!(st["budget"]["cpu_budget_pct"], sh.cfg().effective.num("diagnostics.budget_cpu_pct"));
         assert_eq!(st["budget"]["mem_budget_mb"], sh.cfg().effective.num("diagnostics.budget_mem_mb"));
         assert!(st["debug"]["enabled"].is_boolean());
+    }
+
+    #[test]
+    fn shed_drain_byte_bound_is_exact() {
+        for (budget, chunk) in [(1u64, 8192usize), (10, 4), (4096, 8192), (8193, 8192)] {
+            let mut sent = 0u64;
+            let got = shed_drain(
+                |b, _| {
+                    sent += b.len() as u64;
+                    Ok(b.len()) // an endless sender that always fills the buffer
+                },
+                Duration::from_secs(5),
+                budget,
+                chunk,
+            );
+            assert_eq!((got, sent), (budget, budget), "budget {budget} chunk {chunk}");
+        }
+    }
+
+    #[test]
+    fn shed_drain_stops_at_eof_and_error() {
+        assert_eq!(shed_drain(|_, _| Ok(0), Duration::from_secs(5), 100, 8), 0);
+        let mut n = 0;
+        let got = shed_drain(
+            |b, _| {
+                n += 1;
+                if n == 1 { Ok(b.len()) } else { Err(std::io::ErrorKind::ConnectionReset.into()) }
+            },
+            Duration::from_secs(5),
+            100,
+            8,
+        );
+        assert_eq!(got, 8);
+    }
+
+    #[test]
+    fn shed_drain_time_bound_holds_for_a_stalled_reader() {
+        let started = Instant::now();
+        let got = shed_drain(
+            |_, wait| {
+                std::thread::sleep(wait); // slowloris: nothing arrives until the wait is up
+                Err(std::io::ErrorKind::WouldBlock.into())
+            },
+            Duration::from_millis(150),
+            1 << 20,
+            8192,
+        );
+        let dt = started.elapsed();
+        assert_eq!(got, 0);
+        assert!(dt >= Duration::from_millis(150) && dt < Duration::from_millis(1500), "took {dt:?}");
+        // a trickle of one byte per wait also ends at the time bound, not the byte bound
+        let started = Instant::now();
+        let got = shed_drain(
+            |_, _| {
+                std::thread::sleep(Duration::from_millis(20));
+                Ok(1)
+            },
+            Duration::from_millis(150),
+            1 << 20,
+            8192,
+        );
+        assert!((1..100).contains(&got) && started.elapsed() < Duration::from_millis(1500), "got {got}");
+    }
+
+    #[test]
+    fn shed_drain_zero_time_discards_nothing() {
+        let mut calls = 0;
+        let got = shed_drain(
+            |b, _| {
+                calls += 1;
+                Ok(b.len())
+            },
+            Duration::ZERO,
+            100,
+            8,
+        );
+        assert_eq!((got, calls), (0, 0));
+    }
+
+    #[test]
+    fn shed_slots_cap_then_recover() {
+        let used = AtomicU64::new(0);
+        assert!(shed_slot_take(&used, 2));
+        assert!(shed_slot_take(&used, 2));
+        assert!(!shed_slot_take(&used, 2), "third falls back to an immediate close");
+        assert_eq!(used.load(SeqCst), 2, "a refused take leaves the count unchanged");
+        used.fetch_sub(1, SeqCst);
+        assert!(shed_slot_take(&used, 2), "recovers once a drain finished");
+        assert!(!shed_slot_take(&used, 0), "cap 0 never drains");
+    }
+
+    #[test]
+    fn shed_drain_zero_ms_closes_at_once_and_the_cap_falls_back_then_recovers() {
+        use std::io::Read as _;
+        static USED: AtomicU64 = AtomicU64::new(0);
+        // shed_drain_ms = 0: no thread, the socket is dropped, the peer sees EOF without any wait
+        let (a, mut b) = UnixStream::pair().unwrap();
+        assert!(!shed_drain_in_background(a, Duration::ZERO, 100, 4, 8, &USED));
+        let mut v = Vec::new();
+        b.read_to_end(&mut v).unwrap();
+        assert_eq!(USED.load(SeqCst), 0);
+        // cap 1: the first connection is drained (its peer stays open), the second is closed at once
+        let (a1, mut p1) = UnixStream::pair().unwrap();
+        assert!(shed_drain_in_background(a1, Duration::from_secs(30), 1 << 20, 1, 8, &USED));
+        assert_eq!(USED.load(SeqCst), 1);
+        let (a2, mut p2) = UnixStream::pair().unwrap();
+        assert!(!shed_drain_in_background(a2, Duration::from_secs(30), 1 << 20, 1, 8, &USED));
+        p2.read_to_end(&mut v).unwrap(); // EOF: closed at once
+        // the drained peer closing frees the slot, and the next connection is drained again
+        p1.write_all(b"request").unwrap();
+        drop(p1);
+        let t = Instant::now();
+        while USED.load(SeqCst) != 0 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(USED.load(SeqCst), 0, "the slot is given back when the peer closes");
+        let (a3, p3) = UnixStream::pair().unwrap();
+        assert!(shed_drain_in_background(a3, Duration::from_millis(100), 1 << 20, 1, 8, &USED));
+        drop(p3);
+        let t = Instant::now();
+        while USED.load(SeqCst) != 0 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(USED.load(SeqCst), 0);
     }
 }
