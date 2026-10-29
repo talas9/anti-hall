@@ -2455,7 +2455,7 @@ fn shed_slot_take(used: &AtomicU64, cap: u64) -> bool {
 /// budget. Returns the number of bytes discarded.
 fn shed_drain(mut read: impl FnMut(&mut [u8], Duration) -> std::io::Result<usize>, limit: Duration, bytes: u64, chunk: usize) -> u64 {
     let (end, mut left) = (Instant::now() + limit, bytes);
-    let mut buf = vec![0u8; chunk.max(1)];
+    let mut buf = vec![0u8; chunk];
     while left > 0 {
         let Some(wait) = end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { break };
         let take = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
