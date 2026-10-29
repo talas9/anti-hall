@@ -16,6 +16,11 @@ on:
         description: 'jemalloc conf string (_RJEM_MALLOC_CONF); empty = jemalloc defaults'
         required: false
         default: ''
+      profile:
+        description: 'turn the daemon profiler on for the load bar; profile.jsonl, nproc and daemon.workers go in the hardening-report artifact'
+        type: boolean
+        required: false
+        default: false
       bars:
         description: 'soak.sh BARS filter (space-separated bar prefixes); empty = all bars'
         required: false
@@ -50,6 +55,7 @@ jobs:
           AH_ENGINE_ALLOCATOR: ${{ inputs.allocator }}
           _RJEM_MALLOC_CONF: ${{ inputs.malloc_conf }}
           BARS: ${{ inputs.bars }}
+          AH_HARDENING_PROFILE: ${{ inputs.profile && '1' || '' }}
         run: ./scripts/soak.sh target/hardening/report.md
       - name: bar report
         if: always()

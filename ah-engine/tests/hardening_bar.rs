@@ -1274,6 +1274,18 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let mut d = lab.serve();
     let up = lab.wait_for(|| lab.pid() == Some(d.id()));
     r.check("daemon up", up, true, up);
+    // runner core count and the effective worker count: printed in the bar header and kept for the artifact
+    let cores = std::thread::available_parallelism().map(|c| c.get()).unwrap_or(0);
+    let workers = engine_num("daemon.workers");
+    r.note(t("report.cores_note").replace("{cores}", &cores.to_string()).replace("{workers}", &workers.to_string()));
+    r.keep_file("nproc", &format!("{cores}\n"));
+    r.keep_file("workers", &format!("{workers}\n"));
+    // dispatch input `profile`: the daemon records per-check CPU spans for the whole bar (profile.jsonl, kept below)
+    let profiling = std::env::var(t("load.profile_env")).is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false"));
+    if profiling {
+        let reply = lab.ctl(&t("load.profile_verb"));
+        r.check("daemon profiler on", reply.is_some(), true, reply.is_some());
+    }
     let sock = lab.sock();
     let watch = Watch::start(&lab, d.id(), "load", 60);
     for i in 0..n("load.warmup_calls") {
@@ -1368,6 +1380,11 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     r.check("busy replies (load shedding)", st["busy_replies"].clone(), 0, st["busy_replies"].as_u64() == Some(0));
     r.check("hivecontrol stand-in calls", lab.hivecontrol_calls(), 0, lab.hivecontrol_calls() == 0);
     lab.keep_log(&r);
+    if profiling {
+        lab.ctl("profile off");
+        let spans = std::fs::read_to_string(lab.eng().join(ah_engine::defaults::text("diagnostics.profile_file"))).unwrap_or_default();
+        r.keep_file("profile.jsonl", &spans);
+    }
     common::stop_child(&sock, &mut d);
     r.finish();
 }
