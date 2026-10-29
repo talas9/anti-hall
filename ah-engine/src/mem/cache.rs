@@ -90,9 +90,8 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
     /// Drop and return `k`, if present.
     pub fn remove(&self, k: &K) -> Option<V> {
         let mut t = self.core.lock();
-        let v = t.get(k, 0);
+        let v = t.take(k, 0);
         if v.is_some() {
-            t.remove(k);
             self.core.bytes.store(t.retained_bytes(), SeqCst);
         }
         v

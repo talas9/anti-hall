@@ -85,14 +85,14 @@ max = 100
 
 
 [mem.agent_scan_walk_soft_bytes]
-doc = "Bytes of retained transcript agent-scan walks held before the least recently used are dropped down to the low-water mark."
-value = 16777216
+doc = "Bytes of retained transcript agent-scan walks held before the least recently used are dropped down to the low-water mark. One long transcript is kept once per scan window (the 1.5 MiB, 12 MiB and 64 MiB windows of the Stop checks): a 20 MB transcript measured about 9 MB, 5.5 MB and 0.7 MB estimated, so a limit under their sum made every Stop rebuild the walks it had just dropped (about 57 ms a rebuild instead of about 2 ms a reuse)."
+value = 33554432
 min = 4096
 unit = "bytes"
 
 [mem.agent_scan_walk_hard_bytes]
 doc = "Bytes of retained transcript agent-scan walks at which an insert is refused and the cache is recycled."
-value = 33554432
+value = 67108864
 min = 4096
 unit = "bytes"
 
