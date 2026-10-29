@@ -266,6 +266,28 @@ value = [
 doc = "The compact model-routing line for a Codex session."
 value = "M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent; 3+ parallel/nested spawns -> one flat spawn_agent fan-out. Set the model per seat (planning/review: frontier tier, build: workhorse tier, mechanical: fast tier); never all-frontier."
 
+[verify_first_orch.delivery_dir]
+doc = "Directory of the per-session orchestration delivery records, under script.write_root. A record says the full orchestration text was served to the session, so a later compaction or resume gets the short form."
+value = "orch-delivery"
+
+[verify_first_orch.delivery_prefix]
+doc = "File-name prefix of an orchestration delivery record."
+value = "orch"
+
+[verify_first_orch.repeat_line]
+doc = "The one line sent when the session was already served the orchestration rules and this start is neither fresh nor a compaction or resume; <abs> is replaced by the plugin root."
+value = "ORCHESTRATION: rules already delivered earlier this session. Coordinator, not worker: delegate heavy work, keep the task list, verify delegated claims; full rules: <abs>/PROTOCOL.md#orchestration"
+
+[verify_first_orch.primary_rule_short]
+doc = "The DevSwarm Primary workspace-tier rule (W) in short form, appended to the compact text sent after a compaction or resume."
+value = "  W. DEVSWARM PRIMARY: a workspace-scale feature/fix/deploy is a CHILD WORKSPACE, not a subagent; full rule W in the orchestration section of the protocol."
+
+[verify_first_orch.resend_max_bytes]
+doc = "Byte budget of the orchestration text sent after a compaction or resume or on a repeated start (cut at a line break; 0 = no cap)."
+value = 2500
+min = 0
+unit = "bytes"
+
 [verify_first_orch.compact_delivery]
 doc = "The phrase added to the compact first line when the full text follows on the first spawn."
 value = "; sent in full on your first spawn"

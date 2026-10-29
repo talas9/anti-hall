@@ -96,7 +96,19 @@ function vfoDecide(p, opts, claudeHost) {
   var primary = vf.tierTextOn(p);
   if (primary === null) { ah.unable('verify-first-orch:tier_text_unsure'); primary = false; } // a layout the host cannot classify: not a Primary
   function emit(t) { return { advisory: text.advisoryJson(ah.cfg('verify_first_orch.event'), t) }; }
-  if (ah.settings.enum('orch_state.protocol_setting') === ah.cfg('orch_state.full_level') || primary) { writeNone(); return emit(vfoFull(codex, primary)); }
+  // Emit on change, not every start: a text of the full size already served this session comes back short after a compaction or resume
+  // (and as one line on a repeated start). context.protocolLevel = full and context.protocolOnce = false keep the whole text every time.
+  function once(fullText, kind) {
+    if (kind === 'first') return emit(fullText);
+    var root = vfoRoot(opts);
+    if (root === null) { ah.unable('verify-first-orch:no_plugin_root'); return emit(fullText); }
+    var t = kind === 'resend' ? vfoCompact(false, root, codex) : ah.cfg('verify_first_orch.repeat_line').split(ah.cfg('verify_first_orch.root_placeholder')).join(root);
+    if (kind === 'resend' && primary) t += '\n' + ah.cfg('verify_first_orch.primary_rule_short');
+    return emit(vf.capBytes(t, ah.cfgNum('verify_first_orch.resend_max_bytes')));
+  }
+  var isFullLevel = ah.settings.enum('orch_state.protocol_setting') === ah.cfg('orch_state.full_level');
+  if (isFullLevel) { writeNone(); return emit(vfoFull(codex, primary)); }
+  if (primary) { writeNone(); return once(vfoFull(codex, primary), vf.deliveryKind(p, 'verify_first_orch.delivery_dir', 'verify_first_orch.delivery_prefix')); }
   var mode = ah.settings.enum('orch_state.orch_full_on_setting');
   if (mode === 'auto') mode = ah.cfg('orch_state.auto_mode');
   if (mode === 'spawn' && !confident) mode = 'session';
@@ -113,7 +125,7 @@ function vfoDecide(p, opts, claudeHost) {
     if (state.ok !== undefined && sid !== null && vfoWriteMarker(sid, pending)) return emit(vfoCompact(true, root, codex));
   }
   writeNone();
-  return emit(vfoFull(codex));
+  return once(vfoFull(codex), vf.deliveryKind(p, 'verify_first_orch.delivery_dir', 'verify_first_orch.delivery_prefix'));
 }
 
 function decide(p, opts) { return vfoDecide(p, opts, true); }

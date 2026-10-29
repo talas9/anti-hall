@@ -2436,13 +2436,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first_orch.compact_mn_codex` | `M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent;...` |  |  | The compact model-routing line for a Codex session. |
 | `verify_first_orch.config_dir_default` | `.claude` |  |  | The host's config directory under the home directory when the variable is not set. |
 | `verify_first_orch.config_dir_env` | `CLAUDE_CONFIG_DIR` |  |  | Environment variable that moves the host's config directory. |
+| `verify_first_orch.delivery_dir` | `orch-delivery` |  |  | Directory of the per-session orchestration delivery records, under script.write_root. A record says the full orchestration text was served to the session, so a later compaction or resume gets the short form. |
 | `verify_first_orch.delivery_placeholder` | `<delivery>` |  |  | Placeholder in the compact first line that is replaced by the spawn-delivery phrase, or by nothing. |
+| `verify_first_orch.delivery_prefix` | `orch` |  |  | File-name prefix of an orchestration delivery record. |
 | `verify_first_orch.event` | `SessionStart` |  |  | The only event the hook answers. |
 | `verify_first_orch.full_lines` | `15 items` |  |  | Lines of the full orchestration text for a Claude session, joined with a newline. |
 | `verify_first_orch.full_lines_codex` | `15 items` |  |  | Lines of the full orchestration text for a Codex session, joined with a newline. |
 | `verify_first_orch.mn_prefix` | `M/N.` |  |  | How the compact body's model-routing line starts (that line is swapped for the Codex one). |
 | `verify_first_orch.primary_rule` | `  W. DEVSWARM PRIMARY — WORKSPACE IS THE TOP FAN-OUT TIER: a feature/fix/depl...` |  |  | The DevSwarm Primary workspace-tier rule (W), inserted after the header line of the full orchestration text when the session is a Primary. |
+| `verify_first_orch.primary_rule_short` | `  W. DEVSWARM PRIMARY: a workspace-scale feature/fix/deploy is a CHILD WORKSP...` |  |  | The DevSwarm Primary workspace-tier rule (W) in short form, appended to the compact text sent after a compaction or resume. |
 | `verify_first_orch.projects_dir` | `projects` |  |  | Directory of the host's transcripts, relative to the host's config directory. |
+| `verify_first_orch.repeat_line` | `ORCHESTRATION: rules already delivered earlier this session. Coordinator, not...` |  |  | The one line sent when the session was already served the orchestration rules and this start is neither fresh nor a compaction or resume; <abs> is replaced by the plugin root. |
+| `verify_first_orch.resend_max_bytes` | `2500` |  | bytes | Byte budget of the orchestration text sent after a compaction or resume or on a repeated start (cut at a line break; 0 = no cap). |
 | `verify_first_orch.root_placeholder` | `<abs>` |  |  | Placeholder in the compact text that is replaced by the plugin root. |
 | `verify_first_orch.summary` | `SessionStart orchestration text for the Claude entry: composes the full or co...` |  |  | One-line description of the verify-first-orch check in the generated reference. |
 | `verify_first_orch.summary_codex` | `SessionStart orchestration text for the Codex entry (the same hook without --...` |  |  | One-line description of the verify-first-orch-codex check in the generated reference. |

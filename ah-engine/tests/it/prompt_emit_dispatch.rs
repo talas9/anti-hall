@@ -261,3 +261,85 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     let (_, stale, _) = e.run(&args, true, &ups("is-stale", "go on", Some(&transcript)), &extra);
     assert!(!ctx(&stale).contains("finished agent"), "a stale agent must not be listed: {stale}");
 }
+
+fn session_start(source: &str) -> String {
+    serde_json::json!({"session_id": "os", "cwd": "/tmp", "hook_event_name": "SessionStart", "source": source}).to_string()
+}
+
+/// Emit on change, not every start: a DevSwarm Primary gets the whole orchestration rules once; every later compaction or resume
+/// gets the short form, within the configured byte budget, and a plain repeated start one line.
+#[test]
+fn orchestration_rules_are_sent_whole_once_then_short_after_compaction() {
+    let e = Env::new("orch-once");
+    let map = e.map("SessionStart", "none");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall"); // an external target dir cannot find the checkout by ancestry
+    let env = [("DEVSWARM_REPO_ID", "r1"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+    let mut sizes = Vec::new();
+    let mut outs = Vec::new();
+    for source in ["startup", "compact", "compact", "resume", "other"] {
+        let (code, out, err) = e.run(&args, true, &session_start(source), &env);
+        assert_eq!(code, 0, "{out} {err}");
+        let c = ctx(&out);
+        sizes.push(c.len());
+        outs.push(c);
+    }
+    println!("orchestration SessionStart chars per start (startup, compact, compact, resume, other): {sizes:?}");
+    assert!(outs[0].contains("ORCHESTRATION DISCIPLINE") && outs[0].contains("DEVSWARM PRIMARY"), "the first start carries the whole rules");
+    for (i, o) in outs.iter().enumerate().skip(1) {
+        assert!(!o.contains("ORCHESTRATION DISCIPLINE"), "start {i} must not re-send the whole rules: {o}");
+        assert!(o.contains("PROTOCOL.md#orchestration"), "start {i} keeps the pointer: {o}");
+    }
+    assert!(outs[1].contains("W. DEVSWARM PRIMARY"), "{}", outs[1]);
+    assert!(sizes[1] < sizes[0] / 2 && sizes[4] < sizes[1], "short forms are shorter: {sizes:?}");
+    // the switch keeps the whole text every time
+    let e2 = Env::new("orch-once-off");
+    let map2 = e2.map("SessionStart", "none");
+    let args2 = ["hook", "--event", "SessionStart", "--fallback-map", map2.to_str().unwrap()];
+    let off = [("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_PROTOCOL_ONCE", "0"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+    for source in ["startup", "compact"] {
+        let (_, out, _) = e2.run(&args2, true, &session_start(source), &off);
+        assert!(ctx(&out).contains("ORCHESTRATION DISCIPLINE"), "protocolOnce=false sends the whole rules at {source}");
+    }
+}
+
+/// Twenty consecutive prompts of one session: the recurring context blocks are sent on the first and not again (the model already
+/// holds them); the total injected chars of the sequence are printed against the every-turn baseline (`ANTIHALL_EMIT_DEDUPE=0`).
+#[test]
+fn twenty_consecutive_prompts_inject_the_recurring_blocks_once() {
+    let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall");
+    let run = |dedupe_off: bool| -> Vec<usize> {
+        let e = Env::new(if dedupe_off { "twenty-off" } else { "twenty-on" });
+        let map = e.map("UserPromptSubmit", "none");
+        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+        let mut env = vec![("DEVSWARM_REPO_ID", "r1"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+        if dedupe_off {
+            env.push(("ANTIHALL_EMIT_DEDUPE", "0"));
+            env.push(("ANTIHALL_INJECT_GATE", "0"));
+            env.push(("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"));
+        }
+        let mut sizes: Vec<usize> = (0..20)
+            .map(|i| {
+                let (code, out, err) = e.run(&args, true, &ups("tw", &format!("prompt {i}"), None), &env);
+                assert_eq!(code, 0, "{out} {err}");
+                ctx(&out).len()
+            })
+            .collect();
+        // a compaction loses the blocks: the next prompt re-sends them
+        let smap = e.map("SessionStart", "none");
+        let sargs = ["hook", "--event", "SessionStart", "--fallback-map", smap.to_str().unwrap()];
+        let sp = serde_json::json!({"session_id": "tw", "cwd": "/tmp", "hook_event_name": "SessionStart", "source": "compact"}).to_string();
+        e.run(&sargs, true, &sp, &env);
+        let (_, out, _) = e.run(&args, true, &ups("tw", "after compaction", None), &env);
+        sizes.push(ctx(&out).len());
+        sizes
+    };
+    let on = run(false);
+    let off = run(true);
+    println!("twenty prompts, chars per turn with emit-on-change: {on:?} (total {})", on.iter().sum::<usize>());
+    println!("twenty prompts, chars per turn every turn:          {off:?} (total {})", off.iter().sum::<usize>());
+    assert!(on[0] > 0, "the first prompt carries the blocks");
+    assert!(on[1..20].iter().all(|n| *n == 0), "the second to twentieth prompt re-send nothing while the state is unchanged: {on:?}");
+    assert!(on[20] > 0, "a compaction (changed state) re-sends the blocks: {on:?}");
+    assert!(on.iter().sum::<usize>() < off.iter().sum::<usize>(), "emit-on-change injects less than every turn");
+}

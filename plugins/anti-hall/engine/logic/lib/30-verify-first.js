@@ -85,6 +85,44 @@ var vf = {
     }
     return false;
   },
+  // What a SessionStart owes a session about a block it already served (emit on change, not every start): 'first' (send the whole text:
+  // a fresh context, no record, or the switch context.protocolOnce off), 'resend' (compacted or resumed since: the short form) or 'repeat'
+  // (served earlier, neither fresh nor compaction: one line). One small record per session under script.write_root/<dirKey>; any problem
+  // with it means 'first', never silence. Sources: verify_first.fresh_sources / resend_sources.
+  deliveryKind: function (p, dirKey, prefixKey) {
+    if (!ah.settings.bool('verify_first.setting_once')) return 'first';
+    var sid = jx.isObj(p) && typeof p.session_id === 'string' && p.session_id !== '' ? p.session_id : null;
+    var home = spawn.stateHome();
+    if (sid === null || home.ok === undefined) return 'first';
+    var dirRel = ah.cfg('script.write_root') + '/' + ah.cfg(dirKey), prefix = ah.cfg(prefixKey);
+    var rel = dirRel + '/' + prefix + '-' + spawn.sanitize(sid) + '.json';
+    var seen = ah.fs.readText(ah.path.join(home.ok, rel)) !== null;
+    var source = typeof p.source === 'string' ? p.source : '';
+    var kind = 'first';
+    if (seen && ah.cfg('verify_first.fresh_sources').indexOf(source) < 0) kind = ah.cfg('verify_first.resend_sources').indexOf(source) >= 0 ? 'resend' : 'repeat';
+    try { ah.state.writeAtomic(rel, JSON.stringify({ source: source, kind: kind })); } catch (e) { /* a lost write only means the next start sends the whole text */ }
+    gk.pruneStale(dirRel, prefix);
+    return kind;
+  },
+  utf8Bytes: function (t) {
+    var n = 0;
+    for (var i = 0; i < t.length; i++) {
+      var c = t.charCodeAt(i);
+      if (c < 0x80) n += 1; else if (c < 0x800) n += 2; else if (c >= 0xd800 && c < 0xdc00) { n += 4; i++; } else n += 3;
+    }
+    return n;
+  },
+  // Cut `t` to at most `max` UTF-8 bytes at the last line break that fits (0 or less = no cap).
+  capBytes: function (t, max) {
+    if (!(max > 0)) return t;
+    var lines = t.split('\n'), out = '', i;
+    for (i = 0; i < lines.length; i++) {
+      var next = out === '' ? lines[i] : out + '\n' + lines[i];
+      if (vf.utf8Bytes(next) > max) break;
+      out = next;
+    }
+    return out === '' ? lines[0] : out;
+  },
   // The session id as the UserPromptSubmit hooks use it (`payload.session_id` when truthy, `String(..)` of a number or true): a string,
   // null for none, or undefined for an id the engine does not spell exactly as JavaScript (an array or object): the caller defers.
   sessionOf: function (p) {
