@@ -61,24 +61,15 @@ pub fn resolve_git(prog: &str, path: Option<&str>) -> String {
     resolve_in(prog, path, &defaults::list("proc.git_shims"), &defaults::list("proc.git_candidates"))
 }
 
-/// [`resolve_git`] with the lists given (the testable core). The chosen candidate is remembered per candidate list.
+/// [`resolve_git`] with the lists given (the testable core).  Stateless: the candidates are re-checked on every call.
 fn resolve_in(prog: &str, path: Option<&str>, shims: &[&str], candidates: &[&str]) -> String {
     let found = path.into_iter().flat_map(|p| p.split(':')).filter(|d| !d.is_empty()).map(|d| format!("{d}/{prog}")).find(|f| is_exec(f));
     if !found.as_deref().is_some_and(|f| shims.contains(&f)) {
         return prog.to_string();
     }
-    static CHOSEN: std::sync::Mutex<Vec<(String, Option<String>)>> = std::sync::Mutex::new(Vec::new());
-    let key = candidates.join("\n");
-    let mut chosen = CHOSEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let pick = match chosen.iter().find(|(k, _)| *k == key) {
-        Some((_, v)) => v.clone(),
-        None => {
-            let v = candidates.iter().find(|c| is_exec(c)).map(|c| (*c).to_string());
-            chosen.push((key, v.clone()));
-            v
-        }
-    };
-    pick.unwrap_or_else(|| prog.to_string())
+    // No memo: one stat per candidate is far cheaper than the spawn it saves, a candidate that vanished is never returned,
+    // and a miss is never remembered (a git installed later is picked up on the next call).
+    candidates.iter().find(|c| is_exec(c)).map_or_else(|| prog.to_string(), |c| (*c).to_string())
 }
 
 fn is_exec(path: &str) -> bool {
@@ -359,6 +350,16 @@ mod tests {
         assert_eq!(resolve_in("git", Some(&path), &[&missing], &[&real]), "git", "not a listed shim: unchanged");
         assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&missing]), "git", "no candidate on disk: unchanged");
         assert_eq!(resolve_in("git", None, &[&shim], &[&real]), "git", "no path: unchanged");
+        // a candidate that appears later is picked up (a miss is not remembered); one that stops being executable is dropped
+        let late = d.join("late/git");
+        let late_s = late.to_string_lossy().into_owned();
+        assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&late_s]), "git", "absent now");
+        std::fs::create_dir_all(late.parent().unwrap()).unwrap();
+        std::fs::write(&late, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&late, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&late_s]), late_s, "appeared later: found");
+        std::fs::set_permissions(&late, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+        assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&late_s]), "git", "no longer executable: ignored");
         std::fs::remove_dir_all(&d).ok();
     }
 
