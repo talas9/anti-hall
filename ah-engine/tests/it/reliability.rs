@@ -2384,3 +2384,18 @@ fn an_engine_fail_open_reaches_the_ack_client_the_counters_and_the_degraded_stat
     assert_eq!(st["fail_open"]["state"], "degraded");
     assert!(e.health_log().contains("\tfail_open\tinternal_error\t"), "one health-log line per fail-open: {}", e.health_log());
 }
+
+/// #204: SIGINT starts the same graceful drain as SIGTERM (it used to be ignored), and the exit reason is logged.
+#[test]
+fn sigint_drains_and_exits_like_sigterm() {
+    let e = Env::new("sigint", &[]);
+    e.warm();
+    let pid = e.pid().unwrap();
+    signal(pid, libc::SIGINT);
+    let gone = wait_for(|| !alive(pid));
+    if !gone {
+        signal(pid, libc::SIGKILL);
+    }
+    assert!(gone, "SIGINT must end the daemon{}", e.diag());
+    assert!(e.health_log().contains("SIGINT"), "the drain reason is logged: {}", e.health_log());
+}

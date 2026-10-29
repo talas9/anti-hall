@@ -34,11 +34,15 @@ use std::time::{Duration, Instant};
 
 static HUP: AtomicBool = AtomicBool::new(false);
 static TERM: AtomicBool = AtomicBool::new(false);
+static INT: AtomicBool = AtomicBool::new(false);
 extern "C" fn on_hup(_: libc::c_int) {
     HUP.store(true, SeqCst);
 }
 extern "C" fn on_term(_: libc::c_int) {
     TERM.store(true, SeqCst);
+}
+extern "C" fn on_int(_: libc::c_int) {
+    INT.store(true, SeqCst);
 }
 
 /// What to do after replying.
@@ -2151,10 +2155,11 @@ pub fn serve(start_reason: &str) {
     };
     crate::discard::harmless(std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))); // keep: best effort, fail-open
     listener.set_nonblocking(true).ok_logged("daemon_listener_nonblocking");
-    // SAFETY: both handlers are `extern "C"` fns that only store to an atomic, which is async-signal-safe.
+    // SAFETY: all three handlers are `extern "C"` fns that only store to an atomic, which is async-signal-safe.
     unsafe {
         libc::signal(libc::SIGHUP, on_hup as extern "C" fn(libc::c_int) as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_int as extern "C" fn(libc::c_int) as libc::sighandler_t);
     }
     // Config is read once the singleton lock is ours, so a refused second daemon never logs a config error twice.
     let store = crate::cfgstore::ConfigStore::load();
@@ -2499,6 +2504,9 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         }
         if TERM.swap(false, SeqCst) {
             begin_drain(sh, defaults::text("msg.exit_reason_sigterm"), false);
+        }
+        if INT.swap(false, SeqCst) {
+            begin_drain(sh, defaults::text("msg.exit_reason_sigint"), false);
         }
         let draining = sh.draining.load(SeqCst);
         let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
