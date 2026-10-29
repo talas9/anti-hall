@@ -1577,7 +1577,8 @@ fn shed_probe(sock: &Path, req: &[u8]) -> Result<bool, String> {
 fn shed_requests_get_a_clean_busy(tag: &str, body_bytes: usize) {
     let mut req = b"V 0\n".to_vec(); // a hook request of a realistic size: the daemon never reads it on the shed path
     req.extend_from_slice(
-        format!(r#"{{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{{"content":"{}"}}}}"#, "x".repeat(body_bytes)).as_bytes(),
+        format!(r#"{{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{{"content":"{}"}}}}"#, "x".repeat(body_bytes))
+            .as_bytes(),
     );
     let e = Env::new(tag, &[("AH_ENGINE_WORKERS", "1"), ("AH_ENGINE_QUEUE", "1"), ("AH_ENGINE_STUCK_MS", "60000")]);
     e.warm();
