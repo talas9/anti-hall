@@ -2599,6 +2599,28 @@ mod claim_evidence_guard {
     }
 
     #[test]
+    fn a_genuine_claim_that_only_borrows_a_criterion_or_label_word_is_still_held() {
+        for (i, r) in [
+            "All required tests pass.",
+            "Required changes are merged.",
+            "The criteria are met and PR #405 is merged.",
+            "It is safe to remove because PR #405 is merged.",
+            "The criteria require that PR #405 is merged; PR #406 is merged.",
+            "Confirmed successful deployment.",
+            "Personally verified every endpoint.",
+            "Verified production works.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(bare(&format!("ce-borrow{i}"), r), "must hold: {r}");
+        }
+        for (i, r) in ["The criteria require that PR #405 is merged.", "Safe to remove only when PR #405 is merged."].iter().enumerate() {
+            assert!(!bare(&format!("ce-crit{i}"), r), "must allow: {r}");
+        }
+    }
+
+    #[test]
     fn a_claim_backed_by_an_api_call_or_another_runner_of_this_turn_passes_and_a_bare_one_is_held() {
         let mk = |cmd: &str, reply: &str| {
             vec![

@@ -7,7 +7,7 @@
 // the last N of them. A reply that labels itself honest (not verified, CI pending, earlier run) is never held; the same reply is
 // held once, at most max_blocks times per owner turn (blockCap, as the speculation guard); stop_hook_active, subagents, Codex
 // payloads (the evidence walk reads Claude transcripts only) and a script failure allow. A claim is judged per sentence: one that
-// is negated, future/conditional, a rule or criterion, or reported from someone else's words (its own clause, neg_res/future_res/criterion_res/reported_res) is not a claim. mode = log writes the hit and allows.
+// is negated, future/conditional, a rule or criterion statement, or reported from someone else's words (its own clause, neg_res/future_res/criterion_res/reported_res) is not a claim. mode = log writes the hit and allows.
 // Every pattern, list, number and text: claim_evidence.toml.
 'use strict';
 
@@ -59,17 +59,35 @@ function ceContext(sent, a, b) {
   return sent.slice(Math.max(from, a - ah.cfgNum('claim_evidence.skip_window')), b);
 }
 
-// The first claim of the reply that is stated as fact: a hit whose own clause is negated, future/conditional or reported speech is passed over.
-function ceFindClaim(scan) {
+// Why a claim hit is not a claim: the id of the first suppress list (claim_evidence.suppress) that matches the clause governing it, else null.
+function ceReason(sent, hit) {
+  var sup = ah.cfg('claim_evidence.suppress'), ctx = ceContext(sent, hit[0], hit[1]);
+  for (var i = 0; i < sup.length; i++) if (ceAny(ah.cfg(sup[i].list), ctx) !== null) return sup[i].reason;
+  return null;
+}
+
+// The first claim of the reply that is stated as fact. EVERY match of every row is judged on its own clause (a skip never reaches the rest
+// of the sentence); a hit whose clause is negated, future/conditional, reported speech or a rule/criterion statement is passed over and
+// pushed to `seen` as [reason, quote, claim id] for the log.
+function ceFindClaim(scan, seen) {
   var rows = ah.cfg('claim_evidence.claims'), sents = ceSentences(scan);
-  var skip = [].concat(ah.cfg('claim_evidence.neg_res'), ah.cfg('claim_evidence.future_res'), ah.cfg('claim_evidence.reported_res'), ah.cfg('claim_evidence.criterion_res'));
   for (var k = 0; k < sents.length; k++) {
     for (var i = 0; i < rows.length; i++) {
-      var hit = ah.re.find(rows[i].re, 'i', sents[k]);
-      if (hit && ceAny(skip, ceContext(sents[k], hit[0], hit[1])) === null) return { row: rows[i], quote: sents[k].slice(hit[0], hit[1]) };
+      var all = ah.re.findAll(rows[i].re, 'i', sents[k]);
+      for (var j = 0; j < all.length; j++) {
+        var why = ceReason(sents[k], all[j]), quote = sents[k].slice(all[j][0], all[j][1]);
+        if (why === null) return { row: rows[i], quote: quote };
+        seen.push([why, quote, rows[i].id]);
+      }
     }
   }
   return null;
+}
+
+// Telemetry: one engine-log line (claim_evidence.log_kind) per suppressed hit, at most claim_evidence.max_suppress_logs per reply.
+function ceLogSuppressed(seen) {
+  var n = Math.min(seen.length, ah.cfgNum('claim_evidence.max_suppress_logs'));
+  for (var i = 0; i < n; i++) ah.log(ah.cfg('claim_evidence.log_kind'), text.render(ah.cfg('claim_evidence.msg_suppressed'), { reason: seen[i][0], claim: seen[i][2], quote: text.clean(seen[i][1]) }));
 }
 
 function ceAnyCmd(list, cmds) {
@@ -109,8 +127,15 @@ function decide(p) {
   // the cheap gate: the reply alone, with quoted text and code removed
   var scan = ah.text.maskQuoted(reply), claim = null, done = false;
   if (r1) {
-    claim = ceFindClaim(scan);
-    if (claim !== null && ceAny(ah.cfg('claim_evidence.ack_res'), scan) !== null) claim = null;
+    var seen = [];
+    claim = ceFindClaim(scan, seen);
+    if (claim !== null && ceAny(ah.cfg('claim_evidence.ack_res'), scan) !== null) { seen.push([ah.cfg('claim_evidence.ack_reason'), claim.quote, claim.row.id]); claim = null; }
+    // a claim that exists only inside quoted text or code is suppressed too (the masked scan cannot see it)
+    if (claim === null && scan !== reply) {
+      var raw = [], rawClaim = ceFindClaim(reply, raw);
+      if (rawClaim !== null) seen.push([ah.cfg('claim_evidence.quoted_reason'), rawClaim.quote, rawClaim.row.id]);
+    }
+    ceLogSuppressed(seen);
   }
   if (r2) done = ceAny(ah.cfg('claim_evidence.done_res'), scan) !== null && ceAny(ah.cfg('claim_evidence.ack_pushed_res'), scan) === null;
   if (claim === null && !done) return 'allow';

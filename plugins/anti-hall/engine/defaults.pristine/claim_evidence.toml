@@ -97,10 +97,40 @@ value = [
 ]
 
 [claim_evidence.criterion_res]
-doc = "A claim inside a rule or criterion is not a claim of this turn's work (rule 1): 'SAFE-TO-REMOVE requires that the branch is merged or fully pushed', 'a clone must be merged'. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
+doc = "A clause that is itself a rule or criterion statement is not a claim of this turn's work (rule 1): 'SAFE-TO-REMOVE requires that the branch is merged', 'the criteria require that X is merged', 'safe to remove only when X is merged', 'a clone must be merged'. Structural on purpose: 'required' as an adjective ('All required tests pass', 'Required changes are merged') or 'criteria' / 'safe to' alone stay claims. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
 value = [
-  '\b(?:requires?|required|requiring|requirements?|criteria|criterion|must|means\s+that|safe\s+to|ok\s+to|allowed\s+to)\b',
+  '\b(?:requires?|requiring)\s+that\b',
+  '\b(?:criteria|criterion)\s+(?:\w+\s+){0,5}?(?:requires?|that)\b',
+  '\b(?:safe|ok|okay|allowed)\s+to\s+\w+(?:\s+\w+){0,3}\s+(?:only\s+)?(?:if|when)\b',
+  '\bmust\b',
 ]
+
+[claim_evidence.suppress]
+doc = "Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause governing the hit). The first list that matches names the reason."
+value = [
+  { reason = "negated", list = "claim_evidence.neg_res" },
+  { reason = "future", list = "claim_evidence.future_res" },
+  { reason = "reported", list = "claim_evidence.reported_res" },
+  { reason = "criterion", list = "claim_evidence.criterion_res" },
+]
+
+[claim_evidence.ack_reason]
+doc = "Log reason for a claim excused by a labelled-honest reply (ack_res)."
+value = "labelled"
+
+[claim_evidence.quoted_reason]
+doc = "Log reason for a claim that appears only inside quoted text or code."
+value = "quoted"
+
+[claim_evidence.max_suppress_logs]
+doc = "Most suppressed-hit log lines (claim_evidence.log_kind) written for one reply."
+value = 5
+min = 0
+max = 50
+
+[claim_evidence.msg_suppressed]
+doc = "Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, reported, criterion, labelled, quoted), {claim} the claim kind, {quote} the words found."
+value = "suppressed ({reason}): \"{quote}\" ({claim})"
 
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------
 
@@ -109,7 +139,7 @@ doc = "The result claims rule 1 looks for, in order; the first row that matches 
 value = [
   { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|\S*test\S*\.(?:sh|js|py))\b'] },
   { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
-  { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|the|it|this|all|both)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', needs = [] },
+  { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also|personally|independently|just|successfully)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|successful(?:ly)?|every|each|the|it|this|all|both)\b|^\W*(?:verified|confirmed)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', needs = [] },
   { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', needs = [] },
   { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', needs = [] },
 ]
