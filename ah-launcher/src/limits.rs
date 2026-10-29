@@ -30,9 +30,12 @@ pub enum Ctr {
     ReaperOff,
     KickSkipped,
     FailOpen,
+    NoticeShown,
+    NoticeSuppressed,
+    NoticeEvicted,
 }
 
-const NCTR: usize = 14;
+const NCTR: usize = 17;
 static COUNTERS: [AtomicU64; NCTR] = [const { AtomicU64::new(0) }; NCTR];
 
 impl Ctr {
@@ -53,6 +56,9 @@ impl Ctr {
             Ctr::ReaperOff => "reaper_off",
             Ctr::KickSkipped => "kick_skipped",
             Ctr::FailOpen => "fail_open",
+            Ctr::NoticeShown => "notice_shown",
+            Ctr::NoticeSuppressed => "notice_suppressed",
+            Ctr::NoticeEvicted => "notice_evicted",
         }
     }
     const ALL: [Ctr; NCTR] = [
@@ -70,6 +76,9 @@ impl Ctr {
         Ctr::ReaperOff,
         Ctr::KickSkipped,
         Ctr::FailOpen,
+        Ctr::NoticeShown,
+        Ctr::NoticeSuppressed,
+        Ctr::NoticeEvicted,
     ];
 }
 

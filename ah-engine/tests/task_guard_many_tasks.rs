@@ -67,3 +67,65 @@ fn config_and_settings_reads_cost_one_host_call_per_check_call() {
     }
     std::fs::remove_dir_all(&home).ok();
 }
+
+/// The memo hits and misses of `ah.cfg` / `ah.settings` reach `cfg_cache{result}` through the next call's one `cfgGen` read: 1000 reads
+/// of one cfg key and one setting are 2 misses and 1998 hits, and the host sees one `cfgGen` per call, not one per read.
+#[test]
+fn cfg_cache_hits_and_misses_are_counted_without_extra_host_calls() {
+    let home = std::env::temp_dir().join(format!("ah-tgcachecnt-{}", std::process::id()));
+    std::fs::create_dir_all(home.join(".anti-hall/logic")).unwrap();
+    let real = std::fs::canonicalize(&home).unwrap();
+    std::fs::write(
+        real.join(".anti-hall/logic/ship-it-guard.js"),
+        r#"function decide(p) {
+  var n = 0, g = ahHost.cfgGen;
+  ahHost.cfgGen = function (h, m) { n++; return g(h, m); };
+  for (var i = 0; i < 1000; i++) { ah.cfg('dispatch_tier.owner_values'); ah.settings.bool('dispatch_tier.owner_marker_setting'); }
+  ahHost.cfgGen = g;
+  return { block: 'cfgGen calls ' + n };
+}"#,
+    )
+    .unwrap();
+    let env = RequestEnv::from_pairs(vec![("HOME".to_string(), real.to_string_lossy().into_owned())]);
+    let payload = json!({"tool_name": "Write", "tool_input": {"file_path": "a.rs"}, "cwd": "/x"});
+    let mut m = ah_engine::metrics::Metrics::default();
+    ah_engine::metrics::drain_pending(&mut m);
+    for _ in 0..2 {
+        let v = format!("{:?}", ah_engine::script::run_forced("ship-it-guard", &payload, &json!({}), "PreToolUse", &env));
+        assert!(v.contains("cfgGen calls 1"), "counting adds no host call: {v}");
+    }
+    ah_engine::metrics::drain_pending(&mut m);
+    // the second call's own tally is still waiting for a third call, so only the first call's counts are in: >= 1998 hits, >= 2 misses
+    assert!(m.counter("cfg_cache", &[("result", "hit")]) >= 1998, "hits: {}", m.counter("cfg_cache", &[("result", "hit")]));
+    assert!(m.counter("cfg_cache", &[("result", "miss")]) >= 2, "misses: {}", m.counter("cfg_cache", &[("result", "miss")]));
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// `tailLinesNewest` with a cap counts `tail_newest_reads{mode=capped}`, without one `{mode=fallback_full}`.
+#[test]
+fn newest_tail_reads_are_counted_by_mode() {
+    let home = std::env::temp_dir().join(format!("ah-tgtailcnt-{}", std::process::id()));
+    std::fs::create_dir_all(home.join(".anti-hall/logic")).unwrap();
+    let real = std::fs::canonicalize(&home).unwrap();
+    let tp = real.join("t.jsonl");
+    std::fs::write(&tp, "a\nb\nc\n").unwrap();
+    std::fs::write(
+        real.join(".anti-hall/logic/ship-it-guard.js"),
+        format!(
+            r#"function decide(p) {{ ah.fs.tailLinesNewest('{}', 1000, false, [], 2); ah.fs.tailLinesNewest('{}', 1000, false, [], 0); ah.fs.tailLinesNewest('{}', 1000, false, [], 0); return {{ block: 'x' }}; }}"#,
+            tp.display(),
+            tp.display(),
+            tp.display()
+        ),
+    )
+    .unwrap();
+    let env = RequestEnv::from_pairs(vec![("HOME".to_string(), real.to_string_lossy().into_owned())]);
+    let payload = json!({"tool_name": "Write", "tool_input": {"file_path": "a.rs"}, "cwd": "/x"});
+    let mut m = ah_engine::metrics::Metrics::default();
+    ah_engine::metrics::drain_pending(&mut m);
+    ah_engine::script::run_forced("ship-it-guard", &payload, &json!({}), "PreToolUse", &env);
+    ah_engine::metrics::drain_pending(&mut m);
+    assert!(m.counter("tail_newest_reads", &[("mode", "capped")]) >= 1);
+    assert!(m.counter("tail_newest_reads", &[("mode", "fallback_full")]) >= 2);
+    std::fs::remove_dir_all(&home).ok();
+}

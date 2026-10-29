@@ -11,12 +11,16 @@ function ahUnableCount(site, kind) { try { if (kind === undefined) ahHost.unable
 // `req`: the `ah.request` object the memo was last checked under. The engine installs a fresh one before EVERY check call, so a new
 // call re-reads `cfgGen` once (a defaults reload between calls is seen) and the rest of the call costs no host call.
 var ahCfgMemo = { gen: -1, map: new Map(), req: null };
+// Memo hits and misses of this call's `ah.cfg` / `ah.settings` reads: handed to the host with the next call's one `cfgGen` read (no host call of their own).
+var ahCfgTally = { hit: 0, miss: 0 };
 // Settings values read in this call, by kind + key: the settings chain and the request's home/env are fixed for a call (`useHome` drops them).
 var ahSetMemo = { req: null, map: new Map() };
 function ahSet(kind, key, read) {
+  ah.cfgGen();
   if (ahSetMemo.req !== ah.request) { ahSetMemo.req = ah.request; ahSetMemo.map = new Map(); }
   var k = kind + '\u0000' + key, m = ahSetMemo.map;
-  if (m.has(k)) return m.get(k);
+  if (m.has(k)) { ahCfgTally.hit++; return m.get(k); }
+  ahCfgTally.miss++;
   var v = read(key);
   m.set(k, v);
   return v;
@@ -28,7 +32,9 @@ var ah = {
   cfgGen: function () {
     var r = ah.request;
     if (ahCfgMemo.req !== r || r === undefined || r === null) {
-      var g = ahHost.cfgGen();
+      var h = ahCfgTally.hit, mi = ahCfgTally.miss;
+      ahCfgTally.hit = 0; ahCfgTally.miss = 0;
+      var g = ahHost.cfgGen(h, mi);
       if (g !== ahCfgMemo.gen) { ahCfgMemo.gen = g; ahCfgMemo.map = new Map(); }
       ahCfgMemo.req = r;
     }
@@ -38,7 +44,7 @@ var ah = {
   cfg: function (key) {
     ah.cfgGen();
     var v = ahCfgMemo.map.get(key);
-    if (v === undefined) { v = JSON.parse(ahHost.cfg(key)); ahCfgMemo.map.set(key, v); }
+    if (v === undefined) { ahCfgTally.miss++; v = JSON.parse(ahHost.cfg(key)); ahCfgMemo.map.set(key, v); } else ahCfgTally.hit++;
     return v;
   },
   cfgNum: function (key) { return ahHost.cfgNum(key); },

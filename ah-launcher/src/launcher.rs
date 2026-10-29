@@ -307,12 +307,22 @@ impl L {
                         .collect()
                 })
                 .unwrap_or_default();
+            let counting = self.s.num("launcher.notice_counters") != 0;
             if seen.contains(&sid) {
+                if counting {
+                    limits::bump(limits::Ctr::NoticeSuppressed);
+                }
                 return;
             }
             seen.push(sid);
             let drop = seen.len().saturating_sub(cap);
             seen.drain(..drop);
+            if counting {
+                for _ in 0..drop {
+                    limits::bump(limits::Ctr::NoticeEvicted);
+                }
+                limits::bump(limits::Ctr::NoticeShown);
+            }
             let _ = std::fs::create_dir_all(&self.state_dir);
             let _ = std::fs::write(&p, seen.join("\n") + "\n");
         }

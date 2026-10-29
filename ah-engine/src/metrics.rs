@@ -107,7 +107,12 @@ static PENDING: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new(
 /// Add one to the counter `name` from code that has no `Metrics` at hand. A name nobody registered is ignored (a test catches it),
 /// and so is a new series once `telemetry.max_series` are waiting, so the table stays bounded between two drains.
 pub fn bump(name: &str, labels: &[(&str, &str)]) {
-    if !is_registered(name) {
+    bump_by(name, labels, 1);
+}
+
+/// Add `by` to the counter `name` from code that has no `Metrics` at hand (see [`bump`]); `0` adds nothing.
+pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
+    if by == 0 || !is_registered(name) {
         return;
     }
     let key = series(name, labels);
@@ -115,7 +120,12 @@ pub fn bump(name: &str, labels: &[(&str, &str)]) {
     if !g.contains_key(&key) && g.len() >= defaults::num("telemetry.max_series") as usize {
         return;
     }
-    g.entry(key).or_insert_with(|| (name.to_string(), labels.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect(), 0)).2 += 1;
+    g.entry(key).or_insert_with(|| (name.to_string(), labels.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect(), 0)).2 += by;
+}
+
+/// Whether the telemetry of the recent fixes (config cache, newest-tail reads, served requests, SIGINT drains) is on (`recent_tel.enabled`).
+pub fn recent_on() -> bool {
+    defaults::num("recent_tel.enabled") != 0
 }
 
 /// Move the counts [`bump`] gathered into `m`.
