@@ -64,8 +64,6 @@ Every command accepts `--json`. Read-only commands never change state.
 | `update` | `[--check] [--post-pull-only] \| --from-local <dir> [--engine-bin F] [--hook-bin F] [--tree D] [--source release\|local\|manual] [--check] [--yes] [--force] \| --rollback [--deploy-dir D] [--yes]` | no | implemented | Update anti-hall (D81, lane L9b, the native update): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions (with --json it adds an `engine` object: the running build version, its sha, where it came from - release, local build or manual - and the latest GitHub release). `--from-local <dir>` and `--rollback` run the ONE install routine (pre-check, rollback copy, install, settle, validate, automatic rollback on failure, cleanup, install record); a downgrade needs --force. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
 | `web` | `[open\|status] [--no-open] [--json]` | no | implemented | The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address, opening it in the browser unless --no-open; `status` says whether it runs. The server (binary ah-web) binds to the loopback address on a random port behind a per-session token, serves the live agent tree and exits when idle (web.idle_exit_s). Reads the agent list through `agents status`; changes nothing. Switch: web.enabled. |
-| `afk` | `on\|off\|status` | no | implemented | AFK mode, machine-wide: `on` starts it (agents work silently and log milestone bullets to their progress files), `off` ends it, `status` shows it. Lasts until `back` / `off`. Settings: afk.*. |
-| `back` | `` | no | implemented | End AFK mode and print each session's digest: the checklist bullets after the AFK marker in its progress file, with the percentage of [x] bullets. |
 | `mcp-reaper` | `run [--dry-run]` | no | implemented | The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line. |
 | `refresh` | `[--force] [--home <dir>]` | no | implemented | Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert), the Claude Code and DevSwarm CLI versions (the drift probes) and the reload repair (repair-on-reload), each as a bounded subprocess; `--force` runs every probe whether requested or not (never the repair unless requested). Prints one result per probe. The scheduler runs it every refresh.every_ms. |
 | `engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` | no | implemented | Update the engine binary: runs the thin client's updater (ah-engine update) with the given arguments (--from FILE [--sha256 X] [--yes] \| --channel stable\|dev \| --rollback \| --auto \| --dry-run). The engine itself does no network access. |
@@ -391,7 +389,6 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `advisor-guard` | Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing. |
 | `switch-notice` | Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
 | `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
-| `afk-mode` | UserPromptSubmit, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse (Codex): AFK mode. Machine-wide flag (ah-engine afk on\|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file, a capped Stop hold of overlong AFK replies, output tokens per turn AFK vs present (afk.*). |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets. |
@@ -1354,6 +1351,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.msg_heavy_plain` | `a heavy command` |  |  | The kind of any other heavy command. |
 | `command.msg_heavy_remote` | `a command that changes a shared remote` |  |  | The kind of a state-changing remote command. |
 | `command.msg_heavy_remote_why` | `Pushes, pulls and gh calls touch a shared remote and can stall on network or ...` |  |  | Why a remote git or gh call (push, pull, fetch, a gh read or write that is not on command.remote_block) is blocked in the main thread. |
+| `command.msg_heavy_segment` | ` Heavy: {seg}. The other {n} are fine alone.` |  |  | Added to the heavy-command block of a chain; {seg} is the heavy segment (whitespace collapsed, cut), {n} the number of other segments. The block is all-or-nothing: the hook cannot run part of a command. |
 | `command.msg_heavy_what` | `{kind}{detail} can't run in the main thread.` |  |  | Heading of the heavy-command block ({kind} and {detail} are the next two texts). |
 | `command.msg_heavy_why` | `Its raw output would flood the main conversation.` |  |  | Why a heavy command is blocked. |
 | `command.msg_mailbox_allowed` | ``inbox count`, `inbox peek-primary`, `mesh read --peek`, plain `roster`.` |  |  | What stays allowed. |
@@ -1379,6 +1377,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.msg_stash_scope_subagent` | `a subagent (workers must never touch the coordinator's working tree via stash)` |  |  | Scope text for a subagent. |
 | `command.msg_stash_what` | ``git stash {sub}` is blocked for {scope}.` |  |  | Heading of the git stash block ({sub} is the subcommand, {scope} the next two texts). |
 | `command.msg_stash_why` | `A stash can swallow another agent's protected WIP (defect b08b26566b92).` |  |  | Why a stash is blocked. |
+| `command.name_segment_setting` | `7 entries` |  |  | Off switch (guards.commandNameSegment, default on): a heavy-command block in a chain names the heavy segment and says the other segments are fine to run on their own. |
 | `command.nice_value_flags` | `-n, --adjustment` |  |  | nice options that take a value. |
 | `command.node_eval_deny` | `8 items` |  |  | Patterns that make a `node -e` payload unsafe (command-guard.js NODE_EVAL_UNSAFE_RE, NODE_EVAL_BRACKET_ACCESS_RE and the inline denials of isSafeNodeEvalPayload). |
 | `command.node_eval_flags` | `-e, --eval` |  |  | node options whose next word is inline code. |
@@ -1416,6 +1415,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.script_not_a_run_flag` | `4 entries` |  |  | Per interpreter family, the flag pattern that means the command is not a script-file run: inline code, module, syntax check or stdin. |
 | `command.script_shells` | `sh, bash, zsh, dash` |  |  | Shells whose script run counts as work. |
 | `command.script_value_flags` | `12 items` |  |  | Interpreter options whose next word is their value, not the script. |
+| `command.segment_ellipsis` | `...` |  |  | Appended to a cut segment. |
+| `command.segment_label_max` | `24` |  |  | Longest text (characters) of the named heavy segment; a longer one is cut (the visible block text holds 115 characters). |
 | `command.setting_allow_bg_scratch` | `7 entries` |  |  | Allowance for background scratch scripts (default on). |
 | `command.setting_allow_gcloud_reads` | `7 entries` |  |  | the narrow read-only Google Cloud access (default on). |
 | `command.setting_allow_plain_push` | `7 entries` |  |  | the plain git push chain allowance (default on). |
@@ -2822,25 +2823,25 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.gen_default_kind` | `hooks` |  |  | The file `gen-hooks` prints when `--kind` is not given. |
 | `dispatch.generated_files` | `2 entries` |  |  | Per host and kind of generated file (hooks, registry, list), its path relative to the repository root. `tests/hooks_files.rs` requires each committed file to equal what `gen-hooks` prints and `ah-gen-fallback-list` writes them. |
 | `dispatch.guard_events` | `PreToolUse, PermissionRequest, Stop, SubagentStop` |  |  | Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call (Claude ignores exit 2 on PermissionRequest, so a fail-closed exit 2 there is harmless, and the event stays listed so a hook registered on it later is guarded from the start), Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74). |
-| `dispatch.hooks_claude_PostToolUse` | `12 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PostToolUse` | `11 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PostToolUseFailure` | `4 entries, 4 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `4 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreToolUse` | `32 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `4 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `19 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
-| `dispatch.hooks_claude_Stop` | `14 items` |  |  | The claude Stop hook entries, in dispatch order. |
+| `dispatch.hooks_claude_Stop` | `13 items` |  |  | The claude Stop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStart` | `4 entries, 4 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStop` | `4 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `4 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCreated` | `4 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
-| `dispatch.hooks_claude_UserPromptSubmit` | `14 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
-| `dispatch.hooks_codex_PostToolUse` | `4 entries, 4 entries, 4 entries, 4 entries, 4 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_UserPromptSubmit` | `13 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PostToolUse` | `4 entries, 4 entries, 4 entries, 4 entries, 4 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `4 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreToolUse` | `19 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
-| `dispatch.hooks_codex_SessionStart` | `19 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_codex_SessionStart` | `18 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `4 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
-| `dispatch.hooks_codex_UserPromptSubmit` | `14 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_UserPromptSubmit` | `13 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |
 | `dispatch.list_comment_mark` | `#` |  |  | The mark that starts a comment line of the generated fallback list. |
@@ -3719,75 +3720,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_evidence.sw_telemetry` | `6 entries` |  |  | Switch guards.claimEvidenceTelemetry (default on): off stops the claim-evidence fired / suppressed counters (metrics claim_evidence_fired, claim_evidence_suppressed; advisory counters in status); the guard's decisions do not change. |
 | `claim_evidence.trailing_label_re` | `[;:(—–]\s*(?:unverified\|untested\|unchecked\|not\s+(?:yet\s+)?(?:verified\|check...` |  |  | An honest label that closes the claim's sentence as its own clause ('Tests pass in my head but I did not run them; unverified.'): it covers every claim before it in that sentence. A leading 'Unverified claims aside, ...' is not one. Rust regular expression, case-insensitive, matched against the sentence. |
 
-### afk.toml / afk
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `afk.action_block` | `block` |  |  | afk_overlong_turns action label: an overlong reply held at Stop. |
-| `afk.action_capped` | `capped` |  |  | afk_overlong_turns action label: an overlong reply let through because afk.max_blocks was reached. |
-| `afk.action_nudge` | `nudge` |  |  | afk_overlong_turns action label: the first overlong reply (nudged on the next turn). |
-| `afk.bullet_re` | `^\s*[-*] ` |  |  | A digest entry: a bullet line after the marker (regular expression). |
-| `afk.concise_text` | `Reply style: lead with the answer; 1-3 lines unless asked for detail; no reca...` |  |  | The concise reply rule injected at session start on Codex (Claude gets it from the shipped output style `concise`). |
-| `afk.ctx_line` | `{"hookSpecificOutput":{"hookEventName":"{event}","additionalContext":{text}}}\n` |  |  | The stdout line that injects {text} (JSON-quoted) as additional context for {event}. |
-| `afk.digest_max_entries` | `40` |  |  | Most bullets one digest prints per progress file (the newest are kept; the count of left-out bullets is shown). |
-| `afk.digest_max_files` | `20` |  |  | Most session progress files `ah-engine back` reads for one AFK period. |
-| `afk.done_re` | `^\s*[-*] \[[xX]\] ` |  |  | A finished checklist bullet (counts toward the percentage as done). |
-| `afk.flag_file` | `afk.json` |  |  | The machine-wide AFK flag file, under the per-user state directory (replykit.state_dir). JSON {on, how, since, epoch, counted, pending_digest}. |
-| `afk.guard_name` | `afk-mode` |  |  | The guard id this check answers to in skip.json and in its messages. |
-| `afk.how_idle` | `idle` |  |  | The `how` value of an AFK entered by idle detection (it ends on the owner's next prompt). |
-| `afk.how_manual` | `manual` |  |  | The `how` value of an AFK entered with `ah-engine afk on`. |
-| `afk.how_prompt` | `prompt` |  |  | The `how` value of an AFK entered by the owner typing an afk.words_on prompt. |
-| `afk.line_max_bytes` | `1048576` |  |  | Longest transcript line parsed for usage (a longer line is skipped; its tokens are not counted). |
-| `afk.marker_prefix` | `<!-- afk:` |  |  | Start of the AFK marker line in a progress file; the digest is every line after the LAST marker. |
-| `afk.marker_text` | `\n<!-- afk:{epoch} -->\n## AFK since {iso} ({how})\n` |  |  | The marker block appended to the session's progress file when AFK starts. Placeholders: {epoch}, {iso}, {how}. |
-| `afk.max_blocks` | `1` |  |  | Most Stop holds of overlong replies per session per AFK period, after the one nudge. A hold makes the model answer again, so it is kept small. |
-| `afk.max_lines` | `3000` |  |  | Most transcript lines parsed at Stop (the newest). |
-| `afk.max_reply_chars` | `400` |  |  | While AFK, a final reply longer than this many characters is overlong (enforcement). |
-| `afk.max_reply_lines` | `3` |  |  | While AFK, a final reply with more non-empty lines than this is overlong (enforcement). |
-| `afk.mode_afk` | `afk` |  |  | Label value of afk_output_tokens / afk_turns_measured for a turn that ended while AFK. |
-| `afk.mode_present` | `present` |  |  | Label value for a turn that ended while the owner was present. |
-| `afk.msg_already` | `AFK already on ({how}, since {since}).` |  |  | Reply when AFK is already on. Placeholders: {how}, {since}. |
-| `afk.msg_block` | `AFK: reply over limit ({chars} chars / {lines} lines, limit {max_chars} / {ma...` |  |  | Reason of a Stop hold of an overlong AFK reply (one line). Placeholders: {chars}, {lines}, {max_chars}, {max_lines}. |
-| `afk.msg_digest_head` | `AFK digest: {path}` |  |  | First line of a digest for one progress file. Placeholders: {path}. |
-| `afk.msg_digest_more` | `  ({n} older entries not shown)` |  |  | Line after a cut digest. Placeholders: {n}. |
-| `afk.msg_digest_none` | `AFK digest: {path}: no entries since the AFK marker` |  |  | The digest line when a progress file has no AFK marker or no bullets after it. Placeholders: {path}. |
-| `afk.msg_idle_ended` | `AFK (idle) ended: the owner is back. Type `progress` to see the digest.` |  |  | Context injected on the owner's prompt that ends an idle-entered AFK. |
-| `afk.msg_no_sessions` | `AFK digest: no session progress file recorded for this AFK period` |  |  | Printed by `back` / `progress` when no session recorded a progress file for this AFK period. |
-| `afk.msg_not_on` | `AFK was not on.` |  |  | First line printed by `back` when AFK was not on. |
-| `afk.msg_nudge` | `AFK: your last reply was {chars} chars / {lines} lines (limit {max_chars} / {...` |  |  | Context injected on the session's next prompt or tool call after its first overlong AFK reply. Placeholders: {chars}, {lines}, {max_chars}, {max_lines}. |
-| `afk.msg_off` | `AFK off (was {how}, since {since}).` |  |  | First line printed when AFK ends. Placeholders: {how}, {since}. |
-| `afk.msg_on` | `AFK on ({how}). Agents work silently and log milestones to their progress fil...` |  |  | Reply to the owner (typed command or CLI) when AFK starts. Placeholders: {how}. |
-| `afk.msg_pct` | `Progress: {pct}% ({done}/{total} checklist bullets since the AFK marker are [x])` |  |  | The progress line of a digest. Placeholders: {pct}, {done}, {total}. |
-| `afk.msg_pct_na` | `Progress: n/a (no [ ] / [x] checklist bullets since the AFK marker)` |  |  | The progress line when the digest has no checklist bullets. |
-| `afk.msg_status_off` | `AFK off` |  |  | `afk status` while off. |
-| `afk.msg_status_on` | `AFK on ({how}, since {since})` |  |  | `afk status` while on. Placeholders: {how}, {since}. |
-| `afk.msg_usage` | `usage: ah-engine afk on\|off\|status \| ah-engine back` |  |  | Usage line of the `afk` verb. |
-| `afk.msg_write_failed` | `afk: cannot write {path}: {why}` |  |  | Printed when the flag file cannot be written. Placeholders: {path}, {why}. |
-| `afk.non_owner_prompt_res` | `^\s*<task-notification>, ^\s*<system-reminder>, ^\s*<teammate-message` |  |  | Prompts that are not the owner typing (harness notifications, injected reminders): they neither record presence nor end an idle-entered AFK. Regular expressions, case-insensitive. |
-| `afk.open_re` | `^\s*[-*] \[ \] ` |  |  | An open checklist bullet (counts toward the percentage as not done). |
-| `afk.presence_file` | `afk-presence.json` |  |  | The machine-wide owner-presence file (time of the last owner prompt), under the per-user state directory. |
-| `afk.read_max_bytes` | `262144` |  |  | Most bytes of one progress file read for a digest (the tail is read). |
-| `afk.reminder_interval_s` | `600` |  |  | Seconds between two AFK reminders in one session (PostToolUse). |
-| `afk.reminder_max` | `6` |  |  | Most reminders per session per AFK period. |
-| `afk.reminder_text` | `AFK: no narration, no status prose, decide don't ask, one line at end of turn...` |  |  | The short reminder injected during long AFK turns. |
-| `afk.rule_text` | `AFK MODE: the owner is away. Until told otherwise: (1) no narration between t...` |  |  | The AFK rule, injected once per session per AFK period. Placeholders: {progress} (the session's progress file). |
-| `afk.session_id_unsafe` | `[^A-Za-z0-9_.-]` |  |  | Characters removed from a session id before it becomes part of a file name (regular expression, JavaScript syntax). |
-| `afk.session_prefix` | `afk-sess-` |  |  | Prefix of the per-session AFK state file under the per-user state directory (the sanitised session id and the JSON extension follow). `ah-engine back` reads these to find each session's progress file. |
-| `afk.set_concise_codex` | `8 entries` |  |  | The afk.conciseCodex setting: on Codex (no output styles), inject the concise reply rule (afk.concise_text) once at session start. On Claude the shipped output style `concise` (force-for-plugin) carries the same rule. |
-| `afk.set_enabled` | `8 entries` |  |  | The afk.enabled setting (master switch): off turns the whole AFK feature off (no idle detection, no prompt commands, no rule, no enforcement, no measurement); the `ah-engine afk` verbs still edit the flag. |
-| `afk.set_enforce` | `8 entries` |  |  | The afk.enforce setting: while AFK, nudge once and then hold (at most afk.max_blocks times) a Stop whose final reply is over afk.max_reply_chars or afk.max_reply_lines. |
-| `afk.set_idle` | `8 entries` |  |  | The afk.idleDetect setting: enter AFK by itself after afk.idleMinutes without an owner prompt on this machine. |
-| `afk.set_idle_minutes` | `10 entries` |  |  | The afk.idleMinutes setting: minutes without an owner prompt (any session on this machine) after which AFK starts by itself. |
-| `afk.set_measure` | `8 entries` |  |  | The afk.measure setting: count each main-session turn's output tokens from the transcript usage fields, split AFK vs present (afk_output_tokens{mode}). |
-| `afk.set_prompt_commands` | `8 entries` |  |  | The afk.promptCommands setting: a prompt that is exactly one of afk.words_on / afk.words_off / afk.words_progress is answered by the hook (the prompt is not sent to the model). |
-| `afk.stop_block` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a Stop that holds the reply with {reason} (JSON-quoted). |
-| `afk.summary` | `UserPromptSubmit, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit...` |  |  | One-line description of the afk-mode check in the generated reference. |
-| `afk.ups_block` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a UserPromptSubmit that answers a typed command itself: the prompt is not sent to the model and {reason} (JSON-quoted) is shown to the owner. |
-| `afk.window_bytes` | `2097152` |  |  | Transcript tail window (bytes) read at Stop to find the turn's assistant entries and their usage. |
-| `afk.words_off` | `back` |  |  | Prompts that end AFK mode and print the digest. |
-| `afk.words_on` | `afk` |  |  | Prompts (trimmed, compared case-insensitively) that start AFK mode. |
-| `afk.words_progress` | `progress` |  |  | Prompts that print the digest without changing the mode. |
-
 ### agent_controls.toml / agent_scan
 
 | Key | Default | Env override | Unit | What it is |
@@ -4630,8 +4562,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.append_codex` | `append with a one-line `>>`, never overwrite it` |  |  | How to append to the history file (Codex wording). |
 | `tasklist_guard.budget_setting` | `6 entries` |  |  | guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off). |
 | `tasklist_guard.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
+| `tasklist_guard.carry_setting` | `6 entries` |  |  | Off switch (guards.tasklistCarryProgress, default on): a session that crossed midnight keeps using its progress file under the earlier date instead of being asked for a new one under today's date. |
 | `tasklist_guard.codex_fields` | `turn_id, model` |  |  | Payload fields that, all non-empty strings, mark a Codex payload (isCodexPayload). |
 | `tasklist_guard.codex_tool` | `apply_patch` |  |  | A tool name only Codex payloads carry (isCodexPayload). |
+| `tasklist_guard.counted_ellipsis` | `...` |  |  | Appended to a cut label. |
+| `tasklist_guard.counted_label_max` | `20` |  |  | Longest label (characters) of one named action; a longer one is cut. |
+| `tasklist_guard.counted_max` | `3` |  |  | How many counted actions the block message names (the visible block text holds 115 characters). |
+| `tasklist_guard.counted_more` | ` (+{n} more)` |  |  | {n} further counted actions that are not named. |
+| `tasklist_guard.counted_sep` | `; ` |  |  | Separator between the named actions. |
+| `tasklist_guard.counted_text` | ` Counted: {list}{more}.` |  |  | Added to the block reason; {list} is the named counted actions, {more} the counted_more text when there are others. |
+| `tasklist_guard.date_dir_re` | `^\d{4}-\d{2}-\d{2}$` |  |  | Regex source of a progress date directory name. |
 | `tasklist_guard.details_dir` | `block-details` |  |  | Directory of the tasklist-guard details file under the anti-hall state directory. |
 | `tasklist_guard.details_ext` | `.md` |  |  | File extension of the tasklist-guard details file. |
 | `tasklist_guard.details_head` | `Task list and progress file: what to do` |  |  | First line of the tasklist-guard details file. |
@@ -4661,6 +4601,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.instead_reset` | `restore the open tasks, then stop again.` |  |  | Lead of what to do instead after a task store reset (Claude wording). |
 | `tasklist_guard.instead_reset_codex` | `restore the open tasks, then stop again.` |  |  | Lead of what to do instead after a task store reset (Codex wording). |
 | `tasklist_guard.instead_stalled` | `assign an agent to each stalled task.` |  |  | What to do about tasks stalled in progress. |
+| `tasklist_guard.integration_skip_setting` | `6 entries` |  |  | Off switch (guards.tasklistIntegrationSkip, default on): git commands that only integrate worker commits (workdetect.integration_work) are not counted as this session's own work. |
 | `tasklist_guard.jev_false` | `a small bounded chore — task tracking would be overhead, not help` |  |  | What a false answer means. |
 | `tasklist_guard.jev_id` | `tasklistTrivial` |  |  | The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it). |
 | `tasklist_guard.jev_instructions` | `This session is about to be nudged to track its work as tasks / refresh its p...` |  |  | The question put to Jev (a noul question). |
@@ -4668,6 +4609,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.jev_true` | `genuinely non-trivial — multi-part, benefits from task tracking` |  |  | What a true answer means. |
 | `tasklist_guard.low_priorities` | `p2, low, deferred` |  |  | Priorities (lowercase) below the actionable floor for the stalled-in-progress count. |
 | `tasklist_guard.max_blocks` | `3` |  |  | Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-signal dedupe remains independent; the separate once-per-session reduced-nag budget is unchanged. |
+| `tasklist_guard.name_counted_setting` | `6 entries` |  |  | Off switch (guards.tasklistNameCounted, default on): the block message names the first counted actions. |
 | `tasklist_guard.no_task_tools_setting` | `8 entries` |  |  | Nag form when task tools are missing. The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip). |
 | `tasklist_guard.omc_fresh_ms` | `7200000` |  |  | How recent a loop state's timestamp must be for the loop to count as active. |
 | `tasklist_guard.omc_kill_env` | `DISABLE_OMC` |  |  | Environment variable that disables oh-my-claudecode (value 1). |
@@ -4790,6 +4732,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `workdetect.dev_null` | `\/dev\/null` |  |  | Regex source of the null device, a redirect target that never counts as a write. |
 | `workdetect.devswarm_housekeeping` | `^\s*(?:node\s+)?(?:\S*[\\/])?devswarm\.js\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*(?:i...` |  |  | Regex source (case-insensitive) of a command segment that is only DevSwarm mesh housekeeping through the stable launcher: an inbox, heartbeat, send, relay, notice, nudge, roster or wake-directive verb. |
 | `workdetect.heredoc_delimiter` | `^<<-?\s*((?:[^\s;&\|()<>'"\\]\|'[^'\n]*'\|"[^"\n]*"\|\\[^\n])+)` |  |  | Regex source of a heredoc operator and its delimiter word, which may be partly quoted or escaped; group 1 is the word. |
+| `workdetect.integration_work` | `\bgit\s+(?:checkout\|switch)(?:\s+-[bBcC])?\s+(?!-)\w[\w/-]*(?:\.\d[\w.-]*)*(?...` |  |  | JavaScript regex source (case-insensitive, global) of the PURE integration forms of git: a branch or ref checkout/switch (one ref argument, no `--` pathspec, no flag, no file-like argument) and a merge/cherry-pick that brings in committed work (not --continue, --skip, --abort or --quit, which resolve or undo file content). With guards.tasklistIntegrationSkip on, a command whose only work is one of these does not count toward tasklist-guard's work count: the files were changed by a delegated worker. Anything else (`checkout HEAD -- path`, `checkout --ours`, `merge --continue`, restore, reset) still counts. |
 | `workdetect.mutating_tools` | `Edit, Write, MultiEdit, NotebookEdit` |  |  | File-mutating tools: each call counts as work unless it targets an excluded path. |
 | `workdetect.never_work_tools` | `Agent, Task, CronCreate, CronDelete` |  |  | Tools that start or schedule work and never change a file themselves. |
 | `workdetect.request_path_re` | `(?:^\|[\s"'`(=:,<>])(?:((?:~\|\.{1,2})?\/[\w.@+~-]+(?:\/[\w.@+~-]+)*)\|([\w.@+-]...` |  |  | Regex source (global) of a path named in a user request: an absolute, `~`, `./` or `../` path (group 1), or a relative one with at least one `/` (group 2). A write under such a path in a session with exactly ONE user request is the requested output, not untracked work. |
@@ -4994,6 +4937,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_reason_default` | `inbox status could not be confirmed` |  |  | Label of an unknown-inbox reason not in reason_labels. |
 | `devswarm_role.pg_reason_labels` | `13 entries` |  |  | The label of each unknown-inbox reason (reasonLabel). |
 | `devswarm_role.pg_reason_parked_only` | `DevSwarm Stop gate.` |  |  | The block reason body when only a parked escalation holds the turn (no family, question or truncation). |
+| `devswarm_role.pg_repeat_step` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh inbox peek-primary <id>`; if it sh...` |  |  | The concrete next step the repeated-block hint adds once to a repeated parent-gate block (repeat.allowed_keys). |
 | `devswarm_role.pg_repos_root_marker` | `/.devswarm/repos/` |  |  | A worktree under this path segment is a DevSwarm-app workspace the supervisor active-list cache can archive (DEVSWARM_REPOS_ROOT_RE). |
 | `devswarm_role.pg_set_busy_fresh` | `5 entries` |  |  | Setting devswarm.parentGateBusyFreshMin: minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default. |
 | `devswarm_role.pg_set_busy_max_age` | `5 entries` |  |  | Setting devswarm.parentGateBusyMaxAgeMin: minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default. |
@@ -5024,6 +4968,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_stray_seen_sep` | `#` |  |  | Joins a straying signal's key and episode number in its shown-set key. |
 | `devswarm_role.pg_stray_step` | `: step ` |  |  | Between a warned workspace's title and its step number on the straying line. |
 | `devswarm_role.pg_stray_tail` | ` — advisory (Jev notes are recommendations; your call); `~/.anti-hall/ah-engi...` |  |  | Ends the straying advisory line. |
+| `devswarm_role.pg_sw_shared_count` | `6 entries` |  |  | Switch devswarm.parentGateSharedCount (default on): the parent gate counts the Primary's own unread mail with the ONE shared count `mesh inbox peek-primary` reports (own-family sends and wake rows left out, re-checked live even with no own reader row), and leaves a partition's own-family sends out of the descriptor count (GH #384). Off restores the old `max(countFor, messageCount - own)` projection, which can block on a stale count peek shows as 0. |
 | `devswarm_role.pg_tail` | `If this is intentional, say so explicitly. Escape hatch: the user may direct ...` |  |  | The closing sentence of the reason. |
 | `devswarm_role.pg_title_fmt` | `{name} ({short})` |  |  | A workspace's display name: {name}, {short} (the id's first characters). |
 | `devswarm_role.pg_twin_more` | ` and {n} more` |  |  | More twins than shown: {n}. |
@@ -5083,7 +5028,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
 | `roles.line_max` | `100` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
 | `roles.main_skill` | `3 entries` |  |  | The main skill: its name, its description (when to load it) and its intro line. |
-| `roles.matrix` | `65 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
+| `roles.matrix` | `63 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
 | `roles.msg_none` | `none` |  |  | The verb list in the note when the role may run none. |
 | `roles.msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}. |
 | `roles.msg_note_more` | ` (+{n} more, see the guide)` |  |  | Added to the note when the verb list was shortened. Placeholder: {n}. |
@@ -7612,7 +7557,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.check_scope` | `(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : u...` |  |  | How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB. |
 | `script.cut_at_request_deadline` | `1` | `AH_ENGINE_SCRIPT_CUT_AT_DEADLINE` |  | 1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry takes its check's failure policy while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up). Not counted as a script error. A check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline (the Node parity harness sets AH_ENGINE_SCRIPT_CUT_AT_DEADLINE=0 so its daemon answers every case, however loaded the machine). |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `83 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
+| `script.engine_only_checks` | `82 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -7983,7 +7928,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `386 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `388 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -13116,6 +13061,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.dir_broadcast_seen` | `parent-inbox-broadcast-seen` |  |  | The per-session broadcast seen-state (parent-inbox-broadcast-seen/<session>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_locks` | `locks` |  |  | The lock files directory, under the DevSwarm directory. |
 | `devswarm_parent.dir_notice_cursor` | `maintainer-notice-cursor` |  |  | The per-project maintainer-notice cursors (maintainer-notice-cursor/<repoKey>.json), under the DevSwarm directory. |
+| `devswarm_parent.dir_orphans_seen` | `orphans-seen` |  |  | The directory (under the devswarm state dir) of the per-session orphaned-mesh warning records. |
 | `devswarm_parent.dir_reply_state` | `parent-gate` |  |  | The per-project reply records (parent-gate/<repoKey>-replies.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_stray` | `stray` |  |  | The per-plan straying records (stray/<key>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_token_usage` | `token-usage` |  |  | The per-plan token burn records (token-usage/<key>.json), under the DevSwarm directory. |
@@ -13222,6 +13168,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.stale_build_message` | `stale anti-hall {version}: run /reload-plugins (restart only if it persists) ...` |  |  | The text for a child that runs an older anti-hall build than the machine's newest. Placeholders: {version}, {cmd}. |
 | `devswarm_parent.stale_registry_head` | `⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree...` |  |  | The segment for registry rows whose worktree is gone but that still hold unread. Placeholders: {count}, {shown}, {extra}. |
 | `devswarm_parent.stuck_statuses` | `stale, nudged, escalated` |  |  | Supervisor verdicts that mean a child is wedged (STUCK_STATUSES). |
+| `devswarm_parent.sw_orphans_once` | `6 entries` |  |  | Switch devswarm.orphanWarningOnce (default on): the orphaned-mesh warning is shown once per session per set of orphaned partition ids, not again on every keepalive or unread-count change (GH #419). Off restores the keepalive repeat. |
 | `devswarm_parent.table_activity_token` | `live` |  |  | What the activity-only status labels are replaced with before the table is hashed. |
 | `devswarm_parent.table_head` | `💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):\...` |  |  | The head of the live workspace table: the title line and the column header. |
 | `devswarm_parent.table_row` | `\| {workspace} \| {label} \| {finish} \| {unread} \| {last} \|` |  |  | One table row. Placeholders: {workspace}, {label}, {finish}, {unread}, {last}. |
@@ -13544,7 +13491,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `repeat.allowed_keys` | `6 entries` |  |  | Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line. |
+| `repeat.allowed_keys` | `7 entries` |  |  | Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line. |
 | `repeat.guard_names` | `3 entries` |  |  | Checks whose public guard names differ, for per-guard threshold overrides and allowed-form hints. All other checks use their own names. |
 | `repeat.max_keys` | `512` |  |  | Most (session, guard) pairs the learner remembers; the oldest are dropped past it. |
 | `repeat.min_blocks` | `2` |  |  | How many blocks by one guard of one session inside the window make a repeat. |
@@ -14118,6 +14065,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 
 | Name | Kind | Unit | Labels | What it counts |
 |---|---|---|---|---|
+| `command_heavy_segment_named` | counter | blocks | kind | Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own. |
 | `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
 | `agent_scan_kept` | counter | lookups | result | Kept-walk lookups of the agent scan (silent-agent-nudge and the agent gates): hit (the walk resumed from where the last scan stopped) or miss. |
 | `agent_scan_kept_miss` | counter | lookups | reason | Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised). |
@@ -14214,13 +14162,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
-| `afk_entered` | counter | events | how | AFK periods started, by how (manual = ah-engine afk on, prompt = typed afk, idle = idle detection). Counted by the first hook that sees the new period. |
-| `afk_output_tokens` | counter | tokens | mode | Output tokens of main-session turns (transcript usage, deduplicated by message id), by mode (afk, present). Divide by afk_turns_measured for the per-turn average. |
-| `afk_overlong_turns` | counter | events | action | Overlong AFK replies, by action (nudge, block, capped). |
-| `afk_turns` | counter | turns |  | Main-session turns that ended (Stop) while AFK. |
-| `afk_turns_measured` | counter | turns | mode | Main-session turns whose output tokens were measured, by mode (afk, present). |
-| `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
-| `idle_trips` | counter | events |  | AFK periods started by idle detection. |
+| `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
+| `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
+| `devswarm_parent_gate_count_mismatch` | counter | counts |  | Parent-gate own-mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384). |
+| `devswarm_parent_gate_fired` | counter | blocks | kind | Stop blocks the DevSwarm parent gate answered, by kind (block, escalation). |
+| `devswarm_parent_gate_suppressed` | counter | passes | reason | Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send). |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |
@@ -14256,6 +14202,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 | `dssup_appdb_date_unread` | counter | dates |  | Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full). |
 | `ingest_drops` | counter | paths | reason | Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason. |
+| `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds
 

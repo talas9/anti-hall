@@ -148,6 +148,12 @@ fn own_reader(st: &Settings) -> Result<Option<String>, No> {
     Ok(crate::meshw::cursors::reader_key(own_nonce(st)?.as_deref()))
 }
 
+/// [`own_reader`] for the gate-script tests: `None` when there is no reader key or it cannot be read.
+#[cfg(test)]
+pub(super) fn own_reader_key(st: &Settings) -> Option<String> {
+    own_reader(st).ok().flatten()
+}
+
 /// The reader nonce of the hook that sent this request (`deriveReaderNonce({ home })`), walked as [`own_reader`] walks; `None` for
 /// a headless caller (no harness ancestor).
 fn own_nonce(st: &Settings) -> Result<Option<String>, No> {
@@ -281,7 +287,11 @@ fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     let (sb, nb) = floor_positions(&store, &st.home, id, cursor, reader.as_deref())?;
     let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
     let age = u.oldest_unread_age_ms.filter(|a| a.is_finite());
-    Ok(json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r)).collect::<Vec<_>>(), "age": age}))
+    // the partition's identity family (`recipientFamilyIds`): the gate leaves its own sends out of the count, as peek does
+    let family: Vec<String> = crate::meshw::tick::family_of(id, &ident::rows_of(&store.roster().map_err(|_| No)?)).into_iter().collect();
+    Ok(
+        json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r)).collect::<Vec<_>>(), "age": age, "family": family}),
+    )
 }
 
 /// This hook's own reader on partition `id` (`ownReaderDelta` / `ownReaderLiveUnread`): `{reader: false}` when the hook has no
@@ -294,11 +304,43 @@ fn own_view(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     let rows = store.reader_cursors(id).map_err(|_| No)?;
     let ns = defaults::text("mesh_write.cursor_ns_store");
     let own = rows.iter().find(|x| x["ns"] == ns && x["reader"] == reader.as_str()).and_then(|x| x["value"].as_f64()).filter(|v| v.is_finite());
-    let Some(value) = own.filter(|_| count) else { return Ok(json!({"reader": true, "state": "ok", "own": own})) };
+    if !count {
+        return Ok(json!({"reader": true, "state": "ok", "own": own}));
+    }
+    // `shared`: the ONE unread count `mesh inbox peek-primary` / `read-primary` / tick report (`union::unread_for` at this reader's
+    // bases, own-family sends and wake rows left out), counted with or without an own row (no row: the floor bases, as peek reads);
+    // `null` when it cannot be read or its store base is past the message count (an impossible floor: unknown, not empty). Only the gate's devswarm.parentGateSharedCount path reads it: `unread` and `total` (with a row)
+    // and the no-row shape are the old answer unchanged, so the switch off computes exactly what it did before.
+    let shared = shared_unread(st, &store, id, inbox, cursor, &reader, now).ok();
+    let Some(value) = own else { return Ok(json!({"reader": true, "state": "ok", "own": null, "shared": shared})) };
     let (sb, nb) = floor_positions(&store, &st.home, id, cursor, Some(&reader))?;
     let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
     let total = store.message_count(id).map_err(|_| No)?;
-    Ok(json!({"reader": true, "state": "ok", "own": value, "unread": u.unread, "total": total}))
+    Ok(json!({"reader": true, "state": "ok", "own": value, "unread": u.unread, "total": total, "shared": shared}))
+}
+
+/// The unread count of partition `id` for `reader` exactly as `mesh inbox peek-primary` counts it (`union::unread_for` with the
+/// partition's identity family from the store roster). `Err` when it cannot be read, or when the store base it read from is past the
+/// partition's message count: the count is then unknown, and the gate keeps the count it already had.
+fn shared_unread(
+    st: &Settings,
+    store: &crate::mesh::MeshReader,
+    id: &str,
+    inbox: Option<&str>,
+    cursor: Option<&str>,
+    reader: &str,
+    now: f64,
+) -> Result<usize, No> {
+    let rows = ident::rows_of(&store.roster().map_err(|_| No)?);
+    let family = crate::meshw::tick::family_of(id, &rows);
+    let c = crate::meshw::union::unread_for(store, Path::new(&st.home), id, inbox, cursor, Some(reader), &family, now as i64).map_err(|_| No)?;
+    // a store base past the partition's message count is impossible: a count read from it is unknown, never a confirmed zero
+    let total = store.message_count(id).map_err(|_| No)?;
+    if c.store_base.is_finite() && c.store_base > total as f64 {
+        return Err(No);
+    }
+    crate::meshw::tick::note_own_excluded(&c);
+    Ok(c.unread)
 }
 
 fn app_archived(st: &Settings, id: &str, worktree: &str, cache: bool) -> Result<Value, No> {
@@ -501,5 +543,140 @@ mod tests {
             }
             eprintln!("APPCPU round {round}: {} ms for 700 lookups", (crate::limits::thread_cpu_us() - t0) / 1000);
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_count_tests {
+    use super::*;
+    use crate::meshw::store::{CursorPut, MeshStore, RegistryRow};
+
+    /// GH #384: cursor 6, total 8, the two rows past the cursor the Primary's own sends. The old gate projection
+    /// (`messageCount - own`) reads 2 unread; the shared count `peek-primary` reports reads 0, so the gate must not block.
+    /// One real inbound row after that is still unread and still blocks.
+    #[test]
+    fn a_cursor_behind_total_that_peek_counts_as_zero_is_zero_and_a_real_unread_still_counts() {
+        let home = std::env::temp_dir().join(format!("ah-pg-shared-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        std::fs::create_dir_all(&home).unwrap();
+        let db = home.join("devswarm.db");
+        let w = MeshStore::open(&db).unwrap();
+        let row = RegistryRow {
+            id: "primary-x".into(),
+            worktree_path: Some("/wt/p".into()),
+            session_id: Some("s-p".into()),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
+        assert!(w.upsert_registry(&row, 1, |_, _| true).unwrap());
+        for i in 0..6 {
+            w.append_message_from("primary-x", 10 + i, Some(&format!("in-{i}")), "from a child", Some("child-a")).unwrap();
+        }
+        for i in 0..2 {
+            w.append_message_from("primary-x", 20 + i, Some(&format!("own-{i}")), "my own send", Some("primary-x")).unwrap();
+        }
+        let ns = defaults::text("mesh_write.cursor_ns_store").to_string();
+        let put = CursorPut { partition: "primary-x".into(), ns, reader: "r1".into(), value: 6, retired_line: None, updated_at: 1 };
+        w.reader_cursor_txn(&[put]).unwrap();
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let r = crate::mesh::MeshReader::open(&db).unwrap();
+        let total = r.message_count("primary-x").unwrap() as f64;
+        assert_eq!((total - 6.0).max(0.0), 2.0, "the old projection reads cursor 6 / total 8 as 2 unread (the false block)");
+        assert_eq!(shared_unread(&st, &r, "primary-x", None, None, "r1", 100.0).ok(), Some(0), "peek's count: own sends are not unread");
+        w.append_message_from("primary-x", 30, Some("real"), "a real question", Some("child-a")).unwrap();
+        let r = crate::mesh::MeshReader::open(&db).unwrap();
+        assert_eq!(shared_unread(&st, &r, "primary-x", None, None, "r1", 100.0).ok(), Some(1), "a real unread still counts (and blocks)");
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
+    }
+
+    /// PR #428: a retired own reader row still reads from its own position (as peek-primary does), and the rows of another partition
+    /// never reach this partition's count; each partition leaves out its OWN family's sends only.
+    #[test]
+    fn a_retired_reader_reads_its_own_position_and_partitions_count_apart() {
+        let home = std::env::temp_dir().join(format!("ah-pg-parts-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        std::fs::create_dir_all(&home).unwrap();
+        let db = home.join("devswarm.db");
+        let w = MeshStore::open(&db).unwrap();
+        for (id, wt) in [("primary-x", "/wt/p"), ("child-b", "/wt/b")] {
+            let row = RegistryRow {
+                id: id.into(),
+                worktree_path: Some(wt.into()),
+                session_id: Some(format!("s-{id}")),
+                inbox_path: None,
+                cursor_path: None,
+                nudge_command: None,
+            };
+            assert!(w.upsert_registry(&row, 1, |_, _| true).unwrap());
+        }
+        for i in 0..8 {
+            w.append_message_from("primary-x", 10 + i, Some(&format!("p-{i}")), "from a child", Some("child-b")).unwrap();
+        }
+        for i in 0..3 {
+            w.append_message_from("child-b", 40 + i, Some(&format!("b-{i}")), "from the primary", Some("primary-x")).unwrap();
+        }
+        w.append_message_from("child-b", 50, Some("b-own"), "child-b's own send", Some("child-b")).unwrap();
+        let ns = defaults::text("mesh_write.cursor_ns_store").to_string();
+        let put = |p: &str, r: &str, v: i64, retired: Option<i64>| CursorPut {
+            partition: p.into(),
+            ns: ns.clone(),
+            reader: r.into(),
+            value: v,
+            retired_line: Some(retired),
+            updated_at: 1,
+        };
+        // r1 retired at line 6 (its value 6 <= 6), a live reader r2 behind it at 4
+        w.reader_cursor_txn(&[put("primary-x", "r1", 6, Some(6)), put("primary-x", "r2", 4, None), put("child-b", "r1", 1, None)]).unwrap();
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let r = crate::mesh::MeshReader::open(&db).unwrap();
+        assert_eq!(shared_unread(&st, &r, "primary-x", None, None, "r1", 100.0).ok(), Some(2), "the retired reader's own position: 8 - 6");
+        assert_eq!(shared_unread(&st, &r, "primary-x", None, None, "r2", 100.0).ok(), Some(4), "the live reader's own position: 8 - 4");
+        assert_eq!(
+            shared_unread(&st, &r, "child-b", None, None, "r1", 100.0).ok(),
+            Some(2),
+            "child-b: 4 rows, cursor 1, its own send left out, primary-x's 8 rows never counted"
+        );
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
+    }
+
+    /// PR #428: the wake prefix alone is not provenance. A native-ingested row (no `mtype`) with the prefix is a wake prompt; a
+    /// `mesh send` row (it has an `mtype`) with the same words is mail, in the union, in the shared count and in the SQL total.
+    #[test]
+    fn a_mesh_sent_message_with_the_wake_prefix_is_mail_and_a_native_wake_row_is_not() {
+        use crate::meshw::store::mesh_message_row;
+        let prefix = defaults::text("agent_tracker.wake_prefix");
+        let body = format!("{prefix} resolve conflict?");
+        assert!(crate::meshw::union::is_wake_row(&json!({"body": body, "mtype": null})));
+        assert!(crate::meshw::union::is_wake_row(&json!({"body": body})));
+        assert!(!crate::meshw::union::is_wake_row(&json!({"body": body, "mtype": defaults::text("mesh_write.mtype_direct")})));
+        let home = std::env::temp_dir().join(format!("ah-pg-wake-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        std::fs::create_dir_all(&home).unwrap();
+        let db = home.join("devswarm.db");
+        let w = MeshStore::open(&db).unwrap();
+        let row = RegistryRow {
+            id: "primary-x".into(),
+            worktree_path: Some("/wt/p".into()),
+            session_id: None,
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
+        assert!(w.upsert_registry(&row, 1, |_, _| true).unwrap());
+        assert!(w.append_message_from("primary-x", 10, Some("native"), &body, Some("primary-x")).unwrap());
+        let ns = defaults::text("mesh_write.cursor_ns_store").to_string();
+        w.reader_cursor_txn(&[CursorPut { partition: "primary-x".into(), ns, reader: "r1".into(), value: 0, retired_line: None, updated_at: 1 }]).unwrap();
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let fam = std::collections::HashSet::new();
+        let r = crate::mesh::MeshReader::open(&db).unwrap();
+        assert_eq!(shared_unread(&st, &r, "primary-x", None, None, "r1", 100.0).ok(), Some(0), "a native wake row is not mail");
+        assert_eq!(r.message_count_from_others("primary-x", &fam, prefix).unwrap(), 0);
+        let m = mesh_message_row(Some("child-a"), Some("primary-x"), false, &body, 20, "normal", "child-q", true, None);
+        assert!(w.append_mesh_row(&m).unwrap().inserted);
+        let r = crate::mesh::MeshReader::open(&db).unwrap();
+        assert_eq!(shared_unread(&st, &r, "primary-x", None, None, "r1", 100.0).ok(), Some(1), "a child's mesh send with the prefix is mail");
+        assert_eq!(r.message_count_from_others("primary-x", &fam, prefix).unwrap(), 1);
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
     }
 }
