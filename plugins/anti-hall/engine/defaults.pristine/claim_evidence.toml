@@ -59,7 +59,7 @@ doc = "Engine log kind written for a hit (block or log mode)."
 value = "claim_evidence"
 
 [claim_evidence.ack_res]
-doc = "A reply that already labels itself honest is never held (rule 1): the claim is negated, hedged, or tied to an earlier run. Regular expressions, case-insensitive, matched against the reply with quoted text and code removed."
+doc = "An honest label on a claim (rule 1): the claim is negated, hedged, or tied to an earlier run. It covers only a claim in its own sentence within claim_evidence.reach_label words of it. Regular expressions, case-insensitive, matched against the claim's sentence with quoted text and code removed."
 value = [
   '\b(?:not|never|n.t|un|without)\s*(?:yet\s+|been\s+|fully\s+)?(?:verified|verifying|tested|run|ran|checked|confirmed|deployed|released|merged)\b',
   '\bunverified\b',
@@ -80,60 +80,92 @@ doc = "Where a clause ends inside a sentence: negation, tense and attribution wo
 value = '[,;:()]|\s[-\u2013\u2014]\s|\b(?:but|and then|however|although)\b'
 
 [claim_evidence.skip_window]
-doc = "Most characters before a claim (inside its clause) that are searched for neg_res, future_res and reported_res."
+doc = "Most characters before a claim (inside its clause) that are searched for a suppressor (claim_evidence.suppress)."
 value = 60
 min = 10
 max = 400
 
 [claim_evidence.neg_res]
-doc = "A claim in a negated clause is not a claim (rule 1): 'nothing is merged', 'is not deployed', 'was never released'. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
+doc = "Negation on the claim's own verb or a negative pronoun as its subject (rule 1): 'is not confirmed green', 'never verified', 'nothing is merged', 'none of this is verified'. Reach claim_evidence.reach_verb: only skip words (gap_skip_re) may stand between it and the claim, so 'Without any further delay the suite is passing' stays a claim. Regular expressions, case-insensitive, matched against the clause before the claim."
 value = [
-  '\b(?:not|never|nothing|none|neither|nor|no\s+\w+\s+(?:is|are|was|were)|nobody|without|cannot)\b',
-  '\b(?:is|are|was|were|has|have|had|does|do|did|can|could|will|would|should)n.t\b',
+  '\b(?:not|never|without|cannot|nothing|none|nobody|neither|nor)\b',
+  '\b(?:is|are|was|were|has|have|had|does|do|did|can|could|will|would|should|wo|ca)n.t\b',
+]
+
+[claim_evidence.neg_subject_res]
+doc = "'no' before the claim's subject (rule 1): 'no PR is merged'. Reach claim_evidence.reach_subject (the subject's own noun). Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\bno\b']
+
+[claim_evidence.modal_res]
+doc = "A modal or future marker on the claim's own verb (rule 1): 'must have been merged', 'will have been deployed'. Reach claim_evidence.reach_verb, so 'We must hurry because PR #405 is merged' and 'We will celebrate given that ...' stay claims. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = [
+  '\b(?:will|would|shall|going to|gonna|should|might|may|must|can|could)\b',
+  '\b(?:to be|needs?\s+to be|ready to be|waiting to be|yet to be|about to be)\b',
 ]
 
 [claim_evidence.future_res]
-doc = "A claim in a future, conditional or pending clause is not a claim (rule 1): 'once #1 and #2 are merged', 'after it is merged', 'if CI is green', 'to be verified'. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
-value = [
-  '\b(?:once|after|when|whenever|if|until|unless|before|as soon as|assuming|provided)\b',
-  '\b(?:will|would|shall|going to|gonna|should|might|may)\b',
-  '\b(?:to be|needs?\s+to be|ready to be|waiting to be|yet to be|about to be|can be|could be)\b',
-]
+doc = "A conditional, temporal or 'whether' word that opens the claim's own clause (rule 1): 'once #1 and #2 are merged', 'if CI is green', 'only when X is merged', 'until the tests pass', 'whether that version is live'. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\b(?:once|after|when|whenever|if|until|unless|before|as soon as|assuming|provided|whether|in case)\b']
 
 [claim_evidence.reported_res]
-doc = "A claim that reports someone else's words or an earlier text is not a claim of this turn's work (rule 1): 'the bot reported that tests pass', 'according to the PR body it is merged'. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
+doc = "A reporting verb that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed'. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
 value = [
-  '\b(?:says?|said|saying|reports?|reported|reporting|claims?|claimed|states?|stated|wrote|writes|written|mentions?|mentioned|shows?|showed|reads?|quotes?|quoted|asserts?|asserted)\b',
-  '\baccording to\b',
-  '\b(?:old|previous|earlier|original|stale)\s+(?:line|text|message|comment|claim|note|doc|docs|output|log)\b',
+  '\b(?:says?|said|saying|reports?|reported|reporting|claims?|claimed|states?|stated|wrote|writes|written|mentions?|mentioned|shows?|showed|reads?|quotes?|quoted|asserts?|asserted)(?:\s+that)?\b',
 ]
 
 [claim_evidence.criterion_res]
-doc = "A clause that is itself a rule or criterion statement is not a claim of this turn's work (rule 1): 'SAFE-TO-REMOVE requires that the branch is merged', 'the criteria require that X is merged', 'safe to remove only when X is merged', 'a clone must be merged'. Structural on purpose: 'required' as an adjective ('All required tests pass', 'Required changes are merged') or 'criteria' / 'safe to' alone stay claims. Regular expressions, case-insensitive, matched against the clause up to and including the claim."
-value = [
-  '\b(?:requires?|requiring)\s+that\b',
-  '\b(?:criteria|criterion)\s+(?:\w+\s+){0,5}?(?:requires?|that)\b',
-  '\b(?:safe|ok|okay|allowed)\s+to\s+\w+(?:\s+\w+){0,3}\s+(?:only\s+)?(?:if|when)\b',
-  '\bmust\s+(?:(?:also|first|already|all|both|then)\s+)*(?:be|have\s+been|get)\b',
-]
+doc = "A requirement whose 'that' opens the claim's own clause (rule 1): 'SAFE-TO-REMOVE requires that the branch is merged'. 'required' as an adjective ('All required tests pass') stays a claim. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\b(?:requires?|requiring|required|ensures?)\s+that\b']
 
-[claim_evidence.criterion_break_re]
-doc = "Where a requirement stops governing the words after it: a causal or temporal connector ('because', 'since', 'now that', 'as', 'so', 'given that'). The criterion list is matched only against the text after the last such connector that comes BEFORE the claim, so 'the criterion requires that records be retained since PR #405 is merged' states the merge as a fact (the requirement ends at 'since'), while 'requires that PR #405 is merged' keeps the merge as the object of the requirement. Used by the suppress rows that name it (cut). Rust regular expressions, case-insensitive, matched against the clause text before the claim."
-value = [
-  '\b(?:because(?:\s+of)?|since|as|so(?:\s+that)?|now\s+that|given(?:\s+that)?|seeing\s+that|considering(?:\s+that)?|which\s+means|therefore|thus|hence)\b',
-]
+[claim_evidence.reach_verb]
+doc = "Most counted words (not gap_skip_re) between a negation or modal (neg_res, modal_res) and the claim it covers: 0 = it must sit on the claim's own verb."
+value = 0
+min = 0
+max = 3
+
+[claim_evidence.reach_subject]
+doc = "Most counted words between a negated subject word (neg_subject_res) and the claim: 1 = its own noun ('no PR is merged')."
+value = 1
+min = 0
+max = 3
+
+[claim_evidence.reach_clause]
+doc = "Most counted words between a clause opener (future_res, reported_res, criterion_res) and the claim: the claim's own subject ('once a NAS that has it is deployed'). Any word beyond it (a second predicate, an unknown connector) ends the opener's reach and the claim is judged as fact."
+value = 2
+min = 0
+max = 6
+
+[claim_evidence.reach_label]
+doc = "Most counted words between a claim and the honest label (ack_res) in its own sentence that covers it (1 = the claim's own subject) ('Tests pass per the earlier run', 'Unverified: the service is live'). A label elsewhere in the reply covers nothing."
+value = 1
+min = 0
+max = 3
+
+[claim_evidence.gap_word_re]
+doc = "One word of the text between a suppressor and the claim (punctuation is not a word). Rust regular expression."
+value = '[\w#@\x27\x{2019}/-]+'
+
+[claim_evidence.gap_skip_re]
+doc = "Words that never count against a reach: articles, determiners, possessives, quantifiers, 'of'/'and'/'or', 'it'/'this'/'that', '#refs' and numbers (they belong to the claim's subject). Every other word counts, so a word the list does not know uses up the reach instead of extending it. Rust regular expression, case-insensitive, matched against one whole word."
+value = '^(?:the|a|an|this|that|these|those|it|its|their|our|my|your|his|her|all|every|each|both|any|some|of|and|or|#\S*|v?\d\S*)$'
+
+[claim_evidence.gap_restart_re]
+doc = "A word that starts a new noun phrase: seen after a counted word, the gap holds two phrases (a second clause) and the suppressor's reach ends ('Once again the build is green', 'According to the PR body the change is merged'). Rust regular expression, case-insensitive, matched against one whole word."
+value = '^(?:the|a|an)$'
 
 [claim_evidence.suppress]
-doc = "Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause governing the hit), cut = optional config key of a connector list: the clause is first cut after the last connector before the hit, so the list judges only the words the claim directly follows. The first list that matches names the reason."
+doc = "Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause before the hit), reach = the config key of the most counted words allowed between a list hit and the claim (gap_skip_re words are free; gap_restart_re after a counted word ends the reach). Every hit of every list is tried; the first row with a hit in reach names the reason."
 value = [
-  { reason = "negated", list = "claim_evidence.neg_res" },
-  { reason = "future", list = "claim_evidence.future_res" },
-  { reason = "reported", list = "claim_evidence.reported_res" },
-  { reason = "criterion", list = "claim_evidence.criterion_res", cut = "claim_evidence.criterion_break_re" },
+  { reason = "negated", list = "claim_evidence.neg_res", reach = "claim_evidence.reach_verb" },
+  { reason = "negated", list = "claim_evidence.neg_subject_res", reach = "claim_evidence.reach_subject" },
+  { reason = "future", list = "claim_evidence.modal_res", reach = "claim_evidence.reach_verb" },
+  { reason = "future", list = "claim_evidence.future_res", reach = "claim_evidence.reach_clause" },
+  { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause" },
+  { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
 ]
 
 [claim_evidence.ack_reason]
-doc = "Log reason for a claim excused by a labelled-honest reply (ack_res)."
+doc = "Log reason for a claim covered by an honest label in its own sentence (ack_res, within claim_evidence.reach_label)."
 value = "labelled"
 
 [claim_evidence.quoted_reason]

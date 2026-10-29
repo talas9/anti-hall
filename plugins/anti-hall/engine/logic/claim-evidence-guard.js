@@ -4,10 +4,10 @@
 // in this turn, with no later look at CI or the merge state, is held once. Almost no reply makes such a claim, so the reply text is
 // tested first and the transcript is touched only for a hit: the engine's evidence walk (ah.transcript.evidenceWalk, shared with the
 // claim ledger) counts the tool calls of the turn, and the host's tool-use scan (ah.transcript.toolUseScan) names the commands of
-// the last N of them. A reply that labels itself honest (not verified, CI pending, earlier run) is never held; the same reply is
-// held once, at most max_blocks times per owner turn (blockCap, as the speculation guard); stop_hook_active, subagents, Codex
+// the last N of them. The same reply is held once, at most max_blocks times per owner turn (blockCap, as the speculation guard); stop_hook_active, subagents, Codex
 // payloads (the evidence walk reads Claude transcripts only) and a script failure allow. A claim is judged per sentence: one that
-// is negated, future/conditional, a rule or criterion statement, or reported from someone else's words (its own clause, neg_res/future_res/criterion_res/reported_res) is not a claim. mode = log writes the hit and allows.
+// is negated, future/conditional, a rule or criterion statement, reported from someone else's words, or labelled honest is not a claim, but only
+// when the suppressor is local to the claim (claim_evidence.suppress reach, reach_label): a second predicate between them ends its reach. mode = log writes the hit and allows.
 // Every pattern, list, number and text: claim_evidence.toml.
 'use strict';
 
@@ -59,26 +59,48 @@ function ceStart(sent, a) {
   return Math.max(from, a - ah.cfgNum('claim_evidence.skip_window'));
 }
 
-// The end offset in `t` of the last hit of any pattern of `list`, else 0.
-function ceLastEnd(list, t) {
-  var end = 0;
-  for (var i = 0; i < list.length; i++) {
-    var all = ah.re.findAll(list[i], 'i', t);
-    for (var j = 0; j < all.length; j++) if (all[j][1] > end) end = all[j][1];
+// How far `gap` (the text between a suppressor and the claim) is from the claim: the number of counted words in it. Words of
+// claim_evidence.gap_skip_re are free; every other word counts, so an unknown word uses up the reach instead of extending it; a word of
+// gap_restart_re after a counted word means a second phrase, and the gap is out of every reach (Infinity).
+function ceGapWords(gap) {
+  var words = ah.re.findAll(ah.cfg('claim_evidence.gap_word_re'), 'i', gap), n = 0;
+  for (var i = 0; i < words.length; i++) {
+    var w = gap.slice(words[i][0], words[i][1]);
+    if (n > 0 && ah.re.find(ah.cfg('claim_evidence.gap_restart_re'), 'i', w)) return Infinity;
+    if (!ah.re.find(ah.cfg('claim_evidence.gap_skip_re'), 'i', w)) n++;
   }
-  return end;
+  return n;
 }
 
-// Why a claim hit is not a claim: the reason of the first suppress row (claim_evidence.suppress) whose list matches the clause governing it, else null.
-// A row with `cut` judges only the words after the last connector (that list) before the claim: a requirement does not reach a claim that
-// follows 'because' / 'since' / 'now that' (the claim is then stated as fact, not as the object of the requirement).
-function ceReason(sent, hit) {
-  var sup = ah.cfg('claim_evidence.suppress'), start = ceStart(sent, hit[0]);
-  for (var i = 0; i < sup.length; i++) {
-    var from = start;
-    if (sup[i].cut) from += ceLastEnd(ah.cfg(sup[i].cut), sent.slice(start, hit[0]));
-    if (ceAny(ah.cfg(sup[i].list), sent.slice(from, hit[1])) !== null) return sup[i].reason;
+// True when some hit of a pattern of `list` in `head` ends within `reach` counted words of the end of `head` (where the claim starts).
+function ceInReach(list, head, reach) {
+  for (var i = 0; i < list.length; i++) {
+    var all = ah.re.findAll(list[i], 'i', head);
+    for (var j = 0; j < all.length; j++) if (ceGapWords(head.slice(all[j][1])) <= reach) return true;
   }
+  return false;
+}
+
+// True when an honest label (claim_evidence.ack_res) in the claim's own sentence sits within reach_label counted words of the claim.
+function ceLabelled(sent, hit) {
+  var list = ah.cfg('claim_evidence.ack_res'), reach = ah.cfgNum('claim_evidence.reach_label');
+  for (var i = 0; i < list.length; i++) {
+    var all = ah.re.findAll(list[i], 'i', sent);
+    for (var j = 0; j < all.length; j++) {
+      var gap = all[j][1] <= hit[0] ? sent.slice(all[j][1], hit[0]) : all[j][0] >= hit[1] ? sent.slice(hit[1], all[j][0]) : '';
+      if (ceGapWords(gap) <= reach) return true;
+    }
+  }
+  return false;
+}
+
+// Why a claim hit is not a claim, else null. A suppressor covers a claim only when it is LOCAL to it: a row of claim_evidence.suppress
+// whose list hits the claim's clause within that row's reach (counted words between the hit and the claim), or an honest label next to
+// the claim in its own sentence. A second predicate, an unknown connector or a second phrase between them ends the reach.
+function ceReason(sent, hit) {
+  var sup = ah.cfg('claim_evidence.suppress'), head = sent.slice(ceStart(sent, hit[0]), hit[0]);
+  for (var i = 0; i < sup.length; i++) if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach))) return sup[i].reason;
+  if (ceLabelled(sent, hit)) return ah.cfg('claim_evidence.ack_reason');
   return null;
 }
 
@@ -160,7 +182,6 @@ function decide(p) {
   if (r1) {
     var seen = [];
     claim = ceFindClaim(scan, seen);
-    if (claim !== null && ceAny(ah.cfg('claim_evidence.ack_res'), scan) !== null) { seen.push([ah.cfg('claim_evidence.ack_reason'), claim.quote, claim.row.id]); claim = null; }
     // a claim that exists only inside quoted text or code is suppressed too (the masked scan cannot see it)
     if (claim === null && scan !== reply) {
       var raw = [], rawClaim = ceFindClaim(reply, raw);

@@ -2455,7 +2455,9 @@ mod claim_evidence_guard {
             let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[])];
             stop("ce-honest", &lines, reply, &[], extra).0
         };
-        assert_eq!(t("Tests pass in my head but I did not run them; unverified.", json!({})), ALLOW);
+        assert_eq!(t("Tests pass (unverified).", json!({})), ALLOW);
+        // a label covers only a claim within claim_evidence.reach_label words of it: a second clause between them ends its reach
+        assert!(blocked(&t("Tests pass in my head but I did not run them; unverified.", json!({}))).is_some());
         assert_eq!(t("The rename is in; nothing was run.", json!({})), ALLOW);
         assert_eq!(t("The old line said \"all tests pass\" and was wrong.", json!({})), ALLOW);
         assert_eq!(t("All tests pass.", json!({"agent_id": "a1", "agent_type": "worker"})), ALLOW);
@@ -2536,7 +2538,6 @@ mod claim_evidence_guard {
             "After it is merged the docs go out.",
             "It will be merged when review ends.",
             "The fix needs to be verified before release.",
-            "If CI is green the change is merged by the bot.",
             "Waiting until the PR is merged.",
         ]
         .iter()
@@ -2546,17 +2547,20 @@ mod claim_evidence_guard {
         }
         assert!(bare("ce-fut-after", "After the fix, all tests pass."), "a time word in an earlier clause does not excuse a claim");
         assert!(bare("ce-fut-past", "The change is deployed."));
+        // the opener reaches only its own clause: 'is green' is a second predicate before 'the change is merged'
+        assert!(bare("ce-fut-second", "If CI is green the change is merged by the bot."));
     }
 
     #[test]
     fn a_claim_reported_from_someone_elses_text_is_not_held() {
-        for (i, r) in
-            ["The bot reported that all tests pass.", "According to the PR body the change is merged.", "The old comment said it is fixed and was wrong."]
-                .iter()
-                .enumerate()
+        for (i, r) in ["The bot reported that all tests pass.", "The PR body says the change is merged.", "The old comment said it is fixed and was wrong."]
+            .iter()
+            .enumerate()
         {
             assert!(!bare(&format!("ce-rep{i}"), r), "must allow: {r}");
         }
+        // 'according to X' is a phrase, not an opener of the claim's clause: a second phrase before the claim ends its reach
+        assert!(bare("ce-rep-pp", "According to the PR body the change is merged."));
     }
 
     #[test]
@@ -2664,6 +2668,27 @@ mod claim_evidence_guard {
         {
             assert!(!bare(&format!("ce-req{i}"), r), "must allow: {r}");
         }
+    }
+
+    /// The regression corpus (tests/fixtures/claim_evidence_corpus.ndjson): every row {text, expect: block|allow, source} must get its
+    /// expected verdict. A suppressor covers a claim only when it is local to it (claim_evidence.suppress reach).
+    #[test]
+    fn every_row_of_the_claim_corpus_gets_its_expected_verdict() {
+        let corpus = include_str!("../../tests/fixtures/claim_evidence_corpus.ndjson");
+        let mut wrong: Vec<String> = Vec::new();
+        let mut n = 0;
+        for (i, line) in corpus.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let (text, expect) = (row["text"].as_str().unwrap(), row["expect"].as_str().unwrap());
+            assert!(matches!(expect, "block" | "allow"), "row {i}: expect must be block or allow");
+            let held = bare(&format!("ce-corpus{i}"), text);
+            if held != (expect == "block") {
+                wrong.push(format!("{expect} <- {} ({}): {text}", if held { "block" } else { "allow" }, row["source"]));
+            }
+            n += 1;
+        }
+        assert!(n >= 80, "the corpus is read ({n} rows)");
+        assert!(wrong.is_empty(), "corpus rows with the wrong verdict: {wrong:#?}");
     }
 
     #[test]
