@@ -16,7 +16,12 @@
 #      a turn that ends on a plain-text question is held at Stop with the ladder (capped, afk.question_max_holds); `back` / `progress`
 #      list NEEDS OWNER bullets first;
 #   7. plan approval: while AFK, ExitPlanMode is approved by the hook (permissionDecision allow WITH updatedInput, the documented
-#      shape; allow alone is not enough for this tool) only when an advisor call follows the owner's last message in the transcript.
+#      shape; allow alone is not enough for this tool) only when the session's last advisor call is newer than its last owner
+#      prompt by the hook's own clock (afk.mark_prefix), never for a subagent;
+#   8. subagents (payloads with an agent marker) never get the rule and never touch the parent's once-per-session state; their
+#      question-tool calls ARE denied while AFK (they are part of the autonomous run);
+#   9. the flag file is only rewritten under its lock (afk.lock_file), re-read inside it, so OFF wins over a stale ON; `afk off` /
+#      `back` refresh owner presence, so idle detection does not re-enter AFK right after.
 # Logic: engine/logic/afk-mode.js. Every phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax.
 
 [afk.set_enabled]
@@ -74,6 +79,62 @@ value = "afk-presence.json"
 [afk.session_prefix]
 doc = "Prefix of the per-session AFK state file under the per-user state directory (the sanitised session id and the JSON extension follow). `ah-engine back` reads these to find each session's progress file."
 value = "afk-sess-"
+
+[afk.lock_file]
+doc = "The cross-process lock file (under the per-user state directory) every read-modify-write of the flag file takes: hooks and `ah-engine afk` / `back` re-read the flag under it, so a stale ON copy never overwrites a newer OFF. A hook that cannot take it writes nothing."
+value = "afk.json.lock"
+
+[afk.lock_stale_ms]
+doc = "A flag lock older than this is taken over, whatever its holder."
+value = 5000
+unit = "ms"
+min = 100
+max = 600000
+
+[afk.lock_wait_ms]
+doc = "How long a hook or the CLI waits for the flag lock (a hook then writes nothing; the CLI writes anyway: the owner's command wins)."
+value = 300
+unit = "ms"
+min = 1
+max = 10000
+
+[afk.lock_step_ms]
+doc = "The pause between two tries for the flag lock."
+value = 5
+unit = "ms"
+min = 1
+max = 1000
+
+[afk.lock_reclaim_stale_ms]
+doc = "A takeover marker of the flag lock older than this is taken over."
+value = 5000
+unit = "ms"
+min = 100
+max = 600000
+
+[afk.lock_release_tries]
+doc = "How many times a release of the flag lock tries to take the takeover marker."
+value = 5
+min = 1
+max = 100
+
+[afk.lock_release_step_ms]
+doc = "The pause between those tries."
+value = 10
+unit = "ms"
+min = 1
+max = 1000
+
+[afk.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot (flag lock holder liveness)."
+value = 5
+unit = "s"
+min = 0
+max = 600
+
+[afk.mark_prefix]
+doc = "Prefix of the per-session watermark file (under the per-user state directory; the sanitised session id and the JSON extension follow): {owner, advisor} = the hook clock's time of the session's last real owner prompt (UserPromptSubmit) and of its own last advisor call (PostToolUse of an advisor.tool_names tool, never a subagent's). ExitPlanMode is approved only when the advisor call (this mark, or the transcript entry's own timestamp) is newer than the owner prompt."
+value = "afk-mark-"
 
 [afk.session_id_unsafe]
 doc = "Characters removed from a session id before it becomes part of a file name (regular expression, JavaScript syntax)."
@@ -289,7 +350,7 @@ value = "AFK: your turn ended on a question the owner cannot answer. Do not ask:
 
 [afk.msg_plan_approved]
 doc = "permissionDecisionReason of the AFK ExitPlanMode approval."
-value = "AFK: plan approved by anti-hall (the owner is away; an advisor review follows the owner's last message)."
+value = "AFK: plan approved by anti-hall (the owner is away; an advisor call is newer than the owner's last prompt)."
 
 [afk.question_re]
 doc = "A final reply whose last non-empty line matches this is a plain-text question (regular expression)."
@@ -314,7 +375,7 @@ doc = "afk_plan_autoapproved result label: ExitPlanMode approved by the hook."
 value = "approved"
 
 [afk.result_no_advisor]
-doc = "afk_plan_autoapproved result label: no advisor call since the owner's last message, the normal approval ran."
+doc = "afk_plan_autoapproved result label: no advisor call newer than the owner's last prompt, the normal approval ran."
 value = "no_advisor"
 
 [afk.action_nudged]

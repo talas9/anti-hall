@@ -32,8 +32,9 @@ next prompt. A manual AFK lasts until `back`.
 - The digest (NEEDS OWNER bullets first) is the bullets after the session's AFK marker; the percentage is `[x]` bullets / all checklist bullets.
 - No blocking questions: `AskUserQuestion` is denied EVERY time with the ladder below, and a turn that ends on a plain-text
   question is held at Stop with the ladder (at most `afk.question_max_holds` times).
-- Plan approval: `ExitPlanMode` is approved by the hook (allow + `updatedInput`) only when an advisor call follows the owner's
-  last message; otherwise the normal approval runs.
+- Plan approval: `ExitPlanMode` is approved by the hook (allow + `updatedInput`) only when the session's last advisor call is
+  newer than the owner's last prompt (hook-recorded times); otherwise, and for subagents, the normal approval runs.
+- Subagents never get the AFK rule; their question-tool calls are denied too.
 - Question ladder: decide from the plan and context; ask the advisor; only if still unclear AND not implied by the plan AND the
   choice is destructive/irreversible or would wreck the work if made the other way: park that ONE item as
   `- [ ] NEEDS OWNER: <question>` in the progress file and continue the other parts of the plan (very rare).

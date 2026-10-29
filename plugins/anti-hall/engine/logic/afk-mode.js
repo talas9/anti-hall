@@ -4,7 +4,8 @@
 // file, whose checklist bullets are the digest `back` / `progress` print; a capped Stop hold of overlong AFK replies; output tokens
 // per turn split AFK vs present; no blocking questions (the question tool denied with the ladder every time, a capped Stop hold of
 // a turn ending on a plain-text question, NEEDS OWNER bullets listed first); ExitPlanMode approved (allow + updatedInput) after an
-// advisor review since the owner's last message. Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
+// advisor call newer than the owner's last prompt (hook-recorded watermarks). Subagents never get the rule nor touch the parent's
+// once-per-session state; their question-tool calls are denied too. The flag is only rewritten under its lock (OFF wins). Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
 // the `ah-engine back` command and the typed `back` share it.
 'use strict';
 
@@ -77,31 +78,77 @@ function afkMetric(name, labels, by) { try { ah.metric(name, labels || {}, by ==
 function afkFlag() { return afkReadJson(afkRel(ah.cfg('afk.flag_file'))); }
 function afkSetFlag(f) { return afkWrite(afkRel(ah.cfg('afk.flag_file')), f); }
 function afkOn(f) { return f !== null && f.on === true; }
+function afkIsAgent(p) { return coordinator.subagentByPayload(p); }
 
-function afkStart(how, now) {
-  var f = { on: true, how: how, since: now, epoch: String(now), counted: false };
-  return afkSetFlag(f) ? f : null;
+// Every read-modify-write of the flag: under its cross-process lock (afk.lock_file, the same lock `ah-engine afk` / `back` take),
+// `fn(cur)` gets the flag as it is NOW and returns the object to write, or null to leave it. Without the lock nothing is written
+// and null is returned, so a copy read before another writer's OFF can never overwrite it.
+function afkUpdate(fn) {
+  var h = null;
+  try { h = ah.state.lock(afkRel(ah.cfg('afk.lock_file')), 'afk'); } catch (e) { h = null; }
+  if (h === null) return null;
+  try {
+    var cur = afkFlag(), next = fn(cur);
+    if (next === null) return { flag: cur };
+    return afkSetFlag(next) ? { flag: next } : null;
+  } finally {
+    try { ah.state.unlock(h); } catch (e) { /* the host releases a lock still held when the call ends */ }
+  }
 }
 
-// Counts the CLI could not add (it runs outside the daemon) are added by the first hook that sees them.
+function afkStart(how, now) {
+  var r = afkUpdate(function (cur) { return afkOn(cur) ? null : { on: true, how: how, since: now, epoch: String(now), counted: false }; });
+  return r !== null && afkOn(r.flag) ? r.flag : null;
+}
+
+function afkEnd(f, now, idleOnly) {
+  return afkUpdate(function (cur) {
+    if (!afkOn(cur) || (idleOnly && cur.how !== ah.cfg('afk.how_idle'))) return null;
+    cur.on = false; cur.ended = now;
+    return cur;
+  });
+}
+
+// Counts the CLI could not add (it runs outside the daemon) are added by the first hook that sees them, from the flag as it is under
+// the lock (a stale ON copy is never written back); without the lock the counts wait for the next hook.
 function afkFlush(f) {
   if (f === null) return f;
-  var changed = false;
-  if (f.on === true && f.counted !== true) {
-    afkMetric('afk_entered', { how: String(f.how) });
-    if (f.how === ah.cfg('afk.how_idle')) afkMetric('idle_trips', {});
-    f.counted = true; changed = true;
-  }
-  if (typeof f.pending_digest === 'number' && f.pending_digest > 0) {
-    afkMetric('digest_entries', {}, f.pending_digest);
-    f.pending_digest = 0; changed = true;
-  }
-  if (typeof f.pending_parked === 'number' && f.pending_parked > 0) {
-    afkMetric('afk_question_parked', { action: ah.cfg('afk.action_listed') }, f.pending_parked);
-    f.pending_parked = 0; changed = true;
-  }
-  if (changed) afkSetFlag(f);
-  return f;
+  var due = (f.on === true && f.counted !== true) || f.pending_digest > 0 || f.pending_parked > 0;
+  if (!due) return f;
+  var counts = [];
+  var r = afkUpdate(function (cur) {
+    if (cur === null) return null;
+    var changed = false;
+    counts = [];
+    if (cur.on === true && cur.counted !== true) {
+      counts.push(['afk_entered', { how: String(cur.how) }, 1]);
+      if (cur.how === ah.cfg('afk.how_idle')) counts.push(['idle_trips', {}, 1]);
+      cur.counted = true; changed = true;
+    }
+    if (typeof cur.pending_digest === 'number' && cur.pending_digest > 0) {
+      counts.push(['digest_entries', {}, cur.pending_digest]);
+      cur.pending_digest = 0; changed = true;
+    }
+    if (typeof cur.pending_parked === 'number' && cur.pending_parked > 0) {
+      counts.push(['afk_question_parked', { action: ah.cfg('afk.action_listed') }, cur.pending_parked]);
+      cur.pending_parked = 0; changed = true;
+    }
+    return changed ? cur : null;
+  });
+  if (r === null) return f;
+  for (var i = 0; i < counts.length; i++) afkMetric(counts[i][0], counts[i][1], counts[i][2]);
+  return r.flag;
+}
+
+// The session's watermarks (afk.mark_prefix): the hook clock's time of its last real owner prompt and of its own last advisor call.
+function afkMarkRel(sid) { return afkRel(ah.cfg('afk.mark_prefix') + sid + ah.cfg('replykit.json_ext')); }
+function afkMark(p, key, now) {
+  var sid = afkSid(p);
+  if (!sid) return;
+  var rel = afkMarkRel(sid), m = afkReadJson(rel) || {};
+  m[key] = now;
+  afkWrite(rel, m);
+  ah.state.prune(ah.cfg('afk.mark_prefix'), ah.cfg('afk.mark_prefix') + sid + ah.cfg('replykit.json_ext'));
 }
 
 function afkSid(p) {
@@ -175,16 +222,17 @@ function afkPrompt(p, f, now) {
   var notOwner = ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); });
   if (notOwner) return null;
   afkWrite(afkRel(ah.cfg('afk.presence_file')), { last: now });
+  afkMark(p, 'owner', now);
   var word = prompt.trim().toLowerCase(), reply = null;
   if (ah.settings.bool('afk.set_prompt_commands')) {
     if (afkWordIn(ah.cfg('afk.words_on'), word)) {
       if (afkOn(f)) reply = afkR(ah.cfg('afk.msg_already'), { how: f.how, since: afkFmt(f.since) });
-      else { var n = afkStart(ah.cfg('afk.how_prompt'), now); afkFlush(n); reply = afkR(ah.cfg('afk.msg_on'), { how: ah.cfg('afk.how_prompt') }); }
+      else { var n = afkStart(ah.cfg('afk.how_prompt'), now); afkFlush(n); reply = afkR(ah.cfg('afk.msg_on'), { how: n !== null ? n.how : ah.cfg('afk.how_prompt') }); }
     } else if (afkWordIn(ah.cfg('afk.words_off'), word) || afkWordIn(ah.cfg('afk.words_progress'), word)) {
       var off = afkWordIn(ah.cfg('afk.words_off'), word), d = afkDigestHere(f), head = '';
       if (off) {
         head = afkOn(f) ? afkR(ah.cfg('afk.msg_off'), { how: f.how, since: afkFmt(f.since) }) : ah.cfg('afk.msg_not_on');
-        if (afkOn(f)) { f.on = false; f.ended = now; afkSetFlag(f); }
+        if (afkOn(f)) afkEnd(f, now, false);
       }
       afkMetric('digest_entries', {}, d.entries);
       if (d.parked > 0) afkMetric('afk_question_parked', { action: ah.cfg('afk.action_listed') }, d.parked);
@@ -193,8 +241,8 @@ function afkPrompt(p, f, now) {
   }
   if (reply !== null) return { exact: { code: 0, out: afkR(ah.cfg('afk.ups_block'), { reason: JSON.stringify(reply) }), err: '' } };
   if (afkOn(f) && f.how === ah.cfg('afk.how_idle')) {
-    f.on = false; f.ended = now; afkSetFlag(f);
-    return afkCtx('UserPromptSubmit', ah.cfg('afk.msg_idle_ended'));
+    var r = afkEnd(f, now, true);
+    if (r !== null && !afkOn(r.flag)) return afkCtx('UserPromptSubmit', ah.cfg('afk.msg_idle_ended'));
   }
   return null;
 }
@@ -282,9 +330,16 @@ function afkPre(p, f) {
     afkMetric('afk_question_denied', { tool: tool });
     return { exact: { code: 0, out: afkR(ah.cfg('afk.pre_deny'), { reason: JSON.stringify(ah.cfg('afk.msg_ladder_deny')) }), err: '' } };
   }
-  if (ah.cfg('afk.plan_tools').indexOf(tool) < 0 || !ah.settings.bool('afk.set_plan_autoapprove') || !jx.isObj(p.tool_input)) return 'allow';
-  var scan = advisorKit.scan(p);
-  if (scan === null || !advisorKit.present(p, scan) || scan.lastAdvisor <= scan.lastUser) {
+  if (ah.cfg('afk.plan_tools').indexOf(tool) < 0 || !ah.settings.bool('afk.set_plan_autoapprove') || !jx.isObj(p.tool_input) || afkIsAgent(p)) return 'allow';
+  // the advisor call must be NEWER than the owner's last prompt, both by the hook's own clock (the transcript is written
+  // asynchronously, so its order can lag a prompt the UserPromptSubmit hook already recorded); the transcript entry's own
+  // timestamp counts as an advisor time too
+  var sid = afkSid(p), m = sid ? afkReadJson(afkMarkRel(sid)) : null;
+  var owner = m !== null && typeof m.owner === 'number' ? m.owner : null;
+  var adv = m !== null && typeof m.advisor === 'number' ? m.advisor : -1;
+  var scan = owner === null ? null : advisorKit.scan(p);
+  if (scan !== null && scan.lastAdvisorTs > adv) adv = scan.lastAdvisorTs;
+  if (owner === null || adv <= owner) {
     afkMetric('afk_plan_autoapproved', { result: ah.cfg('afk.result_no_advisor') });
     return 'allow';
   }
@@ -328,6 +383,9 @@ function decide(p) {
   f = afkFlush(afkIdleTrip(f, now));
   if (ev === 'Stop') return afkStop(p, f, now);
   if (ev === 'PreToolUse') return afkPre(p, f);
-  if (ev === 'PostToolUse' && afkOn(f)) return afkInject(p, f, now, ev);
+  if (ev === 'PostToolUse' && !afkIsAgent(p)) {
+    if (ah.cfg('advisor.tool_names').indexOf(p.tool_name) >= 0) afkMark(p, 'advisor', now);
+    if (afkOn(f)) return afkInject(p, f, now, ev); // a subagent never gets the rule nor consumes the parent's once-per-session state
+  }
   return 'allow';
 }

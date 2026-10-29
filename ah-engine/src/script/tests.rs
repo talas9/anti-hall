@@ -3162,37 +3162,82 @@ mod afk_mode {
     }
 
     #[test]
-    fn exit_plan_mode_is_auto_approved_with_updated_input_only_after_an_advisor_review_since_the_owner() {
+    fn exit_plan_mode_is_auto_approved_with_updated_input_only_after_an_advisor_review_newer_than_the_owner_prompt() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
         let h = home("afk-plan");
         drained();
+        let iso = crate::checks::taskkit::time::iso;
         let user = json!({"type": "user", "message": {"role": "user", "content": "build it"}});
-        let adv = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "server_tool_use", "name": "advisor", "id": "a"}]}});
+        let adv = |ts: String| json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [{"type": "server_tool_use", "name": "advisor", "id": "a"}]}});
         let plan = json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "1. do X\n2. do Y", "allowedPrompts": []}});
-        transcript(&h, &[user.clone(), adv.clone()]);
-        assert!(out(&run(&h, "PreToolUse", plan.clone(), &[])).is_empty(), "not AFK: the normal approval");
-        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let ok = |o: &str| -> bool {
+            let v: Value = serde_json::from_str(o.trim()).unwrap_or(Value::Null);
+            v["hookSpecificOutput"]["permissionDecision"] == json!("allow") && v["hookSpecificOutput"]["updatedInput"] == plan["tool_input"]
+        };
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]); // an owner prompt: the watermark
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        transcript(&h, &[user.clone(), adv(iso(crate::checks::taskkit::time::now_ms()))]);
         let o = out(&run(&h, "PreToolUse", plan.clone(), &[]));
-        let v: Value = serde_json::from_str(o.trim()).unwrap_or_else(|e| panic!("{o}: {e}"));
-        let hso = &v["hookSpecificOutput"];
-        assert_eq!(hso["hookEventName"], json!("PreToolUse"));
-        assert_eq!(hso["permissionDecision"], json!("allow"));
-        assert_eq!(hso["updatedInput"], plan["tool_input"], "updatedInput is the whole input, unchanged");
-        // the owner wrote after the advisor call: the normal approval
-        transcript(&h, &[adv, user]);
+        assert!(ok(&o), "advisor newer than the owner prompt: approved with the whole input: {o}");
+        // a NEW owner prompt is recorded while the transcript still ends with the previous advisor exchange (writes are async)
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        run(&h, "UserPromptSubmit", json!({"prompt": "change the plan: also do Z"}), &[]);
+        assert!(out(&run(&h, "PreToolUse", plan.clone(), &[])).is_empty(), "the old advisor call predates the new owner prompt");
+        // a subagent's advisor call does not count for the parent
+        run(&h, "PostToolUse", json!({"tool_name": "advisor", "agent_id": "child"}), &[]);
         assert!(out(&run(&h, "PreToolUse", plan.clone(), &[])).is_empty());
+        // the session's own advisor call, recorded by the hook with its own clock, is newer: approved
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        run(&h, "PostToolUse", json!({"tool_name": "advisor"}), &[]);
+        assert!(ok(&out(&run(&h, "PreToolUse", plan.clone(), &[]))));
+        // a subagent's ExitPlanMode is never approved by the hook
+        assert!(out(&run(&h, "PreToolUse", json!({"tool_name": "ExitPlanMode", "agent_id": "child", "tool_input": {"plan": "p"}}), &[])).is_empty());
         let m = drained();
-        assert_eq!(m.counter("afk_plan_autoapproved", &[("result", "approved")]), 1);
-        assert_eq!(m.counter("afk_plan_autoapproved", &[("result", "no_advisor")]), 1);
+        assert_eq!(m.counter("afk_plan_autoapproved", &[("result", "approved")]), 2);
+        assert_eq!(m.counter("afk_plan_autoapproved", &[("result", "no_advisor")]), 2);
         std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"planAutoApprove": false}}).to_string()).unwrap();
-        transcript(
-            &h,
-            &[
-                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
-                json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "server_tool_use", "name": "advisor", "id": "b"}]}}),
-            ],
-        );
         assert!(out(&run(&h, "PreToolUse", plan, &[])).is_empty(), "setting off");
+        drained();
+    }
+
+    #[test]
+    fn a_subagent_never_consumes_the_parents_afk_rule_and_its_question_is_still_denied() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-child");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let c = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash", "agent_id": "child", "agent_type": "general-purpose"}), &[]));
+        assert!(c.is_empty(), "a subagent gets no rule and writes no session state: {c}");
+        let d = out(&run(&h, "PreToolUse", json!({"tool_name": "AskUserQuestion", "agent_id": "child", "tool_input": {}}), &[]));
+        assert!(d.contains("\"deny\""), "a subagent is part of the autonomous run: its question is denied: {d}");
+        let p = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert!(p.contains("AFK MODE"), "the parent still gets its rule: {p}");
+        drained();
+    }
+
+    #[test]
+    fn the_flag_is_never_rewritten_without_its_lock_and_off_wins_over_a_stale_on() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-race");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": false}).to_string()).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let params = || crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp, params()).expect("test holds the lock");
+        // another writer holds the lock: the hook writes nothing (no lost update)
+        run(&h, "PostToolUse", json!({"tool_name": "Bash", "session_id": "s2"}), &[]);
+        assert_eq!(flag(&h)["counted"], json!(false), "no write without the lock");
+        // a hook that read ON waits on the lock while `back` writes OFF; it must not resurrect ON
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "PostToolUse", json!({"tool_name": "Bash", "session_id": "s3"}), &[]);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": false, "ended": 2}).to_string()).unwrap();
+        assert!(held.release());
+        t.join().expect("hook thread");
+        assert_eq!(flag(&h)["on"], json!(false), "OFF wins over the stale ON");
         drained();
     }
 

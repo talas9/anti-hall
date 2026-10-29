@@ -72,8 +72,38 @@ fn say(p: &Parsed, text: &str, extra: Value) {
     }
 }
 
+/// Run `f` under the flag's cross-process lock (`afk.lock_file`, the lock the hooks take for every flag update), so the flag is
+/// read and written with no hook in between. When the lock cannot be taken in `afk.lock_wait_ms` the command runs anyway: the
+/// owner's command wins, and a hook that cannot take the lock writes nothing.
+fn locked<T>(home: &str, f: impl FnOnce() -> T) -> T {
+    let path = state_dir(home).join(defaults::text("afk.lock_file"));
+    let held = std::fs::create_dir_all(state_dir(home))
+        .ok()
+        .and(crate::checks::guardkit::nodelock::Params::from_group("afk"))
+        .and_then(|params| crate::checks::guardkit::nodelock::acquire(&path.to_string_lossy(), params));
+    let r = f();
+    if let Some(h) = held
+        && !h.release()
+    {
+        err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &"lock already released")]) + "\n"));
+    }
+    r
+}
+
+/// The owner ran `afk off` / `back`: they are present now, so idle detection does not start a new AFK right after.
+fn mark_present(home: &str) {
+    let path = state_dir(home).join(defaults::text("afk.presence_file"));
+    if let Err(e) = crate::atomic::write(&path, json!({"last": now_ms()}).to_string()) {
+        err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &e)]) + "\n"));
+    }
+}
+
 /// Start AFK (manual); `false` when the flag could not be written.
 fn turn_on(p: &Parsed, home: &str) -> i32 {
+    locked(home, || turn_on_locked(p, home))
+}
+
+fn turn_on_locked(p: &Parsed, home: &str) -> i32 {
     let cur = read_json(&flag_path(home));
     if let Some(f) = cur.as_ref().filter(|f| is_on(Some(f))) {
         say(p, &defaults::render("afk.msg_already", &[("how", &field(f, "how")), ("since", &since(f))]), json!({"on": true}));
@@ -87,8 +117,10 @@ fn turn_on(p: &Parsed, home: &str) -> i32 {
     f.insert("since".into(), json!(now));
     f.insert("epoch".into(), Value::String(now.to_string()));
     f.insert("counted".into(), Value::Bool(false));
-    if let Some(n) = cur.as_ref().and_then(|c| c.get("pending_digest")).cloned() {
-        f.insert("pending_digest".into(), n);
+    for k in ["pending_digest", "pending_parked"] {
+        if let Some(n) = cur.as_ref().and_then(|c| c.get(k)).cloned() {
+            f.insert(k.into(), n);
+        }
     }
     if !write_flag(home, &f) {
         return 1;
@@ -152,8 +184,13 @@ pub(crate) fn digest(home: &str, epoch: &str) -> (String, u64, u64) {
     }
 }
 
-/// End AFK; with `print_digest`, print the digest of the period that ended (or of the last one).
+/// End AFK; with `print_digest`, print the digest of the period that ended (or of the last one). Owner presence is refreshed.
 fn turn_off(p: &Parsed, home: &str, print_digest: bool) -> i32 {
+    locked(home, || turn_off_locked(p, home, print_digest))
+}
+
+fn turn_off_locked(p: &Parsed, home: &str, print_digest: bool) -> i32 {
+    mark_present(home);
     let Some(mut f) = read_json(&flag_path(home)) else {
         say(p, defaults::text("afk.msg_not_on"), json!({"on": false}));
         return 0;
@@ -262,6 +299,22 @@ mod tests {
         assert_eq!(turn_off(&parsed("back", &[]), &home, false), 0);
         let g = read_json(&flag_path(&home)).expect("flag");
         assert!(!is_on(Some(&g)));
+    }
+
+    #[test]
+    fn afk_off_refreshes_owner_presence_so_idle_detection_does_not_re_enter_afk() {
+        let dir = scratch("presence");
+        let home = dir.to_string_lossy().into_owned();
+        assert_eq!(turn_on(&parsed("afk", &["on"]), &home), 0);
+        let pres = state_dir(&home).join(defaults::text("afk.presence_file"));
+        std::fs::write(&pres, json!({"last": 0}).to_string()).expect("write");
+        assert_eq!(turn_off(&parsed("afk", &["off"]), &home, false), 0);
+        let last = read_json(&pres).and_then(|m| m.get("last").and_then(Value::as_f64)).unwrap_or_default();
+        assert!(last > 0.0, "the owner ran the command: presence is now");
+        let env = crate::reqenv::RequestEnv::from_pairs(vec![("HOME".to_string(), home.clone())]);
+        let p = json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": home, "tool_name": "Bash"});
+        crate::script::run_forced("afk-mode", &p, &Value::Null, "PostToolUse", &env);
+        assert!(!is_on(read_json(&flag_path(&home)).as_ref()), "an old presence before `off` does not re-enter idle AFK");
     }
 
     #[test]
