@@ -657,7 +657,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `files.spool_quarantine` | `spool.quarantine` |  |  | Spool records that could not be parsed or that the store refused for good, kept with their reason, never dropped (D24). |
 | `files.starts` | `starts` |  |  | Counter of daemon starts, surfaced as `starts` and `restarts` in status. |
 | `files.telemetry_inbox` | `telemetry-inbox.jsonl` |  |  | Events recorded by processes other than the daemon (the hook dispatcher, one-shot commands), one JSON line each, in the state directory; the daemon reads and empties it on every telemetry flush. |
-| `files.unreachable_notice` | `unreachable.notice` |  |  | Holds the session id that already got the engine-unreachable notice, so the notice is shown once per session (the next session overwrites it). |
+| `files.unreachable_notice` | `unreachable.notice` |  |  | Holds the recent session ids (see launcher.notice_sessions_max) that already got the engine-unreachable notice, so the notice is shown once per session. |
 | `files.wrapper_fail_log` | `wrapper.fails` |  |  | Epoch seconds, one per line, of the thin client's engine failures (timeout, signal death, no answer). The integrity check counts them against rollback.fail_n. |
 
 ### engine.toml / health
@@ -859,6 +859,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `launcher.nodeback_tool_events` | `PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest` |  |  | The events on which the Node fallback reads the tool name from the payload and selects the list rows by their matcher. |
 | `launcher.nodeback_tool_field` | `tool_name` |  |  | The payload field that names the tool of a tool event; the Node fallback matches the list's matchers against it. |
 | `launcher.nodeback_unrunnable_markers` | `MODULE_NOT_FOUND, Cannot find module` |  |  | Texts that must all appear on a Node hook's stderr (exit 1) for the hook to count as unrunnable (its script or a module is missing) instead of a non-blocking failure of the hook itself. |
+| `launcher.notice_sessions_max` | `64` |  | sessions | Most session ids a once-per-session notice marker (engine-unreachable, cold-start, stale-engine) remembers. Sessions interleaving within this many others are told once each; past it the oldest session is forgotten and may hear the notice again. |
 | `launcher.out_cap_bytes` | `4194304` |  | bytes | Most engine standard output the launcher keeps. A hook answer is small; more than this is treated as a failed engine and the hook is let through. |
 | `launcher.payload_prefix_bytes` | `1048576` |  | bytes | How much of the payload the launcher keeps in memory: the part it inspects (session id, stop flag) and replays to the fallback runner. The rest is streamed through and never held. |
 | `launcher.plugin_root_envs` | `CLAUDE_PLUGIN_ROOT, PLUGIN_ROOT` |  |  | Environment variables the host uses to name the plugin root, in the order the launcher tries them. |
@@ -13580,6 +13581,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.exit_reason_handoff` | Drain reason for a handoff to a newer build or a stop request. |
 | `msg.exit_reason_idle` | Drain reason for idle exit (only when daemon.idle_exit_s is set). |
 | `msg.exit_reason_rss` | Drain reason for exceeding the memory cap. |
+| `msg.exit_reason_sigint` | Drain reason for SIGINT. |
 | `msg.exit_reason_sigterm` | Drain reason for SIGTERM. |
 | `msg.exit_reason_stall` | Drain reason for a stalled loop. |
 | `msg.exit_reason_stuck` | Drain reason for a stuck worker. |
