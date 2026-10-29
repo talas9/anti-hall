@@ -100,6 +100,8 @@ pub struct Stats {
     /// Connections that closed without sending a byte: the launcher's liveness probe (connect only). Not requests: nothing is
     /// dispatched, answered or logged for them (a reply would only hit a closed pipe).
     pub probes: AtomicU64,
+    /// Requests dropped unserved because their client had hung up before a worker took them (`daemon.skip_when_client_gone`).
+    pub gone_skipped: AtomicU64,
 }
 
 /// Everything the request handler and the threads share.
@@ -617,6 +619,7 @@ impl Shared {
             "slow_replies": SLOW_REPLIES.load(SeqCst),
             "rejected_peers": self.stats.rejected.load(SeqCst),
             "probes": self.stats.probes.load(SeqCst),
+            "gone_skipped": self.stats.gone_skipped.load(SeqCst),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
             "breaker": b.map_or("closed".to_string(), |d| defaults::render("msg.state_open", &[("secs", &(d.as_secs() + 1))])),
@@ -1519,6 +1522,15 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     crate::load::take_scan();
     crate::load::take_request();
     let cfg = sh.cfg();
+    // a client that closed the whole connection while the request sat in the queue (a legacy client gives up at its deadline and
+    // drops the stream) reads no reply: serving it would only burn the checks and write to a closed pipe. A client still waiting
+    // (including one waiting out client.slow_fallback_max_ms) keeps its end open, so it is never skipped; a client that only
+    // shut down its write side after sending (the legacy client always does) is not hung up either.
+    if crate::deadline::hung_up(s.as_raw_fd()) {
+        sh.stats.gone_skipped.fetch_add(1, SeqCst);
+        sh.telemetry.with_metrics(|m| m.inc("client_gone_skipped", &[]));
+        return After::Continue;
+    }
     // the client stops waiting `client.deadline_ms` after it sent the request, which is about when it was accepted
     crate::deadline::begin(started.checked_sub(wait).unwrap_or(started));
     let (req, wire) = match read_request(&mut s, &cfg) {
@@ -2656,6 +2668,32 @@ mod tests {
         crate::memstat::configure_measure(false, 1);
         sh.reload_config();
         assert!(crate::memstat::measure_enabled(), "diagnostics.check_mem is true in the shipped defaults");
+    }
+    /// A legacy client (no ack) that gave up and closed the connection while its request sat in the queue is dropped by the
+    /// worker without a single check; one that only shut down its write side (every legacy client does) is still served.
+    #[test]
+    fn a_request_whose_client_hung_up_in_the_queue_is_skipped_but_a_waiting_client_is_served() {
+        use std::io::{Read, Write};
+        let sh = shared();
+        let payload = r#"{"session_id":"s","cwd":"/","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"}}"#;
+        // a waiting client: request written, write side shut down, read side open
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client.write_all(payload.as_bytes()).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        serve_conn(server, &sh, Duration::ZERO, 0);
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).unwrap();
+        assert!(!got.is_empty(), "a client that is still waiting gets its reply");
+        assert_eq!(sh.stats.gone_skipped.load(SeqCst), 0);
+        assert_eq!(sh.stats.requests.load(SeqCst), 1);
+        // a client that timed out: same bytes, then the whole socket closed before a worker popped the connection
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client.write_all(payload.as_bytes()).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        drop(client);
+        serve_conn(server, &sh, Duration::ZERO, 0);
+        assert_eq!(sh.stats.gone_skipped.load(SeqCst), 1, "the abandoned request is counted as skipped");
+        assert_eq!(sh.stats.requests.load(SeqCst), 1, "and no check ran for it");
     }
     fn call(req: &str, own: &str) -> (Reply, After) {
         let mut sh = shared();
