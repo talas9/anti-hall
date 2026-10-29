@@ -79,6 +79,17 @@
             "id": "agent-reminders"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PostToolUse",
+            "timeout": 10,
+            "id": "advisor-guard:pass"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [

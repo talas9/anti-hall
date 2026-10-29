@@ -216,6 +216,8 @@ function mrAdvisorReview(p, model, omitted, description, subagentType, flagship)
     if (!ah.settings.bool('advisor.sw_review') || p.stop_hook_active === true) return null;
     var dTokens = mrTokenize(description + ' ' + subagentType);
     if (!(mrSig(dTokens, new Set(dTokens), 'advisor.review_signals') > 0)) return null; // the description and agent type only: a brief that merely mentions a review is no review
+    // A named agent without an explicit model runs on the model its own definition sets, not the session's: unknown, so allowed.
+    if (omitted && ah.cfg('advisor.generic_agent_types').indexOf(jx.asciiLower(subagentType)) < 0) return null;
     var tier = omitted ? mrInheritedTier(p) : model;
     if (omitted) { if (tier === null || ah.cfg('model_routing.flagship_models').indexOf(tier) >= 0) return null; }
     else if (flagship) return null;
@@ -223,7 +225,7 @@ function mrAdvisorReview(p, model, omitted, description, subagentType, flagship)
     if (!advisorKit.present(p, scan)) return null;
     var key = typeof p.session_id === 'string' ? p.session_id : '';
     if (!advisorKit.gate('advisor.kind_review', p, key + '|' + (typeof p.agent_id === 'string' ? p.agent_id : '') + '|' + description)) return null;
-    var shown = omitted ? ah.cfg('advisor.unknown_model_label') : model;
+    var shown = omitted ? text.render(ah.cfg('advisor.unknown_model_label'), { model: tier }) : model;
     return mrBlock(text.message('block', ah.cfg('advisor.guard_name'), {
       what: text.render(ah.cfg('advisor.msg_review_what'), { model: shown }), why: ah.cfg('advisor.msg_why'), instead: ah.cfg('advisor.msg_review_instead'), override: '',
     }));

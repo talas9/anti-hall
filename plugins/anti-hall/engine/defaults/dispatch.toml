@@ -607,6 +607,7 @@ value = [
   { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "dispatch-tier" },
   { id = "tasklist-hygiene:post", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "tasklist-hygiene" },
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
+  { id = "advisor-guard:pass", matcher = "Bash", timeout = 10, check = "advisor-guard" },
 ]
 
 [dispatch.hooks_claude_PostToolUseFailure]

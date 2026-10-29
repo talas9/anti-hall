@@ -386,7 +386,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
 | `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on). |
 | `wide-search-guard` | PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
-| `advisor-guard` | PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure on Bash, only when the session has an advisor tool: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build with no advisor call in between (guards.advisorRetry). The review rule lives in model-routing. |
+| `advisor-guard` | PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure and PostToolUse on Bash, only when the session has an advisor tool: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing. |
 | `switch-notice` | Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
 | `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
@@ -2818,7 +2818,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.gen_default_kind` | `hooks` |  |  | The file `gen-hooks` prints when `--kind` is not given. |
 | `dispatch.generated_files` | `2 entries` |  |  | Per host and kind of generated file (hooks, registry, list), its path relative to the repository root. `tests/hooks_files.rs` requires each committed file to equal what `gen-hooks` prints and `ah-gen-fallback-list` writes them. |
 | `dispatch.guard_events` | `PreToolUse, PermissionRequest, Stop, SubagentStop` |  |  | Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call (Claude ignores exit 2 on PermissionRequest, so a fail-closed exit 2 there is harmless, and the event stays listed so a hook registered on it later is guarded from the start), Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74). |
-| `dispatch.hooks_claude_PostToolUse` | `10 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PostToolUse` | `11 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PostToolUseFailure` | `4 entries, 4 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `4 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreToolUse` | `32 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
@@ -5105,6 +5105,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `advisor.block_types` | `tool_use, server_tool_use` |  |  | Transcript content-block types that are a tool call (the advisor is a server tool, so its block may be server_tool_use). |
 | `advisor.edit_tools` | `Write, Edit, MultiEdit` |  |  | Tool names whose file_path is an edit target. |
+| `advisor.generic_agent_types` | `, general-purpose` |  |  | Agent types (lower case) that carry no model of their own, so a spawn without a model inherits the session tier. Any other agent type is a named agent whose own definition may set the model, so the review rule leaves it alone. |
 | `advisor.guard_name` | `advisor-guard` |  |  | The skip.json key and block label of the advisor rules. |
 | `advisor.kind_plan` | `advisor_plan` |  |  | Advisory kind (counters and cap) of the plan rule. |
 | `advisor.kind_retry` | `advisor_retry` |  |  | Advisory kind (counters and cap) of the retry rule. |
@@ -5121,17 +5122,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.payload_tool_keys` | `tools, available_tools, allowed_tools` |  |  | Hook payload fields that may list the tools available to the session (an array of names or of objects with a name); the advisor counts as available when one names it. |
 | `advisor.plan_file_re` | `(?i)(?:^\|/)PLAN\.md$\|(?:^\|/)(?:\.omc/plans\|\.claude/plans\|\.anti-hall/plans\|p...` |  |  | Regular expression (Rust syntax) of a file path that is a plan file: PLAN.md anywhere, or a markdown file in a plans directory. |
 | `advisor.plan_tools` | `ExitPlanMode` |  |  | Tool names that always count as writing a plan. |
-| `advisor.review_signals` | `review, reviewer, audit, auditor, critique, critic` |  |  | Token phrases that make an agent spawn review-shaped (matched against its description and prompt like model_routing.complex). |
-| `advisor.session_safe_max` | `64` |  |  | Longest session-id part kept in a state file name. |
+| `advisor.review_signals` | `review, reviewer, critique, critic` |  |  | Token phrases that make an agent spawn review-shaped (matched against its description and agent type like model_routing.complex). Reviews and plans only: audits and scans may run on a cheaper model. |
+| `advisor.session_safe_max` | `128` |  |  | Longest session-id part kept in a state file name. |
 | `advisor.state_ext` | `.json` |  |  | File-name extension of the per-session retry state. |
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
-| `advisor.summary` | `PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure on Bas...` |  |  | One-line description of the advisor-guard check in the generated reference. |
+| `advisor.summary` | `PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure and Po...` |  |  | One-line description of the advisor-guard check in the generated reference. |
 | `advisor.sw_plan` | `6 entries` |  |  | Switch guards.advisorPlan (default on, active only when an advisor tool is present): block writing a plan with no advisor call since the task began, once. |
 | `advisor.sw_retry` | `6 entries` |  |  | Switch guards.advisorRetry (default on, active only when an advisor tool is present): block a second edit of the same file after a failed test or build with no advisor call in between, once. |
 | `advisor.sw_review` | `6 entries` |  |  | Switch guards.advisorReview (default on, active only when an advisor tool is present): block a review-shaped agent spawn on a non-flagship model once. |
 | `advisor.test_cmd_re` | `\b(?:cargo\s+(?:\+\S+\s+)?(?:test\|nextest\|build\|check\|clippy)\|npm\s+(?:run\s+...` |  |  | Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run. |
+| `advisor.test_file_re` | `(?i)(?:^\|/)(?:tests?\|__tests__\|specs?)/\|[._-](?:test\|spec)\.[A-Za-z0-9]+$\|_te...` |  |  | Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run). |
 | `advisor.tool_names` | `advisor` |  |  | Names of the advisor tool, in a transcript tool_use block or in the payload's tool list. |
-| `advisor.unknown_model_label` | `the inherited model` |  |  | Label shown in the review block when the model is inherited. |
+| `advisor.unknown_model_label` | `the inherited {model} session tier` |  |  | Label shown in the review block when the spawn names no model. Placeholder: {model} (the resolved session tier). |
 | `advisor.window_bytes` | `4194304` |  | bytes | Bytes of the transcript tail read to find advisor calls and the last user message. |
 
 ### broad_kill.toml / broad_kill

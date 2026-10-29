@@ -52,19 +52,23 @@ var advisorKit = {
   },
   // Block once per trigger: the advisory layer's hash gate (an unchanged trigger is held back) and per-kind cap, with its counters.
   gate: function (kindKey, p, trigger) {
-    var session = typeof p.session_id === 'string' ? p.session_id : '';
-    return adv.gate(ah.cfg(kindKey), session, trigger);
+    return adv.gate(ah.cfg(kindKey), advisorKit.scope(p), trigger);
   },
   block: function (what, instead) {
     var reason = text.message('block', ah.cfg('advisor.guard_name'), { what: what, why: ah.cfg('advisor.msg_why'), instead: instead, override: '' });
     return { exact: { code: 2, out: text.blockJson(reason), err: reason + '\n' } };
   },
   stopping: function (p) { return p.stop_hook_active === true; },
+  // The state owner: the session, or the subagent inside it (a payload with an agent_id): subagents never share the main thread's state.
+  scope: function (p) {
+    var sid = typeof p.session_id === 'string' ? p.session_id : '';
+    return typeof p.agent_id === 'string' && p.agent_id !== '' ? sid + '.' + p.agent_id : sid;
+  },
   stateRel: function (p) {
-    var safe = String(p.session_id || 'nosession').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, ah.cfgNum('advisor.session_safe_max'));
+    var safe = String(advisorKit.scope(p) || 'nosession').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, ah.cfgNum('advisor.session_safe_max'));
     return ah.cfg('paths.base_dir') + '/' + ah.cfg('advisor.state_prefix') + '-' + safe + ah.cfg('advisor.state_ext');
   },
-  // {fail: null | {advisorAt}, edits: {file: n}}; anything unreadable is a fresh state.
+  // {fail: null | {advisorAt, files: [edited before the failure]}, edits: {file: n}}; anything unreadable is a fresh state.
   load: function (p) {
     var raw = null;
     try { raw = ah.state.readText(advisorKit.stateRel(p)); } catch (e) { raw = null; }

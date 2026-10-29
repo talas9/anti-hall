@@ -5,13 +5,14 @@
 #   review: model-routing.js (PreToolUse Agent/Task), a review-shaped spawn on a non-flagship model.
 #   plan:   advisor-guard.js (PreToolUse Write/Edit/MultiEdit/ExitPlanMode), a plan written with no advisor call this task.
 #   retry:  advisor-guard.js (PostToolUseFailure Bash + PreToolUse Write/Edit/MultiEdit), the same file edited again after a
-#           failed test or build with no advisor call in between.
+#           failed test or build that followed its first edit, with no advisor call in between. A passing test or build
+#           (PostToolUse Bash) clears the failure and the edit record.
 # The decision logic is engine/logic/advisor-guard.js, engine/logic/lib/53-advisor.js and engine/logic/model-routing.js; every
 # list, pattern, number and text is here (D88).
 
 [advisor.summary]
 doc = "One-line description of the advisor-guard check in the generated reference."
-value = "PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure on Bash, only when the session has an advisor tool: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build with no advisor call in between (guards.advisorRetry). The review rule lives in model-routing."
+value = "PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure and PostToolUse on Bash, only when the session has an advisor tool: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing."
 
 [advisor.guard_name]
 doc = "The skip.json key and block label of the advisor rules."
@@ -59,8 +60,12 @@ value = 4000
 min = 10
 
 [advisor.review_signals]
-doc = "Token phrases that make an agent spawn review-shaped (matched against its description and prompt like model_routing.complex)."
-value = ["review", "reviewer", "audit", "auditor", "critique", "critic"]
+doc = "Token phrases that make an agent spawn review-shaped (matched against its description and agent type like model_routing.complex). Reviews and plans only: audits and scans may run on a cheaper model."
+value = ["review", "reviewer", "critique", "critic"]
+
+[advisor.generic_agent_types]
+doc = "Agent types (lower case) that carry no model of their own, so a spawn without a model inherits the session tier. Any other agent type is a named agent whose own definition may set the model, so the review rule leaves it alone."
+value = ["", "general-purpose"]
 
 [advisor.plan_tools]
 doc = "Tool names that always count as writing a plan."
@@ -78,6 +83,10 @@ value = ["Write", "Edit", "MultiEdit"]
 doc = "Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run."
 value = '\b(?:cargo\s+(?:\+\S+\s+)?(?:test|nextest|build|check|clippy)|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|node\s+--test|pytest|go\s+(?:test|build|vet)|make\s+(?:test|check|build)?|tsc|jest|vitest|flutter\s+test|dart\s+test|gradle\w*\s+(?:test|build)|mvn\s+(?:test|verify|package))\b'
 
+[advisor.test_file_re]
+doc = "Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run)."
+value = '(?i)(?:^|/)(?:tests?|__tests__|specs?)/|[._-](?:test|spec)\.[A-Za-z0-9]+$|_tests?\.[A-Za-z0-9]+$|(?:^|/)test_[^/]+$'
+
 [advisor.state_prefix]
 doc = "File-name prefix of the per-session retry state."
 value = "advisor-retry"
@@ -88,7 +97,7 @@ value = ".json"
 
 [advisor.session_safe_max]
 doc = "Longest session-id part kept in a state file name."
-value = 64
+value = 128
 min = 8
 
 [advisor.kind_review]
@@ -132,5 +141,5 @@ doc = "The reason line shared by the three rules."
 value = "Hard decisions (review, plan, retry after a failure) belong to the advisor model."
 
 [advisor.unknown_model_label]
-doc = "Label shown in the review block when the model is inherited."
-value = "the inherited model"
+doc = "Label shown in the review block when the spawn names no model. Placeholder: {model} (the resolved session tier)."
+value = "the inherited {model} session tier"

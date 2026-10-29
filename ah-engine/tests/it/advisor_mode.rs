@@ -77,7 +77,8 @@ fn review_blocked_once_on_non_flagship_when_advisor_present() {
     let p = spawn("rev1", &tp, "Review the diff", Some("sonnet"), json!({}));
     assert_eq!(run("model-routing", &[], &p), 2, "first review spawn on sonnet is blocked");
     assert_eq!(run("model-routing", &[], &p), 0, "the same spawn retried is allowed (once per trigger)");
-    assert_eq!(run("model-routing", &[], &spawn("rev1", &tp, "Audit the config", Some("haiku"), json!({}))), 2, "another trigger blocks again");
+    assert_eq!(run("model-routing", &[], &spawn("rev1", &tp, "Critique the config", Some("haiku"), json!({}))), 2, "another trigger blocks again");
+    assert_eq!(run("model-routing", &[], &spawn("rev1", &tp, "Audit the config", Some("haiku"), json!({}))), 0, "audits and scans may run on a cheap model");
 }
 
 #[test]
@@ -197,4 +198,72 @@ fn retry_cap_is_respected() {
         }
     }
     assert_eq!(blocks, 3, "advisory.cap_hard_by_kind.advisor_retry");
+}
+
+const OPUS_WORK: &str =
+    r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"working"}]}}"#;
+const TEXT_ONLY: &str =
+    r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"I could call the advisor tool here"}]}}"#;
+
+#[test]
+fn review_omitted_model_follows_the_resolved_session_tier() {
+    let tp = transcript("rev5", &[USER, ADVISOR, OPUS_WORK]);
+    assert_eq!(run("model-routing", &[], &spawn("rev5", &tp, "Review the diff", None, json!({}))), 0, "omitted model on an Opus main inherits a flagship");
+    let tp = transcript("rev6", &[USER, ADVISOR, WORK]);
+    assert_eq!(run("model-routing", &[], &spawn("rev6", &tp, "Review the diff", None, json!({}))), 2, "omitted model on a Sonnet main inherits a non-flagship");
+}
+
+#[test]
+fn review_named_agent_with_own_model_is_allowed() {
+    let tp = transcript("rev7", &[USER, ADVISOR, WORK]);
+    let mut p = spawn("rev7", &tp, "Review the diff", None, json!({}));
+    p["tool_input"]["subagent_type"] = json!("code-reviewer");
+    assert_eq!(run("model-routing", &[], &p), 0, "a custom agent without a model argument runs on its own definition model (fail-open)");
+    let mut q = spawn("rev7", &tp, "Review the diff again", Some("sonnet"), json!({}));
+    q["tool_input"]["subagent_type"] = json!("code-reviewer");
+    assert_eq!(run("model-routing", &[], &q), 2, "an explicit non-flagship model is still blocked");
+}
+
+#[test]
+fn advisor_word_in_a_text_block_is_not_detected() {
+    let tp = transcript("txt1", &[USER, TEXT_ONLY]);
+    assert_eq!(run("model-routing", &[], &spawn("txt1", &tp, "Review the diff", Some("sonnet"), json!({}))), 0, "review rule silent");
+    assert_eq!(run("advisor-guard", &[], &tool("txt1", &tp, "PreToolUse", "ExitPlanMode", json!({}))), 0, "plan rule silent");
+}
+
+fn pass(session: &str, tp: &str, cmd: &str) -> i32 {
+    run("advisor-guard", &[], &tool(session, tp, "PostToolUse", "Bash", json!({"command": cmd})))
+}
+
+#[test]
+fn retry_state_is_per_agent() {
+    let tp = transcript("ag1", &[USER, ADVISOR, WORK]);
+    let sub = |event: &str, name: &str, input: Value| {
+        let mut p = tool("ag1", &tp, event, name, input);
+        p["agent_id"] = json!("sub-1");
+        run("advisor-guard", &[], &p)
+    };
+    assert_eq!(edit("ag1", &tp, "/r/a.rs", &[]), 0, "main edits a.rs");
+    assert_eq!(fail("ag1", &tp, "cargo test"), 0, "main thread test fails");
+    assert_eq!(sub("PreToolUse", "Edit", json!({"file_path": "/r/a.rs"})), 0, "a subagent's first edit is not the main thread's retry");
+    assert_eq!(edit("ag1", &tp, "/r/a.rs", &[]), 2, "the main thread keeps its own armed state");
+    assert_eq!(sub("PostToolUseFailure", "Bash", json!({"command": "cargo test"})), 0);
+    assert_eq!(sub("PreToolUse", "Edit", json!({"file_path": "/r/a.rs"})), 2, "the subagent's own retry is blocked on its own state");
+}
+
+#[test]
+fn retry_ignores_unrelated_and_settled_failures() {
+    let tp = transcript("ret6", &[USER, ADVISOR]);
+    assert_eq!(fail("ret6", &tp, "cargo test"), 0, "failure before any edit");
+    assert_eq!(edit("ret6", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(edit("ret6", &tp, "/r/a.rs", &[]), 0, "the failure came before the first edit: unrelated, not armed for a.rs");
+    let tp = transcript("ret7", &[USER, ADVISOR]);
+    assert_eq!(edit("ret7", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("ret7", &tp, "cargo test"), 0);
+    assert_eq!(pass("ret7", &tp, "cargo test"), 0);
+    assert_eq!(edit("ret7", &tp, "/r/a.rs", &[]), 0, "a passing run cleared the failure");
+    let tp = transcript("ret8", &[USER, ADVISOR]);
+    assert_eq!(edit("ret8", &tp, "/r/tests/a_test.rs", &[]), 0, "red step: write the test");
+    assert_eq!(fail("ret8", &tp, "cargo test"), 0, "expected failure");
+    assert_eq!(edit("ret8", &tp, "/r/tests/a_test.rs", &[]), 0, "first re-edit of the test is not blocked");
 }
