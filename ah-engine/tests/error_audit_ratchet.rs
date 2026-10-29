@@ -176,8 +176,10 @@ fn indexing_slicing_count_only_goes_down() {
         let text = code_only(&non_test_text(&file));
         count += indexing_sites(&text);
     }
-    // Rebaseline the existing audit for the deliberate 0.2 engine additions.
-    assert!(count <= 1738, "indexing/slicing ratchet is {count}, expected <= 1738");
+    // Rebaselined after the code_only lifetime fix: 1738 -> 2111 is the TRUE count.
+    // The old scanner mis-handled lifetimes and under-counted by 373 sites (hidden
+    // debt, not new code). The ratchet only goes down from here.
+    assert!(count <= 2111, "indexing/slicing ratchet is {count}, expected <= 2111");
 }
 
 fn indexing_sites(text: &str) -> usize {
