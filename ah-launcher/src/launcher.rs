@@ -299,9 +299,15 @@ impl L {
             let p = self.state_dir.join(name);
             let cap = (self.s.num("launcher.notice_sessions_max") as usize).max(1);
             let mut seen: Vec<String> = std::fs::read_to_string(&p)
-                .map(|t| t.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(String::from).collect())
+                .map(|t| {
+                    t.lines()
+                        .map(str::trim_end)
+                        .filter(|l| !l.is_empty())
+                        .map(String::from)
+                        .collect()
+                })
                 .unwrap_or_default();
-            if seen.iter().any(|s| *s == sid) {
+            if seen.contains(&sid) {
                 return;
             }
             seen.push(sid);
