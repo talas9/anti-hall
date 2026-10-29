@@ -134,9 +134,31 @@ function pgOwnReader(selfKey, id, e, count) {
 }
 
 // The live count of an own reader view read with `count`: `Math.max(countFor, messageCount - own)`.
+// With devswarm.parentGateSharedCount on (default), the count is the ONE shared count `mesh inbox peek-primary` reports (`v.unread`:
+// own-family sends and wake rows left out); a case where the old projection was higher is counted (count_mismatch), never blocked on.
 function pgOwnLive(v, own) {
-  if (v.state !== 'ok' || v.own === null || !piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
-  return Math.max(v.unread, Math.max(0, v.total - own));
+  var shared = pgSharedOn();
+  if (v.state !== 'ok' || (v.own === null && !shared) || !piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
+  if (!shared) return Math.max(v.unread, Math.max(0, v.total - own));
+  if (piFinite(v.legacy) && v.legacy > v.unread) pgCountMismatch();
+  return v.unread;
+}
+
+// The shared-count switch (devswarm.parentGateSharedCount; off restores the old `max(countFor, messageCount - own)` projection).
+function pgSharedOn() { return ah.settings.bool('devswarm_role.pg_sw_shared_count') === true; }
+
+// Counters: the registered metrics and the advisory counters of `status`. A lost count never changes a decision.
+function pgCountMismatch() {
+  ah.metric('devswarm_parent_gate_count_mismatch', []);
+  ah.advisory('devswarm_parent_gate', 'count_mismatch');
+}
+function pgCountFired(kind) {
+  ah.metric('devswarm_parent_gate_fired', ['kind', kind]);
+  ah.advisory('devswarm_parent_gate', 'fired_' + kind);
+}
+function pgCountSuppressed(reason) {
+  ah.metric('devswarm_parent_gate_suppressed', ['reason', reason]);
+  ah.advisory('devswarm_parent_gate', 'suppressed_' + reason);
 }
 
 // readOwnUnread's own-instance projection of the summary count `raw` (companion/lib/devswarm-own-reader.js `ownReaderDelta`, then
@@ -162,7 +184,7 @@ function pgOwnCount(selfKey, id, e, raw) {
   if (r.unread > 0) {
     // ownReaderLiveUnread: never block on a cached count when this reader's own row can be read live
     var w = pgOwnReader(selfKey, id, e, true);
-    if (w.reader && w.state === 'ok' && w.own !== null) {
+    if (w.reader && w.state === 'ok' && (w.own !== null || pgSharedOn())) { // shared count: re-checked live with or without an own row
       var lv = pgOwnLive(w, w.own);
       if (lv < 0) { r.stale = true; r.unread = 0; return r; }
       r.unread = lv;
@@ -546,7 +568,7 @@ function pgGate(p, root, l) {
     e.done = done;
     e.doneGate = !isOwn && pgGateDone(readyMemo, fresh, d.id);
     e.foreign = foreign;
-    var ndOldest = null, ownNoInbox = false, ownStoreCounted = false, dead = false;
+    var ndOldest = null, ownNoInbox = false, ownStoreCounted = false, dead = false, ndSenders = [];
     var bl = pgBacklog(d.inbox, d.cursor);
     if (bl.unknown !== undefined) {
       if (isOwn && bl.unknown === 'no-inbox-path') ownNoInbox = true;
@@ -565,6 +587,8 @@ function pgGate(p, root, l) {
         else if (ts.none) e.ageUnknown = true;
         else e.ageOdd = true;
         e.realUnread += 1;
+        var snd = row[ah.cfg('mesh_write.ndjson_sender_field')];
+        ndSenders.push(typeof snd === 'string' ? snd : null);
       });
     }
     var unionKey = fresh !== null ? fresh : (dead ? registered : null);
@@ -574,9 +598,14 @@ function pgGate(p, root, l) {
       else if (u.state === 'ok') {
         ownStoreCounted = true;
         var allOwn = true, real = 0;
+        // the partition's own identity family sent these: not inbound mail (the shared count of peek leaves them out too)
+        var fam = pgSharedOn() && Array.isArray(u.family) ? u.family : [];
+        var famHas = function (s) { return typeof s === 'string' && fam.indexOf(s) >= 0; };
+        ndSenders.forEach(function (s) { if (famHas(s)) { e.realUnread -= 1; pgCountSuppressed('own_send'); } });
         u.storeOnly.forEach(function (row) {
           if (typeof row.body === 'string' && row.body.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) === 0) return;
           if (done && pgBroadcast(row)) return;
+          if (famHas(row.sender)) { pgCountSuppressed('own_send'); return; }
           real += 1;
           e.realUnread += 1;
           if (!(own.id !== null && typeof row.sender === 'string' && row.sender === own.id)) allOwn = false;
@@ -783,15 +812,17 @@ function pgGate(p, root, l) {
     var first = pgReason(blocking, own, null, hasIntent,
       { unanswered: unanswered, informational: informational, truncated: truncated, qEscalate: null, waiting: pgWaitingSeg(home, blocking) }).split('\n')[0];
     fx.err += (first.indexOf(ah.cfg('devswarm_role.pg_drain_tag')) >= 0 ? '' : ah.cfg('devswarm_role.pg_drain_prefix')) + first + ah.cfg('devswarm_role.pg_drain_suffix');
+    pgCountSuppressed('drain');
     return fx;
   }
   // an unanswered question or a truncated question list bypasses the neglect cap; the question set has its own ceiling
   var bypassCap = unanswered.length > 0 || !!truncated;
-  if (!bypassCap && effEscalated) return fx; // already escalated once: quiet
+  if (!bypassCap && effEscalated) { pgCountSuppressed('escalated_quiet'); return fx; } // already escalated once: quiet
   // every flagged child is held by anti-hall's own guard, not neglected by the Primary: a notice, no block, and nothing counted toward the
   // forced-acknowledgement cap or the escalation (the loop state is left as it is)
   if (!bypassCap && blocking.length > 0 && blocking.every(function (b) { return b.guardBlocked && own.id !== b.id; })) {
     fx.err += text.render(ah.cfg('devswarm_role.pg_guard_held'), { ids: pgListMore(blocking.map(function (b) { return b.id; }), ah.cfgNum('devswarm_role.pg_max_shown')) });
+    pgCountSuppressed('guard_held');
     return fx;
   }
   var cap = ah.settings.num('devswarm_role.pg_set_cap');
@@ -815,6 +846,7 @@ function pgGate(p, root, l) {
     if (effQEscalated) {
       // the question set already escalated once: quiet, the state kept
       fx.write = { rel: stateRel, body: stateBody(effQBlocks, true) };
+      pgCountSuppressed('escalated_quiet');
       return fx;
     }
     nextQBlocks = effQBlocks + 1;
@@ -826,7 +858,7 @@ function pgGate(p, root, l) {
   fx.write = { rel: stateRel, body: stateBody(nextQBlocks, nextQEscalated) };
 
   // the stale-build downgrade: a plain neglect block is dropped while the host registered a newer version
-  if (blocking.length > 0 && !bypassCap && escalateTimes === null && qEscalateTimes === null && pgVersionStale(root)) return fx;
+  if (blocking.length > 0 && !bypassCap && escalateTimes === null && qEscalateTimes === null && pgVersionStale(root)) { pgCountSuppressed('version_stale'); return fx; }
   var wake = pgWakeLine(own.id, l);
   var base = (blocking.length > 0 || unanswered.length > 0 || truncated)
     ? pgReason(blocking, own, escalateTimes, hasIntent,
@@ -835,6 +867,7 @@ function pgGate(p, root, l) {
   var cli = dwEngineCmd('devswarm_role.engine_cli', ah.env.get(ah.cfg('env.home')) || '');
   var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: pgShQuote(cli), guard: ah.cfg('devswarm_role.gate_guard') });
   fx.out = JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: pgFrame(base + (parked !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + parked : '') + wake, skip) }) + '\n';
+  pgCountFired(escalateTimes !== null || qEscalateTimes !== null ? 'escalation' : 'block');
   return fx;
 }
 
