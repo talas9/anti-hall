@@ -7,16 +7,40 @@ use ah_engine::reqenv::RequestEnv;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+// The counters are process-global and the state directory comes from the process environment, so the tests run one at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static REAL_HOME: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+
+thread_local! {
+    static HELD: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> = const { std::cell::RefCell::new(None) };
+}
+
 fn home(tag: &str) -> PathBuf {
+    HELD.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.is_none() {
+            *h = Some(SERIAL.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+    });
+    REAL_HOME.get_or_init(|| std::env::var_os("HOME"));
     let d = std::env::temp_dir().join(format!("ah-dfa-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&d).ok();
-    // a test binary starts with nothing loaded; the plugin tree of this checkout is the root, wherever the binary was built
-    // SAFETY: every test sets the same value before anything reads it.
-    unsafe { std::env::set_var("AH_ENGINE_PLUGIN_ROOT", concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall")) };
-    ah_engine::defaults::init().expect("defaults load");
-    std::fs::create_dir_all(ah_engine::paths::dir()).ok(); // the counter journal lives in the state directory and is only written when it exists
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
-    std::fs::canonicalize(&d).unwrap()
+    let d = std::fs::canonicalize(&d).unwrap();
+    // the scratch state directory is applied BEFORE anything resolves a state path, so no counter, journal or cache reaches the real home
+    // SAFETY: the tests are serialized by SERIAL, so no other thread reads the environment while it changes.
+    unsafe {
+        std::env::set_var("AH_ENGINE_DIR", d.join("state"));
+        std::env::set_var("AH_ENGINE_PLUGIN_ROOT", concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall"));
+    }
+    ah_engine::defaults::init().expect("defaults load");
+    let state = ah_engine::paths::dir();
+    assert_eq!(state, d.join("state"), "the state directory is the scratch one");
+    if let Some(Some(real)) = REAL_HOME.get() {
+        assert!(!state.starts_with(Path::new(real).join(".anti-hall")), "the real home's state tree must stay untouched: {state:?}");
+    }
+    std::fs::create_dir_all(&state).unwrap(); // the counter journal is only written when the state directory exists
+    d
 }
 
 fn advisory(metric: &str, kind: &str) -> u64 {
@@ -81,7 +105,7 @@ fn worker_commits_integrated_by_the_session_do_not_block_stop_and_are_counted() 
     let before = advisory("tasklist_integration_skipped", "suppressed");
     let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[]));
     assert!(!blocked, "integration-only commands must not block: {out}");
-    assert!(advisory("tasklist_integration_skipped", "suppressed") > before, "counted (other tests share the process counter)");
+    assert_eq!(advisory("tasklist_integration_skipped", "suppressed"), before + 1);
     // the off switch restores the old count: the same integration commands block again
     let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0")]));
     assert!(blocked, "with the switch off the integration commands count again: {out}");
@@ -111,7 +135,7 @@ fn a_session_that_crossed_midnight_keeps_its_earlier_progress_file() {
     let before = advisory("tasklist_progress_carried", "suppressed");
     let lines: Vec<String> = (0..4).map(|i| edit_use(i, &format!("{}/src/f{i}.rs", proj.display()))).collect();
     let (out, _) = text_of(stop(&h, &proj, &lines, &[]));
-    assert!(advisory("tasklist_progress_carried", "suppressed") > before, "the carry is counted");
+    assert_eq!(advisory("tasklist_progress_carried", "suppressed"), before + 1, "the carry is counted");
     assert!(!out.contains("progress/2026-10-29/sess1.md"), "no new-date path is demanded: {out}");
 }
 
@@ -149,7 +173,7 @@ fn a_chain_with_one_heavy_part_names_it_and_still_blocks() {
     assert!(blocked, "the heavy part still blocks the chain: {out}");
     assert!(out.contains("Heavy: node tests/x.test.js"), "names the heavy segment: {out}");
     assert!(out.contains("are fine alone"), "says the rest is fine: {out}");
-    assert!(advisory("command_heavy_segment_named", "flagged") > before, "counted");
+    assert_eq!(advisory("command_heavy_segment_named", "flagged"), before + 1);
 }
 
 #[test]
