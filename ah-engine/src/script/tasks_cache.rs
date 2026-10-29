@@ -655,12 +655,10 @@ mod tests {
         let p = path("memo");
         std::fs::write(&p, "").unwrap();
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-        let mut i = 0;
-        for step in 0..40 {
+        for step in 0..40usize {
             // lines of kind 4, 5, 14, 15 are irrelevant to a reconstruction: the kept lines stand still across them
-            let kind = if step % 4 == 0 { i } else { i - i % 16 + [4, 5, 14, 15][step % 4] };
+            let kind = if step % 4 == 0 { step } else { step - step % 16 + [4, 5, 14, 15][step % 4] };
             f.write_all(line(kind).as_bytes()).unwrap();
-            i += 1;
             same(&p, &format!("step {step} first call"));
             same(&p, &format!("step {step} repeat call (reused)"));
         }

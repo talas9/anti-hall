@@ -12,7 +12,7 @@ use std::time::Instant;
 fn line(i: u64) -> String {
     // AH_TGCOST_SPARSE=<n>: only one block of five in n creates a task (a long session holds few tasks among many other lines)
     let sparse: u64 = std::env::var("AH_TGCOST_SPARSE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-    let k = if (i / 5) % sparse != 0 && matches!(i % 5, 1 | 3) { if i % 5 == 1 { 2 } else { 4 } } else { i % 5 };
+    let k = if !(i / 5).is_multiple_of(sparse) && matches!(i % 5, 1 | 3) { if i % 5 == 1 { 2 } else { 4 } } else { i % 5 };
     match k {
         0 => format!(
             r#"{{"type":"user","uuid":"u{i}","timestamp":"2026-10-07T10:00:{:02}.000Z","message":{{"role":"user","content":"prompt number {i} about the engine"}}}}"#,
@@ -97,7 +97,9 @@ fn stop_on_a_growing_transcript_is_measured() {
         let mut facts = reconstruct(&lines, Variant::Guard).unwrap();
         let t_rec = t.elapsed().as_micros();
         let t = Instant::now();
-        let _ = backfill(&mut facts, &ts, w);
+        if let Err(e) = backfill(&mut facts, &ts, w) {
+            eprintln!("backfill failed: {e:?}");
+        }
         let t_back = t.elapsed().as_micros();
         let t = Instant::now();
         let n = d.split('\n').filter(|l| l.contains("\"user\"")).count();
