@@ -176,7 +176,7 @@ impl Runner for System {
 }
 
 /// How long the wait loop sleeps before looking at the child again: `poll` while the call is younger than `fast`, `slow` (never less
-/// than `poll`) after, and never past the call's own timeout.
+/// than `poll`) after, and never past the timeout of the call.
 fn nap_for(elapsed: Duration, limit: Duration, poll: Duration, fast: Duration, slow: Duration) -> Duration {
     let nap = if elapsed < fast { poll } else { slow.max(poll) };
     nap.min(limit.saturating_sub(elapsed))
