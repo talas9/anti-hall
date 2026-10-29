@@ -77,7 +77,7 @@ fn run_cmd(argv: &[String], timeout_ms: u64, max_bytes: u64) -> rquickjs::Result
 }
 
 fn run_bounded(prog: &str, args: &[String], env: &HashMap<String, String>, timeout_ms: u64, max_bytes: u64) -> Run {
-    let mut cmd = Command::new(prog);
+    let mut cmd = Command::new(crate::proc::resolve_git(prog, env.get("PATH").map(String::as_str)));
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).env_clear();
     for (k, v) in env {
         cmd.env(k, v);

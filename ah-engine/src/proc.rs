@@ -49,6 +49,34 @@ impl Error {
     }
 }
 
+/// The program to start for `prog` (a script's bare program name): when it is a git program (`proc.git_programs`) and the
+/// request's `path` finds it at one of `proc.git_shims` (macOS: `/usr/bin/git` is a developer-tools shim that looks the real
+/// git up and execs it on every spawn, about twice the cost of starting the real one), the first existing entry of
+/// `proc.git_candidates` instead. Any other program, a git the path finds elsewhere, no candidate on disk, or
+/// `proc.git_resolve` off keeps `prog` as given. Nothing outside the configured lists is ever chosen.
+pub fn resolve_git(prog: &str, path: Option<&str>) -> String {
+    if defaults::raw("proc.git_resolve").as_bool() != Some(true) || !defaults::list("proc.git_programs").contains(&prog) {
+        return prog.to_string();
+    }
+    resolve_in(prog, path, &defaults::list("proc.git_shims"), &defaults::list("proc.git_candidates"))
+}
+
+/// [`resolve_git`] with the lists given (the testable core).  Stateless: the candidates are re-checked on every call.
+fn resolve_in(prog: &str, path: Option<&str>, shims: &[&str], candidates: &[&str]) -> String {
+    let found = path.into_iter().flat_map(|p| p.split(':')).filter(|d| !d.is_empty()).map(|d| format!("{d}/{prog}")).find(|f| is_exec(f));
+    if !found.as_deref().is_some_and(|f| shims.contains(&f)) {
+        return prog.to_string();
+    }
+    // No memo: one stat per candidate is far cheaper than the spawn it saves, a candidate that vanished is never returned,
+    // and a miss is never remembered (a git installed later is picked up on the next call).
+    candidates.iter().find(|c| is_exec(c)).map_or_else(|| prog.to_string(), |c| (*c).to_string())
+}
+
+fn is_exec(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
 /// Mark `cmd` as a read-only git reader when its program is git (`proc.git_programs`): every `proc.git_env` assignment
 /// (`GIT_OPTIONAL_LOCKS=0`) is set unless the caller already set that name. Without it `git status`/`git diff` take
 /// `.git/index.lock` to refresh the index, and a helper killed at its timeout (SIGKILL) leaves the lock behind, which blocks
@@ -301,6 +329,38 @@ mod tests {
         assert!(matches!(run(Command::new(&bin), "test", Duration::from_millis(1500), Duration::from_millis(5)), Err(Error::Timeout)));
         assert!(!lock.exists(), "a read-only git killed at its timeout left index.lock");
         crate::discard::harmless(std::fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn resolve_in_swaps_only_a_shim_for_an_existing_candidate() {
+        let d = std::env::temp_dir().join(format!("ah-resolve-{}", std::process::id()));
+        let (shimdir, realdir) = (d.join("shim"), d.join("real"));
+        std::fs::create_dir_all(&shimdir).unwrap();
+        std::fs::create_dir_all(&realdir).unwrap();
+        for dir in [&shimdir, &realdir] {
+            let f = dir.join("git");
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+        let shim = shimdir.join("git").to_string_lossy().into_owned();
+        let real = realdir.join("git").to_string_lossy().into_owned();
+        let missing = d.join("none/git").to_string_lossy().into_owned();
+        let path = format!("{}:{}", shimdir.display(), realdir.display());
+        assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&missing, &real]), real, "shim found first: first existing candidate");
+        assert_eq!(resolve_in("git", Some(&path), &[&missing], &[&real]), "git", "not a listed shim: unchanged");
+        assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&missing]), "git", "no candidate on disk: unchanged");
+        assert_eq!(resolve_in("git", None, &[&shim], &[&real]), "git", "no path: unchanged");
+        // a candidate that appears later is picked up (a miss is not remembered); one that stops being executable is dropped
+        let late = d.join("late/git");
+        let late_s = late.to_string_lossy().into_owned();
+        assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&late_s]), "git", "absent now");
+        std::fs::create_dir_all(late.parent().unwrap()).unwrap();
+        std::fs::write(&late, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&late, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&late_s]), late_s, "appeared later: found");
+        std::fs::set_permissions(&late, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+        assert_eq!(resolve_in("git", Some(&path), &[&shim], &[&late_s]), "git", "no longer executable: ignored");
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
