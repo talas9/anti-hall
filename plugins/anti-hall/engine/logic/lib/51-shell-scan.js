@@ -6,7 +6,7 @@ var shellScan = (function () {
   var HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
   var verbs = null, verbsGen = -1;
   function shellVerbs() {
-    var g = ahHost.cfgGen();
+    var g = ah.cfgGen();
     if (verbs === null || g !== verbsGen) { verbs = new Set(ah.cfg('git.shell_verbs')); verbsGen = g; }
     return verbs;
   }

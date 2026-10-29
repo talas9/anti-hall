@@ -5,7 +5,7 @@
 var inf = {
   re: function (key, flags) { return jx.re(key, flags); },
   stop: function () {
-    var g = ahHost.cfgGen();
+    var g = ah.cfgGen();
     if (inf.stopGen !== g) { inf.stopGen = g; inf.stopSet = new Set(ah.cfg('inference.stop_words').split(/\s+/)); }
     return inf.stopSet;
   },

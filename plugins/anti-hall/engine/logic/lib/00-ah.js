@@ -8,14 +8,35 @@ var ahWfRe = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\ud
 function ahWf(t) { return typeof t === 'string' ? t.replace(ahWfRe, '\ufffd') : t; }
 // Count a case this script could not model exactly (at `site`, a short stable name such as `task-tracker.state_unsure`): a stand-in (stand_in: the script went on with a stand-in value) or, with `kind` 'abandoned', a dropped decision (abandoned). The caller applies the native decision.
 function ahUnableCount(site, kind) { try { if (kind === undefined) ahHost.unable(site); else ahHost.unable(site, kind); } catch (e) { /* a lost count never changes a decision */ } }
-var ahCfgMemo = { gen: -1, map: new Map() };
+// `req`: the `ah.request` object the memo was last checked under. The engine installs a fresh one before EVERY check call, so a new
+// call re-reads `cfgGen` once (a defaults reload between calls is seen) and the rest of the call costs no host call.
+var ahCfgMemo = { gen: -1, map: new Map(), req: null };
+// Settings values read in this call, by kind + key: the settings chain and the request's home/env are fixed for a call (`useHome` drops them).
+var ahSetMemo = { req: null, map: new Map() };
+function ahSet(kind, key, read) {
+  if (ahSetMemo.req !== ah.request) { ahSetMemo.req = ah.request; ahSetMemo.map = new Map(); }
+  var k = kind + '\u0000' + key, m = ahSetMemo.map;
+  if (m.has(k)) return m.get(k);
+  var v = read(key);
+  m.set(k, v);
+  return v;
+}
 var ah = {
   // Replaced before EVERY check call: authoritative dispatcher options, including --host. Never daemon-global state.
   request: {},
+  // The defaults generation, read from the host once per check call (a defaults reload between calls is seen by the next one). Every memo keyed on it uses this.
+  cfgGen: function () {
+    var r = ah.request;
+    if (ahCfgMemo.req !== r || r === undefined || r === null) {
+      var g = ahHost.cfgGen();
+      if (g !== ahCfgMemo.gen) { ahCfgMemo.gen = g; ahCfgMemo.map = new Map(); }
+      ahCfgMemo.req = r;
+    }
+    return ahCfgMemo.gen;
+  },
   // Defaults entries, memoized until the engine loads a new defaults snapshot (a file edit or a plugin update).
   cfg: function (key) {
-    var g = ahHost.cfgGen();
-    if (g !== ahCfgMemo.gen) { ahCfgMemo.gen = g; ahCfgMemo.map = new Map(); }
+    ah.cfgGen();
     var v = ahCfgMemo.map.get(key);
     if (v === undefined) { v = JSON.parse(ahHost.cfg(key)); ahCfgMemo.map.set(key, v); }
     return v;
@@ -80,19 +101,19 @@ var ah = {
   markExecutable: function (rel) { return ahHost.fileExec(rel) === true; },
   // Make absolute directory `h` the home of the rest of this call (settings, skips and the scoped state reads and writes), as a Node
   // hook whose os.homedir() falls back to the passwd home sees it. false (nothing changed) for a path that is not absolute.
-  useHome: function (h) { return ahHost.useHome(h); },
+  useHome: function (h) { ahSetMemo.req = null; return ahHost.useHome(h); },
   pid: function () { return ahHost.pid(); },
   fnv: function (t) { return ahHost.fnv(t); },
   contentHash: function (parts) { return ahHost.contentHash(parts); },
   settings: {
-    bool: function (key) { return ahHost.settingBool(key); },
-    enum: function (key) { return ahHost.settingEnum(key); },
-    str: function (key) { return ahHost.settingStr(key); },
-    num: function (key) { return ahHost.settingNum(key); },
+    bool: function (key) { return ahSet('b', key, ahHost.settingBool); },
+    enum: function (key) { return ahSet('e', key, ahHost.settingEnum); },
+    str: function (key) { return ahSet('s', key, ahHost.settingStr); },
+    num: function (key) { return ahSet('n', key, ahHost.settingNum); },
     // Like `num`, but a value below the entry's minimum is dropped (the next source is asked), the way the Node `settings.get` does.
-    numStrict: function (key) { return ahHost.settingNumStrict(key); },
+    numStrict: function (key) { return ahSet('m', key, ahHost.settingNumStrict); },
     // The effective value of a free-text setting (its default when unset).
-    str: function (key) { return ahHost.settingStr(key); },
+    str: function (key) { return ahSet('s', key, ahHost.settingStr); },
     skipped: function (guard) { return ahHost.skipped(guard); },
     // `get(section, key, dflt)` of the settings chain for the described entry; `dflt` undefined: the entry's own default.
     // Returns {status: 'value'|'none'|'undecidable', value}.

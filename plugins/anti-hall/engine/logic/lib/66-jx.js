@@ -6,7 +6,7 @@ var jxReMemo = { gen: -1, map: {} };
 var jx = {
   // The regular expression of the defaults entry `key` (JavaScript syntax, compiled once per defaults generation); `flags` as RegExp's.
   re: function (key, flags) {
-    var g = ahHost.cfgGen();
+    var g = ah.cfgGen();
     if (g !== jxReMemo.gen) { jxReMemo.gen = g; jxReMemo.map = {}; }
     var id = key + '/' + (flags || '');
     var r = jxReMemo.map[id];
