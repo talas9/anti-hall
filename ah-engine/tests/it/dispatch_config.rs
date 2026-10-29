@@ -134,7 +134,12 @@ fn order_and_max_rules_decide_which_entries_run() {
         ["coordinator-work-guard:post", "output-verify-guard", "merge-side-pick:post"],
         "listed ids first, then the table's order, cut at 3"
     );
-    assert_eq!(e.plan("skipped_max_rules"), ["git-guard:audit", "devswarm-parent-reply-tracker", "devswarm-child-drain", "agent-reminders", "advisor-guard:pass"], "{}", e.log());
+    assert_eq!(
+        e.plan("skipped_max_rules"),
+        ["git-guard:audit", "devswarm-parent-reply-tracker", "devswarm-child-drain", "agent-reminders", "advisor-guard:pass"],
+        "{}",
+        e.log()
+    );
 }
 
 #[test]

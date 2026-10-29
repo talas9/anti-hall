@@ -12,22 +12,22 @@
 
 [advisor.summary]
 doc = "One-line description of the advisor-guard check in the generated reference."
-value = "PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure and PostToolUse on Bash, only when the session has an advisor tool: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing."
+value = "Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing."
 
 [advisor.guard_name]
 doc = "The skip.json key and block label of the advisor rules."
 value = "advisor-guard"
 
 [advisor.sw_review]
-doc = "Switch guards.advisorReview (default on, active only when an advisor tool is present): block a review-shaped agent spawn on a non-flagship model once."
+doc = "Blocks a review agent on a non-flagship model once. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorReview", type = "boolean", env = "ANTIHALL_ADVISOR_REVIEW", option = "", default = true }
 
 [advisor.sw_plan]
-doc = "Switch guards.advisorPlan (default on, active only when an advisor tool is present): block writing a plan with no advisor call since the task began, once."
+doc = "Blocks a plan written with no advisor call once. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorPlan", type = "boolean", env = "ANTIHALL_ADVISOR_PLAN", option = "", default = true }
 
 [advisor.sw_retry]
-doc = "Switch guards.advisorRetry (default on, active only when an advisor tool is present): block a second edit of the same file after a failed test or build with no advisor call in between, once."
+doc = "Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorRetry", type = "boolean", env = "ANTIHALL_ADVISOR_RETRY", option = "", default = true }
 
 [advisor.tool_names]

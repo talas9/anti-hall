@@ -200,10 +200,8 @@ fn retry_cap_is_respected() {
     assert_eq!(blocks, 3, "advisory.cap_hard_by_kind.advisor_retry");
 }
 
-const OPUS_WORK: &str =
-    r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"working"}]}}"#;
-const TEXT_ONLY: &str =
-    r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"I could call the advisor tool here"}]}}"#;
+const OPUS_WORK: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"working"}]}}"#;
+const TEXT_ONLY: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"I could call the advisor tool here"}]}}"#;
 
 #[test]
 fn review_omitted_model_follows_the_resolved_session_tier() {

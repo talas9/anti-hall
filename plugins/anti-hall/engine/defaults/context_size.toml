@@ -4,11 +4,11 @@
 # engine.toml. Owner rule: hook output over the host's inline cap spills to a file, it is never cut; this keeps each hook far under it.
 
 [context_size.sw_enabled]
-doc = "Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before."
+doc = "Master switch of the inline caps. Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before."
 value = { section = "context", key = "shrinkInline", env = "ANTIHALL_CONTEXT_SHRINK", option = "", default = true }
 
 [context_size.num_hook_cap]
-doc = "Characters one hook's context may take inline at the events in context_size.events before it becomes a summary line plus a file (context.inlineHookChars; 0 = no per-hook cap, only the event total applies). context_size.hook_caps overrides it per hook entry."
+doc = "Inline character cap of one hook. Characters one hook's context may take inline at the events in context_size.events before it becomes a summary line plus a file (context.inlineHookChars; 0 = no per-hook cap, only the event total applies). context_size.hook_caps overrides it per hook entry."
 value = { section = "context", key = "inlineHookChars", env = "ANTIHALL_CONTEXT_INLINE_HOOK", option = "", default = 1500, min = 0 }
 
 [context_size.num_event_cap]

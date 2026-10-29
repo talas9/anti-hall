@@ -386,7 +386,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
 | `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on). |
 | `wide-search-guard` | PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
-| `advisor-guard` | PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure and PostToolUse on Bash, only when the session has an advisor tool: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing. |
+| `advisor-guard` | Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing. |
 | `switch-notice` | Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
 | `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
@@ -1787,11 +1787,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `api_guard.node_builtins` | `23 items` |  |  | Node built-in modules whose attributes the Node guard verifies by default. |
 | `api_guard.python_extensions` | `py, pyi` |  |  | File extensions (lower-case) the guard checks as Python. |
 | `api_guard.python_stdlib` | `46 items` |  |  | Python standard-library modules whose attributes the Node guard verifies by default. |
-| `api_guard.setting` | `6 entries` |  |  | Where the guard's own on/off switch is read from (guards.apiGuard, default on). |
-| `api_guard.shell_setting` | `6 entries` |  |  | Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on). |
+| `api_guard.setting` | `6 entries` |  |  | Switch for the fabricated-API guard. Where the guard's own on/off switch is read from (guards.apiGuard, default on). |
+| `api_guard.shell_setting` | `6 entries` |  |  | Switch for checking code a shell write adds. Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on). |
 | `api_guard.shell_write_pattern` | `[>]\|\btee\b\|\bsed\b\|\bperl\b\|\bcp\b\|\bmv\b\|\bopen\b\|createWriteStream\|File(?:...` |  |  | Regex source (case-sensitive) of the Node pre-filter that says a Bash command could write a file (a redirect, tee, an in-place editor, cp or mv, an inline-code write); a command it does not match yields no code chunk, so the guard allows it. |
 | `api_guard.summary` | `Fabricated-API guard: answers every call the Node api-guard would allow witho...` |  |  | One-line description of the api-guard check in the generated reference. |
-| `api_guard.thirdparty_setting` | `6 entries` |  |  | Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off). |
+| `api_guard.thirdparty_setting` | `6 entries` |  |  | Switch for verifying third-party packages. Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off). |
 | `api_guard.tool_edit` | `Edit` |  |  | Tool whose code is `tool_input.new_string`. |
 | `api_guard.tool_multi` | `MultiEdit` |  |  | Tool whose code is the `new_string` of each entry of `tool_input.edits`. |
 | `api_guard.tool_patch` | `apply_patch` |  |  | Codex tool whose patch text carries the code. |
@@ -1859,7 +1859,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `coordinator_work.codex_markers` | `turn_id, model` |  |  | Payload fields that, both non-empty strings, identify a Codex payload. |
 | `coordinator_work.codex_tool` | `apply_patch` |  |  | The tool name only Codex sends; a payload naming it is a Codex payload. |
 | `coordinator_work.command_guard_name` | `command-guard` |  |  | The skip.json key of command-guard, which also silences the work window. |
-| `coordinator_work.command_guard_setting` | `6 entries` |  |  | Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it. |
+| `coordinator_work.command_guard_setting` | `6 entries` |  |  | Switch for command-guard. Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it. |
 | `coordinator_work.counters` | `calls, work, blocks, skippedWouldBlock` |  |  | The counters a window file keeps and the metrics fold, by their key in the files. |
 | `coordinator_work.entrypoint_env` | `CLAUDE_CODE_ENTRYPOINT` |  |  | The environment variable that names the host entry point. |
 | `coordinator_work.fold_stamp_file` | `.coordinator-work-fold-stamp.json` |  |  | Name of the stamp file that throttles folding stale window files into the metrics. |
@@ -2184,7 +2184,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.complex` | `18 items` |  |  | Complex/planning signal phrases whose presence vetoes rows that steer to haiku. |
 | `model_routing.deploy_floor_default` | `sonnet` |  |  | Default deploy/migration/secret model floor. |
 | `model_routing.deploy_floor_off` | `off` |  |  | Deploy-floor value that disables the deploy/migration/secret floor. |
-| `model_routing.deploy_floor_setting` | `7 entries` |  |  | Where the deploy/migration/secret model floor (sonnet, opus, off) is read from (guards.modelRoutingDeployFloor): the environment variable, settings.json, then the plugin option; sonnet when none holds a valid value. |
+| `model_routing.deploy_floor_setting` | `7 entries` |  |  | Model floor for deploys and secrets. Where the deploy/migration/secret model floor (sonnet, opus, off) is read from (guards.modelRoutingDeployFloor): the environment variable, settings.json, then the plugin option; sonnet when none holds a valid value. |
 | `model_routing.deploy_strong_re` | `\b(deploy\w*\|redeploy\w*\|migrat\w*\|rollbacks?\|roll\s+back\|token\s+rotation\|ro...` |  |  | Strong deploy/migration/secret regex that activates the deploy floor. |
 | `model_routing.deploy_weak_aliases` | `1 entries` |  |  | Weak deploy/migration/secret words normalized before distinct-kind counting. This mirrors Node's production -> prod policy. |
 | `model_routing.deploy_weak_re` | `\b(prod\|production\|secrets?\|credentials?)\b` |  |  | Weak deploy/migration/secret words; two distinct kinds activate the deploy floor. |
@@ -2219,7 +2219,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.mechanical` | `19 items` |  |  | Mechanical execution-only signal phrases, matched as token phrases after compatibility folding. |
 | `model_routing.mechanical_shape_re` | `\b(run\s+exactly\|run\s+only\|run\s+(?:this\|these\|the\s+following)\s+(?:exact\s...` |  |  | Fixed-command or bounded-output regex used to suppress row-4 false positives. |
 | `model_routing.message_guard` | `model-routing` |  |  | The guard label used in ordinary routing advisory text. |
-| `model_routing.mode_setting` | `7 entries` |  |  | Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then the plugin option; strict when none holds a valid value. |
+| `model_routing.mode_setting` | `7 entries` |  |  | Model-routing mode. Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then the plugin option; strict when none holds a valid value. |
 | `model_routing.model_rank` | `4 entries` |  |  | Rank table for the deploy/migration/secret model floor. |
 | `model_routing.msg_deploy_low_extra` | ` It also looks planning-shaped; consider opus or fable for deeper reasoning.` |  |  | Extra row-4 planning note appended to a haiku deploy-floor advisory when applicable. |
 | `model_routing.msg_deploy_low_instead` | `use model:'{floor}' or higher.{extra}` |  |  | Deploy-floor advisory advice for too-low explicit model spawns. |
@@ -3005,7 +3005,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.resend_sources` | `compact, resume` |  |  | SessionStart sources after which the earlier text is gone or buried (the session was compacted or resumed): the short digest is sent. Any other source of an already-served session gets the one-line repeat. |
 | `verify_first.root_probe` | `hooks/install.sh` |  |  | File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file. |
 | `verify_first.setting_level` | `5 entries` |  |  | Where the protocol size is read from (context.protocolLevel: compact or full, default compact). |
-| `verify_first.setting_once` | `6 entries` |  |  | Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start. |
+| `verify_first.setting_once` | `6 entries` |  |  | Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start. |
 | `verify_first.setting_orchestration` | `6 entries` |  |  | Orchestration rules switch. Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself. |
 | `verify_first.setting_session` | `6 entries` |  |  | Where the on/off switch of verify-first-full is read from (context.verifyFirstSession, default on). |
 | `verify_first.setting_subagent` | `6 entries` |  |  | Verify-first-subagent switch. Where the on/off switch of verify-first-subagent is read from (context.verifyFirstSubagent, default on). |
@@ -3388,11 +3388,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.msg_shrunk` | `{hooks} hook context(s) shrunk: {before} characters became {after} inline, th...` |  |  | Event-log detail after contexts were replaced by summaries. Placeholders: {hooks}, {before}, {after} (characters), {path}. |
 | `context_size.never` | `verify-first-full, verify-first-orch, handover-resume, engine-role-note` |  |  | Dispatch entry ids (a variant suffix is ignored) whose context is never shrunk: behavioural blocks that size themselves (the verify-first protocol and orchestration rules, delivered once per session or on the first spawn) and the handover resume steps, which are the task. |
 | `context_size.num_event_cap` | `6 entries` |  |  | Characters all hooks of one event may inline together (0 = no total). Over it, the largest shrinkable contexts become a summary line plus a file until the event fits. The host's own inline cap is dispatch.context_cap; this is the lower, token-oriented budget. |
-| `context_size.num_hook_cap` | `6 entries` |  |  | Characters one hook's context may take inline at the events in context_size.events before it becomes a summary line plus a file (context.inlineHookChars; 0 = no per-hook cap, only the event total applies). context_size.hook_caps overrides it per hook entry. |
+| `context_size.num_hook_cap` | `6 entries` |  |  | Inline character cap of one hook. Characters one hook's context may take inline at the events in context_size.events before it becomes a summary line plus a file (context.inlineHookChars; 0 = no per-hook cap, only the event total applies). context_size.hook_caps overrides it per hook entry. |
 | `context_size.path_reserve` | `150` |  |  | Characters reserved for the file path in the size estimate of a shrunk context. |
 | `context_size.section_head` | `== {id} ==\n` |  |  | Heading before each hook's full text in that file. Placeholder: {id}. |
 | `context_size.summary_chars` | `280` |  |  | Longest summary line a shrunk context keeps inline: its first line, cut at a word end. |
-| `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
+| `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the inline caps. Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
 
 ### session.toml / session
 
@@ -5039,8 +5039,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `lane_test.rules` | `7 items` |  |  | Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message. |
 | `lane_test.summary` | `PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo t...` |  |  | One-line description of the lane-test-guard check in the generated reference. |
 | `lane_test.sw` | `6 entries` |  |  | Default on; off lets a subagent run suite-scale test commands. |
-| `lane_test.sw_allow_suites` | `6 entries` |  |  | Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside). |
-| `lane_test.sw_policy` | `7 entries` |  |  | Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run. |
+| `lane_test.sw_allow_suites` | `6 entries` |  |  | Lets a subagent run test suites. Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside). |
+| `lane_test.sw_policy` | `7 entries` |  |  | Test policy for subagents. Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run. |
 | `lane_test.sw_policy_main` | `6 entries` |  |  | On makes testPolicy none apply to the main session too (default off). |
 
 ### lane_waste.toml / lane_waste
@@ -5126,10 +5126,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.session_safe_max` | `128` |  |  | Longest session-id part kept in a state file name. |
 | `advisor.state_ext` | `.json` |  |  | File-name extension of the per-session retry state. |
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
-| `advisor.summary` | `PreToolUse on Write/Edit/MultiEdit/ExitPlanMode and PostToolUseFailure and Po...` |  |  | One-line description of the advisor-guard check in the generated reference. |
-| `advisor.sw_plan` | `6 entries` |  |  | Switch guards.advisorPlan (default on, active only when an advisor tool is present): block writing a plan with no advisor call since the task began, once. |
-| `advisor.sw_retry` | `6 entries` |  |  | Switch guards.advisorRetry (default on, active only when an advisor tool is present): block a second edit of the same file after a failed test or build with no advisor call in between, once. |
-| `advisor.sw_review` | `6 entries` |  |  | Switch guards.advisorReview (default on, active only when an advisor tool is present): block a review-shaped agent spawn on a non-flagship model once. |
+| `advisor.summary` | `Advisor sessions only: blocks once a plan written with no advisor call this t...` |  |  | One-line description of the advisor-guard check in the generated reference. |
+| `advisor.sw_plan` | `6 entries` |  |  | Blocks a plan written with no advisor call once. Default on, advisor sessions only. |
+| `advisor.sw_retry` | `6 entries` |  |  | Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only. |
+| `advisor.sw_review` | `6 entries` |  |  | Blocks a review agent on a non-flagship model once. Default on, advisor sessions only. |
 | `advisor.test_cmd_re` | `\b(?:cargo\s+(?:\+\S+\s+)?(?:test\|nextest\|build\|check\|clippy)\|npm\s+(?:run\s+...` |  |  | Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run. |
 | `advisor.test_file_re` | `(?i)(?:^\|/)(?:tests?\|__tests__\|specs?)/\|[._-](?:test\|spec)\.[A-Za-z0-9]+$\|_te...` |  |  | Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run). |
 | `advisor.tool_names` | `advisor` |  |  | Names of the advisor tool, in a transcript tool_use block or in the payload's tool list. |
@@ -5162,7 +5162,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `broad_kill.script_words` | `eval` |  |  | Commands (besides the shells of git.shell_verbs) whose arguments are themselves a script, so a kill inside them still counts (eval). |
 | `broad_kill.signal_value_flags` | `-s, -n, --signal` |  |  | Flags of kill that take the next word as their value (the signal), so that word is not a target. |
 | `broad_kill.summary` | `PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill ...` |  |  | One-line description of the broad-kill-guard check in the generated reference. |
-| `broad_kill.sw` | `5 entries` |  |  | Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills. |
+| `broad_kill.sw` | `5 entries` |  |  | Switch for the broad-kill guard. Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills. |
 | `broad_kill.wrapper_positional` | `2 entries` |  |  | Per wrapper, how many plain words follow its flags before the command (timeout takes a duration). |
 | `broad_kill.wrappers` | `14 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (sudo pkill, env X=1 killall, nohup pkill). |
 | `broad_kill.xargs_commands` | `xargs` |  |  | Commands that run another command with arguments read from standard input. |
@@ -13458,7 +13458,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `repeat.msg_allowed` | `Allowed here: {forms}` |  |  | The one-time allowed-forms line added to the first repeated block of a guard in a session; {forms} the guard's own allowed-forms text. |
 | `repeat.msg_changed` | `This was blocked {n} times in {minutes} min: change approach.` |  |  | The line added to a repeated block; {n} the blocks in the window, {minutes} the window. |
 | `repeat.overrides` | `0 entries` |  |  | Per guard or check name, optional min_blocks (N, at least 2) and window_min (W, at least 1). Either omitted field inherits its global repeat.* key. Example: { command = { min_blocks = 3, window_min = 5 } }. Guard names win over check aliases; both command-guard and command are accepted. |
-| `repeat.setting` | `6 entries` |  |  | Switch guards.repeatHint (default on): a guard that blocks the same session again and again appends what is allowed and a request to change approach. |
+| `repeat.setting` | `6 entries` |  |  | Switch for the repeated-block hint. Switch guards.repeatHint (default on): a guard that blocks the same session again and again appends what is allowed and a request to change approach. |
 | `repeat.window_min` | `10` |  |  | The repeat window in minutes. |
 
 ### session_switches.toml / standdown
@@ -13497,7 +13497,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `upfront.msg_skip_expired` | `Guard skips for this session expired, the guards are back on: {guards}.` |  |  | Line for guard skips that just expired; {guards} the names. |
 | `upfront.msg_skip_set` | `Guards skipped for this session on the owner's say-so: {guards}.` |  |  | Line for guard skips being active; {guards} the names. |
 | `upfront.msg_spawn_stop` | `Agent spawning is stopped ({reason}): do the work inline, in small bounded st...` |  |  | Line for spawning being unavailable; {reason} is rendered from standdown.reasons. |
-| `upfront.setting` | `6 entries` |  |  | Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call. |
+| `upfront.setting` | `6 entries` |  |  | Switch for the switch-change notice. Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call. |
 | `upfront.summary` | `Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only disp...` |  |  | One-line description of the switch-notice check in the generated reference. |
 
 ## Messages

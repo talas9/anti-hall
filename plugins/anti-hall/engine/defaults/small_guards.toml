@@ -535,11 +535,11 @@ doc = "Where the update-in-session switch is read from (guards.updateInSession, 
 value = { section = "guards", key = "updateInSession", env = "ANTIHALL_UPDATE_IN_SESSION", aliases = [], option = "guards_update_in_session", default = true }
 
 [model_routing.mode_setting]
-doc = "Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then the plugin option; strict when none holds a valid value."
+doc = "Model-routing mode. Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then the plugin option; strict when none holds a valid value."
 value = { section = "guards", key = "modelRouting", env = "ANTIHALL_MODEL_ROUTING", aliases = [], option = "guards_model_routing", default = "strict", values = ["strict", "advisory", "off"] }
 
 [model_routing.deploy_floor_setting]
-doc = "Where the deploy/migration/secret model floor (sonnet, opus, off) is read from (guards.modelRoutingDeployFloor): the environment variable, settings.json, then the plugin option; sonnet when none holds a valid value."
+doc = "Model floor for deploys and secrets. Where the deploy/migration/secret model floor (sonnet, opus, off) is read from (guards.modelRoutingDeployFloor): the environment variable, settings.json, then the plugin option; sonnet when none holds a valid value."
 value = { section = "guards", key = "modelRoutingDeployFloor", env = "ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR", aliases = [], option = "guards_model_routing_deploy_floor", default = "sonnet", values = ["sonnet", "opus", "off"] }
 
 [model_routing.advisory_mode]
@@ -1256,7 +1256,7 @@ doc = "The skip.json key of command-guard, which also silences the work window."
 value = "command-guard"
 
 [coordinator_work.command_guard_setting]
-doc = "Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it."
+doc = "Switch for command-guard. Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it."
 value = { section = "safety", key = "commandGuard", env = "ANTIHALL_COMMAND_GUARD", aliases = [], option = "safety_command_guard", default = true }
 
 [coordinator_work.window_setting]
@@ -1629,15 +1629,15 @@ doc = "The guard id this check answers to in skip.json."
 value = "api-guard"
 
 [api_guard.setting]
-doc = "Where the guard's own on/off switch is read from (guards.apiGuard, default on)."
+doc = "Switch for the fabricated-API guard. Where the guard's own on/off switch is read from (guards.apiGuard, default on)."
 value = { section = "guards", key = "apiGuard", env = "", aliases = [], option = "guards_api_guard", default = true }
 
 [api_guard.shell_setting]
-doc = "Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on)."
+doc = "Switch for checking code a shell write adds. Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on)."
 value = { section = "guards", key = "shellWriteChecks", env = "ANTIHALL_SHELL_WRITE_CHECKS", aliases = [], option = "", default = true }
 
 [api_guard.thirdparty_setting]
-doc = "Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off)."
+doc = "Switch for verifying third-party packages. Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off)."
 value = { section = "guards", key = "apiGuardThirdparty", env = "ANTIHALL_API_GUARD_THIRDPARTY", aliases = [], option = "", default = false }
 
 [api_guard.tool_write]
