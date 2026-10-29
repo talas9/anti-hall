@@ -155,9 +155,7 @@ impl Runner for System {
                 crate::discard::harmless(child.kill()); // keep: the child may have exited between the check and the kill
                 break child.wait().ok();
             }
-            let elapsed = started.elapsed();
-            let nap = if elapsed < fast { poll } else { slow.max(poll) };
-            std::thread::sleep(nap.min(limit.saturating_sub(elapsed)));
+            std::thread::sleep(nap_for(started.elapsed(), limit, poll, fast, slow));
         };
         // a grandchild may hold the pipe open: wait a bounded while for what was written
         let grace = poll.saturating_mul(defaults::num("devswarm_act.poll_ms").max(1) as u32);
@@ -175,6 +173,13 @@ impl Runner for System {
             error: timed_out.then(|| defaults::render("devswarm_act.msg_timeout", &[("ms", &spec.timeout_ms)])),
         }
     }
+}
+
+/// How long the wait loop sleeps before looking at the child again: `poll` while the call is younger than `fast`, `slow` (never less
+/// than `poll`) after, and never past the call's own timeout.
+fn nap_for(elapsed: Duration, limit: Duration, poll: Duration, fast: Duration, slow: Duration) -> Duration {
+    let nap = if elapsed < fast { poll } else { slow.max(poll) };
+    nap.min(limit.saturating_sub(elapsed))
 }
 
 /// The first `major.minor.patch` in `text`, as numbers (`hivecontrol 2.5.3` -> [2,5,3]); `None` when there is none.
@@ -213,7 +218,6 @@ pub fn at_least(have: &[u64], want: &[u64]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn sh(script: &str, timeout_ms: u64) -> RunSpec {
         RunSpec { bin: Some("/bin/sh".into()), args: vec!["-c".into(), script.into()], cwd: None, timeout_ms, cap_bytes: 0, scrub_env: Vec::new() }
@@ -252,20 +256,29 @@ mod tests {
     }
 
     /// The wait for a long call costs the waiting thread's CPU in proportion to its wake-ups: checked every 10 ms for the whole wait
-    /// it was a hundred wake-ups a second per running drain.
+    /// it was a hundred wake-ups a second per running drain. The wake-ups are counted off the real schedule ([`nap_for`]) rather than
+    /// read from thread CPU, which on a loaded or fast-wake machine is dominated by the fixed cost of starting the child.
     #[test]
     fn waiting_for_a_long_call_wakes_the_thread_far_less_than_polling_it_every_poll_ms() {
-        crate::defaults::init().unwrap();
-        let cpu_of = |slow_ms: u64| {
-            crate::defaults::set_overlay(&[("devswarm_act.poll_slow_ms", json!(slow_ms)), ("devswarm_act.poll_fast_ms", json!(0))]);
-            let before = crate::limits::thread_cpu_us();
-            let r = System::configured().run(&sh("sleep 3", 10_000));
-            assert!(r.ok, "{r:?}");
-            crate::limits::thread_cpu_us().saturating_sub(before)
+        let wakes = |poll_ms: u64, fast_ms: u64, slow_ms: u64| {
+            let (limit, poll, fast, slow) =
+                (Duration::from_secs(10), Duration::from_millis(poll_ms), Duration::from_millis(fast_ms), Duration::from_millis(slow_ms));
+            let (mut at, mut n) = (Duration::ZERO, 0u32);
+            while at < Duration::from_secs(3) {
+                at += nap_for(at, limit, poll, fast, slow);
+                n += 1;
+            }
+            n
         };
-        let polled = cpu_of(10);
-        let backed_off = cpu_of(250);
-        eprintln!("thread CPU while waiting 3 s: every 10 ms {polled} us, every 250 ms {backed_off} us");
-        assert!(backed_off * 2 < polled || polled < 2000, "every 10 ms {polled} us, every 250 ms {backed_off} us");
+        crate::defaults::init().unwrap();
+        let (poll_ms, slow_ms) = (defaults::num("devswarm_act.poll_ms"), defaults::num("devswarm_act.poll_slow_ms"));
+        let polled = wakes(poll_ms, 0, poll_ms);
+        let backed_off = wakes(poll_ms, 0, slow_ms);
+        assert!(backed_off * 10 < polled, "every 10 ms {polled} wake-ups, every 250 ms {backed_off}");
+        // the timeout still bounds the last nap
+        assert_eq!(
+            nap_for(Duration::from_millis(950), Duration::from_secs(1), Duration::from_millis(10), Duration::ZERO, Duration::from_millis(250)),
+            Duration::from_millis(50)
+        );
     }
 }
