@@ -2426,7 +2426,7 @@ fn shed_drain_in_background(s: UnixStream, limit: Duration, bytes: u64, cap: u64
             |buf, wait| {
                 s.set_nonblocking(false)?;
                 s.set_read_timeout(Some(wait))?;
-                s.read(buf)
+                s.read(buf.as_mut_slice())
             },
             limit,
             bytes,
@@ -2453,13 +2453,13 @@ fn shed_slot_take(used: &AtomicU64, cap: u64) -> bool {
 /// Discard up to exactly `bytes` bytes via `read(buf, wait)` (which must give up after `wait`), reading at most `chunk` bytes at
 /// a time and never more than the budget left, for at most `limit` in total. Stops at EOF, an error, the byte budget or the time
 /// budget. Returns the number of bytes discarded.
-fn shed_drain(mut read: impl FnMut(&mut [u8], Duration) -> std::io::Result<usize>, limit: Duration, bytes: u64, chunk: usize) -> u64 {
+fn shed_drain(mut read: impl FnMut(&mut Vec<u8>, Duration) -> std::io::Result<usize>, limit: Duration, bytes: u64, chunk: usize) -> u64 {
     let (end, mut left) = (Instant::now() + limit, bytes);
     let mut buf = vec![0u8; chunk];
     while left > 0 {
         let Some(wait) = end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { break };
-        let take = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
-        match read(&mut buf[..take], wait) {
+        buf.truncate(usize::try_from(left).unwrap_or(usize::MAX)); // never read past the budget left (only shrinks, on the last reads)
+        match read(&mut buf, wait) {
             Ok(0) => break,
             Ok(n) => left = left.saturating_sub(n as u64),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
