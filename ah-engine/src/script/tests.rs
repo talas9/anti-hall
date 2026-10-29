@@ -2190,6 +2190,14 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
         "ls \"unbalanced",
         "cat <(touch /x)",
         "ls\u{e9}",
+        "rm -rf a/target /Users/victim",
+        "rm -rf /target ~",
+        "rm -rf /target",
+        "rm -rf a/target ~",
+        "rm -rf a/target*",
+        "rm -rf ../target",
+        "git commit -m 'x' && rm -rf a/target ~",
+        "cd /w && git -c core.pager=./e log",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -2207,6 +2215,11 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
         "git commit -F /w/scratchpad/msg.txt",
         "git -C /w commit -m 'x'",
         "git add -A",
+        "git commit -m 'a' -m 'b'",
+        "git commit -m 'fix -c thing'",
+        "git log -c",
+        "rm -rf a/target",
+        "rm -rf /w/work/target/",
         "git status",
         "git diff",
         "git diff HEAD~1 | head",

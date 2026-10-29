@@ -3,7 +3,7 @@
 // commit, finished step, passing check or new file, and mirrors it in <state>/agent-tracker/breaker/<agent key>.json. While that marker
 // is fresh this check blocks the SUBAGENT's tool calls except commit (`git commit -m '<plain text>'` or `-F <file>`), push, status and read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (its report); the main
 // session is never blocked (no agent_id in its payload). The marker is removed by the tracker when the agent produces an outcome, and at once by this check when the agent runs an allowed git commit.
-// Every name, number, pattern and text is in burn.toml. A failure of this script allows (script.failure_mode_by_check).
+// Every name, number, pattern and text is in burn.toml. A Bash decision fails CLOSED (any error in it means not allowed); a crash of the script itself allows (script.failure_mode_by_check).
 'use strict';
 
 // Every Bash decision here fails CLOSED: a command is allowed only when every check below passes, and any error inside them means "not allowed".
@@ -48,7 +48,7 @@ function bbSegments(cmd) {
 
 function bbSegmentAllowed(seg) {
   if (ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', seg.plain)) return false;
-  if (ah.re.test(ah.cfg('burn.commit_re'), 'r', seg.raw)) return true;
+  if (ah.re.test(ah.cfg('burn.commit_re'), 'r', seg.raw) || ah.re.test(ah.cfg('burn.rm_target_re'), 'r', seg.raw)) return true;
   return ah.re.test(ah.cfg('burn.allowed_bash_re'), 'r', seg.plain) || ah.re.test(ah.cfg('burn.allowed_readonly_re'), 'r', seg.plain) || ah.re.test(ah.cfg('burn.allowed_cd_re'), 'r', seg.plain);
 }
 
