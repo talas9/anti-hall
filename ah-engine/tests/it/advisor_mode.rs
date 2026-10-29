@@ -38,7 +38,8 @@ fn run(check: &str, extra: &[(&str, &str)], p: &Value) -> i32 {
 }
 
 const USER: &str = r#"{"type":"user","message":{"role":"user","content":"please do it"}}"#;
-const ADVISOR: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"server_tool_use","name":"advisor","input":{}}]}}"#;
+const ADVISOR: &str =
+    r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"server_tool_use","name":"advisor","input":{}}]}}"#;
 const WORK: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"working"}]}}"#;
 
 /// A transcript of `lines` under a name of its own; returns the path.
@@ -58,7 +59,8 @@ fn spawn(session: &str, tp: &str, desc: &str, model: Option<&str>, extra: Value)
     if let Some(m) = model {
         input["model"] = json!(m);
     }
-    let mut p = json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+    let mut p =
+        json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
     for (k, v) in extra.as_object().unwrap() {
         p[k] = v.clone();
     }

@@ -144,6 +144,12 @@ Codex-safe behavior:
 - `anti-hall-install-statusline` is a retired no-op and points to cleanup for old installs
 - Claude cleanup remains available through `uninstall-statusline`
 
+## Advisor mode (Claude only)
+
+Claude's advisor mode (`guards.advisorReview`, `guards.advisorPlan`, `guards.advisorRetry`) needs an `advisor` tool and, for the review rule, an Agent/Task PreToolUse hook point. Codex has neither: no advisor tool, and no Agent-tool matcher in its hook table, so none of the three rules is wired into the Codex PreToolUse or Stop tables. Consultation maps to the deadly-loop frontier review protocol (`anti-hall-deadly-loop`: independent frontier-model review lenses, run in sequence).
+
+Not enforceable on Codex: that a consultation happened (no machine-verifiable receipt), the model of a spawned reviewer, and a plan-before-advisor or retry-before-advisor gate. These stay a convention of the deadly-loop skill.
+
 ## Limits and escape hatches
 
 Skip switches, remaining limits, hook latency and the opt-in judge numbers are in the GUIDE: [Limits and escape hatches](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#limits-and-escape-hatches).
