@@ -1549,6 +1549,87 @@ fn queue_overflow_answers_busy_and_the_guard_event_follows_its_failure_mode() {
     assert!(e.status()["busy_replies"].as_u64().unwrap() >= 1);
 }
 
+/// One client exchange the way the ack-protocol client does it: write the whole request (no half-close), then read one frame.
+/// `Ok(true)` = a clean BUSY frame, `Ok(false)` = some other complete frame, `Err` = a transport error (reset, broken pipe).
+fn shed_probe(sock: &Path, req: &[u8]) -> Result<bool, String> {
+    let mut s = std::os::unix::net::UnixStream::connect(sock).map_err(|e| format!("connect: {e}"))?;
+    s.set_read_timeout(Some(crate::common::IO_CEILING)).unwrap();
+    s.set_write_timeout(Some(crate::common::IO_CEILING)).unwrap();
+    s.write_all(req).map_err(|e| format!("write: {e}"))?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if let Some(total) = ah_engine::frame::total_len(&buf)
+            && buf.len() >= total
+        {
+            break;
+        }
+        match s.read(&mut chunk) {
+            Ok(0) => return Err("read: closed before a frame".into()),
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) => return Err(format!("read: {e}")),
+        }
+    }
+    let (k, _) = ah_engine::frame::decode(&buf).map_err(|e| format!("frame: {e:?}"))?;
+    Ok(k == ah_engine::frame::Kind::Busy)
+}
+
+fn shed_requests_get_a_clean_busy(tag: &str, body_bytes: usize) {
+    let mut req = b"V 0\n".to_vec(); // a hook request of a realistic size: the daemon never reads it on the shed path
+    req.extend_from_slice(
+        format!(r#"{{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{{"content":"{}"}}}}"#, "x".repeat(body_bytes))
+            .as_bytes(),
+    );
+    let e = Env::new(tag, &[("AH_ENGINE_WORKERS", "1"), ("AH_ENGINE_QUEUE", "1"), ("AH_ENGINE_STUCK_MS", "60000")]);
+    e.warm();
+    // one request in the worker, one queued, a third already refused: the queue (cap 1) stays full while the sleeps last
+    let sock = e.eng().join("e.sock");
+    let sleepers: Vec<_> = (0..3)
+        .map(|_| {
+            let mut c = e.cmd();
+            std::thread::spawn(move || {
+                ah_engine::discard::harmless(c.args(["ctl", "sleep 20000"]).output());
+            })
+        })
+        .collect();
+    std::thread::sleep(common::scaled(Duration::from_secs(3)));
+    // wait until the queue is saturated (the first clean BUSY), then count
+    let t = Instant::now();
+    let saturated = loop {
+        let r = shed_probe(&sock, &req);
+        eprintln!("saturate probe: {r:?} at {:?}", t.elapsed());
+        if !matches!(r, Ok(false)) {
+            break true; // shed: a clean BUSY, or (before the fix) the transport error the shed produced
+        }
+        if t.elapsed() > common::scaled(Duration::from_secs(8)) {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(saturated, "the queue never saturated");
+    let (mut busy, mut other, mut failed) = (0, 0, Vec::new());
+    for _ in 0..200 {
+        match shed_probe(&sock, &req) {
+            Ok(true) => busy += 1,
+            Ok(false) => other += 1,
+            Err(why) => failed.push(why),
+        }
+    }
+    eprintln!("shed probe {} B: busy={busy} other={other} transport_failures={} sample={:?}", req.len(), failed.len(), failed.first());
+    assert!(failed.is_empty() && other == 0, "busy={busy} other={other} transport failures={}: {:?}", failed.len(), failed.first());
+    drop(sleepers);
+}
+
+#[test]
+fn shed_requests_are_answered_with_a_clean_busy_every_time() {
+    shed_requests_get_a_clean_busy("shedclean", 6_000);
+}
+
+#[test]
+fn shed_large_requests_are_answered_with_a_clean_busy_every_time() {
+    shed_requests_get_a_clean_busy("shedbig", 60_000);
+}
+
 #[test]
 fn accept_loop_survives_a_hundred_client_flood_with_silent_peers() {
     let e = Env::new(
