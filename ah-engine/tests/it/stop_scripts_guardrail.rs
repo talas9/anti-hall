@@ -67,7 +67,7 @@ fn the_stop_checks_ask_the_host_for_the_lines_they_parse() {
     assert!(get("speculation-judge.js").contains("'assistant'"));
     assert!(get("speculation-guard.js").contains("['assistant'"));
     // the prompt key, the code-edit scan and the context reading fetch only the lines they read
-    assert!(get("task-guard.js").contains("ah.fs.tailLines("));
+    assert!(get("task-guard.js").contains("ah.fs.tailLinesNewest("));
     assert!(get("codex-nudge.js").contains("ah.fs.tailLines("));
     assert!(get("lib/75-ctxbudget.js").contains("ah.fs.tailLines("));
     assert!(get("compact-advice-guard.js").contains("ah.fs.tailHasAny("));

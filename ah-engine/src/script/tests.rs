@@ -2582,3 +2582,72 @@ mod claim_evidence_guard {
         assert!(started.elapsed() < std::time::Duration::from_millis(20), "{:?}", started.elapsed());
     }
 }
+
+/// The prompt key of the task guard: the uuid of the newest real user entry (not a tool result), read newest-first from a capped fetch,
+/// whole-tail fetch when the cap holds none. It must equal what a scan of every user line gives, and the capped fetch must be small.
+#[test]
+fn tail_lines_newest_gives_the_prompt_key_a_full_scan_gives() {
+    fn key(lines: &[String]) -> String {
+        for l in lines {
+            let v: Value = serde_json::from_str(l.trim()).unwrap();
+            if v["isMeta"] == json!(true) || v["isSidechain"] == json!(true) {
+                continue;
+            }
+            let real = match &v["message"]["content"] {
+                Value::String(s) => !s.trim().is_empty(),
+                Value::Array(a) => a.iter().any(|b| b["type"] != json!("tool_result")),
+                _ => false,
+            };
+            if real {
+                return v["uuid"].as_str().unwrap_or_default().to_string();
+            }
+        }
+        String::new()
+    }
+    let user = |i: usize, c: &str| format!(r#"{{"type":"user","uuid":"u{i}","message":{{"content":{c}}}}}"#);
+    let res = |i: usize| user(i, r#"[{"type":"tool_result","content":"ok"}]"#);
+    let asst = |i: usize| format!(r#"{{"type":"assistant","uuid":"a{i}","message":{{"content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(200));
+    for tail_results in [0usize, 1, 5, 40] {
+        let mut lines = vec![user(0, r#""first prompt""#), user(1, r#""second prompt""#)];
+        for i in 2..600 {
+            lines.push(if i % 3 == 0 { asst(i) } else { res(i) });
+        }
+        lines.push(user(900, r#""the real newest prompt""#));
+        for i in 0..tail_results {
+            lines.push(res(1000 + i));
+            lines.push(asst(1000 + i));
+        }
+        let h = home(&format!("newest-{tail_results}"));
+        let p = format!("{h}/t.jsonl");
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let needle = vec![r#""user""#.to_string()];
+        let mut old = super::host_b3::tail_lines_matching(&p, 1 << 20, false, &needle).unwrap();
+        old.reverse();
+        let want = key(&old);
+        assert_eq!(want, "u900");
+        for max in [1usize, 3, 64] {
+            let capped = super::host_b3::tail_lines_newest(&p, 1 << 20, false, &needle, max).unwrap();
+            assert!(capped.len() <= max);
+            assert_eq!(capped[..], old[..capped.len()], "newest first, a prefix of the full set");
+            let mut got = key(&capped);
+            if got.is_empty() && capped.len() >= max {
+                got = key(&super::host_b3::tail_lines_newest(&p, 1 << 20, false, &needle, 0).unwrap());
+            }
+            assert_eq!(got, want, "tail_results={tail_results} max={max}");
+        }
+        if tail_results == 0 {
+            let all: usize = old.iter().map(String::len).sum();
+            let cap: usize = super::host_b3::tail_lines_newest(&p, 1 << 20, false, &needle, 64).unwrap().iter().map(String::len).sum();
+            println!("PROMPTKEY_BYTES full={all} capped={cap}");
+        }
+    }
+    // crlf and a missing file behave as tailLines
+    let h = home("newest-crlf");
+    let p = format!("{h}/t.jsonl");
+    std::fs::write(&p, "a\"user\"1\r\nb\r\nc\"user\"2\r\n").unwrap();
+    let n = vec![r#""user""#.to_string()];
+    let mut o = super::host_b3::tail_lines_matching(&p, 1 << 20, true, &n).unwrap();
+    o.reverse();
+    assert_eq!(super::host_b3::tail_lines_newest(&p, 1 << 20, true, &n, 0).unwrap(), o);
+    assert!(super::host_b3::tail_lines_newest(&format!("{h}/none"), 1 << 20, false, &n, 3).is_none());
+}

@@ -4665,6 +4665,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `taskstate.js_parse_max_depth` | `2000` |  |  | The deepest bracket nesting of a transcript line the engine reads the way JSON.parse does when serde_json's 128-level limit rejects it (JavaScript's own stack ends far past it). A deeper line cannot be read and leaves the scan unsure. |
 | `taskstate.open_statuses` | `pending, in_progress, in-progress` |  |  | Statuses (lowercase) that make a task open. |
 | `taskstate.pending_statuses` | `pending` |  |  | Statuses (lowercase) that count an open task as waiting to start; with the in-progress statuses they make up the open ids the Stop gate reads from the session task store. |
+| `taskstate.prompt_key_max_lines` | `64` |  |  | How many of the newest user-entry lines of the transcript tail the task guard reads to find the newest real prompt (its key). Tool results are user entries too, so a long run of them is skipped; when the newest this-many are all unusable the whole tail is read, so the key is the same as a full scan gives. 0 reads every user line. |
 | `taskstate.prune_stamp_prefix` | `.prune-stamp-` |  |  | Prefix of the stamp file that throttles one prefix's sweep. |
 | `taskstate.prune_throttle_hours` | `6` |  |  | The sweep of one file prefix runs at most once per this many hours. |
 | `taskstate.prune_ttl_days` | `7` |  |  | Per-session state files older than this many days are removed by the opportunistic sweep. |
