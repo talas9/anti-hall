@@ -9,6 +9,20 @@ description: Show or change anti-hall settings. Use for "anti-hall settings", "t
 
 Show or change any anti-hall setting for Codex. Use when the user says "anti-hall settings", "show/change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
 
+## Advisor mode (Sonnet main + Opus advisor)
+
+Claude only. Codex has no advisor tool, so none of these rules is wired on Codex; the consult maps to the deadly-loop frontier review protocol (`anti-hall-deadly-loop`) and is not enforceable without a machine-verifiable receipt. Recommended Claude setup: run Sonnet as the main model and Opus as the advisor (the `advisor` tool). Hard decisions go to the advisor; the rest stays on Sonnet.
+
+| Rule | Switch (default on) | Enforced |
+|---|---|---|
+| Retry | `guards.advisorRetry` | a second edit of the same file after a failed test or build, with no advisor call in between, is blocked once |
+| Plan | `guards.advisorPlan` | writing a plan file or calling ExitPlanMode with no advisor call since the task began is blocked once |
+| Review | `guards.advisorReview` | a review-shaped agent spawn on Sonnet or Haiku is blocked once (use Opus, Fable or Codex) |
+
+All three stay silent unless the session has the advisor tool, block once per trigger, are capped per session, never fire on a Stop continuation and fail open. Their lists, patterns, caps and texts live in the plugin's `advisor.toml` and `advisory.toml`. Adherence is counted under `advisory` in the engine report (`ah-engine status --json`): `advisor_consult.consult`, `advisor_retry.armed`, `.consulted` (consult after a failure), `.injected` (blocks fired), `.acted_on` (block followed by a consult), `advisor_review` and `advisor_plan` `.injected` and `.suppressed`; each session also keeps its own tally in its `advisor-retry-<session>.json` state file.
+
+Turn it off with `set guards.advisorRetry false` (likewise `guards.advisorPlan`, `guards.advisorReview`) or the env `ANTIHALL_ADVISOR_RETRY`, `ANTIHALL_ADVISOR_PLAN`, `ANTIHALL_ADVISOR_REVIEW` set to `0`.
+
 ## Resolve the plugin root
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — resolve
