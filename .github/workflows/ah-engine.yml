@@ -257,6 +257,9 @@ jobs:
         run: ./test.sh
         env:
           AH_TEST_PROFILE: nightly
+          # LTO-linking ~36 release test binaries took 106-111 min on the macOS runner (150 min job limit). The bulk of the suite
+          # builds on the `ci-test` Cargo profile; the wall-clock tests stay on release (test.sh).
+          AH_TEST_CARGO_PROFILE: ci-test
       - name: Upload generated reference on mismatch
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
