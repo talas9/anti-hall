@@ -23,7 +23,9 @@ fn home(tag: &str) -> PathBuf {
         }
     });
     REAL_HOME.get_or_init(|| std::env::var_os("HOME"));
-    let d = std::env::temp_dir().join(format!("ah-dfa-{tag}-{}", std::process::id()));
+    // NOT std::env::temp_dir(): writes under the request's tmp root (/tmp when TMPDIR is unset, as on Linux CI) are scratch by design
+    // and never count as the session's work, so a project there could not show own edits blocking Stop.
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("ah-dfa-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&d).ok();
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
     let d = std::fs::canonicalize(&d).unwrap();
