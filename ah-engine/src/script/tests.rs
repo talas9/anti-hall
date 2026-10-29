@@ -2418,3 +2418,99 @@ mod claim_evidence_guard {
         assert!(started.elapsed() < std::time::Duration::from_millis(20), "{:?}", started.elapsed());
     }
 }
+
+// ---- reply-length-guard: replies are short unless detail is asked; held once per owner turn ----
+
+mod reply_length_guard {
+    use super::*;
+
+    fn assistant(text: &str) -> Value {
+        json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "text", "text": text}]}})
+    }
+
+    fn user(text: &str) -> Value {
+        json!({"type": "user", "message": {"role": "user", "content": text}})
+    }
+
+    fn long() -> String {
+        (1..=30).map(|i| format!("Line {i} of a long status reply that keeps going with more words.")).collect::<Vec<_>>().join("\n")
+    }
+
+    fn run(h: &str, sid: &str, reply: &str, extra: Value) -> Option<Option<Verdict>> {
+        let t = format!("{h}/t.jsonl");
+        let mut payload = json!({"transcript_path": t, "session_id": sid, "cwd": h, "last_assistant_message": reply});
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            payload[k] = v;
+        }
+        super::super::run_forced("reply-length-guard", &payload, &Value::Null, "Stop", &env(h))
+    }
+
+    /// A fresh session whose transcript is the user message `ask` and the assistant `reply`; returns the home.
+    fn session(tag: &str, ask: &str, reply: &str) -> String {
+        let h = home(tag);
+        let body: String = [user(ask), assistant(reply)].iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(format!("{h}/t.jsonl"), body).unwrap();
+        h
+    }
+
+    fn blocked(v: &Option<Option<Verdict>>) -> Option<String> {
+        match v {
+            Some(Some(Verdict::Exact(x))) if x.code == 0 && x.out.contains("\"decision\":\"block\"") => Some(x.out.clone()),
+            _ => None,
+        }
+    }
+
+    const ALLOW: Option<Option<Verdict>> = Some(Some(Verdict::Allow));
+
+    #[test]
+    fn a_long_reply_to_a_plain_ask_is_held_once_with_a_two_line_message_and_the_second_is_allowed_by_the_cap() {
+        let reply = long();
+        let h = session("rl-block", "fix the build", &reply);
+        let v = run(&h, "rl-block", &reply, json!({}));
+        let out = blocked(&v).unwrap_or_else(|| panic!("held: {v:?}"));
+        let reason = serde_json::from_str::<Value>(out.trim()).unwrap()["reason"].as_str().unwrap().to_string();
+        assert!(reason.lines().count() <= 2 && reason.contains("limit is 1200 / 18"), "{reason}");
+        let again = run(&h, "rl-block", &format!("{reply}\nmore"), json!({}));
+        assert_eq!(again, ALLOW, "{again:?}");
+    }
+
+    #[test]
+    fn detail_asked_a_short_reply_a_stop_retry_a_subagent_and_the_switch_off_allow() {
+        let reply = long();
+        for (i, ask) in ["explain why this broke", "give me the full report", "walk me through it", "how does the cap work"].iter().enumerate() {
+            let h = session(&format!("rl-ask{i}"), ask, &reply);
+            assert_eq!(run(&h, &format!("rl-ask{i}"), &reply, json!({})), ALLOW, "{ask}");
+        }
+        let h = session("rl-short", "fix it", "Done: fixed in 1 file.");
+        assert_eq!(run(&h, "rl-short", "Done: fixed in 1 file.", json!({})), ALLOW);
+        let h = session("rl-misc", "fix the build", &reply);
+        assert_eq!(run(&h, "rl-misc", &reply, json!({"stop_hook_active": true})), ALLOW);
+        assert_eq!(run(&h, "rl-misc", &reply, json!({"agent_id": "a1", "agent_type": "worker"})), ALLOW);
+        let t = format!("{h}/t.jsonl");
+        let p = json!({"transcript_path": t, "session_id": "rl-misc", "cwd": h, "last_assistant_message": reply});
+        let off = RequestEnv::from_pairs(vec![("HOME".to_string(), h.clone()), ("ANTIHALL_REPLY_LENGTH_GUARD".to_string(), "false".to_string())]);
+        assert_eq!(super::super::run_forced("reply-length-guard", &p, &Value::Null, "Stop", &off), ALLOW);
+    }
+
+    #[test]
+    fn a_reply_made_mostly_of_a_fenced_block_under_the_allowance_is_allowed_and_a_huge_block_is_held() {
+        let code: String = (1..=40).map(|i| format!("let value_{i} = compute({i});")).collect::<Vec<_>>().join("\n");
+        let reply = format!("Patch:\n```rust\n{code}\n```\nDone.");
+        let h = session("rl-fence", "fix the build", &reply);
+        assert_eq!(run(&h, "rl-fence", &reply, json!({})), ALLOW);
+        let big: String = (1..=120).map(|i| format!("let value_{i} = compute({i});")).collect::<Vec<_>>().join("\n");
+        let reply = format!("Patch:\n```rust\n{big}\n```\nDone.");
+        let h = session("rl-fence2", "fix the build", &reply);
+        assert!(blocked(&run(&h, "rl-fence2", &reply, json!({}))).is_some());
+    }
+
+    #[test]
+    fn a_short_reply_stays_inside_the_stop_latency_bar() {
+        let reply = "Renamed the function and updated its two callers.";
+        let h = session("rl-lat", "rename it", reply);
+        let _ = run(&h, "rl-lat", reply, json!({}));
+        let started = std::time::Instant::now();
+        assert_eq!(run(&h, "rl-lat", reply, json!({})), ALLOW);
+        assert!(started.elapsed() < std::time::Duration::from_millis(20), "{:?}", started.elapsed());
+    }
+}
