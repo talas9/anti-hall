@@ -134,14 +134,18 @@ function pgOwnReader(selfKey, id, e, count) {
 }
 
 // The live count of an own reader view read with `count`: `Math.max(countFor, messageCount - own)`.
-// With devswarm.parentGateSharedCount on (default), the count is the ONE shared count `mesh inbox peek-primary` reports (`v.unread`:
+// With devswarm.parentGateSharedCount on (default), the count is the ONE shared count `mesh inbox peek-primary` reports (`v.shared`:
 // own-family sends and wake rows left out); a case where the old projection was higher is counted (count_mismatch), never blocked on.
 function pgOwnLive(v, own) {
-  var shared = pgSharedOn();
-  if (v.state !== 'ok' || (v.own === null && !shared) || !piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
-  if (!shared) return Math.max(v.unread, Math.max(0, v.total - own));
-  if (piFinite(v.legacy) && v.legacy > v.unread) pgCountMismatch();
-  return v.unread;
+  if (!pgSharedOn()) {
+    // switch off: the old computation, unchanged
+    if (v.state !== 'ok' || v.own === null || !piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
+    return Math.max(v.unread, Math.max(0, v.total - own));
+  }
+  if (v.state !== 'ok' || !piFinite(v.shared)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
+  // the old projection, only to count the cases it would have blocked on more than the shared count shows
+  if (v.own !== null && piFinite(v.unread) && piFinite(v.total) && Math.max(v.unread, Math.max(0, v.total - own)) > v.shared) pgCountMismatch();
+  return v.shared;
 }
 
 // The shared-count switch (devswarm.parentGateSharedCount; off restores the old `max(countFor, messageCount - own)` projection).

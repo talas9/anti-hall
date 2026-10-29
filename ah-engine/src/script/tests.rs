@@ -2355,21 +2355,28 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     assert!(details.contains("c-1"), "{details}");
 }
 
-/// GH #384: the parent gate counts the Primary's own mailbox with the shared peek-primary count, driven through the shipped gate
-/// script and the shipped defaults. Cursor 6 / total 8 with the two rows past the cursor the Primary's own sends reads 0 and does
-/// not block; one real inbound row after that blocks and names the peek-primary step; the escalation text names peek-primary
-/// first and `defect` second.
-#[test]
-fn the_parent_gate_does_not_block_on_own_sends_and_still_blocks_on_a_real_unread() {
+/// One row of a parent-gate fixture: who sent it and how it reached the store.
+#[derive(Clone, Copy)]
+enum PgRow {
+    /// A `mesh send` from a child (`mtype` direct), with `needsReply`.
+    Child(&'static str),
+    /// A `mesh send` from the Primary itself to its own partition.
+    Own(&'static str),
+    /// A native-ingested row (no `mtype`), as DevSwarm's `reactivate-child` prompt reaches the store.
+    Native(&'static str),
+}
+
+/// Drive the shipped parent gate script with the shipped defaults over one fixture: the Primary's partition holds `rows`, this hook's
+/// own reader row sits at `own_row` (`None`: no own row, only the `#floor` row at `floor`), and the summary names `raw` unread at
+/// `cursor`. `shared` sets devswarm.parentGateSharedCount. `Some(n)`: the gate blocked naming n unread; `None`: it allowed.
+fn pg_fixture(tag: &str, shared: bool, rows: &[PgRow], own_row: Option<i64>, floor: i64, raw: u32, cursor: u32) -> Option<String> {
     use crate::meshw::ident;
-    use crate::meshw::store::{CursorPut, MeshStore, RegistryRow};
-    let esc = defaults::text("devswarm_role.pg_escalation");
-    let (peek, defect) = (esc.find("peek-primary"), esc.find("defect"));
-    assert!(peek.is_some() && defect.is_some() && peek < defect, "the escalation names the peek-primary step, then defect: {esc}");
+    use crate::meshw::store::{CursorPut, MeshStore, RegistryRow, mesh_message_row};
     let case = golden::lay(&json!({
-        "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
-        "event": "Stop", "opts": {"payload_sha1": "gate-384"},
-        "payload": {"hook_event_name": "Stop", "session_id": "gate-384", "cwd": "{HOME}/repo"},
+        "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex",
+                "ANTIHALL_DEVSWARM_PARENT_GATE_SHARED_COUNT": if shared { "true" } else { "false" }},
+        "event": "Stop", "opts": {"payload_sha1": format!("gate-{tag}")},
+        "payload": {"hook_event_name": "Stop", "session_id": format!("gate-{tag}"), "cwd": "{HOME}/repo"},
         "files": {}
     }));
     let repo = format!("{}/repo", case.home);
@@ -2382,7 +2389,7 @@ fn the_parent_gate_does_not_block_on_own_sends_and_still_blocks_on_a_real_unread
     let dir = crate::meshw::union::store_dir(Path::new(&case.home), &key);
     std::fs::create_dir_all(&dir).unwrap();
     let w = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
-    let row = RegistryRow {
+    let reg = RegistryRow {
         id: own.clone(),
         worktree_path: Some(top.clone()),
         session_id: Some("s-p".into()),
@@ -2390,44 +2397,85 @@ fn the_parent_gate_does_not_block_on_own_sends_and_still_blocks_on_a_real_unread
         cursor_path: None,
         nudge_command: None,
     };
-    assert!(w.upsert_registry(&row, 1, |_, _| true).unwrap());
-    for i in 0..6 {
-        w.append_message_from(&own, 10 + i, Some(&format!("in-{i}")), "from a child", Some("child-a")).unwrap();
+    assert!(w.upsert_registry(&reg, 1, |_, _| true).unwrap());
+    for (i, r) in rows.iter().enumerate() {
+        let (ts, h) = (10 + i as i64, format!("h-{i}"));
+        match *r {
+            PgRow::Child(b) => {
+                assert!(w.append_mesh_row(&mesh_message_row(Some("child-a"), Some(&own), false, b, ts, "normal", &h, true, None)).unwrap().inserted)
+            }
+            PgRow::Own(b) => assert!(w.append_mesh_row(&mesh_message_row(Some(&own), Some(&own), false, b, ts, "normal", &h, false, None)).unwrap().inserted),
+            PgRow::Native(b) => assert!(w.append_message_from(&own, ts, Some(&h), b, Some(&own)).unwrap()),
+        }
     }
-    for i in 0..2 {
-        w.append_message_from(&own, 20 + i, Some(&format!("own-{i}")), "my own send", Some(&own)).unwrap();
-    }
-    let put = CursorPut {
-        partition: own.clone(),
-        ns: defaults::text("mesh_write.cursor_ns_store").to_string(),
-        reader: defaults::text("mesh_write.floor_reader").to_string(),
-        value: 6,
-        retired_line: None,
-        updated_at: 1,
-    };
-    w.reader_cursor_txn(&[put]).unwrap();
     // a hook runs under a harness process: this test process stands in for it (a session record names its pid), so the gate has a reader key
     let sess = Path::new(&case.home).join(defaults::text("mesh_write.claude_dir")).join(defaults::text("mesh_write.sessions_dir"));
     std::fs::create_dir_all(&sess).unwrap();
     let pid = std::process::id();
     std::fs::write(sess.join(format!("{pid}{}", defaults::text("mesh_write.json_suffix"))), json!({"pid": pid, "startedAt": 1}).to_string()).unwrap();
-    let summary = |unread: u32, total: u32| {
-        json!({"workspaces": {own.clone(): {"id": own, "worktreePath": top, "unread": unread, "cursor": 6, "total": total}}}).to_string()
-    };
+    let ns = defaults::text("mesh_write.cursor_ns_store").to_string();
+    let mut puts = vec![CursorPut {
+        partition: own.clone(),
+        ns: ns.clone(),
+        reader: defaults::text("mesh_write.floor_reader").to_string(),
+        value: floor,
+        retired_line: None,
+        updated_at: 1,
+    }];
+    if let Some(v) = own_row {
+        let st = crate::checks::git::util::Settings { home: case.home.clone(), env: std::collections::HashMap::new() };
+        let reader = super::host_mesh::own_reader_key(&st).expect("the hook's own reader key");
+        puts.push(CursorPut { partition: own.clone(), ns, reader, value: v, retired_line: None, updated_at: 1 });
+    }
+    w.reader_cursor_txn(&puts).unwrap();
+    let total = rows.len();
+    let sum = json!({"workspaces": {own.clone(): {"id": own, "worktreePath": top, "unread": raw, "cursor": cursor, "total": total}}}).to_string();
     let sum_path = format!("{}/.anti-hall/devswarm/summaries/{key}.json", case.home);
     std::fs::create_dir_all(Path::new(&sum_path).parent().unwrap()).unwrap();
-    std::fs::write(&sum_path, summary(2, 8)).unwrap();
+    std::fs::write(&sum_path, sum).unwrap();
     let got = golden::run_case("devswarm-parent-gate", &case, 1).expect("a shipped gate");
     let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap_or_default();
-    assert!(matches!(got, Some(Verdict::Allow)), "cursor 6 / total 8 own sends only (peek 0) must not block: {got:?} {details}");
-    w.append_message_from(&own, 30, Some("real"), "a real question", Some("child-a")).unwrap();
-    std::fs::write(&sum_path, summary(1, 9)).unwrap();
-    let got = golden::run_case("devswarm-parent-gate", &case, 1).expect("a shipped gate");
-    let Some(Verdict::Exact(out)) = got else { panic!("a real unread must block: {got:?}") };
-    let answer: Value = serde_json::from_str(&out.out).expect("Stop decision JSON");
-    assert_eq!(answer["decision"], "block");
-    let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap();
-    assert!(details.contains("1 unread") && details.contains("peek-primary") && details.contains("defect"), "{details}");
+    match got {
+        Some(Verdict::Allow) => None,
+        Some(Verdict::Exact(out)) => {
+            let answer: Value = serde_json::from_str(&out.out).expect("Stop decision JSON");
+            assert_eq!(answer["decision"], "block", "{tag}: {}", out.out);
+            let n = details.split(" unread").next().and_then(|h| h.rsplit(|c: char| !c.is_ascii_digit()).next()).unwrap_or("?").to_string();
+            Some(n)
+        }
+        other => panic!("{tag}: unexpected verdict {other:?} {details}"),
+    }
+}
+
+/// GH #384 / PR #428: the parent gate's own-mailbox count, driven through the shipped gate script with the shipped defaults, for each
+/// fixture with devswarm.parentGateSharedCount on and off. Off must give what the base (`max(countFor, messageCount - own)`) gives.
+#[test]
+fn the_parent_gate_counts_the_shared_peek_count_when_on_and_the_old_projection_when_off() {
+    use PgRow::*;
+    let esc = defaults::text("devswarm_role.pg_escalation");
+    let (peek, defect) = (esc.find("peek-primary"), esc.find("defect"));
+    assert!(peek.is_some() && defect.is_some() && peek < defect, "the escalation names the peek-primary step, then defect: {esc}");
+    let six = [Child("c0"), Child("c1"), Child("c2"), Child("c3"), Child("c4"), Child("c5")];
+    let own_after = [&six[..], &[Own("mine 1"), Own("mine 2")]].concat();
+    let wake = "anti-hall wake: a mesh message is waiting for workspace x.";
+    // (tag, rows, own row, floor, summary raw, summary cursor, expected ON, expected OFF = base)
+    type Case = (&'static str, Vec<PgRow>, Option<i64>, i64, u32, u32, Option<&'static str>, Option<&'static str>);
+    let cases: Vec<Case> = vec![
+        ("own-sends-past-cursor", own_after.clone(), Some(6), 6, 2, 6, None, Some("2")),
+        ("own-sends-only", vec![Own("mine")], Some(0), 0, 1, 0, None, Some("1")),
+        ("child-unread", vec![Child("please review")], Some(0), 0, 1, 0, Some("1"), Some("1")),
+        ("child-wake-prefix", vec![Child("anti-hall wake: resolve conflict?")], Some(0), 0, 1, 0, Some("1"), Some("1")),
+        ("native-wake", vec![Native(wake)], Some(0), 0, 1, 0, None, Some("1")),
+        ("no-own-row", own_after.clone(), None, 6, 2, 6, None, Some("2")),
+    ];
+    let mut table = Vec::new();
+    for (tag, rows, own_row, floor, raw, cursor, on, off) in &cases {
+        let got_on = pg_fixture(&format!("{tag}-on"), true, rows, *own_row, *floor, *raw, *cursor);
+        let got_off = pg_fixture(&format!("{tag}-off"), false, rows, *own_row, *floor, *raw, *cursor);
+        table.push(format!("{tag}: on={got_on:?} (want {on:?}) off={got_off:?} (want {off:?})"));
+        assert_eq!((got_on.as_deref(), got_off.as_deref()), (*on, *off), "{}", table.join("\n"));
+    }
+    eprintln!("parent-gate fixtures:\n{}", table.join("\n"));
 }
 
 // ---- claim-evidence-guard (GH #313): a claim needs a tool call of this turn; pushed is not done ----
