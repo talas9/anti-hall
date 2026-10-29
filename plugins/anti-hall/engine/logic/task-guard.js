@@ -243,10 +243,19 @@ function tgPromptKey(p, transcript) {
   var pid = p[ah.cfg('task_guard.prompt_id_key')];
   if (typeof pid === 'string' && pid) return pid;
   var user = ah.cfg('task_guard.user_type');
-  // only the lines that name a user entry are read below, so only those are fetched
-  var lines = ah.fs.tailLines(transcript, ah.cfgNum('taskstate.tail_bytes'), false, ['"' + user + '"']);
+  // only the newest lines that name a user entry are fetched, newest first; a window whose newest `max` are all unusable (a long run of
+  // tool results) is read again whole, so the answer is the one a full scan gives
+  var max = ah.cfgNum('taskstate.prompt_key_max_lines'), needle = ['"' + user + '"'], bytes = ah.cfgNum('taskstate.tail_bytes');
+  var lines = ah.fs.tailLinesNewest(transcript, bytes, false, needle, max);
   if (lines === null) return '';
-  for (var i = lines.length - 1; i >= 0; i--) {
+  var key = tgNewestPromptKey(lines, user);
+  if (key === '' && max > 0 && lines.length >= max) key = tgNewestPromptKey(ah.fs.tailLinesNewest(transcript, bytes, false, needle, 0) || [], user);
+  return key;
+}
+
+// The uuid of the first real user entry of `lines` (newest first), or ''.
+function tgNewestPromptKey(lines, user) {
+  for (var i = 0; i < lines.length; i++) {
     var t = lines[i].trim();
     if (!t || t.indexOf('"' + user + '"') < 0) continue;
     var r = jx.parse(t);

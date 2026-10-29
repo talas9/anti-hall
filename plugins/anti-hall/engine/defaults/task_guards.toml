@@ -163,6 +163,11 @@ doc = "How much of the end of a transcript the task reconstruction reads (the No
 value = 1572864
 min = 1
 
+[taskstate.prompt_key_max_lines]
+doc = "How many of the newest user-entry lines of the transcript tail the task guard reads to find the newest real prompt (its key). Tool results are user entries too, so a long run of them is skipped; when the newest this-many are all unusable the whole tail is read, so the key is the same as a full scan gives. 0 reads every user line."
+value = 64
+min = 0
+
 [taskstate.store_base]
 doc = "Path parts, under the home directory, of Claude Code's own task store: one directory per task list, one `<id>.json` per task. It is the authoritative list when it exists (the transcript tail of a long session no longer holds the creates). Codex has no such store, so it keeps the transcript reconstruction."
 value = [".claude", "tasks"]

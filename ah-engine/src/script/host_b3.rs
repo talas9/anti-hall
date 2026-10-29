@@ -83,7 +83,7 @@ fn heredoc_at(cmd: &str, i: usize) -> Option<Vec<i64>> {
 /// (a `\r` before a newline goes with the separator, a lone one stays). With `needles`, only the lines that contain at least one of
 /// them (a plain substring, as `indexOf`) come back, in order: a script that skips every other line anyway no longer pulls them
 /// into the interpreter. `None` where `readTail` answers `null`.
-fn tail_lines_matching(path: &str, window: u64, crlf: bool, needles: &[String]) -> Option<Vec<String>> {
+pub(super) fn tail_lines_matching(path: &str, window: u64, crlf: bool, needles: &[String]) -> Option<Vec<String>> {
     let text = read_tail(path, window)?;
     let pieces = text.split('\n').collect::<Vec<_>>();
     let last = pieces.len().saturating_sub(1);
@@ -92,6 +92,26 @@ fn tail_lines_matching(path: &str, window: u64, crlf: bool, needles: &[String]) 
         let line = if crlf && i != last { piece.strip_suffix('\r').unwrap_or(piece) } else { piece };
         if needles.is_empty() || needles.iter().any(|n| line.contains(n.as_str())) {
             out.push(line.to_string());
+        }
+    }
+    Some(out)
+}
+
+/// `tailLinesNewest(path, window, crlf, needles, max)`: the same lines as `tailLines`, newest first, at most `max` of them (`0` = no
+/// cap): a script that only wants the newest line of some kind no longer pulls every matching line of the window into the interpreter.
+/// `None` where `readTail` answers `null`.
+pub(super) fn tail_lines_newest(path: &str, window: u64, crlf: bool, needles: &[String], max: usize) -> Option<Vec<String>> {
+    let text = read_tail(path, window)?;
+    let mut out = Vec::new();
+    let mut first = true; // the last piece of the split has no newline after it, so no `\r` goes with a separator
+    for piece in text.rsplit('\n') {
+        let line = if crlf && !first { piece.strip_suffix('\r').unwrap_or(piece) } else { piece };
+        first = false;
+        if needles.is_empty() || needles.iter().any(|n| line.contains(n.as_str())) {
+            out.push(line.to_string());
+            if max != 0 && out.len() >= max {
+                break;
+            }
         }
     }
     Some(out)
@@ -305,6 +325,12 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set(
         "tailLines",
         Function::new(c.clone(), |p: String, w: f64, crlf: bool, needles: Vec<String>| tail_lines_matching(&p, w.max(0.0) as u64, crlf, &needles))?,
+    )?;
+    h.set(
+        "tailLinesNewest",
+        Function::new(c.clone(), |p: String, w: f64, crlf: bool, needles: Vec<String>, max: f64| {
+            tail_lines_newest(&p, w.max(0.0) as u64, crlf, &needles, max.max(0.0) as usize)
+        })?,
     )?;
     h.set(
         "tailHasAny",
