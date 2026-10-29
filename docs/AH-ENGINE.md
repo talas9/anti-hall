@@ -1931,3 +1931,5 @@ Additional defaults files: `agent_nudge.toml`, `entry_audit.toml`, `io.toml`, `j
 The `memory_leak_notices` counter records retained-memory leak notices, labelled by `top`.
 
 The `switch-notice` check reports engine switches on tool events.
+
+The `tasklist_integration_skipped` counter records Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted (`guards.tasklistIntegrationSkip`). The `tasklist_progress_carried` counter records Stops where the session's progress file under an earlier date was used after midnight (`guards.tasklistCarryProgress`). The `command_heavy_segment_named` counter records heavy-command blocks of a chain that named the heavy segment (`guards.commandNameSegment`). All three appear under `advisory` in `ah-engine status`.
