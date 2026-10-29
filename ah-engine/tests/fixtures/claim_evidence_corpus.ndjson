@@ -1,0 +1,147 @@
+{"text": "All required tests pass.", "expect": "block", "source": "review-round1"}
+{"text": "Required changes are merged.", "expect": "block", "source": "review-round1"}
+{"text": "The criteria are met and PR #405 is merged.", "expect": "block", "source": "review-round1"}
+{"text": "It is safe to remove because PR #405 is merged.", "expect": "block", "source": "review-round1"}
+{"text": "The criteria require that PR #405 is merged; PR #406 is merged.", "expect": "block", "source": "review-round1"}
+{"text": "Confirmed successful deployment.", "expect": "block", "source": "review-round1"}
+{"text": "Personally verified every endpoint.", "expect": "block", "source": "review-round1"}
+{"text": "Verified production works.", "expect": "block", "source": "review-round1"}
+{"text": "We must hurry because PR #405 is merged.", "expect": "block", "source": "review-round2"}
+{"text": "We must celebrate because CI is green.", "expect": "block", "source": "review-round2"}
+{"text": "We must stop waiting because the suite is passing.", "expect": "block", "source": "review-round2"}
+{"text": "We must hurry now that PR #405 is merged.", "expect": "block", "source": "review-round2"}
+{"text": "The criterion requires that records be retained since PR #405 is merged.", "expect": "block", "source": "review-round2"}
+{"text": "The criterion requires that checks be documented because CI is green.", "expect": "block", "source": "review-round2"}
+{"text": "No further action is needed because PR #405 is merged.", "expect": "block", "source": "review-round2-probe"}
+{"text": "We will celebrate because PR #405 is merged.", "expect": "block", "source": "review-round2-probe"}
+{"text": "After a long investigation PR #405 is merged.", "expect": "block", "source": "review-round2-probe"}
+{"text": "Without any further delay the suite is passing.", "expect": "block", "source": "review-round2-probe"}
+{"text": "The policy requires that logs be retained thanks to the fact that CI is green.", "expect": "block", "source": "review-round3"}
+{"text": "The policy requires that logs be retained in that the service is deployed.", "expect": "block", "source": "review-round3"}
+{"text": "No cleanup is needed because PR #405 is merged.", "expect": "block", "source": "review-round3"}
+{"text": "We will celebrate given that the service is deployed.", "expect": "block", "source": "review-round3"}
+{"text": "We must ship today as CI is green.", "expect": "block", "source": "brief"}
+{"text": "We must move on since all tests pass.", "expect": "block", "source": "brief"}
+{"text": "We must note that PR #405 is merged.", "expect": "block", "source": "brief"}
+{"text": "The policy requires that we ship so PR #405 is merged.", "expect": "block", "source": "brief"}
+{"text": "The criteria require review given that PR #405 is merged.", "expect": "block", "source": "brief"}
+{"text": "The service is live.", "expect": "block", "source": "brief"}
+{"text": "The criteria require that PR #405 is merged.", "expect": "allow", "source": "brief"}
+{"text": "Safe to remove only when PR #405 is merged.", "expect": "allow", "source": "brief"}
+{"text": "PR #405 must be merged first.", "expect": "allow", "source": "brief"}
+{"text": "Ready once a NAS that has it is deployed.", "expect": "allow", "source": "brief"}
+{"text": "The release is not live yet.", "expect": "allow", "source": "brief"}
+{"text": "The report said \"the service is live\" but I have not checked.", "expect": "allow", "source": "brief"}
+{"text": "I will check whether that version is live.", "expect": "allow", "source": "brief"}
+{"text": "The checklist requires that CI is green.", "expect": "allow", "source": "brief"}
+{"text": "Each clone must be merged into main.", "expect": "allow", "source": "brief"}
+{"text": "The rule requires that all tests pass.", "expect": "allow", "source": "brief"}
+{"text": "I will roll it out once a NAS that has it is deployed.", "expect": "allow", "source": "pr413-peer-comment"}
+{"text": "It is not yet live on the NAS.", "expect": "allow", "source": "pr413-peer-comment"}
+{"text": "Nothing is merged this turn.", "expect": "allow", "source": "issue-376"}
+{"text": "Once #373 and #374 are merged, I will rebase.", "expect": "allow", "source": "issue-376"}
+{"text": "I'll merge once CI is green.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "Merge only if CI is green.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "I will merge it as soon as the build is green, then clean up.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "SAFE-TO-REMOVE requires that the branch is merged or fully pushed.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "A clone is safe to remove only when its work is merged or fully pushed.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "I haven't verified any of this.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "None of this is verified yet.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "CI is not confirmed green.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "Still waiting on CI to be green before the merge.", "expect": "allow", "source": "pr413-live-fp"}
+{"text": "Tests pass per the earlier run.", "expect": "allow", "source": "labelled"}
+{"text": "Unverified: the service is live.", "expect": "allow", "source": "labelled"}
+{"text": "The rule requires that logs rotate because CI is green.", "expect": "block", "source": "adversarial"}
+{"text": "We should celebrate since all tests pass.", "expect": "block", "source": "adversarial"}
+{"text": "Once teams merge given that the service is deployed.", "expect": "block", "source": "adversarial"}
+{"text": "Nothing else matters now that PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "We will ship today seeing as CI is green.", "expect": "block", "source": "adversarial"}
+{"text": "Not much changed, yet PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "Whether or not you agree, PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "No one asked, but the service is live.", "expect": "block", "source": "adversarial"}
+{"text": "According to plan, the service is live.", "expect": "block", "source": "adversarial"}
+{"text": "Once again the build is green.", "expect": "block", "source": "adversarial"}
+{"text": "It must be noted that PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "The checklist says to celebrate because PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "When I checked yesterday the release was live.", "expect": "block", "source": "adversarial"}
+{"text": "Until now nothing failed and all tests pass.", "expect": "block", "source": "adversarial"}
+{"text": "Without doubt the fix is deployed.", "expect": "block", "source": "adversarial"}
+{"text": "There is no reason to wait because CI is green.", "expect": "block", "source": "adversarial"}
+{"text": "We will celebrate inasmuch as the service is deployed.", "expect": "block", "source": "adversarial"}
+{"text": "The criteria require nothing more since PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "We'll merge after lunch and the service is live.", "expect": "block", "source": "adversarial"}
+{"text": "It's merged, and we're done: PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "Unverified claims aside, the service is live.", "expect": "block", "source": "adversarial"}
+{"text": "If we wait for review the change is merged.", "expect": "block", "source": "adversarial"}
+{"text": "I won't merge until CI is green.", "expect": "allow", "source": "coordinator"}
+{"text": "Wait until the service is live before testing.", "expect": "allow", "source": "coordinator"}
+{"text": "Do not report it done until the tests pass.", "expect": "allow", "source": "coordinator"}
+{"text": "CI is green and I won't wait.", "expect": "block", "source": "coordinator"}
+{"text": "CI is green.", "expect": "block", "source": "coordinator"}
+{"text": "I have not run the e2e suite. PR #405 is merged.", "expect": "block", "source": "adversarial"}
+{"text": "No doubt it is merged.", "expect": "block", "source": "review-round4-leak"}
+{"text": "No wonder it is live.", "expect": "block", "source": "review-round4-leak"}
+{"text": "No question it is deployed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "No kidding it is fixed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "No doubt CI is passing.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Once again CI is passing.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Once more CI is green.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Once again it is merged.", "expect": "block", "source": "review-round4-leak"}
+{"text": "If asked it is deployed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "If anything CI is green.", "expect": "block", "source": "review-round4-leak"}
+{"text": "If needed it is fixed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Until today it is live.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Until now CI is passing.", "expect": "block", "source": "review-round4-leak"}
+{"text": "After all it is merged.", "expect": "block", "source": "review-round4-leak"}
+{"text": "After all CI is green.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Whether acknowledged or not CI is green.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Not only is it deployed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "\"It is merged.\"", "expect": "block", "source": "review-round4-leak"}
+{"text": "CI is \"green\".", "expect": "block", "source": "review-round4-leak"}
+{"text": "The service is 'live'.", "expect": "block", "source": "review-round4-leak"}
+{"text": "Once again it is fixed.", "expect": "block", "source": "review-round4-leak"}
+{"text": "If CI is green the change is merged by the bot.", "expect": "allow", "source": "review-round4-overblock"}
+{"text": "According to the PR body the change is merged.", "expect": "allow", "source": "review-round4-overblock"}
+{"text": "Tests pass in my head but I did not run them; unverified.", "expect": "allow", "source": "review-round4-overblock"}
+{"text": "PR #405 must be merged first.", "expect": "allow", "source": "review-round4-allow"}
+{"text": "once a NAS that has it is deployed", "expect": "allow", "source": "review-round4-allow"}
+{"text": "The release is not live yet.", "expect": "allow", "source": "review-round4-allow"}
+{"text": "whether that version is live", "expect": "allow", "source": "review-round4-allow"}
+{"text": "I won't merge until CI is green.", "expect": "allow", "source": "review-round4-allow"}
+{"text": "No problem the service is live.", "expect": "block", "source": "round5-adversarial"}
+{"text": "No surprise CI is green.", "expect": "block", "source": "round5-adversarial"}
+{"text": "Once more the release is live.", "expect": "block", "source": "round5-adversarial"}
+{"text": "If so it is merged.", "expect": "block", "source": "round5-adversarial"}
+{"text": "Until then CI is green.", "expect": "block", "source": "round5-adversarial"}
+{"text": "In the end CI is green.", "expect": "block", "source": "round5-adversarial"}
+{"text": "\"All tests pass,\" and they do.", "expect": "block", "source": "round5-adversarial"}
+{"text": "The build is “green”.", "expect": "block", "source": "round5-adversarial"}
+{"text": "The bug is ‘fixed’.", "expect": "block", "source": "round5-adversarial"}
+{"text": "Without question the fix is deployed.", "expect": "block", "source": "round5-adversarial"}
+{"text": "If anyone asks the service is live.", "expect": "block", "source": "round5-adversarial"}
+{"text": "Once again, CI is green.", "expect": "block", "source": "round5-adversarial"}
+{"text": "If the build is green the release is published by the pipeline.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Once CI is green the PR is merged automatically.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Tests pass locally; unverified.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "The log shows \"all tests pass\" from the nightly job.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "The bot wrote 'CI is green' on the PR.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "No PR is merged yet.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Until CI is green nothing is merged.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "According to the release notes v2 is live.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "If the tests pass the change is merged by the queue.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Unless CI is green, it is not merged.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "PR #12 must be merged before the release.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Never mind CI is green.", "expect": "block", "source": "review-round4-pass"}
+{"text": "No, CI is passing.", "expect": "block", "source": "review-round4-pass"}
+{"text": "I think it is live.", "expect": "block", "source": "review-round4-pass"}
+{"text": "I believe it is fixed.", "expect": "block", "source": "review-round4-pass"}
+{"text": "Per worker CI is green.", "expect": "block", "source": "review-round4-pass"}
+{"text": "Per worker it is merged.", "expect": "block", "source": "review-round4-pass"}
+{"text": "Until now CI was red but CI is passing.", "expect": "block", "source": "review-round4-pass"}
+{"text": "Not today and it is merged.", "expect": "block", "source": "review-round4-pass"}
+{"text": "If asked: it is fixed.", "expect": "block", "source": "review-round4-pass"}
+{"text": "I'll merge once all PRs are merged.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Merge when all checks are green.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "Ping me if needed once CI is green.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "When needed the fix is deployed.", "expect": "block", "source": "round5-adversarial"}
+{"text": "I will merge after all PRs are merged.", "expect": "allow", "source": "round5-adversarial"}

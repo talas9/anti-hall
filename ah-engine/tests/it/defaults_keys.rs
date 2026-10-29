@@ -248,6 +248,8 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("dispatch.hooks_") // the dispatch table, read by host and event (dispatch::table::key)
             || k == "script.p95_budget_by_check" // read by tests/script_latency.rs, the go/no-go gate of the scripted checks
             || k.starts_with("procwatch.mode_") // each orphan class names its mode setting by key (procwatch.classes mode_key)
+            || matches!(k, "claim_evidence.neg_res" | "claim_evidence.neg_subject_res" | "claim_evidence.modal_res" | "claim_evidence.future_res" | "claim_evidence.reported_res" | "claim_evidence.criterion_res" | "claim_evidence.no_idiom_re" | "claim_evidence.opener_idiom_re") // each suppress row names its pattern list and idiom regex by key (claim_evidence.suppress list, idiom)
+            || k.starts_with("claim_evidence.reach_") && k != "claim_evidence.reach_label" // each suppress row names its reach by key (claim_evidence.suppress reach)
             || k.starts_with("devswarm_sup.duty.") // the supervisor duties, read by name from the ordered list devswarm_sup.duties
             || k.starts_with("devswarm_sup.set_") // Node settings entries, named by the duty that uses them (the duty's `sec` / `mode` fields)
     };
