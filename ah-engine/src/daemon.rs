@@ -1902,10 +1902,8 @@ fn watchdog(sh: Arc<Shared>) {
                 && limits::data_recycle_due(data_kb, cfg.mem_mb, cfg.mem_recycle_pct)
                 && !sh.rss_tripped.swap(true, SeqCst)
             {
-                let detail = defaults::render(
-                    "msg.log_data",
-                    &[("data", &data_kb.unwrap_or(0)), ("limit", &(cfg.mem_mb * 1024)), ("pct", &cfg.mem_recycle_pct)],
-                );
+                let detail =
+                    defaults::render("msg.log_data", &[("data", &data_kb.unwrap_or(0)), ("limit", &(cfg.mem_mb * 1024)), ("pct", &cfg.mem_recycle_pct)]);
                 health::log_event("recycle", "data", &detail);
                 health::log_event("memory", "breakdown", &sh.memory_line());
                 begin_drain(&sh, defaults::text("msg.exit_reason_data"), false);

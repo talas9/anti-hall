@@ -336,6 +336,14 @@ min = 0
 max = 100
 unit = "%"
 
+[daemon.mem_recycle_pct_base]
+doc = "The whole of daemon.mem_recycle_pct: 100 percent."
+value = 100
+
+[daemon.kb_per_mb]
+doc = "Kilobytes in a megabyte, to compare VmData (KB) with daemon.mem_mb (MB)."
+value = 1024
+
 [daemon.rlimit_ok_prefix]
 doc = "The prefix of the status word apply_mem_limit returns when the data-segment limit is in force."
 value = "ok:"

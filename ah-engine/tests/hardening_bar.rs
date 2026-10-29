@@ -867,7 +867,7 @@ fn proc_report(status: &str, limits: &str, fds: Option<usize>, fields: &[String]
     let mut out: Vec<String> = fields
         .iter()
         .filter_map(|f| {
-            let v = ah_engine::limits::status_field_kb(status, f).or_else(|| status.lines().find_map(|l| l.strip_prefix(f.as_str())).and_then(|v| v.trim().parse().ok()))?;
+            let v = ah_engine::limits::status_field_kb(status, f)?;
             Some(format!("{}={v}", f.trim_end_matches(':')))
         })
         .collect();
@@ -981,7 +981,9 @@ impl Watch {
                     let why =
                         if stalled { format!("no call completed for {} s", n("common.stall_report_s")) } else { gone_label(verdict.unwrap_or(Gone::Dead)) };
                     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-                    let mut out = format!("{key} {why} at {now_s}s after {done} calls: pid {pid} alive: {alive}; control socket: {ctl}; last /proc sample: {last_proc}\n");
+                    let mut out = format!(
+                        "{key} {why} at {now_s}s after {done} calls: pid {pid} alive: {alive}; control socket: {ctl}; last /proc sample: {last_proc}\n"
+                    );
                     for l in filter_log(&log, &words, log_lines) {
                         out.push_str(&format!("log: {l}\n"));
                     }

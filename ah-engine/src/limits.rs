@@ -333,7 +333,10 @@ pub fn vm_data_kb() -> Option<u64> {
 /// itself then, because past the ceiling an allocation fails and Rust aborts the process. `pct` 0 or `mem_mb` 0 turns it off.
 pub fn data_recycle_due(vm_data_kb: Option<u64>, mem_mb: u64, pct: u64) -> bool {
     match vm_data_kb {
-        Some(kb) if mem_mb > 0 && pct > 0 => kb.saturating_mul(100) >= mem_mb.saturating_mul(1024).saturating_mul(pct),
+        Some(kb) if mem_mb > 0 && pct > 0 => {
+            kb.saturating_mul(crate::defaults::num("daemon.mem_recycle_pct_base"))
+                >= mem_mb.saturating_mul(crate::defaults::num("daemon.kb_per_mb")).saturating_mul(pct)
+        }
         _ => false,
     }
 }
