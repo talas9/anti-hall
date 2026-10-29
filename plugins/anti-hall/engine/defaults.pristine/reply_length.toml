@@ -1,0 +1,99 @@
+# Reply-length guard, Stop, Claude and Codex. Replies are short by default and long only when the user asked for detail: a final reply
+# over the size limits is held once per owner turn with a two-line message (shorten, keep decision + evidence + next action, move the
+# detail to a file, PR or ledger and link it). A reply under both limits (a short ack included) is never read further.
+# Logic: engine/logic/reply-length-guard.js (reads the reply and the owner turn's text only). Every number, pattern and text is here.
+# Regular expressions in detail_res are Rust syntax (linear time, no look-around); fence_re is a JavaScript pattern.
+
+[reply_length.sw_guard]
+doc = "Switch guards.replyLengthGuard (default on): off lets any reply be any length."
+value = { section = "guards", key = "replyLengthGuard", type = "boolean", env = "ANTIHALL_REPLY_LENGTH_GUARD", option = "", default = true }
+
+[reply_length.sw_max_chars]
+doc = "Setting guards.replyMaxChars: the most visible characters of a final reply before it is held (fenced code is free up to code_allow_chars)."
+value = { type = "number", section = "guards", key = "replyMaxChars", env = "ANTIHALL_REPLY_MAX_CHARS", option = "", min = 100, max = 100000, default = 1200 }
+
+[reply_length.sw_max_lines]
+doc = "Setting guards.replyMaxLines: the most non-blank visible lines of a final reply before it is held (fenced code is free up to code_allow_lines)."
+value = { type = "number", section = "guards", key = "replyMaxLines", env = "ANTIHALL_REPLY_MAX_LINES", option = "", min = 3, max = 1000, default = 18 }
+
+[reply_length.guard_name]
+doc = "The guard id this check answers to in skip.json and in its messages."
+value = "reply-length-guard"
+
+[reply_length.summary]
+doc = "One-line description of the reply-length-guard check in the generated reference."
+value = "Stop (Claude and Codex): holds once per owner turn a final reply over guards.replyMaxChars / guards.replyMaxLines (fenced code free up to an allowance) when the user's last message did not ask for detail; asks to shorten to the limit and move the detail to a file, PR or ledger (guards.replyLengthGuard)."
+
+[reply_length.mode]
+doc = "What a hit does: block (the Stop is held, at most max_blocks times per owner turn) or log (the hit is only written to the engine log, for measuring noise before it acts)."
+value = "block"
+
+[reply_length.max_blocks]
+doc = "Most holds per cap_scope window; a new real owner turn resets it. The default 1 holds a turn once, so the guard can never loop."
+value = 1
+min = 1
+max = 5
+
+[reply_length.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap."
+value = "owner_turn"
+
+[reply_length.state_prefix]
+doc = "Prefix of the per-session state file name under the replykit state directory (the sanitised session id and the JSON extension follow)."
+value = "reply-length-state-"
+
+[reply_length.code_allow_lines]
+doc = "Non-blank lines of fenced code that do not count toward the line limit; only the excess counts."
+value = 60
+min = 0
+max = 10000
+
+[reply_length.code_allow_chars]
+doc = "Characters of fenced code that do not count toward the character limit; only the excess counts."
+value = 4000
+min = 0
+max = 1000000
+
+[reply_length.fence_re]
+doc = "A line that opens or closes a fenced code block (JavaScript pattern, matched per line)."
+value = '^\s*(?:`{3,}|~{3,})'
+
+[reply_length.detail_res]
+doc = "Phrases in the user's last message that ask for detail (a long reply is then allowed). Rust regular expressions, case-insensitive."
+value = [
+  '\bdetails?\b',
+  '\bdetailed\b',
+  '\bexplain\b',
+  '\bwhy\b',
+  '\bfull\s+(?:report|list|output|write-?up|breakdown)\b',
+  '\bin[\s-]+depth\b',
+  '\bwalk\s+me\s+through\b',
+  '\bhow\s+(?:does|do|did)\b',
+  '\bin\s+full\b',
+  '\bthorough(?:ly)?\b',
+  '\belaborate\b',
+]
+
+[reply_length.log_kind]
+doc = "Engine log kind written for a hit (fired) and for a suppressed one (detail asked, cap reached)."
+value = "reply_length"
+
+[reply_length.log_fired]
+doc = "Log text of a hit. Placeholders: {chars} {lines} {max_chars} {max_lines}."
+value = "fired: {chars} chars, {lines} lines (limit {max_chars} / {max_lines})"
+
+[reply_length.log_suppressed_asked]
+doc = "Log text of a long reply allowed because the user's last message asked for detail."
+value = "suppressed: detail asked"
+
+[reply_length.log_suppressed_cap]
+doc = "Log text of a long reply allowed because the block cap of this owner turn is used up."
+value = "suppressed: cap reached"
+
+[reply_length.msg_what]
+doc = "Block headline (one emoji, at most two lines in all). Placeholders: {chars} {lines} {max_chars} {max_lines}."
+value = "\U0001F4CF Reply is {chars} chars / {lines} lines; the limit is {max_chars} / {max_lines}."
+
+[reply_length.msg_instead]
+doc = "Block advice."
+value = "shorten to the limit keeping the decision, evidence and next action; move the detail to a file, PR or ledger and link it."
