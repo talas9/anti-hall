@@ -5,7 +5,7 @@
 # engine/logic/broad-kill-guard.js; every command list, pattern, number and text is here (D88).
 
 [broad_kill.sw]
-doc = "Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills."
+doc = "Switch for the broad-kill guard. Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills."
 value = { section = "guards", key = "broadKill", env = "ANTIHALL_BROAD_KILL", option = "", default = true }
 
 [broad_kill.guard_name]

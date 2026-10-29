@@ -42,7 +42,7 @@ doc = "A stdout redirect to a file (not /dev/null) in a command segment, JavaScr
 value = "(^|[^0-9&>])>>?\\s*(?!/dev/null)[^\\s&>|]"
 
 [upfront.setting]
-doc = "Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call."
+doc = "Switch for the switch-change notice. Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call."
 value = { section = "guards", key = "upfrontNotice", type = "boolean", env = "ANTIHALL_UPFRONT_NOTICE", option = "", default = true }
 
 [upfront.guard_name]
@@ -91,7 +91,7 @@ doc = "Text between guard names in a skip line."
 value = ", "
 
 [repeat.setting]
-doc = "Switch guards.repeatHint (default on): a guard that blocks the same session again and again appends what is allowed and a request to change approach."
+doc = "Switch for the repeated-block hint. Switch guards.repeatHint (default on): a guard that blocks the same session again and again appends what is allowed and a request to change approach."
 value = { section = "guards", key = "repeatHint", type = "boolean", env = "ANTIHALL_REPEAT_HINT", option = "", default = true }
 
 [repeat.min_blocks]

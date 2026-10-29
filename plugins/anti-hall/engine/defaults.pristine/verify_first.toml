@@ -82,7 +82,7 @@ doc = "Where the on/off switch of verify-first-full is read from (context.verify
 value = { section = "context", key = "verifyFirstSession", env = "", aliases = [], option = "context_verify_first_session", default = true }
 
 [verify_first.setting_once]
-doc = "Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start."
+doc = "Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start."
 value = { section = "context", key = "protocolOnce", env = "ANTIHALL_PROTOCOL_ONCE", aliases = [], option = "", default = true }
 
 [verify_first.delivery_dir]

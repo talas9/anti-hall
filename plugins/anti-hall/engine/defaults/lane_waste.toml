@@ -53,11 +53,11 @@ doc = "Default on; off lets a subagent run suite-scale test commands."
 value = { section = "guards", key = "laneTestGuard", type = "boolean", env = "ANTIHALL_LANE_TEST_GUARD", option = "", default = true }
 
 [lane_test.sw_allow_suites]
-doc = "Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside)."
+doc = "Lets a subagent run test suites. Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside)."
 value = { section = "guards", key = "allowTestSuites", type = "boolean", env = "ANTIHALL_ALLOW_TEST_SUITES", option = "", default = false }
 
 [lane_test.sw_policy]
-doc = "Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run."
+doc = "Test policy for subagents. Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run."
 value = { section = "guards", key = "testPolicy", env = "ANTIHALL_TEST_POLICY", aliases = [], option = "", default = "targeted", values = ["none", "targeted", "suites"] }
 
 [lane_test.sw_policy_main]

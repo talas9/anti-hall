@@ -79,6 +79,17 @@
             "id": "agent-reminders"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PostToolUse",
+            "timeout": 10,
+            "id": "advisor-guard:pass"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -90,6 +101,12 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUseFailure || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PostToolUseFailure",
             "timeout": 10,
             "id": "failure-root-cause-nudge"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUseFailure || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PostToolUseFailure",
+            "timeout": 10,
+            "id": "advisor-guard:failure"
           }
         ]
       }
@@ -373,6 +390,17 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PreToolUse",
             "timeout": 10,
             "id": "switch-notice"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PreToolUse",
+            "timeout": 10,
+            "id": "advisor-guard"
           }
         ]
       }

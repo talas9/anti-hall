@@ -1,0 +1,145 @@
+# Advisor mode (GH #404, phase 1): keeps the hard decisions on the advisor model when the session has an `advisor` tool.
+# Three rules, each with its own switch (guards.advisorReview, guards.advisorPlan, guards.advisorRetry), each silent unless the
+# session shows the advisor tool (an `advisor` tool_use in its transcript, or the tool listed in the hook payload), each blocking
+# ONCE per trigger through the advisory layer (caps and counters: advisory.toml), never on a Stop continuation, failing open.
+#   review: model-routing.js (PreToolUse Agent/Task), a review-shaped spawn on a non-flagship model.
+#   plan:   advisor-guard.js (PreToolUse Write/Edit/MultiEdit/ExitPlanMode), a plan written with no advisor call this task.
+#   retry:  advisor-guard.js (PostToolUseFailure Bash + PreToolUse Write/Edit/MultiEdit), the same file edited again after a
+#           failed test or build that followed its first edit, with no advisor call in between. A passing test or build
+#           (PostToolUse Bash) clears the failure and the edit record.
+# The decision logic is engine/logic/advisor-guard.js, engine/logic/lib/53-advisor.js and engine/logic/model-routing.js; every
+# list, pattern, number and text is here (D88).
+
+[advisor.summary]
+doc = "One-line description of the advisor-guard check in the generated reference."
+value = "Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing."
+
+[advisor.guard_name]
+doc = "The skip.json key and block label of the advisor rules."
+value = "advisor-guard"
+
+[advisor.sw_review]
+doc = "Blocks a review agent on a non-flagship model once. Default on, advisor sessions only."
+value = { section = "guards", key = "advisorReview", type = "boolean", env = "ANTIHALL_ADVISOR_REVIEW", option = "", default = true }
+
+[advisor.sw_plan]
+doc = "Blocks a plan written with no advisor call once. Default on, advisor sessions only."
+value = { section = "guards", key = "advisorPlan", type = "boolean", env = "ANTIHALL_ADVISOR_PLAN", option = "", default = true }
+
+[advisor.sw_retry]
+doc = "Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only."
+value = { section = "guards", key = "advisorRetry", type = "boolean", env = "ANTIHALL_ADVISOR_RETRY", option = "", default = true }
+
+[advisor.tool_names]
+doc = "Names of the advisor tool, in a transcript tool_use block or in the payload's tool list."
+value = ["advisor"]
+
+[advisor.block_types]
+doc = "Transcript content-block types that are a tool call (the advisor is a server tool, so its block may be server_tool_use)."
+value = ["tool_use", "server_tool_use"]
+
+[advisor.payload_tool_keys]
+doc = "Hook payload fields that may list the tools available to the session (an array of names or of objects with a name); the advisor counts as available when one names it."
+value = ["tools", "available_tools", "allowed_tools"]
+
+[advisor.window_bytes]
+doc = "Bytes of the transcript tail read to find advisor calls and the last user message."
+value = 4194304
+min = 4096
+unit = "bytes"
+
+[advisor.line_max_bytes]
+doc = "A transcript line longer than this is skipped when looking for advisor calls."
+value = 1048576
+min = 1024
+unit = "bytes"
+
+[advisor.max_lines]
+doc = "Most transcript lines read from the tail."
+value = 4000
+min = 10
+
+[advisor.review_signals]
+doc = "Token phrases that make an agent spawn review-shaped (matched against its description and agent type like model_routing.complex). Reviews and plans only: audits and scans may run on a cheaper model."
+value = ["review", "reviewer", "critique", "critic"]
+
+[advisor.generic_agent_types]
+doc = "Agent types (lower case) that carry no model of their own, so a spawn without a model inherits the session tier. Any other agent type is a named agent whose own definition may set the model, so the review rule leaves it alone."
+value = ["", "general-purpose"]
+
+[advisor.plan_tools]
+doc = "Tool names that always count as writing a plan."
+value = ["ExitPlanMode"]
+
+[advisor.plan_file_re]
+doc = "Regular expression (Rust syntax) of a file path that is a plan file: PLAN.md anywhere, or a markdown file in a plans directory."
+value = '(?i)(?:^|/)PLAN\.md$|(?:^|/)(?:\.omc/plans|\.claude/plans|\.anti-hall/plans|plans)/[^/]+\.md$'
+
+[advisor.edit_tools]
+doc = "Tool names whose file_path is an edit target."
+value = ["Write", "Edit", "MultiEdit"]
+
+[advisor.test_cmd_re]
+doc = "Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run."
+value = '\b(?:cargo\s+(?:\+\S+\s+)?(?:test|nextest|build|check|clippy)|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|node\s+--test|pytest|go\s+(?:test|build|vet)|make\s+(?:test|check|build)?|tsc|jest|vitest|flutter\s+test|dart\s+test|gradle\w*\s+(?:test|build)|mvn\s+(?:test|verify|package))\b'
+
+[advisor.test_file_re]
+doc = "Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run)."
+value = '(?i)(?:^|/)(?:tests?|__tests__|specs?)/|[._-](?:test|spec)\.[A-Za-z0-9]+$|_tests?\.[A-Za-z0-9]+$|(?:^|/)test_[^/]+$'
+
+[advisor.state_prefix]
+doc = "File-name prefix of the per-session retry state."
+value = "advisor-retry"
+
+[advisor.state_ext]
+doc = "File-name extension of the per-session retry state."
+value = ".json"
+
+[advisor.session_safe_max]
+doc = "Longest session-id part kept in a state file name."
+value = 128
+min = 8
+
+[advisor.kind_review]
+doc = "Advisory kind (counters and cap) of the review rule."
+value = "advisor_review"
+
+[advisor.kind_plan]
+doc = "Advisory kind (counters and cap) of the plan rule."
+value = "advisor_plan"
+
+[advisor.kind_retry]
+doc = "Advisory kind (counters and cap) of the retry rule."
+value = "advisor_retry"
+
+[advisor.msg_review_what]
+doc = "Block text of the review rule. Placeholder: {model}."
+value = "A review-shaped agent on {model} is not allowed while the advisor is available."
+
+[advisor.msg_review_instead]
+doc = "What to do instead for the review rule."
+value = "Use an Opus, Fable or Codex agent for the review, or call the advisor yourself; retry this spawn once if the model is deliberate."
+
+[advisor.msg_plan_what]
+doc = "Block text of the plan rule."
+value = "A plan is being written with no advisor call since the task began."
+
+[advisor.msg_plan_instead]
+doc = "What to do instead for the plan rule."
+value = "Call the advisor on this plan first, then write it."
+
+[advisor.msg_retry_what]
+doc = "Block text of the retry rule. Placeholder: {file}."
+value = "{file} is being edited again after a failed test or build, with no advisor call in between."
+
+[advisor.msg_retry_instead]
+doc = "What to do instead for the retry rule."
+value = "Consult the advisor on the failure before editing again."
+
+[advisor.msg_why]
+doc = "The reason line shared by the three rules."
+value = "Hard decisions (review, plan, retry after a failure) belong to the advisor model."
+
+[advisor.unknown_model_label]
+doc = "Label shown in the review block when the spawn names no model. Placeholder: {model} (the resolved session tier)."
+value = "the inherited {model} session tier"

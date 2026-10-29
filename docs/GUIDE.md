@@ -1167,6 +1167,18 @@ uninstaller directly: `~/.anti-hall/ah-engine/bin/ah-engine uninstall-statusline
 
 See `statusline/STATUSLINE.md` for details and how to revert.
 
+### Recommended setup: Sonnet main + Opus advisor
+
+Run a cheaper main model (Sonnet) and give the session an `advisor` tool backed by a stronger model (Opus). The main model rarely consults the advisor unprompted, so advisor mode routes three hard decisions through it. Each rule has its own switch, blocks once per trigger, is capped per session (`advisory.cap_hard_by_kind`), skips a Stop continuation (`stop_hook_active`), fails open, and stays silent unless an `advisor` tool call appears in the session transcript or the hook payload lists the tool.
+
+| Rule | Trigger | Switch |
+|---|---|---|
+| Review | an Agent/Task spawn whose description reads as a review or audit, on a non-flagship model | `guards.advisorReview` |
+| Plan | ExitPlanMode, or writing a plan file (PLAN.md, a plans/ markdown file), with no advisor call since the last user message | `guards.advisorPlan` |
+| Retry | a failed test or build command, then a second edit of the same file with no advisor call between | `guards.advisorRetry` |
+
+Lists, patterns, caps and texts live in `engine/defaults/advisor.toml` and `advisory.toml`, so tuning needs no rebuild. Not in phase 1: red-CI and Stop-block failures arming the retry rule, and a pass resetting it. The Codex port has no advisor tool; see its README.
+
 ## Settings (`/anti-hall:settings`)
 
 Every user-facing anti-hall setting lives in ONE place: `~/.anti-hall/settings.json`,
@@ -1329,6 +1341,9 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 | `guards.progressFreshMs` adv | `1800000` [0..] | `ANTIHALL_PROGRESS_FRESH_MS` | Freshness window (ms) for the progress file in tasklist-guard. |
 | `guards.apiGuardThirdparty` adv | `false` | `ANTIHALL_API_GUARD_THIRDPARTY` | Also verify installed 3rd-party package APIs, not just stdlib/builtins. |
 | `guards.modelRouting` | `strict` (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` | model-routing-guard (PreToolUse Agent/Task): strict blocks a mis-tiered spawn, advisory only warns, off disables the hook. |
+| `guards.advisorReview` | `true` | `ANTIHALL_ADVISOR_REVIEW` | advisor mode, review rule: blocks once a review-shaped agent spawn on a non-flagship model. Active only when the session has an `advisor` tool |
+| `guards.advisorPlan` | `true` | `ANTIHALL_ADVISOR_PLAN` | advisor mode, plan rule: blocks once a plan (ExitPlanMode, a plan file) written with no advisor call since the last user message. Active only with an `advisor` tool |
+| `guards.advisorRetry` | `true` | `ANTIHALL_ADVISOR_RETRY` | advisor mode, retry rule: blocks once a second edit of the same file after a failed test or build with no advisor call in between. Active only with an `advisor` tool |
 | `guards.updateInSession` | `true` | `ANTIHALL_UPDATE_IN_SESSION` | model-routing-guard blocks a subagent spawn that runs anti-hall's own update (`ah-engine update` or `run /anti-hall:update`): `update.js` runs migrations, so `/anti-hall:update` runs it in the main session and command-guard allows that exact invocation. off allows delegating it. |
 | `guards.noBlockingQuestions` adv | `off` (off/advise/block) | `ANTIHALL_NO_BLOCKING_QUESTIONS` | ask-guard (PreToolUse AskUserQuestion, Claude only): `advise` allows the question and adds the standing rule "take the recommended option, say which, continue; list destructive items as a non-blocking 'needs your OK' line"; `block` refuses the call unless the FIRST question's `header` or `question` text starts with `DESTRUCTIVE:` or `CREDENTIAL:` (case-sensitive; each marked call is logged to `~/.anti-hall/logs/ask-guard.ndjson`). In a DevSwarm child workspace it also says to send the question to the parent. Skip name `ask-guard`. Skills that deliberately ask the user (`settings`, `deadly-loop`, `deadly-loop-multi`, `ship-it`, `devswarm`) are not rewritten: in block mode those flows must use the `DESTRUCTIVE:`/`CREDENTIAL:` marker, or turn the setting off for them. |
 | `guards.questionAgentsNote` adv | `true` | `ANTIHALL_QUESTION_AGENTS_NOTE` | ask-guard (PreToolUse AskUserQuestion, Claude only): when a question is asked while one or more background agents are provably in flight (agent-scan reads the transcript), add one advisory line naming how many and their short descriptions, saying they may act on an option before the answer arrives (pause them or tell them to wait). Silent when no agent is running or the count cannot be proven (unreadable or too-long transcript). Never blocks; independent of `guards.noBlockingQuestions`, so it works with that set to `off`. Skip name `ask-guard`. |

@@ -277,6 +277,9 @@ pub static SWITCH_NOTICE: Scripted = Scripted::new("switch-notice", "upfront.sum
 /// `wide-search-guard` (PreToolUse on Bash, every agent; engine-only; GH #174): blocks a whole-disk search rooted at /, ~, /Users or /Volumes.
 pub static WIDE_SEARCH_GUARD: Scripted = Scripted::new("wide-search-guard", "wide_search.summary");
 
+/// `advisor-guard` (PreToolUse Write/Edit/MultiEdit/ExitPlanMode, PostToolUseFailure Bash; engine-only; GH #404).
+pub static ADVISOR_GUARD: Scripted = Scripted::new("advisor-guard", "advisor.summary");
+
 /// `engine-role-note` (SessionStart and SubagentStart; engine-only).
 pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");
 

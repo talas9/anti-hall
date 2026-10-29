@@ -54,7 +54,7 @@ value = { task_open_line = 12, task_demand_line = 12 }
 
 [advisory.cap_hard_by_kind]
 doc = "Per-kind override of advisory.cap_hard_default."
-value = { task_open_line = 60, task_demand_line = 60 }
+value = { task_open_line = 60, task_demand_line = 60, advisor_review = 3, advisor_plan = 3, advisor_retry = 3 }
 
 [advisory.fallback_per_session]
 doc = "How many times per session the rule-only fallback of a judgment advisory may fire when Jev cannot confirm it (error, no key, too slow)."
