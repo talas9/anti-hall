@@ -2651,3 +2651,184 @@ fn tail_lines_newest_gives_the_prompt_key_a_full_scan_gives() {
     assert_eq!(super::host_b3::tail_lines_newest(&p, 1 << 20, true, &n, 0).unwrap(), o);
     assert!(super::host_b3::tail_lines_newest(&format!("{h}/none"), 1 << 20, false, &n, 3).is_none());
 }
+
+// ---- afk-mode (GH #425): the machine-wide AFK flag, idle detection, the digest, the capped Stop hold, the counters ----
+mod afk_mode {
+    use super::*;
+
+    /// The tests share the process-wide pending metric table: one at a time, so a drain never takes another test's counts.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn run(h: &str, ev: &str, extra: Value, envs: &[(&str, &str)]) -> Option<Option<Verdict>> {
+        let mut payload = json!({"hook_event_name": ev, "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            payload[k] = v;
+        }
+        let mut pairs = vec![("HOME".to_string(), h.to_string())];
+        pairs.extend(envs.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        super::super::run_forced("afk-mode", &payload, &Value::Null, ev, &RequestEnv::from_pairs(pairs))
+    }
+
+    fn out(v: &Option<Option<Verdict>>) -> String {
+        match v {
+            Some(Some(Verdict::Exact(x))) => x.out.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn flag(h: &str) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/afk.json")).unwrap_or_default()).unwrap_or(Value::Null)
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn progress(h: &str) -> String {
+        let date = &crate::checks::taskkit::time::iso(crate::checks::taskkit::time::now_ms())[..10];
+        format!("{h}/.anti-hall/progress/{date}/s1.md")
+    }
+
+    #[test]
+    fn typed_afk_starts_it_counts_it_and_is_not_sent_to_the_model() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-typed");
+        drained();
+        let v = run(&h, "UserPromptSubmit", json!({"prompt": "  AFK "}), &[]);
+        let o = out(&v);
+        assert!(o.contains("\"decision\":\"block\"") && o.contains("AFK on"), "{o}");
+        let f = flag(&h);
+        assert_eq!(f["on"], json!(true));
+        assert_eq!(f["how"], json!("prompt"));
+        assert_eq!(f["counted"], json!(true));
+        let m = drained();
+        assert_eq!(m.counter("afk_entered", &[("how", "prompt")]), 1);
+        // a manual period from the CLI (counted=false) is counted once by the next hook
+        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": false, "pending_digest": 3}).to_string()).unwrap();
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        let m = drained();
+        assert_eq!(m.counter("afk_entered", &[("how", "manual")]), 1);
+        assert_eq!(m.counter("digest_entries", &[]), 3);
+    }
+
+    #[test]
+    fn idle_detection_trips_after_the_idle_minutes_and_the_next_owner_prompt_ends_it() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-idle");
+        drained();
+        // no recorded owner prompt: never trips
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        assert_eq!(flag(&h), Value::Null);
+        // a prompt long ago: the next tool call trips idle and injects the rule once
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        let o = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert_eq!(flag(&h)["how"], json!("idle"));
+        assert!(o.contains("AFK MODE"), "{o}");
+        assert!(out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[])).is_empty(), "the rule is injected once");
+        let m = drained();
+        assert_eq!(m.counter("idle_trips", &[]), 1);
+        assert_eq!(m.counter("afk_entered", &[("how", "idle")]), 1);
+        // a harness notification is not the owner
+        run(&h, "UserPromptSubmit", json!({"prompt": "<task-notification>done</task-notification>"}), &[]);
+        assert_eq!(flag(&h)["on"], json!(true));
+        // the owner's prompt ends an idle AFK
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "how is it going"}), &[]));
+        assert_eq!(flag(&h)["on"], json!(false));
+        assert!(o.contains("ended"), "{o}");
+        // idle detection off: no trip
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"idleDetect": false}}).to_string()).unwrap();
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        assert_eq!(flag(&h)["on"], json!(false));
+    }
+
+    #[test]
+    fn the_digest_prints_the_bullets_since_the_marker_with_a_percentage_and_back_ends_it() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-digest");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        // the first tool call of the session writes the marker into its progress file
+        let o = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert!(o.contains("AFK MODE"), "{o}");
+        let p = progress(&h);
+        let mut text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert!(text.contains("<!-- afk:"), "{text}");
+        text.push_str("- [x] built the flag\n- [ ] tests pending\nnot a bullet\n");
+        std::fs::write(&p, &text).unwrap();
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "progress"}), &[]));
+        assert!(o.contains("built the flag") && o.contains("tests pending") && o.contains("50% (1/2"), "{o}");
+        assert!(!o.contains("not a bullet"), "{o}");
+        assert_eq!(flag(&h)["on"], json!(true), "progress does not end AFK");
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "back"}), &[]));
+        assert!(o.contains("AFK off") && o.contains("built the flag"), "{o}");
+        assert_eq!(flag(&h)["on"], json!(false));
+        assert_eq!(drained().counter("digest_entries", &[]), 4);
+    }
+
+    #[test]
+    fn an_overlong_afk_reply_is_nudged_once_then_held_at_most_max_blocks_times() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-enforce");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let long = "line\n".repeat(10);
+        let stop = |extra: Value| out(&run(&h, "Stop", extra, &[]));
+        assert!(stop(json!({"last_assistant_message": "done."})).is_empty(), "a one-line reply passes");
+        assert!(stop(json!({"last_assistant_message": long})).is_empty(), "the first overlong reply is nudged, not held");
+        let o = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert!(o.contains("your last reply was"), "the nudge reaches the next turn: {o}");
+        assert!(stop(json!({"last_assistant_message": long, "stop_hook_active": true})).is_empty(), "never on stop_hook_active");
+        assert!(stop(json!({"last_assistant_message": long})).contains("\"decision\":\"block\""), "then held");
+        assert!(stop(json!({"last_assistant_message": long})).is_empty(), "capped at afk.max_blocks (1)");
+        let m = drained();
+        assert_eq!(m.counter("afk_overlong_turns", &[("action", "nudge")]), 1);
+        assert_eq!(m.counter("afk_overlong_turns", &[("action", "block")]), 1);
+        assert_eq!(m.counter("afk_overlong_turns", &[("action", "capped")]), 1);
+        assert_eq!(m.counter("afk_turns", &[]), 4, "a stop_hook_active Stop is not a turn");
+        // enforcement off: never held
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"enforce": false}}).to_string()).unwrap();
+        std::fs::remove_file(format!("{h}/.anti-hall/afk-sess-s1.json")).unwrap();
+        for _ in 0..3 {
+            assert!(stop(json!({"last_assistant_message": long})).is_empty());
+        }
+    }
+
+    #[test]
+    fn output_tokens_per_turn_are_measured_from_usage_split_afk_vs_present() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-tokens");
+        drained();
+        let a = |id: &str, n: u64| json!({"type": "assistant", "message": {"id": id, "role": "assistant", "usage": {"output_tokens": n}, "content": [{"type": "text", "text": "x"}]}});
+        let lines = [
+            json!({"type": "user", "message": {"role": "user", "content": "earlier"}}),
+            a("m0", 999),
+            json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+            a("m1", 50),
+            a("m1", 50),
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "u", "content": "ok"}]}}),
+            a("m2", 30),
+        ];
+        std::fs::write(format!("{h}/t.jsonl"), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        run(&h, "Stop", json!({"last_assistant_message": "ok"}), &[]);
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        run(&h, "Stop", json!({"last_assistant_message": "ok"}), &[]);
+        let m = drained();
+        assert_eq!(m.counter("afk_output_tokens", &[("mode", "present")]), 80, "the turn since the last owner prompt, m1 counted once");
+        assert_eq!(m.counter("afk_turns_measured", &[("mode", "present")]), 1);
+        assert_eq!(m.counter("afk_output_tokens", &[("mode", "afk")]), 80);
+    }
+
+    #[test]
+    fn the_master_switch_off_leaves_prompts_alone() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-off");
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"enabled": false}}).to_string()).unwrap();
+        assert_eq!(run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]), Some(Some(Verdict::Allow)));
+        assert_eq!(flag(&h), Value::Null);
+        drained();
+    }
+}

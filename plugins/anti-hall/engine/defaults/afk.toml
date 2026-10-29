@@ -1,0 +1,327 @@
+# AFK mode (GH #425): silent work with a bullet digest while the owner is away. One check, `afk-mode` (engine-only, no Node twin),
+# runs on UserPromptSubmit, PostToolUse and Stop (Claude) and on SessionStart, UserPromptSubmit and PostToolUse (Codex):
+#   1. signals: the machine-wide flag file (afk.flag_file under the per-user state directory) is set by `ah-engine afk on`, by the
+#      owner typing `afk`, or by idle detection (no owner prompt for afk.idleMinutes); it lasts until `back` (`ah-engine back` or the
+#      owner typing `back`); an idle-entered AFK also ends on the owner's next prompt;
+#   2. behaviour: the rule (afk.rule_text) is injected once per session when AFK starts, plus a short reminder at a capped interval in
+#      long turns; existing guards are unchanged;
+#   3. digest: the session's own progress file (.anti-hall/progress/<date>/<session>.md) gets an AFK marker line; the agent appends
+#      one checklist bullet per milestone after it; `back` / `progress` print the bullets since the marker with a percentage;
+#   4. enforcement (owner decision, overrides #425 (d) "no blocking guard"): while AFK, a Stop whose final reply is over the limits
+#      is nudged once, then held at most afk.max_blocks times per AFK period and session (never on stop_hook_active, fail-open);
+#   5. measurement: output tokens per turn from the transcript usage fields, split AFK vs present (afk_output_tokens{mode}).
+# Logic: engine/logic/afk-mode.js. Every phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax.
+
+[afk.set_enabled]
+doc = "The afk.enabled setting (master switch): off turns the whole AFK feature off (no idle detection, no prompt commands, no rule, no enforcement, no measurement); the `ah-engine afk` verbs still edit the flag."
+value = { section = "afk", key = "enabled", kind = "bool", env = "ANTIHALL_AFK", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.set_idle]
+doc = "The afk.idleDetect setting: enter AFK by itself after afk.idleMinutes without an owner prompt on this machine."
+value = { section = "afk", key = "idleDetect", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.set_idle_minutes]
+doc = "The afk.idleMinutes setting: minutes without an owner prompt (any session on this machine) after which AFK starts by itself."
+value = { section = "afk", key = "idleMinutes", kind = "num", env = "", aliases = [], option = "", manifest_default = "", default = 20, min = 1, max = 1440 }
+
+[afk.set_prompt_commands]
+doc = "The afk.promptCommands setting: a prompt that is exactly one of afk.words_on / afk.words_off / afk.words_progress is answered by the hook (the prompt is not sent to the model)."
+value = { section = "afk", key = "promptCommands", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.set_enforce]
+doc = "The afk.enforce setting: while AFK, nudge once and then hold (at most afk.max_blocks times) a Stop whose final reply is over afk.max_reply_chars or afk.max_reply_lines."
+value = { section = "afk", key = "enforce", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.set_measure]
+doc = "The afk.measure setting: count each main-session turn's output tokens from the transcript usage fields, split AFK vs present (afk_output_tokens{mode})."
+value = { section = "afk", key = "measure", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.set_concise_codex]
+doc = "The afk.conciseCodex setting: on Codex (no output styles), inject the concise reply rule (afk.concise_text) once at session start. On Claude the shipped output style `concise` (force-for-plugin) carries the same rule."
+value = { section = "afk", key = "conciseCodex", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.guard_name]
+doc = "The guard id this check answers to in skip.json and in its messages."
+value = "afk-mode"
+
+[afk.summary]
+doc = "One-line description of the afk-mode check in the generated reference."
+value = "UserPromptSubmit, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse (Codex): AFK mode. Machine-wide flag (ah-engine afk on|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file, a capped Stop hold of overlong AFK replies, output tokens per turn AFK vs present (afk.*)."
+
+[afk.flag_file]
+doc = "The machine-wide AFK flag file, under the per-user state directory (replykit.state_dir). JSON {on, how, since, epoch, counted, pending_digest}."
+value = "afk.json"
+
+[afk.presence_file]
+doc = "The machine-wide owner-presence file (time of the last owner prompt), under the per-user state directory."
+value = "afk-presence.json"
+
+[afk.session_prefix]
+doc = "Prefix of the per-session AFK state file under the per-user state directory (the sanitised session id and the JSON extension follow). `ah-engine back` reads these to find each session's progress file."
+value = "afk-sess-"
+
+[afk.session_id_unsafe]
+doc = "Characters removed from a session id before it becomes part of a file name (regular expression, JavaScript syntax)."
+value = "[^A-Za-z0-9_.-]"
+
+[afk.how_manual]
+doc = "The `how` value of an AFK entered with `ah-engine afk on`."
+value = "manual"
+
+[afk.how_prompt]
+doc = "The `how` value of an AFK entered by the owner typing an afk.words_on prompt."
+value = "prompt"
+
+[afk.how_idle]
+doc = "The `how` value of an AFK entered by idle detection (it ends on the owner's next prompt)."
+value = "idle"
+
+[afk.words_on]
+doc = "Prompts (trimmed, compared case-insensitively) that start AFK mode."
+value = ["afk"]
+
+[afk.words_off]
+doc = "Prompts that end AFK mode and print the digest."
+value = ["back"]
+
+[afk.words_progress]
+doc = "Prompts that print the digest without changing the mode."
+value = ["progress"]
+
+[afk.non_owner_prompt_res]
+doc = "Prompts that are not the owner typing (harness notifications, injected reminders): they neither record presence nor end an idle-entered AFK. Regular expressions, case-insensitive."
+value = ["^\\s*<task-notification>", "^\\s*<system-reminder>", "^\\s*<teammate-message"]
+
+[afk.ups_block]
+doc = "The stdout line of a UserPromptSubmit that answers a typed command itself: the prompt is not sent to the model and {reason} (JSON-quoted) is shown to the owner."
+value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
+
+[afk.ctx_line]
+doc = "The stdout line that injects {text} (JSON-quoted) as additional context for {event}."
+value = "{\"hookSpecificOutput\":{\"hookEventName\":\"{event}\",\"additionalContext\":{text}}}\n"
+
+[afk.stop_block]
+doc = "The stdout line of a Stop that holds the reply with {reason} (JSON-quoted)."
+value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
+
+[afk.marker_prefix]
+doc = "Start of the AFK marker line in a progress file; the digest is every line after the LAST marker."
+value = "<!-- afk:"
+
+[afk.marker_text]
+doc = "The marker block appended to the session's progress file when AFK starts. Placeholders: {epoch}, {iso}, {how}."
+value = "\n<!-- afk:{epoch} -->\n## AFK since {iso} ({how})\n"
+
+[afk.bullet_re]
+doc = "A digest entry: a bullet line after the marker (regular expression)."
+value = "^\\s*[-*] "
+
+[afk.done_re]
+doc = "A finished checklist bullet (counts toward the percentage as done)."
+value = "^\\s*[-*] \\[[xX]\\] "
+
+[afk.open_re]
+doc = "An open checklist bullet (counts toward the percentage as not done)."
+value = "^\\s*[-*] \\[ \\] "
+
+[afk.digest_max_entries]
+doc = "Most bullets one digest prints per progress file (the newest are kept; the count of left-out bullets is shown)."
+value = 40
+min = 1
+max = 500
+
+[afk.digest_max_files]
+doc = "Most session progress files `ah-engine back` reads for one AFK period."
+value = 20
+min = 1
+max = 200
+
+[afk.read_max_bytes]
+doc = "Most bytes of one progress file read for a digest (the tail is read)."
+value = 262144
+min = 4096
+max = 4194304
+
+[afk.msg_digest_head]
+doc = "First line of a digest for one progress file. Placeholders: {path}."
+value = "AFK digest: {path}"
+
+[afk.msg_digest_none]
+doc = "The digest line when a progress file has no AFK marker or no bullets after it. Placeholders: {path}."
+value = "AFK digest: {path}: no entries since the AFK marker"
+
+[afk.msg_digest_more]
+doc = "Line after a cut digest. Placeholders: {n}."
+value = "  ({n} older entries not shown)"
+
+[afk.msg_pct]
+doc = "The progress line of a digest. Placeholders: {pct}, {done}, {total}."
+value = "Progress: {pct}% ({done}/{total} checklist bullets since the AFK marker are [x])"
+
+[afk.msg_pct_na]
+doc = "The progress line when the digest has no checklist bullets."
+value = "Progress: n/a (no [ ] / [x] checklist bullets since the AFK marker)"
+
+[afk.msg_no_sessions]
+doc = "Printed by `back` / `progress` when no session recorded a progress file for this AFK period."
+value = "AFK digest: no session progress file recorded for this AFK period"
+
+[afk.msg_on]
+doc = "Reply to the owner (typed command or CLI) when AFK starts. Placeholders: {how}."
+value = "AFK on ({how}). Agents work silently and log milestones to their progress files. Type `back` or run `ah-engine back` to end it."
+
+[afk.msg_already]
+doc = "Reply when AFK is already on. Placeholders: {how}, {since}."
+value = "AFK already on ({how}, since {since})."
+
+[afk.msg_off]
+doc = "First line printed when AFK ends. Placeholders: {how}, {since}."
+value = "AFK off (was {how}, since {since})."
+
+[afk.msg_not_on]
+doc = "First line printed by `back` when AFK was not on."
+value = "AFK was not on."
+
+[afk.msg_status_on]
+doc = "`afk status` while on. Placeholders: {how}, {since}."
+value = "AFK on ({how}, since {since})"
+
+[afk.msg_status_off]
+doc = "`afk status` while off."
+value = "AFK off"
+
+[afk.msg_usage]
+doc = "Usage line of the `afk` verb."
+value = "usage: ah-engine afk on|off|status | ah-engine back"
+
+[afk.msg_write_failed]
+doc = "Printed when the flag file cannot be written. Placeholders: {path}, {why}."
+value = "afk: cannot write {path}: {why}"
+
+[afk.msg_idle_ended]
+doc = "Context injected on the owner's prompt that ends an idle-entered AFK."
+value = "AFK (idle) ended: the owner is back. Type `progress` to see the digest."
+
+[afk.rule_text]
+doc = "The AFK rule, injected once per session per AFK period. Placeholders: {progress} (the session's progress file)."
+value = "AFK MODE: the owner is away. Until told otherwise: (1) no narration between tool calls and no status prose; (2) decide, do not ask: pick the reversible default and note it; still never do anything destructive or irreversible without the owner; (3) end each turn with at most ONE short line; (4) after each milestone append ONE checklist bullet to {progress}: `- [x] <what is done, evidence>` or `- [ ] <what is open/blocked>` (it is the owner's digest). Guards are unchanged."
+
+[afk.reminder_text]
+doc = "The short reminder injected during long AFK turns."
+value = "AFK: no narration, no status prose, decide don't ask, one line at end of turn, one checklist bullet per milestone in the progress file."
+
+[afk.reminder_interval_s]
+doc = "Seconds between two AFK reminders in one session (PostToolUse)."
+value = 600
+min = 30
+max = 86400
+
+[afk.reminder_max]
+doc = "Most reminders per session per AFK period."
+value = 6
+min = 0
+max = 100
+
+[afk.max_reply_chars]
+doc = "While AFK, a final reply longer than this many characters is overlong (enforcement)."
+value = 400
+min = 40
+max = 100000
+
+[afk.max_reply_lines]
+doc = "While AFK, a final reply with more non-empty lines than this is overlong (enforcement)."
+value = 3
+min = 1
+max = 1000
+
+[afk.max_blocks]
+doc = "Most Stop holds of overlong replies per session per AFK period, after the one nudge. A hold makes the model answer again, so it is kept small."
+value = 1
+min = 0
+max = 10
+
+[afk.msg_nudge]
+doc = "Context injected on the session's next prompt or tool call after its first overlong AFK reply. Placeholders: {chars}, {lines}, {max_chars}, {max_lines}."
+value = "AFK: your last reply was {chars} chars / {lines} lines (limit {max_chars} / {max_lines}). Keep replies to one line; put details in the progress file."
+
+[afk.msg_block]
+doc = "Reason of a Stop hold of an overlong AFK reply (one line). Placeholders: {chars}, {lines}, {max_chars}, {max_lines}."
+value = "AFK: reply over limit ({chars} chars / {lines} lines, limit {max_chars} / {max_lines}). End the turn now with ONE short line; no recap."
+
+[afk.concise_text]
+doc = "The concise reply rule injected at session start on Codex (Claude gets it from the shipped output style `concise`)."
+value = "Reply style: lead with the answer; 1-3 lines unless asked for detail; no recap of what you did; no narration between tool calls."
+
+[afk.window_bytes]
+doc = "Transcript tail window (bytes) read at Stop to find the turn's assistant entries and their usage."
+value = 2097152
+min = 65536
+max = 16777216
+
+[afk.line_max_bytes]
+doc = "Longest transcript line parsed for usage (a longer line is skipped; its tokens are not counted)."
+value = 1048576
+min = 4096
+max = 16777216
+
+[afk.max_lines]
+doc = "Most transcript lines parsed at Stop (the newest)."
+value = 3000
+min = 10
+max = 100000
+
+[afk.mode_afk]
+doc = "Label value of afk_output_tokens / afk_turns_measured for a turn that ended while AFK."
+value = "afk"
+
+[afk.mode_present]
+doc = "Label value for a turn that ended while the owner was present."
+value = "present"
+
+[afk.action_nudge]
+doc = "afk_overlong_turns action label: the first overlong reply (nudged on the next turn)."
+value = "nudge"
+
+[afk.action_block]
+doc = "afk_overlong_turns action label: an overlong reply held at Stop."
+value = "block"
+
+[afk.action_capped]
+doc = "afk_overlong_turns action label: an overlong reply let through because afk.max_blocks was reached."
+value = "capped"
+
+[cmd.afk]
+doc = "AFK mode, machine-wide: `on` starts it (agents work silently and log milestone bullets to their progress files), `off` ends it, `status` shows it. Lasts until `back` / `off`. Settings: afk.*."
+value = { args = "on|off|status", read_only = false, read_only_args = ["status"], status = "implemented" }
+
+[cmd.back]
+doc = "End AFK mode and print each session's digest: the checklist bullets after the AFK marker in its progress file, with the percentage of [x] bullets."
+value = { args = "", read_only = false, status = "implemented" }
+
+[metric.afk_entered]
+doc = "AFK periods started, by how (manual = ah-engine afk on, prompt = typed afk, idle = idle detection). Counted by the first hook that sees the new period."
+value = { kind = "counter", unit = "events", labels = ["how"] }
+
+[metric.afk_turns]
+doc = "Main-session turns that ended (Stop) while AFK."
+value = { kind = "counter", unit = "turns", labels = [] }
+
+[metric.digest_entries]
+doc = "Digest bullets printed by back / progress (CLI counts are added by the next hook)."
+value = { kind = "counter", unit = "entries", labels = [] }
+
+[metric.idle_trips]
+doc = "AFK periods started by idle detection."
+value = { kind = "counter", unit = "events", labels = [] }
+
+[metric.afk_overlong_turns]
+doc = "Overlong AFK replies, by action (nudge, block, capped)."
+value = { kind = "counter", unit = "events", labels = ["action"] }
+
+[metric.afk_output_tokens]
+doc = "Output tokens of main-session turns (transcript usage, deduplicated by message id), by mode (afk, present). Divide by afk_turns_measured for the per-turn average."
+value = { kind = "counter", unit = "tokens", labels = ["mode"] }
+
+[metric.afk_turns_measured]
+doc = "Main-session turns whose output tokens were measured, by mode (afk, present)."
+value = { kind = "counter", unit = "turns", labels = ["mode"] }

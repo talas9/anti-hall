@@ -641,6 +641,20 @@ pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
     Ok(cfgstore::resolve_one(requested, &layers, &|_| None).value.to_string())
 }
 
+/// `metric(name, labels, by)`: add `by` (a finite, non-negative whole number) to the registered counter `name`, labelled by the
+/// string members of the JSON object `labels` in the order the metric registers its labels. Goes through [`crate::metrics::bump_by`],
+/// so a count made outside the daemon is dropped, and an unregistered name is ignored.
+pub fn metric_add(name: &str, labels: &str, by: f64) {
+    if !by.is_finite() || by < 0.0 {
+        return;
+    }
+    let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(labels).unwrap_or_default();
+    let order = defaults::raw(&format!("metric.{name}")).get("labels").map(|v| v.strings().into_iter().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+    let pairs: Vec<(String, String)> = order.iter().filter_map(|l| obj.get(l).and_then(|v| v.as_str()).map(|v| (l.clone(), v.to_string()))).collect();
+    let refs: Vec<(&str, &str)> = pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    crate::metrics::bump_by(name, &refs, by as u64);
+}
+
 /// `tailLines(path, windowBytes, lineMax)`: the last `windowBytes` (clamped to `script.tail_max_bytes`) of a file as lines, the
 /// partial first line dropped when the window starts inside the file: JSON `{"lines":[[offset, text|null], ...]}`, `offset` the
 /// byte position of the line in the file; `text` is `null` for a line over `lineMax` bytes (never stored) or not valid UTF-8.
@@ -1064,6 +1078,8 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     )?;
     // one advisory event for advisory kind `kind` (flagged, asked, confirmed, injected, suppressed, jev_error)
     h.set("advisory", Function::new(c.clone(), |kind: String, metric: String| crate::obs::counters::advisory(&kind, &metric))?)?;
+    // add `by` to the registered counter `name` with the labels of the JSON object `labels` (an unregistered name is ignored)
+    h.set("metric", Function::new(c.clone(), |name: String, labels: String, by: f64| metric_add(&name, &labels, by))?)?;
     h.set("log", Function::new(c.clone(), |kind: String, text: String| crate::discard::note("script_log", &format!("{kind}: {text}")))?)?;
     h.set("deadlineLeftMs", Function::new(c.clone(), deadline_left_ms)?)?;
     h.set("realpathEx", Function::new(c.clone(), |p: String| realpath_ex(&p))?)?;

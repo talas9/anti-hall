@@ -13,7 +13,7 @@ struct Env {
     dir: PathBuf,
 }
 
-const POST_BASH: [&str; 8] = [
+const POST_BASH: [&str; 9] = [
     "merge-side-pick:post",
     "git-guard:audit",
     "output-verify-guard",
@@ -22,6 +22,7 @@ const POST_BASH: [&str; 8] = [
     "coordinator-work-guard:post",
     "agent-reminders",
     "advisor-guard:pass",
+    "afk-mode:post",
 ];
 
 impl Env {
@@ -136,7 +137,7 @@ fn order_and_max_rules_decide_which_entries_run() {
     );
     assert_eq!(
         e.plan("skipped_max_rules"),
-        ["git-guard:audit", "devswarm-parent-reply-tracker", "devswarm-child-drain", "agent-reminders", "advisor-guard:pass"],
+        ["git-guard:audit", "devswarm-parent-reply-tracker", "devswarm-child-drain", "agent-reminders", "advisor-guard:pass", "afk-mode:post"],
         "{}",
         e.log()
     );

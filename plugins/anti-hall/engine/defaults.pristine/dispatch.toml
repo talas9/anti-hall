@@ -488,6 +488,7 @@ value = [
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
   { id = "gh-rt-advisory", matcher = "", timeout = 10, check = "gh-rt-advisory" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
+  { id = "afk-mode", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_claude_TaskCreated]
@@ -555,6 +556,7 @@ value = [
   { id = "silent-agent-nudge", matcher = "", timeout = 30, check = "silent-agent-nudge" },
   { id = "compact-advice-guard", matcher = "", timeout = 30, check = "compact-advice-guard" },
   { id = "sibling-sweep", matcher = "", timeout = 10, check = "sibling-sweep" },
+  { id = "afk-mode:stop", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_claude_PreToolUse]
@@ -608,6 +610,7 @@ value = [
   { id = "tasklist-hygiene:post", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "tasklist-hygiene" },
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
   { id = "advisor-guard:pass", matcher = "Bash", timeout = 10, check = "advisor-guard" },
+  { id = "afk-mode:post", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_claude_PostToolUseFailure]
@@ -652,6 +655,7 @@ value = [
   { id = "repair-on-reload", matcher = "", timeout = 10, check = "repair-on-reload" },
   { id = "procwatch-advisory", matcher = "", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-note", matcher = "", timeout = 10, check = "engine-role-note" },
+  { id = "afk-mode:start", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_codex_UserPromptSubmit]
@@ -670,6 +674,7 @@ value = [
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
   { id = "gh-rt-advisory", matcher = "", timeout = 10, check = "gh-rt-advisory" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
+  { id = "afk-mode", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_codex_PreToolUse]
@@ -732,6 +737,7 @@ value = [
   { id = "devswarm-parent-reply-tracker", matcher = "Bash", timeout = 10, check = "devswarm-parent-reply-tracker" },
   { id = "devswarm-child-drain", matcher = "Bash", timeout = 10, check = "devswarm-child-drain" },
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
+  { id = "afk-mode:post", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.msg_unparsed]

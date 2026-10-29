@@ -1,0 +1,281 @@
+// check = "afk-mode" (UserPromptSubmit, PostToolUse, Stop on Claude; SessionStart, UserPromptSubmit, PostToolUse on Codex; engine-only,
+// no Node twin; GH #425). AFK mode: a machine-wide flag (afk.flag_file) set by `ah-engine afk on`, by the owner typing `afk`, or by
+// idle detection; the rule injected once per session per AFK period plus capped reminders; an AFK marker in the session progress
+// file, whose checklist bullets are the digest `back` / `progress` print; a capped Stop hold of overlong AFK replies; output tokens
+// per turn split AFK vs present. Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
+// the `ah-engine back` command and the typed `back` share it.
+'use strict';
+
+function afkC(C, k) { return C[k]; }
+// The digest's part of afk.toml, read here when the hook renders the digest (the engine's `back` passes the same table).
+function afkDigestCfg() {
+  return {
+    msg_digest_head: ah.cfg('afk.msg_digest_head'), msg_digest_none: ah.cfg('afk.msg_digest_none'), msg_digest_more: ah.cfg('afk.msg_digest_more'),
+    msg_pct: ah.cfg('afk.msg_pct'), msg_pct_na: ah.cfg('afk.msg_pct_na'), msg_no_sessions: ah.cfg('afk.msg_no_sessions'),
+    marker_prefix: ah.cfg('afk.marker_prefix'), bullet_re: ah.cfg('afk.bullet_re'), done_re: ah.cfg('afk.done_re'), open_re: ah.cfg('afk.open_re'),
+    digest_max_entries: ah.cfgNum('afk.digest_max_entries'),
+  };
+}
+function afkR(s, vars) { return String(s).replace(/\{(\w+)\}/g, function (m, k) { return Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m; }); }
+
+// The digest of one progress file's text: { lines: [...], entries: n }. `C` is the afk.* table without the prefix.
+function afkDigestOne(C, path, txt) {
+  var head = afkR(afkC(C, 'msg_digest_head'), { path: path });
+  if (typeof txt !== 'string') return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0 };
+  var at = txt.lastIndexOf(afkC(C, 'marker_prefix'));
+  if (at < 0) return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0 };
+  var rest = txt.slice(at).split('\n').slice(1);
+  var bullet = new RegExp(afkC(C, 'bullet_re')), done = new RegExp(afkC(C, 'done_re')), open = new RegExp(afkC(C, 'open_re'));
+  var bullets = [], nDone = 0, nOpen = 0;
+  for (var i = 0; i < rest.length; i++) {
+    var l = rest[i];
+    if (!bullet.test(l)) continue;
+    bullets.push(l.replace(/^\s+/, ''));
+    if (done.test(l)) nDone++;
+    else if (open.test(l)) nOpen++;
+  }
+  if (bullets.length === 0) return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0 };
+  var max = Number(afkC(C, 'digest_max_entries')), out = [head], cut = Math.max(0, bullets.length - max);
+  if (cut > 0) out.push(afkR(afkC(C, 'msg_digest_more'), { n: cut }));
+  for (var j = cut; j < bullets.length; j++) out.push('  ' + bullets[j]);
+  var total = nDone + nOpen;
+  out.push(total > 0 ? afkR(afkC(C, 'msg_pct'), { pct: Math.round((nDone * 100) / total), done: nDone, total: total }) : afkC(C, 'msg_pct_na'));
+  return { lines: out, entries: bullets.length - cut };
+}
+
+// `afkDigest({cfg, files: [{path, text}]})` -> {text, entries}: called by the engine's `back` command (cfg = the afk.* table).
+function afkDigest(input) {
+  var C = input && input.cfg ? input.cfg : afkDigestCfg(), files = input && Array.isArray(input.files) ? input.files : [];
+  if (files.length === 0) return { text: afkC(C, 'msg_no_sessions'), entries: 0 };
+  var lines = [], n = 0;
+  for (var i = 0; i < files.length; i++) {
+    var d = afkDigestOne(C, String(files[i].path), files[i].text);
+    lines = lines.concat(d.lines);
+    n += d.entries;
+  }
+  return { text: lines.join('\n'), entries: n };
+}
+
+// ---- state ----------------------------------------------------------------------------------------------------------------
+
+function afkRel(name) { return ah.cfg('replykit.state_dir') + '/' + name; }
+function afkReadJson(rel) {
+  var t = ah.state.readText(rel);
+  if (t === null) return null;
+  try { var v = JSON.parse(t); return v !== null && typeof v === 'object' ? v : null; } catch (e) { return null; }
+}
+function afkWrite(rel, obj) { try { return ah.state.writeAtomic(rel, JSON.stringify(obj)); } catch (e) { return false; } }
+function afkMetric(name, labels, by) { try { ah.metric(name, labels || {}, by === undefined ? 1 : by); } catch (e) { /* counting never fails a hook */ } }
+
+function afkFlag() { return afkReadJson(afkRel(ah.cfg('afk.flag_file'))); }
+function afkSetFlag(f) { return afkWrite(afkRel(ah.cfg('afk.flag_file')), f); }
+function afkOn(f) { return f !== null && f.on === true; }
+
+function afkStart(how, now) {
+  var f = { on: true, how: how, since: now, epoch: String(now), counted: false };
+  return afkSetFlag(f) ? f : null;
+}
+
+// Counts the CLI could not add (it runs outside the daemon) are added by the first hook that sees them.
+function afkFlush(f) {
+  if (f === null) return f;
+  var changed = false;
+  if (f.on === true && f.counted !== true) {
+    afkMetric('afk_entered', { how: String(f.how) });
+    if (f.how === ah.cfg('afk.how_idle')) afkMetric('idle_trips', {});
+    f.counted = true; changed = true;
+  }
+  if (typeof f.pending_digest === 'number' && f.pending_digest > 0) {
+    afkMetric('digest_entries', {}, f.pending_digest);
+    f.pending_digest = 0; changed = true;
+  }
+  if (changed) afkSetFlag(f);
+  return f;
+}
+
+function afkSid(p) {
+  var raw = p && p.session_id !== undefined && p.session_id !== null ? String(p.session_id) : '';
+  return raw.replace(new RegExp(ah.cfg('afk.session_id_unsafe'), 'g'), '');
+}
+function afkSessRel(sid) { return afkRel(ah.cfg('afk.session_prefix') + sid + ah.cfg('replykit.json_ext')); }
+
+// The session's progress file: <project root>/.anti-hall/progress/<UTC date>/<sid>.md (the task-list guard's layout).
+function afkProgress(p, sid, now) {
+  var cwd = p && typeof p.cwd === 'string' && p.cwd.charAt(0) === '/' ? p.cwd : null;
+  if (cwd === null || !sid) return null;
+  var root = ah.project.root(cwd);
+  if (root === null) root = cwd;
+  var segs = ah.cfg('tasklist_guard.progress_dir').concat([new Date(now).toISOString().slice(0, 10), sid + '.md']);
+  return { root: root, rel: segs.join('/'), abs: root + '/' + segs.join('/') };
+}
+
+// The session's view of the current AFK period; a new period writes the marker and returns {fresh: true}.
+function afkSession(p, f, now) {
+  var sid = afkSid(p);
+  if (!sid) return null;
+  var rel = afkSessRel(sid), s = afkReadJson(rel);
+  if (s !== null && s.epoch === f.epoch) return { sid: sid, rel: rel, s: s, fresh: false };
+  var pr = afkProgress(p, sid, now), path = pr !== null ? pr.abs : '';
+  if (pr !== null) {
+    var mark = afkR(ah.cfg('afk.marker_text'), { epoch: f.epoch, iso: new Date(Number(f.since) || now).toISOString(), how: f.how });
+    try { ah.state.op(pr.root, 'append', pr.rel, mark); } catch (e) { path = ''; }
+  }
+  s = { epoch: f.epoch, progress: path, reminded: now, reminders: 0, nudge: null, nudged: false, blocks: 0 };
+  afkWrite(rel, s);
+  ah.state.prune(ah.cfg('afk.session_prefix'), ah.cfg('afk.session_prefix') + sid + ah.cfg('replykit.json_ext'));
+  return { sid: sid, rel: rel, s: s, fresh: true };
+}
+
+function afkCtx(event, t) { return { exact: { code: 0, out: afkR(ah.cfg('afk.ctx_line'), { event: event, text: JSON.stringify(t) }), err: '' } }; }
+
+// Idle detection: no owner prompt on this machine for afk.idleMinutes. Never trips without a recorded prompt.
+function afkIdleTrip(f, now) {
+  if (afkOn(f) || !ah.settings.bool('afk.set_idle')) return f;
+  var pr = afkReadJson(afkRel(ah.cfg('afk.presence_file')));
+  if (pr === null || typeof pr.last !== 'number') return f;
+  if (now - pr.last < ah.settings.num('afk.set_idle_minutes') * 60000) return f;
+  return afkStart(ah.cfg('afk.how_idle'), now) || f;
+}
+
+function afkWordIn(list, t) {
+  for (var i = 0; i < list.length; i++) if (String(list[i]).toLowerCase() === t) return true;
+  return false;
+}
+
+function afkDigestHere(f) {
+  var files = [], seen = {};
+  // the sessions that recorded a progress file for this period (their state files), newest first, bounded
+  var dir = ah.home() + '/' + ah.cfg('replykit.state_dir'), names = ah.fs.readdir(dir) || [], pre = ah.cfg('afk.session_prefix');
+  var max = ah.cfgNum('afk.digest_max_files');
+  for (var i = 0; i < names.length && files.length < max; i++) {
+    if (names[i].indexOf(pre) !== 0) continue;
+    var s = afkReadJson(afkRel(names[i]));
+    if (s === null || f === null || s.epoch !== f.epoch || typeof s.progress !== 'string' || s.progress === '' || seen[s.progress]) continue;
+    seen[s.progress] = true;
+    files.push({ path: s.progress, text: ah.fs.readText(s.progress, ah.cfgNum('afk.read_max_bytes')) });
+  }
+  return afkDigest({ cfg: null, files: files });
+}
+
+function afkFmt(ms) { return new Date(Number(ms) || 0).toISOString(); }
+
+function afkPrompt(p, f, now) {
+  var prompt = typeof p.prompt === 'string' ? p.prompt : '';
+  var notOwner = ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); });
+  if (notOwner) return null;
+  afkWrite(afkRel(ah.cfg('afk.presence_file')), { last: now });
+  var word = prompt.trim().toLowerCase(), reply = null;
+  if (ah.settings.bool('afk.set_prompt_commands')) {
+    if (afkWordIn(ah.cfg('afk.words_on'), word)) {
+      if (afkOn(f)) reply = afkR(ah.cfg('afk.msg_already'), { how: f.how, since: afkFmt(f.since) });
+      else { var n = afkStart(ah.cfg('afk.how_prompt'), now); afkFlush(n); reply = afkR(ah.cfg('afk.msg_on'), { how: ah.cfg('afk.how_prompt') }); }
+    } else if (afkWordIn(ah.cfg('afk.words_off'), word) || afkWordIn(ah.cfg('afk.words_progress'), word)) {
+      var off = afkWordIn(ah.cfg('afk.words_off'), word), d = afkDigestHere(f), head = '';
+      if (off) {
+        head = afkOn(f) ? afkR(ah.cfg('afk.msg_off'), { how: f.how, since: afkFmt(f.since) }) : ah.cfg('afk.msg_not_on');
+        if (afkOn(f)) { f.on = false; f.ended = now; afkSetFlag(f); }
+      }
+      afkMetric('digest_entries', {}, d.entries);
+      reply = (head ? head + '\n' : '') + d.text;
+    }
+  }
+  if (reply !== null) return { exact: { code: 0, out: afkR(ah.cfg('afk.ups_block'), { reason: JSON.stringify(reply) }), err: '' } };
+  if (afkOn(f) && f.how === ah.cfg('afk.how_idle')) {
+    f.on = false; f.ended = now; afkSetFlag(f);
+    return afkCtx('UserPromptSubmit', ah.cfg('afk.msg_idle_ended'));
+  }
+  return null;
+}
+
+// The output tokens of the turn that just ended (deduplicated by message id) and nothing else: {tokens} or null.
+function afkTurnTokens(tp) {
+  var keep = [['type'], ['message', 'id'], ['message', 'usage', 'output_tokens'], ['message', 'content'], ['message', 'content', '*', 'type']];
+  var r = ah.transcript.tailEntries(tp, ah.cfgNum('afk.window_bytes'), ah.cfgNum('afk.line_max_bytes'), keep, ah.cfgNum('afk.max_lines'));
+  if (r === null || !Array.isArray(r.lines)) return null;
+  var byId = {}, anon = 0;
+  for (var i = r.lines.length - 1; i >= 0; i--) {
+    var e = r.lines[i][1];
+    if (e === null || typeof e !== 'object') continue;
+    var m = e.message;
+    if (e.type === 'user' && m && (typeof m.content === 'string' || (Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text'; })))) break;
+    if (e.type !== 'assistant' || !m || !m.usage || typeof m.usage.output_tokens !== 'number') continue;
+    if (typeof m.id === 'string' && m.id) byId[m.id] = Math.max(byId[m.id] || 0, m.usage.output_tokens);
+    else anon += m.usage.output_tokens;
+  }
+  var t = anon;
+  for (var k in byId) if (Object.prototype.hasOwnProperty.call(byId, k)) t += byId[k];
+  return t;
+}
+
+function afkStop(p, f, now) {
+  if (p.stop_hook_active === true) return 'allow';
+  if (ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; })) return 'allow';
+  var on = afkOn(f), tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
+  if (on) afkMetric('afk_turns', {});
+  if (tp && ah.settings.bool('afk.set_measure')) {
+    var tok = afkTurnTokens(hookProc.open(p, tp));
+    if (tok !== null) {
+      var mode = on ? ah.cfg('afk.mode_afk') : ah.cfg('afk.mode_present');
+      afkMetric('afk_output_tokens', { mode: mode }, tok);
+      afkMetric('afk_turns_measured', { mode: mode });
+    }
+  }
+  if (!on || !ah.settings.bool('afk.set_enforce') || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+  var reply = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
+  var lines = reply.split('\n').filter(function (l) { return l.trim() !== ''; }).length;
+  var maxC = ah.cfgNum('afk.max_reply_chars'), maxL = ah.cfgNum('afk.max_reply_lines');
+  if (reply.length <= maxC && lines <= maxL) return 'allow';
+  var se = afkSession(p, f, now);
+  if (se === null) return 'allow';
+  var vars = { chars: reply.length, lines: lines, max_chars: maxC, max_lines: maxL };
+  if (!se.s.nudged) {
+    se.s.nudged = true; se.s.nudge = afkR(ah.cfg('afk.msg_nudge'), vars);
+    afkWrite(se.rel, se.s);
+    afkMetric('afk_overlong_turns', { action: ah.cfg('afk.action_nudge') });
+    return 'allow';
+  }
+  if (se.s.blocks >= ah.cfgNum('afk.max_blocks')) { afkMetric('afk_overlong_turns', { action: ah.cfg('afk.action_capped') }); return 'allow'; }
+  se.s.blocks += 1;
+  if (!afkWrite(se.rel, se.s)) return 'allow'; // the cap cannot be recorded: never hold
+  afkMetric('afk_overlong_turns', { action: ah.cfg('afk.action_block') });
+  return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(afkR(ah.cfg('afk.msg_block'), vars)) }), err: '' } };
+}
+
+// The rule once per session per period, a pending nudge, else a reminder at the capped interval.
+function afkInject(p, f, now, event) {
+  var se = afkSession(p, f, now);
+  if (se === null) return 'allow';
+  var parts = [];
+  if (se.fresh) parts.push(afkR(ah.cfg('afk.rule_text'), { progress: se.s.progress || ah.cfg('tasklist_guard.progress_dir').join('/') }));
+  if (typeof se.s.nudge === 'string' && se.s.nudge) { parts.push(se.s.nudge); se.s.nudge = null; }
+  if (!se.fresh && event === 'PostToolUse' && se.s.reminders < ah.cfgNum('afk.reminder_max') && now - (se.s.reminded || 0) >= ah.cfgNum('afk.reminder_interval_s') * 1000) {
+    parts.push(ah.cfg('afk.reminder_text'));
+    se.s.reminders += 1; se.s.reminded = now;
+  }
+  if (parts.length === 0) return 'allow';
+  if (!se.fresh) afkWrite(se.rel, se.s);
+  else if (parts.length > 1) afkWrite(se.rel, se.s);
+  return afkCtx(event, parts.join('\n'));
+}
+
+function decide(p) {
+  if (p === null || typeof p !== 'object') return 'allow';
+  if (ah.env.get(ah.cfg('session.judge_child_env')) === ah.cfg('session.judge_child_on')) return 'allow';
+  if (!ah.settings.bool('afk.set_enabled') || !ah.home()) return 'allow';
+  var ev = typeof p.hook_event_name === 'string' ? p.hook_event_name : '', now = ah.clock.now();
+  if (ev === 'SessionStart') {
+    if (coordinator.isCodexPayload(p) && ah.settings.bool('afk.set_concise_codex')) return afkCtx(ev, ah.cfg('afk.concise_text'));
+    return 'allow';
+  }
+  var f = afkFlush(afkFlag());
+  if (ev === 'UserPromptSubmit') {
+    var r = afkPrompt(p, f, now);
+    if (r !== null) return r;
+    f = afkFlag();
+    return afkOn(f) ? afkInject(p, f, now, ev) : 'allow';
+  }
+  f = afkFlush(afkIdleTrip(f, now));
+  if (ev === 'Stop') return afkStop(p, f, now);
+  if (ev === 'PostToolUse' && afkOn(f)) return afkInject(p, f, now, ev);
+  return 'allow';
+}
