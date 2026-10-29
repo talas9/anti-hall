@@ -1,7 +1,7 @@
 // check = "burn-breaker" (PreToolUse on every tool; engine-only, no Node twin). GH #270: tokens spent versus outcome. The agent tracker
 // (ah-engine, src/agents/signals.rs) keeps the hard burn flag of an agent that spent burn.hard_tokens_no_outcome tokens since its last
 // commit, finished step, passing check or new file, and mirrors it in <state>/agent-tracker/breaker/<agent key>.json. While that marker
-// is fresh this check blocks the SUBAGENT's tool calls except commit, push, status commands and SendMessage (its report); the main
+// is fresh this check blocks the SUBAGENT's tool calls except commit (a heredoc message too), push, status and read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (its report); the main
 // session is never blocked (no agent_id in its payload). The marker is removed by the tracker when the agent produces an outcome, and at once by this check when the agent runs an allowed git commit.
 // Every name, number, pattern and text is in burn.toml. A failure of this script allows (script.failure_mode_by_check).
 'use strict';
@@ -15,10 +15,33 @@ function bbAllowedBash(cmd) {
     var seg = parts[i].replace(new RegExp(ah.cfg('burn.allowed_suffix_re')), '');
     if (seg.replace(/\s+/g, '') === '') continue;
     if (ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', seg)) return false;
-    if (!ah.re.test(ah.cfg('burn.allowed_bash_re'), 'r', seg) && !ah.re.test(ah.cfg('burn.allowed_cd_re'), 'r', seg)) return false;
+    if (ah.re.test(ah.cfg('burn.deny_re'), 'r', seg)) return false;
+    if (!ah.re.test(ah.cfg('burn.allowed_bash_re'), 'r', seg) && !ah.re.test(ah.cfg('burn.allowed_readonly_re'), 'r', seg) && !ah.re.test(ah.cfg('burn.allowed_cd_re'), 'r', seg)) return false;
     seen++;
   }
   return seen > 0;
+}
+
+// A commit whose message is a quoted-delimiter heredoc in a command substitution (`git commit -m "$(cat <<'EOF'` ... `EOF` `)"`) spans lines, which the
+// segment judge forbids. The body is inert data, so it is reduced to "" when the shape is exact: the opener is the first line, the first line equal to
+// the delimiter is followed by a closing line `)"` (+ optional tail) and nothing else, and the prefix holds no unbalanced quote. Returns the single-line
+// command, or null when the command is not that shape (it is then judged as written and fails on its newline).
+function bbMaskCommitHeredoc(cmd) {
+  var nl = cmd.indexOf('\n');
+  if (nl < 0) return null;
+  var open = new RegExp(ah.cfg('burn.commit_heredoc_open_re')).exec(cmd.slice(0, nl));
+  if (open === null) return null;
+  var lines = cmd.slice(nl + 1).split('\n'), end = -1;
+  for (var i = 0; i < lines.length && end < 0; i++) if (lines[i].replace(/^\t+/, '') === open[2]) end = i;
+  if (end < 0) return null;
+  var rest = lines.slice(end + 1);
+  while (rest.length > 0 && rest[rest.length - 1].trim() === '') rest.pop();
+  if (rest.length !== 1) return null;
+  var close = new RegExp(ah.cfg('burn.commit_heredoc_close_re')).exec(rest[0]);
+  if (close === null) return null;
+  var prefix = open[1].replace(new RegExp(ah.cfg('burn.quoted_re'), 'g'), '""');
+  if (new RegExp(ah.cfg('burn.quote_char_re')).test(prefix)) return null;
+  return open[1] + '""' + close[1];
 }
 
 // True when some segment of the command is a git commit (burn.lift_bash_re): the outcome the block asks for.
@@ -88,6 +111,8 @@ function decide(p) {
   }
   if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0) {
     var cmd = p.tool_input && typeof p.tool_input.command === 'string' ? p.tool_input.command : '';
+    var masked = bbMaskCommitHeredoc(cmd);
+    if (masked !== null) cmd = masked;
     if (cmd !== '' && bbAllowedBash(cmd)) {
       // a commit is the outcome the block asks for: lift it now; the tracker counts the commit on its next tick and raises it again only if the hard condition still holds
       if (bbCommits(cmd)) ah.state.remove(rel);

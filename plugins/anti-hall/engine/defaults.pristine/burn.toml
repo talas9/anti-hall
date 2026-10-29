@@ -14,7 +14,7 @@ value = "burn-breaker"
 
 [burn.summary]
 doc = "One-line description of the burn-breaker check in the generated reference."
-value = "PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag (tokens spent since the last commit, finished step, passing check or new file past burn.hard_tokens_no_outcome) blocks every call except commit, push, status commands and SendMessage (the report)."
+value = "PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag (tokens spent since the last commit, finished step, passing check or new file past burn.hard_tokens_no_outcome) blocks every call except commit, push, status and read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (the report)."
 
 [burn.soft_tokens_no_outcome]
 doc = "Soft line: tokens (cache reads weighted by agent_tracker.limits.cache_read_pct) spent since the last outcome, within agent_tracker.limits.waste_window_ms, at which the agent is warned and the coordinator notified. 0 = no soft line. Chosen from the 2026-10-23 incident (alerts of 1.5M to 7.7M per 30 minutes with no commit)."
@@ -88,6 +88,26 @@ value = ["Bash"]
 doc = "A segment of a command a blocked subagent may still run. Git (optionally with any number of -C <dir> and -c <key=value> options) followed by commit, add, push, status, log, diff, show, rev-parse or branch; read-only GitHub status (gh pr|run|issue checks, view, status, list, diff); a compile or check (cargo build|check|clippy, optionally behind lockf <file> and nice -n N), which is a step outcome when it finishes; and removing the agent's own build output (rm -rf <dir>/target). Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
 value = '''^\s*(?:git(?:\s+-[Cc]\s+\S+)*\s+(?:commit|add|push|status|log|diff|show|rev-parse|branch)|gh\s+(?:pr|run|issue)\s+(?:checks|view|status|list|diff)|(?:lockf\s+\S+\s+)?(?:nice\s+-n\s+\d+\s+)?cargo\s+(?:build|check|clippy)|rm\s+-[rf]+\s+\S*/target/?)(?:\s|$)'''
 
+[burn.allowed_readonly_re]
+doc = "A read-only inspection command a blocked subagent may still run, so it can look at its state before committing: grep, egrep, fgrep, rg, ls, cat, head, tail, wc, pwd, stat, file (judged like burn.allowed_bash_re: one segment, no pipe or redirect except burn.allowed_suffix_re, no command substitution). Regular expression (Rust syntax)."
+value = '''^\s*(?:grep|egrep|fgrep|rg|ls|cat|head|tail|wc|pwd|stat|file)(?:\s|$)'''
+
+[burn.deny_re]
+doc = "Options that make an otherwise allowed segment run another program or write a file: ripgrep --pre and --hostname-bin, git --output / --ext-diff / --textconv / --upload-pack / --receive-pack / --exec-path, and git -c settings that name a program (alias, pager, editor, ssh command, fsmonitor, hooks path). A segment that matches is not allowed. Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
+value = '''--pre\b|--hostname-bin|--output\b|--ext-diff|--textconv|--upload-pack|--receive-pack|--exec-path|-c\s+(?:alias\.|core\.(?:pager|editor|sshcommand|fsmonitor|hookspath)|diff\.\S*\.(?:command|textconv)|pager\.)'''
+
+[burn.commit_heredoc_open_re]
+doc = "The first line of a commit whose message is a QUOTED-delimiter heredoc inside a command substitution (`git commit -m \"$(cat <<'EOF'`): group 1 is everything before the opening quote, group 2 the delimiter. The body is inert data, nothing in it expands. JavaScript syntax."
+value = '''^(.*?)"\$\(\s*cat\s*<<-?\s*\x27([A-Za-z_][A-Za-z0-9_]*)\x27\s*$'''
+
+[burn.commit_heredoc_close_re]
+doc = "The line after the heredoc delimiter that closes the command substitution and the quote: `)\"`, then optionally a harmless tail (group 1, judged with the rest of the command). Nothing else may follow it. JavaScript syntax."
+value = '''^\s*\)"(.*)$'''
+
+[burn.quote_char_re]
+doc = "A quote character. A commit-heredoc prefix that still holds one after its plain quoted strings are reduced has an unbalanced quote, so the heredoc is not inert and the command is not allowed. Regular expression (JavaScript syntax)."
+value = '''[\x27"]'''
+
 [burn.allowed_cd_re]
 doc = "The other segment a blocked subagent may run: `cd <dir>` (so `cd <dir> && git ...` passes). Regular expression (Rust syntax), tested like burn.allowed_bash_re."
 value = '''^\s*cd\s+\S+\s*$'''
@@ -97,8 +117,8 @@ doc = "What splits a command into segments that are judged one by one: `&&` and 
 value = '''&&|;'''
 
 [burn.allowed_suffix_re]
-doc = "A harmless tail of a segment, removed before the segment is judged: `2>&1`, optionally piped into tail or head with a line count. Any other pipe or redirect stays forbidden. Regular expression (Rust syntax)."
-value = '''\s+2>&1(?:\s*\|\s*(?:tail|head)(?:\s+-n?\s*\d+)?)?\s*$'''
+doc = "A harmless tail of a segment, removed before the segment is judged: optionally `2>&1`, optionally piped into tail, head or wc with a line count or -l. Any other pipe or redirect stays forbidden. Regular expression (Rust syntax)."
+value = '''(?:\s+2>&1)?(?:\s*\|\s*(?:tail|head|wc)(?:\s+-[nl]?\s*\d*)?)?\s*$'''
 
 [burn.forbidden_bash_re]
 doc = "What makes an otherwise allowed segment a hidden command: a pipe, lone `&` (background), redirect, backtick, newline or dollar-paren outside quoted text. (`&&` and `;` are separators, see burn.separator_re.) Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
@@ -138,7 +158,7 @@ value = "save a report of the outcome and stop."
 
 [burn.msg_allowed]
 doc = "Allowed line of the block: what stays possible while the breaker holds."
-value = "git commit/add/push/status/log/diff, read-only gh checks, cargo build/check/clippy, report writes."
+value = "git commit/add/push/status/log/diff (a heredoc message is fine), read-only grep/rg/ls/cat/head/tail/wc, read-only gh checks, cargo build/check/clippy, report writes."
 
 [burn.msg_override]
 doc = "How the user can lift the block (shown on the last line)."

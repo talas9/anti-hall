@@ -2087,6 +2087,39 @@ fn burn_breaker_blocks_a_flagged_subagent_except_commit_push_status_and_its_repo
     assert!(blocked(bash("git commit -m x; rm -rf y")));
     assert!(blocked(bash("git status | tee out")));
     assert!(blocked(bash("git commit -m \"$(rm -rf y)\"")));
+    for bad in [
+        "git commit -m x && rm -rf y",
+        "npm test",
+        "grep foo f | sh",
+        "cat f > g",
+        "rg --pre ./evil foo",
+        "git diff --output=/tmp/o",
+        "git -c core.pager=evil log",
+        "ls $(rm -rf y)",
+        "find . -exec rm {} +",
+        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\nrm -rf y\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"\nrm -rf y",
+        "git commit -m 'x \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+        "git commit -m \"$(cat <<EOF\nmsg\nEOF\n)\"",
+    ] {
+        assert!(blocked(bash(bad)), "{bad}");
+    }
+    for tool in ["Write", "Edit", "Grep", "Agent"] {
+        assert!(blocked(json!({"tool_name": tool, "agent_id": "a1", "tool_input": {"file_path": "/src/main.rs"}})), "{tool}");
+    }
+    for ok in [
+        "git status",
+        "git diff HEAD~1 | head -50",
+        "git log --oneline -n 5",
+        "grep -rn foo src/",
+        "rg foo src | wc -l",
+        "ls -la",
+        "cat src/lib.rs | head -20",
+        "git commit -m \"$(cat <<'EOF'\nfix(x): y\n\nbody with $VAR and `ticks` and ; & |\nEOF\n)\"",
+        "cd /w && git add -A && git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" 2>&1",
+    ] {
+        assert!(!blocked(bash(ok)), "{ok}");
+    }
     for ok in ["git commit -m \"a; b & c\"", "git -C /w push origin v301/x", "git status --short", "git add -A"] {
         assert!(!blocked(bash(ok)), "{ok}");
     }
