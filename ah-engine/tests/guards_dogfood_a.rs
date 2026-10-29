@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 fn home(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("ah-dfa-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&d).ok();
+    // a test binary starts with nothing loaded; the plugin tree of this checkout is the root, wherever the binary was built
+    // SAFETY: every test sets the same value before anything reads it.
+    unsafe { std::env::set_var("AH_ENGINE_PLUGIN_ROOT", concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall")) };
+    ah_engine::defaults::init().expect("defaults load");
+    std::fs::create_dir_all(ah_engine::paths::dir()).ok(); // the counter journal lives in the state directory and is only written when it exists
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
     std::fs::canonicalize(&d).unwrap()
 }
