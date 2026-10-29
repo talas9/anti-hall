@@ -4639,8 +4639,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `tasklist_hygiene.create_tool` | `TaskCreate` |  |  | The tool that creates a task. |
+| `tasklist_hygiene.delete_trigger` | `deleted` |  |  | The TaskUpdate statuses that count as deleting a task. |
 | `tasklist_hygiene.detail_done` | `Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own f...` |  |  | Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from. |
 | `tasklist_hygiene.done_trigger` | `completed` |  |  | The TaskUpdate status values that count as a task being finished and trigger the delete-it line. |
+| `tasklist_hygiene.event_deleted` | `deleted` |  |  | Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge). |
+| `tasklist_hygiene.event_nudge` | `nudge` |  |  | Counter event: a completed-task note was shown (one per TaskUpdate to a done status). |
+| `tasklist_hygiene.event_prune` | `prune_suggested` |  |  | Counter event: the prune suggestion (more finished tasks than the prune default) reached the model. |
 | `tasklist_hygiene.guard_name` | `tasklist-hygiene` |  |  | The guard id this check answers to in skip.json and in messages. |
 | `tasklist_hygiene.instead_block` | `shorten the subject and delete finished tasks first; put details in the histo...` |  |  | What to do, in the block message. |
 | `tasklist_hygiene.instead_budget` | `keep subjects as `T-<n> [P] title`, details in the history ledger; delete fin...` |  |  | What to do, in the advisory line. |
@@ -14120,6 +14124,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
+| `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |

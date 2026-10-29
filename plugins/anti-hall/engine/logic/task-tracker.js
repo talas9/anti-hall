@@ -616,6 +616,7 @@ function decide(p) {
     out = show ? [short, c.open].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner')) : c.open;
   }
   var pruneShown = pruneOut !== '' && (ch.hold || emit) ? pruneOut : '';
+  if (pruneShown !== '') ah.advisory(ah.cfg('metric.tasklist_hygiene').advisory_kind, ah.cfg('tasklist_hygiene.event_prune'));
   var finalText = [pruneShown, emit ? out : '', primaryBlock].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner'));
   // count the tables: delivered ones are recorded as injected (and their hash remembered), held-back ones as suppressed
   var delivered = emit && finalText.indexOf(freshLine) >= 0 && freshLine !== '';

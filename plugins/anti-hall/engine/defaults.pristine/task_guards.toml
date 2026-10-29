@@ -1314,6 +1314,26 @@ value = "TaskUpdate status=deleted (own task entries are not user data)."
 doc = "Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from."
 value = "Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
 
+[tasklist_hygiene.event_nudge]
+doc = "Counter event: a completed-task note was shown (one per TaskUpdate to a done status)."
+value = "nudge"
+
+[tasklist_hygiene.event_deleted]
+doc = "Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge)."
+value = "deleted"
+
+[tasklist_hygiene.event_prune]
+doc = "Counter event: the prune suggestion (more finished tasks than the prune default) reached the model."
+value = "prune_suggested"
+
+[tasklist_hygiene.delete_trigger]
+doc = "The TaskUpdate statuses that count as deleting a task."
+value = ["deleted"]
+
+[metric.tasklist_hygiene]
+doc = "Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "tasklist_hygiene" }
+
 [tasklist_hygiene.msg_subject]
 doc = "The subject breach; {n} is the subject length and {max} handover.taskSubjectMax."
 value = "task subject is {n} chars (max {max})."

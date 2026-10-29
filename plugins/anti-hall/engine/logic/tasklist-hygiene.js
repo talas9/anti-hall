@@ -62,12 +62,14 @@ function decide(p, opts, event) {
     var reason = text.message('block', guard, { what: bp, instead: ah.cfg('tasklist_hygiene.instead_block') }, sid);
     return { exact: { code: 2, out: text.blockJson(reason), err: '' } };
   }
-  var whats = [], instead = '', doneNote = false;
+  var whats = [], instead = '', doneNote = false, mk = ah.cfg('metric.tasklist_hygiene').advisory_kind;
+  if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.cfg('tasklist_hygiene.delete_trigger').indexOf(String(inp.status)) >= 0) ah.advisory(mk, ah.cfg('tasklist_hygiene.event_deleted'));
   if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.settings.bool('ctxbudget.set_h_task_done_note') && ah.cfg('tasklist_hygiene.done_trigger').indexOf(String(inp.status)) >= 0) {
     var id = inp.taskId === undefined || inp.taskId === null ? '' : String(inp.taskId);
     whats.push(text.render(ah.cfg('tasklist_hygiene.msg_done'), { id: id }));
     instead = ah.cfg('tasklist_hygiene.instead_done');
     doneNote = true;
+    ah.advisory(mk, ah.cfg('tasklist_hygiene.event_nudge'));
   }
   if (mode !== 'off') {
     var content = thCompose(thBreach(p, tool, false));
