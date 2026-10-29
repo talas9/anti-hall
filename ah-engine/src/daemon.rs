@@ -1895,6 +1895,22 @@ fn watchdog(sh: Arc<Shared>) {
                 begin_drain(&sh, &crate::mem::restart_reason(&r), true);
                 continue;
             }
+            // the data segment (Linux VmData, what setrlimit caps): recycle before the ceiling, because past it an allocation
+            // fails and Rust aborts the process (nightly 40821576555: SIGABRT at 15000 calls while RSS sat at 110 MB)
+            let data_kb = limits::vm_data_kb();
+            if sh.rlimit.starts_with(defaults::text("daemon.rlimit_ok_prefix"))
+                && limits::data_recycle_due(data_kb, cfg.mem_mb, cfg.mem_recycle_pct)
+                && !sh.rss_tripped.swap(true, SeqCst)
+            {
+                let detail = defaults::render(
+                    "msg.log_data",
+                    &[("data", &data_kb.unwrap_or(0)), ("limit", &(cfg.mem_mb * 1024)), ("pct", &cfg.mem_recycle_pct)],
+                );
+                health::log_event("recycle", "data", &detail);
+                health::log_event("memory", "breakdown", &sh.memory_line());
+                begin_drain(&sh, defaults::text("msg.exit_reason_data"), false);
+                continue;
+            }
             if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb && !sh.rss_tripped.swap(true, SeqCst) {
                 health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
                 crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_rss"));

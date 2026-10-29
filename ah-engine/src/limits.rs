@@ -313,6 +313,31 @@ pub fn apply_mem_limit(mb: u64) -> String {
     }
 }
 
+/// One `<Key>: <n> kB` line of a `/proc/<pid>/status` text, in KB (`None` when the key is absent or not a number).
+pub fn status_field_kb(status: &str, key: &str) -> Option<u64> {
+    status.lines().find_map(|l| l.strip_prefix(key)).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<u64>().ok())
+}
+
+/// The data segment (`VmData`: private writable mappings, thread stacks and heap; the figure `RLIMIT_DATA` caps) of this process in KB.
+/// `None` where the platform does not report it (macOS), so the recycle below never fires there.
+pub fn vm_data_kb() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        return status_field_kb(&std::fs::read_to_string("/proc/self/status").ok()?, "VmData:");
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// True when the data segment has reached `pct` percent of the `mem_mb` ceiling `setrlimit` enforces: the daemon must recycle
+/// itself then, because past the ceiling an allocation fails and Rust aborts the process. `pct` 0 or `mem_mb` 0 turns it off.
+pub fn data_recycle_due(vm_data_kb: Option<u64>, mem_mb: u64, pct: u64) -> bool {
+    match vm_data_kb {
+        Some(kb) if mem_mb > 0 && pct > 0 => kb.saturating_mul(100) >= mem_mb.saturating_mul(1024).saturating_mul(pct),
+        _ => false,
+    }
+}
+
 /// The process's own memory, without file-backed pages other processes share or the kernel can reclaim (`None` where the platform
 /// will not say): macOS, `ri_phys_footprint` (what Activity Monitor shows); Linux, `RssAnon + RssShmem` from `/proc/self/status`.
 pub fn footprint_kb() -> Option<u64> {
@@ -453,6 +478,21 @@ pub fn ensure_private_dir(dir: &Path) -> Result<(), DirError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_field_parses_and_recycle_threshold_is_exact() {
+        let st = "Name:\tah\nVmData:\t  409600 kB\nVmSize:\t 900000 kB\n";
+        assert_eq!(super::status_field_kb(st, "VmData:"), Some(409600));
+        assert_eq!(super::status_field_kb(st, "VmRSS:"), None);
+        // 512 MB ceiling at 80 % = 419430.4 KB: 409600 is under, 419431 is over
+        assert!(!super::data_recycle_due(Some(409600), 512, 80));
+        assert!(super::data_recycle_due(Some(419_431), 512, 80));
+        assert!(super::data_recycle_due(Some(524_288), 512, 100));
+        // off switches and an unreadable figure never recycle
+        assert!(!super::data_recycle_due(Some(u64::MAX), 0, 80));
+        assert!(!super::data_recycle_due(Some(u64::MAX), 512, 0));
+        assert!(!super::data_recycle_due(None, 512, 80));
+    }
+
     use super::*;
     use std::time::Duration;
 

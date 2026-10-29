@@ -328,6 +328,18 @@ value = 512
 env = "AH_ENGINE_MEM_MB"
 unit = "MB"
 
+[daemon.mem_recycle_pct]
+doc = "Percent of daemon.mem_mb at which the daemon drains and exits cleanly (the next call starts a fresh one) instead of running into the data-segment ceiling, where an allocation fails and the process aborts (SIGABRT). Compared with VmData from /proc/self/status, so it acts only on Linux and only when the limit was applied; 0 = never."
+value = 80
+env = "AH_ENGINE_MEM_RECYCLE_PCT"
+min = 0
+max = 100
+unit = "%"
+
+[daemon.rlimit_ok_prefix]
+doc = "The prefix of the status word apply_mem_limit returns when the data-segment limit is in force."
+value = "ok:"
+
 [daemon.mem_metric]
 doc = "Which figure `daemon.rss_cap_kb` is compared with: `footprint` (the process's own memory: macOS physical footprint, Linux RssAnon + RssShmem; shared and reclaimable file pages are not counted) or `rss` (the kernel's resident set, which also counts shared code pages touched over time and made the daemon restart without a real leak). Falls back to the resident set where the platform has no footprint."
 value = "footprint"
