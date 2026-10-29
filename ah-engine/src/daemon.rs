@@ -2396,6 +2396,47 @@ fn accept_error(sh: &Shared, e: &std::io::Error) -> String {
 /// Accept calls that failed with something other than "nothing pending" (EMFILE and the like), since start.
 pub static ACCEPT_ERRORS: AtomicU64 = AtomicU64::new(0);
 
+/// Refused connections currently being drained by [`shed_close_gracefully`].
+static SHED_DRAINING: AtomicU64 = AtomicU64::new(0);
+
+/// Close a refused connection after its BUSY frame so the client can still read that frame. Closing a socket that holds unread
+/// request bytes sends a reset, and a reset discards what the peer has not read yet (or fails its write): the client then reports
+/// a transport error instead of BUSY. So: half-close the write side (the BUSY frame is delivered, then EOF), and discard the
+/// request the client already sent until it closes, `daemon.shed_drain_ms` or `daemon.shed_drain_bytes` pass. The wait is on a
+/// small thread (at most `daemon.shed_drain_threads` at once) so the accept loop never waits; past the cap, or if no thread can be
+/// started, the connection is closed at once as before (fail-open, additive).
+fn shed_close_gracefully(s: UnixStream) {
+    let (limit, bytes) = (defaults::millis("daemon.shed_drain_ms"), defaults::num("daemon.shed_drain_bytes"));
+    if limit.is_zero() || s.shutdown(std::net::Shutdown::Write).is_err() {
+        return;
+    }
+    if SHED_DRAINING.fetch_add(1, SeqCst) >= defaults::num("daemon.shed_drain_threads") {
+        SHED_DRAINING.fetch_sub(1, SeqCst);
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("ah-shed-drain".into()).spawn(move || {
+        let mut s = s;
+        let (end, mut left) = (Instant::now() + limit, bytes);
+        let mut chunk = vec![0u8; defaults::num("io.small_chunk_bytes") as usize];
+        while left > 0 {
+            let Some(wait) = end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { break };
+            if s.set_nonblocking(false).is_err() || s.set_read_timeout(Some(wait)).is_err() {
+                break;
+            }
+            match s.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => left = left.saturating_sub(n as u64),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        SHED_DRAINING.fetch_sub(1, SeqCst);
+    });
+    if spawned.is_err() {
+        SHED_DRAINING.fetch_sub(1, SeqCst); // the closure (and the socket) is dropped: closed at once
+    }
+}
+
 fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
     let me = limits::uid();
     let fd = listener.as_raw_fd();
@@ -2453,7 +2494,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 s.set_nonblocking(true).ok_logged("daemon_busy_nonblocking");
                 let frame = Reply::Busy.frame();
                 match s.write(&frame) {
-                    Ok(n) if n == frame.len() => {}
+                    Ok(n) if n == frame.len() => shed_close_gracefully(s),
                     Ok(_) => {
                         REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
                     }

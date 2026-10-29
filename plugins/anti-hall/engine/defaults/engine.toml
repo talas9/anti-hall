@@ -507,6 +507,21 @@ doc = "How often the daemon checks the rules file (and SIGHUP) for a change."
 value = 200
 unit = "ms"
 
+[daemon.shed_drain_ms]
+doc = "How long a refused (BUSY) connection is kept open after the BUSY frame so the client can read it before the close; the unread request is discarded meanwhile. 0 closes at once."
+value = 200
+unit = "ms"
+
+[daemon.shed_drain_bytes]
+doc = "At most this many bytes of a refused connection's unread request are discarded before it is closed."
+value = 4194304
+unit = "bytes"
+
+[daemon.shed_drain_threads]
+doc = "At most this many refused connections are drained at once; beyond it the connection is closed immediately, as before."
+value = 32
+unit = "count"
+
 [daemon.worker_wait_ms]
 doc = "How long an idle worker sleeps on the queue before looking again."
 value = 200
