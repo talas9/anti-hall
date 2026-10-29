@@ -142,7 +142,15 @@ function pgOwnLive(v, own) {
     if (v.state !== 'ok' || v.own === null || !piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
     return Math.max(v.unread, Math.max(0, v.total - own));
   }
-  if (v.state !== 'ok' || !piFinite(v.shared)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
+  if (v.state !== 'ok') { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
+  if (!piFinite(v.shared)) {
+    // the shared count is unknown (unreadable, or read from an impossible floor past the message count): never a confirmed zero.
+    // With an own row the old projection decides, as with the switch off; with none the cached count is kept (-2), as the base did.
+    ah.unable('devswarm-parent-gate:shared_unknown');
+    if (v.own === null) return -2;
+    if (!piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; }
+    return Math.max(v.unread, Math.max(0, v.total - own));
+  }
   // the old projection, only to count the cases it would have blocked on more than the shared count shows
   if (v.own !== null && piFinite(v.unread) && piFinite(v.total) && Math.max(v.unread, Math.max(0, v.total - own)) > v.shared) pgCountMismatch();
   return v.shared;
@@ -190,6 +198,7 @@ function pgOwnCount(selfKey, id, e, raw) {
     var w = pgOwnReader(selfKey, id, e, true);
     if (w.reader && w.state === 'ok' && (w.own !== null || pgSharedOn())) { // shared count: re-checked live with or without an own row
       var lv = pgOwnLive(w, w.own);
+      if (lv === -2) return r; // no own row and no shared count: the cached count stands (the base never re-checked it live)
       if (lv < 0) { r.stale = true; r.unread = 0; return r; }
       r.unread = lv;
       r.live = true;

@@ -309,7 +309,7 @@ fn own_view(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     }
     // `shared`: the ONE unread count `mesh inbox peek-primary` / `read-primary` / tick report (`union::unread_for` at this reader's
     // bases, own-family sends and wake rows left out), counted with or without an own row (no row: the floor bases, as peek reads);
-    // `null` when it cannot be read. Only the gate's devswarm.parentGateSharedCount path reads it: `unread` and `total` (with a row)
+    // `null` when it cannot be read or its store base is past the message count (an impossible floor: unknown, not empty). Only the gate's devswarm.parentGateSharedCount path reads it: `unread` and `total` (with a row)
     // and the no-row shape are the old answer unchanged, so the switch off computes exactly what it did before.
     let shared = shared_unread(st, &store, id, inbox, cursor, &reader, now).ok();
     let Some(value) = own else { return Ok(json!({"reader": true, "state": "ok", "own": null, "shared": shared})) };
@@ -320,7 +320,8 @@ fn own_view(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
 }
 
 /// The unread count of partition `id` for `reader` exactly as `mesh inbox peek-primary` counts it (`union::unread_for` with the
-/// partition's identity family from the store roster).
+/// partition's identity family from the store roster). `Err` when it cannot be read, or when the store base it read from is past the
+/// partition's message count: the count is then unknown, and the gate keeps the count it already had.
 fn shared_unread(
     st: &Settings,
     store: &crate::mesh::MeshReader,
@@ -333,6 +334,11 @@ fn shared_unread(
     let rows = ident::rows_of(&store.roster().map_err(|_| No)?);
     let family = crate::meshw::tick::family_of(id, &rows);
     let c = crate::meshw::union::unread_for(store, Path::new(&st.home), id, inbox, cursor, Some(reader), &family, now as i64).map_err(|_| No)?;
+    // a store base past the partition's message count is impossible: a count read from it is unknown, never a confirmed zero
+    let total = store.message_count(id).map_err(|_| No)?;
+    if c.store_base.is_finite() && c.store_base > total as f64 {
+        return Err(No);
+    }
     crate::meshw::tick::note_own_excluded(&c);
     Ok(c.unread)
 }

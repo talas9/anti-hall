@@ -2467,6 +2467,10 @@ fn the_parent_gate_counts_the_shared_peek_count_when_on_and_the_old_projection_w
         ("child-wake-prefix", vec![Child("anti-hall wake: resolve conflict?")], Some(0), 0, 1, 0, Some("1"), Some("1")),
         ("native-wake", vec![Native(wake)], Some(0), 0, 1, 0, None, Some("1")),
         ("no-own-row", own_after.clone(), None, 6, 2, 6, None, Some("2")),
+        // an impossible floor (past the message count) is unknown, never a confirmed zero: the cached count stands
+        ("floor-past-total", vec![Child("please review")], None, 20, 1, 0, Some("1"), Some("1")),
+        ("floor-equals-total", vec![Child("please review")], None, 1, 1, 0, None, Some("1")),
+        ("floor-below-total", vec![Child("q1"), Child("q2")], None, 1, 1, 0, Some("1"), Some("1")),
     ];
     let mut table = Vec::new();
     for (tag, rows, own_row, floor, raw, cursor, on, off) in &cases {
