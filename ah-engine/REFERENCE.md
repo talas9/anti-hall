@@ -3048,7 +3048,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.banner_text` | `anti-hall {version} active: {rules} rules enforced{last}.` |  |  | The session banner. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause. |
 | `guard_rules.blocks_limit` | `2000` |  |  | How many recorded blocks the banner and summary read at most. |
 | `guard_rules.blocks_window_days` | `14` |  | days | How many days of recorded blocks the banner and summary look back over to find a session. |
-| `guard_rules.digest_entry` | `{what} {instead}` |  |  | How an essential rule's digest text is built from its enforced message entry (the same `source` the block uses). Placeholders: {what}, {instead}. |
+| `guard_rules.digest_entry` | `{instead}` |  |  | How an essential rule's digest text is built from its enforced message entry (the same `source` the block uses): the entry's own instead text, so the digest tells the agent what to do. Placeholders: {what}, {instead}. |
 | `guard_rules.digest_file` | `engine/rule-digest.txt` |  |  | The generated digest, relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above. |
 | `guard_rules.digest_foot` | `More: skill engine-rules. After a block fix the cause, retry once.` |  |  | Last line of the digest. |
 | `guard_rules.digest_head` | `anti-hall rules (same config the engine enforces):` |  |  | First line of the session-start digest. |

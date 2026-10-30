@@ -1306,7 +1306,7 @@ mod session_blocks_tests {
     #[test]
     fn a_session_started_after_this_one_is_not_its_previous() {
         let rows = [row("later", "a"), row("old", "a")];
-        assert_eq!(last(&rows, &marks(&[("old", 10), ("me", 20), ("later", 30)]), "me"), 1, "old is previous, not later");
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("me", 20), ("later", 30)]), "me"), 1);
     }
 
     #[test]
@@ -1314,6 +1314,6 @@ mod session_blocks_tests {
         let st = MemoryState::new();
         assert_eq!(touch_session(&st, "a", 5), marks(&[("a", 5)]));
         assert_eq!(touch_session(&st, "b", 9), marks(&[("a", 5), ("b", 9)]));
-        assert_eq!(touch_session(&st, "a", 99), marks(&[("a", 5), ("b", 9)]), "first sight wins");
+        assert_eq!(touch_session(&st, "a", 99), marks(&[("a", 5), ("b", 9)]));
     }
 }

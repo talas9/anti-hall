@@ -40,10 +40,10 @@ fn editing_an_enforced_rule_message_changes_the_digest_and_makes_the_committed_d
     };
     let digest_rel = format!("plugins/anti-hall/{}", ah_engine::defaults::text("guard_rules.digest_file"));
     assert!(!String::from_utf8_lossy(&regen(&plugin).stdout).contains(&digest_rel), "the unedited digest must not be stale");
-    // edit the enforced force-push message (the entry the git guard blocks with), not any digest text
+    // edit the enforced force-push message (the entry the git guard blocks with, its instead text), not any digest text
     let file = plugin.join("engine/defaults/git.toml");
     let text = std::fs::read_to_string(&file).unwrap();
-    let edited = text.replace("a force push was stopped.", EDITED);
+    let edited = text.replace("push without rewriting published history.", EDITED);
     assert_ne!(text, edited, "the force-push message moved: update this test");
     std::fs::write(&file, edited).unwrap();
     ah_engine::defaults::reload(None).unwrap();

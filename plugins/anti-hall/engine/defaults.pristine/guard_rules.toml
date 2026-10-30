@@ -198,8 +198,8 @@ doc = "One essential digest line. Placeholder: {line}, the enforced rule's own t
 value = "- {line}"
 
 [guard_rules.digest_entry]
-doc = "How an essential rule's digest text is built from its enforced message entry (the same `source` the block uses). Placeholders: {what}, {instead}."
-value = "{what} {instead}"
+doc = "How an essential rule's digest text is built from its enforced message entry (the same `source` the block uses): the entry's own instead text, so the digest tells the agent what to do. Placeholders: {what}, {instead}."
+value = "{instead}"
 
 [guard_rules.skill_use_when]
 doc = "The description of a generated sub-skill: the sentence that makes the host load it. Placeholder: {use_when}, the area's `use_when` in `roles.areas`."

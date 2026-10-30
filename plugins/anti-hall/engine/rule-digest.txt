@@ -1,16 +1,16 @@
-- this commit includes a private session handover. unstage the handover before committing.
-- a force push was stopped. push without rewriting published history.
-- commit has an AI co-author line. remove the Co-Authored-By line and commit again.
+- unstage the handover before committing.
+- push without rewriting published history.
+- remove the Co-Authored-By line and commit again.
 - ... is not allowed: the ... does not edit files directly.
-- this edit references APIs missing from the installed runtime. verify the API names and correct the references.
-- your reply makes an unverified claim ("..."). verify the claim or label it unverified.
-- this step was stopped after repeated main-thread edits. hand the remaining work to a helper agent.
-- routine execution was assigned to a flagship model. respawn with model:'haiku' (or 'sonnet' if it authors code).
-- new agents can't start: the ... usage limit is at ...% (stop at ...%, ...). wait for the usage limit to reset.
-- this agent is a worker and can't start agents of its own. report back to the coordinator if more agents are needed.
-- ... open tasks have no agent working on them. assign the pending tasks to agents.
-- `rm -rf` on / or the home directory. confirm with the owner before deleting data, and delete only the exact paths you created.
-- a file written through a Bash heredoc. write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.
+- verify the API names and correct the references.
+- verify the claim or label it unverified.
+- hand the remaining work to a helper agent.
+- respawn with model:'haiku' (or 'sonnet' if it authors code).
+- wait for the usage limit to reset.
+- report back to the coordinator if more agents are needed.
+- assign the pending tasks to agents.
+- confirm with the owner before deleting data, and delete only the exact paths you created.
+- write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.
 - ... files changed but no tasks tracked.
 --
 - advisor.review: A review-shaped agent on ... is not allowed while the advisor is available.

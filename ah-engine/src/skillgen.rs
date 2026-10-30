@@ -243,6 +243,7 @@ pub fn compose(action: &str, source: &str) -> String {
 /// The digest text of an essential rule: composed from the enforced message entry itself (`source`), never from a copy.
 pub fn digest_entry(source: &str) -> String {
     let (what, _, instead) = rule_parts(source);
+    let instead = if instead.is_empty() { what.clone() } else { instead }; // an entry with no instead text speaks with its what
     defaults::render("guard_rules.digest_entry", &[("what", &what), ("instead", &instead)]).split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
