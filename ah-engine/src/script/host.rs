@@ -881,7 +881,7 @@ fn range_scan(
         None => start > 0,
         Some(_) if start == 0 => false,
         Some(_) => {
-            let mut b = [0u8; 1];
+            let mut b = [0u8];
             f.seek(SeekFrom::Start(start - 1)).ok()?;
             f.read_exact(&mut b).ok()?;
             b[0] != b'\n'

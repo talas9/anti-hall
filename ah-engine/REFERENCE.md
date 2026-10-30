@@ -5268,8 +5268,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `advisor.agent_file_tpl` | `agent-{agent}` |  |  | File name (without advisor.transcript_ext) of a subagent's own transcript. Placeholder: {agent}. A payload transcript_path with this name is used as is. |
+| `advisor.agent_head_bytes` | `8192` |  | bytes | Bytes read from the head of a subagent's transcript to check the agent id its first line records. |
+| `advisor.agent_id_re` | `"agentId"\s*:\s*"[^"]*"` |  |  | Regular expression (Rust syntax) of the agent id field in the head of a subagent's transcript; a match naming another agent than the payload's agent_id means a mismatch (the rules stay silent). |
 | `advisor.agent_transcript_keys` | `agent_transcript_path` |  |  | Hook payload fields that may carry a subagent's own transcript path. |
 | `advisor.agent_transcript_tpl` | `{dir}/{session}/subagents/agent-{agent}.jsonl` |  |  | Where a subagent's own transcript lies when the payload names none. Placeholders: {dir} (the main transcript's directory), {session} (its file name without .jsonl), {agent} (the agent id). A subagent is never judged by the main transcript; with no own transcript its rules stay silent. |
+| `advisor.attachment` | `6 entries` |  |  | The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. |
 | `advisor.block_types` | `tool_use, server_tool_use` |  |  | Transcript content-block types that are a tool call (the advisor is a server tool, so its block may be server_tool_use). |
 | `advisor.brief_head_bytes` | `2000` |  | bytes | How much of a dispatch prompt (from its start) is classified when the description names no thinking type. |
 | `advisor.dispatch_tools` | `Agent, Task` |  |  | Tool names that dispatch an agent: the thinking and second-attempt rules judge their brief (description, prompt). |
@@ -5278,6 +5282,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.generic_agent_types` | `, general-purpose` |  |  | Agent types (lower case) that carry no model of their own, so a spawn without a model inherits the session tier. Any other agent type is a named agent whose own definition may set the model, so the review rule leaves it alone. |
 | `advisor.guard_name` | `advisor-guard` |  |  | The skip.json key and block label of the advisor rules. |
 | `advisor.issue_key_re` | `(?i)(?:#\d{1,7}\b\|\b(?:issue\|gh)[ -]?\d{1,7}\b\|\b(?:fix\|bug\|hotfix\|feat)/[A-Z...` |  |  | Regular expression (Rust syntax) of the issue key of a fix dispatch (an issue number or a branch name) in its description, else its prompt: two fix dispatches with the same key are the same issue. |
+| `advisor.kind_availability` | `advisor_availability` |  |  | Advisory kind (counters) of why the advisor rules stayed silent or how availability was established: the names of advisor.silence_metrics. |
 | `advisor.kind_consult` | `advisor_consult` |  |  | Advisory kind (counter) of the advisor calls seen in the transcript. Adherence monitoring (phase 2): the engine report's `advisory` section shows, per session-independent total, advisor_consult.consult (consults), advisor_retry.armed (failures watched), advisor_retry.consulted (consulted after the failure), advisor_retry.injected (retry blocks fired), advisor_retry.acted_on (blocks followed by a consult), advisor_review.injected and .suppressed (non-flagship review/plan spawns blocked and held back). The same tallies are kept per session in the retry state file. |
 | `advisor.kind_plan` | `advisor_plan` |  |  | Advisory kind (counters and cap) of the plan rule. |
 | `advisor.kind_retry` | `advisor_retry` |  |  | Advisory kind (counters and cap) of the retry rule. |
@@ -5288,7 +5293,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.known_model_re` | `(?i)sonnet\|haiku\|opus\|fable\|^gpt-\|^o\d` |  |  | Regular expression (Rust syntax) of a model id the rules recognise. The newest assistant entry whose model matches it (or the flagship pattern) is the main model; an unknown model (`<synthetic>`, empty) is skipped, and with no known model the rules stay silent. |
 | `advisor.latency_buckets_s` | `10, 30, 60, 300, 900` |  |  | Upper bounds (seconds) of the consult-latency buckets: the time from the owner's last message to the advisor call (counter latency_le_<n>s, else latency_gt_<last>s). |
 | `advisor.line_max_bytes` | `1048576` |  | bytes | A transcript line longer than this is skipped when looking for advisor calls. |
-| `advisor.max_lines` | `4000` |  |  | Most transcript lines read from the tail. |
+| `advisor.max_lines` | `100000` |  |  | Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time). |
 | `advisor.metric_dispatch_tpl` | `dispatch_{type}` |  |  | Counter name of a thinking dispatch of one type. Placeholder: {type}. |
 | `advisor.metric_latency_gt_tpl` | `latency_gt_{s}s` |  |  | Counter name of a consult latency past the last bucket. Placeholder: {s}. |
 | `advisor.metric_latency_le_tpl` | `latency_le_{s}s` |  |  | Counter name of a consult-latency bucket. Placeholder: {s}. |
@@ -5317,6 +5322,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.review_signals` | `review, reviewer, critique, critic` |  |  | Token phrases that make an agent spawn review-shaped (matched against its description and agent type like model_routing.complex). Reviews and plans only: audits and scans may run on a cheaper model. |
 | `advisor.say_do_re` | `(?i)\b(?:i\W?ll\|i will\|let me\|i\W?m going to\|going to\|will now\|next,? i)\s+(?...` |  |  | Regular expression (Rust syntax) of assistant text that announces an advisor call. |
 | `advisor.session_safe_max` | `128` |  |  | Longest session-id part kept in a state file name. |
+| `advisor.settings_files` | `2 entries, 2 entries, 2 entries, 2 entries, 2 entries` |  |  | Claude Code settings files that may set an advisor model (root: home = the user's home, cwd = the session's working directory, abs = the path as given). Read only when the head of the transcript was never read (so a missing advisor_tool attachment proves nothing); a set advisor.settings_key then counts as the advisor being available. |
+| `advisor.settings_key` | `advisorModel` |  |  | Top-level key of a Claude Code settings file that names the advisor model; a non-empty string means an advisor is configured. |
+| `advisor.settings_read_max_bytes` | `1048576` |  | bytes | Most bytes of one settings file read (a longer file is not parsed and counts as not configured). |
+| `advisor.silence_metrics` | `7 entries` |  |  | Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved). |
 | `advisor.state_ext` | `.json` |  |  | File-name extension of the per-session retry state. |
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
 | `advisor.summary` | `Advisor sessions only: blocks once a plan written with no advisor call this t...` |  |  | One-line description of the advisor-guard check in the generated reference. |
