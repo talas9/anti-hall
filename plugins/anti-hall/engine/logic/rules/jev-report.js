@@ -953,6 +953,12 @@ function jevReportRun(input) {
   }
   var humanLabelByHash = jrLatestHumanLabelByHash(jrParseNdjson(input.labels));
 
+  // `--window 24h|7d` (or a number of days) narrows the whole report, not only the cost windows: it is a `--since now-N days`
+  // unless an explicit `--since` was given (#466).
+  if (opts.window && opts.since === null) {
+    var wDays = Object.prototype.hasOwnProperty.call(JR_C.windows, opts.window) && JR_C.windows[opts.window] != null ? JR_C.windows[opts.window] : Number(opts.window);
+    if (Number.isFinite(wDays) && wDays > 0) opts.since = now - wDays * JR_C.day_ms;
+  }
   var rowsBeforeWindow = rows.length;
   rows = jrFilterByTimeWindow(rows, opts);
   triageRows = jrFilterByTimeWindow(triageRows, opts);
