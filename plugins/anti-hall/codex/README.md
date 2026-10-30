@@ -148,7 +148,7 @@ Codex-safe behavior:
 
 Claude's advisor mode (`guards.advisorReview`, `guards.advisorPlan`, `guards.advisorRetry`) needs an `advisor` tool and, for the review rule, an Agent/Task PreToolUse hook point. Codex has neither: no advisor tool, and no Agent-tool matcher in its hook table, so none of the three rules is wired into the Codex PreToolUse or Stop tables. Consultation maps to the deadly-loop frontier review protocol (`anti-hall-deadly-loop`: independent frontier-model review lenses, run in sequence).
 
-Not enforceable on Codex: that a consultation happened (no machine-verifiable receipt), the model of a spawned reviewer, and a plan-before-advisor or retry-before-advisor gate. These stay a convention of the deadly-loop skill.
+Not enforceable on Codex: that a consultation happened (no machine-verifiable receipt), the model of a spawned reviewer, and a plan-before-advisor or retry-before-advisor gate. These stay a convention of the deadly-loop skill. Adherence counters (advisor consults, consult-after-failure, retry blocks acted on, review spawns blocked) are Claude-side only for the same reason.
 
 ## Limits and escape hatches
 

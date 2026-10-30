@@ -1351,6 +1351,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.msg_heavy_plain` | `a heavy command` |  |  | The kind of any other heavy command. |
 | `command.msg_heavy_remote` | `a command that changes a shared remote` |  |  | The kind of a state-changing remote command. |
 | `command.msg_heavy_remote_why` | `Pushes, pulls and gh calls touch a shared remote and can stall on network or ...` |  |  | Why a remote git or gh call (push, pull, fetch, a gh read or write that is not on command.remote_block) is blocked in the main thread. |
+| `command.msg_heavy_segment` | ` Heavy: {seg}. The other {n} are fine alone.` |  |  | Added to the heavy-command block of a chain; {seg} is the heavy segment (whitespace collapsed, cut), {n} the number of other segments. The block is all-or-nothing: the hook cannot run part of a command. |
 | `command.msg_heavy_what` | `{kind}{detail} can't run in the main thread.` |  |  | Heading of the heavy-command block ({kind} and {detail} are the next two texts). |
 | `command.msg_heavy_why` | `Its raw output would flood the main conversation.` |  |  | Why a heavy command is blocked. |
 | `command.msg_mailbox_allowed` | ``inbox count`, `inbox peek-primary`, `mesh read --peek`, plain `roster`.` |  |  | What stays allowed. |
@@ -1376,6 +1377,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.msg_stash_scope_subagent` | `a subagent (workers must never touch the coordinator's working tree via stash)` |  |  | Scope text for a subagent. |
 | `command.msg_stash_what` | ``git stash {sub}` is blocked for {scope}.` |  |  | Heading of the git stash block ({sub} is the subcommand, {scope} the next two texts). |
 | `command.msg_stash_why` | `A stash can swallow another agent's protected WIP (defect b08b26566b92).` |  |  | Why a stash is blocked. |
+| `command.name_segment_setting` | `7 entries` |  |  | Off switch (guards.commandNameSegment, default on): a heavy-command block in a chain names the heavy segment and says the other segments are fine to run on their own. |
 | `command.nice_value_flags` | `-n, --adjustment` |  |  | nice options that take a value. |
 | `command.node_eval_deny` | `8 items` |  |  | Patterns that make a `node -e` payload unsafe (command-guard.js NODE_EVAL_UNSAFE_RE, NODE_EVAL_BRACKET_ACCESS_RE and the inline denials of isSafeNodeEvalPayload). |
 | `command.node_eval_flags` | `-e, --eval` |  |  | node options whose next word is inline code. |
@@ -1413,6 +1415,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.script_not_a_run_flag` | `4 entries` |  |  | Per interpreter family, the flag pattern that means the command is not a script-file run: inline code, module, syntax check or stdin. |
 | `command.script_shells` | `sh, bash, zsh, dash` |  |  | Shells whose script run counts as work. |
 | `command.script_value_flags` | `12 items` |  |  | Interpreter options whose next word is their value, not the script. |
+| `command.segment_ellipsis` | `...` |  |  | Appended to a cut segment. |
+| `command.segment_label_max` | `24` |  |  | Longest text (characters) of the named heavy segment; a longer one is cut (the visible block text holds 115 characters). |
 | `command.setting_allow_bg_scratch` | `7 entries` |  |  | Allowance for background scratch scripts (default on). |
 | `command.setting_allow_gcloud_reads` | `7 entries` |  |  | the narrow read-only Google Cloud access (default on). |
 | `command.setting_allow_plain_push` | `7 entries` |  |  | the plain git push chain allowance (default on). |
@@ -3670,30 +3674,51 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `claim_evidence.ack_pushed_res` | `\b(?:ci\\|checks?\\|pipeline\\|actions?\\|build)\b[^.\n]{0,40}\b(?:pending\\|runni...` |  |  | A reply that states the CI or merge state honestly is never held by rule 2 (CI pending or unchecked, not merged, awaiting review). Regular expressions, case-insensitive. |
-| `claim_evidence.ack_res` | `8 items` |  |  | A reply that already labels itself honest is never held (rule 1): the claim is negated, hedged, or tied to an earlier run. Regular expressions, case-insensitive, matched against the reply with quoted text and code removed. |
+| `claim_evidence.ack_reason` | `labelled` |  |  | Log reason for a claim covered by an honest label in its own sentence (ack_res, within claim_evidence.reach_label). |
+| `claim_evidence.ack_res` | `8 items` |  |  | An honest label on a claim (rule 1): the claim is negated, hedged, or tied to an earlier run. It covers only a claim in its own sentence within claim_evidence.reach_label words of it. Regular expressions, case-insensitive, matched against the claim's sentence with quoted text and code removed. |
 | `claim_evidence.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. |
 | `claim_evidence.claims` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | The result claims rule 1 looks for, in order; the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. With no tool call at all this turn, every row fires. |
 | `claim_evidence.clause_break_re` | `[,;:()]\|\s[-\u2013\u2014]\s\|\b(?:but\|and then\|however\|although)\b` |  |  | Where a clause ends inside a sentence: negation, tense and attribution words only govern a claim in the same clause. Rust regular expression. |
+| `claim_evidence.criterion_res` | `\b(?:requires?\\|requiring\\|required\\|ensures?)\s+that\b` |  |  | A requirement whose 'that' opens the claim's own clause (rule 1): 'SAFE-TO-REMOVE requires that the branch is merged'. 'required' as an adjective ('All required tests pass') stays a claim. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim. |
 | `claim_evidence.done_res` | `\b(?:all\s+)?(?:done\\|finished\\|shipped\\|delivered\\|landed\\|resolved\\|wrapped...` |  |  | Completion words of rule 2. Regular expressions, case-insensitive, matched against the reply with quoted text and code removed. |
-| `claim_evidence.future_res` | `\b(?:once\\|after\\|when\\|whenever\\|if\\|until\\|unless\\|before\\|as soon as\\|assu...` |  |  | A claim in a future, conditional or pending clause is not a claim (rule 1): 'once #1 and #2 are merged', 'after it is merged', 'if CI is green', 'to be verified'. Regular expressions, case-insensitive, matched against the clause up to and including the claim. |
+| `claim_evidence.future_res` | `\b(?:once\\|after\\|when\\|whenever\\|if\\|until\\|unless\\|before\\|as soon as\\|assu...` |  |  | A conditional, temporal or 'whether' word that opens the claim's own clause (rule 1): 'once #1 and #2 are merged', 'if CI is green', 'only when X is merged', 'until the tests pass', 'whether that version is live'. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim. |
+| `claim_evidence.gap_restart_re` | `^(?:the\|a\|an)$` |  |  | A word that starts a new noun phrase: seen after a counted word, the gap holds two phrases (a second clause) and the suppressor's reach ends ('Once again the build is green', 'According to the PR body the change is merged'). Rust regular expression, case-insensitive, matched against one whole word. |
+| `claim_evidence.gap_skip_re` | `^(?:the\|a\|an\|this\|that\|these\|those\|it\|its\|their\|our\|my\|your\|his\|her\|all\|every...` |  |  | Words that never count against a reach: articles, determiners, possessives, quantifiers, 'of'/'and'/'or', 'it'/'this'/'that', '#refs' and numbers (they belong to the claim's subject). Every other word counts, so a word the list does not know uses up the reach instead of extending it. Rust regular expression, case-insensitive, matched against one whole word. |
+| `claim_evidence.gap_word_re` | `[\w#@\x27\x{2019}/-]+` |  |  | One word of the text between a suppressor and the claim (punctuation is not a word). Rust regular expression. |
 | `claim_evidence.guard_name` | `claim-evidence-guard` |  |  | The guard id this check answers to in skip.json and in its messages. |
 | `claim_evidence.log_kind` | `claim_evidence` |  |  | Engine log kind written for a hit (block or log mode). |
 | `claim_evidence.max_blocks` | `2` |  |  | Most holds per cap_scope window; a new real owner turn resets it. Same-text dedupe is independent: the same reply is never held twice. |
+| `claim_evidence.max_suppress_logs` | `5` |  |  | Most suppressed-hit log lines (claim_evidence.log_kind) written for one reply. |
+| `claim_evidence.modal_res` | `\b(?:will\\|would\\|shall\\|going to\\|gonna\\|should\\|might\\|may\\|must\\|can\\|coul...` |  |  | A modal or future marker on the claim's own verb (rule 1): 'must have been merged', 'will have been deployed'. Reach claim_evidence.reach_verb, so 'We must hurry because PR #405 is merged' and 'We will celebrate given that ...' stay claims. Regular expressions, case-insensitive, matched against the clause before the claim. |
 | `claim_evidence.mode` | `block` |  |  | What a hit does: block (the Stop is held once per reply, the reply is asked to run the check or label the claim) or log (the hit is only written to the engine log, for measuring noise before it acts). |
 | `claim_evidence.msg_claim_instead` | `run the check and show its result, or say it was not verified.` |  |  | Rule 1 advice. |
 | `claim_evidence.msg_claim_what` | `"{quote}" ({claim}) has no matching check run this turn.` |  |  | Rule 1 headline. Placeholders: {claim} the claim kind, {quote} the words found. |
 | `claim_evidence.msg_pushed_instead` | `check the run (gh run list, gh pr checks), or report it as pushed, not done.` |  |  | Rule 2 advice. |
 | `claim_evidence.msg_pushed_what` | `pushed this turn, then called done, but CI and merge state were never checked.` |  |  | Rule 2 headline. |
-| `claim_evidence.neg_res` | `\b(?:not\\|never\\|nothing\\|none\\|neither\\|nor\\|no\s+\w+\s+(?:is\\|are\\|was\\|wer...` |  |  | A claim in a negated clause is not a claim (rule 1): 'nothing is merged', 'is not deployed', 'was never released'. Regular expressions, case-insensitive, matched against the clause up to and including the claim. |
+| `claim_evidence.msg_suppressed` | `suppressed ({reason}): "{quote}" ({claim})` |  |  | Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, reported, criterion, labelled, quoted), {claim} the claim kind, {quote} the words found. |
+| `claim_evidence.neg_res` | `\b(?:is\\|are\\|was\\|were\\|am\\|be\\|been\\|has\\|have\\|had\\|do\\|does\\|did\\|can\\|co...` |  |  | Negation on the claim's own verb or a negative pronoun as its subject (rule 1): 'is not confirmed green', 'not yet verified', 'never verified', 'nothing is merged', 'none of this is verified'. A bare 'not' counts only on a verb ('is not', 'have not', 'not yet'), never before the claim's subject ('Whether acknowledged or not CI is green' stays a claim). Reach claim_evidence.reach_verb: only skip words (gap_skip_re) may stand between it and the claim, so 'Without any further delay the suite is passing' stays a claim. Regular expressions, case-insensitive, matched against the clause before the claim. |
+| `claim_evidence.neg_subject_res` | `\bno\b` |  |  | 'no' before the claim's subject (rule 1): 'no PR is merged'. Reach claim_evidence.reach_subject (the subject's own noun); a certainty idiom after it (claim_evidence.no_idiom_re: 'no doubt', 'no wonder') never suppresses. Regular expressions, case-insensitive, matched against the clause before the claim. |
+| `claim_evidence.no_idiom_re` | `^no\s+(?:doubt\|doubts\|wonder\|question\|questions\|kidding\|way\|problem\|problems\|...` |  |  | The words after a 'no' (neg_subject_res) that make it a certainty idiom, not a negated subject: 'No doubt it is merged', 'No wonder it is live' stay claims. Rust regular expression, case-insensitive, matched against the 'no' and the text after it up to the claim. |
+| `claim_evidence.opener_idiom_re` | `^(?:once\s+(?:again\|more)\|(?:if\|when\|whenever)\s+(?:asked\|anything\|needed\|nec...` |  |  | The words after a clause opener (future_res) that make it an idiom, not a condition on the claim: 'Once again CI is green', 'If anything', 'If needed', 'Until now', 'After all', 'whether ... or not' stay claims, while 'once all PRs are merged' is a condition. Each idiom is paired with its opener. Only an opener followed by the claim's own subject covers it. Rust regular expression, case-insensitive, matched against the opener and the text after it up to the claim. |
 | `claim_evidence.push_res` | `\bgit\s+push\b, \bgh\s+pr\s+create\b` |  |  | Commands that publish work: matched against each command run this turn (Rust syntax). A hit starts rule 2's clock. |
-| `claim_evidence.reported_res` | `\b(?:says?\\|said\\|saying\\|reports?\\|reported\\|reporting\\|claims?\\|claimed\\|st...` |  |  | A claim that reports someone else's words or an earlier text is not a claim of this turn's work (rule 1): 'the bot reported that tests pass', 'according to the PR body it is merged'. Regular expressions, case-insensitive, matched against the clause up to and including the claim. |
+| `claim_evidence.quote_mark_re` | `["“”]\|\B[\x27‘’]\|[\x27‘’]\B` |  |  | Quote marks taken out of the reply before claims are looked for (an apostrophe inside a word stays): a claim in quotes ('"It is merged."', 'CI is "green"') is judged like any other, so only a reporting verb that opens its clause (reported_res) covers it. Code, fences and blockquotes stay masked. Rust regular expression. |
+| `claim_evidence.quoted_reason` | `quoted` |  |  | Log reason for a claim that appears only inside code, a fence or a blockquote. |
+| `claim_evidence.reach_clause` | `2` |  |  | Most counted words between a clause opener (future_res, reported_res, criterion_res) and the claim: the claim's own subject ('once a NAS that has it is deployed'). Any word beyond it (a second predicate, an unknown connector) ends the opener's reach and the claim is judged as fact. |
+| `claim_evidence.reach_consequent` | `1` |  |  | Most counted words between a claim covered by a chain row of claim_evidence.suppress (a conditional opener) and a following claim in the same clause that is its consequent: the consequent's own subject ('If CI is green the change is merged'). |
+| `claim_evidence.reach_label` | `1` |  |  | Most counted words between a claim and the honest label (ack_res) in its own sentence that covers it (1 = the claim's own subject) ('Tests pass per the earlier run', 'Unverified: the service is live'). A label elsewhere in the reply covers nothing. |
+| `claim_evidence.reach_subject` | `1` |  |  | Most counted words between a negated subject word (neg_subject_res) and the claim: 1 = its own noun ('no PR is merged'). |
+| `claim_evidence.reach_verb` | `0` |  |  | Most counted words (not gap_skip_re) between a negation or modal (neg_res, modal_res) and the claim it covers: 0 = it must sit on the claim's own verb. |
+| `claim_evidence.reported_res` | `\b(?:says?\\|said\\|saying\\|reports?\\|reported\\|reporting\\|claims?\\|claimed\\|st...` |  |  | A reporting verb, or 'according to' a named source, that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed', 'according to the PR body the change is merged' ('according to plan' names no source). Quoted text is a claim like any other unless one of these opens its clause. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim. |
 | `claim_evidence.sentence_end_re` | `[.!?]+\s\|\n+` |  |  | Where a sentence of the reply ends (a claim is judged inside its own sentence). Rust regular expression. |
-| `claim_evidence.skip_window` | `60` |  |  | Most characters before a claim (inside its clause) that are searched for neg_res, future_res and reported_res. |
+| `claim_evidence.skip_window` | `60` |  |  | Most characters before a claim (inside its clause) that are searched for a suppressor (claim_evidence.suppress). |
 | `claim_evidence.state_prefix` | `claim-evidence-state-` |  |  | Prefix of the per-session state file name under the replykit state directory (the sanitised session id and the JSON extension follow). |
 | `claim_evidence.state_res` | `\bgh\s+run\s+(?:view\\|watch\\|list)\b, \bgh\s+pr\s+(?:checks\\|view\\|merge\\|sta...` |  |  | Commands that look at CI or the merge state: matched against the commands run AFTER the last push of the turn. Any hit satisfies rule 2. |
 | `claim_evidence.summary` | `Stop (Claude): holds once a reply that claims a result (tests pass, verified,...` |  |  | One-line description of the claim-evidence-guard check in the generated reference. |
+| `claim_evidence.suppress` | `3 entries, 4 entries, 3 entries, 5 entries, 3 entries, 3 entries` |  |  | Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause before the hit), reach = the config key of the most counted words allowed between a list hit and the claim (gap_skip_re words are free; gap_restart_re after a counted word ends the reach). idiom (optional) = the config key of a regex matched against the text between a list hit and the claim: a match makes that hit an idiom that covers nothing. chain = true: a claim that follows a claim this row covered, in the same clause with at most claim_evidence.reach_consequent counted words between them, is that condition's consequent and is covered too ('If CI is green the change is merged by the bot'). Every hit of every list is tried; the first row with a hit in reach names the reason. |
 | `claim_evidence.sw_claim` | `6 entries` |  |  | Switch guards.claimEvidence (default on): off lets a reply assert a check or outcome with no matching tool call this turn. |
 | `claim_evidence.sw_pushed` | `6 entries` |  |  | Pushed work is not done switch. Switch guards.pushedNotDone (default on): off lets a reply call pushed work done without a look at CI or the merge state. |
+| `claim_evidence.sw_telemetry` | `6 entries` |  |  | Switch guards.claimEvidenceTelemetry (default on): off stops the claim-evidence fired / suppressed counters (metrics claim_evidence_fired, claim_evidence_suppressed; advisory counters in status); the guard's decisions do not change. |
+| `claim_evidence.trailing_label_re` | `[;:(—–]\s*(?:unverified\|untested\|unchecked\|not\s+(?:yet\s+)?(?:verified\|check...` |  |  | An honest label that closes the claim's sentence as its own clause ('Tests pass in my head but I did not run them; unverified.'): it covers every claim before it in that sentence. A leading 'Unverified claims aside, ...' is not one. Rust regular expression, case-insensitive, matched against the sentence. |
 
 ### agent_controls.toml / agent_scan
 
@@ -4537,8 +4562,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.append_codex` | `append with a one-line `>>`, never overwrite it` |  |  | How to append to the history file (Codex wording). |
 | `tasklist_guard.budget_setting` | `6 entries` |  |  | guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off). |
 | `tasklist_guard.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
+| `tasklist_guard.carry_setting` | `6 entries` |  |  | Off switch (guards.tasklistCarryProgress, default on): a session that crossed midnight keeps using its progress file under the earlier date instead of being asked for a new one under today's date. |
 | `tasklist_guard.codex_fields` | `turn_id, model` |  |  | Payload fields that, all non-empty strings, mark a Codex payload (isCodexPayload). |
 | `tasklist_guard.codex_tool` | `apply_patch` |  |  | A tool name only Codex payloads carry (isCodexPayload). |
+| `tasklist_guard.counted_ellipsis` | `...` |  |  | Appended to a cut label. |
+| `tasklist_guard.counted_label_max` | `20` |  |  | Longest label (characters) of one named action; a longer one is cut. |
+| `tasklist_guard.counted_max` | `3` |  |  | How many counted actions the block message names (the visible block text holds 115 characters). |
+| `tasklist_guard.counted_more` | ` (+{n} more)` |  |  | {n} further counted actions that are not named. |
+| `tasklist_guard.counted_sep` | `; ` |  |  | Separator between the named actions. |
+| `tasklist_guard.counted_text` | ` Counted: {list}{more}.` |  |  | Added to the block reason; {list} is the named counted actions, {more} the counted_more text when there are others. |
+| `tasklist_guard.date_dir_re` | `^\d{4}-\d{2}-\d{2}$` |  |  | Regex source of a progress date directory name. |
 | `tasklist_guard.details_dir` | `block-details` |  |  | Directory of the tasklist-guard details file under the anti-hall state directory. |
 | `tasklist_guard.details_ext` | `.md` |  |  | File extension of the tasklist-guard details file. |
 | `tasklist_guard.details_head` | `Task list and progress file: what to do` |  |  | First line of the tasklist-guard details file. |
@@ -4568,6 +4601,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.instead_reset` | `restore the open tasks, then stop again.` |  |  | Lead of what to do instead after a task store reset (Claude wording). |
 | `tasklist_guard.instead_reset_codex` | `restore the open tasks, then stop again.` |  |  | Lead of what to do instead after a task store reset (Codex wording). |
 | `tasklist_guard.instead_stalled` | `assign an agent to each stalled task.` |  |  | What to do about tasks stalled in progress. |
+| `tasklist_guard.integration_skip_setting` | `6 entries` |  |  | Off switch (guards.tasklistIntegrationSkip, default on): git commands that only integrate worker commits (workdetect.integration_work) are not counted as this session's own work. |
 | `tasklist_guard.jev_false` | `a small bounded chore — task tracking would be overhead, not help` |  |  | What a false answer means. |
 | `tasklist_guard.jev_id` | `tasklistTrivial` |  |  | The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it). |
 | `tasklist_guard.jev_instructions` | `This session is about to be nudged to track its work as tasks / refresh its p...` |  |  | The question put to Jev (a noul question). |
@@ -4575,6 +4609,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.jev_true` | `genuinely non-trivial — multi-part, benefits from task tracking` |  |  | What a true answer means. |
 | `tasklist_guard.low_priorities` | `p2, low, deferred` |  |  | Priorities (lowercase) below the actionable floor for the stalled-in-progress count. |
 | `tasklist_guard.max_blocks` | `3` |  |  | Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-signal dedupe remains independent; the separate once-per-session reduced-nag budget is unchanged. |
+| `tasklist_guard.name_counted_setting` | `6 entries` |  |  | Off switch (guards.tasklistNameCounted, default on): the block message names the first counted actions. |
 | `tasklist_guard.no_task_tools_setting` | `8 entries` |  |  | Nag form when task tools are missing. The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip). |
 | `tasklist_guard.omc_fresh_ms` | `7200000` |  |  | How recent a loop state's timestamp must be for the loop to count as active. |
 | `tasklist_guard.omc_kill_env` | `DISABLE_OMC` |  |  | Environment variable that disables oh-my-claudecode (value 1). |
@@ -4697,6 +4732,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `workdetect.dev_null` | `\/dev\/null` |  |  | Regex source of the null device, a redirect target that never counts as a write. |
 | `workdetect.devswarm_housekeeping` | `^\s*(?:node\s+)?(?:\S*[\\/])?devswarm\.js\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*(?:i...` |  |  | Regex source (case-insensitive) of a command segment that is only DevSwarm mesh housekeeping through the stable launcher: an inbox, heartbeat, send, relay, notice, nudge, roster or wake-directive verb. |
 | `workdetect.heredoc_delimiter` | `^<<-?\s*((?:[^\s;&\|()<>'"\\]\|'[^'\n]*'\|"[^"\n]*"\|\\[^\n])+)` |  |  | Regex source of a heredoc operator and its delimiter word, which may be partly quoted or escaped; group 1 is the word. |
+| `workdetect.integration_work` | `\bgit\s+(?:checkout\|switch)(?:\s+-[bBcC])?\s+(?!-)\w[\w/-]*(?:\.\d[\w.-]*)*(?...` |  |  | JavaScript regex source (case-insensitive, global) of the PURE integration forms of git: a branch or ref checkout/switch (one ref argument, no `--` pathspec, no flag, no file-like argument) and a merge/cherry-pick that brings in committed work (not --continue, --skip, --abort or --quit, which resolve or undo file content). With guards.tasklistIntegrationSkip on, a command whose only work is one of these does not count toward tasklist-guard's work count: the files were changed by a delegated worker. Anything else (`checkout HEAD -- path`, `checkout --ours`, `merge --continue`, restore, reset) still counts. |
 | `workdetect.mutating_tools` | `Edit, Write, MultiEdit, NotebookEdit` |  |  | File-mutating tools: each call counts as work unless it targets an excluded path. |
 | `workdetect.never_work_tools` | `Agent, Task, CronCreate, CronDelete` |  |  | Tools that start or schedule work and never change a file themselves. |
 | `workdetect.request_path_re` | `(?:^\|[\s"'`(=:,<>])(?:((?:~\|\.{1,2})?\/[\w.@+~-]+(?:\/[\w.@+~-]+)*)\|([\w.@+-]...` |  |  | Regex source (global) of a path named in a user request: an absolute, `~`, `./` or `../` path (group 1), or a relative one with at least one `/` (group 2). A write under such a path in a session with exactly ONE user request is the requested output, not untracked work. |
@@ -4727,7 +4763,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisory.kind_tasklist_omc` | `tasklist_omc` |  |  | The advisory kind name of the task-list guard's step-aside note while an OMC loop runs. |
 | `advisory.kind_tasklist_plan_mode` | `tasklist_plan_mode` |  |  | The advisory kind name of the task-list guard's plan-mode note. |
 | `advisory.max_kinds` | `32` |  |  | The most advisory kinds one session's state file keeps (the least recently used go first). |
-| `advisory.metric_names` | `7 entries` |  |  | The metric names the scripts count per advisory kind, by role: a rule flagged a candidate, a question was put to Jev, Jev confirmed, the advisory reached the model, it was held back (unchanged table, repeat, cap, Jev declined, rate-limited fallback), a Jev question failed, an advisory fired past its soft cap. |
+| `advisory.metric_names` | `11 entries` |  |  | The metric names the scripts count per advisory kind, by role: a rule flagged a candidate, a question was put to Jev, Jev confirmed, the advisory reached the model, it was held back (unchanged table, repeat, cap, Jev declined, rate-limited fallback), a Jev question failed, an advisory fired past its soft cap; the advisor-mode adherence counts: a failure armed the retry rule, the advisor was consulted after that failure, a retry block was acted on (advisor consulted before the next edit), an advisor call was seen. |
 | `advisory.repeat_turns_by_kind` | `5 entries` |  |  | Per-kind override of advisory.repeat_turns_default. |
 | `advisory.repeat_turns_default` | `12` |  |  | How many further calls a fixed-text advisory is held back after it fired, unless its kind has its own entry in advisory.repeat_turns_by_kind. |
 | `advisory.session_safe_max` | `80` |  |  | The longest sanitised session id used in the advisory state file name. |
@@ -4901,6 +4937,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_reason_default` | `inbox status could not be confirmed` |  |  | Label of an unknown-inbox reason not in reason_labels. |
 | `devswarm_role.pg_reason_labels` | `13 entries` |  |  | The label of each unknown-inbox reason (reasonLabel). |
 | `devswarm_role.pg_reason_parked_only` | `DevSwarm Stop gate.` |  |  | The block reason body when only a parked escalation holds the turn (no family, question or truncation). |
+| `devswarm_role.pg_repeat_step` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh inbox peek-primary <id>`; if it sh...` |  |  | The concrete next step the repeated-block hint adds once to a repeated parent-gate block (repeat.allowed_keys). |
 | `devswarm_role.pg_repos_root_marker` | `/.devswarm/repos/` |  |  | A worktree under this path segment is a DevSwarm-app workspace the supervisor active-list cache can archive (DEVSWARM_REPOS_ROOT_RE). |
 | `devswarm_role.pg_set_busy_fresh` | `5 entries` |  |  | Setting devswarm.parentGateBusyFreshMin: minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default. |
 | `devswarm_role.pg_set_busy_max_age` | `5 entries` |  |  | Setting devswarm.parentGateBusyMaxAgeMin: minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default. |
@@ -4931,6 +4968,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_stray_seen_sep` | `#` |  |  | Joins a straying signal's key and episode number in its shown-set key. |
 | `devswarm_role.pg_stray_step` | `: step ` |  |  | Between a warned workspace's title and its step number on the straying line. |
 | `devswarm_role.pg_stray_tail` | ` — advisory (Jev notes are recommendations; your call); `~/.anti-hall/ah-engi...` |  |  | Ends the straying advisory line. |
+| `devswarm_role.pg_sw_shared_count` | `6 entries` |  |  | Switch devswarm.parentGateSharedCount (default on): the parent gate counts the Primary's own unread mail with the ONE shared count `mesh inbox peek-primary` reports (own-family sends and wake rows left out, re-checked live even with no own reader row), and leaves a partition's own-family sends out of the descriptor count (GH #384). Off restores the old `max(countFor, messageCount - own)` projection, which can block on a stale count peek shows as 0. |
 | `devswarm_role.pg_tail` | `If this is intentional, say so explicitly. Escape hatch: the user may direct ...` |  |  | The closing sentence of the reason. |
 | `devswarm_role.pg_title_fmt` | `{name} ({short})` |  |  | A workspace's display name: {name}, {short} (the id's first characters). |
 | `devswarm_role.pg_twin_more` | ` and {n} more` |  |  | More twins than shown: {n}. |
@@ -5109,6 +5147,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.edit_tools` | `Write, Edit, MultiEdit` |  |  | Tool names whose file_path is an edit target. |
 | `advisor.generic_agent_types` | `, general-purpose` |  |  | Agent types (lower case) that carry no model of their own, so a spawn without a model inherits the session tier. Any other agent type is a named agent whose own definition may set the model, so the review rule leaves it alone. |
 | `advisor.guard_name` | `advisor-guard` |  |  | The skip.json key and block label of the advisor rules. |
+| `advisor.kind_consult` | `advisor_consult` |  |  | Advisory kind (counter) of the advisor calls seen in the transcript. Adherence monitoring (phase 2): the engine report's `advisory` section shows, per session-independent total, advisor_consult.consult (consults), advisor_retry.armed (failures watched), advisor_retry.consulted (consulted after the failure), advisor_retry.injected (retry blocks fired), advisor_retry.acted_on (blocks followed by a consult), advisor_review.injected and .suppressed (non-flagship review/plan spawns blocked and held back). The same tallies are kept per session in the retry state file. |
 | `advisor.kind_plan` | `advisor_plan` |  |  | Advisory kind (counters and cap) of the plan rule. |
 | `advisor.kind_retry` | `advisor_retry` |  |  | Advisory kind (counters and cap) of the retry rule. |
 | `advisor.kind_review` | `advisor_review` |  |  | Advisory kind (counters and cap) of the review rule. |
@@ -7890,7 +7929,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `385 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `388 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -13023,6 +13062,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.dir_broadcast_seen` | `parent-inbox-broadcast-seen` |  |  | The per-session broadcast seen-state (parent-inbox-broadcast-seen/<session>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_locks` | `locks` |  |  | The lock files directory, under the DevSwarm directory. |
 | `devswarm_parent.dir_notice_cursor` | `maintainer-notice-cursor` |  |  | The per-project maintainer-notice cursors (maintainer-notice-cursor/<repoKey>.json), under the DevSwarm directory. |
+| `devswarm_parent.dir_orphans_seen` | `orphans-seen` |  |  | The directory (under the devswarm state dir) of the per-session orphaned-mesh warning records. |
 | `devswarm_parent.dir_reply_state` | `parent-gate` |  |  | The per-project reply records (parent-gate/<repoKey>-replies.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_stray` | `stray` |  |  | The per-plan straying records (stray/<key>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_token_usage` | `token-usage` |  |  | The per-plan token burn records (token-usage/<key>.json), under the DevSwarm directory. |
@@ -13129,6 +13169,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.stale_build_message` | `stale anti-hall {version}: run /reload-plugins (restart only if it persists) ...` |  |  | The text for a child that runs an older anti-hall build than the machine's newest. Placeholders: {version}, {cmd}. |
 | `devswarm_parent.stale_registry_head` | `⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree...` |  |  | The segment for registry rows whose worktree is gone but that still hold unread. Placeholders: {count}, {shown}, {extra}. |
 | `devswarm_parent.stuck_statuses` | `stale, nudged, escalated` |  |  | Supervisor verdicts that mean a child is wedged (STUCK_STATUSES). |
+| `devswarm_parent.sw_orphans_once` | `6 entries` |  |  | Switch devswarm.orphanWarningOnce (default on): the orphaned-mesh warning is shown once per session per set of orphaned partition ids, not again on every keepalive or unread-count change (GH #419). Off restores the keepalive repeat. |
 | `devswarm_parent.table_activity_token` | `live` |  |  | What the activity-only status labels are replaced with before the table is hashed. |
 | `devswarm_parent.table_head` | `💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):\...` |  |  | The head of the live workspace table: the title line and the column header. |
 | `devswarm_parent.table_row` | `\| {workspace} \| {label} \| {finish} \| {unread} \| {last} \|` |  |  | One table row. Placeholders: {workspace}, {label}, {finish}, {unread}, {last}. |
@@ -13451,7 +13492,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `repeat.allowed_keys` | `6 entries` |  |  | Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line. |
+| `repeat.allowed_keys` | `7 entries` |  |  | Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line. |
 | `repeat.guard_names` | `3 entries` |  |  | Checks whose public guard names differ, for per-guard threshold overrides and allowed-form hints. All other checks use their own names. |
 | `repeat.max_keys` | `512` |  |  | Most (session, guard) pairs the learner remembers; the oldest are dropped past it. |
 | `repeat.min_blocks` | `2` |  |  | How many blocks by one guard of one session inside the window make a repeat. |
@@ -14025,6 +14066,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 
 | Name | Kind | Unit | Labels | What it counts |
 |---|---|---|---|---|
+| `command_heavy_segment_named` | counter | blocks | kind | Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own. |
 | `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
 | `agent_scan_kept` | counter | lookups | result | Kept-walk lookups of the agent scan (silent-agent-nudge and the agent gates): hit (the walk resumed from where the last scan stopped) or miss. |
 | `agent_scan_kept_miss` | counter | lookups | reason | Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised). |
@@ -14119,6 +14161,13 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
+| `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
+| `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
+| `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
+| `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
+| `devswarm_parent_gate_count_mismatch` | counter | counts |  | Parent-gate own-mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384). |
+| `devswarm_parent_gate_fired` | counter | blocks | kind | Stop blocks the DevSwarm parent gate answered, by kind (block, escalation). |
+| `devswarm_parent_gate_suppressed` | counter | passes | reason | Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send). |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |
@@ -14154,6 +14203,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 | `dssup_appdb_date_unread` | counter | dates |  | Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full). |
 | `ingest_drops` | counter | paths | reason | Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason. |
+| `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds
 

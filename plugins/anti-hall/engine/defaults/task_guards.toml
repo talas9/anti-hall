@@ -1372,3 +1372,59 @@ value = "🏷️ [task-guard] priority tag must be P0-P3 (found {list}): rename 
 [task_guard.enforce_state_prefix]
 doc = "Prefix of the per-session file that counts the prune and priority Stop blocks (`<prefix><session>`)."
 value = "tasklist-enforce-"
+
+[workdetect.integration_work]
+doc = "JavaScript regex source (case-insensitive, global) of the PURE integration forms of git: a branch or ref checkout/switch (one ref argument, no `--` pathspec, no flag, no file-like argument) and a merge/cherry-pick that brings in committed work (not --continue, --skip, --abort or --quit, which resolve or undo file content). With guards.tasklistIntegrationSkip on, a command whose only work is one of these does not count toward tasklist-guard's work count: the files were changed by a delegated worker. Anything else (`checkout HEAD -- path`, `checkout --ours`, `merge --continue`, restore, reset) still counts."
+value = '\bgit\s+(?:checkout|switch)(?:\s+-[bBcC])?\s+(?!-)\w[\w/-]*(?:\.\d[\w.-]*)*(?=\s*(?:$|[;&|)\n]))|\bgit\s+(?:merge|cherry-pick)(?:\s+(?!--(?:continue|skip|abort|quit)(?:\s|$))[^\s;&|]+)+'
+
+[tasklist_guard.integration_skip_setting]
+doc = "Off switch (guards.tasklistIntegrationSkip, default on): git commands that only integrate worker commits (workdetect.integration_work) are not counted as this session's own work."
+value = { section = "guards", key = "tasklistIntegrationSkip", env = "ANTIHALL_TASKLIST_INTEGRATION_SKIP", aliases = [], option = "", default = true }
+
+[tasklist_guard.carry_setting]
+doc = "Off switch (guards.tasklistCarryProgress, default on): a session that crossed midnight keeps using its progress file under the earlier date instead of being asked for a new one under today's date."
+value = { section = "guards", key = "tasklistCarryProgress", env = "ANTIHALL_TASKLIST_CARRY_PROGRESS", aliases = [], option = "", default = true }
+
+[tasklist_guard.name_counted_setting]
+doc = "Off switch (guards.tasklistNameCounted, default on): the block message names the first counted actions."
+value = { section = "guards", key = "tasklistNameCounted", env = "ANTIHALL_TASKLIST_NAME_COUNTED", aliases = [], option = "", default = true }
+
+
+
+[tasklist_guard.date_dir_re]
+doc = "Regex source of a progress date directory name."
+value = '^\d{4}-\d{2}-\d{2}$'
+
+[tasklist_guard.counted_max]
+doc = "How many counted actions the block message names (the visible block text holds 115 characters)."
+value = 3
+min = 1
+
+[tasklist_guard.counted_label_max]
+doc = "Longest label (characters) of one named action; a longer one is cut."
+value = 20
+min = 8
+
+[tasklist_guard.counted_ellipsis]
+doc = "Appended to a cut label."
+value = "..."
+
+[tasklist_guard.counted_sep]
+doc = "Separator between the named actions."
+value = "; "
+
+[tasklist_guard.counted_text]
+doc = "Added to the block reason; {list} is the named counted actions, {more} the counted_more text when there are others."
+value = " Counted: {list}{more}."
+
+[tasklist_guard.counted_more]
+doc = "{n} further counted actions that are not named."
+value = " (+{n} more)"
+
+[metric.tasklist_integration_skipped]
+doc = "Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work."
+value = { kind = "counter", unit = "stops", labels = ["kind"] }
+
+[metric.tasklist_progress_carried]
+doc = "Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight)."
+value = { kind = "counter", unit = "stops", labels = ["kind"] }

@@ -276,7 +276,8 @@ impl MeshReader {
     }
 
     /// How many messages of workspace `id` were not sent by one of `senders` (its own identity family); a message with no sender
-    /// counts. Rows whose body starts with `skip_prefix` (the engine's own wake prompts, which DevSwarm stores as mail) are not counted.
+    /// counts. Rows whose body starts with `skip_prefix` and that carry no `mtype` (the engine's own wake prompts, which DevSwarm stores as mail and
+    /// the native ingest writes without one) are not counted; a `mesh send` row (it always has an `mtype`) counts whatever its body says.
     pub fn message_count_from_others(&self, id: &str, senders: &std::collections::HashSet<String>, skip_prefix: &str) -> Res<u64> {
         let marks = if senders.is_empty() { "''".to_string() } else { vec!["?"; senders.len()].join(",") };
         let q = sql::MESH_MESSAGE_COUNT_FROM_OTHERS.replace("%s", &marks);

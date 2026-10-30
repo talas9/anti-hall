@@ -172,6 +172,11 @@ var wd = {
       if (!cmd || wd.housekeepingOnly(cmd)) return false;
       var n = wd.neutralize(cmd);
       if (!wd.bashWork(n)) return false;
+      // a session that only integrates (merges, cherry-picks, switches) what delegated workers committed made no edit of its own
+      if (cx.skipIntegration) {
+        var rest = n.replace(wd.re('workdetect.integration_work', 'ig'), ' ');
+        if (rest !== n && !wd.bashWork(rest)) { cx.integrationSkipped = (cx.integrationSkipped || 0) + 1; return false; }
+      }
       var scratchOnly = wd.pathHint(cmd, cx.tmp, cx) && !wd.re('workdetect.always_work', 'i').test(n) && wd.allPathsExcluded(n, cx);
       return !scratchOnly;
     }

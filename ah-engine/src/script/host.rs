@@ -41,6 +41,7 @@
 //! | `tailLines(path, windowBytes, lineMax)` | the last lines of a file with their byte offsets, bounded: see [`tail_lines`] |
 //! | `tailEntries(path, windowBytes, lineMax, keep, maxLines)` | the newest lines parsed by the engine, cut down to the paths `keep` names: see [`tail_entries`] |
 //! | `pruneState(prefix, keep)` | the state-file retention sweep of one writer prefix in the state directory (stale files older than the TTL, throttled; `keep` is never removed) |
+//! | `metric(name, labels)` | add one to the registered counter `name` (`[metric.<name>]` in a defaults file); `labels` is a flat `[label, value, ...]` array; an unregistered name is ignored |
 //! | `log(kind, text)` | one line in the engine's event log (rate-limited by the engine) |
 //! | `now()` | milliseconds since the epoch from the engine's one clock (injectable for tests): see [`now_ms`] |
 //! | `stateRead(rel)`, `stateRemove(rel)`, `stateSweep(dir, prefix, maxAgeMs, maxRemove)` | scoped read, single-file delete and bounded prefix/age sweep under the state root: see [`state_read`], [`state_remove`], [`state_sweep`] |
@@ -1076,6 +1077,13 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     )?;
     // one advisory event for advisory kind `kind` (flagged, asked, confirmed, injected, suppressed, jev_error)
     h.set("advisory", Function::new(c.clone(), |kind: String, metric: String| crate::obs::counters::advisory(&kind, &metric))?)?;
+    h.set(
+        "metric",
+        Function::new(c.clone(), |name: String, labels: Vec<String>| {
+            let pairs: Vec<(&str, &str)> = labels.iter().step_by(2).zip(labels.iter().skip(1).step_by(2)).map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            crate::metrics::bump(&name, &pairs)
+        })?,
+    )?;
     h.set("log", Function::new(c.clone(), |kind: String, text: String| crate::discard::note("script_log", &format!("{kind}: {text}")))?)?;
     h.set("deadlineLeftMs", Function::new(c.clone(), deadline_left_ms)?)?;
     h.set("realpathEx", Function::new(c.clone(), |p: String| realpath_ex(&p))?)?;

@@ -24,11 +24,13 @@ function decide(p) {
     if (!ah.re.test(ah.cfg('advisor.test_cmd_re'), 'r', cmd)) return 'allow';
     var st = advisorKit.load(p);
     if (event === 'PostToolUse') { // a passing test or build: the edits are settled, nothing stays armed
-      if (st.fail !== null || Object.keys(st.edits).length > 0) { st.fail = null; st.edits = {}; advisorKit.save(p, st); }
+      if (st.fail !== null || st.blocked || Object.keys(st.edits).length > 0) { st.fail = null; st.blocked = null; st.edits = {}; advisorKit.save(p, st); }
       return 'allow';
     }
     scan = advisorKit.scan(p);
     if (!advisorKit.present(p, scan)) return 'allow';
+    advisorKit.consults(st, scan);
+    advisorKit.bump(st, 'armed', 'advisor.kind_retry', 'armed'); // a failure the retry rule is watching: the denominator of the consult-after-failure rate
     st.fail = { advisorAt: scan !== null ? scan.lastAdvisor : -1, files: Object.keys(st.edits) }; // only files edited BEFORE this failure can trip the rule
     advisorKit.save(p, st);
     return 'allow';
@@ -37,6 +39,7 @@ function decide(p) {
   var isEdit = ah.cfg('advisor.edit_tools').indexOf(tool) >= 0 && file !== '' && !ah.re.test(ah.cfg('advisor.test_file_re'), 'r', file); // test files are exempt: test-first work re-edits the test after its red run
   if (isPlan && ah.settings.bool('advisor.sw_plan')) {
     scan = advisorKit.scan(p);
+    if (scan !== null) { var ps = advisorKit.load(p); if (advisorKit.consults(ps, scan)) advisorKit.save(p, ps); }
     if (advisorKit.present(p, scan) && scan !== null && scan.lastAdvisor < scan.lastUser && advisorKit.gate('advisor.kind_plan', p, tool + ':' + file)) {
       return advisorKit.block(ah.cfg('advisor.msg_plan_what'), ah.cfg('advisor.msg_plan_instead'));
     }
@@ -44,14 +47,20 @@ function decide(p) {
   if (isEdit && ah.settings.bool('advisor.sw_retry')) {
     var s = advisorKit.load(p);
     var verdict = 'allow';
+    if (jx.isObj(s.blocked)) { // a retry block fired: acted on when the advisor was consulted before this next edit
+      scan = advisorKit.scan(p);
+      if (scan !== null && scan.lastAdvisor > s.blocked.advisorAt) { advisorKit.bump(s, 'acted_on', 'advisor.kind_retry', 'acted_on'); s.blocked = null; }
+    }
     if (s.fail !== null && jx.isObj(s.fail) && Array.isArray(s.fail.files) && s.fail.files.indexOf(file) >= 0) {
       if (scan === null) scan = advisorKit.scan(p);
-      if (scan !== null && scan.lastAdvisor > s.fail.advisorAt) s.fail = null; // consulted since the failure: disarm
+      if (scan !== null && scan.lastAdvisor > s.fail.advisorAt) { advisorKit.bump(s, 'consulted', 'advisor.kind_retry', 'consulted'); s.fail = null; } // consulted since the failure: disarm
       else if (advisorKit.present(p, scan) && advisorKit.gate('advisor.kind_retry', p, file)) {
+        s.blocked = { advisorAt: scan !== null ? scan.lastAdvisor : -1 };
         s.fail = null;
         verdict = advisorKit.block(text.render(ah.cfg('advisor.msg_retry_what'), { file: file }), ah.cfg('advisor.msg_retry_instead'));
       }
     }
+    if (scan !== null) advisorKit.consults(s, scan);
     if (verdict === 'allow') s.edits[file] = (s.edits[file] || 0) + 1;
     advisorKit.save(p, s);
     return verdict;

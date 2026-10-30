@@ -57,7 +57,7 @@ var text = {
     var instead = ah.cfg('guardkit.brief_instead')[guard];
     // Save the complete original instructions, even when the short action needs no link.
     var path = text.saveDetails(guard, p, session);
-    return text.message(kind, guard, { what: what || p.what, instead: instead || p.instead, savedDetails: path, skipSave: true, details: !!p.details }, session);
+    return text.message(kind, guard, { what: (what || p.what) + (typeof p.briefExtra === 'string' ? p.briefExtra : ''), instead: instead || p.instead, savedDetails: path, skipSave: true, details: !!p.details }, session);
   },
   // `io.blockDecision(reason)`: the JSON decision and a newline on stdout.
   blockJson: function (reason) { return JSON.stringify({ decision: 'block', reason: reason }) + '\n'; },

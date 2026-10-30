@@ -50,9 +50,13 @@ pub fn is_wake_line(line: &str) -> bool {
     line_body(line).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
 }
 
-/// [`is_wake_line`] for a store row.
+/// [`is_wake_line`] for a store row. The prefix alone is not provenance: a workspace can `mesh send` a message that starts with the
+/// same words. A wake prompt reaches the store only through the native ingest (`dssup::ingest::import`, `append_message_from`),
+/// which writes no `mtype`; a `mesh send` row always carries one (`mesh_write.mtype_direct` / `mtype_broadcast`). So a row with an
+/// `mtype` is mail whatever its body says (GH #428: a child's question that starts with the prefix still counts).
 pub fn is_wake_row(row: &Value) -> bool {
-    row.get("body").and_then(Value::as_str).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
+    row.get("mtype").is_none_or(Value::is_null)
+        && row.get("body").and_then(Value::as_str).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
 }
 
 /// The inputs of [`union_unread`] (Node's `unionUnread` opts).
