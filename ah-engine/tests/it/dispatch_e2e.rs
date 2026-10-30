@@ -1349,5 +1349,6 @@ fn the_git_inline_depth_comes_from_the_plugin_config() {
         std::fs::write(&f, format!("{}value = 0{}", &text[..v], &text[v + "value = 3".len()..])).unwrap();
     }
     let (code, out, err) = e.run_with(&args, true, &p, true, &env);
+    assert_eq!(code, 0, "git.inline_depth = 0: the edited setting loads and the inline shell is not followed: out={out} err={err}");
     assert!(!err.contains("force push"), "git.inline_depth = 0: the inline shell is not followed: code={code} out={out} err={err}");
 }
