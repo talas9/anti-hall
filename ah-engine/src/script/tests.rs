@@ -3261,8 +3261,10 @@ mod afk_mode {
         let (rec, wit) = (rec_path(&h, "afk.plan_state_ns"), rec_path(&h, "afk.plan_prompt_ns"));
         let saved = std::fs::read_to_string(&rec).unwrap();
         let saved_w = std::fs::read_to_string(&wit).ok();
-        let _ = std::fs::remove_file(&rec);
-        let _ = std::fs::remove_file(&wit);
+        std::fs::remove_file(&rec).unwrap();
+        if saved_w.is_some() {
+            std::fs::remove_file(&wit).unwrap();
+        }
         std::fs::create_dir_all(&rec).unwrap();
         std::fs::create_dir_all(&wit).unwrap();
         step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
@@ -3318,7 +3320,7 @@ mod afk_mode {
         std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
         let old = format!("{h}/.anti-hall/{wit_ns}-s9.json");
         std::fs::write(&old, r#"{"seq":3}"#).unwrap();
-        std::fs::File::options().write(true).open(&old).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
+        std::fs::File::options().write(true).open(old.as_str()).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
         plan_write(&h, "s1"); // a record write runs the record namespace's prune
         assert!(std::path::Path::new(&old).exists(), "the witness of another session was pruned by the record namespace");
         drained();
@@ -3331,7 +3333,7 @@ mod afk_mode {
         type Case = (&'static str, &'static str, fn(&str) -> Value);
         let cases: Vec<Case> = vec![
             ("state_error", "state", |h| {
-                let rec = rec_path(&h, "afk.plan_state_ns");
+                let rec = rec_path(h, "afk.plan_state_ns");
                 std::fs::remove_file(&rec).unwrap();
                 std::fs::create_dir_all(&rec).unwrap();
                 json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
