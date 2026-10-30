@@ -2704,3 +2704,120 @@ fn p2_writes_to_distinct_quoted_paths_are_distinct_hard_outcomes_pr472() {
     ticks(&h, &mut st, &[n + 26 * MIN]);
     assert!(!agent(&st, "s1").files.iter().any(|f| f.contains("b.txt")), "a `>` inside quotes is no write");
 }
+
+/// One Bash call of `c` at `t` that ended with success, as a tool call and its result.
+fn ok_bash(p: &Path, t: u64, k: &str, tin: u64, c: &str) {
+    append(p, &[tool(t, &format!("m{k}"), tin, k, "Bash", json!({"command": c})), result(t, k, "", false)]);
+}
+
+/// PR #472 round 4 P1: a passing check repeated with nothing changed in between (no edit, no fresh shell write, no commit since its last
+/// HARD pass) is SOFT, so a polling `git diff --check` every 6 minutes is paused like any other poll.
+#[test]
+fn d1_a_repeated_passing_check_with_no_change_in_between_is_soft_and_pauses_pr472() {
+    let h = home("d1-472");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let mut paused_at = None;
+    let mut first = 0;
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        ok_bash(&p, t, &format!("d{k}"), 700_000, "git diff --check");
+        ticks(&h, &mut st, &[t + MIN]);
+        if k == 0 {
+            first = agent(&st, "s1").progress;
+        }
+        if marker.exists() && paused_at.is_none() {
+            paused_at = Some(k);
+        }
+    }
+    assert!(first > 0, "the first pass is HARD (A2)");
+    assert_eq!(agent(&st, "s1").progress, first, "a repeat with no change since earns nothing");
+    assert!(paused_at.is_some() && marker.exists(), "a 6-minute `git diff --check` poll is paused within 2 hours");
+}
+
+/// PR #472 round 4 P1 (regression guard): check, edit, check: every pass after a real change is HARD again, even when the same file is
+/// edited each time (the change counter re-arms the check, not first-edit progress).
+#[test]
+fn d2_check_edit_check_keeps_earning_hard_pr472() {
+    let (h, p, marker, mut st, n) = burned_in("d2-472", "");
+    let f = h.join("w/out/a.txt").to_string_lossy().into_owned();
+    for k in 0..5u64 {
+        let t = n + (21 + 2 * k) * MIN;
+        append(&p, &[tool(t, &format!("me{k}"), 10, &format!("e{k}"), "Edit", json!({"file_path": f, "old_string": "a", "new_string": "b"})), result(t, &format!("e{k}"), "ok", false)]);
+        ticks(&h, &mut st, &[t + 10_000]);
+        let before = agent(&st, "s1").progress;
+        ok_bash(&p, t + 20_000, &format!("c{k}"), 10, "git diff --check");
+        ticks(&h, &mut st, &[t + MIN]);
+        assert!(agent(&st, "s1").progress > before, "check {k} after an edit is HARD");
+    }
+    assert!(!marker.exists(), "legit work is not paused");
+}
+
+/// PR #472 round 4 P2: a leading `cd <literal dir>` in the same call is followed when resolving a relative write; a cd that cannot be
+/// resolved (an expansion) leaves the relative write at most SOFT.
+#[test]
+fn c1_a_leading_cd_is_followed_when_resolving_a_relative_write_pr472() {
+    let (h, p, marker, mut st, n) = burned_in("c1-472", "");
+    std::fs::create_dir_all(h.join("w/sub")).unwrap();
+    touch(&h.join("w/other.txt"), n + 21 * MIN + 1000);
+    ok_bash(&p, n + 21 * MIN, "x1", 10, "cd $SUBDIR && printf x > other.txt");
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0, "an unresolvable cd: the relative write is no HARD outcome");
+    assert_eq!(agent(&st, "s1").soft_ts.len(), 1, "but still a SOFT one");
+    touch(&h.join("w/sub/new.txt"), n + 23 * MIN + 1000);
+    ok_bash(&p, n + 23 * MIN, "x2", 10, "cd sub && printf x > new.txt");
+    ticks(&h, &mut st, &[n + 24 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > 0, "a write after `cd sub` is resolved in sub/ and is HARD");
+    assert!(a.files.iter().any(|f| f.ends_with("/w/sub/new.txt")), "the real path is kept: {:?}", a.files);
+    assert!(!marker.exists(), "and lifts the pause");
+}
+
+/// PR #472 round 4 P2: commit and push credit come from the command run (command position), never from quoted argument text.
+#[test]
+fn q1_quoted_git_commit_text_earns_no_commit_credit_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("q1-472", "");
+    for (k, c) in ["rg 'git commit' src", "echo \"git commit\"", "echo 'git push'"].iter().enumerate() {
+        let t = n + (21 + k as u64) * MIN;
+        ok_bash(&p, t, &format!("q{k}"), 10, c);
+        ticks(&h, &mut st, &[t + 30_000]);
+        let a = agent(&st, "s1");
+        assert_eq!((a.progress, a.commits, a.pushes), (0, 0, 0), "no credit for {c:?}");
+    }
+    for (k, c) in ["git commit -m x", "cd repo && git commit -m 'y'", "git -C \"my repo\" commit -m z"].iter().enumerate() {
+        let t = n + (30 + k as u64) * MIN;
+        ok_bash(&p, t, &format!("r{k}"), 10, c);
+        ticks(&h, &mut st, &[t + 30_000]);
+        assert_eq!(agent(&st, "s1").commits, k as u64 + 1, "a real commit counts: {c:?}");
+    }
+}
+
+/// PR #472 round 4: a polling loop at the lowest spend that reaches the hard burn line (burn.hard_tokens_no_outcome within one waste
+/// window, at a 6-minute cadence) is paused; below that line nothing pauses by design, but the soft episode is spent all the same, so
+/// nothing holds the pause off once the spend does reach the line.
+#[test]
+fn l1_low_spend_polling_spends_the_episode_and_pauses_at_the_burn_line_pr472() {
+    let hard = crate::defaults::num("burn.hard_tokens_no_outcome");
+    let polls = crate::agents::facts::lim_n("waste_window_ms") / (6 * MIN);
+    for (tag, per, pauses) in [("l1lo-472", hard / polls / 2, false), ("l1hi-472", hard / polls + hard / 50, true)] {
+        let h = home(tag);
+        let n = now0();
+        let p = sess(&h, "s1");
+        let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+        write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n]);
+        let mut t = n;
+        for k in 0..20u64 {
+            t = n + (6 * k + 1) * MIN;
+            ok_bash(&p, t, &format!("p{k}"), per, &format!("curl -s http://dev/status?t={k}"));
+            ticks(&h, &mut st, &[t + MIN]);
+        }
+        assert_eq!(crate::agents::signals::hold_reason(agent(&st, "s1"), t + MIN), None, "{tag}: the soft episode is spent at {per} tokens per poll");
+        assert_eq!(marker.exists(), pauses, "{tag}: {per} tokens per 6-minute poll (hard line {hard} per {polls} polls)");
+    }
+}
