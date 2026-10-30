@@ -504,7 +504,7 @@ src/webcli.rs:
 src/wire.rs:
 /Users/talas9/.anti-hall/work/scratch/fix-484/ah-engine/../target-484/debug/build/ah-engine-4804a051052637d3/out/required_keys.rs:
 
-# env-dep:AH_BUILD_VERSION=0.2.1+fix-484-agent-cap.6dac3caa-dirty
+# env-dep:AH_BUILD_VERSION=0.2.1+fix-484-agent-cap.8971c8ae
 # env-dep:CARGO_MANIFEST_DIR=/Users/talas9/.anti-hall/work/scratch/fix-484/ah-engine
 # env-dep:CARGO_PKG_VERSION=0.2.1
 # env-dep:INSTA_WORKSPACE_ROOT

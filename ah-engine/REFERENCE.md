@@ -3978,6 +3978,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
 | `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
 | `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
+| `silent_nudge.msg_rt_instead` | `check its output now, then stop it or re-task it with a tighter scope; this b...` |  |  | What to do about an escalated agent. |
+| `silent_nudge.msg_rt_item` | `'{name}' (running {dur})` |  |  | One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes). |
+| `silent_nudge.msg_rt_what` | `{names}{more} still running after repeated runtime nudges, not finished and n...` |  |  | What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder. |
 | `silent_nudge.msg_what` | `{count} of your own {noun} have gone silent past the {min}m threshold: {shown...` |  |  | Headline of the nudge. |
 | `silent_nudge.msg_why` | `Advisory only; nothing was auto-killed.` |  |  | Why line of the nudge. |
 | `silent_nudge.noun_agent` | `background subagent(s)` |  |  | What the headline calls silent agents. |
@@ -3987,6 +3990,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.pronoun_many` | `them` |  |  | The pronoun for several silent agents. |
 | `silent_nudge.pronoun_one` | `it` |  |  | The pronoun for one silent agent. |
 | `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
+| `silent_nudge.rt_dur_hours` | `{h} h {m} min` |  |  | The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes. |
+| `silent_nudge.rt_dur_minutes` | `{m} min` |  |  | The runtime format under one hour; {m} minutes. |
+| `silent_nudge.rt_state_file` | `runtime-escalation-stops.json` |  |  | Per-session count of the runtime-escalation Stop blocks given, under the engine state directory. |
+| `silent_nudge.rt_stop_cap` | `1` |  |  | How many times per session an open runtime escalation (agent_nudge.runtime_escalation) may block the coordinator's Stop (0 = never block); it never loops. |
 | `silent_nudge.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES). |
 | `silent_nudge.session_id_len` | `36` |  |  | Length of a session id (the directory name that precedes tasks/ in an output file path). |
 | `silent_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.silentAgentNudge, default on). |
@@ -4073,6 +4080,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_ceiling.ignore_unknown_liveness` | `true` |  |  | Do not count a transcript row toward the spawn ceiling unless the agent tracker proves it live; missing, unreadable or stale evidence fails open. False retains the legacy count for unknown rows. |
 | `spawn_ceiling.join` | `; ` |  |  | The separator between the listed agent names. |
 | `spawn_ceiling.list_max` | `8` |  |  | How many running agents the block message names. |
+| `spawn_ceiling.max_concurrent_setting` | `9 entries` |  |  | The owner's cap on agents running at once (guards.maxConcurrentAgents, default 4, 0 = no cap): a spawn is denied when this many agents already run. Unlike the usage-scaled ceiling below, an agent of unknown liveness counts as running until the session proves it ended (GH #484). |
+| `spawn_ceiling.msg_cap_instead` | `wait for one of them to finish or stop one you no longer need, then spawn. Th...` |  |  | What to do instead of spawning past the owner's cap. |
+| `spawn_ceiling.msg_cap_what` | `{n} agents are running (limit {cap}, your guards.maxConcurrentAgents cap): {n...` |  |  | What the concurrency-cap block says; {n} running, {cap} the owner's cap, {names} the listed agents, {more} the remainder clause. |
 | `spawn_ceiling.msg_instead` | `wait for a running agent to finish.` |  |  | What to do instead of spawning past the ceiling. |
 | `spawn_ceiling.msg_more` | ` and {n} more` |  |  | The remainder clause when more agents run than are listed; {n} is how many are not listed. |
 | `spawn_ceiling.msg_what` | `{n} agents are running (limit {ceiling}).` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
@@ -5693,7 +5703,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `388 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `389 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8107,7 +8117,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `394 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `395 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -9484,6 +9494,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_nudge.reason_plausible` | `plausible` |  |  | The nudgeReason label that lets the requested snooze stand. |
 | `agent_nudge.ref_alphabet` | `abcdefghjkmnpqrstuvwxyz23456789` |  |  | The characters a nudge's ref token is made of (lower case and digits, no look-alikes). |
 | `agent_nudge.reply_integration` | `nudgeReply` |  |  | The Jev evidence integration that classifies a prose reply into an answer word. |
+| `agent_nudge.runtime_escalation` | `2 entries` |  |  | Escalation of a long-running child whose nudges keep repeating (GH #484). after_reminders: nudges about one child (the first included) after which it counts as escalated if it has not finished or been stopped (0 = off). file: where the open escalations are published for the coordinator's Stop check, under the tracker's directory. |
 | `agent_nudge.scope_setting` | `6 entries` |  |  | Where the switch of the nudge and wake scope rules is read from (agents.nudgeScope, default on): on, an answered nudge is never queued again by the wake fallback, an agentHealth verdict of done holds the nudge, and heartbeat and lock-holder wake rows go only to the session that owns them (agent_tracker.wake_scope); off, the earlier behaviour. |
 | `agent_nudge.setting` | `6 entries` |  |  | Where the nudge loop's switch is read from (agents.nudge, default on): on, an unhealthy child's signals go to its direct parent as a nudge (the plain reminder routes stay quiet about them); off, the plain reminder routes of agent_tracker.routes deliver them as before. |
 | `agent_nudge.snooze_setting` | `6 entries` |  |  | Where the switch of the held snooze is read from (agents.nudgeSnoozeHold, default on): on, a snooze is kept per child and trigger, outlives the nudge it was given to and holds a re-raised condition (no new nudge until it runs out; its count carries over); off, a snooze lives and dies with its nudge. |
@@ -14369,6 +14380,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_turns_measured` | counter | turns | mode | Main-session turns whose output tokens were measured, by mode (afk, present). |
 | `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
 | `idle_trips` | counter | events |  | AFK periods started by idle detection. |
+| `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
@@ -14399,6 +14411,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `agent_nudge_suppressed` | counter | nudges | reason | Nudges held back by the scope rules (agents.nudgeScope), by reason: judge_done (the agentHealth judge said the child's work is finished, so the done hold starts; the hold then keeps suppressing without a judge call or another count until it runs out or the child writes) and answered (the parent answered after the last send, so the wake fallback does not queue it again). |
 | `agent_nudge_to_owner` | counter | notices | where | Notices sent to the owner's channel (escalations, acted-on notices, dead-child notices with no live parent), by where: session (the newest live armed main session of the child's project) or file (the owner notices file, when no such session exists). |
 | `agent_wake_dropped` | counter | rows | reason | Wake rows dropped because no followed session owns them (agents.nudgeScope on), by reason: foreign_agent (a heartbeat whose writer is no followed session), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started). |
+| `runtime_escalations` | counter | escalations |  | Children whose repeated runtime nudges reached agent_nudge.runtime_escalation.after_reminders without the child finishing or being stopped; counted once per nudge. |
 | `dsx_actions` | counter | actions | feature, outcome | Automatic archive and nag attempts of the DevSwarm expansion features, by feature and outcome (ok, refused, failed). |
 | `dsx_auto_archive_mistake_rate` | gauge | ratio |  | Mistake signals per successful auto-archive since the engine started (gauge). |
 | `dsx_auto_archive_success_rate` | gauge | ratio |  | ok / (ok + failed) of auto-archive attempts since the engine started (gauge, 0..1); a refusal is a safety check working and is not counted. |
