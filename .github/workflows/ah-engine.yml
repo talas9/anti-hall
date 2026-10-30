@@ -239,6 +239,10 @@ jobs:
       - name: Build the thin client for hook and install tests
         working-directory: ah-launcher
         run: cargo build --release --locked
+      # The missing-ah-hook path (first install, binary removed) is owned by hooks/install.sh: rc 0, empty stdout, one notice per
+      # session (#183). Pure shell against a scratch HOME and a file:// release; runs on both OSes in every tier.
+      - name: install.sh tests
+        run: sh "$GITHUB_WORKSPACE/tests/install/install-sh.sh"
       # The gate on ubuntu: test.sh (release clippy -D warnings, the `ci` profile, doctests, wrapper and bootstrap tests, the
       # daemon-survivor check). Clippy runs only here, once.
       - name: test.sh (gate)

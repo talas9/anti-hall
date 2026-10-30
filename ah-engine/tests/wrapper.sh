@@ -82,11 +82,24 @@ check() {
   fi
 }
 
+# notice_pattern: the anchored grep regex of the engine-unreachable notice, GENERATED from the shipped template
+# (messages.toml msg.engine_unreachable_notice): literal text escaped, each {placeholder} a wildcard. A TOML edit therefore moves
+# the check with it; a client that stops rendering the template (or a template edited to something the client no longer
+# prints) fails the drift test below instead of passing a stale hardcoded prefix.
+notice_template() {
+  awk '/^\[msg\.engine_unreachable_notice\]/{on=1; next} /^\[/{on=0} on && /^value = "/{sub(/^value = "/, ""); sub(/"[ \t]*$/, ""); print; exit}' \
+    "$repo/plugins/anti-hall/engine/defaults/messages.toml"
+}
+notice_pattern() {
+  notice_template | sed -e 's/[][\\.^$*/]/\\&/g' -e 's/{[a-z_]*}/.*/g' -e 's/^/^/' -e 's/$/$/'
+}
+
 # only_notice <err-file>: the file holds EXACTLY the one engine-unreachable notice line (the wrapper passes the call through
 # unchecked and says so once per session; with an unwritable HOME it cannot remember, so it says so on every call). Empty stderr
-# is a failure: a broken engine must never be silent.
+# is a failure: a broken engine must never be silent. The line must match the template read from messages.toml.
 only_notice() {
-  [ "$(wc -l <"$1" | tr -d ' ')" -eq 1 ] && grep -q '^anti-hall: the engine did not answer this ' "$1"
+  pat=$(notice_pattern)
+  [ -n "$pat" ] && [ "$(wc -l <"$1" | tr -d ' ')" -eq 1 ] && grep -q -- "$pat" "$1"
 }
 
 # engine_script <name> <body>: a stand-in engine that runs <body> (stdin is the hook payload).
@@ -111,6 +124,7 @@ make_engine() {
       exit1) printf 'cat >/dev/null; exit 1\n' ;;
       exit1_done) printf 'cat >/dev/null; : >"$AH_ENGINE_DONE_FILE"; printf "hook-own-error\\n" >&2; printf "hook-own-out"; exit 1\n' ;;
       exit3) printf 'cat >/dev/null; exit 3\n' ;;
+      exit70) printf 'cat >/dev/null; exit 70\n' ;;
       exit126) printf 'cat >/dev/null; exit 126\n' ;;
       exit127) printf 'cat >/dev/null; exit 127\n' ;;
       seventyfive) printf 'cat >/dev/null; exit 75\n' ;;
@@ -356,34 +370,62 @@ test_broken_engine_notice_once_per_session() {
   rp2=$tmp/once-payload2.json
   printf '{"tool_name":"Bash","session_id":"sess-B"}' >"$rp2"
   : >"$tmp/once.list"
-  for mode in missing exit126 exit127 signal hang; do
-    rh=$tmp/once-home-$mode
-    mkdir -p "$rh"
-    if [ "$mode" = missing ]; then e=/no/such/engine; else e=$(make_engine "once-$mode" "$mode"); fi
-    to=$large_timeout
-    [ "$mode" = hang ] && to=$short_timeout
-    for round in first repeat other; do
-      in=$rp
-      [ "$round" = other ] && in=$rp2
-      out=$tmp/once-$mode-$round.out
-      err=$tmp/once-$mode-$round.err
-      set +e
-      HOME="$rh" AH_STARTED="$tmp/once-$mode.started" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/once.list" AH_HOOK_TIMEOUT_S="$to" sh "$wrapper" PreToolUse --tool-from-payload <"$in" >"$out" 2>"$err"
-      rc=$?
-      set -e
-      if [ "$rc" -ne 0 ] || [ -s "$out" ]; then
-        printf 'once[%s/%s]: rc=%s out=[%s]\n' "$mode" "$round" "$rc" "$(cat "$out")" >&2
-        return 1
-      fi
-      if [ "$round" = repeat ]; then
-        [ ! -s "$err" ] || { printf 'once[%s/repeat]: repeat notice [%s]\n' "$mode" "$(cat "$err")" >&2; return 1; }
-      else
-        only_notice "$err" || { printf 'once[%s/%s]: want exactly one notice, got [%s]\n' "$mode" "$round" "$(cat "$err")" >&2; return 1; }
-      fi
+  # <label>:<event>:<extra args>; Stop and SubagentStop have no tool name, and one case runs the Codex host.
+  for ev in 'pre:PreToolUse:--tool-from-payload' 'stop:Stop:' 'substop:SubagentStop:' 'codex:PreToolUse:--tool-from-payload --host codex'; do
+    label=${ev%%:*}
+    rest=${ev#*:}
+    event=${rest%%:*}
+    extra=${rest#*:}
+    for mode in missing exit70 exit126 exit127 signal hang; do
+      rh=$tmp/once-home-$label-$mode
+      mkdir -p "$rh"
+      if [ "$mode" = missing ]; then e=/no/such/engine; else e=$(make_engine "once-$label-$mode" "$mode"); fi
+      to=$large_timeout
+      [ "$mode" = hang ] && to=$short_timeout
+      for round in first repeat other; do
+        in=$rp
+        [ "$round" = other ] && in=$rp2
+        out=$tmp/once-$label-$mode-$round.out
+        err=$tmp/once-$label-$mode-$round.err
+        set +e
+        # shellcheck disable=SC2086 # $extra is a word list on purpose
+        HOME="$rh" AH_STARTED="$tmp/once-$label-$mode.started" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/once.list" AH_HOOK_TIMEOUT_S="$to" sh "$wrapper" "$event" $extra <"$in" >"$out" 2>"$err"
+        rc=$?
+        set -e
+        if [ "$rc" -ne 0 ] || [ -s "$out" ]; then
+          printf 'once[%s/%s/%s]: rc=%s out=[%s]\n' "$label" "$mode" "$round" "$rc" "$(cat "$out")" >&2
+          return 1
+        fi
+        if [ "$round" = repeat ]; then
+          [ ! -s "$err" ] || { printf 'once[%s/%s/repeat]: repeat notice [%s]\n' "$label" "$mode" "$(cat "$err")" >&2; return 1; }
+        else
+          only_notice "$err" || { printf 'once[%s/%s/%s]: want exactly one notice, got [%s]\n' "$label" "$mode" "$round" "$(cat "$err")" >&2; return 1; }
+        fi
+      done
     done
   done
 }
 
+# Drift: the notice the client really prints is the template in messages.toml rendered (placeholders filled), not a copy. The
+# template is read from the plugin file; a client whose text differs from it (or a template the client no longer renders) fails.
+test_notice_text_matches_the_template() {
+  tpl=$(notice_template)
+  [ -n "$tpl" ] || { printf 'drift: no msg.engine_unreachable_notice template found\n' >&2; return 1; }
+  rh=$tmp/drift-home
+  mkdir -p "$rh"
+  err=$tmp/drift.err
+  printf '{"tool_name":"Bash","session_id":"sess-D"}' >"$tmp/drift.json"
+  HOME="$rh" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/once.list" sh "$wrapper" PreToolUse --tool-from-payload <"$tmp/drift.json" >/dev/null 2>"$err" || return 1
+  # the literal text before the first placeholder and after the last one must be byte-identical to the template's
+  head_lit=${tpl%%\{*}
+  tail_lit=${tpl##*\}}
+  line=$(cat "$err")
+  case "$line" in
+    "$head_lit"*"$tail_lit") : ;;
+    *) printf 'drift: printed [%s] does not fit template [%s]\n' "$line" "$tpl" >&2; return 1 ;;
+  esac
+  only_notice "$err"
+}
 
 test_signal_fallback() {
   h=$(hook_script sig 'printf signal')
@@ -851,6 +893,7 @@ check engine_exit_without_done_mark_is_a_failure test_an_engine_exit_code_withou
 check exit_75_fallback test_exit_75_fallback
 check missing_binary_fallback test_missing_binary_fallback
 check broken_engine_notice_once_per_session test_broken_engine_notice_once_per_session
+check notice_text_matches_the_template test_notice_text_matches_the_template
 check signal_fallback test_signal_fallback
 check engine_odd_exits_fallback test_engine_odd_exits_fallback
 check timeout_fallback test_timeout_fallback
