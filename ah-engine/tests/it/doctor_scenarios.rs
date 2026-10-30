@@ -1443,7 +1443,10 @@ fn sh_witness_flags_a_live_hook_running_from_another_plugin_root() {
     let mut sc = Sc::new();
     sc.own_plugin();
     let mine = sc.plugin.display().to_string();
-    sc.put(".codex/hooks.json", format!("{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"sh \\\"{mine}/hooks/install.sh\\\" Stop\"}}]}}]}}}}").as_bytes());
+    sc.put(
+        ".codex/hooks.json",
+        format!("{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"sh \\\"{mine}/hooks/install.sh\\\" Stop\"}}]}}]}}}}").as_bytes(),
+    );
     let d = sc.doctor(&[]);
     d.lacks("runs hooks from");
     sc.put(".codex/hooks.json", b"{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"sh '/old plugin/dir/hooks/install.sh' Stop\"}]}]}}");

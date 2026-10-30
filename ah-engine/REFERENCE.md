@@ -6308,6 +6308,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.why_truncated` | `truncated header` |  |  | BIN-04 reason. |
 | `doctor_msg.why_unknown` | `unrecognised header` |  |  | BIN-04 reason. |
 | `doctor_msg.witness_absent` | `Node witness not installed (optional)` |  |  | SH-01. |
+| `doctor_msg.witness_live_root` | `a live hook runs hooks from {live}, not the deployed plugin {deployed} - Fix:...` |  |  | A host hook registration runs from a plugin root other than the deployed one. Placeholders: {live}, {deployed}. |
 | `doctor_msg.witness_log_huge` | `{file} is {mb} MB - Fix: rotate it` |  |  | SH-05. Placeholders: {file}, {mb}. |
 | `doctor_msg.witness_no_skip` | `{dir} has no node-shadow.skip; the witness runs nothing - Fix: node-shadow.sh...` |  |  | SH-03. Placeholder: {dir}. |
 | `doctor_msg.witness_ok` | `Node witness installed ({n} hook entries, log {mb} MB)` |  |  | SH-02. Placeholders: {mb}, {n}. |
@@ -12559,8 +12560,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.line_units` | `units: {text}` |  |  | The service units of an older install were retired by `units heal`. {text}. |
 | `routine.line_validated` | `validated: one daemon (pid {pid}) on the new binary, client round trip and gu...` |  |  | Validation passed. {pid}. |
 | `routine.live_hook_command_key` | `command` |  |  | The key of a hook registration entry that holds its shell command. |
-| `routine.live_hook_files` | `{home}/.codex/hooks.json` |  |  | Hook registrations whose commands name the plugin root the host really runs hooks from (the deploy check validates that root, not an assumed path). Token {home}. |
-| `routine.live_hook_root_rx` | `([^"'\s]+)/hooks/install\.sh` |  |  | Matched against a live hook command; group 1 is the plugin root (the directory above hooks/install.sh). |
+| `routine.live_hook_depth` | `2` |  |  | How many levels of nested command string (sh -c '...') are searched for the plugin root. |
+| `routine.live_hook_files` | `{home}/.codex/hooks.json, .codex/hooks.json` |  |  | Hook registrations whose commands name the plugin root the host really runs hooks from (the deploy check validates that root, not an assumed path). Token {home}; a path without it is read relative to the working directory (the project-local file `codex-install` writes by default). |
+| `routine.live_hook_home_vars` | `${HOME}, $HOME` |  |  | Spellings of the home directory expanded in a live hook command (longest first). |
+| `routine.live_hook_marker` | `/hooks/install.sh` |  |  | Text that marks a hook command as running the plugin hook wrapper; a command that holds it but cannot be parsed is reported as unresolved. |
+| `routine.live_hook_root_rx` | `^(.+)/hooks/install\.sh$` |  |  | Matched against each shell word of a live hook command (after quote decoding and $HOME expansion); group 1 is the plugin root (the directory above hooks/install.sh). |
+| `routine.live_hook_tilde` | `~` |  |  | A leading tilde in a live hook path stands for the home directory. |
 | `routine.manifest_file` | `manifest.json` |  |  | File name of an install's manifest inside its saved-copy directory. |
 | `routine.msg_backup_missing` | `update: the saved copy {path} is missing` |  |  | The saved copy of a file is gone. {path}. |
 | `routine.msg_bad_arg` | `update: unknown argument {arg}\nusage: update --from-local <dir> [--engine-bi...` |  |  | Unknown argument. {arg}. |
@@ -12595,6 +12600,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.problem_daemons` | `{n} engine daemon(s) run; exactly 1 must` |  |  | More or fewer than one daemon runs. {n}. |
 | `routine.problem_defaults_error` | `defaults.error written since the start: {text} {writer}` |  |  | The defaults error file was written since the start. {text}, {writer} (pid, ppid, argv, cwd when recorded). |
 | `routine.problem_event` | `engine log since the start: {kind} {code} {detail}` |  |  | A bad row in the engine log since the start. {kind}, {code}, {detail}. |
+| `routine.problem_live_root` | `a live hook runs from {root}, which cannot be validated (unresolved path, mis...` |  |  | A live hook runs from a plugin directory the check cannot validate. {root}. |
 | `routine.problem_new_binary` | `the new engine {path} does not answer `version` (got: {got})` |  |  | The new engine binary does not run. {path}, {got}. |
 | `routine.problem_new_hook` | `the new client {path} does not report its version (got: {got})` |  |  | The new thin client does not run. {path}, {got}. |
 | `routine.problem_new_web` | `the new dashboard binary {path} does not report a version (got: {got})` |  |  | The new dashboard binary does not report a version. {path}, {got}. |
