@@ -527,3 +527,18 @@ fn phase3_rows_are_wired_never_shed_and_fail_open() {
         assert_eq!(read(f), pristine, "{f}: defaults and defaults.pristine are byte-identical");
     }
 }
+
+#[test]
+fn default_switches_give_one_block_per_task_across_both_dispatch_rules() {
+    let tp = transcript("one1", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("one1", &tp, "Fix #404 crash", &[]).1.contains(NUDGE), "first: nudge");
+    assert_eq!(dispatch("one1", &tp, "Fix #404 again", &[]).0, 2, "second: the one block (second attempt)");
+    assert_eq!(dispatch("one1", &tp, "Fix #404 third", &[]), (0, String::new()), "third: passes, the task's block is spent");
+}
+
+#[test]
+fn say_do_fires_in_a_session_that_never_called_the_advisor() {
+    let tp = transcript("sd3", &[OWNER, SONNET, SAY]);
+    assert_eq!(stop("sd3", &tp, &[], false), 2, "the announcement alone shows the tool is there");
+    assert_eq!(stop("sd3", &tp, &[], false), 0, "one block per turn");
+}

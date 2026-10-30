@@ -75,6 +75,10 @@ function agThinking(p, st, view, onThink, onSecond) {
     if (jx.isObj(rec) && view.lastAdvisor <= rec.advisorAt && rec.gated !== true) {
       rec.gated = true;
       st.nudge = { at: at };
+      if (!jx.isObj(st.tasks)) st.tasks = {};
+      var gt = jx.isObj(st.tasks[String(view.lastUser)]) ? st.tasks[String(view.lastUser)] : { n: 0 };
+      if (gt.n < 2) gt.n = 2; // this block is the task's one block: a later thinking hit of the task passes (block_capped)
+      st.tasks[String(view.lastUser)] = gt;
       advisorKit.bump(st, 'second_gated', 'advisor.kind_second', 'gated');
       return advisorKit.block(text.render(ah.cfg('advisor.msg_second_what'), { key: cls.key }), ah.cfg('advisor.msg_second_instead'), ah.cfg('advisor.msg_why_flagship'));
     }

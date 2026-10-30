@@ -94,7 +94,7 @@ var advisorKit = {
     tx.size = typeof s.size === 'number' ? s.size : tx.size;
     if (s.lastAdvisor > tx.lastAdvisor) tx.lastAdvisor = s.lastAdvisor;
     if (s.lastUser > tx.lastUser) tx.lastUser = s.lastUser;
-    if (s.any) tx.seen = true;
+    if (s.any || s.sayAt >= 0) tx.seen = true; // announcing an advisor call is evidence the tool is in the model's prompt
     if (s.model !== null) tx.model = s.model;
     st.tx = tx;
     return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, model: tx.model, sayAt: s.sayAt, scan: s };
