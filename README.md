@@ -62,13 +62,15 @@ Recommended setup: run Sonnet as the main model and Opus as the advisor (the `ad
 
 | Rule | Switch (default on) | Enforced |
 |---|---|---|
-| Retry | `guards.advisorRetry` | a second edit of the same file after a failed test or build, with no advisor call in between, is blocked once |
+| Retry | `guards.advisorRetry` | a second edit of the same file after a failed test or build, with no advisor call in between, is blocked once; also a second fix dispatch for one issue with no advisor call since the first (non-flagship main) |
+| Thinking | `guards.advisorThinking` | non-flagship main: a fix/design/investigate/plan/review dispatch with no advisor call since your last message is nudged, the second is blocked once per task |
+| Say-do | `guards.advisorSayDo` | non-flagship main: a turn that says it will ask the advisor and does not is blocked once at Stop |
 | Plan | `guards.advisorPlan` | writing a plan file or calling ExitPlanMode with no advisor call since the task began is blocked once |
 | Review | `guards.advisorReview` | a review-shaped agent spawn on Sonnet or Haiku is blocked once (use Opus, Fable or Codex) |
 
 All three stay silent unless the session has the advisor tool, block once per trigger, are capped per session, never fire on a Stop continuation and fail open. Their lists, patterns, caps and texts live in the plugin's `advisor.toml` and `advisory.toml`. Adherence is counted under `advisory` in the engine report (`ah-engine status --json`): `advisor_consult.consult`, `advisor_retry.armed`, `.consulted` (consult after a failure), `.injected` (blocks fired), `.acted_on` (block followed by a consult), `advisor_review` and `advisor_plan` `.injected` and `.suppressed`; each session also keeps its own tally in its `advisor-retry-<session>.json` state file.
 
-Turn it off with `set guards.advisorRetry false` (likewise `guards.advisorPlan`, `guards.advisorReview`) or the env `ANTIHALL_ADVISOR_RETRY`, `ANTIHALL_ADVISOR_PLAN`, `ANTIHALL_ADVISOR_REVIEW` set to `0`.
+Turn it off with `set guards.advisorRetry false` (likewise `guards.advisorPlan`, `guards.advisorReview`, `guards.advisorThinking`, `guards.advisorSayDo`) or the env `ANTIHALL_ADVISOR_RETRY`, `ANTIHALL_ADVISOR_PLAN`, `ANTIHALL_ADVISOR_REVIEW`, `ANTIHALL_ADVISOR_THINKING`, `ANTIHALL_ADVISOR_SAY_DO` set to `0`.
 
 Codex has no advisor tool: the consult maps to the deadly-loop frontier review protocol and is not enforceable without a receipt (see the Codex port README).
 
