@@ -50,9 +50,29 @@ pub struct Union {
 /// The prefix alone is not provenance (GH #429): a native message from a child or sibling can start with the same words. A wake prompt is
 /// the Primary's outbound, so its resolved sender is a Primary id (`mesh_write.primary_prefix`) or, when the pull could not resolve one,
 /// none; a line with any other sender is mail.
+///
+/// With `devswarm.noiseProvenance` off the prefix alone decides (the earlier rule). The readers of this function have no settings handle,
+/// so [`union_unread`] (which every reader goes through first) refreshes [`WAKE_PROVENANCE`] from the switch; the switch is read from
+/// the settings file and the process environment of the engine that runs the read.
 pub fn is_wake_line(line: &str) -> bool {
+    is_wake_line_with(line, WAKE_PROVENANCE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// [`is_wake_line`] with the provenance rule named: `true` = prefix and a Primary/none sender, `false` = the prefix alone.
+fn is_wake_line_with(line: &str, provenance: bool) -> bool {
     line_body(line).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
-        && line_sender(line).is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix")))
+        && (!provenance || line_sender(line).is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix"))))
+}
+
+/// The last value of `devswarm.noiseProvenance` [`union_unread`] read (default on).
+static WAKE_PROVENANCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Re-read `devswarm.noiseProvenance` (`devswarm_role.pg_sw_provenance`) for [`is_wake_line`].
+fn refresh_wake_provenance() {
+    let env: std::collections::HashMap<String, String> = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    let home = env.get(defaults::env_name("home")).cloned().or_else(|| env.get(defaults::env_name("home_alt")).cloned()).unwrap_or_default();
+    let on = crate::checks::guardkit::settings::get_bool(&crate::checks::git::util::Settings { home, env }, defaults::raw("devswarm_role.pg_sw_provenance"));
+    WAKE_PROVENANCE.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Whether a store row is a `[Primary poke]` mirror (`devswarm_role.pg_poke_prefix`): the prefix on a row with no `mtype` (the native
@@ -213,6 +233,7 @@ fn line_ts(line: &str) -> Option<f64> {
 
 /// `unionUnread(opts)` for an NDJSON inbox plus a store partition read at the given bases.
 pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
+    refresh_wake_provenance();
     // readUnread / unreadBacklog: the lines are only known when the inbox and its cursor file both read
     let all = match i.inbox {
         Some(p) => non_empty_lines(p)?,
@@ -494,6 +515,9 @@ mod tests {
         assert!(is_wake_line(&line(None)), "no resolved sender: the engine's own prompt shape");
         assert!(!is_wake_line(&line(Some("child-b"))), "a child's native message that starts with the prefix is mail");
         assert!(!is_wake_line(r#"{"sender":"child-b","message":"hello"}"#));
+        // devswarm.noiseProvenance off: the prefix alone decides (the earlier rule)
+        assert!(is_wake_line_with(&line(Some("child-b")), false), "off: a child's line with the prefix is a wake prompt");
+        assert!(!is_wake_line_with(r#"{"sender":"child-b","message":"hello"}"#, false), "off: no prefix, no wake");
     }
 
     /// Runs `f` on a thread and returns its answer, failing when it takes longer than the bound (a read that blocks on a FIFO).
