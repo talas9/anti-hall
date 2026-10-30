@@ -177,12 +177,7 @@ pub fn rules() -> Vec<Rule> {
         .as_array()
         .map(|a| {
             a.iter()
-                .map(|r| Rule {
-                    id: r.str_field("id"),
-                    setting: r.str_field("setting"),
-                    tier: r.str_field("tier"),
-                    source: r.str_field("source"),
-                })
+                .map(|r| Rule { id: r.str_field("id"), setting: r.str_field("setting"), tier: r.str_field("tier"), source: r.str_field("source") })
                 .collect()
         })
         .unwrap_or_default()

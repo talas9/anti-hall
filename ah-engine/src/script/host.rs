@@ -1231,7 +1231,11 @@ fn session_blocks(session: &str) -> String {
     let days = defaults::num("guard_rules.blocks_window_days");
     let since = crate::health::now_ms().saturating_sub(days.saturating_mul(defaults::num("web.query_day_ms")));
     let rows = crate::telemetry::cli::open_existing().map(|t| t.blocks(since, defaults::num("guard_rules.blocks_limit") as usize)).unwrap_or_default();
-    let marks = with_settings(|st| crate::checks::guardkit::state::FileState::new(&st.home)).ok().flatten().map(|s| touch_session(&s, session, crate::health::now_ms())).unwrap_or_default();
+    let marks = with_settings(|st| crate::checks::guardkit::state::FileState::new(&st.home))
+        .ok()
+        .flatten()
+        .map(|s| touch_session(&s, session, crate::health::now_ms()))
+        .unwrap_or_default();
     session_counts(&rows, &marks, session)
 }
 
