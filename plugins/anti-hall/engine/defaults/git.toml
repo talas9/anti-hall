@@ -809,16 +809,92 @@ value = { what = "the commit message holds a shell expansion ({shown}).", why = 
 doc = "git push options after which nothing is published, so the pre-push credit backstop is skipped."
 value = ["--dry-run", "-n", "--delete", "-d"]
 
-[git.push_argv_upstream]
-doc = "git arguments listing the commits a push would publish when the branch has an upstream; {dir} is the repository directory and {n} the most commits read. Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep)."
-value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "@{u}..HEAD"]
+[git.push_value_opts]
+doc = "git push options that take the next argument as their value (it is neither the remote nor a refspec)."
+value = ["-o", "--push-option", "--repo", "--receive-pack", "--exec"]
 
-[git.push_argv_fallback]
-doc = "The same listing for a branch with no upstream: the commits of HEAD that no remote-tracking branch has."
-value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "HEAD", "--not", "--remotes"]
+[git.push_repo_opts]
+doc = "git push options whose value names the remote (used when no remote is given as an argument)."
+value = ["--repo"]
+
+[git.push_all_opts]
+doc = "git push options that publish every local branch; the backstop then reads the commits of all branches."
+value = ["--all", "--branches", "--mirror"]
+
+[git.push_tags_opts]
+doc = "git push options that publish every tag; the backstop then reads the commits of all tags."
+value = ["--tags", "--mirror"]
+
+[git.push_all_rev_arg]
+doc = "The git log argument that stands for every local branch (push_all_opts)."
+value = "--branches"
+
+[git.push_tags_rev_arg]
+doc = "The git log argument that stands for every tag (push_tags_opts)."
+value = "--tags"
+
+[git.push_glob_rev_arg]
+doc = "The git log argument for a wildcard refspec source; {ref} is the source pattern."
+value = "--glob={ref}"
+
+[git.push_glob_chars]
+doc = "Characters that make a refspec source a wildcard pattern."
+value = "*?["
+
+[git.push_tag_keyword]
+doc = "The git push refspec keyword that names a tag (`git push origin tag v1`)."
+value = "tag"
+
+[git.push_tag_prefix]
+doc = "The ref prefix a `tag <name>` refspec stands for."
+value = "refs/tags/"
+
+[git.push_default_ref]
+doc = "The ref a push without refspecs publishes (the current branch)."
+value = "HEAD"
+
+[git.push_argv_log]
+doc = "git arguments listing the commits a push would publish: {dir} is the repository directory, {n} the most commits read (the cap plus one, to see an overflow), {refs} expands to the pushed refs and {exclude} to the remote exclusion. Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep)."
+value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "{refs}", "--not", "{exclude}"]
+
+[git.push_exclude_remote]
+doc = "The exclusion when the target remote has remote-tracking refs: only commits that remote lacks are read."
+value = "--remotes={remote}"
+
+[git.push_exclude_any]
+doc = "The exclusion when the target has no remote-tracking refs (a URL, or a remote never fetched): commits no remote-tracking ref has are read, an approximation the guard reports."
+value = "--remotes"
+
+[git.push_argv_branch]
+doc = "git arguments printing the current branch name, to find the remote of a push that names none."
+value = ["-C", "{dir}", "symbolic-ref", "-q", "--short", "HEAD"]
+
+[git.push_argv_config]
+doc = "git arguments reading one config value; {key} is the key."
+value = ["-C", "{dir}", "config", "--get", "{key}"]
+
+[git.push_remote_keys]
+doc = "Config keys, in order, naming the remote of a push that names none; {branch} is the current branch."
+value = ["branch.{branch}.pushRemote", "remote.pushDefault", "branch.{branch}.remote"]
+
+[git.push_remote_fallback]
+doc = "The remote of a push that names none when no push_remote_keys value is set."
+value = "origin"
+
+[git.push_argv_tracking]
+doc = "git arguments printing one remote-tracking ref of {remote}: empty output means the remote's state is unknown locally."
+value = ["-C", "{dir}", "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/{remote}/"]
+
+[git.msg_push_over_cap]
+doc = "Block: the commits a push would publish are more than the backstop reads, so a credit past the cap could not be ruled out. Placeholders: {cap}, {range} (the git log arguments of the range)."
+value = { what = "this push would publish more than {cap} commits, more than the credit check reads.", why = "A credit in a commit past the cap could not be ruled out, and the guard never allows what it did not read.", instead = "check them yourself (git log {range}), then push in parts of at most {cap} commits (git push <remote> <commit>:<branch>), oldest first.", override = "turn off guards.gitPushCreditCheck for this push, only after you checked the range." }
+
+[git.push_range_note]
+doc = "Advisory after an allowed push whose range was approximated (the target has no remote-tracking refs). Placeholders: {remote}, {cap}."
+value = "anti-hall git-guard: {remote} has no remote-tracking refs here, so the credit check read the pushed commits no remote has (at most {cap}); run `git fetch {remote}` first for an exact check."
 
 [git.push_max_commits]
-doc = "Most unpushed commits the pre-push credit backstop reads."
+doc = "Most unpushed commits the pre-push credit backstop reads; a push with more is refused (msg_push_over_cap), never allowed unread."
 value = 50
 min = 1
 max = 1000

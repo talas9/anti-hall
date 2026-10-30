@@ -15,7 +15,7 @@
       "events": ["PreToolUse"],
       "tools": ["Bash"],
       "field": "command",
-      "pattern": "(?is)\\bgit\\b[^\\n]*\\bcommit\\b.*(?:co-authored-by\\s*[:=]\\s*(?:claude|codex|gpt|openai|anthropic|copilot)|claude-session\\s*[:=]|claude\\.ai/code/session|generated with\\s*\\[?\\s*(?:claude|codex|chatgpt))",
+      "pattern": "(?is)\\bgit\\b[^\\n]*\\bcommit\\b.*(?:co-authored-by\\s*[:=]\\s*(?:claude|codex|gpt|openai|anthropic|copilot)|generated with\\s*\\[?\\s*(?:claude|codex|chatgpt))",
       "action": "deny",
       "message": "anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\"). Remove it - commits carry no AI co-author credit. Re-run the commit without that trailer."
     },

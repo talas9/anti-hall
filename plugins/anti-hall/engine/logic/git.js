@@ -69,6 +69,10 @@ function gitBuildTables() {
   t.expansionPatterns = c('commit_expansion_patterns').map((p) => new RegExp('^(?:' + p + ')'));
   t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
   t.pushSkipOpts = set(c('push_skip_opts'));
+  t.pushValueOpts = set(c('push_value_opts'));
+  t.pushRepoOpts = set(c('push_repo_opts'));
+  t.pushAllOpts = set(c('push_all_opts'));
+  t.pushTagsOpts = set(c('push_tags_opts'));
   t.trailerKeys = c('self_credit_trailer_keys');
   t.forwardEnvRe = new RegExp('^(?:GIT_CONFIG_(?:' + c('forward_config_names').concat(c('forward_config_indexed').map((p) => gitEsc(p) + '\\d+')).join('|') + ')|' +
     c('forward_env_names').map(gitEsc).join('|') + ')$');
@@ -100,7 +104,7 @@ function gitFreshState(raw, cwd, session) {
     launcherFsBudget: ah.cfg('git.budget_launcher_fs'), launcherCmdText: '',
     handoverQueryBudget: ah.cfg('git.budget_handover_queries'), handoverSkipped: 0, handoverEvalBudget: ah.cfg('git.budget_handover_evals'),
     handoverQueryCache: new Map(), handoverAdds: [], handoverOn: null,
-    keyOf: new Map(), creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
+    keyOf: new Map(), pushNote: null, creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
     quotedLiteralsCache: null, stdinCandidateCache: null, hdOn: null, aliasOn: null, reuseOn: null,
     gitCache: new Map(), aliasCache: new Map(), shellDefsCache: new Map(), depthGuard: 0,
   };
@@ -584,29 +588,118 @@ function inlineCommitMessageToks(rest) {
 
 // GH #457: the first shell expansion still live in the source text of an argument ('...' is literal, "..." and bare text expand,
 // a backslash protects the next character), or null. An expansion the guard already reads (config) ends the scan of the argument.
+// Every expansion in the argument is read (P1 of PR #469): an allowed form is skipped and the scan goes on after it.
 function unresolvedExpansion(raw0) {
   // the segment splitter swapped a substitution opener inside double quotes for the sentinel: put an opener back
   const raw = raw0.split(' ' + CMDSUBST_SENTINEL + ' ').join('$(').split(CMDSUBST_SENTINEL).join('$(');
-  let mode = 0; // 0 bare, 1 single-quoted, 2 double-quoted
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw.charAt(i);
+  const r = scanExpansionWord(raw, 0, 0, false);
+  // the splitter cut the argument where a heredoc substitution's own lines start: it is read on in the whole command
+  return r.cut ? heredocSubstsInCommand() : r.shown;
+}
+
+function expansionShown(tail) { return tail.split(/\s/)[0].slice(0, ah.cfg('git.expansion_shown_chars')); }
+
+// the allowed form `tail` starts with (the matched text), or null
+function expansionAllowMatch(tail) {
+  for (const re of TB.expansionAllow) { const m = re.exec(tail); if (m) return m[0]; }
+  return null;
+}
+
+// One shell word of `s` read from `i` in quote mode `mode` (0 bare, 1 single-quoted, 2 double-quoted): { shown } for the first live
+// expansion, { cut } when an allowed heredoc substitution cannot be followed inside `s`, and `end` where the word stops.
+// `whole` is true when `s` is the whole command (a heredoc substitution is then followed to its closing parenthesis).
+function scanExpansionWord(s, i, mode, whole) {
+  let first = null; // in the whole command the word is read to its end, so the caller knows where the next one starts
+  const hit = (shown, at) => { if (!whole) return { shown: shown, end: at }; if (first === null) first = shown; return null; };
+  for (; i < s.length; i++) {
+    const ch = s.charAt(i);
+    if (mode === 1) { if (ch === "'") mode = 0; continue; }
+    if (mode === 0 && whole && /[ \t\r\n;&|()<>]/.test(ch)) return { shown: first, end: i };
+    if (ch === '\\') { i++; continue; }
+    if (ch === "'" && mode === 0) { mode = 1; continue; }
+    if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
+    const tail = s.slice(i);
+    if (!TB.expansionPatterns.some((re) => re.test(tail))) continue;
+    const m = expansionAllowMatch(tail);
+    if (m === null) {
+      if (!whole && /^\$\([ \t]*$/.test(tail)) return { cut: true, end: s.length };
+      const r = hit(expansionShown(tail), i);
+      if (r) return r;
+      continue;
+    }
+    if (m.indexOf('<<') < 0) { i += m.length - 1; continue; }
+    const close = heredocSubstClose(s, i, m);
+    if (close.at < 0 && !whole) return { cut: true, end: s.length };
+    if (close.shown !== null || close.at < 0) {
+      const r = hit(close.shown !== null ? close.shown : expansionShown(tail), i);
+      if (r) return r;
+    }
+    if (close.at < 0) return { shown: first, end: s.length };
+    i = close.at;
+  }
+  return { shown: first, end: s.length };
+}
+
+// The allowed heredoc substitution at `at` in `s` (matched text `m`): { at } of its closing parenthesis, -1 when it does not close
+// inside `s`, and `shown` (or null) for a live expansion in an unquoted heredoc body (that body expands, so it is part of the message).
+function heredocSubstClose(s, at, m) {
+  const h = shellScan.parseHeredocAt(s, at + m.lastIndexOf('<<'));
+  if (!h || !h.terminated) return { at: -1, shown: null };
+  let shown = null;
+  if (!h.quoted) {
+    const body = h.body;
+    for (let k = 0; k < body.length && shown === null; k++) {
+      if (body.charAt(k) === '\\') { k++; continue; }
+      const tail = body.slice(k);
+      if (TB.expansionPatterns.some((re) => re.test(tail))) shown = expansionShown(tail);
+    }
+  }
+  let k = h.end;
+  while (k < s.length && /[ \t\r\n]/.test(s.charAt(k))) k++;
+  return { at: s.charAt(k) === ')' ? k : -1, shown: shown };
+}
+
+// the quote mode at `pos` of the whole command (heredoc bodies skipped)
+function quoteModeAt(s, pos) {
+  let mode = 0;
+  for (let i = 0; i < pos; i++) {
+    const ch = s.charAt(i);
     if (mode === 1) { if (ch === "'") mode = 0; continue; }
     if (ch === '\\') { i++; continue; }
     if (ch === "'" && mode === 0) { mode = 1; continue; }
     if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
-    const tail = raw.slice(i);
-    if (!TB.expansionPatterns.some((re) => re.test(tail))) continue;
-    if (TB.expansionAllow.some((re) => re.test(tail))) return null;
-    // the splitter cut the argument where the substitution's own lines start: the opener is read from the whole command
-    if (/^\$\([ \t]*$/.test(tail)) {
-      for (let at = S.raw.indexOf('$('); at >= 0; at = S.raw.indexOf('$(', at + 1)) {
-        const t2 = S.raw.slice(at);
-        if (TB.expansionAllow.some((re) => re.test(t2))) return null;
-      }
+    if (ch === '<' && s.charAt(i + 1) === '<') {
+      const h = shellScan.parseHeredocAt(s, i);
+      if (h && h.terminated && h.end <= pos) { i = h.end - 1; continue; }
     }
-    return tail.split(/\s/)[0].slice(0, ah.cfg('git.expansion_shown_chars'));
   }
-  return null;
+  return mode;
+}
+
+// Each allowed heredoc substitution of the whole command is followed past its closing parenthesis: the rest of its word and every
+// later message argument of the same command are read. The first live expansion, or the substitution itself when it cannot be followed.
+function heredocSubstsInCommand() {
+  const s = S.raw;
+  let found = false;
+  for (let at = s.indexOf('$('); at >= 0; at = s.indexOf('$(', at + 1)) {
+    const m = expansionAllowMatch(s.slice(at));
+    if (m === null || m.indexOf('<<') < 0) continue;
+    found = true;
+    const r = scanExpansionWord(s, at, quoteModeAt(s, at), true);
+    if (r.shown) return r.shown;
+    let i = r.end, msgNext = false;
+    while (i < s.length) {
+      while (i < s.length && /[ \t]/.test(s.charAt(i))) i++;
+      if (i >= s.length || /[;&|()<>\r\n]/.test(s.charAt(i))) break;
+      const w = scanExpansionWord(s, i, 0, true);
+      const word = s.slice(i, Math.max(w.end, i + 1));
+      // a word that is a message option's value, or carries one (--message=..., -m...), holds message text
+      if (w.shown && (msgNext || /^(?:--message=|--trailer=|-[A-Za-z]*m.)/.test(word))) return w.shown;
+      msgNext = word === '--message' || word === '--trailer' || /^-[A-Za-z]*m$/.test(word);
+      i = Math.max(w.end, i + 1);
+    }
+  }
+  return found ? null : expansionShown('$(');
 }
 
 function fileCommitMessages(rest) {
@@ -1874,21 +1967,71 @@ function pushCreditVerdict(ev, lastCdDir) {
       if (t.startsWith('-')) continue;
       break;
     }
-    const n = String(ah.cfg('git.push_max_commits'));
-    const run = (key) => gitRun(ah.cfg(key).map((a) => a.split('{dir}').join(dir).split('{n}').join(n)), null, null, ah.cfg('git.push_timeout_ms'));
-    let out = run('git.push_argv_upstream');
-    if (out === null) out = run('git.push_argv_fallback');
+    const cap = ah.cfg('git.push_max_commits');
+    const sub = (a, vars) => Object.keys(vars).reduce((x, k) => x.split('{' + k + '}').join(vars[k]), a);
+    const run = (key, vars) => gitRun(ah.cfg(key).map((a) => sub(a, Object.assign({ dir: dir }, vars))), null, null, ah.cfg('git.push_timeout_ms'));
+    // the remote and the pushed refs (the source side of each refspec), read from the command (P1 of PR #469)
+    const rest = gitSubcommand(ev.args).rest;
+    let remote = null, repoOpt = null, endOpts = false;
+    const refs = [];
+    const globChars = ah.cfg('git.push_glob_chars');
+    for (let k = 0; k < rest.length; k++) {
+      const t = rest[k].text;
+      if (!endOpts && t === '--') { endOpts = true; continue; }
+      if (!endOpts && t.startsWith('-')) {
+        const eq = t.indexOf('=');
+        if (TB.pushValueOpts.has(t)) { if (TB.pushRepoOpts.has(t) && k + 1 < rest.length) repoOpt = rest[k + 1].text; k++; continue; }
+        if (eq > 0 && TB.pushRepoOpts.has(t.slice(0, eq))) { repoOpt = t.slice(eq + 1); continue; }
+        if (TB.pushAllOpts.has(t)) refs.push(ah.cfg('git.push_all_rev_arg'));
+        if (TB.pushTagsOpts.has(t)) refs.push(ah.cfg('git.push_tags_rev_arg'));
+        continue;
+      }
+      if (remote === null) { remote = t; continue; }
+      if (t === ah.cfg('git.push_tag_keyword') && k + 1 < rest.length) { refs.push(ah.cfg('git.push_tag_prefix') + rest[k + 1].text); k++; continue; }
+      let src = t.charAt(0) === '+' ? t.slice(1) : t;
+      if (src.indexOf(':') >= 0) src = src.slice(0, src.indexOf(':'));
+      if (!src || src.charAt(0) === '-') continue; // `:dst` deletes (the force/delete check owns it); never pass an option as a ref
+      refs.push(src.split('').some((ch) => globChars.indexOf(ch) >= 0) ? sub(ah.cfg('git.push_glob_rev_arg'), { ref: src }) : src);
+    }
+    if (!refs.length) refs.push(ah.cfg('git.push_default_ref'));
+    if (remote === null) remote = repoOpt;
+    if (remote === null) {
+      const branch = (run('git.push_argv_branch', {}) || '').trim();
+      for (const key of ah.cfg('git.push_remote_keys')) {
+        if (key.indexOf('{branch}') >= 0 && !branch) continue;
+        const v = (run('git.push_argv_config', { key: sub(key, { branch: branch }) }) || '').trim();
+        if (v) { remote = v; break; }
+      }
+      if (remote === null) remote = ah.cfg('git.push_remote_fallback');
+    }
+    // the commits the target remote lacks; a remote with no remote-tracking refs (a URL, never fetched) is approximated and said so
+    const exact = remote.charAt(0) !== '-' && !!(run('git.push_argv_tracking', { remote: remote }) || '').trim();
+    const exclude = exact ? sub(ah.cfg('git.push_exclude_remote'), { remote: remote }) : ah.cfg('git.push_exclude_any');
+    const argv = [];
+    for (const a of ah.cfg('git.push_argv_log')) {
+      if (a === '{refs}') argv.push(...refs);
+      else argv.push(sub(a, { dir: dir, n: String(cap + 1), exclude: exclude }));
+    }
+    const out = gitRun(argv, null, null, ah.cfg('git.push_timeout_ms'));
     if (!out) return null;
     const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
     const hits = [];
+    let count = 0;
     for (const rec of out.split(rs)) {
       const f = rec.replace(/^\n/, '').split(us);
       const sha = (f[0] || '').trim();
-      if (sha && f[1] && hasSelfCredit(f[1])) hits.push(sha.slice(0, TB.commitHashShort));
+      if (!sha) continue;
+      count++;
+      if (count <= cap && f[1] && hasSelfCredit(f[1])) hits.push(sha.slice(0, TB.commitHashShort));
     }
-    if (!hits.length) return null;
-    const shown = hits.slice(0, TB.shown).join(', ') + (hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
-    return gmKey('msg_push_credit', { shown: shown, first: hits[hits.length - 1] });
+    if (hits.length) {
+      const shown = hits.slice(0, TB.shown).join(', ') + (hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
+      return gmKey('msg_push_credit', { shown: shown, first: hits[hits.length - 1] });
+    }
+    // more commits than the cap: a credit past it cannot be ruled out, so an exact range is refused, never allowed unread (P2 of PR #469)
+    if (count > cap && exact) return gmKey('msg_push_over_cap', { cap: cap, range: refs.concat(['--not', exclude]).join(' ') });
+    if (!exact) S.pushNote = text.render(ah.cfg('git.push_range_note'), { remote: remote, cap: cap });
+    return null;
   } catch (e) {
     if (gitFatal(e)) throw e;
     return null; // fail open
@@ -2748,9 +2891,11 @@ function decideScan(p, opts, event) {
   const hit = scanCommand(cmd, 0, cwdIn);
   if (hit) countBlock(hit);
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
-  if (S.handoverSkipped > 0) {
-    const t = text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped });
-    return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: t } }) };
+  const notes = [];
+  if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
+  if (S.pushNote) notes.push(S.pushNote);
+  if (notes.length) {
+    return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.join('\n') } }) };
   }
   return 'allow';
 }

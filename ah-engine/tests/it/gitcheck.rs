@@ -193,3 +193,88 @@ fn a_push_with_an_unpushed_credited_commit_is_blocked_with_the_sha_and_the_fix()
     assert!(err.contains("reword"), "the block names the fix: {err}");
     assert_eq!(git_ok(&work, &["log", "--format=%s", "-1"]), "credited", "history is never rewritten");
 }
+
+// ---- PR #469 review: every expansion is read, pushed refs are resolved, the cap never allows unread, prose is not a trailer ----
+
+#[test]
+fn an_allowed_expansion_does_not_hide_a_later_one_in_the_message() {
+    let e = Env::new("later");
+    let _ = e.hook("echo warm");
+    for cmd in [
+        "git commit -q -m \"$(:)$T\"".to_string(),
+        "git commit -q -m \"$(:) $(printf x)\"".to_string(),
+        "git commit -q -m \"$(cat <<'EOF'\nfix: x\nEOF\n)$T\"".to_string(),
+        "git commit -q -m \"$(cat <<'EOF'\nfix: x\nEOF\n)\" -m \"$T\"".to_string(),
+        // an unquoted heredoc delimiter expands its body: the variable is part of the message
+        "git commit -q -m \"$(cat <<EOF\nfix: x\n\n$T\nEOF\n)\"".to_string(),
+    ] {
+        let (out, err, code) = e.hook(&cmd);
+        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
+        assert!(err.contains("literal"), "{cmd}: {err}");
+    }
+    for cmd in [
+        "git commit -q -m \"$(cat <<EOF\nfix: x\n\nbody\nEOF\n)\"".to_string(),
+        "git commit -q -m \"$(cat <<'EOF'\nfix: x\nEOF\n)\" -m 'plain'".to_string(),
+        "git commit -q -m 'docs: reject Claude-Session: trailers'".to_string(),
+    ] {
+        assert_eq!(e.hook(&cmd), (String::new(), String::new(), 0), "{cmd}");
+    }
+}
+
+/// A repository with a pushed `main` and a bare origin; returns (work dir, origin dir).
+fn pushed_repo(e: &Env) -> (std::path::PathBuf, std::path::PathBuf) {
+    let origin = e.dir.join("origin.git");
+    let work = e.dir.join("work");
+    std::fs::create_dir_all(&origin).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    git_ok(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&work, &["init", "-q", "-b", "main"]);
+    git_ok(&work, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "base"]);
+    git_ok(&work, &["push", "-q", "-u", "origin", "main"]);
+    (work, origin)
+}
+
+const CREDITED: &str = "credited\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>";
+
+#[test]
+fn a_push_is_checked_on_the_refs_it_publishes_not_on_head() {
+    let e = Env::new("refs");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["checkout", "-q", "-b", "feature"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    for cmd in ["git push origin feature", "git push --all origin", "git push origin feature:main", "git push -u origin feature"] {
+        let (out, err, code) = e.hook_in(cmd, w);
+        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
+        assert!(err.contains("reword"), "{cmd}: {err}");
+    }
+    // the clean branch HEAD is on is allowed although another branch carries a credit
+    assert_eq!(e.hook_in("git push origin main", w), (String::new(), String::new(), 0));
+    assert_eq!(e.hook_in("git push", w), (String::new(), String::new(), 0));
+    // a remote that was never fetched: HEAD:dev from a credited HEAD
+    let other = e.dir.join("other.git");
+    std::fs::create_dir_all(&other).unwrap();
+    git_ok(&other, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&work, &["remote", "add", "newremote", other.to_str().unwrap()]);
+    git_ok(&work, &["checkout", "-q", "feature"]);
+    let (out, err, code) = e.hook_in("git push newremote HEAD:dev", w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+}
+
+#[test]
+fn a_push_over_the_commit_cap_is_refused_naming_the_cap() {
+    let e = Env::new("cap");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    for i in 0..50 {
+        git_ok(&work, &["commit", "-q", "--allow-empty", "-m", &format!("clean {i}")]);
+    }
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in("git push origin main", w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("more than 50 commits"), "{err}");
+}

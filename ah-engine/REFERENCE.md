@@ -1202,13 +1202,31 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.origin_commit` | `commit `{ref}`` |  |  | Where a reused message came from: a named commit. Placeholder: {ref}. |
 | `git.origin_template` | `the commit template` |  |  | Where a reused message came from: the commit template. |
 | `git.parallel_separators` | `:::, ::::, :::+, ::::+` |  |  | GNU parallel argument-source separators. |
-| `git.push_argv_fallback` | `9 items` |  |  | The same listing for a branch with no upstream: the commits of HEAD that no remote-tracking branch has. |
-| `git.push_argv_upstream` | `7 items` |  |  | git arguments listing the commits a push would publish when the branch has an upstream; {dir} is the repository directory and {n} the most commits read. Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
+| `git.push_all_opts` | `--all, --branches, --mirror` |  |  | git push options that publish every local branch; the backstop then reads the commits of all branches. |
+| `git.push_all_rev_arg` | `--branches` |  |  | The git log argument that stands for every local branch (push_all_opts). |
+| `git.push_argv_branch` | `-C, {dir}, symbolic-ref, -q, --short, HEAD` |  |  | git arguments printing the current branch name, to find the remote of a push that names none. |
+| `git.push_argv_config` | `-C, {dir}, config, --get, {key}` |  |  | git arguments reading one config value; {key} is the key. |
+| `git.push_argv_log` | `9 items` |  |  | git arguments listing the commits a push would publish: {dir} is the repository directory, {n} the most commits read (the cap plus one, to see an overflow), {refs} expands to the pushed refs and {exclude} to the remote exclusion. Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
+| `git.push_argv_tracking` | `-C, {dir}, for-each-ref, --count=1, --format=%(refname), refs/remotes/{remote}/` |  |  | git arguments printing one remote-tracking ref of {remote}: empty output means the remote's state is unknown locally. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
+| `git.push_default_ref` | `HEAD` |  |  | The ref a push without refspecs publishes (the current branch). |
+| `git.push_exclude_any` | `--remotes` |  |  | The exclusion when the target has no remote-tracking refs (a URL, or a remote never fetched): commits no remote-tracking ref has are read, an approximation the guard reports. |
+| `git.push_exclude_remote` | `--remotes={remote}` |  |  | The exclusion when the target remote has remote-tracking refs: only commits that remote lacks are read. |
+| `git.push_glob_chars` | `*?[` |  |  | Characters that make a refspec source a wildcard pattern. |
+| `git.push_glob_rev_arg` | `--glob={ref}` |  |  | The git log argument for a wildcard refspec source; {ref} is the source pattern. |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
-| `git.push_max_commits` | `50` |  |  | Most unpushed commits the pre-push credit backstop reads. |
+| `git.push_max_commits` | `50` |  |  | Most unpushed commits the pre-push credit backstop reads; a push with more is refused (msg_push_over_cap), never allowed unread. |
+| `git.push_range_note` | `anti-hall git-guard: {remote} has no remote-tracking refs here, so the credit...` |  |  | Advisory after an allowed push whose range was approximated (the target has no remote-tracking refs). Placeholders: {remote}, {cap}. |
+| `git.push_remote_fallback` | `origin` |  |  | The remote of a push that names none when no push_remote_keys value is set. |
+| `git.push_remote_keys` | `branch.{branch}.pushRemote, remote.pushDefault, branch.{branch}.remote` |  |  | Config keys, in order, naming the remote of a push that names none; {branch} is the current branch. |
+| `git.push_repo_opts` | `--repo` |  |  | git push options whose value names the remote (used when no remote is given as an argument). |
 | `git.push_skip_opts` | `--dry-run, -n, --delete, -d` |  |  | git push options after which nothing is published, so the pre-push credit backstop is skipped. |
+| `git.push_tag_keyword` | `tag` |  |  | The git push refspec keyword that names a tag (`git push origin tag v1`). |
+| `git.push_tag_prefix` | `refs/tags/` |  |  | The ref prefix a `tag <name>` refspec stands for. |
+| `git.push_tags_opts` | `--tags, --mirror` |  |  | git push options that publish every tag; the backstop then reads the commits of all tags. |
+| `git.push_tags_rev_arg` | `--tags` |  |  | The git log argument that stands for every tag (push_tags_opts). |
 | `git.push_timeout_ms` | `4000` |  | ms | Timeout of each git query the pre-push credit backstop runs. |
+| `git.push_value_opts` | `-o, --push-option, --repo, --receive-pack, --exec` |  |  | git push options that take the next argument as their value (it is neither the remote nor a refspec). |
 | `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
 | `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
 | `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
@@ -14085,6 +14103,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_launcher` | Block: a write into the launcher directory. |
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |
 | `git.msg_push_credit` | Block: a push would publish commits that carry an AI credit. Placeholders: {shown} (short hashes), {first} (the first hash). |
+| `git.msg_push_over_cap` | Block: the commits a push would publish are more than the backstop reads, so a credit past the cap could not be ruled out. Placeholders: {cap}, {range} (the git log arguments of the range). |
 | `git.msg_reused_message` | Block: a reused commit message carries an AI self-credit. Placeholder: {origin}. |
 | `git.msg_runner_no_subcommand` | Block: a runner with git and no subcommand beside a force or delete flag. Placeholder: {runner}. |
 | `git.msg_runner_placeholder` | Block: a runner placeholder stands for the command or subcommand beside a force or delete flag. |
