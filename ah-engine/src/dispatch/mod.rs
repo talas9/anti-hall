@@ -538,6 +538,21 @@ fn passes_unasked(non_ok: bool, timed_out: bool, unavailable: impl FnOnce() -> b
     !non_ok && !timed_out && unavailable()
 }
 
+/// Whether a call the daemon gave no answers for passes because the slow-reply recovery is tripped ([`crate::client::slow_degraded`],
+/// Codex P1 on #473): `client.slow_down_n` timeouts in a row with no answer since. A fail-closed timeout must never wedge the owner,
+/// so every entry passes (one notice per session) until the daemon answers again. A completed non-OK reply still goes by the policies.
+fn degraded_pass(non_ok: bool, unanswered: bool, degraded: impl FnOnce() -> bool) -> bool {
+    !non_ok && unanswered && degraded()
+}
+
+/// Whether the user skipped the guard of entry check `check` (`~/.anti-hall/skip.json`, the same rule the scripts apply): its name is
+/// the defaults key `client.timeout_skip_name_key_by_check` names for it, else the check's own name. A check the daemon could not
+/// answer then passes instead of answering by its failure policy (Codex P1 (b) on #473: the timeout fallback ignored skips).
+fn skipped_check(env: &crate::reqenv::RequestEnv, check: &str) -> bool {
+    let name = defaults::raw("client.timeout_skip_name_key_by_check").get(check).and_then(defaults::V::as_str).map_or(check, defaults::text);
+    crate::checks::guardkit::settings::is_skipped(&crate::checks::git::util::Settings::from_env(env), name)
+}
+
 /// `guards.failOpenNonSafety` (default on), read from the request's environment and the loaded settings.
 fn fail_open_enabled(env: &crate::reqenv::RequestEnv) -> bool {
     let st = crate::checks::git::util::Settings::from_env(env);
@@ -756,9 +771,15 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         (Some(_), _) => match ask_daemon_for(&meta, raw, guard) {
             Some(a) => a,
             None => {
+                // the entries are answered in this process now: the session of their guard-down notice and of the skip file is this
+                // payload's (Codex P2: unset, a timed-out open check allowed silently and a skipped safety guard still blocked)
+                crate::script::set_session(parsed.as_ref().and_then(|p| p.get("session_id")).and_then(serde_json::Value::as_str).unwrap_or_default());
                 let (non_ok, timed_out) = (crate::client::take_non_ok_reply(), crate::client::take_timed_out());
-                let unavailable = || crate::client::take_unavailable() || crate::client::fail_open_unavailable();
-                if passes_unasked(non_ok, timed_out, unavailable) {
+                let unavailable = crate::client::take_unavailable() || crate::client::fail_open_unavailable();
+                if degraded_pass(non_ok, timed_out || unavailable, crate::client::slow_degraded) {
+                    return Outcome { out: String::new(), code: 0, err: crate::client::slow_degraded_notice(raw, &args.event) };
+                }
+                if passes_unasked(non_ok, timed_out, || unavailable) {
                     return Outcome { out: String::new(), code: 0, err: crate::client::unreachable_notice(raw, Some(&args.event)) };
                 }
                 Vec::new()
@@ -779,6 +800,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             Some((_, Answer::Decided(r, _))) if shadow[i] => shadow_results[i] = Some(r.clone()),
             Some((_, Answer::Decided(r, _))) => results[i] = Some(r.clone()),
             _ if sibling[i] => {} // the Node hook of the same id decides; the shadowed check just goes unmeasured
+            // a skipped guard the daemon gave no answer for passes, as its script would have (the skip file is the user's command)
+            _ if !shadow[i] && e.check.as_deref().is_some_and(|c| skipped_check(&req_env, c)) => results[i] = Some(combine::HookResult::quiet(&e.id)),
             // a non-safety guard entry that gave no answer (a late or missing daemon reply, a spent budget) is let through, counted per
             // check and told once per session (guards.failOpenNonSafety); a safety guard (script.failure_mode_by_check) keeps failing closed
             _ if guard && fails_open(e) && (budget.exceeded() || (!table::runnable(&e.command) && !defers_to_blocking(&answers, e, &blocking_checks))) => {

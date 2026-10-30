@@ -423,7 +423,9 @@ fn mark_daemon_down(reason: &str) {
 }
 
 /// Count this slow reply into the streak file (`count first_ts_ms`); true once `client.slow_down_n` slow replies came in a
-/// row within `client.slow_window_ms`. A normal reply removes the file. Concurrent clients race on it, which only makes the
+/// row (within `client.slow_window_ms` when that is not 0; 0, the default, counts consecutive timeouts whatever their wall time,
+/// since each serial timeout already waits the whole slow window). A completed reply removes the file. A trip also sets the
+/// degraded state ([`slow_degraded`]), which only an answer clears. Concurrent clients race on it, which only makes the
 /// count approximate, so an unreadable or unwritable streak counts as no streak.
 fn slow_streak_tripped() -> bool {
     let (now, window) = (health::now_ms(), defaults::num("client.slow_window_ms"));
@@ -434,11 +436,15 @@ fn slow_streak_tripped() -> bool {
         Some((it.next()?, it.next()?))
     });
     let (count, first) = match prev {
-        Some((c, f)) if now.saturating_sub(f) <= window => (c + 1, f),
+        Some((c, f)) if window == 0 || now.saturating_sub(f) <= window => (c + 1, f),
         _ => (1, now),
     };
     if count >= defaults::num("client.slow_down_n") {
         clear_slow_streak();
+        // #463 P1: a daemon that keeps a healthy heartbeat but misses every reply must not keep the safety guards blocked forever
+        crate::discard::logged("slow_degraded_write", crate::atomic::write(state_file("slow_degraded"), count.to_string()));
+        crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_tripped"));
+        health::log_event("client_slow_degraded", "daemon", &defaults::render("msg.engine_slow_degraded_log", &[("n", &count)]));
         return true;
     }
     crate::discard::logged("slow_streak_write", crate::atomic::write(&path, format!("{count} {first}")));
@@ -466,6 +472,39 @@ fn create_marker(p: &std::path::Path) -> std::io::Result<()> {
 
 fn clear_slow_streak() {
     crate::discard::harmless(std::fs::remove_file(state_file("slow_streak"))); // keep: absent streak is the desired state
+}
+
+/// True while the slow-reply recovery is tripped ([`slow_streak_tripped`]): `client.slow_down_n` timeouts came in a row and no
+/// answer since. A timed-out call then passes (each safety guard included) with one notice per session ([`slow_degraded_notice`]).
+pub(crate) fn slow_degraded() -> bool {
+    state_file("slow_degraded").exists()
+}
+
+/// The daemon answered (any completed reply): the slow streak starts over and a tripped recovery is restored.
+fn answered() {
+    clear_slow_streak();
+    if std::fs::remove_file(state_file("slow_degraded")).is_ok() {
+        crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_restored"));
+        health::log_event("client_slow_restored", "daemon", defaults::text("msg.engine_slow_restored_log"));
+    }
+}
+
+/// The once-per-session notice of a call passed while the slow-reply recovery is tripped ([`slow_degraded`]), counted each time
+/// at `client.slow_degraded_counter`; empty when this session already heard it (the same pattern as [`unreachable_notice`]).
+pub(crate) fn slow_degraded_notice(raw: &str, event: &str) -> String {
+    crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_passed"));
+    let sid = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|p| p.get("session_id").and_then(|v| v.as_str().map(str::to_owned)))
+        .unwrap_or_else(|| "none".into());
+    let file = state_file("slow_degraded_notice");
+    if std::fs::read_to_string(&file).is_ok_and(|t| t.trim_end() == sid) {
+        return String::new();
+    }
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the notice is still shown when the marker cannot be written
+    crate::discard::logged("slow_degraded_notice_write", crate::atomic::write(&file, format!("{sid}\n")));
+    let n = std::fs::read_to_string(state_file("slow_degraded")).unwrap_or_default();
+    defaults::render("msg.engine_slow_degraded_notice", &[("event", &event), ("n", &n.trim())])
 }
 
 fn clear_daemon_down_marker() {
@@ -700,12 +739,12 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
                 wait_marker(false);
             }
             clear_daemon_down_marker();
-            clear_slow_streak();
+            answered();
             Some(body)
         }
         Exch::Reply(_, _) => {
             // a completed valid reply (BUSY / ERR) is not a slow one: the streak counts consecutive slow replies only
-            clear_slow_streak();
+            answered();
             LAST_NON_OK_REPLY.set(true);
             None
         }
@@ -816,9 +855,11 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
                         wait_marker(false);
                     }
                     clear_daemon_down_marker();
+                    answered();
                     Some(body)
                 }
                 Exch::Reply(_, _) => {
+                    answered();
                     wait_marker(false);
                     LAST_NON_OK_REPLY.set(true);
                     None
@@ -1163,6 +1204,13 @@ fn panic_code(_args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    /// Codex P1 on #473: the slow streak window must hold client.slow_down_n serial timeouts of the default wait, or it never trips.
+    #[test]
+    fn the_slow_streak_window_fits_the_default_serial_timeouts() {
+        let (w, n, each) = (defaults::num("client.slow_window_ms"), defaults::num("client.slow_down_n"), defaults::num("client.slow_fallback_max_ms"));
+        assert!(w == 0 || w >= n * each, "window {w} ms < {n} x {each} ms: the streak resets before it trips");
+    }
+
     use super::*;
     use crate::checks::Exact;
 

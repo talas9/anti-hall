@@ -1326,6 +1326,117 @@ fn consecutive_slow_calls_mark_a_wedged_daemon_down_and_a_normal_reply_resets_th
     assert_eq!(d.seen(), before);
 }
 
+/// The fixed part of the slow-reply recovery notice (`msg.engine_slow_degraded_notice` up to its first placeholder).
+fn degraded_notice_text() -> String {
+    ah_engine::defaults::text("msg.engine_slow_degraded_notice").split('{').next().unwrap().to_string()
+}
+
+/// Codex P1 on #473: five serial timeouts at the DEFAULT per-exchange wait (client.slow_fallback_max_ms less the margin, about
+/// 2.6 s each) must trip the recovery; with a 10 s streak window the fifth landed past it, the streak restarted and every git/Bash
+/// call stayed blocked while the daemon's heartbeat looked healthy. Once tripped, the calls pass with ONE notice per session.
+#[test]
+fn five_serial_default_timeouts_trip_the_slow_recovery_and_then_calls_pass_with_one_notice() {
+    let e = Env::new("slow-default-trip");
+    let map = event_map(&e, "PreToolUse", "echo NODEBLOCK >&2; exit 2", "true");
+    let d = scripted_daemon(&e, vec![NEVER]);
+    for i in 0..5 {
+        let (code, _, err) = slow_call(&e, &map, &[]);
+        assert_eq!(code, 2, "timeout {i} answers by each entry's policy: the safety guards fail closed: {err:?}");
+    }
+    // the down marker of the trip lasts client.down_marker_ttl_ms; past it the next call reaches the daemon and times out again
+    ah_engine::discard::harmless(std::fs::remove_file(e.state().join("daemon.down.until")));
+    let (code, _, err) = slow_call(&e, &map, &[]);
+    assert_eq!(code, 0, "tripped: a timed-out call no longer wedges the owner: {err:?} {}", engine_log(&e));
+    assert!(err.contains(&degraded_notice_text()), "one visible notice: {err:?}");
+    let (code, _, err) = slow_call(&e, &map, &[]);
+    assert_eq!(code, 0, "{err:?}");
+    assert!(!err.contains(&degraded_notice_text()), "once per session: {err:?}");
+    assert!(d.seen() >= 6);
+}
+
+/// One completed reply between timeouts resets the streak; once tripped git/Bash pass with the notice; the next answer restores
+/// the guards, and a single isolated timeout then blocks the safety guard again (the policy is intact).
+#[test]
+fn one_answer_resets_the_slow_streak_and_restores_the_guards_after_a_trip() {
+    let e = Env::new("slow-reset-restore");
+    let map = event_map(&e, "PreToolUse", "echo NODEBLOCK >&2; exit 2", "true");
+    let n = [WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "2")];
+    let down = e.state().join("daemon.down.until");
+    let _d = scripted_daemon(&e, vec![NEVER, FAST_OK, NEVER, NEVER, NEVER, NEVER, FAST_OK, NEVER]);
+    for want in [2, 0, 2] {
+        let (code, _, err) = slow_call(&e, &map, &n);
+        assert_eq!(code, want, "{err:?}");
+    }
+    assert!(!e.state().join("daemon.slow.degraded").exists(), "an answer between the timeouts reset the streak: {}", engine_log(&e));
+    let (code, _, err) = slow_call(&e, &map, &n);
+    assert_eq!(code, 2, "the tripping call still answers by policy: {err:?}");
+    ah_engine::discard::harmless(std::fs::remove_file(&down));
+    let env = [("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), n[0], n[1]];
+    let git = |cmd: &str| e.run_with(&["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()], false, &bash(cmd, &e.dir), true, &env);
+    let (code, _, err) = git("git push --force origin main");
+    assert_eq!(code, 0, "tripped: git passes: {err:?} {}", engine_log(&e));
+    assert!(err.contains(&degraded_notice_text()), "{err:?}");
+    ah_engine::discard::harmless(std::fs::remove_file(&down));
+    let (code, _, err) = git("ls");
+    assert_eq!((code, err.contains(&degraded_notice_text())), (0, false), "Bash passes, no second notice: {err:?}");
+    ah_engine::discard::harmless(std::fs::remove_file(&down));
+    slow_call(&e, &map, &n); // FAST_OK: the daemon answers again
+    assert!(!e.state().join("daemon.slow.degraded").exists(), "an answer restores the guards: {}", engine_log(&e));
+    let (code, _, err) = slow_call(&e, &map, &n);
+    assert_eq!(code, 2, "a single isolated timeout still blocks the safety guard: {err:?}");
+}
+
+/// Codex P1 (b) on #473: the timeout fallback honors the skip file. With every safety guard of the event skipped by the name its
+/// script checks (client.timeout_skip_name_key_by_check), a timed-out call passes instead of failing closed.
+#[test]
+fn a_timed_out_call_honors_the_guard_skip_file() {
+    let e = Env::new("slow-skip");
+    let map = event_map(&e, "PreToolUse", "echo NODEBLOCK >&2; exit 2", "true");
+    let names = ah_engine::defaults::raw("client.timeout_skip_name_key_by_check");
+    let skip: serde_json::Map<String, serde_json::Value> = ah_engine::dispatch::table::entries("claude", "PreToolUse")
+        .into_iter()
+        .filter_map(|x| x.check)
+        .filter(|c| ah_engine::script::failure_mode(c) == ah_engine::defaults::text("script.failure_mode_closed"))
+        .map(|c| names.get(c.as_str()).and_then(|v| v.as_str()).map_or(c.clone(), |k| ah_engine::defaults::text(k).to_string()))
+        .map(|name| (name, serde_json::json!(1e300)))
+        .collect();
+    std::fs::create_dir_all(e.dir.join("home/.anti-hall")).unwrap();
+    std::fs::write(e.dir.join("home/.anti-hall/skip.json"), serde_json::Value::Object(skip).to_string()).unwrap();
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let (code, _, err) = slow_call(&e, &map, &[WINDOW]);
+    assert_eq!(code, 0, "every safety guard is skipped: the timeout must not block: {err:?}");
+}
+
+/// Codex P2 on #473: a timed-out non-guard check answers by its policy in the dispatcher, which must know the payload's session, or
+/// the once-per-session guard-down notice is never sent (it was, before #473, through the unreachable notice).
+#[test]
+fn a_timed_out_non_guard_check_still_tells_the_session_once() {
+    let e = Env::new("slow-p2-notice");
+    let map = event_map(&e, "UserPromptSubmit", "true", "true");
+    let payload = serde_json::json!({"session_id": "s-473-p2", "cwd": e.dir, "hook_event_name": "UserPromptSubmit", "prompt": "hi"}).to_string();
+    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+    let env = [("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW];
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let tmpl = ah_engine::defaults::text("script.msg_guard_down");
+    let mid = tmpl.split('{').nth(1).and_then(|s| s.split('}').nth(1)).unwrap().to_string(); // " guard could not run ("
+    let (code, out, err) = e.run_with(&args, false, &payload, true, &env);
+    assert_eq!(code, 0, "{err:?}");
+    assert!(out.contains(&mid) || err.contains(&mid), "the guard-down notice is sent: out={out:?} err={err:?}");
+    let (_, out, err) = e.run_with(&args, false, &payload, true, &env);
+    assert!(!out.contains(&mid) && !err.contains(&mid), "once per session: out={out:?} err={err:?}");
+}
+
+/// The older `ah-engine hook` path without `--event` (no dispatch table: the daemon dispatches) knows no entries, so no check policy
+/// can apply; a timeout there passes, and only the dispatcher path (`--event`, what ah-hook runs) answers by policy. Pinned so a change
+/// of either is deliberate.
+#[test]
+fn the_legacy_hook_path_without_event_passes_a_timeout() {
+    let e = Env::new("slow-legacy");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let (code, _, err) = e.run_with(&["hook"], false, &bash("git push --force origin main", &e.dir), true, &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW]);
+    assert_eq!(code, 0, "{err:?}");
+}
+
 /// The git check's inline-shell nesting cap is the plugin's `git.inline_depth`, not a number in the script: the same force push
 /// one `bash -c` deep is blocked under the shipped value and is no longer followed into once the setting is lowered to 0.
 #[test]
