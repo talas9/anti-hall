@@ -64,8 +64,9 @@ pub enum Exch {
     Failed(String),
     /// No reply within the whole wait window (the deadline, extended to `client.slow_fallback_max_ms` for a daemon that is alive
     /// but late; on macOS an SO_RCVTIMEO expiry reads as EAGAIN, os error 35). The daemon may already have processed the
-    /// request, so this call runs no Node hook (it would count twice): it fails open, and no down marker, spawn or breaker
-    /// failure follows unless `client.slow_down_n` such calls come in a row (a wedged daemon).
+    /// request, so this call runs no Node hook (it would count twice): the dispatcher answers each entry by its own failure policy
+    /// (a safety guard fails closed, the rest pass under guards.failOpenNonSafety), and no down marker, spawn or breaker failure
+    /// follows unless `client.slow_down_n` such calls come in a row (a wedged daemon).
     Slow(String),
     /// Past the deadline, and the daemon's heartbeat (`files.heartbeat`) is older than `client.heartbeat_stale_ms`: the process is
     /// stopped or wedged, not slow, so the call stops waiting at once (no slow window). `true` = confirmed (the same heartbeat
@@ -723,7 +724,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
         }
         Exch::Slow(why) => {
             // nothing came within the whole window, but the daemon may have processed the request already: running the Node
-            // hooks too would count the call twice, so this call fails open (the unavailable path), never to Node
+            // hooks too would count the call twice, so this call never goes to Node; each entry answers by its failure policy
             wait_marker(false);
             note_unavailable();
             LAST_TIMED_OUT.set(true); // the dispatcher answers each entry by its policy: a safety guard fails closed (Codex P1)
