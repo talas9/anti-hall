@@ -276,6 +276,8 @@ var ah = {
     // The newest maxLines lines parsed by the engine and cut down to the `keep` paths (lists of keys, '*' = every array element):
     // {lines: [[offset, value]], dropped, droppedUnread} (older lines left out; of them over lineMax or not UTF-8), value null (over lineMax or not UTF-8), 0 (blank, or not a JSON object), the cut-down object,
     // or the line's text when the engine's parser refused it (parse it yourself); null when unreadable.
+    // An incremental forward read from `from` (a `next` an earlier call returned; below 0: the last window), bounded per call and per line.
+    rangeEntries: function (p, from, windowBytes, lineMax, keep, maxLines) { var r = ahHost.rangeEntries(p, from, windowBytes || 0, lineMax || 0, JSON.stringify(keep), maxLines || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     tailEntries: function (p, windowBytes, lineMax, keep, maxLines) { var r = ahHost.tailEntries(p, windowBytes || 0, lineMax || 0, JSON.stringify(keep), maxLines || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // null: no readable transcript; {hint:false}: no line can hold `hint`; {unsure:true}: a line JS might read differently;
     // {parts:[...]}: the current turn's assistant text blocks.
