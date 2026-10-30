@@ -457,7 +457,7 @@ doc = "Flag writes of a hook that did not publish: the flag lock was taken over 
 value = { kind = "counter", unit = "events", labels = [] }
 
 [metric.afk_idle_revoked]
-doc = "Idle AFK entries discarded at the rename of their fenced commit: the owner presence or the flag's `ended` watermark (a `back`) moved past the value the idle decision used while the commit was pending. Nothing of that hook landed."
+doc = "Idle AFK entries discarded while their fenced commit was pending because the owner presence or the flag's `ended` watermark (a `back`) moved past the value the idle decision used: found by the host re-check right before the rename, or after a lost lock (counted here, not afk_lock_lost, when the watched value moved). Nothing of that hook landed."
 value = { kind = "counter", unit = "events", labels = [] }
 
 [metric.afk_question_denied]

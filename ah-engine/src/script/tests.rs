@@ -3486,12 +3486,18 @@ mod afk_mode {
 
     #[test]
     fn an_idle_on_paused_before_staging_loses_to_back() {
-        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off("afk-back-pre", Some(crate::checks::guardkit::nodelock::FencePhase::BeforeStage));
+        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off(
+            "afk-back-pre",
+            Some(crate::checks::guardkit::nodelock::FencePhase::BeforeStage),
+        );
     }
 
     #[test]
     fn an_idle_on_paused_after_staging_loses_to_back() {
-        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off("afk-back-staged", Some(crate::checks::guardkit::nodelock::FencePhase::AfterStage));
+        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off(
+            "afk-back-staged",
+            Some(crate::checks::guardkit::nodelock::FencePhase::AfterStage),
+        );
     }
 
     #[test]

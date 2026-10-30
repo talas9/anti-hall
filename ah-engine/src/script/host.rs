@@ -478,7 +478,9 @@ pub fn write_fenced(home: &str, rel: &str, text: &str, id: f64, infix: &str, gua
     if let Some(g) = guard {
         let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(g) else { return Ok(false) };
         for row in rows {
-            let (Some(r), Some(k), Some(max)) = (row.get(0).and_then(|v| v.as_str()), row.get(1).and_then(|v| v.as_str()), row.get(2).and_then(serde_json::Value::as_f64)) else {
+            let (Some(r), Some(k), Some(max)) =
+                (row.get(0).and_then(|v| v.as_str()), row.get(1).and_then(|v| v.as_str()), row.get(2).and_then(serde_json::Value::as_f64))
+            else {
                 return Ok(false);
             };
             let Some(wp) = scoped_target(home, r, 0, false)? else { return Ok(false) };
