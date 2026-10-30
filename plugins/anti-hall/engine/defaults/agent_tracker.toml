@@ -442,6 +442,10 @@ value = ["completed"]
 doc = "The task-notification statuses that mean a background shell task ended with success (PR #472): only then does a background check or shell write earn its HARD outcome; its launch acknowledgment is at most a soft one."
 value = ["completed"]
 
+[agent_tracker.write_mask]
+doc = "The sentinel around the index of a quoted string masked while a shell command's written files are found (PR #472): a character no command text holds, so a quoted redirect target keeps its real path. Empty: quoted strings are blanked and a quoted target is no file."
+value = "\u0001"
+
 [agent_tracker.wake_scope]
 doc = "Wake rows scoped to the session that owns them (switch agent_nudge.scope_setting). The telemetry class and event of a dropped row and its reason values: foreign_agent (a heartbeat whose writer is no session the tracker follows), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started). walk_max: most parent processes walked up from a lock holder to find its session."
 value = { class = "wake_scope", dropped = "dropped", foreign_agent = "foreign_agent", empty_step = "empty_step", foreign_pid = "foreign_pid", walk_max = 64 }

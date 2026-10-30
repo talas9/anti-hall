@@ -654,26 +654,28 @@ fn hard_outcome(a: &mut Agent, check: bool, writes: &[String]) -> bool {
 
 /// The files a shell command creates or appends: every capture of patterns.shell_write (the first group that matched), minus the
 /// paths patterns.shell_write_skip names (a device such as /dev/null). Quoted strings (burn.quoted_re) are masked while matching, so
-/// a `>` inside quotes is no redirect, and put back in a captured path (PR #472: `> "out/a.txt"` and `> "out/b.txt"` are two files).
+/// a `>` inside quotes is no redirect, and put back in a captured path (PR #472: `> "out/a.txt"` and `> "out/b.txt"` are two files);
+/// agent_tracker.write_mask is the sentinel around a masked string's index (empty: quoted strings are blanked, as before).
 fn shell_writes(cmd: &str) -> Vec<String> {
     let (Some(re), skip) = (pat("shell_write"), pat("shell_write_skip")) else { return Vec::new() };
+    let mask = defaults::text("agent_tracker.write_mask");
     let mut quoted: Vec<String> = Vec::new();
-    let masked = match Regex::new(defaults::text("burn.quoted_re")).ok() {
+    let masked = match Regex::new(defaults::text("burn.quoted_re")).ok().filter(|_| !mask.is_empty()) {
         Some(q) => q
             .replace_all(cmd, |c: &regex::Captures| {
                 let m = c.get(0).map_or("", |m| m.as_str());
                 quoted.push(m.get(1..m.len().saturating_sub(1)).unwrap_or("").to_string());
-                format!("{MASK}{}{MASK}", quoted.len() - 1)
+                format!("{mask}{}{mask}", quoted.len() - 1)
             })
             .into_owned(),
-        None => cmd.to_string(),
+        None => unquoted(cmd),
     };
     let mut out: Vec<String> = Vec::new();
     for c in re.captures_iter(&masked) {
         let Some(m) = c.iter().skip(1).flatten().next() else { continue };
         let path: String = m
             .as_str()
-            .split(MASK)
+            .split(mask)
             .enumerate()
             .map(|(i, s)| if i % 2 == 1 { s.parse::<usize>().ok().and_then(|n| quoted.get(n)).map_or(s, String::as_str) } else { s })
             .collect();
@@ -683,9 +685,6 @@ fn shell_writes(cmd: &str) -> Vec<String> {
     }
     out
 }
-
-/// The sentinel around the index of a masked quoted string in shell_writes: a control character no command text holds.
-const MASK: char = '\u{1}';
 
 /// The command with each quoted string blanked (burn.quoted_re): text in an argument (`printf 'git diff --check'`, `echo "a > b"`) never
 /// names the program run or a file written.
