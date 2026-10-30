@@ -49,14 +49,15 @@ function ceSentences(t) {
 }
 
 // Where the text of `sent` that governs a claim found at `a` starts: after the last clause break before it (or `win` chars back, the nearer).
-// With guards.claimEvidenceStrict on, a break that closes an 'according to <source>' phrase (claim_evidence.clause_join_re) does not end the
+// With guards.claimEvidenceStrict on, a comma (claim_evidence.clause_join_break_re) that closes an 'according to <source>' phrase (claim_evidence.clause_join_re) does not end the
 // clause: the source still governs the words after its comma ('According to the PR body, the change is merged').
 function ceStart(sent, a) {
   var br = ah.cfg('claim_evidence.clause_break_re'), before = sent.slice(0, a), from = 0, off = 0, strict = ceStrict();
   for (;;) {
     var m = ah.re.find(br, 'i', before.slice(off));
     if (!m || m[1] <= m[0]) break;
-    if (strict && ah.re.find(ah.cfg('claim_evidence.clause_join_re'), 'i', before.slice(0, off + m[0]))) {
+    if (strict && ah.re.find(ah.cfg('claim_evidence.clause_join_break_re'), 'i', before.slice(off + m[0], off + m[1])) &&
+        ah.re.find(ah.cfg('claim_evidence.clause_join_re'), 'i', before.slice(0, off + m[0]))) {
       off = off + m[1];
       continue;
     }

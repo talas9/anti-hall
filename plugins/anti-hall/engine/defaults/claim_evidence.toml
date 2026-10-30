@@ -141,6 +141,10 @@ value = '^[-_/]\w'
 doc = "A phrase that, when it ends right before a clause break, keeps the clause going (strict mode): 'According to the PR body, the change is merged' stays one clause so the source still governs it. Rust regular expression, case-insensitive, matched against the sentence up to the break; it must end with $."
 value = '\baccording\s+to\s+(?:[\w#\x27-]+\s+){0,3}[\w#\x27-]+$'
 
+[claim_evidence.clause_join_break_re]
+doc = "Which clause break may keep a clause going after a source phrase (strict mode): only a comma ('According to the docs, CI is green' stays one clause); a semicolon, dash or other break ends it ('I updated the config according to the docs; CI is green' leaves the second claim bare). Rust regular expression, case-insensitive, matched against the break text itself."
+value = '^,$'
+
 [claim_evidence.ack_before_not_re]
 doc = "Text that ends right before an honest-label word and negates it (strict mode): 'not unverified', 'never unverified'. Rust regular expression, case-insensitive, matched against the sentence up to the label; it must end with $."
 value = '\b(?:not|never|no|n.t)\s+$'

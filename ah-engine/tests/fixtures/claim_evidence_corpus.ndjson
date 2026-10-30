@@ -172,3 +172,8 @@
 {"text": "(Unverified) files are deployed.", "expect": "allow", "source": "gh-432-p1a"}
 {"text": "Unverified: tasks are merged.", "expect": "allow", "source": "gh-432-p1a"}
 {"text": "Unverified files are deployed.", "expect": "block", "source": "gh-432-p1a"}
+{"text": "I updated the config according to the docs; CI is green.", "expect": "block", "source": "gh-432-p1-sep"}
+{"text": "I updated the config according to the docs. CI is green.", "expect": "block", "source": "gh-432-p1-sep"}
+{"text": "I updated the config according to the docs — CI is green.", "expect": "block", "source": "gh-432-p1-sep"}
+{"text": "I updated the config according to the docs\nCI is green.", "expect": "block", "source": "gh-432-p1-sep"}
+{"text": "According to the docs, CI is green.", "expect": "allow", "source": "gh-432-p1-sep"}

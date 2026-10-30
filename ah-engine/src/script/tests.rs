@@ -2508,7 +2508,8 @@ mod claim_evidence_guard {
     }
 
     /// Every Stop counts into the process-wide metric table; the counter test holds the write side so nothing else counts meanwhile.
-    static COUNTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+    /// The afk-mode tests drain that same table, so they hold the write side too.
+    pub(super) static COUNTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
     fn stop_unlocked(tag: &str, lines: &[Value], reply: &str, extra: &[(&str, &str)], payload_extra: Value) -> (Option<Option<Verdict>>, String) {
         let h = home(tag);
@@ -2909,9 +2910,11 @@ mod claim_evidence_guard {
     fn a_stop_with_no_claim_stays_inside_the_stop_latency_bar() {
         let reply = "Renamed the function and updated its two callers.";
         let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &["sed -i x y"])];
-        let _ = stop("ce-lat-warm", &lines, reply, &[], json!({}));
+        // the shared side is taken before the clock starts: time spent waiting for a counting test is not the Stop's latency
+        let _shared = COUNTS.read().unwrap_or_else(|e| e.into_inner());
+        let _ = stop_unlocked("ce-lat-warm", &lines, reply, &[], json!({}));
         let started = std::time::Instant::now();
-        let (v, _) = stop("ce-lat", &lines, reply, &[], json!({}));
+        let (v, _) = stop_unlocked("ce-lat", &lines, reply, &[], json!({}));
         assert_eq!(v, ALLOW);
         assert!(started.elapsed() < std::time::Duration::from_millis(20), "{:?}", started.elapsed());
     }
@@ -2984,4 +2987,564 @@ fn tail_lines_newest_gives_the_prompt_key_a_full_scan_gives() {
     o.reverse();
     assert_eq!(super::host_b3::tail_lines_newest(&p, 1 << 20, true, &n, 0).unwrap(), o);
     assert!(super::host_b3::tail_lines_newest(&format!("{h}/none"), 1 << 20, false, &n, 3).is_none());
+}
+
+// ---- afk-mode (GH #425): the machine-wide AFK flag, idle detection, the digest, the capped Stop hold, the counters ----
+mod afk_mode {
+    use super::*;
+
+    /// The tests share the process-wide pending metric table with the claim-evidence counter test: one at a time (the write side of its
+    /// lock), so a drain never takes another test's counts.
+    use super::claim_evidence_guard::COUNTS;
+
+    fn run(h: &str, ev: &str, extra: Value, envs: &[(&str, &str)]) -> Option<Option<Verdict>> {
+        let mut payload = json!({"hook_event_name": ev, "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            payload[k] = v;
+        }
+        let mut pairs = vec![("HOME".to_string(), h.to_string())];
+        pairs.extend(envs.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        super::super::run_forced("afk-mode", &payload, &Value::Null, ev, &RequestEnv::from_pairs(pairs))
+    }
+
+    fn out(v: &Option<Option<Verdict>>) -> String {
+        match v {
+            Some(Some(Verdict::Exact(x))) => x.out.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn flag(h: &str) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/afk.json")).unwrap_or_default()).unwrap_or(Value::Null)
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn progress(h: &str) -> String {
+        let date = &crate::checks::taskkit::time::iso(crate::checks::taskkit::time::now_ms())[..10];
+        format!("{h}/.anti-hall/progress/{date}/s1.md")
+    }
+
+    #[test]
+    fn typed_afk_starts_it_counts_it_and_is_not_sent_to_the_model() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-typed");
+        drained();
+        let v = run(&h, "UserPromptSubmit", json!({"prompt": "  AFK "}), &[]);
+        let o = out(&v);
+        assert!(o.contains("\"decision\":\"block\"") && o.contains("AFK on"), "{o}");
+        let f = flag(&h);
+        assert_eq!(f["on"], json!(true));
+        assert_eq!(f["how"], json!("prompt"));
+        assert_eq!(f["counted"], json!(true));
+        let m = drained();
+        assert_eq!(m.counter("afk_entered", &[("how", "prompt")]), 1);
+        // a manual period from the CLI (counted=false) is counted once by the next hook
+        std::fs::write(
+            format!("{h}/.anti-hall/afk.json"),
+            json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": false, "pending_digest": 3}).to_string(),
+        )
+        .unwrap();
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        let m = drained();
+        assert_eq!(m.counter("afk_entered", &[("how", "manual")]), 1);
+        assert_eq!(m.counter("digest_entries", &[]), 3);
+    }
+
+    #[test]
+    fn idle_detection_trips_after_the_idle_minutes_and_the_next_owner_prompt_ends_it() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-idle");
+        drained();
+        // no recorded owner prompt: never trips
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        assert_eq!(flag(&h), Value::Null);
+        // a prompt long ago: the next tool call trips idle and injects the rule once
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        let o = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert_eq!(flag(&h)["how"], json!("idle"));
+        assert!(o.contains("AFK MODE"), "{o}");
+        assert!(out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[])).is_empty(), "the rule is injected once");
+        let m = drained();
+        assert_eq!(m.counter("idle_trips", &[]), 1);
+        assert_eq!(m.counter("afk_entered", &[("how", "idle")]), 1);
+        // a harness notification is not the owner
+        run(&h, "UserPromptSubmit", json!({"prompt": "<task-notification>done</task-notification>"}), &[]);
+        assert_eq!(flag(&h)["on"], json!(true));
+        // the owner's prompt ends an idle AFK
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "how is it going"}), &[]));
+        assert_eq!(flag(&h)["on"], json!(false));
+        assert!(o.contains("ended"), "{o}");
+        // idle detection off: no trip
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"idleDetect": false}}).to_string()).unwrap();
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        assert_eq!(flag(&h)["on"], json!(false));
+    }
+
+    #[test]
+    fn the_digest_prints_the_bullets_since_the_marker_with_a_percentage_and_back_ends_it() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-digest");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        // the first tool call of the session writes the marker into its progress file
+        let o = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert!(o.contains("AFK MODE"), "{o}");
+        let p = progress(&h);
+        let mut text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert!(text.contains("<!-- afk:"), "{text}");
+        text.push_str("- [x] built the flag\n- [ ] tests pending\nnot a bullet\n");
+        std::fs::write(&p, &text).unwrap();
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "progress"}), &[]));
+        assert!(o.contains("built the flag") && o.contains("tests pending") && o.contains("50% (1/2"), "{o}");
+        assert!(!o.contains("not a bullet"), "{o}");
+        assert_eq!(flag(&h)["on"], json!(true), "progress does not end AFK");
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "back"}), &[]));
+        assert!(o.contains("AFK off") && o.contains("built the flag"), "{o}");
+        assert_eq!(flag(&h)["on"], json!(false));
+        assert_eq!(drained().counter("digest_entries", &[]), 4);
+    }
+
+    #[test]
+    fn an_overlong_afk_reply_is_nudged_once_then_held_at_most_max_blocks_times() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-enforce");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let long = "line\n".repeat(10);
+        let stop = |extra: Value| out(&run(&h, "Stop", extra, &[]));
+        assert!(stop(json!({"last_assistant_message": "done."})).is_empty(), "a one-line reply passes");
+        assert!(stop(json!({"last_assistant_message": long})).is_empty(), "the first overlong reply is nudged, not held");
+        let o = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert!(o.contains("your last reply was"), "the nudge reaches the next turn: {o}");
+        assert!(stop(json!({"last_assistant_message": long, "stop_hook_active": true})).is_empty(), "never on stop_hook_active");
+        assert!(stop(json!({"last_assistant_message": long})).contains("\"decision\":\"block\""), "then held");
+        assert!(stop(json!({"last_assistant_message": long})).is_empty(), "capped at afk.max_blocks (1)");
+        let m = drained();
+        assert_eq!(m.counter("afk_overlong_turns", &[("action", "nudge")]), 1);
+        assert_eq!(m.counter("afk_overlong_turns", &[("action", "block")]), 1);
+        assert_eq!(m.counter("afk_overlong_turns", &[("action", "capped")]), 1);
+        assert_eq!(m.counter("afk_turns", &[]), 4, "a stop_hook_active Stop is not a turn");
+        // enforcement off: never held
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"enforce": false}}).to_string()).unwrap();
+        std::fs::remove_file(format!("{h}/.anti-hall/afk-sess-s1.json")).unwrap();
+        for _ in 0..3 {
+            assert!(stop(json!({"last_assistant_message": long})).is_empty());
+        }
+    }
+
+    #[test]
+    fn output_tokens_per_turn_are_measured_from_usage_split_afk_vs_present() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-tokens");
+        drained();
+        let a = |id: &str, n: u64| json!({"type": "assistant", "message": {"id": id, "role": "assistant", "usage": {"output_tokens": n}, "content": [{"type": "text", "text": "x"}]}});
+        let lines = [
+            json!({"type": "user", "message": {"role": "user", "content": "earlier"}}),
+            a("m0", 999),
+            json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+            a("m1", 50),
+            a("m1", 50),
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "u", "content": "ok"}]}}),
+            a("m2", 30),
+        ];
+        std::fs::write(format!("{h}/t.jsonl"), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        run(&h, "Stop", json!({"last_assistant_message": "ok"}), &[]);
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        run(&h, "Stop", json!({"last_assistant_message": "ok"}), &[]);
+        let m = drained();
+        assert_eq!(m.counter("afk_output_tokens", &[("mode", "present")]), 80, "the turn since the last owner prompt, m1 counted once");
+        assert_eq!(m.counter("afk_turns_measured", &[("mode", "present")]), 1);
+        assert_eq!(m.counter("afk_output_tokens", &[("mode", "afk")]), 80);
+    }
+
+    #[test]
+    fn ask_user_question_is_denied_every_time_while_afk_with_the_ladder() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-ask");
+        drained();
+        let ask = json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Which one?"}]}});
+        assert!(out(&run(&h, "PreToolUse", ask.clone(), &[])).is_empty(), "not AFK: the question passes");
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        for _ in 0..5 {
+            let o = out(&run(&h, "PreToolUse", ask.clone(), &[]));
+            let v: Value = serde_json::from_str(o.trim()).unwrap_or_else(|e| panic!("{o}: {e}"));
+            assert_eq!(v["hookSpecificOutput"]["hookEventName"], json!("PreToolUse"));
+            assert_eq!(v["hookSpecificOutput"]["permissionDecision"], json!("deny"), "denied every time, no cap: {o}");
+            let why = v["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap_or_default();
+            assert!(why.contains("advisor") && why.contains("NEEDS OWNER"), "{why}");
+        }
+        assert_eq!(drained().counter("afk_question_denied", &[("tool", "AskUserQuestion")]), 5);
+        // the rule injected at AFK start states the ladder
+        let o = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert!(o.contains("NEEDS OWNER"), "{o}");
+        // the setting off: the question passes
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"noQuestions": false}}).to_string()).unwrap();
+        assert!(out(&run(&h, "PreToolUse", ask, &[])).is_empty());
+        drained();
+    }
+
+    #[test]
+    fn a_subagent_never_consumes_the_parents_afk_rule_and_its_question_is_still_denied() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-child");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let c = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash", "agent_id": "child", "agent_type": "general-purpose"}), &[]));
+        assert!(c.is_empty(), "a subagent gets no rule and writes no session state: {c}");
+        let d = out(&run(&h, "PreToolUse", json!({"tool_name": "AskUserQuestion", "agent_id": "child", "tool_input": {}}), &[]));
+        assert!(d.contains("\"deny\""), "a subagent is part of the autonomous run: its question is denied: {d}");
+        let p = out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]));
+        assert!(p.contains("AFK MODE"), "the parent still gets its rule: {p}");
+        drained();
+    }
+
+    #[test]
+    fn the_flag_is_never_rewritten_without_its_lock_and_off_wins_over_a_stale_on() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-race");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": false}).to_string()).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let params = || crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp, params()).expect("test holds the lock");
+        // another writer holds the lock: the hook writes nothing (no lost update)
+        run(&h, "PostToolUse", json!({"tool_name": "Bash", "session_id": "s2"}), &[]);
+        assert_eq!(flag(&h)["counted"], json!(false), "no write without the lock");
+        // a hook that read ON waits on the lock while `back` writes OFF; it must not resurrect ON
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "PostToolUse", json!({"tool_name": "Bash", "session_id": "s3"}), &[]);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": false, "ended": 2}).to_string()).unwrap();
+        assert!(held.release());
+        t.join().expect("hook thread");
+        assert_eq!(flag(&h)["on"], json!(false), "OFF wins over the stale ON");
+        drained();
+    }
+
+    /// GH #426 review (C): a hook that read OFF and a stale presence decides to trip idle AFK; `back` writes OFF with `ended`
+    /// while the hook waits on the lock; under the lock the hook must re-check idle against `ended` and write nothing.
+    #[test]
+    fn idle_re_entry_is_re_checked_under_the_lock_against_the_back_watermark() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-idle-race");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let params = crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp, params).expect("test holds the lock");
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let now = crate::checks::taskkit::time::now_ms();
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": now}).to_string()).unwrap();
+        assert!(held.release());
+        t.join().expect("hook thread");
+        assert_eq!(flag(&h)["on"], json!(false), "the later `back` wins: no idle re-entry");
+        drained();
+    }
+
+    /// GH #426 review (D): a contended hook call has ONE lock budget (afk.lock_wait_ms) for all its flag updates and returns
+    /// within it, writing nothing (the old code waited the full budget once per update).
+    #[test]
+    fn a_contended_hook_call_returns_within_one_lock_budget_writing_nothing() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-budget");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        let body = json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2, "pending_digest": 3}).to_string();
+        std::fs::write(&fp, &body).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let params = crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp, params).expect("test holds the lock");
+        let budget = crate::defaults::num("afk.lock_wait_ms") as u128;
+        let t0 = std::time::Instant::now();
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        let took = t0.elapsed().as_millis();
+        assert!(held.release());
+        assert!(took < 2 * budget, "one budget per call: {took} ms vs afk.lock_wait_ms {budget} ms");
+        assert_eq!(std::fs::read_to_string(&fp).unwrap(), body, "a contended hook writes nothing");
+        drained();
+    }
+
+    /// GH #426 review (E): typed `back` is the whole trimmed prompt in any case; with the flag lock busy it says so (the flag stays ON).
+    #[test]
+    fn typed_back_ignores_case_and_surrounding_space_and_reports_a_busy_lock() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-back-forms");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        let on = json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": true}).to_string();
+        for typed in ["  BACK \n", "Back", "back"] {
+            std::fs::write(&fp, &on).unwrap();
+            run(&h, "UserPromptSubmit", json!({"prompt": typed}), &[]);
+            assert_eq!(flag(&h)["on"], json!(false), "{typed:?} ends AFK");
+        }
+        std::fs::write(&fp, &on).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let params = crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp, params).expect("test holds the lock");
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "back"}), &[]));
+        assert!(held.release());
+        assert_eq!(flag(&h)["on"], json!(true));
+        assert!(o.contains("ah-engine back"), "busy: the reply says the flag did not change and names the CLI: {o}");
+        drained();
+    }
+
+    #[test]
+    fn a_turn_ending_on_a_plain_text_question_while_afk_is_held_with_the_ladder_capped() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-q-stop");
+        drained();
+        let q = json!({"last_assistant_message": "Shall I proceed?"});
+        assert!(out(&run(&h, "Stop", q.clone(), &[])).is_empty(), "not AFK");
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        assert!(out(&run(&h, "Stop", json!({"last_assistant_message": "Done."}), &[])).is_empty());
+        let mut q2 = q.clone();
+        q2["stop_hook_active"] = json!(true);
+        assert!(out(&run(&h, "Stop", q2, &[])).is_empty(), "never on stop_hook_active");
+        let o = out(&run(&h, "Stop", q.clone(), &[]));
+        assert!(o.contains("\"decision\":\"block\"") && o.contains("NEEDS OWNER"), "{o}");
+        run(&h, "Stop", q.clone(), &[]);
+        assert!(out(&run(&h, "Stop", q, &[])).is_empty(), "capped at afk.question_max_holds (2)");
+        let m = drained();
+        assert_eq!(m.counter("afk_question_parked", &[("action", "nudged")]), 2);
+        assert_eq!(m.counter("afk_question_parked", &[("action", "capped")]), 1);
+    }
+
+    #[test]
+    fn on_codex_stop_only_holds_a_question_never_the_length_or_the_measurement() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-codex-stop");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let codex = |msg: &str| json!({"turn_id": "t1", "model": "gpt-5", "last_assistant_message": msg});
+        std::fs::write(
+            format!("{h}/t.jsonl"),
+            format!("{}\n", json!({"type": "assistant", "message": {"id": "m", "usage": {"output_tokens": 9}, "content": []}})),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            assert!(out(&run(&h, "Stop", codex(&"line\n".repeat(10)), &[])).is_empty(), "no length hold on Codex");
+        }
+        let o = out(&run(&h, "Stop", codex("Which option do you want?"), &[]));
+        assert!(o.contains("\"decision\":\"block\"") && o.contains("NEEDS OWNER"), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_turns", &[]), 0);
+        assert_eq!(m.counter("afk_output_tokens", &[("mode", "afk")]), 0);
+        assert_eq!(m.counter("afk_overlong_turns", &[("action", "nudge")]), 0);
+        assert_eq!(m.counter("afk_question_parked", &[("action", "nudged")]), 1);
+    }
+
+    #[test]
+    fn the_digest_lists_needs_owner_bullets_first() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-needs");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        let p = progress(&h);
+        let mut text = std::fs::read_to_string(&p).unwrap();
+        text.push_str("- [x] built A\n- [ ] NEEDS OWNER: drop table x? (destructive)\n- [x] built B\n");
+        std::fs::write(&p, &text).unwrap();
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "progress"}), &[]));
+        let v: Value = serde_json::from_str(o.trim()).unwrap();
+        let r = v["reason"].as_str().unwrap_or_default();
+        let (n, a) = (r.find("NEEDS OWNER").unwrap_or(usize::MAX), r.find("built A").unwrap_or(0));
+        assert!(n < a, "NEEDS OWNER first: {r}");
+        assert_eq!(r.matches("NEEDS OWNER: drop").count(), 1, "listed once: {r}");
+        assert!(r.contains("67% (2/3"), "{r}");
+        assert_eq!(drained().counter("afk_question_parked", &[("action", "listed")]), 1);
+    }
+
+    /// GH #426 review (P1, Codex): a hook paused INSIDE its flag commit (after the ownership check, before the rename) for longer
+    /// than afk.lock_stale_ms; another writer takes the expired lock over and publishes OFF; the paused hook resumes. Its stale ON
+    /// must never land: the new holder swept its stage, so the rename finds nothing. Final state OFF, the loss counted.
+    #[test]
+    fn an_expired_holder_paused_inside_its_commit_never_resurrects_on_after_a_takeover() {
+        use crate::checks::guardkit::nodelock;
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-fence");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2}).to_string()).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let infix = crate::defaults::text("afk.fence_infix");
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).push((std::path::PathBuf::from(&fp), gate.clone()));
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "UserPromptSubmit", json!({"prompt": "afk", "session_id": "s1"}), &[]);
+        });
+        gate.wait(); // the hook staged ON, passed its ownership check, and is paused before the rename
+        let stale = crate::defaults::num("afk.lock_stale_ms");
+        std::thread::sleep(std::time::Duration::from_millis(stale + stale / 20));
+        let params = nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let taker = nodelock::acquire(&lp, params).expect("the expired lock is taken over");
+        // unregister the gate first: the taker's own commit must not meet the barrier the paused hook is parked on
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| p != std::path::Path::new(&fp));
+        nodelock::fence_sweep(std::path::Path::new(&fp), infix);
+        let off = json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 3}).to_string();
+        assert!(nodelock::fenced_write(&taker, std::path::Path::new(&fp), &off, infix, false).expect("io"), "the new holder publishes OFF");
+        assert!(taker.release());
+        gate.wait(); // resume the paused hook
+        t.join().expect("hook thread");
+        assert_eq!(flag(&h)["on"], json!(false), "the stale holder never resurrects ON");
+        assert_eq!(flag(&h)["ended"], json!(3), "the new holder's OFF is intact");
+        let stages = std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(infix)).count();
+        assert_eq!(stages, 0, "no stage left behind");
+        assert_eq!(drained().counter("afk_lock_lost", &[]), 1);
+    }
+
+    /// GH #426: the fence does not stop a CRASHED holder's expired lock from being taken over (a dead pid, older than
+    /// afk.lock_stale_ms): the next hook takes it and writes.
+    #[test]
+    fn a_crashed_holders_expired_flag_lock_is_still_taken_over() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-crashed");
+        drained();
+        let mut child = std::process::Command::new("true").spawn().expect("spawn");
+        let dead = child.id();
+        child.wait().expect("wait");
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let old = crate::checks::taskkit::time::now_ms() as u64 - 2 * crate::defaults::num("afk.lock_stale_ms");
+        std::fs::write(&lp, json!({"pid": dead, "ts": old, "token": "crashed"}).to_string()).unwrap();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk", "session_id": "s1"}), &[]);
+        assert_eq!(flag(&h)["on"], json!(true), "the crashed holder's expired lock was taken over");
+        drained();
+    }
+
+    /// Child-process helper of the interleaving tests below (ignored; a no-op unless the home is named): a typed `back` in another
+    /// process, as the owner's next prompt would be (an in-process thread would queue on the daemon's in-process lock mutex).
+    #[test]
+    #[ignore]
+    fn child_typed_back() {
+        let Ok(h) = std::env::var("AH_TEST_AFK_BACK_HOME") else { return };
+        run(&h, "UserPromptSubmit", json!({"prompt": "back", "session_id": "s9"}), &[]);
+    }
+
+    /// GH #426 review (P1, Codex): an idle entry decided from a stale presence is paused inside its commit (`phase`; None = after
+    /// the ownership check, before the rename) past afk.lock_stale_ms; the owner types `back` in another process while the
+    /// PUBLISHED flag is still OFF; the paused hook resumes. Its idle ON must never land: final OFF, no stage left.
+    fn an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off(tag: &str, phase: Option<crate::checks::guardkit::nodelock::FencePhase>) {
+        use crate::checks::guardkit::nodelock;
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home(tag);
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let target = std::path::PathBuf::from(&fp);
+        match phase {
+            None => nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).push((target.clone(), gate.clone())),
+            Some(ph) => nodelock::FENCE_GATE_AT.lock().unwrap_or_else(|e| e.into_inner()).push((target.clone(), ph, gate.clone())),
+        }
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        });
+        gate.wait(); // the idle entry is paused inside its commit
+        let stale = crate::defaults::num("afk.lock_stale_ms");
+        std::thread::sleep(std::time::Duration::from_millis(stale + stale / 20));
+        let exe = std::env::current_exe().expect("test binary");
+        let st = std::process::Command::new(exe)
+            .args(["afk_mode::child_typed_back", "--ignored", "--test-threads=1", "--nocapture"])
+            .env("AH_TEST_AFK_BACK_HOME", &h)
+            .status()
+            .expect("child back");
+        assert!(st.success(), "the child `back` ran");
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| p != &target);
+        nodelock::FENCE_GATE_AT.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _, _)| p != &target);
+        gate.wait(); // resume the paused hook
+        t.join().expect("hook thread");
+        let f = flag(&h);
+        assert_eq!(f["on"], json!(false), "the owner's `back` wins over the pending idle ON: {f}");
+        assert!(f["ended"].as_i64().unwrap_or_default() > 2, "`back` bumped the watermark although the flag was OFF: {f}");
+        let infix = crate::defaults::text("afk.fence_infix");
+        let stages = std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(infix)).count();
+        assert_eq!(stages, 0, "no stage left behind");
+        // the discarded commit is counted as revoked: the `ended` watermark its guard watches moved past its idle base
+        assert_eq!(drained().counter("afk_idle_revoked", &[]), 1);
+    }
+
+    /// GH #426: the host's own re-check, with the lock still ours (no takeover): the idle entry is paused after its ownership
+    /// check, before the rename, well under afk.lock_stale_ms; an owner presence newer than its idle base lands meanwhile (as the
+    /// CLI `back` writes before it waits on the lock). The stage is discarded: final OFF, no stage left, counted afk_idle_revoked.
+    #[test]
+    fn an_idle_on_pending_at_the_rename_loses_to_a_newer_presence() {
+        use crate::checks::guardkit::nodelock;
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-presence-rename");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2}).to_string()).unwrap();
+        let pp = format!("{h}/.anti-hall/afk-presence.json");
+        std::fs::write(&pp, json!({"last": 0}).to_string()).unwrap();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let target = std::path::PathBuf::from(&fp);
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).push((target.clone(), gate.clone()));
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        });
+        gate.wait(); // the idle entry owns the lock and is paused right before its re-check and rename
+        std::fs::write(&pp, json!({"last": 3}).to_string()).unwrap();
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| p != &target);
+        gate.wait();
+        t.join().expect("hook thread");
+        let f = flag(&h);
+        assert_eq!(f["on"], json!(false), "a presence newer than the idle base discards the pending idle ON: {f}");
+        let infix = crate::defaults::text("afk.fence_infix");
+        let stages = std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(infix)).count();
+        assert_eq!(stages, 0, "no stage left behind");
+        let m = drained();
+        assert_eq!(m.counter("afk_idle_revoked", &[]), 1);
+        assert_eq!(m.counter("afk_lock_lost", &[]), 0);
+    }
+
+    #[test]
+    fn an_idle_on_paused_before_staging_loses_to_back() {
+        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off(
+            "afk-back-pre",
+            Some(crate::checks::guardkit::nodelock::FencePhase::BeforeStage),
+        );
+    }
+
+    #[test]
+    fn an_idle_on_paused_after_staging_loses_to_back() {
+        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off(
+            "afk-back-staged",
+            Some(crate::checks::guardkit::nodelock::FencePhase::AfterStage),
+        );
+    }
+
+    #[test]
+    fn an_idle_on_paused_inside_the_rename_loses_to_back() {
+        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off("afk-back-rename", None);
+    }
+
+    #[test]
+    fn the_master_switch_off_leaves_prompts_alone() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-off");
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"enabled": false}}).to_string()).unwrap();
+        assert_eq!(run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]), Some(Some(Verdict::Allow)));
+        assert_eq!(flag(&h), Value::Null);
+        drained();
+    }
 }
