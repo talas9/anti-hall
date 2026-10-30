@@ -188,22 +188,33 @@ function swgDescribe(p) {
 // metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
 
 // The owner's concurrent-agent cap (guards.maxConcurrentAgents): a block reason, or null with the allowed spawn's slot reserved. The
-// count and the reservation are one step under the reservation lock, so overlapping checks of one burst cannot all pass (GH #494). A
-// reservation (keyed by the tool call id) counts with the running agents until its launch shows in the transcript or it is older than
-// spawn_ceiling.reservation_ttl_ms, so a crashed or denied call frees its slot. Lock busy: the unreserved count still applies.
+// whole decision (the running agents, the reservations, the count, the new reservation) is taken under the reservation lock, never a
+// snapshot read before it, so overlapping checks cannot pass the cap however launches interleave (GH #494). A reservation (keyed by the
+// tool call id) counts until a tool result of its call shows in the transcript (an async launch or a foreground answer, running or
+// finished) or it is older than spawn_ceiling.reservation_ttl_ms. Only a background call reserves (spawn_ceiling.background_field);
+// an agent type of guards.cap_excluded_agent_types is outside the cap. Lock busy: the same count, read unlocked, decides and nothing
+// is reserved; a lock left by a dead or hung check is taken over (the spawn_reservation lock group).
 function swgCapGate(p, home) {
   var cap = ah.settings.num('spawn_ceiling.max_concurrent_setting');
   if (!(cap > 0) || typeof p.transcript_path !== 'string' || p.transcript_path === '') return null; // no transcript: nothing to count against, as before
-  var all = swgCapRunning(p), now = Date.now(), ttl = ah.cfgNum('spawn_ceiling.reservation_ttl_ms');
+  var inp = swgIsObj(p.tool_input) ? p.tool_input : {};
+  if (swgCapExcluded(swgAgentType(inp))) { ah.metric('spawn_reservations', ['outcome', 'excluded_type']); return null; }
+  var bgv = inp[ah.cfg('spawn_ceiling.background_field')];
+  var bg = typeof bgv === 'boolean' ? bgv : ah.cfg('spawn_ceiling.reserve_unflagged');
   var session = typeof p.session_id === 'string' ? p.session_id : '', dir = ah.cfg('swarm_guard.state_dir');
   var rel = dir + '/' + ah.cfg('spawn_ceiling.reservation_file');
-  var lock = ah.state.lock(dir + '/' + ah.cfg('spawn_ceiling.reservation_lock'), 'swarm_guard', ah.cfgNum('spawn_ceiling.reservation_lock_wait_ms'));
+  var lock = ah.state.lock(dir + '/' + ah.cfg('spawn_ceiling.reservation_lock'), ah.cfg('spawn_ceiling.reservation_lock_group'));
   if (lock === null) { ah.unable('swarm-guard:cap_lock_busy'); ah.metric('spawn_reservations', ['outcome', 'lock_busy']); }
-  var rows = [], raw = lock === null ? null : ah.fs.readText(ah.path.join(home, rel)), doc = null;
+  var all = swgCapRunning(p), now = Date.now(), ttl = ah.cfgNum('spawn_ceiling.reservation_ttl_ms');
+  var rows = [], raw = ah.fs.readText(ah.path.join(home, rel)), doc = null;
   if (raw !== null) { try { doc = JSON.parse(raw); } catch (e) { doc = null; } }
   if (doc && Array.isArray(doc.rows)) rows = doc.rows.filter(function (r) {
     return r && typeof r.id === 'string' && typeof r.at === 'number' && now - r.at < ttl && !(r.session === session && all.toolUseIds[r.id]);
   });
+  var open = {};
+  rows.forEach(function (r) { if (r.session === session) open[r.id] = true; });
+  var answered = swgAnsweredIds(p.transcript_path, open);
+  rows = rows.filter(function (r) { return !(r.session === session && answered[r.id]); });
   var mine = rows.filter(function (r) { return r.session === session; }).length, n = all.n + mine;
   if (n >= cap) {
     if (lock !== null) ah.state.unlock(lock);
@@ -215,12 +226,14 @@ function swgCapGate(p, home) {
     });
   }
   if (lock === null) return null;
-  var id = typeof p.tool_use_id === 'string' && p.tool_use_id !== '' ? p.tool_use_id : now + '-' + Math.random().toString(36).slice(2);
-  rows.push({ id: id, session: session, at: now });
+  if (bg) {
+    var id = typeof p.tool_use_id === 'string' && p.tool_use_id !== '' ? p.tool_use_id : now + '-' + Math.random().toString(36).slice(2);
+    rows.push({ id: id, session: session, at: now });
+  }
   var ok = ah.state.writeAtomic(rel, JSON.stringify({ rows: rows }));
   ah.state.unlock(lock);
   if (!ok) ah.unable('swarm-guard:cap_reserve_write');
-  ah.metric('spawn_reservations', ['outcome', ok ? 'reserved' : 'write_failed']);
+  ah.metric('spawn_reservations', ['outcome', !ok ? 'write_failed' : bg ? 'reserved' : 'foreground']);
   return null;
 }
 

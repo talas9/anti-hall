@@ -460,16 +460,72 @@ value = "spawn-reservations.json"
 doc = "The lock that makes the cap's count and its reservation one step, under swarm_guard.state_dir (timings: the swarm_guard lock group)."
 value = "spawn-reservations.lock"
 
-[spawn_ceiling.reservation_lock_wait_ms]
-doc = "How long a spawn check waits for the reservation lock (at most script.lock_wait_max_ms); still busy: the unreserved count decides and nothing is reserved."
+[spawn_ceiling.reservation_lock_group]
+doc = "The lock timings group of the reservation lock (<group>.lock_*): its wait, its stale timeout and whether a dead holder is taken over at once."
+value = "spawn_reservation"
+
+[spawn_reservation.lock_wait_ms]
+doc = "How long a spawn check waits for the reservation lock (at most script.lock_wait_max_ms); still busy: the same count, read unlocked, decides and nothing is reserved."
 value = 2000
+
+[spawn_reservation.lock_stale_ms]
+doc = "A reservation lock older than this is taken over whatever its holder (a hung check), so a check cut or killed while holding it never wedges the next spawn (GH #494)."
+value = 5000
+
+[spawn_reservation.lock_steal_dead]
+doc = "Take over a reservation lock whose holder process is dead at once, whatever its age (a check that crashed holding it)."
+value = true
+
+[spawn_reservation.lock_step_ms]
+doc = "The pause between attempts to take the reservation lock."
+value = 5
+
+[spawn_reservation.lock_reclaim_stale_ms]
+doc = "A reservation-lock takeover marker older than this belongs to a reclaimer that died and may be taken over."
+value = 5000
+
+[spawn_reservation.lock_release_tries]
+doc = "How many times releasing the reservation lock tries to take the takeover marker before it removes its own lock unguarded."
+value = 5
+
+[spawn_reservation.lock_release_step_ms]
+doc = "The pause between those tries."
+value = 10
+
+[spawn_reservation.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution)."
+value = 5
+
+[guards.cap_excluded_agent_types]
+doc = "Agent types outside the owner's concurrent-agent cap (guards.maxConcurrentAgents): neither counted as running nor reserved nor capped (the Codex reviewers, on their own quota)."
+value = ["codex:codex-rescue"]
+
+[spawn_ceiling.cap_excluded_tracked_kinds]
+doc = "Agent-tracker child kinds that are not agents of the concurrent-agent cap (background shell jobs, agent_tracker.guard_job_kind)."
+value = ["shell"]
+
+[spawn_ceiling.background_field]
+doc = "The spawn input field that says the call runs in the background; only a background call reserves a cap slot (a foreground call returns before the next one)."
+value = "run_in_background"
+
+[spawn_ceiling.reserve_unflagged]
+doc = "Whether a call without spawn_ceiling.background_field reserves a slot (the host may background it); its reservation ends with its tool result."
+value = true
+
+[spawn_ceiling.answered_window_bytes]
+doc = "The transcript tail searched for the tool results that end this session's open reservations (an async launch or a foreground answer)."
+value = 2097152
+
+[spawn_ceiling.answered_line_max_bytes]
+doc = "Transcript lines longer than this are not read for those tool results (a long foreground answer then holds its slot until the TTL)."
+value = 8388608
 
 [spawn_ceiling.reservation_ttl_ms]
 doc = "How long a reservation holds its slot when its launch never shows in the transcript (a crashed or denied call)."
 value = 30000
 
 [metric.spawn_reservations]
-doc = "Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, write_failed (allowed unreserved), lock_busy (the unreserved count decided)."
+doc = "Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided)."
 value = { kind = "counter", unit = "spawns", labels = ["outcome"] }
 
 [metric.spawns_denied_over_cap]
