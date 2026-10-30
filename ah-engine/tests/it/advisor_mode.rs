@@ -236,6 +236,7 @@ fn pass(session: &str, tp: &str, cmd: &str) -> i32 {
 #[test]
 fn retry_state_is_per_agent() {
     let tp = transcript("ag1", &[USER, ADVISOR, WORK]);
+    sub_transcript("ag1", "sub-1", &[USER, ADVISOR, WORK]); // phase 3: a subagent is judged by its own transcript
     let sub = |event: &str, name: &str, input: Value| {
         let mut p = tool("ag1", &tp, event, name, input);
         p["agent_id"] = json!("sub-1");
@@ -311,4 +312,520 @@ fn monitoring_counts_consult_after_failure() {
     assert_eq!(edit("mon2", &tp, "/r/a.rs", &[]), 0, "no double count");
     let s = stats("mon2");
     assert_eq!((s["armed"].as_u64(), s["consulted"].as_u64(), s["consults"].as_u64()), (Some(1), Some(1), Some(2)), "{s}");
+}
+
+// ---- Phase 3 (GH #404): enforcement when the main model is not a flagship ----
+
+const OWNER: &str = r#"{"type":"user","timestamp":"2026-10-30T10:00:00.000Z","message":{"role":"user","content":"please fix the crash"}}"#;
+const OWNER2: &str = r#"{"type":"user","timestamp":"2026-10-30T11:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"next task"}]}}"#;
+const NOTIFY: &str = r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification> agent done"}}"#;
+const META: &str = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"Stop hook feedback: x"}}"#;
+const SONNET: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"dispatching"}]}}"#;
+const OPUS: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"dispatching"}]}}"#;
+const SYNTH: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"x"}]}}"#;
+const ADV_CALL: &str = r#"{"type":"assistant","timestamp":"2026-10-30T10:00:20.000Z","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}"#;
+const ADV_RESULT: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"advisor_result","text":"ok"}}]}}"#;
+const SAY: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Plan set. Let me consult the advisor before dispatching."}]}}"#;
+
+/// `run` that also returns stdout (a nudge exits 0 with an additionalContext payload).
+fn run_out(check: &str, extra: &[(&str, &str)], p: &Value) -> (i32, String) {
+    let d = dir();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["check", check])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", d.join("home"))
+        .env("AH_ENGINE_DIR", d.join("state"))
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .current_dir(&d)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    c.envs(extra.iter().copied());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(p.to_string().as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+/// A subagent's own transcript where Claude Code keeps it: `<dir>/<session file stem>/subagents/agent-<id>.jsonl`.
+fn sub_transcript(stem: &str, agent: &str, lines: &[&str]) {
+    let d = dir().join(stem).join("subagents");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(format!("agent-{agent}.jsonl")), lines.join("\n") + "\n").unwrap();
+}
+
+fn dispatch(session: &str, tp: &str, desc: &str, extra: &[(&str, &str)]) -> (i32, String) {
+    let input = json!({"description": desc, "prompt": "do the work", "subagent_type": "general-purpose"});
+    let p = json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+    run_out("advisor-guard", extra, &p)
+}
+
+fn stop(session: &str, tp: &str, extra: &[(&str, &str)], active: bool) -> i32 {
+    let p = json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "Stop", "stop_hook_active": active, "transcript_path": tp});
+    run("advisor-guard", extra, &p)
+}
+
+const NUDGE: &str = "Call the advisor tool now, then dispatch";
+
+#[test]
+fn thinking_nudge_then_one_capped_block_per_task() {
+    let tp = transcript("th1", &[ADVISOR, OWNER, SONNET]);
+    let (c, out) = dispatch("th1", &tp, "Fix the parser bug", &[]);
+    assert_eq!(c, 0, "first thinking dispatch: a nudge, not a block");
+    assert!(out.contains(NUDGE) && out.contains("additionalContext"), "nudge names the exact action: {out}");
+    assert_eq!(dispatch("th1", &tp, "Investigate the crash", &[]).0, 2, "second dispatch of the same task: one block");
+    let (c, out) = dispatch("th1", &tp, "Design the cache", &[]);
+    assert_eq!((c, out.is_empty()), (0, true), "the task's one block is spent: passes silently, never a loop");
+    append(&tp, OWNER2);
+    assert!(dispatch("th1", &tp, "Root-cause the leak", &[]).1.contains(NUDGE), "a new owner message is a new task");
+    let s = stats("th1");
+    assert_eq!((s["dispatch"].as_u64(), s["nudge"].as_u64(), s["blocked"].as_u64(), s["block_capped"].as_u64()), (Some(4), Some(2), Some(1), Some(1)), "{s}");
+}
+
+#[test]
+fn thinking_silent_for_flagship_unknown_model_routine_work_or_switch_off() {
+    let tp = transcript("th2", &[ADVISOR, OWNER, OPUS]);
+    assert_eq!(dispatch("th2", &tp, "Fix the parser bug", &[]), (0, String::new()), "flagship main");
+    assert_eq!(dispatch("th2", &tp, "Fix the parser bug", &[]), (0, String::new()), "flagship main, again");
+    let adv_synth = ADVISOR.replace("claude-sonnet-5-5", "<synthetic>");
+    let tp = transcript("th3", &[&adv_synth, OWNER, SYNTH]);
+    assert_eq!(dispatch("th3", &tp, "Fix the parser bug", &[]), (0, String::new()), "no known model: silent");
+    let tp = transcript("th4", &[ADVISOR, OWNER, SONNET]);
+    assert_eq!(dispatch("th4", &tp, "Write the release notes", &[]), (0, String::new()), "routine work");
+    assert_eq!(dispatch("th4", &tp, "Fix the parser bug", &[("ANTIHALL_ADVISOR_THINKING", "0")]), (0, String::new()), "switch off");
+    let tp = transcript("th5", &[OWNER, SONNET]);
+    assert_eq!(dispatch("th5", &tp, "Fix the parser bug", &[]), (0, String::new()), "no advisor tool in the session");
+}
+
+#[test]
+fn thinking_silent_after_a_consult_since_the_owner_message() {
+    let tp = transcript("th6", &[OWNER, SONNET, ADV_CALL, ADV_RESULT, NOTIFY, META]);
+    assert_eq!(dispatch("th6", &tp, "Fix the parser bug", &[]), (0, String::new()), "consulted; notifications and harness text are not the owner");
+    let tp = transcript("th7", &[OWNER, SONNET, ADV_RESULT]);
+    assert_eq!(dispatch("th7", &tp, "Fix the parser bug", &[]), (0, String::new()), "an advisor result block alone is a consult");
+    assert_eq!(stats("th6")["consulted_before"], 1);
+}
+
+#[test]
+fn thinking_consult_older_than_the_owner_message_still_requires_one() {
+    let tp = transcript("th8", &[ADV_CALL, ADV_RESULT, OWNER, SONNET]);
+    assert!(dispatch("th8", &tp, "Investigate the flaky test", &[]).1.contains(NUDGE), "the consult predates the owner's message");
+}
+
+#[test]
+fn subagent_does_not_inherit_the_main_transcript_consult() {
+    let tp = transcript("sa1", &[ADVISOR, OWNER, SONNET, ADV_CALL]);
+    sub_transcript("sa1", "a7", &[ADVISOR, OWNER, SONNET]);
+    let sub = |agent: &str| {
+        let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+        let p =
+            json!({"session_id": "sa1", "agent_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+        run_out("advisor-guard", &[], &p)
+    };
+    assert_eq!(dispatch("sa1", &tp, "Fix the parser bug", &[]), (0, String::new()), "the main thread consulted");
+    assert!(sub("a7").1.contains(NUDGE), "the subagent's own transcript has no consult: nudged");
+    assert_eq!(sub("a-none"), (0, String::new()), "a subagent with no own transcript stays silent (never judged by the main one)");
+}
+
+#[test]
+fn advisor_seen_survives_ten_megabytes_without_a_call() {
+    let tp = transcript("big1", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("big1", &tp, "Fix the parser bug", &[]).1.contains(NUDGE), "advisor seen in the window");
+    let filler = format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","model":"claude-sonnet-5-5","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+        "x".repeat(1000)
+    );
+    let block = vec![filler.as_str(); 2 * 1024].join("\n");
+    for _ in 0..5 {
+        append(&tp, &block); // read by a Stop after each 2 MB: under the window, so nothing is jumped
+        assert_eq!(stop("big1", &tp, &[], false), 0);
+    }
+    append(&tp, OWNER2);
+    append(&tp, SONNET);
+    assert!(std::fs::metadata(&tp).unwrap().len() > 10 * 1024 * 1024);
+    assert!(dispatch("big1", &tp, "Investigate the crash", &[]).1.contains(NUDGE), "the advisor call is 10 MB back, out of the window: still known from state");
+}
+
+#[test]
+fn hook_errors_allow() {
+    let d = dir();
+    let garbage = d.join("garbage.jsonl");
+    std::fs::write(&garbage, "{not json\n\u{0}\u{1}\n").unwrap();
+    for tp in
+        [garbage.to_string_lossy().to_string(), d.join("missing.jsonl").to_string_lossy().to_string(), "relative.jsonl".into(), d.to_string_lossy().to_string()]
+    {
+        assert_eq!(dispatch("err1", &tp, "Fix the parser bug", &[]).0, 0, "unreadable transcript {tp}: allow");
+        assert_eq!(stop("err1", &tp, &[], false), 0, "unreadable transcript {tp} at Stop: allow");
+    }
+    assert_eq!(run("advisor-guard", &[], &json!(["not", "an", "object"])), 0, "malformed payload: allow");
+}
+
+#[test]
+fn say_do_blocks_one_stop_per_turn() {
+    let tp = transcript("sd1", &[ADVISOR, OWNER, SONNET, SAY]);
+    assert_eq!(stop("sd1", &tp, &[], true), 0, "a Stop continuation is never blocked");
+    assert_eq!(stop("sd1", &tp, &[], false), 2, "announced an advisor call that did not follow");
+    assert_eq!(stop("sd1", &tp, &[], false), 0, "one block per turn");
+    append(&tp, OWNER2);
+    append(&tp, SAY);
+    append(&tp, ADV_CALL);
+    assert_eq!(stop("sd1", &tp, &[], false), 0, "said and did");
+    append(&tp, OWNER);
+    append(&tp, SAY);
+    assert_eq!(stop("sd1", &tp, &[("ANTIHALL_ADVISOR_SAY_DO", "0")], false), 0, "switch off");
+    let say_opus = SAY.replace("claude-sonnet-5-5", "claude-opus-5-5");
+    let tp2 = transcript("sd2", &[ADVISOR, OWNER, OPUS, &say_opus]);
+    assert_eq!(stop("sd2", &tp2, &[], false), 0, "flagship main");
+    let s = stats("sd1");
+    assert_eq!((s["say_do_miss"].as_u64(), s["say_do_blocked"].as_u64()), (Some(2), Some(1)), "{s}");
+    assert_eq!(s["nudged"], 1, "the consult after the block counts as nudged: {s}");
+}
+
+#[test]
+fn second_fix_attempt_for_one_issue_needs_a_consult() {
+    let off = [("ANTIHALL_ADVISOR_THINKING", "0")];
+    let tp = transcript("fx1", &[ADVISOR, OWNER, SONNET]);
+    assert_eq!(dispatch("fx1", &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+    assert_eq!(dispatch("fx1", &tp, "Fix #404 again", &off).0, 2, "second attempt, no consult in between");
+    assert_eq!(dispatch("fx1", &tp, "Fix #404 third", &off).0, 0, "blocked once per issue");
+    assert_eq!(dispatch("fx1", &tp, "Fix #500 crash", &off).0, 0);
+    append(&tp, ADV_CALL);
+    assert_eq!(dispatch("fx1", &tp, "Fix #500 retry", &off).0, 0, "consulted between the attempts");
+    assert_eq!(dispatch("fx1", &tp, "Fix #600 x", &[("ANTIHALL_ADVISOR_THINKING", "0"), ("ANTIHALL_ADVISOR_RETRY", "0")]).0, 0);
+    assert_eq!(dispatch("fx1", &tp, "Fix #600 y", &[("ANTIHALL_ADVISOR_THINKING", "0"), ("ANTIHALL_ADVISOR_RETRY", "0")]).0, 0, "switch off");
+    assert_eq!(stats("fx1")["second_gated"], 1);
+}
+
+#[test]
+fn nudge_then_routine_work_counts_a_false_nag() {
+    let tp = transcript("fn1", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("fn1", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    assert_eq!(dispatch("fn1", &tp, "Rename the module", &[]), (0, String::new()), "routine work passes");
+    assert_eq!(stats("fn1")["false_nag"], 1);
+}
+
+#[test]
+fn two_sessions_keep_their_own_state() {
+    let a = transcript("ss-a", &[ADVISOR, OWNER, SONNET]);
+    let b = transcript("ss-b", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("ss-a", &a, "Fix the parser bug", &[]).1.contains(NUDGE));
+    assert_eq!(dispatch("ss-a", &a, "Fix the parser bug", &[]).0, 2);
+    assert!(dispatch("ss-b", &b, "Fix the parser bug", &[]).1.contains(NUDGE), "session b starts at its own first nudge");
+}
+
+#[test]
+fn phase3_rows_are_wired_never_shed_and_fail_open() {
+    let read = |f: &str| std::fs::read_to_string(plugin().join("engine/defaults").join(f)).unwrap();
+    let dispatch = read("dispatch.toml");
+    assert!(dispatch.contains(r#"{ id = "advisor-guard:dispatch", matcher = "Agent|Task", timeout = 10, check = "advisor-guard" }"#));
+    assert!(dispatch.contains(r#"{ id = "advisor-guard:stop", matcher = "", timeout = 10, check = "advisor-guard" }"#));
+    let diag = read("diagnostics.toml");
+    let shed = diag.split("[diagnostics.shed_never]").nth(1).unwrap().split("\n[").next().unwrap();
+    assert!(shed.contains(r#""advisor-guard" = "#), "advisor-guard is never shed");
+    assert!(read("script.toml").contains(r#"advisor-guard = "open""#), "advisor-guard fails open");
+    for f in ["advisor.toml", "advisory.toml", "dispatch.toml", "diagnostics.toml"] {
+        let pristine = std::fs::read_to_string(plugin().join("engine/defaults.pristine").join(f)).unwrap();
+        assert_eq!(read(f), pristine, "{f}: defaults and defaults.pristine are byte-identical");
+    }
+}
+
+#[test]
+fn default_switches_give_one_block_per_task_across_both_dispatch_rules() {
+    let tp = transcript("one1", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("one1", &tp, "Fix #404 crash", &[]).1.contains(NUDGE), "first: nudge");
+    assert_eq!(dispatch("one1", &tp, "Fix #404 again", &[]).0, 2, "second: the one block (second attempt)");
+    assert_eq!(dispatch("one1", &tp, "Fix #404 third", &[]), (0, String::new()), "third: passes, the task's block is spent");
+}
+
+#[test]
+fn say_do_fires_in_a_session_that_never_called_the_advisor() {
+    let tp = transcript("sd3", &[ATTACH, OWNER, SONNET, SAY]);
+    assert_eq!(stop("sd3", &tp, &[], false), 2, "the advisor is in the prompt (attachment), never called, announced and not called");
+    assert_eq!(stop("sd3", &tp, &[], false), 0, "one block per turn");
+}
+
+// ---- GH #404 gaps G1-G4 and the unwritable-state fail-open ----
+
+/// The entry Claude Code writes when it puts the advisor tool into an agent's prompt (shape copied from a real transcript).
+const ATTACH: &str = r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"},"timestamp":"2026-10-30T09:59:00.000Z"}"#;
+const ATTACH_OFF: &str = r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":false,"model":"claude-opus-5-5","toolChange":"remove"}}"#;
+
+fn filler(n: usize) -> String {
+    let line = format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","model":"claude-sonnet-5-5","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+        "x".repeat(1000)
+    );
+    vec![line.as_str(); n].join("\n")
+}
+
+/// The folded transcript state (`tx`) of `session`'s state file.
+fn tx(session: &str) -> Value {
+    let f = |d: &std::path::Path| -> Option<PathBuf> {
+        let mut stack = vec![d.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).ok()?.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.file_name().is_some_and(|n| n.to_string_lossy() == format!("advisor-retry-{session}.json")) {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    };
+    let p = f(&dir()).expect("state file");
+    serde_json::from_str::<Value>(&std::fs::read_to_string(p).unwrap()).unwrap()["tx"].clone()
+}
+
+#[test]
+fn g1_attachment_alone_enforces_with_zero_prior_advisor_use() {
+    let tp = transcript("g1a", &[ATTACH, OWNER, SONNET]);
+    let (c, out) = dispatch("g1a", &tp, "Fix the parser bug", &[]);
+    assert!(c == 0 && out.contains(NUDGE), "advisor available per the harness attachment, never used: nudge ({c} {out})");
+    assert_eq!(dispatch("g1a", &tp, "Investigate the crash", &[]).0, 2, "then the one block");
+    assert_eq!(dispatch("g1a", &tp, "Design the cache", &[]), (0, String::new()), "then capped");
+    let tp = transcript("g1b", &[ATTACH, OWNER, SONNET, SAY]);
+    assert_eq!(stop("g1b", &tp, &[], false), 2, "say-do also fires on the attachment signal");
+}
+
+#[test]
+fn g1_attachment_off_or_absent_on_a_fully_read_transcript_is_silent_even_with_settings() {
+    let cwd = dir().join("g1c-cwd");
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    std::fs::write(cwd.join(".claude/settings.json"), r#"{"advisorModel":"opus"}"#).unwrap();
+    let at = |tp: &str, s: &str| {
+        let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+        let p = json!({"session_id": s, "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+        run_out("advisor-guard", &[], &p)
+    };
+    let tp = transcript("g1c", &[OWNER, SONNET]);
+    assert_eq!(at(&tp, "g1c"), (0, String::new()), "whole transcript read, no attachment: the settings prove nothing, fail open");
+    let tp = transcript("g1d", &[ATTACH, ATTACH_OFF, OWNER, SONNET]);
+    assert_eq!(at(&tp, "g1d"), (0, String::new()), "the newest attachment took the advisor out");
+}
+
+#[test]
+fn g1_settings_fallback_when_the_head_was_never_read() {
+    let cwd = dir().join("g1e-cwd");
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    std::fs::write(cwd.join(".claude/settings.local.json"), r#"{"advisorModel":"opus"}"#).unwrap();
+    let tp = transcript("g1e", &[&filler(6 * 1024), OWNER, SONNET]); // over the 4 MB window: first contact reads the tail only
+    let at = |cwd: &std::path::Path| {
+        let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+        let p = json!({"session_id": "g1e", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+        run_out("advisor-guard", &[], &p)
+    };
+    assert!(at(&cwd).1.contains(NUDGE), "advisor configured in the project settings, head unread: enforced");
+    let tp2 = transcript("g1f", &[&filler(6 * 1024), OWNER, SONNET]);
+    let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+    let p = json!({"session_id": "g1f", "cwd": dir().join("g1f-none"), "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp2});
+    assert_eq!(run_out("advisor-guard", &[], &p), (0, String::new()), "no settings either: unknown, fail open");
+}
+
+#[test]
+fn g2_review_rule_remembers_the_advisor_past_the_window() {
+    let tp = transcript("g2a", &[USER, ADVISOR, WORK]);
+    assert_eq!(run("model-routing", &[], &spawn("g2a", &tp, "Review the diff", Some("sonnet"), json!({}))), 2);
+    for _ in 0..5 {
+        append(&tp, &filler(2 * 1024)); // 2 MB at a time, each read by a Stop on the same agent state: no gap is jumped
+        assert_eq!(stop("g2a", &tp, &[], false), 0);
+    }
+    assert!(std::fs::metadata(&tp).unwrap().len() > 10 * 1024 * 1024);
+    assert_eq!(run("model-routing", &[], &spawn("g2a", &tp, "Critique the config", Some("sonnet"), json!({}))), 2, "advisor 10 MB back: still known");
+}
+
+#[test]
+fn g3_incremental_read_is_bounded_per_call_and_per_line() {
+    let tp = transcript("g3a", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("g3a", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    append(&tp, &filler(48 * 1024)); // ~48 MB appended: one read takes the last window only
+    let huge = format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "y".repeat(5 << 20));
+    append(&tp, &huge); // a 5 MB line, over advisor.line_max_bytes: never buffered
+    append(&tp, SONNET);
+    let size = std::fs::metadata(&tp).unwrap().len();
+    let t0 = std::time::Instant::now();
+    assert_eq!(dispatch("g3a", &tp, "Investigate the crash", &[]), (0, String::new()), "a jump past unread bytes: availability unknown, fail open");
+    let first = t0.elapsed();
+    let s = tx("g3a");
+    assert_eq!(s["pos"].as_u64(), Some(size), "read to the end: {s}");
+    assert!(s["read"].as_u64().unwrap() <= 4 * 1024 * 1024, "one call reads at most the window: {s}");
+    assert!(s["peak"].as_u64().unwrap() <= 4 * 1024 * 1024, "the 5 MB line was never buffered whole: {s}");
+    append(&tp, ATTACH); // the window shows the advisor again
+    append(&tp, OWNER2);
+    append(&tp, SONNET);
+    let t1 = std::time::Instant::now();
+    assert!(dispatch("g3a", &tp, "Root-cause the leak", &[]).1.contains(NUDGE));
+    let tail = t1.elapsed();
+    let s = tx("g3a");
+    assert!(s["read"].as_u64().unwrap() < 4096, "only the new tail is read: {s}");
+    eprintln!("g3 latency: after a 53 MB jump {first:?}, incremental tail {tail:?}");
+    assert!(tail < std::time::Duration::from_secs(5), "generous CI bound: {tail:?}");
+    std::fs::write(&tp, [OWNER, SONNET, ATTACH].join("\n") + "\n").unwrap(); // rewritten shorter: start afresh
+    assert!(dispatch("g3a", &tp, "Fix the parser bug", &[]).1.contains(NUDGE), "a shrunk file is read from the start");
+}
+
+#[test]
+fn g4_subagent_reads_only_its_own_transcript() {
+    let tp = transcript("g4a", &[ATTACH, OWNER, SONNET, ADV_CALL]);
+    let own = dir().join("g4a").join("subagents");
+    std::fs::create_dir_all(&own).unwrap();
+    let head = |id: &str| format!(r#"{{"type":"user","agentId":"{id}","isSidechain":true,"message":{{"role":"user","content":"fix it"}}}}"#);
+    std::fs::write(own.join("agent-b1.jsonl"), [head("b1").as_str(), ATTACH, SONNET].join("\n") + "\n").unwrap();
+    std::fs::write(own.join("agent-b2.jsonl"), [head("zz").as_str(), ATTACH, SONNET].join("\n") + "\n").unwrap();
+    let sub = |agent: &str, path: &str| {
+        let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+        let p = json!({"session_id": "g4a", "agent_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": path});
+        run_out("advisor-guard", &[], &p)
+    };
+    assert!(sub("b1", &tp).1.contains(NUDGE), "main transcript_path: the subagent's own file found by the layout");
+    assert_eq!(sub("b1", &tp).0, 2, "its own state: the second hit is the block");
+    let wf = own.join("workflows").join("wf_run1");
+    std::fs::create_dir_all(&wf).unwrap();
+    std::fs::write(wf.join("agent-w1.jsonl"), [head("w1").as_str(), ATTACH, SONNET].join("\n") + "\n").unwrap();
+    assert!(sub("w1", &tp).1.contains(NUDGE), "a workflow agent's file one level down (subagents/workflows/<run>/) is found");
+    assert_eq!(sub("b2", &tp), (0, String::new()), "its first line names another agent: silent");
+    assert_eq!(sub("b3", &tp), (0, String::new()), "no own transcript: silent, the main one's consult is never credited");
+}
+
+#[test]
+fn unwritable_state_never_blocks() {
+    let tp = transcript("uw0", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("uw0", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    let mut stack = vec![dir()];
+    let mut found = None;
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n.to_string_lossy() == "advisor-retry-uw0.json") {
+                found = Some(p);
+            }
+        }
+    }
+    let at = found.expect("state file").with_file_name("advisor-retry-uw1.json");
+    std::fs::create_dir_all(&at).unwrap(); // a directory where the state file goes: every save fails (works as root too)
+    let tp = transcript("uw1", &[ATTACH, OWNER, SONNET, SAY]);
+    for i in 0..4 {
+        assert_eq!(dispatch("uw1", &tp, "Fix the parser bug", &[]), (0, String::new()), "dispatch {i}: unpersisted cap, allow");
+        assert_eq!(stop("uw1", &tp, &[], false), 0, "stop {i}: allow");
+    }
+}
+
+#[test]
+fn rewritten_longer_transcript_at_the_same_path_is_read_afresh() {
+    let tp = transcript("rot1", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("rot1", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    let longer = [ATTACH_OFF, OWNER2, SONNET, &filler(8)].join("\n") + "\n"; // longer, and its head says the advisor is off
+    std::fs::write(&tp, &longer).unwrap();
+    assert_eq!(dispatch("rot1", &tp, "Investigate the crash", &[]), (0, String::new()), "the rewrite was detected: its head (advisor off) was read");
+    assert_eq!(tx("rot1")["pos"].as_u64(), Some(longer.len() as u64));
+}
+
+/// `run_out` with its own engine state dir (counters journal), so the counts belong to this test alone.
+fn run_in(state: &std::path::Path, check: &str, p: &Value) -> (i32, String) {
+    run_out(check, &[("AH_ENGINE_DIR", state.to_str().unwrap())], p)
+}
+
+#[test]
+fn counters_after_a_nudge_and_a_block_show_in_status_and_telemetry_summary() {
+    let state = dir().join("tel-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let tp = transcript("tel1", &[ATTACH, OWNER, SONNET]);
+    let p = |d: &str| json!({"session_id": "tel1", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"description": d, "prompt": "x"}, "transcript_path": tp});
+    assert!(run_in(&state, "advisor-guard", &p("Fix the parser bug")).1.contains(NUDGE));
+    assert_eq!(run_in(&state, "advisor-guard", &p("Investigate the crash")).0, 2);
+    let none = transcript("tel2", &[OWNER, SONNET]);
+    let q = json!({"session_id": "tel2", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"description": "Fix it", "prompt": "x"}, "transcript_path": none});
+    assert_eq!(run_in(&state, "advisor-guard", &q), (0, String::new()), "no advisor signal: silent, counted");
+    let report = |args: &[&str]| -> Value {
+        let d = dir();
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", d.join("home"))
+            .env("AH_ENGINE_DIR", &state)
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+            .output()
+            .unwrap();
+        serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stdout)))
+    };
+    for (name, v) in
+        [("status", report(&["status", "--json"])["advisory"].clone()), ("telemetry summary", report(&["telemetry", "summary", "--json"])["advisory"].clone())]
+    {
+        let t = &v["advisor_thinking"];
+        assert_eq!(
+            (t["dispatch"].as_u64(), t["nudge"].as_u64(), t["blocked"].as_u64(), t["dispatch_fix"].as_u64()),
+            (Some(2), Some(1), Some(1), Some(1)),
+            "{name}: {v}"
+        );
+        assert_eq!(v["advisor_availability"]["silent_unknown"].as_u64(), Some(1), "{name}: {v}");
+    }
+}
+
+#[test]
+fn concurrent_rules_on_one_agent_state_give_exactly_one_nudge_and_one_block() {
+    let tp = transcript("cc1", &[ATTACH, OWNER, SONNET]);
+    let hs: Vec<_> = (0..8)
+        .map(|i| {
+            let tp = tp.clone();
+            std::thread::spawn(move || {
+                if i % 2 == 0 {
+                    dispatch("cc1", &tp, &format!("Fix the parser bug {i}"), &[])
+                } else {
+                    run_out("model-routing", &[], &spawn("cc1", &tp, &format!("Write module {i}"), Some("sonnet"), json!({})))
+                }
+            })
+        })
+        .collect();
+    let outs: Vec<(i32, String)> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+    let guard: Vec<&(i32, String)> = outs.iter().step_by(2).collect();
+    assert_eq!(guard.iter().filter(|o| o.0 == 0 && o.1.contains(NUDGE)).count(), 1, "one nudge: {outs:?}");
+    assert_eq!(guard.iter().filter(|o| o.0 == 2).count(), 1, "one block, never turned back into a nudge: {outs:?}");
+    let s = stats("cc1");
+    assert_eq!((s["dispatch"].as_u64(), s["nudge"].as_u64(), s["blocked"].as_u64(), s["block_capped"].as_u64()), (Some(4), Some(1), Some(1), Some(2)), "{s}");
+}
+
+// ---- Codex re-review P2s ----
+
+const QUOTED: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"The README says: \"I will ask the advisor before each fix.\""}]}}"#;
+
+#[test]
+fn p2_an_announcement_alone_is_not_availability() {
+    let tp = transcript("p21", &[OWNER, SONNET, QUOTED]);
+    assert_eq!(dispatch("p21", &tp, "Fix the parser bug", &[]), (0, String::new()), "quoted prose, no attachment: silent");
+    assert_eq!(stop("p21", &tp, &[], false), 0, "say-do silent too");
+}
+
+#[test]
+fn p2_longer_rewrite_keeping_the_head_is_read_afresh() {
+    let head = format!(r#"{{"type":"user","message":{{"role":"user","content":"{}"}}}}"#, "h".repeat(400)); // same first 256 bytes
+    let tp = transcript("p22", &[&head, ATTACH, OWNER, SONNET]);
+    assert!(dispatch("p22", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    let f = filler(5);
+    std::fs::write(&tp, [head.as_str(), ATTACH_OFF, OWNER, SONNET, &f].join("\n") + "\n").unwrap();
+    assert_eq!(dispatch("p22", &tp, "Investigate the crash", &[]), (0, String::new()), "the off attachment before the old offset was read");
+}
+
+#[test]
+fn p2_a_jumped_gap_drops_cached_availability() {
+    let tp = transcript("p23", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("p23", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    append(&tp, ATTACH_OFF);
+    append(&tp, &filler(5 * 1024)); // 5 MB: past the 4 MB window, the off attachment is jumped
+    append(&tp, SONNET);
+    assert_eq!(dispatch("p23", &tp, "Investigate the crash", &[]), (0, String::new()), "unknown after the gap: silent");
+}
+
+#[test]
+fn p2_the_task_block_cap_spans_issue_keys() {
+    let tp = transcript("p24", &[ATTACH, OWNER, SONNET]);
+    let got: Vec<i32> = ["Fix #1 a", "Fix #1 b", "Fix #2 a", "Fix #2 b"].iter().map(|d| dispatch("p24", &tp, d, &[]).0).collect();
+    assert_eq!(got, vec![0, 2, 0, 0], "nudge, the one block, then passes for every key");
+    assert_eq!(stats("p24")["block_capped"], 2);
 }
