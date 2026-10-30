@@ -3803,6 +3803,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.msg_on` | `AFK on ({how}). Agents work silently and log milestones to their progress fil...` |  |  | Reply to the owner (typed command or CLI) when AFK starts. Placeholders: {how}. |
 | `afk.msg_pct` | `Progress: {pct}% ({done}/{total} checklist bullets since the AFK marker are [x])` |  |  | The progress line of a digest. Placeholders: {pct}, {done}, {total}. |
 | `afk.msg_pct_na` | `Progress: n/a (no [ ] / [x] checklist bullets since the AFK marker)` |  |  | The progress line when the digest has no checklist bullets. |
+| `afk.msg_plan_approved` | `anti-hall AFK: plan auto-approved (advisor consulted after the last plan writ...` |  |  | Reason of the AFK plan auto-approval. |
 | `afk.msg_status_off` | `AFK off` |  |  | `afk status` while off. |
 | `afk.msg_status_on` | `AFK on ({how}, since {since})` |  |  | `afk status` while on. Placeholders: {how}, {since}. |
 | `afk.msg_usage` | `usage: ah-engine afk on\|off\|status \| ah-engine back` |  |  | Usage line of the `afk` verb. |
@@ -3810,6 +3811,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.needs_owner_re` | `NEEDS OWNER` |  |  | A digest bullet that parks an item for the owner: listed first by back / progress (regular expression). |
 | `afk.non_owner_prompt_res` | `^\s*<task-notification>, ^\s*<system-reminder>, ^\s*<teammate-message` |  |  | Prompts that are not the owner typing (harness notifications, injected reminders): they neither record presence nor end an idle-entered AFK. Regular expressions, case-insensitive. |
 | `afk.open_re` | `^\s*[-*] \[ \] ` |  |  | An open checklist bullet (counts toward the percentage as not done). |
+| `afk.plan_allow` | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"all...` |  |  | The stdout line of a PreToolUse that approves the plan-approval tool: allow with {reason} (JSON-quoted) and updatedInput {input} (the tool input echoed unchanged as JSON; allow alone is not enough for this tool). |
+| `afk.plan_reason_afk_off` | `afk_off` |  |  | afk_plan_autoapprove_denied reason: AFK is not on. |
+| `afk.plan_reason_no_input` | `no_input` |  |  | afk_plan_autoapprove_denied reason: no session id or no tool input object to echo as updatedInput. |
+| `afk.plan_reason_no_marker` | `no_marker` |  |  | afk_plan_autoapprove_denied reason: this session has no recorded advisor consult. |
+| `afk.plan_reason_off` | `off` |  |  | afk_plan_autoapprove_denied reason: the afk.planAutoApprove setting is off (or the AFK guard is skipped). |
+| `afk.plan_reason_stale` | `stale` |  |  | afk_plan_autoapprove_denied reason: the newest consult is not newer than the last plan-file write, plan-approval attempt or owner prompt (ties count as stale). |
+| `afk.plan_reason_state_error` | `state_error` |  |  | afk_plan_autoapprove_denied reason: the attempt could not be recorded in the state file (the consult would be reusable), so nothing is approved. |
+| `afk.plan_reason_subagent` | `subagent` |  |  | afk_plan_autoapprove_denied reason: the call came from a subagent (only the main thread's own consult can approve its own plan). |
+| `afk.plan_state_ns` | `afk-plan` |  |  | State namespace of the per-session plan auto-approve record (<state dir>/<ns>-<session>.json): the wall-clock ms of the main thread's last advisor consult (advisorAt), plan-file write (planAt), plan-approval attempt (attemptAt) and owner prompt (promptAt). |
+| `afk.plan_tools` | `ExitPlanMode` |  |  | Harness tools that ask the owner to approve a plan: auto-approved while AFK after a fresh advisor consult (afk.planAutoApprove). The dispatch entry afk-mode:pre must match them. Never list them in afk.question_tools (those are denied). |
 | `afk.pre_deny` | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"den...` |  |  | The stdout line of a PreToolUse that denies the tool call with {reason} (JSON-quoted). |
 | `afk.presence_file` | `afk-presence.json` |  |  | The machine-wide owner-presence file (time of the last owner prompt), under the per-user state directory. |
 | `afk.question_max_holds` | `2` |  |  | Most Stop holds of a turn ending on a plain-text question, per session per AFK period (then it is let through, counted capped). |
@@ -3829,6 +3840,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.set_idle_minutes` | `10 entries` |  |  | The afk.idleMinutes setting: minutes without an owner prompt (any session on this machine) after which AFK starts by itself. |
 | `afk.set_measure` | `8 entries` |  |  | The afk.measure setting: count each main-session turn's output tokens from the transcript usage fields, split AFK vs present (afk_output_tokens{mode}). |
 | `afk.set_no_questions` | `8 entries` |  |  | The afk.noQuestions setting: while AFK, deny the harness question tool (afk.question_tools) every time with the question ladder, and hold (at most afk.question_max_holds times) a turn that ends on a plain-text question. Off = questions pass as usual. |
+| `afk.set_plan_autoapprove` | `8 entries` |  |  | The afk.planAutoApprove setting: while AFK only, approve the plan-approval tool (afk.plan_tools) from its PreToolUse hook (allow + updatedInput, the documented contract) when this session's main thread consulted the advisor after its last plan-file write, its last plan-approval attempt and its last owner prompt. Anything else (no or stale consult, AFK off, a subagent, a state error, a hook error) leaves the normal approval prompt. Off = never auto-approved. |
 | `afk.set_prompt_commands` | `8 entries` |  |  | The afk.promptCommands setting: a prompt that is exactly one of afk.words_on / afk.words_off / afk.words_progress is answered by the hook (the prompt is not sent to the model). |
 | `afk.stop_block` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a Stop that holds the reply with {reason} (JSON-quoted). |
 | `afk.summary` | `UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, User...` |  |  | One-line description of the afk-mode check in the generated reference. |
@@ -14302,6 +14314,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_lock_lost` | counter | events |  | Flag writes of a hook that did not publish: the flag lock was taken over before the fenced commit (afk.fence_infix), or the write failed. Nothing of that hook landed. |
 | `afk_output_tokens` | counter | tokens | mode | Output tokens of main-session turns (transcript usage, deduplicated by message id), by mode (afk, present). Divide by afk_turns_measured for the per-turn average. |
 | `afk_overlong_turns` | counter | events | action | Overlong AFK replies, by action (nudge, block, capped). |
+| `afk_plan_autoapprove_denied` | counter | events | reason | Plan-approval tool calls left to the normal approval prompt, by reason (afk.plan_reason_*: off, afk_off, subagent, no_input, no_marker, stale, state_error). |
+| `afk_plan_autoapproved` | counter | events |  | Plan-approval tool calls auto-approved while AFK (afk.planAutoApprove) after a fresh advisor consult of the same session's main thread. |
 | `afk_question_denied` | counter | events | tool | AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap). |
 | `afk_question_parked` | counter | events | action | AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook). |
 | `afk_turns` | counter | turns |  | Main-session turns that ended (Stop) while AFK. |

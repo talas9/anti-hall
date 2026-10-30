@@ -3033,7 +3033,8 @@ mod afk_mode {
 
     fn afk_on(h: &str) {
         std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
-        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": true}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": true}).to_string())
+            .unwrap();
     }
 
     /// One step of the plan flow in session `sid`, a few ms after the previous one (the markers compare wall-clock ms strictly).
@@ -3051,7 +3052,12 @@ mod afk_mode {
         step(h, sid, "PostToolUse", json!({"tool_name": "advisor", "tool_input": {}}))
     }
     fn exit_plan(h: &str, sid: &str) -> String {
-        step(h, sid, "PreToolUse", json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. do", "planFilePath": format!("{h}/.claude/plans/p.md")}}))
+        step(
+            h,
+            sid,
+            "PreToolUse",
+            json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. do", "planFilePath": format!("{h}/.claude/plans/p.md")}}),
+        )
     }
     fn approved(o: &str) -> bool {
         let Ok(v) = serde_json::from_str::<Value>(o.trim()) else { return false };
