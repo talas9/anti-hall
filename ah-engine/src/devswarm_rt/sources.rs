@@ -455,13 +455,13 @@ impl FsProbe {
     pub fn new(home: &Path, now: i64) -> FsProbe {
         FsProbe { home: home.to_path_buf(), now, cache: None, plans: OnceLock::new(), descs: OnceLock::new(), provenance: None }
     }
-    /// Answer the file reads of this probe from `cache` where the files are unchanged (the reconcile's own probe; an action's
-    /// re-check reads the sources again and uses none).
     /// Classify wake lines with the `devswarm.noiseProvenance` of the request this probe serves ([`union::provenance_of`], GH #429).
     pub fn with_provenance(mut self, provenance: bool) -> FsProbe {
         self.provenance = Some(provenance);
         self
     }
+    /// Answer the file reads of this probe from `cache` where the files are unchanged (the reconcile's own probe; an action's
+    /// re-check reads the sources again and uses none).
     pub fn with_cache(mut self, cache: Arc<ReadCache>) -> FsProbe {
         self.cache = Some(cache);
         self
