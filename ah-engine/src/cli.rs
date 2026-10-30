@@ -86,6 +86,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("coordinator-work-baseline", crate::ops::cmd_coordinator_work_baseline),
         ("statusline", crate::ops::cmd_statusline),
         ("phase", crate::ops::cmd_phase),
+        ("afk", crate::ops::afk::cmd_afk),
+        ("back", crate::ops::afk::cmd_back),
         ("shadow-run", crate::nodeback::cmd_shadow_run),
         ("shadow-compare", crate::nodeback::report::run),
         ("fallback", crate::nodeback::fallback::run),

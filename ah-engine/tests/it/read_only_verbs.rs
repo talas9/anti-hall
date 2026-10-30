@@ -38,6 +38,7 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("describe", s(&[])),
         ("query", s(&["sources"])),
         ("status", s(&[])),
+        ("afk", s(&["status"])),
         ("status", s(&["--memory"])),
         ("metrics", s(&[])),
         ("impact", s(&[])),

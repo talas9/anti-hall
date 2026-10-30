@@ -43,10 +43,17 @@ var ah = {
   },
   cfgNum: function (key) { return ahHost.cfgNum(key); },
   unable: function (site, kind) { ahUnableCount(site, kind); },
+  // Add `by` (default 1) to the registered counter `name` ([metric.<name>] in a defaults file); `labels` = {label: value} or
+  // [label, value, ...]. A lost count never changes a decision.
+  metric: function (name, labels, by) {
+    try {
+      var o = labels || {};
+      if (Array.isArray(o)) { o = {}; for (var i = 0; i + 1 < labels.length; i += 2) o[String(labels[i])] = String(labels[i + 1]); }
+      ahHost.metric(name, JSON.stringify(o), by === undefined ? 1 : by);
+    } catch (e) { /* telemetry only */ }
+  },
   // One advisory event of `kind` (flagged, asked, confirmed, injected, suppressed, jev_error) under `metric`; a lost count never changes a decision.
   advisory: function (kind, metric) { try { ahHost.advisory(kind, metric); } catch (e) { /* telemetry only */ } },
-  // One count on the registered counter `name` ([metric.<name>] in a defaults file); `labels` = [label, value, ...]. A lost count never changes a decision.
-  metric: function (name, labels) { try { ahHost.metric(name, labels || []); } catch (e) { /* telemetry only */ } },
   // The hook's own environment (the request's, never the daemon's); null when a variable is unset.
   env: {
     get: function (name) { return ahNull(ahHost.env(name)); },
@@ -66,6 +73,12 @@ var ah = {
     // `waitMs` (optional) replaces the group's wait (never past script.lock_wait_max_ms). Up to script.lock_max_held at once; take nested ones in a fixed order.
     lock: function (rel, group, waitMs) { return ahNull(ahHost.lockAcquire(rel, group, waitMs === undefined ? null : waitMs)); },
     unlock: function (h) { return ahHost.lockRelease(h); },
+    // The fenced commit of a file guarded by the lock `h` taken in this call: `fenceSweep` (right after taking the lock, before
+    // reading `rel`) removes earlier holders' staged copies `<rel><infix>*`; `writeFenced` stages, re-checks that `h` is still
+    // ours, then renames; false when the lock was taken over (nothing of ours lands over the new holder's write).
+    fenceSweep: function (rel, infix) { return ahHost.fenceSweep(rel, infix); },
+    // `guard` (optional): [[rel, key, max], ...]; the commit is discarded when a watched number is above its bound at the rename.
+    writeFenced: function (rel, t, h, infix, guard) { return ahHost.writeFenced(rel, ahWf(t), h, infix, guard === undefined || guard === null ? null : JSON.stringify(guard)); },
     // The retention sweep of the state files of one writer prefix (stale ones go; `keep` stays).
     // Scoped read of a file under the state directory (null when absent, unreadable or over the cap).
     readText: function (rel) { return ahNull(ahHost.stateRead(rel)); },

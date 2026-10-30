@@ -69,6 +69,8 @@ telemetry/mod.rs | STAGE | events staged by one request, taken or dropped at its
 dispatch/node.rs | Capture.buf | cut at mem.proc_output_max_bytes (mem.proc_output_marker appended) | output of the Node fallback child
 dsact/runner.rs | Drained.buf | cut at the cap passed to drain() (devswarm_act config), the rest is read and dropped | output of a DevSwarm action child
 daemon.rs | Shared.test_alloc | only reachable through the test-hook verb `alloc` (AH_ENGINE_TEST_HOOKS=1, never set in production); each call pushes one caller-sized buffer and the daemon process is short-lived in tests | test-only allocation probe for the memory watchdog tests
+checks/guardkit/nodelock.rs | FENCE_GATE | #[cfg(test)] only, absent from every non-test build; each interleaving test in script/tests.rs pushes one (target, barrier) for its own temp target and retains it out before returning, a panicking test may leave its entry, so it holds at most one entry per interleaving test case in the binary | test-only barrier gate inside fenced_write_if (GH #426)
+checks/guardkit/nodelock.rs | FENCE_GATE_AT | #[cfg(test)] only, absent from every non-test build; each interleaving test pushes at most one (target, phase, barrier) for its own temp target and retains it out before returning, a panicking test may leave its entry, so it holds at most one entry per interleaving test case in the binary | test-only barrier gates before/after staging in fenced_write_if (GH #426)
 
 # ---- added when the live19 train merged the dswire redesign, the Jev breaker and the request deadline work ----------------------
 deadline.rs | EVENT | one event name per thread, cleared when the request ends | the hook event of the request in progress
