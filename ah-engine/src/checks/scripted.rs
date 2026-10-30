@@ -271,6 +271,9 @@ pub static LANE_TEST_GUARD: Scripted = Scripted::new("lane-test-guard", "lane_te
 /// `tasklist-hygiene` (PostToolUse and PreToolUse on TaskCreate and TaskUpdate; engine-only, Claude only): keeps the session task list small.
 pub static TASKLIST_HYGIENE: Scripted = Scripted::new("tasklist-hygiene", "tasklist_hygiene.summary");
 
+/// `afk-mode` (UserPromptSubmit, PostToolUse, Stop; Codex SessionStart, UserPromptSubmit, PostToolUse; engine-only; GH #425): AFK mode.
+pub static AFK_MODE: Scripted = Scripted::new("afk-mode", "afk.summary");
+
 /// `switch-notice` (run by the dispatcher on UserPromptSubmit and PreToolUse, not a hook row; engine-only): the up-front line about the session-wide switches.
 pub static SWITCH_NOTICE: Scripted = Scripted::new("switch-notice", "upfront.summary");
 

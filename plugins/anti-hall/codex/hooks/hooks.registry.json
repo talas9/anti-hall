@@ -37,6 +37,12 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
             "timeout": 10,
             "id": "agent-reminders"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
+            "timeout": 10,
+            "id": "afk-mode:post"
           }
         ]
       }
@@ -322,6 +328,12 @@
             "command": "[ -f \"${PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex",
             "timeout": 10,
             "id": "engine-role-note"
+          },
+          {
+            "type": "command",
+            "command": "[ -f \"${PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "afk-mode:start"
           }
         ]
       }
@@ -394,6 +406,12 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 10,
             "id": "sibling-sweep"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 10,
+            "id": "afk-mode:stop"
           }
         ]
       }
@@ -490,6 +508,12 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "switch-notice"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "afk-mode"
           }
         ]
       }

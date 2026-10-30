@@ -110,7 +110,7 @@ pub fn bump(name: &str, labels: &[(&str, &str)]) {
     bump_by(name, labels, 1);
 }
 
-/// Add `by` to the counter `name` from code that has no `Metrics` at hand (see [`bump`]); `0` adds nothing.
+/// Add `by` to the counter `name` from code that has no `Metrics` at hand ([`bump`] with a count; the same bounds); `0` adds nothing.
 pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
     if by == 0 || !is_registered(name) {
         return;

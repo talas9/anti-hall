@@ -36,6 +36,7 @@ files = [
     "session.toml",
     "response_guards.toml",
     "claim_evidence.toml",
+    "afk.toml",
     "agent_controls.toml",
     "spawn_guards.toml",
     "session_gates.toml",
