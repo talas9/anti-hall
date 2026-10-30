@@ -147,3 +147,147 @@ value = "Hard decisions (review, plan, retry after a failure) belong to the advi
 [advisor.unknown_model_label]
 doc = "Label shown in the review block when the spawn names no model. Placeholder: {model} (the resolved session tier)."
 value = "the inherited {model} session tier"
+
+# Advisor mode phase 3 (GH #404): enforcement when the main session runs a non-flagship model. Three more rules in advisor-guard.js:
+#   thinking:  PreToolUse Agent/Task. Thinking work (fix, design, investigate, root cause, plan, review; advisor.thinking_types)
+#              dispatched by a non-flagship main with no advisor result since the owner's last message: the first dispatch of the
+#              task gets an advisory nudge, the second ONE block, every later one passes (counted block_capped). Never a loop.
+#   say-do:    Stop. The turn's text says it will ask the advisor and no advisor call follows in that turn: ONE Stop block per turn.
+#   second:    PreToolUse Agent/Task (switch guards.advisorRetry, the retry state). A second fix dispatch for the same issue key with
+#              no advisor call since the first is blocked once (a re-dispatch is read as "the first attempt did not land").
+# The main model, the owner's last message and the advisor calls are read from the transcript (the advisor is a server tool hooks do
+# not see). What was seen is folded into the per-agent state (offsets, "advisor seen"), so the rules do not depend on the tail window.
+
+[advisor.sw_thinking]
+doc = "Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only."
+value = { section = "guards", key = "advisorThinking", type = "boolean", env = "ANTIHALL_ADVISOR_THINKING", option = "", default = true }
+
+[advisor.sw_say_do]
+doc = "Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only."
+value = { section = "guards", key = "advisorSayDo", type = "boolean", env = "ANTIHALL_ADVISOR_SAY_DO", option = "", default = true }
+
+[advisor.result_types]
+doc = "Transcript content-block types that are an advisor result (the server tool's answer carries a tool_use_id, not a name); one counts as an advisor call."
+value = ["advisor_tool_result"]
+
+[advisor.flagship_model_re]
+doc = "Regular expression (Rust syntax, case-insensitive) of a main-session model id that is a flagship: the thinking, say-do and second-attempt rules are silent for it."
+value = '(?i)opus|fable|^gpt-5(?:\.\d+)*(?:-codex)?(?:-max)?$'
+
+[advisor.known_model_re]
+doc = "Regular expression (Rust syntax) of a model id the rules recognise. The newest assistant entry whose model matches it (or the flagship pattern) is the main model; an unknown model (`<synthetic>`, empty) is skipped, and with no known model the rules stay silent."
+value = '(?i)sonnet|haiku|opus|fable|^gpt-|^o\d'
+
+[advisor.thinking_types]
+doc = "Thinking-work classes of a dispatch brief, in match order: the first whose pattern (Rust syntax) matches the description, else the head of the prompt, names the type (counter dispatch_<type>)."
+value = [
+  { type = "root_cause", re = '(?i)\broot[- ]?caus' },
+  { type = "investigate", re = '(?i)\b(?:investigat\w*|diagnos\w*|debug\w*|triage\w*|why does|why is|figure out why)\b' },
+  { type = "design", re = '(?i)\b(?:design\w*|architect\w*|trade-?offs?|approach for)\b' },
+  { type = "plan", re = '(?i)\b(?:plan|planning|roadmap)\b' },
+  { type = "review", re = '(?i)\b(?:review\w*|critique|critic)\b' },
+  { type = "fix", re = '(?i)\b(?:fix\w*|bug\w*|regression|repair\w*|hotfix|broken|failing)\b' },
+]
+
+[advisor.thinking_exempt_re]
+doc = "Regular expression (Rust syntax) of a dispatch description that is routine work even when its brief mentions a thinking word (a mechanical lane)."
+value = '(?i)\b(?:mechanical|rename|reformat|typo|regen\w*|bump (?:the )?version|changelog|status (?:check|poll)|watch(?:er)?|monitor)\b'
+
+[advisor.brief_head_bytes]
+doc = "How much of a dispatch prompt (from its start) is classified when the description names no thinking type."
+value = 2000
+min = 64
+unit = "bytes"
+
+[advisor.issue_key_re]
+doc = "Regular expression (Rust syntax) of the issue key of a fix dispatch (an issue number or a branch name) in its description, else its prompt: two fix dispatches with the same key are the same issue."
+value = '(?i)(?:#\d{1,7}\b|\b(?:issue|gh)[ -]?\d{1,7}\b|\b(?:fix|bug|hotfix|feat)/[A-Za-z0-9._/-]+)'
+
+[advisor.say_do_re]
+doc = "Regular expression (Rust syntax) of assistant text that announces an advisor call."
+value = '(?i)\b(?:i(?:''|’)?ll|i will|let me|i(?:''|’)?m going to|going to|will now|next,? i)\s+(?:\w+\s+){0,3}?(?:ask|consult|call|check with|run (?:it|this|that) by|get)\s+(?:the\s+)?advisor'
+
+[advisor.owner_skip_meta]
+doc = "A user entry with this field true is harness text (a reminder, a hook's feedback), not the owner."
+value = "isMeta"
+
+[advisor.owner_origin_kinds]
+doc = "A user entry whose `origin.kind` is set counts as the owner only when it is one of these (task notifications and peer messages are not the owner)."
+value = ["human"]
+
+[advisor.non_owner_text_re]
+doc = "Regular expression (Rust syntax) of a user text block that is harness text, not the owner (notifications, slash-command echoes, continuation banners)."
+value = '^\s*(?:<task-notification>|<command-name>|<command-message>|<local-command|<system-reminder>|Another Claude session|This session is being continued|Stop hook feedback|\[Request interrupted|Caveat:)'
+
+[advisor.agent_transcript_keys]
+doc = "Hook payload fields that may carry a subagent's own transcript path."
+value = ["agent_transcript_path"]
+
+[advisor.agent_transcript_tpl]
+doc = "Where a subagent's own transcript lies when the payload names none. Placeholders: {dir} (the main transcript's directory), {session} (its file name without .jsonl), {agent} (the agent id). A subagent is never judged by the main transcript; with no own transcript its rules stay silent."
+value = "{dir}/{session}/subagents/agent-{agent}.jsonl"
+
+[advisor.latency_buckets_s]
+doc = "Upper bounds (seconds) of the consult-latency buckets: the time from the owner's last message to the advisor call (counter latency_le_<n>s, else latency_gt_<last>s)."
+value = [10, 30, 60, 300, 900]
+
+[advisor.metric_dispatch_tpl]
+doc = "Counter name of a thinking dispatch of one type. Placeholder: {type}."
+value = "dispatch_{type}"
+
+[advisor.metric_latency_le_tpl]
+doc = "Counter name of a consult-latency bucket. Placeholder: {s}."
+value = "latency_le_{s}s"
+
+[advisor.metric_latency_gt_tpl]
+doc = "Counter name of a consult latency past the last bucket. Placeholder: {s}."
+value = "latency_gt_{s}s"
+
+[advisor.tasks_max]
+doc = "Most tasks (owner messages) and issue keys one agent's state keeps (the oldest go first)."
+value = 32
+min = 4
+
+[advisor.kind_thinking]
+doc = "Advisory kind (counters) of the thinking rule: dispatch, dispatch_<type>, consulted_before, nudge, blocked, block_capped, false_nag, and the derived consult_rate."
+value = "advisor_thinking"
+
+[advisor.kind_say_do]
+doc = "Advisory kind (counters) of the say-do rule: miss (an announced advisor call that did not follow), blocked."
+value = "advisor_say_do"
+
+[advisor.kind_second]
+doc = "Advisory kind (counters) of the second-attempt rule: gated (a second fix dispatch for one issue blocked)."
+value = "advisor_second_attempt"
+
+[advisor.msg_thinking_nudge]
+doc = "Advisory text of the thinking rule's first hit. Placeholders: {type}, {model}."
+value = "Advisor first: this {type} dispatch runs from a {model} main with no advisor call since the owner's last message. Call the advisor tool now, then dispatch."
+
+[advisor.msg_thinking_what]
+doc = "Block text of the thinking rule's second hit (once per task). Placeholders: {type}, {model}."
+value = "A second {type} dispatch from a {model} main, still with no advisor call since the owner's last message."
+
+[advisor.msg_thinking_instead]
+doc = "What to do instead for the thinking rule."
+value = "Call the advisor tool now, then dispatch. This is blocked once per task; the next dispatch passes."
+
+[advisor.msg_say_do_what]
+doc = "Block text of the say-do rule."
+value = "This turn says it will ask the advisor, but no advisor call followed."
+
+[advisor.msg_say_do_instead]
+doc = "What to do instead for the say-do rule."
+value = "Call the advisor tool now, or say plainly that you are not consulting it. Blocked once per turn."
+
+[advisor.msg_second_what]
+doc = "Block text of the second-attempt rule. Placeholder: {key}."
+value = "A second fix dispatch for {key} from a non-flagship main, with no advisor call since the first."
+
+[advisor.msg_second_instead]
+doc = "What to do instead for the second-attempt rule."
+value = "One fix attempt, then the advisor: call the advisor tool on why the first attempt missed, then dispatch. Blocked once per issue."
+
+[advisor.msg_why_flagship]
+doc = "The reason line of the phase-3 rules."
+value = "A non-flagship main gets one attempt at thinking work; design, investigation and retries go through the advisor."
