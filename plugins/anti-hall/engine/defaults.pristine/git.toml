@@ -860,8 +860,8 @@ doc = "Block: more local commits are on no remote than the pre-push credit check
 value = { what = "more than {cap} local commits are on no remote, more than the credit check reads.", why = "A credit in a commit past the cap could not be ruled out, and the guard never allows what it did not read.", instead = "check them yourself (git log --all --not --remotes), reword any with an AI credit, then push.", override = "turn off guards.gitPushCreditCheck for this push, only after you checked the range." }
 
 [git.push_unchecked_advisory]
-doc = "Advisory when the pre-push credit check could not run git (unavailable, or past push_timeout_ms): the push is let through unchecked."
-value = "anti-hall: this push was not checked for AI credit lines (git could not run or timed out); check git log --all --not --remotes yourself."
+doc = "Advisory when a git query of the pre-push credit check could not run (unavailable), failed (non-zero exit, e.g. not a repository) or passed push_timeout_ms: the push is let through unchecked."
+value = "anti-hall: this push was not checked for AI credit lines (git could not run, failed or timed out); check git log --all --not --remotes yourself."
 
 [git.push_same_call_subs]
 doc = "Subcommands whose message the same-call check reads: with a push in the same Bash call, one whose message layer 1 cannot read is refused (msg_push_same_call)."
@@ -876,8 +876,8 @@ doc = "Subcommands of push_same_call_subs that open an editor or reuse a message
 value = ["commit"]
 
 [git.push_same_call_opts]
-doc = "Regular expressions (JavaScript syntax) for options that take the message from somewhere layer 1 does not read (a reused or edited commit, a template, an editor); any one makes the message unread."
-value = ["^-[A-Za-z]*[Cct]", "^--(?:reuse-message|reedit-message|template|edit)(?:=|$)"]
+doc = "Regular expressions (JavaScript syntax) for options that take the message from somewhere layer 1 does not read (a reused or edited commit, a template, an editor: -e or --edit); any one makes the message unread. A short-flag cluster ending in m (-em) is matched on its flags before the m."
+value = ["^-[A-Za-z]*[Ccte]", "^--(?:reuse-message|reedit-message|template|edit)(?:=|$)"]
 
 [git.push_same_call_quoted_heredoc]
 doc = "Regular expression (JavaScript syntax) for a quoted heredoc on the commit's own command: -F - fed by one is read by layer 1 (its body never expands)."
@@ -903,8 +903,68 @@ value = 4000
 unit = "ms"
 
 [git.msg_push_credit]
-doc = "Block: a push would publish commits that carry an AI credit. Placeholders: {shown} (short hashes), {first} (the first hash)."
-value = { what = "this push would publish commits with AI credit ({shown}).", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "reword them (git rebase -i {first}^, drop the credit lines) and push again." }
+doc = "Block: a push would publish commits that carry an AI credit. Placeholder: {shown} (each short hash with the branches that hold it, push_hit_format)."
+value = { what = "this push would publish commits with AI credit: {shown}.", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "reword it (git commit --amend) if unpushed on a branch you own; else stop and tell the owner. Never force push." }
+
+[git.push_hit_format]
+doc = "One credited commit in msg_push_credit. Placeholders: {sha} (short hash), {branches} (the local branches that contain it, from push_argv_branch_contains), {where} (push_hit_where_format for a submodule, else empty)."
+value = "{sha} on {branches}{where}"
+
+[git.push_hit_no_branch_format]
+doc = "One credited commit in msg_push_credit that no local branch contains (a tag, a custom ref, a detached HEAD), or whose branches could not be read. Placeholders: {sha}, {where}."
+value = "{sha} (on no local branch){where}"
+
+[git.push_hit_where_format]
+doc = "Appended to a credited commit found inside a submodule. Placeholder: {path} (the submodule directory)."
+value = " in submodule {path}"
+
+[git.push_argv_branch_contains]
+doc = "git arguments listing the local branches that contain one credited commit, for the block message ({dir}, {repo} as in push_argv_log; {sha} the commit). At most git.shown hits are looked up, each bounded by push_timeout_ms."
+value = ["-C", "{dir}", "{repo}", "branch", "--format=%(refname:short)", "--contains", "{sha}"]
+
+[git.push_argv_cdup]
+doc = "git arguments printing the path from the push directory to the top of its work tree (empty at the top and in a bare repository); .gitmodules there means submodules are scanned."
+value = ["-C", "{dir}", "{repo}", "rev-parse", "--show-cdup"]
+
+[git.push_gitmodules_file]
+doc = "The file at the top of a work tree whose presence makes the pre-push credit check scan each checked-out submodule too."
+value = ".gitmodules"
+
+[git.push_argv_submodules]
+doc = "git arguments printing the absolute path of each checked-out submodule, nested ones included; each is scanned with push_argv_log, and all of them share push_max_commits."
+value = ["-C", "{dir}", "{repo}", "submodule", "foreach", "--quiet", "--recursive", "pwd"]
+
+[git.push_argv_tags]
+doc = "git arguments listing the newest local tags ({n} of them, the commit cap plus one) as object type, name and message; an annotated tag (push_tag_object_type) whose message carries an AI credit refuses the push. Fields end with US and records with RS."
+value = ["-C", "{dir}", "{repo}", "for-each-ref", "--count={n}", "--sort=-creatordate", "--format=%(objecttype)%1f%(refname:short)%1f%(contents)%1e", "refs/tags"]
+
+[git.push_tag_object_type]
+doc = "The object type for-each-ref prints for an annotated tag (a lightweight tag prints its commit's type and is covered by the commit scan)."
+value = "tag"
+
+[git.msg_push_tag_credit]
+doc = "Block: a local annotated tag's message carries an AI credit. Placeholder: {tags} (the tag names)."
+value = { what = "the local annotated tag {tags} carries an AI credit in its message.", why = "A push would publish it, and a published tag cannot be reworded without a force push.", instead = "if you made it and no remote has it, recreate it cleanly; else stop and tell the owner. Never force push." }
+
+[git.push_repo_env_names]
+doc = "Environment names that move the repository a push runs in: a value the shell expands at run time refuses the push (msg_push_dynamic_repo), and submodule scans run without them."
+value = ["GIT_DIR", "GIT_WORK_TREE"]
+
+[git.push_repo_opts]
+doc = "git options before the subcommand whose value is the repository a push runs in; a value the shell expands at run time refuses the push (msg_push_dynamic_repo)."
+value = ["-C", "--git-dir", "--work-tree"]
+
+[git.push_dynamic_path_res]
+doc = "Regular expressions (JavaScript syntax) for a repository path, as written, that the guard cannot expand (a ~user home, an unquoted glob); a $ or backtick expansion is always one."
+value = ["^~[^/]", "^[^'\"]*[*?\\[]"]
+
+[git.push_dynamic_repo_cmd_re]
+doc = "Regular expression (JavaScript syntax) over the whole command for a git push whose -C, --git-dir or --work-tree value holds an unquoted command substitution: the segment splitter cuts the command there, so the push is matched on the raw text (msg_push_dynamic_repo)."
+value = "\\bgit\\s+(?:[^\\s;&|]+\\s+)*?(?:-C\\s+|--git-dir[=\\s]|--work-tree[=\\s])[^\\s;&|]*(?:\\$\\(|`)[^;&|\\n]*\\bpush\\b"
+
+[git.msg_push_dynamic_repo]
+doc = "Block: a push whose repository (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) is a path the shell expands at run time. Placeholder: {arg}."
+value = { what = "this push runs in a repository path the guard cannot read before it runs ({arg}).", why = "The credit check would read some other directory and could miss a credited commit.", instead = "write the repository path literally (git -C /full/path push, or cd /full/path first)." }
 
 [git.block_key_prefix]
 doc = "The prefix of a message key that is removed to make the reason label of the git_blocked counter."

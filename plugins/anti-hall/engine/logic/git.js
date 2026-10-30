@@ -1965,11 +1965,25 @@ function pushCreditVerdict(ev, lastCdDir) {
     if (gitSubcommand(ev.args).rest.some((t) => TB.pushSkipOpts.has(t.text))) return null;
     let dir = lastCdDir || S.procCwd;
     const repo = [];
+    const repoOpts = ah.cfg('git.push_repo_opts');
+    if (ev.dynEnv && ev.dynEnv.length) return gmKey('msg_push_dynamic_repo', { arg: ev.dynEnv[0] });
     for (let k = 0; k < ev.args.length; k++) {
       const t = ev.args[k].text;
-      if (t === '-C' && k + 1 < ev.args.length) { dir = posix.resolveIn(S.procCwd, [dir, ev.args[k + 1].text]); k++; continue; }
-      if ((t === '--git-dir' || t === '--work-tree') && k + 1 < ev.args.length) { repo.push(t + '=' + ev.args[k + 1].text); k++; continue; }
-      if (t.startsWith('--git-dir=') || t.startsWith('--work-tree=')) { repo.push(t); continue; }
+      const eq = t.indexOf('=');
+      const opt = repoOpts.includes(t) ? t : (t.startsWith('--') && eq > 0 && repoOpts.includes(t.slice(0, eq)) ? t.slice(0, eq) : null);
+      if (opt !== null) {
+        const sep = opt === t;
+        if (sep && k + 1 >= ev.args.length) break;
+        const tok = sep ? ev.args[k + 1] : ev.args[k];
+        const raw = String(tok.raw === undefined ? tok.text : tok.raw);
+        const rawVal = sep ? raw : raw.slice(raw.indexOf('=') + 1);
+        if (dynamicRepoPath(rawVal) || /[$`]/.test(tok.text) || tok.text.indexOf(CMDSUBST_SENTINEL) !== -1) return gmKey('msg_push_dynamic_repo', { arg: opt + ' ' + rawVal });
+        const val = homePath(sep ? tok.text : t.slice(eq + 1));
+        if (opt === '-C') dir = posix.resolveIn(S.procCwd, [dir, val]);
+        else repo.push(opt + '=' + val);
+        if (sep) k++;
+        continue;
+      }
       if (t === '-c' || t === '--namespace' || t === '--config-env') { k++; continue; }
       if (t.startsWith('-')) continue;
       break;
@@ -1977,42 +1991,110 @@ function pushCreditVerdict(ev, lastCdDir) {
     const key = [dir].concat(repo).join('\n');
     if (!S.pushChecks.has(key)) S.pushChecks.set(key, unpushedCredit(dir, repo, ev.env));
     const r = S.pushChecks.get(key);
-    if (r.unchecked) { S.pushUnchecked = true; return null; }
+    if (r.tags.length) return gmKey('msg_push_tag_credit', { tags: r.tags.slice(0, TB.shown).join(', ') + (r.tags.length > TB.shown ? ah.cfg('git.more_marker') : '') });
     if (r.hits.length) {
-      const shown = r.hits.slice(0, TB.shown).join(', ') + (r.hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
-      return gmKey('msg_push_credit', { shown: shown, first: r.hits[r.hits.length - 1] });
+      const shown = r.hits.slice(0, TB.shown).map(hitText).join(', ') + (r.hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
+      return gmKey('msg_push_credit', { shown: shown });
     }
     // more unpushed commits than the cap: a credit past it cannot be ruled out, so the push is refused, never allowed unread
     if (r.over) return gmKey('msg_push_over_cap', { cap: ah.cfg('git.push_max_commits') });
+    if (r.unchecked) S.pushUnchecked = true;
     return null;
   } catch (e) {
     if (gitFatal(e)) throw e;
-    return null; // fail open
+    S.pushUnchecked = true;
+    return null; // fail open, with the advisory
   }
 }
 
-// The unpushed commits of one repository (git.push_argv_log): { hits } (short hashes with a credit), { over } (past the cap or
-// output cut short), { unchecked } (git could not run or timed out). A failing query (not a repository) has nothing to publish.
+// `~` and `~/x` are the agent's own home; anything else is used as written
+function homePath(p) {
+  if (S.home && (p === '~' || p.startsWith('~/'))) return posix.join(S.home, p.slice(1));
+  return p;
+}
+
+// true when a repository path as written (raw shell text) expands at run time: a live $ or backtick, or git.push_dynamic_path_res
+function dynamicRepoPath(raw) {
+  if (unresolvedExpansion(raw)) return true;
+  if (!S.pushDynRes) S.pushDynRes = ah.cfg('git.push_dynamic_path_res').map((x) => new RegExp(x));
+  return S.pushDynRes.some((re) => re.test(raw));
+}
+
+// "sha on branch, branch" for the block (git.push_hit_format); the lookup is bounded by push_timeout_ms and never decides the verdict
+function hitText(h) {
+  const where = h.sub ? ah.cfg('git.push_hit_where_format').split('{path}').join(h.sub) : '';
+  const argv = fillPushArgv(ah.cfg('git.push_argv_branch_contains'), h.dir, h.repo, 0).map((a) => a.split('{sha}').join(h.sha));
+  const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: h.env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  const br = r !== null && r.status === 0 ? String(r.stdout || '').split('\n').map((x) => x.trim()).filter(Boolean) : [];
+  if (!br.length) return ah.cfg('git.push_hit_no_branch_format').split('{sha}').join(h.sha).split('{where}').join(where);
+  const list = br.slice(0, TB.shown).join(', ') + (br.length > TB.shown ? ah.cfg('git.more_marker') : '');
+  return ah.cfg('git.push_hit_format').split('{sha}').join(h.sha).split('{branches}').join(list).split('{where}').join(where);
+}
+
+function fillPushArgv(tpl, dir, repo, n) {
+  const argv = [];
+  for (const a of tpl) {
+    if (a === '{repo}') argv.push(...repo);
+    else argv.push(a.split('{dir}').join(dir).split('{n}').join(String(n)));
+  }
+  return argv;
+}
+
+// The unpushed commits of one repository and of each checked-out submodule (git.push_argv_log), plus the newest local annotated
+// tags (git.push_argv_tags): { hits } ({ sha, dir, repo, sub }), { tags } (names with a credit), { over } (past the cap or output
+// cut short), { unchecked } (a git query could not run, failed or timed out: the push goes on with the advisory).
 function unpushedCredit(dir, repo, env) {
   const cap = ah.cfg('git.push_max_commits');
-  const argv = [];
-  for (const a of ah.cfg('git.push_argv_log')) {
-    if (a === '{repo}') argv.push(...repo);
-    else argv.push(a.split('{dir}').join(dir).split('{n}').join(String(cap + 1)));
-  }
-  const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: env && Object.keys(env).length ? env : undefined, timeoutMs: ah.cfg('git.push_timeout_ms') });
-  const out = { unchecked: r === null, hits: [], over: false };
-  if (r === null || r.status !== 0) return out;
+  const out = { unchecked: false, hits: [], tags: [], over: false };
+  const execEnv = env && Object.keys(env).length ? env : undefined;
+  const run = (argv, e) => {
+    const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: e, timeoutMs: ah.cfg('git.push_timeout_ms') });
+    if (r === null || r.status !== 0) { out.unchecked = true; return null; }
+    if (r.truncated === true) out.over = true;
+    return String(r.stdout || '');
+  };
   const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
   let count = 0;
-  for (const rec of String(r.stdout || '').split(rs)) {
-    const f = rec.replace(/^\n/, '').split(us);
-    const sha = (f[0] || '').trim();
-    if (!sha) continue;
-    count++;
-    if (count <= cap && f[1] && hasSelfCredit(f[1])) out.hits.push(sha.slice(0, TB.commitHashShort));
+  const scan = (d, rp, e, sub) => {
+    const txt = run(fillPushArgv(ah.cfg('git.push_argv_log'), d, rp, cap + 1 - count), e);
+    if (txt === null) return;
+    for (const rec of txt.split(rs)) {
+      const f = rec.replace(/^\n/, '').split(us);
+      const sha = (f[0] || '').trim();
+      if (!sha) continue;
+      count++;
+      if (count <= cap && f[1] && hasSelfCredit(f[1])) out.hits.push({ sha: sha.slice(0, TB.commitHashShort), dir: d, repo: rp, env: e, sub: sub });
+    }
+  };
+  scan(dir, repo, execEnv, null);
+  out.over = out.over || count > cap;
+  if (out.unchecked || out.over) return out;
+  // annotated tags: the newest {n}; an older tag past them was most likely fetched, and lightweight tags are commits (scanned above)
+  const tagTxt = run(fillPushArgv(ah.cfg('git.push_argv_tags'), dir, repo, cap + 1), execEnv);
+  if (tagTxt !== null) {
+    for (const rec of tagTxt.split(rs)) {
+      const f = rec.replace(/^\n/, '').split(us);
+      if ((f[0] || '').trim() === ah.cfg('git.push_tag_object_type') && f[2] && hasSelfCredit(f[2])) out.tags.push(f[1]);
+    }
   }
-  out.over = count > cap || r.truncated === true;
+  // submodules: each checked-out one is scanned the same way, inside the same commit cap
+  const cdup = run(fillPushArgv(ah.cfg('git.push_argv_cdup'), dir, repo, 0), execEnv);
+  if (cdup === null) return out;
+  const top = posix.resolveIn(S.procCwd, [dir, cdup.trim() || '.']);
+  if (ah.fs.realpath(posix.join(top, ah.cfg('git.push_gitmodules_file'))) === null) return out;
+  const subs = run(fillPushArgv(ah.cfg('git.push_argv_submodules'), dir, repo, 0), execEnv);
+  if (subs === null) return out;
+  let subEnv;
+  if (execEnv) {
+    subEnv = Object.assign({}, execEnv);
+    for (const n of ah.cfg('git.push_repo_env_names')) delete subEnv[n];
+  }
+  for (const p of subs.split('\n').map((x) => x.trim()).filter(Boolean)) {
+    if (count > cap || out.unchecked) break;
+    const rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : p;
+    scan(p, [], subEnv && Object.keys(subEnv).length ? subEnv : undefined, rel);
+  }
+  out.over = out.over || count > cap;
   return out;
 }
 
@@ -2021,15 +2103,19 @@ function unpushedCredit(dir, repo, env) {
 function forEachGitCommand(cmd, base, depth, visit) {
   let cdDir = base;
   const persist = {};
+  const persistDyn = {};
   for (const seg of splitSegments(cmd)) {
     const tokens = tokenize(seg);
     if (!tokens.length) continue;
     const se = segmentEnv(tokens);
     const env = Object.assign({}, persist, se.inline);
     Object.assign(persist, se.persist);
+    for (const n of Object.keys(se.persist)) delete persistDyn[n];
+    for (const d of se.persistDyn || []) persistDyn[d.name] = d.raw;
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
     ev.env = env;
+    ev.dynEnv = Object.keys(persistDyn).filter((n) => !(n in se.inline)).map((n) => persistDyn[n]).concat((se.inlineDyn || []).map((d) => d.raw));
     if (ev.verb === ah.cfg('git_audit.cd_verb')) {
       const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
       if (dirTok) cdDir = posix.resolveIn(S.procCwd, [cdDir, dirTok.text]);
@@ -2061,6 +2147,8 @@ function unreadCommitMessage(ev, sub, rest, dir, seg) {
   for (let i = 0; i < rest.length; i++) {
     const w = rest[i].text;
     if (w === '--' ) break;
+    const mc = /^-([A-Za-z]*)m/.exec(w);
+    if (mc && mc[1] && TB.sameCallOpts.some((re) => re.test('-' + mc[1]))) return sub;
     if (w === '--message' || /^-[A-Za-z]*m$/.test(w)) { msg = true; i++; continue; }
     if (w.startsWith('--message=') || /^-[A-Za-z]*m./.test(w)) { msg = true; continue; }
     if (TB.sameCallOpts.some((re) => re.test(w))) return sub;
@@ -2088,6 +2176,11 @@ function pushPrepass(cmd, cwd) {
   } catch (e) {
     if (gitFatal(e)) throw e;
     return null;
+  }
+  if (gitSettingOn('git.setting_push_credit')) {
+    // an unquoted substitution in the repository path cuts the segment before the push: matched on the whole command
+    const dm = new RegExp(ah.cfg('git.push_dynamic_repo_cmd_re')).exec(cmd);
+    if (dm) return gmKey('msg_push_dynamic_repo', { arg: dm[0].slice(0, ah.cfg('git.expansion_shown_chars')) });
   }
   if (!pushes.length || !gitSettingOn('git.setting_push_credit')) return null;
   for (const p of pushes) {
@@ -2146,13 +2239,27 @@ function forwardable(tokens) {
   return out;
 }
 
+// { name, raw } of each git.push_repo_env_names assignment whose value the shell expands at run time (dynamicRepoPath)
+function dynamicRepoEnv(tokens) {
+  const names = ah.cfg('git.push_repo_env_names');
+  const out = [];
+  for (const t of tokens) {
+    if (t.quotedOnly) continue;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(t.text);
+    if (!m || !names.includes(m[1])) continue;
+    const raw = String(t.raw === undefined ? t.text : t.raw);
+    if (dynamicRepoPath(raw.slice(raw.indexOf('=') + 1))) out.push({ name: m[1], raw: raw });
+  }
+  return out;
+}
+
 function segmentEnv(tokens) {
   try {
     const gi = tokens.findIndex((t) => !t.quotedOnly && t.text === 'git');
-    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {} };
+    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {}, inlineDyn: dynamicRepoEnv(tokens.slice(0, gi)) };
     const first = tokens[0] && !tokens[0].quotedOnly ? tokens[0].text : '';
     const allAssign = tokens.every((t) => !t.quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text));
-    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens) };
+    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens), persistDyn: dynamicRepoEnv(tokens) };
   } catch (e) { if (gitFatal(e)) throw e; }
   return { inline: {}, persist: {} };
 }
