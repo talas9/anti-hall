@@ -71,8 +71,13 @@ fn spawn(home: &Path) -> (i32, String) {
 
 /// One spawn through the check carrying the tool call id `tu` (none when empty): (exit code, stdout).
 fn spawn_as(home: &Path, tu: &str) -> (i32, String) {
+    spawn_input(home, tu, json!({"subagent_type":"Explore","prompt":"x"}))
+}
+
+/// One spawn through the check with the tool input `input` and the tool call id `tu` (none when empty): (exit code, stdout).
+fn spawn_input(home: &Path, tu: &str, input: serde_json::Value) -> (i32, String) {
     let mut payload = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":home,
-        "transcript_path": home.join("t.jsonl"), "tool_input":{"subagent_type":"Explore","prompt":"x"}});
+        "transcript_path": home.join("t.jsonl"), "tool_input": input});
     if !tu.is_empty() {
         payload["tool_use_id"] = json!(tu);
     }
@@ -261,4 +266,158 @@ fn t9_tracked_agents_outside_the_window_count() {
     let (code, out) = spawn(&h);
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("4 agents are running"), "{out}");
+}
+
+// ---- PR #494 round 2: interleavings, a wedged lock, foreground calls, shell jobs, excluded agent types ----
+
+const RES_LOCK: &str = ".anti-hall/spawn-reservations.lock";
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// A reservations file holding `ids` for session `s`, made now.
+fn reserved(home: &Path, ids: &[&str]) {
+    let rows: Vec<_> = ids.iter().map(|id| json!({"id": id, "session": "s", "at": now_ms()})).collect();
+    put(home, RESERVATIONS, &json!({"rows": rows}).to_string());
+}
+
+/// The reservation lock held by `pid`, taken `age_ms` ago (the Node owner-record shape, no host: a local pid).
+fn hold_lock(home: &Path, pid: u32, age_ms: u64) {
+    put(home, RES_LOCK, &json!({"pid": pid, "ts": now_ms() - age_ms, "token": "held-by-test"}).to_string());
+}
+
+/// P1: cap 2, agent X (toolu_0) reserved but not launched. Check A starts while the lock is held; X then launches and check B
+/// replaces X's reservation with its own; only then A gets the lock. A must count X (running) + B (reserved) = 2 and be denied.
+#[test]
+fn t10_a_launch_between_snapshot_and_lock_cannot_pass_the_cap() {
+    let h = scratch("interleave");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":2}}"#);
+    put(&h, "t.jsonl", &quiet());
+    reserved(&h, &["toolu_0"]);
+    let warm = scratch("interleave-warm");
+    put(&warm, "t.jsonl", &quiet());
+    spawn_as(&warm, "toolu_warm"); // a warm binary and page cache, so A reaches its snapshot well inside the sleep below
+    hold_lock(&h, std::process::id(), 0);
+    let a = {
+        let h = h.clone();
+        std::thread::spawn(move || spawn_as(&h, "toolu_A"))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(1200)); // A is waiting on the lock (reservation_lock_wait_ms 2000)
+    put(&h, "t.jsonl", &running(1)); // X (toolu_0) launched
+    reserved(&h, &["toolu_B"]); // B saw X running, dropped its reservation and reserved its own slot
+    std::fs::remove_file(h.join(RES_LOCK)).unwrap(); // B releases the lock
+    let (code, out) = a.join().unwrap();
+    assert_eq!(code, 2, "X running + B reserved is the cap of 2, A must be denied: {out}");
+}
+
+/// LOCK MUST NOT WEDGE: a check that died holding the reservation lock (dead pid), or a hung one past swarm_guard.lock_stale_ms,
+/// never stops the next spawn: it is allowed AND reserves (the lock was taken over, not skipped).
+#[test]
+fn t11_a_lock_left_by_a_dead_or_hung_check_does_not_wedge() {
+    let h = scratch("wedge");
+    put(&h, "t.jsonl", &quiet());
+    let mut dead = Command::new("true").spawn().unwrap();
+    let pid = dead.id();
+    dead.wait().unwrap();
+    hold_lock(&h, pid, 0);
+    let t = std::time::Instant::now();
+    assert_eq!(spawn_as(&h, "toolu_w0").0, 0);
+    assert!(std::fs::read_to_string(h.join(RESERVATIONS)).unwrap_or_default().contains("toolu_w0"), "dead holder taken over");
+    assert!(t.elapsed().as_millis() < 5000, "allowed within the stale timeout");
+    hold_lock(&h, std::process::id(), 60_000); // a live but hung holder, far past the stale timeout
+    assert_eq!(spawn_as(&h, "toolu_w1").0, 0);
+    assert!(std::fs::read_to_string(h.join(RESERVATIONS)).unwrap_or_default().contains("toolu_w1"), "stale holder taken over");
+}
+
+/// An Agent call and its foreground (synchronous) result: no async launch, so never a running row.
+fn foreground(i: usize) -> String {
+    let tu = format!("toolu_fg{i}");
+    let call = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":tu,"name":"Agent","input":{"description":format!("fg {i}"),"subagent_type":"Explore"}}]}});
+    let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":tu,"content":"done: the answer"}]}});
+    format!("{call}\n{result}\n")
+}
+
+/// P2: foreground Agent calls never hold a slot: four marked foreground reserve nothing, and four unmarked ones whose results are in
+/// the transcript are released, so the next background spawn is allowed at once with zero background agents.
+#[test]
+fn t12_foreground_calls_leave_no_reservation() {
+    let h = scratch("foreground");
+    put(&h, "t.jsonl", &quiet());
+    for i in 0..4 {
+        let input = json!({"subagent_type":"Explore","prompt":"x","run_in_background":false});
+        assert_eq!(spawn_input(&h, &format!("toolu_ff{i}"), input).0, 0);
+    }
+    assert_eq!(spawn_input(&h, "toolu_bg", json!({"subagent_type":"Explore","prompt":"x","run_in_background":true})).0, 0, "4 foreground calls hold no slot");
+    let h = scratch("foreground2");
+    put(&h, "t.jsonl", &quiet());
+    for i in 0..4 {
+        assert_eq!(spawn_as(&h, &format!("toolu_fg{i}")).0, 0);
+    }
+    put(&h, "t.jsonl", &(0..4).map(foreground).collect::<String>());
+    assert_eq!(spawn_as(&h, "toolu_next").0, 0, "4 answered calls released their reservations");
+}
+
+/// P2: a background agent that launched and finished before the next check releases its reservation (its row is completed, so it
+/// is not among the running rows).
+#[test]
+fn t13_a_background_agent_finished_before_reconciliation_frees_its_slot() {
+    let h = scratch("finished");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":1}}"#);
+    put(&h, "t.jsonl", &quiet());
+    assert_eq!(spawn_as(&h, "toolu_0").0, 0);
+    let done = json!({"type":"user","message":{"role":"user","content":format!("<task-notification>\n<task-id>a{:015x}</task-id>\n<status>completed</status>\n</task-notification>", 0)}});
+    put(&h, "t.jsonl", &format!("{}{done}\n", running(1)));
+    let (code, out) = spawn_as(&h, "toolu_1");
+    assert_eq!(code, 0, "the finished agent's reservation is released: {out}");
+}
+
+/// P2: background shell jobs of the session are tracker children too, but not agents: 4 running jobs and 0 agents allow a spawn.
+#[test]
+fn t14_shell_jobs_do_not_fill_the_cap() {
+    let h = scratch("shelljobs");
+    put(&h, "t.jsonl", &quiet());
+    let mut st = ah_engine::agents::State::default();
+    let mut a = ah_engine::agents::Agent {
+        id: "s".into(),
+        kind: "main".into(),
+        parent: "s".into(),
+        name: "main".into(),
+        cwd: h.to_string_lossy().into_owned(),
+        path: h.join("t.jsonl").to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    for i in 0..4 {
+        a.bg_ids.insert(format!("bjob{i}"), now_ms());
+    }
+    st.agents.insert("s".into(), a);
+    put(&h, ".anti-hall/agent-tracker/state.json", &serde_json::to_string(&st).unwrap());
+    let (code, out) = spawn(&h);
+    assert_eq!(code, 0, "4 shell jobs are not agents: {out}");
+}
+
+/// A transcript in which one background agent of each type in `types` was launched and none has finished.
+fn launches(types: &[&str]) -> String {
+    let mut out = String::new();
+    for (i, ty) in types.iter().enumerate() {
+        let (tu, id) = (format!("toolu_{i}"), format!("a{i:015x}"));
+        let call = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":tu,"name":"Agent","input":{"description":format!("lane {i}"),"subagent_type":ty,"run_in_background":true}}]}});
+        let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":tu,
+            "content":format!("Async agent launched successfully.\nagentId: {id} (internal ID - do not mention to user)\noutput_file: /tmp/ah-none/{id}.output")}]}});
+        out.push_str(&format!("{call}\n{result}\n"));
+    }
+    out
+}
+
+/// COUNT WHAT THE OWNER MEANS: Codex reviewer agents (guards.cap_excluded_agent_types) neither count nor are capped: 4 builders + 2
+/// Codex reviewers running at cap 4 deny a 5th builder and allow a 3rd Codex reviewer.
+#[test]
+fn t15_codex_reviewers_are_outside_the_cap() {
+    let h = scratch("codex");
+    put(&h, "t.jsonl", &launches(&["executor", "executor", "executor", "executor", "codex:codex-rescue", "codex:codex-rescue"]));
+    let (code, out) = spawn_input(&h, "toolu_b5", json!({"subagent_type":"executor","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 2, "4 builders fill the cap: {out}");
+    assert!(out.contains("4 agents are running"), "the 2 reviewers are not counted: {out}");
+    let (code, out) = spawn_input(&h, "toolu_c3", json!({"subagent_type":"codex:codex-rescue","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 0, "a Codex reviewer is outside the cap: {out}");
 }
