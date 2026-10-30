@@ -420,7 +420,8 @@ fn subagent_does_not_inherit_the_main_transcript_consult() {
     sub_transcript("sa1", "a7", &[ADVISOR, OWNER, SONNET]);
     let sub = |agent: &str| {
         let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
-        let p = json!({"session_id": "sa1", "agent_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+        let p =
+            json!({"session_id": "sa1", "agent_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
         run_out("advisor-guard", &[], &p)
     };
     assert_eq!(dispatch("sa1", &tp, "Fix the parser bug", &[]), (0, String::new()), "the main thread consulted");
@@ -432,7 +433,10 @@ fn subagent_does_not_inherit_the_main_transcript_consult() {
 fn advisor_seen_survives_ten_megabytes_without_a_call() {
     let tp = transcript("big1", &[ADVISOR, OWNER, SONNET]);
     assert!(dispatch("big1", &tp, "Fix the parser bug", &[]).1.contains(NUDGE), "advisor seen in the window");
-    let filler = format!(r#"{{"type":"assistant","message":{{"role":"assistant","model":"claude-sonnet-5-5","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(1000));
+    let filler = format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","model":"claude-sonnet-5-5","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+        "x".repeat(1000)
+    );
     let block = vec![filler.as_str(); 10 * 1024].join("\n");
     append(&tp, &block);
     append(&tp, OWNER2);
@@ -446,7 +450,9 @@ fn hook_errors_allow() {
     let d = dir();
     let garbage = d.join("garbage.jsonl");
     std::fs::write(&garbage, "{not json\n\u{0}\u{1}\n").unwrap();
-    for tp in [garbage.to_string_lossy().to_string(), d.join("missing.jsonl").to_string_lossy().to_string(), "relative.jsonl".into(), d.to_string_lossy().to_string()] {
+    for tp in
+        [garbage.to_string_lossy().to_string(), d.join("missing.jsonl").to_string_lossy().to_string(), "relative.jsonl".into(), d.to_string_lossy().to_string()]
+    {
         assert_eq!(dispatch("err1", &tp, "Fix the parser bug", &[]).0, 0, "unreadable transcript {tp}: allow");
         assert_eq!(stop("err1", &tp, &[], false), 0, "unreadable transcript {tp} at Stop: allow");
     }

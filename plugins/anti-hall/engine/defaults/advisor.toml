@@ -12,7 +12,7 @@
 
 [advisor.summary]
 doc = "One-line description of the advisor-guard check in the generated reference."
-value = "Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing."
+value = "Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). With a non-flagship main (phase 3): nudges, then blocks once per task, a thinking dispatch with no advisor call since the owner's last message (guards.advisorThinking), blocks once a second fix dispatch for one issue with no advisor call since the first (guards.advisorRetry) and one Stop per turn that announced an advisor call that did not follow (guards.advisorSayDo). The review rule lives in model-routing."
 
 [advisor.guard_name]
 doc = "The skip.json key and block label of the advisor rules."
