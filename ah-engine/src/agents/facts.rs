@@ -337,10 +337,11 @@ fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
             a.bg_ids.remove(id);
             a.exited.push((id.to_string(), ts));
             // PR #472: a background check or shell write earns its HARD outcome only now, when it ended with success
+            let start = a.bg_starts.remove(id).unwrap_or(u64::MAX);
             if let Some((check, writes)) = a.bg_outcomes.remove(id)
                 && defaults::raw("agent_tracker.bg_success_statuses").strings().iter().any(|w| w.eq_ignore_ascii_case(st))
             {
-                hard_outcome(a, check, &writes);
+                hard_outcome(a, check, &writes, start);
             }
         }
     }
@@ -382,6 +383,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     let mut class = String::new();
     let mut writes = Vec::new();
     let mut push = false;
+    let mut amp = false;
     if is_edit {
         a.edits += 1;
         let path = str_of(&input, tr("file_path"));
@@ -404,6 +406,14 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
         for w in words(arg) {
             push_ring(&mut a.work, w, lim("work_words_max"));
         }
+        // PR #472: the command is read by the engine shell splitter (host_shell::split_detailed, the scanner the `command` check and the
+        // burn breaker's commit exemption use): its top-level segments hold no comment and no heredoc body, and its delimiters say
+        // which segment runs in the background (agent_tracker.bg_delims). The class, the push and the written files come from them.
+        let (segs, delims) = crate::script::host_shell::split_detailed(arg);
+        let bgd = defaults::raw("agent_tracker.bg_delims").strings();
+        amp = delims.iter().any(|d| bgd.iter().any(|b| b == d));
+        let code = segs.join("\n");
+        let arg = code.as_str();
         push = pat("push").is_some_and(|r| r.is_match(arg));
         if pat("commit").is_some_and(|r| r.is_match(arg)) {
             class = "commit".into();
@@ -420,7 +430,13 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
         } else if pat("probe").is_some_and(|r| r.is_match(&unquoted(arg))) {
             class = "probe".into();
         }
-        writes = shell_writes(arg);
+        for s in &segs {
+            for w in shell_writes(s) {
+                if !writes.contains(&w) {
+                    writes.push(w);
+                }
+            }
+        }
         // a build launch is one event of the burn episode: an endless chain of builds with no outcome spends the episode's cap (PR #472)
         if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == class) {
             episode_event(a, ts);
@@ -465,7 +481,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
         let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -560,6 +576,7 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         }
         if p.class == "check" || !p.writes.is_empty() {
             a.bg_outcomes.insert(id.clone(), (p.class == "check", p.writes.clone()));
+            a.bg_starts.insert(id.clone(), p.ts);
         }
         a.bg_ids.insert(id, ts);
         while a.bg_ids.len() > lim("loop_window") as usize {
@@ -568,6 +585,7 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         }
         let live = &a.bg_ids;
         a.bg_outcomes.retain(|k, _| live.contains_key(k));
+        a.bg_starts.retain(|k, _| live.contains_key(k));
     }
     if failed {
         a.errors += 1;
@@ -579,9 +597,10 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     // burn count), like an edited file or a passing test. SOFT: a completed live probe or a shell write to a file already written; each
     // is one event of the burn episode, which may only hold off the pause within the episode's cap (burn.soft_hold).
     // A BACKGROUND launch's result is only its acknowledgment: the check has not run, so the launch is at most SOFT and the HARD outcome
-    // waits for its completion notice (task_ends).
+    // waits for its completion notice (task_ends). A command backgrounded with a top-level `&` (p.amp) has no completion notice at all:
+    // it is never more than SOFT.
     let om = defaults::raw("agent_tracker.outcome_metric");
-    let hard = !p.bg && hard_outcome(a, p.class == "check", &p.writes);
+    let hard = !p.bg && !p.amp && hard_outcome(a, p.class == "check", &p.writes, p.ts);
     if !hard && (p.class == "probe" || p.class == "check" || !p.writes.is_empty()) {
         push_ring(&mut a.soft_ts, ts, lim("loop_window"));
         episode_event(a, ts);
@@ -633,10 +652,11 @@ pub(crate) fn episode_sync(a: &mut Agent, ts: u64) {
     }
 }
 
-/// A HARD outcome of a shell command that ended with success (PR #472): a file it created or appended for the first time (the
-/// shell_file weight), else a passing check (the check weight). False when it earned neither.
-fn hard_outcome(a: &mut Agent, check: bool, writes: &[String]) -> bool {
-    let fresh: Vec<String> = writes.iter().filter(|w| !a.files.contains(w)).cloned().collect();
+/// A HARD outcome of a shell command that began at `start` and ended with success (PR #472): a file it created or appended for the
+/// first time (the shell_file weight), else a passing check (the check weight). False when it earned neither. A claimed write counts
+/// only when the file is there: `written_since` finds it on disk, modified at or after `start`; the command text alone earns nothing.
+fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64) -> bool {
+    let fresh: Vec<String> = writes.iter().filter_map(|w| written_since(&a.cwd, w, start)).filter(|w| !a.files.contains(w)).collect();
     if !fresh.is_empty() {
         for w in fresh {
             push_ring(&mut a.files, w, lim("files_max"));
@@ -652,7 +672,29 @@ fn hard_outcome(a: &mut Agent, check: bool, writes: &[String]) -> bool {
     true
 }
 
-/// The files a shell command creates or appends: every capture of patterns.shell_write (the first group that matched), minus the
+/// The real path of a file the shell claims to have written, when it is a regular file (never a device, a pipe or a directory) that
+/// exists now and was modified at or after `start` (milliseconds since the epoch); a relative path is taken from the agent's `cwd`.
+/// None for anything else, and for a resolved path patterns.shell_write_skip names.
+fn written_since(cwd: &str, path: &str, start: u64) -> Option<String> {
+    let p = std::path::Path::new(path);
+    let p = if p.is_absolute() {
+        p.to_path_buf()
+    } else if cwd.is_empty() {
+        return None;
+    } else {
+        std::path::Path::new(cwd).join(p)
+    };
+    let real = std::fs::canonicalize(&p).ok()?;
+    let s = real.to_string_lossy().into_owned();
+    if pat("shell_write_skip").is_some_and(|r| r.is_match(&s)) {
+        return None;
+    }
+    let md = std::fs::metadata(&real).ok().filter(std::fs::Metadata::is_file)?;
+    let ms = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
+    (ms >= start).then_some(s)
+}
+
+/// The files a shell command segment creates or appends: every capture of patterns.shell_write (the first group that matched), minus the
 /// paths patterns.shell_write_skip names (a device such as /dev/null). Quoted strings (burn.quoted_re) are masked while matching, so
 /// a `>` inside quotes is no redirect, and put back in a captured path (PR #472: `> "out/a.txt"` and `> "out/b.txt"` are two files);
 /// agent_tracker.write_mask is the sentinel around a masked string's index (empty: quoted strings are blanked, as before).

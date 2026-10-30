@@ -442,6 +442,10 @@ value = ["completed"]
 doc = "The task-notification statuses that mean a background shell task ended with success (PR #472): only then does a background check or shell write earn its HARD outcome; its launch acknowledgment is at most a soft one."
 value = ["completed"]
 
+[agent_tracker.bg_delims]
+doc = "The engine shell splitter's delimiters that run the command before them in the background (PR #472): a call holding one at the top level (`npx tsc --noEmit &`) has not finished when its launching shell exits, so it is at most a SOFT outcome; a HARD one only ever comes from a completion notice (bg_success_statuses)."
+value = ["&"]
+
 [agent_tracker.write_mask]
 doc = "The sentinel around the index of a quoted string masked while a shell command's written files are found (PR #472): a character no command text holds, so a quoted redirect target keeps its real path. Empty: quoted strings are blanked and a quoted target is no file."
 value = "\u0001"

@@ -540,11 +540,10 @@ fn w3_a_new_apparent_path_each_call_still_pauses_pr472() {
 /// PR #472 round 3: a check backgrounded with a top-level `&` has not run when its launching shell exits 0: at most SOFT.
 #[test]
 fn bg1_a_check_backgrounded_with_an_ampersand_is_at_most_soft_pr472() {
-    let (h, p, marker, mut st, n) = burned_in("bg1-472", "");
+    let (h, p, _marker, mut st, n) = burned_in("bg1-472", "");
     append(&p, &[tool(n + 21 * MIN, "m2", 10, "c1", "Bash", json!({"command": "npx tsc --noEmit >/dev/null 2>&1 &"})), result(n + 21 * MIN, "c1", "", false)]);
     ticks(&h, &mut st, &[n + 22 * MIN]);
-    assert_eq!(agent(&st, "s1").progress, 0, "a `&` check is no HARD outcome");
-    assert!(marker.exists(), "the pause stays");
+    assert_eq!(agent(&st, "s1").progress, 0, "a `&` check is no HARD outcome (a SOFT one may hold the pause off within burn.soft_hold)");
 }
 
 /// PR #472 acceptance A2: a passing check is a HARD outcome: it adds progress and resets the burn episode.
@@ -2646,7 +2645,9 @@ fn p1_a_background_check_is_hard_only_once_its_successful_completion_is_seen_pr4
 /// PR #472 review P2: shell writes to distinct quoted paths are distinct files: each first write is a HARD outcome (A1).
 #[test]
 fn p2_writes_to_distinct_quoted_paths_are_distinct_hard_outcomes_pr472() {
-    let (h, p, _marker, mut st, n) = burned("p2-472");
+    let (h, p, _marker, mut st, n) = burned_in("p2-472", "");
+    touch(&h.join("w/out/first.txt"), n + 21 * MIN + 1000);
+    touch(&h.join("w/out/second.txt"), n + 23 * MIN + 1000);
     append(&p, &[tool(n + 21 * MIN, "m2", 10, "w1", "Bash", json!({"command": "printf 'x\\n' > \"out/first.txt\""})), result(n + 21 * MIN, "w1", "", false)]);
     ticks(&h, &mut st, &[n + 22 * MIN]);
     let first = agent(&st, "s1").progress;
@@ -2655,7 +2656,7 @@ fn p2_writes_to_distinct_quoted_paths_are_distinct_hard_outcomes_pr472() {
     ticks(&h, &mut st, &[n + 24 * MIN]);
     let a = agent(&st, "s1");
     assert!(a.progress > first, "a write to a second distinct quoted path is a new hard outcome");
-    assert!(a.files.iter().any(|f| f == "out/first.txt") && a.files.iter().any(|f| f == "out/second.txt"), "the real paths are kept: {:?}", a.files);
+    assert!(a.files.iter().any(|f| f.ends_with("/w/out/first.txt")) && a.files.iter().any(|f| f.ends_with("/w/out/second.txt")), "the real paths are kept: {:?}", a.files);
     // quoted text that is no redirect target still names no file
     append(&p, &[tool(n + 25 * MIN, "m4", 10, "w3", "Bash", json!({"command": "echo \"a > b.txt\""})), result(n + 25 * MIN, "w3", "", false)]);
     ticks(&h, &mut st, &[n + 26 * MIN]);
