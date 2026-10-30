@@ -24,6 +24,12 @@ impl Env {
         Env { dir }
     }
 
+    /// The owner's state-directory config.toml (written before the first hook starts the daemon).
+    fn config(&self, text: &str) {
+        std::fs::create_dir_all(self.dir.join("eng")).unwrap();
+        std::fs::write(self.dir.join("eng/config.toml"), text).unwrap();
+    }
+
     fn cmd(&self) -> Command {
         let mut c = Command::new(BIN);
         c.env("HOME", self.dir.join("home"))
@@ -653,10 +659,12 @@ fn only_annotated_tags_on_unpushed_commits_are_scanned() {
 }
 
 /// A public credited commit whose remote-tracking ref was pruned looks unpushed: the push is blocked once (naming the sha and
-/// "already public"), the identical retry gets an advisory, and a new credited commit still blocks.
+/// "already public"), the identical retry gets an advisory, and a new credited commit still blocks. The acknowledgement is OFF by
+/// default (git.push_ack_max_shas = 0), so this test turns it on explicitly.
 #[test]
 fn a_pruned_tracking_ref_blocks_once_then_advises_on_the_identical_retry() {
     let e = Env::new("pruned");
+    e.config("[git]\npush_ack_max_shas = 20\n");
     let (work, _) = pushed_repo(&e);
     git_ok(&work, &["checkout", "-q", "-b", "old"]);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
@@ -674,9 +682,29 @@ fn a_pruned_tracking_ref_blocks_once_then_advises_on_the_identical_retry() {
     let (out, err, code) = e.hook_in(&cmd, w);
     assert_eq!(code, 0, "the identical retry is let through: stdout={out} stderr={err}");
     assert!(out.contains(&sha) && out.contains("AI credit"), "with an advisory naming the sha: {out}");
+    let m = String::from_utf8_lossy(&e.cmd().args(["metrics", "--json"]).output().unwrap().stdout).to_string();
+    assert!(m.contains("git_push_ack_downgraded"), "the downgrade is counted: {m}");
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
     let new_sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
     let (out, err, code) = e.hook_in(&cmd, w);
     assert_eq!(code, 2, "a new credited commit still blocks: stdout={out} stderr={err}");
     assert!(err.contains(&new_sha) && !err.contains(&sha), "only the new sha: {err}");
+}
+
+/// The acknowledgement is OFF by default (git.push_ack_max_shas = 0): a push blocked for a credited commit is blocked again on the
+/// identical retry, so an agent retrying a blocked push never gets a credit line through.
+#[test]
+fn by_default_an_identical_retry_of_a_credit_blocked_push_is_blocked_again() {
+    let e = Env::new("ackoff");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
+    let w = work.to_str().unwrap();
+    let cmd = format!("git {P} origin main");
+    let _ = e.hook("echo warm");
+    for n in 1..=3 {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        assert_eq!(code, 2, "try {n} still blocks: stdout={out} stderr={err}");
+        assert!(err.contains(&sha) && err.contains("already public or other: tell the owner"), "try {n}: {err}");
+    }
 }
