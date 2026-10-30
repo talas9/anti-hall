@@ -544,6 +544,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         };
         if let Some(r) = drop {
             rec(env, ws.str_field("class"), ws.str_field("dropped"), Outcome::Skip, base(a).tok("signal", sig).tok("reason", r));
+            crate::metrics::bump("agent_wake_dropped", &[("reason", r)]);
             a.last_sent.insert(sig.to_string(), now);
             return;
         }

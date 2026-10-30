@@ -104,6 +104,17 @@ pub fn is_registered(name: &str) -> bool {
 type Pending = BTreeMap<String, (String, Vec<(String, String)>, u64)>;
 static PENDING: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new());
 
+#[cfg(test)]
+thread_local! {
+    static THIS_THREAD: std::sync::Mutex<BTreeMap<String, u64>> = const { std::sync::Mutex::new(BTreeMap::new()) };
+}
+
+/// Test only: what the calling thread bumped for one series (the process-wide pending table is shared by parallel tests).
+#[cfg(test)]
+pub(crate) fn bumped_on_this_thread(name: &str, labels: &[(&str, &str)]) -> u64 {
+    THIS_THREAD.with(|t| t.lock().unwrap_or_else(|e| e.into_inner()).get(&series(name, labels)).copied().unwrap_or(0))
+}
+
 /// Add one to the counter `name` from code that has no `Metrics` at hand. A name nobody registered is ignored (a test catches it),
 /// and so is a new series once `telemetry.max_series` are waiting, so the table stays bounded between two drains.
 pub fn bump(name: &str, labels: &[(&str, &str)]) {
@@ -116,6 +127,8 @@ pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
         return;
     }
     let key = series(name, labels);
+    #[cfg(test)]
+    THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += by);
     let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     if !g.contains_key(&key) && g.len() >= defaults::num("telemetry.max_series") as usize {
         return;

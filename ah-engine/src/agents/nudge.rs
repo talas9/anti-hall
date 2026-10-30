@@ -290,6 +290,11 @@ fn answer_line(n: &Nudge) -> String {
     )
 }
 
+/// Count a delivery that failed, by the channel it failed on (`agent_nudge_delivery_failed`, label `where`: queue, wake or owner_file).
+fn delivery_failed(wher: &str) {
+    crate::metrics::bump("agent_nudge_delivery_failed", &[("where", wher)]);
+}
+
 /// Put `text` in front of session `to`: its reminder queue (its hook delivers it at its next turn) and, while a wake-watch covers
 /// it, its wake feed (so an idle session wakes). Returns the path word.
 fn send_to(env: &Env, to: &str, n: &Nudge, text: String) -> String {
@@ -298,11 +303,17 @@ fn send_to(env: &Env, to: &str, n: &Nudge, text: String) -> String {
     // a session a wake-watch covers gets the nudge on its wake feed alone (it reaches an active session too), so it is seen once; the
     // reminder queue is the fallback when no wake line was delivered in time (`follow`) and the road for a session nothing watches
     let armed = wake_armed(env, to);
-    if (!armed || !env.switch("agent_nudge.once_setting")) && SessionQueue.deliver(env, to, &r).is_ok() {
-        path.push(word("path_queue"));
+    if !armed || !env.switch("agent_nudge.once_setting") {
+        match SessionQueue.deliver(env, to, &r) {
+            Ok(()) => path.push(word("path_queue")),
+            Err(_) => delivery_failed("queue"),
+        }
     }
-    if armed && WakeFeed.deliver(env, to, &r).is_ok() {
-        path.push(word("path_wake"));
+    if armed {
+        match WakeFeed.deliver(env, to, &r) {
+            Ok(()) => path.push(word("path_wake")),
+            Err(_) => delivery_failed("wake"),
+        }
     }
     path.join(word("path_join"))
 }
@@ -327,32 +338,45 @@ fn owner_in_project(env: &Env, st: &State, n: &Nudge) -> Option<String> {
     cands.into_iter().find(|m| project_key(st, m).as_deref() == Some(want.as_str())).map(|m| m.id.clone())
 }
 
-fn to_owner(env: &Env, st: &State, n: &Nudge, text: String) -> (String, String) {
+/// Returns (where, path, delivered).
+fn to_owner(env: &Env, st: &State, n: &Nudge, text: String) -> (String, String, bool) {
     match owner_in_project(env, st, n) {
         Some(k) => {
             let p = send_to(env, &k, n, text);
-            (k, p)
+            let ok = !p.is_empty();
+            if ok {
+                crate::metrics::bump("agent_nudge_to_owner", &[("where", "session")]); // a failed delivery is counted by send_to
+            }
+            (k, p, ok)
         }
         None => {
             let r = Reminder { id: format!("{}-{}", n.id, n.reminders), ts: env.now_ms, signal: word("signal").into(), agent: n.child.clone(), text };
-            crate::discard::harmless(OwnerNotices.deliver(env, "", &r)); // keep: the event below records the escalation either way
-            (word("owner_file").to_string(), word("path_notices").to_string())
+            // keep: the event below records the escalation either way; the counter only counts a notice that was written
+            let ok = OwnerNotices.deliver(env, "", &r).is_ok();
+            if ok {
+                crate::metrics::bump("agent_nudge_to_owner", &[("where", "file")]);
+            } else {
+                delivery_failed("owner_file");
+            }
+            (word("owner_file").to_string(), word("path_notices").to_string(), ok)
         }
     }
 }
 
-fn escalate_now(env: &Env, st: &State, n: &mut Nudge, why: &str) {
+/// Returns whether the notice reached the owner's channel (false when already escalated or the delivery failed).
+fn escalate_now(env: &Env, st: &State, n: &mut Nudge, why: &str) -> bool {
     if n.escalated_at > 0 {
-        return;
+        return false;
     }
     let text = defaults::render(
         "msg.agent_nudge_escalate",
         &[("kind", &n.child_kind), ("name", &n.child_name), ("parent", &n.parent), ("evidence", &n.ev_text), ("why", &why), ("answer", &answer_line(n))],
     );
-    let (to, _) = to_owner(env, st, n, text);
+    let (to, _, ok) = to_owner(env, st, n, text);
     n.escalated_to = to;
     n.escalated_at = env.now_ms;
     emit(env, word("ev_escalated"), n);
+    ok
 }
 
 /// The evidence of an unhealthy child, in plain words.
@@ -502,6 +526,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
                     hold_done(st, &a, now);
                     let sup = defaults::raw("agent_nudge.suppress");
                     rec(env, word("class"), sup.str_field("event"), Outcome::Skip, base(&a).tok("reason", sup.str_field("judge_done")).tok("trigger", trig));
+                    crate::metrics::bump("agent_nudge_suppressed", &[("reason", sup.str_field("judge_done"))]);
                     continue;
                 }
             }
@@ -559,11 +584,17 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             ],
         );
         n.last_text.clone_from(&text);
-        match to {
-            Some(p) => n.path = send_to(env, &p, &n, text),
+        let delivered = match to {
+            Some(p) => {
+                n.path = send_to(env, &p, &n, text);
+                !n.path.is_empty()
+            }
             None => escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_no_parent")),
-        }
+        };
         emit(env, word("ev_sent"), &n);
+        if delivered {
+            crate::metrics::bump("agent_nudge_sent", &[("trigger", trig)]);
+        }
         st.nudges.insert(id, n);
     }
 }
@@ -588,6 +619,7 @@ fn adopt_legacy_done_holds(st: &mut State, now: u64) {
         let activity_ms = st.agents.get(&c).map_or(0, |a| a.last_output_ms).min(until.saturating_sub(span));
         st.nudge_done_hold.entry(c.clone()).or_insert(DoneHold { until, activity_ms });
         st.nudge_hold.remove(&c);
+        crate::metrics::bump("agent_nudge_legacy_hold_adopted", &[]);
     }
 }
 
@@ -606,6 +638,7 @@ fn answered_since_send(env: &Env, n: &mut Nudge) -> bool {
     n.fallback_at = env.now_ms;
     let sup = defaults::raw("agent_nudge.suppress");
     rec(env, word("class"), sup.str_field("event"), Outcome::Skip, ev(n).tok("reason", sup.str_field("answered")));
+    crate::metrics::bump("agent_nudge_suppressed", &[("reason", sup.str_field("answered"))]);
     true
 }
 
@@ -681,9 +714,12 @@ fn follow(env: &Env, st: &mut State) {
                 agent: n.child.clone(),
                 text: n.last_text.clone(),
             };
-            if SessionQueue.deliver(env, &n.parent, &r).is_ok() {
-                n.fallback_at = now;
-                n.path = [n.path.as_str(), word("path_queue")].join(word("path_join"));
+            match SessionQueue.deliver(env, &n.parent, &r) {
+                Ok(()) => {
+                    n.fallback_at = now;
+                    n.path = [n.path.as_str(), word("path_queue")].join(word("path_join"));
+                }
+                Err(_) => delivery_failed("queue"),
             }
         }
         let snoozed = n.snooze_until > now;
@@ -709,6 +745,8 @@ fn follow(env: &Env, st: &mut State) {
                 &[("n", &n.reminders), ("kind", &n.child_kind), ("name", &n.child_name), ("evidence", &n.ev_text), ("answer", &answer_line(&n))],
             );
             n.last_text.clone_from(&text);
+            // a nudge nothing was delivered for yet (the first delivery failed) is counted as sent when a reminder finally lands
+            let first_landing = n.path.is_empty() && n.escalated_at == 0;
             if live(st, &n.parent) {
                 n.path = send_to(env, &n.parent.clone(), &n, text);
             } else {
@@ -719,8 +757,13 @@ fn follow(env: &Env, st: &mut State) {
                         n.parent.clone_from(&p);
                         n.path = send_to(env, &p, &n, text);
                     }
-                    None => escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_no_parent")),
+                    None => {
+                        escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_no_parent"));
+                    }
                 }
+            }
+            if first_landing && !n.path.is_empty() {
+                crate::metrics::bump("agent_nudge_sent", &[("trigger", &n.trigger)]);
             }
             emit(env, word("ev_reminded"), &n);
         }
@@ -1136,7 +1179,15 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
     let now = env.now_ms;
     st.nudge_hold.retain(|_, t| *t > now);
     let agents = &st.agents;
-    st.nudge_done_hold.retain(|c, h| h.until > now && agents.get(c).is_some_and(|a| a.last_output_ms <= h.activity_ms));
+    st.nudge_done_hold.retain(|c, h| {
+        let live = h.until > now;
+        let seen = agents.get(c).map(|a| a.last_output_ms);
+        let kept = live && seen.is_some_and(|t| t <= h.activity_ms);
+        if live && seen.is_some_and(|t| t > h.activity_ms) {
+            crate::metrics::bump("agent_nudge_done_hold_released", &[]); // new output, not expiry or a forgotten child
+        }
+        kept
+    });
     let forget = lim("snooze_forget_ms");
     let agents = &st.agents;
     st.nudge_snooze.retain(|k, s| now < s.until.saturating_add(forget) && k.split_once('|').is_some_and(|(c, _)| agents.contains_key(c)));

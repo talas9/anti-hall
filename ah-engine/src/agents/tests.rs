@@ -2076,3 +2076,244 @@ fn n430_legacy_done_hold_keeps_an_idle_done_child_held() {
     println!("MEASURE n430 legacy-idle expiry: nudge_open={}", st.nudges.contains_key("abc"));
     assert!(st.nudges.contains_key("abc"), "the idle child was still held after the legacy hold's expiry");
 }
+
+// ---- telemetry of the nudge scope rules (counters declared in agent_nudge.toml) -------------------------------------------------
+
+/// The pending-count table is process-wide; the tests below take turns so one never drains what another bumped. Other tests only add,
+/// so each asserts "at least" on the series its own path bumps.
+static NUDGE_COUNTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn drained() -> crate::metrics::Metrics {
+    let mut m = crate::metrics::Metrics::default();
+    crate::metrics::drain_pending(&mut m);
+    m
+}
+
+#[test]
+fn nudge_counters_are_declared() {
+    for m in [
+        "agent_nudge_sent",
+        "agent_nudge_suppressed",
+        "agent_nudge_done_hold_released",
+        "agent_nudge_legacy_hold_adopted",
+        "agent_nudge_to_owner",
+        "agent_nudge_delivery_failed",
+        "agent_wake_dropped",
+    ] {
+        assert!(crate::metrics::is_registered(m), "{m} is not declared in agent_nudge.toml");
+    }
+}
+
+/// A nudge opened (sent), then answered by a snooze: the wake fallback does not queue it again (suppressed, answered).
+#[test]
+fn nudge_sent_and_answered_suppression_are_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("tel-sent");
+    drained();
+    let mut st = State::default();
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+        e
+    };
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick_at(&mut st, n + MIN);
+    append(&child, &spend);
+    let e = tick_at(&mut st, n + 18 * MIN);
+    let sent = drained();
+    assert!(sent.counter("agent_nudge_sent", &[("trigger", "waste")]) >= 1, "an opened nudge is counted by trigger");
+    let sig = defaults::raw("agent_nudge.words").str_field("signal");
+    let id = st.nudges.get("abc").expect("a nudge is open").id.clone();
+    nudge::delivered(&mut st, &json!({"signal": sig, "agent": "abc", "key": "parent", "id": format!("{id}-1")}), n + 18 * MIN + 1000);
+    answer_snooze(&e, "abc", 180);
+    for m in [19, 23, 30] {
+        tick_at(&mut st, n + m * MIN);
+    }
+    assert!(drained().counter("agent_nudge_suppressed", &[("reason", "answered")]) >= 1, "an answered nudge kept out of the queue is counted");
+}
+
+/// A done hold released by the held child's new output is counted; one that simply runs out is not.
+#[test]
+fn done_hold_release_by_output_is_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child, mut st) = n430_done_held("tel-release");
+    drained();
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    assert_eq!(drained().counter("agent_nudge_done_hold_released", &[]), 0, "idle: still held, nothing released");
+    append(&child, &[asst(n + 20 * MIN, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    tick(&nudge_env(&h, n + 21 * MIN, &[]), &mut st);
+    assert!(drained().counter("agent_nudge_done_hold_released", &[]) >= 1, "output after the verdict released the hold");
+}
+
+/// A done hold an older version kept in the busy-hold field is adopted once (idempotent).
+#[test]
+fn legacy_hold_adoption_is_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, _child, mut st) = n430_legacy_done_held("tel-legacy");
+    drained();
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    assert!(drained().counter("agent_nudge_legacy_hold_adopted", &[]) >= 1, "the old-field hold was moved and counted");
+}
+
+/// A child whose parent is not live escalates at once: the notice goes to the owner's channel (no armed session of the project: the file).
+#[test]
+fn nudge_to_owner_is_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("tel-owner");
+    let n = now0();
+    register(&h, dead_pid(), "parent", "busy", n);
+    write(&sess(&h, "parent"), &[prompt(n - 30 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
+    let child = h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl");
+    write(&child, &[prompt(n - 5 * MIN, "/w"), asst(n - 4 * MIN, "c0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    drained();
+    let mut st = State::default();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&nudge_env(&h, n + MIN, &[]), &mut st);
+    append(&child, &spend);
+    for m in [18, 19] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+    }
+    let got = drained();
+    println!("MEASURE tel-owner: nudge_open={} to_owner_file={}", st.nudges.contains_key("abc"), got.counter("agent_nudge_to_owner", &[("where", "file")]));
+    assert!(got.counter("agent_nudge_to_owner", &[("where", "file")]) >= 1, "an escalation to the owner file is counted");
+}
+
+/// Parent live with no wake-watch and an unwritable reminder queue: the delivery fails, so the nudge is not counted as sent.
+#[test]
+fn failed_delivery_is_not_counted_as_sent() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("tel-fail");
+    drained();
+    let mut st = State::default();
+    let e0 = nudge_env(&h, n + MIN, &[]);
+    std::fs::create_dir_all(sinks::SessionQueue::file(&e0, "parent")).unwrap(); // a directory where the queue file goes: append fails
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&e0, &mut st);
+    append(&child, &spend);
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    let got = drained();
+    assert!(st.nudges.contains_key("abc"), "the nudge opened");
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_sent", &[("trigger", "waste")]), 0, "a failed delivery is not a sent nudge");
+    assert!(got.counter("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1, "the failed queue write is counted");
+    assert!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1);
+}
+
+/// A wake-only delivery that no wake line confirmed falls back to the reminder queue; an unwritable queue makes that fallback fail, and the failure is counted.
+#[test]
+fn failed_wake_fallback_queue_write_is_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("tel-fallback-fail");
+    drained();
+    let mut st = State::default();
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+        e
+    };
+    let e0 = nudge_env(&h, n + MIN, &[]);
+    std::fs::create_dir_all(sinks::SessionQueue::file(&e0, "parent")).unwrap(); // the queue file cannot be written
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick_at(&mut st, n + MIN);
+    append(&child, &spend);
+    tick_at(&mut st, n + 18 * MIN);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]), 0, "wake-only: the queue is not written at open");
+    for m in [19, 23, 30, 45, 60, 78] {
+        tick_at(&mut st, n + m * MIN);
+    }
+    assert!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1, "a failed wake-fallback queue write is counted");
+}
+
+/// The first delivery fails (nothing sent), the queue recovers, a later reminder lands: that success is counted as sent once.
+#[test]
+fn a_reminder_that_lands_after_a_failed_first_delivery_is_counted_as_sent() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("tel-recover");
+    drained();
+    let mut st = State::default();
+    let e0 = nudge_env(&h, n + MIN, &[]);
+    let q = sinks::SessionQueue::file(&e0, "parent");
+    std::fs::create_dir_all(&q).unwrap();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&e0, &mut st);
+    append(&child, &spend);
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    let sent = || crate::metrics::bumped_on_this_thread("agent_nudge_sent", &[("trigger", "waste")]);
+    assert_eq!(sent(), 0, "the first delivery failed");
+    assert!(st.nudges.contains_key("abc"), "the nudge is open");
+    std::fs::remove_dir(&q).unwrap(); // the queue works again
+    for m in [19, 23, 30, 45, 60, 78, 100, 130, 160] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+    }
+    let reminded = st.nudges.get("abc").map_or(0, |x| x.reminders);
+    assert!(reminded >= 1, "a reminder went out");
+    assert_eq!(sent(), 1, "the reminder that landed is counted once as sent");
+}
+
+/// The same scene with a writable queue: delivered, counted once as sent, no failure.
+#[test]
+fn successful_delivery_is_counted_as_sent() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("tel-ok");
+    drained();
+    let mut st = State::default();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&nudge_env(&h, n + MIN, &[]), &mut st);
+    append(&child, &spend);
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    let got = drained();
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_sent", &[("trigger", "waste")]), 1);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]), 0);
+    let _ = got;
+}
+
+/// An unwritable owner notices file: the escalation is not counted as sent to the owner, the failure is.
+#[test]
+fn failed_owner_file_is_not_counted_as_to_owner() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("tel-owner-fail");
+    let n = now0();
+    register(&h, dead_pid(), "parent", "busy", n);
+    write(&sess(&h, "parent"), &[prompt(n - 30 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
+    let child = h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl");
+    write(&child, &[prompt(n - 5 * MIN, "/w"), asst(n - 4 * MIN, "c0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    drained();
+    let mut st = State::default();
+    let e0 = nudge_env(&h, n + MIN, &[]);
+    std::fs::create_dir_all(e0.dir().join(defaults::raw("agent_tracker.paths").str_field("notices"))).unwrap();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&e0, &mut st);
+    append(&child, &spend);
+    for m in [18, 19] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+    }
+    let got = drained();
+    let _ = got;
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_to_owner", &[("where", "file")]), 0);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_sent", &[("trigger", "waste")]), 0);
+    assert!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "owner_file")]) >= 1);
+}
+
+/// A stale heartbeat of no followed session is dropped and counted by reason.
+#[test]
+fn unowned_heartbeat_drop_is_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("tel-hb");
+    let n = now0();
+    write(&sess(&h, "main1"), &[prompt(n - 3 * MIN, "/w"), asst(n - MIN, "m1", 5, 5, json!([{"type": "text", "text": "ok"}]), Some("end_turn"))]);
+    let hb = h.join(".anti-hall/agents");
+    std::fs::create_dir_all(&hb).unwrap();
+    std::fs::write(hb.join("job1.json"), json!({"id": "job1", "ts": n - 30 * MIN, "status": "running", "step": "compiling"}).to_string()).unwrap();
+    drained();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(drained().counter("agent_wake_dropped", &[("reason", "foreign_agent")]) >= 1, "the dropped row is counted with its reason");
+}

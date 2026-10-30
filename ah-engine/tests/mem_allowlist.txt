@@ -92,6 +92,7 @@ script/host_childturn.rs | PLANNED | thread-local, reset at the start of every s
 dswire/facts.rs | GIT_CACHE | devswarm_wire.git_cache_max_entries: when the map is at the cap the next insert clears it first (checked in the insert path) | remembered git answers per worktree, signature and age; stale entries are re-run, never trusted
 dssup/ingest/mod.rs | DROPPED | devswarm_ingest.drop_log_max_paths: when the map is at the cap the next insert of a new path clears it first (checked in note_drop) | the last drop reason logged per path, so a drop is logged once per (path, reason)
 metrics.rs | PENDING | telemetry.max_series: bump() adds no new series once that many wait, and every metrics read or snapshot empties the map | counter bumps from code that holds no Metrics, until the next drain
+metrics.rs | THIS_THREAD | cfg(test) only, one test thread: the series that thread bumps (a handful per test) | lets a parallel test read its own counter bumps
 threads.rs | EXITED | diagnostics.tally_hard_keys: a new thread name past it is not kept | CPU of ended threads by thread name (status --threads exited_by_name)
 threads.rs | TALLY | diagnostics.tally_hard_keys: a new key past it is dropped and counted in tally_dropped | labelled work counters (site x cause) for status --threads
 nodeback/shadow.rs | CAPTURE | the checks of the call being shadowed, taken at its end | per-request
