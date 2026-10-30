@@ -123,7 +123,6 @@ fn scan(p: &Path, kept: bool) -> Option<Scan> {
     scan_res(p, kept).unwrap()
 }
 
-
 /// (oversize lines skipped, scans degraded to unknown) counted since the last call.
 fn counts() -> (usize, usize) {
     let c = ah_engine::load::take_counts();

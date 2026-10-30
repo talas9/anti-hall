@@ -421,10 +421,15 @@ fn a_stop_does_not_block_on_an_agent_scan_that_skipped_an_oversize_line() {
     let launch = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "tu_1", "type": "tool_result", "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a1b2c3d4e5f601 (x)\noutput_file: /nonexistent/out.txt\n"}]}]}, "timestamp": ts});
     let big = 5 * 1024 * 1024;
     let note = |pad: usize| {
-        let text = format!("<task-notification>\n<task-id>a1b2c3d4e5f601</task-id>\n<status>completed</status>\n<summary>{}</summary>\n</task-notification>", "p".repeat(pad));
+        let text = format!(
+            "<task-notification>\n<task-id>a1b2c3d4e5f601</task-id>\n<status>completed</status>\n<summary>{}</summary>\n</task-notification>",
+            "p".repeat(pad)
+        );
         serde_json::json!({"type": "user", "message": {"role": "user", "content": text}, "timestamp": ts}).to_string()
     };
-    let noise = serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "n".repeat(big)}]}, "timestamp": ts}).to_string();
+    let noise =
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "n".repeat(big)}]}, "timestamp": ts})
+            .to_string();
     let run = |name: &str, body: String| {
         let t = e.dir.join(name);
         std::fs::write(&t, body).unwrap();
