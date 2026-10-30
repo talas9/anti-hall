@@ -379,7 +379,7 @@ fn thinking_nudge_then_one_capped_block_per_task() {
     let (c, out) = dispatch("th1", &tp, "Design the cache", &[]);
     assert_eq!((c, out.is_empty()), (0, true), "the task's one block is spent: passes silently, never a loop");
     append(&tp, OWNER2);
-    assert_eq!(dispatch("th1", &tp, "Root-cause the leak", &[]).1.contains(NUDGE), true, "a new owner message is a new task");
+    assert!(dispatch("th1", &tp, "Root-cause the leak", &[]).1.contains(NUDGE), "a new owner message is a new task");
     let s = stats("th1");
     assert_eq!((s["dispatch"].as_u64(), s["nudge"].as_u64(), s["blocked"].as_u64(), s["block_capped"].as_u64()), (Some(4), Some(2), Some(1), Some(1)), "{s}");
 }
