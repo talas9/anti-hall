@@ -829,6 +829,38 @@ mod swarm {
         }
     }
 
+    /// GH #484: each spawn denied over `guards.maxConcurrentAgents` bumps `spawns_denied_over_cap`; an allowed spawn does not.
+    #[test]
+    fn a_spawn_denied_over_the_cap_is_counted_and_an_allowed_one_is_not() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = || {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("spawns_denied_over_cap", &[])
+        };
+        let h = swarm_home("sw-cap484");
+        let running = |n: usize| {
+            let mut out = String::new();
+            for i in 0..n {
+                let (tu, id) = (format!("toolu_{i}"), format!("a{i:015x}"));
+                let call = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tu, "name": "Agent", "input": {"description": format!("lane {i}"), "subagent_type": "Explore"}}]}});
+                let res = json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tu,
+                    "content": format!("Async agent launched successfully.\nagentId: {id} (internal ID - do not mention to user)\noutput_file: /tmp/x/{id}.output")}]}});
+                out.push_str(&format!("{call}\n{res}\n"));
+            }
+            std::fs::write(format!("{h}/t.jsonl"), out).unwrap();
+        };
+        let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "Explore", "prompt": "x"}, "session_id": "s", "transcript_path": format!("{h}/t.jsonl"), "cwd": h});
+        running(3);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        assert_eq!(call(&h, &p, T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "3 running is under the cap of 4");
+        assert_eq!(count(), 0, "an allowed spawn is not a denial");
+        running(4);
+        let v = call(&h, &p, T0 + 1, Some(8.0 * GB), 16.0 * GB);
+        assert!(matches!(&v, Some(Some(Verdict::Exact(x))) if x.code == 2), "{v:?}");
+        assert_eq!(count(), 1, "the denial is counted once");
+    }
+
     #[test]
     fn a_write_capable_spawn_beside_a_running_writer_gets_the_advisory_and_is_recorded() {
         let h = swarm_home("sw-adv");
