@@ -336,7 +336,9 @@ mod tests {
     /// deferral to a Node hook that no longer runs.
     #[test]
     fn a_check_past_the_hard_deadline_answers_by_its_policy_not_a_deferral() {
-        let p = json!({"session_id": "s-463", "cwd": "/", "hook_event_name": "UserPromptSubmit", "prompt": "hi"});
+        // a session left on this worker thread by an earlier request must not take the notice of this one (Codex P2)
+        crate::script::set_session("");
+        let p = json!({"session_id": "s-463-pre-start-notice", "cwd": "/", "hook_event_name": "UserPromptSubmit", "prompt": "hi"});
         let meta = Meta {
             host: "claude".into(),
             event: "UserPromptSubmit".into(),
@@ -355,6 +357,9 @@ mod tests {
         crate::deadline::end();
         let a = got.iter().find(|(id, _)| id == "switch-notice").map(|(_, a)| a.clone());
         assert!(matches!(a, Some(Answer::Decided(..))), "past the deadline the check still answers by its policy: {a:?}");
+        // an open check that could not run tells the user once in THIS request's session (Codex P2: the pre-start cut skipped it)
+        assert!(format!("{a:?}").contains(crate::defaults::text("script.notice_key")), "the guard-down notice is told: {a:?}");
+        assert_eq!(crate::script::session(), "s-463-pre-start-notice");
     }
 
     #[test]

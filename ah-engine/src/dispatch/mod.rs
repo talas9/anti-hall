@@ -530,6 +530,15 @@ fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
     }
 }
 
+/// Whether a call the daemon gave no answers for passes at once (exit 0, the unreachable notice) instead of answering every entry by
+/// its own failure policy (no answers: a safety guard fails closed, the rest pass under guards.failOpenNonSafety). A completed non-OK
+/// reply goes by the entries' policies; so does a reply that timed out (Codex P1: the daemon was reached, so the policies apply, and a
+/// safety guard must not pass because its answer came late); only an unreachable daemon passes.
+fn passes_unasked(non_ok: bool, timed_out: bool, unavailable: impl FnOnce() -> bool) -> bool {
+    let _ = timed_out;
+    !non_ok && unavailable()
+}
+
 /// `guards.failOpenNonSafety` (default on), read from the request's environment and the loaded settings.
 fn fail_open_enabled(env: &crate::reqenv::RequestEnv) -> bool {
     let st = crate::checks::git::util::Settings::from_env(env);
@@ -747,11 +756,14 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_| false, &|_, _, _| {}),
         (Some(_), _) => match ask_daemon_for(&meta, raw, guard) {
             Some(a) => a,
-            None if crate::client::take_non_ok_reply() => Vec::new(),
-            None if crate::client::take_unavailable() || crate::client::fail_open_unavailable() => {
-                return Outcome { out: String::new(), code: 0, err: crate::client::unreachable_notice(raw, Some(&args.event)) };
+            None => {
+                let (non_ok, timed_out) = (crate::client::take_non_ok_reply(), crate::client::take_timed_out());
+                let unavailable = || crate::client::take_unavailable() || crate::client::fail_open_unavailable();
+                if passes_unasked(non_ok, timed_out, unavailable) {
+                    return Outcome { out: String::new(), code: 0, err: crate::client::unreachable_notice(raw, Some(&args.event)) };
+                }
+                Vec::new()
             }
-            None => Vec::new(),
         },
     };
     let blocking_checks = defaults::list("judge.dispatch_blocking_checks");
@@ -1045,6 +1057,16 @@ fn on_panic(event: &str, guard: bool) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    /// Codex P1: a client whole-exchange timeout is no unreachable daemon: the entries answer by their own policies (a safety guard
+    /// fails closed), never the blanket exit 0; an unreachable daemon still passes, and a non-OK reply still goes by the policies.
+    #[test]
+    fn a_timed_out_reply_goes_by_each_entrys_policy_not_the_unreachable_pass() {
+        assert!(!super::passes_unasked(false, true, || true), "a timeout (which also marks unavailable) must not pass every entry");
+        assert!(super::passes_unasked(false, false, || true), "an unreachable daemon passes");
+        assert!(!super::passes_unasked(true, false, || true), "a non-OK reply goes by the policies");
+        assert!(!super::passes_unasked(false, false, || false));
+    }
+
     use super::*;
 
     /// The over-cap tool-name scan (a payload past the stdin cap is spooled and its top-level `tool_name` found structurally, so the

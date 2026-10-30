@@ -126,6 +126,12 @@ pub fn beat() {
     });
 }
 
+/// Arm the cut of the script call in progress at the request's client deadline plus `grace` ms (the check's
+/// `diagnostics.deadline_grace_ms`), or disarm it (`None`).
+pub fn set_cut_grace(grace: Option<u64>) {
+    set_cut_armed(grace.is_some());
+}
+
 /// Arm (or disarm) the cut of the script call in progress at the request's client deadline.
 pub fn set_cut_armed(on: bool) {
     CUT_ARMED.with(|c| c.store(on, Ordering::Relaxed));
@@ -350,6 +356,23 @@ mod tests {
         beat();
         assert!(slot.load(Ordering::Relaxed) > 5000, "the beat records the progress time: {}", slot.load(Ordering::Relaxed));
         BEAT.with(|b| *b.borrow_mut() = None);
+    }
+
+    /// Codex P2 (#463): the deadline grace of a check reaches the native scans its script runs, not only the interpreter.
+    #[test]
+    fn a_native_scan_keeps_the_deadline_grace_of_its_check() {
+        begin_now();
+        set_cut_grace(Some(400));
+        client_deadline(0);
+        assert!(!cut_due(), "inside the check's grace a native scan is not cut");
+        end();
+        begin(Instant::now() - std::time::Duration::from_secs(60));
+        set_cut_grace(Some(400));
+        client_deadline(0);
+        assert!(cut_due(), "past the grace it is");
+        set_cut_grace(None);
+        assert!(!cut_due(), "a disarmed call is never cut");
+        end();
     }
 
     #[test]

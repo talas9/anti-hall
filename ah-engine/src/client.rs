@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 thread_local! {
     static LAST_NON_OK_REPLY: Cell<bool> = const { Cell::new(false) };
     static LAST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
+    /// The last exchange got no reply within its whole wait window (`Exch::Slow`): the daemon may be judging it still.
+    static LAST_TIMED_OUT: Cell<bool> = const { Cell::new(false) };
     /// Set by the dispatcher for a guard event (dispatch.guard_events): such a call waits for a starting daemon.
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
 }
@@ -32,6 +34,11 @@ thread_local! {
 /// (`client.cold_guard_wait_ms`) instead of answering nothing; prompts and advisories never wait.
 pub(crate) fn set_guard_call(on: bool) {
     GUARD_CALL.set(on);
+}
+
+/// Whether the last call timed out waiting for its reply (and clear the mark).
+pub(crate) fn take_timed_out() -> bool {
+    LAST_TIMED_OUT.replace(false)
 }
 
 pub(crate) fn take_non_ok_reply() -> bool {
