@@ -1284,21 +1284,22 @@ fn a_late_reply_is_waited_for_and_never_runs_the_node_hooks_twice() {
 }
 
 #[test]
-fn a_reply_that_never_comes_fails_open_without_node_and_counts_in_the_slow_streak() {
+fn a_reply_that_never_comes_answers_each_entry_by_its_policy_without_node_and_counts_in_the_slow_streak() {
     let e = Env::new("slow-never");
     let marker = e.dir.join("node-ran");
     let map = event_map(&e, "PreToolUse", &format!("touch {}; echo NODEBLOCK >&2; exit 2", marker.display()), "true");
     let d = scripted_daemon(&e, vec![NEVER, NEVER]);
     let t = Instant::now();
     let (code, out, err) = slow_call(&e, &map, &[WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "2")]);
-    assert_eq!((code, out.as_str()), (0, ""), "no reply in the window: fail open");
-    assert!(err.contains("went through unchecked"), "the session is told once (#229): {err:?}");
+    // Codex P1: the daemon was reached, so each entry answers by its own failure policy: the safety guards fail closed
+    assert_eq!((code, out.as_str()), (2, ""), "no reply in the window: a safety guard fails closed: {err:?}");
+    assert!(err.contains("anti-hall git: BLOCKED"), "the safety guard says why: {err:?}");
     assert!(t.elapsed() < common::scaled(Duration::from_millis(7000)), "bounded by the window, not the daemon: {:?} {}", t.elapsed(), engine_log(&e));
     assert!(!marker.exists(), "the Node hook must not run for a call the daemon may have processed");
     assert!(engine_log(&e).contains("\tclient_slow\t"), "{}", engine_log(&e));
     assert!(!e.state().join("daemon.down.until").exists(), "one slow call must not mark the daemon down");
-    let (code, _, err) = slow_call(&e, &map, &[WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "2")]);
-    assert_eq!((code, err.as_str()), (0, ""), "the same session is not told twice");
+    let (code, _, _) = slow_call(&e, &map, &[WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "2")]);
+    assert_eq!(code, 2, "a second timeout goes by the same policies");
     assert!(!marker.exists());
     assert!(e.state().join("daemon.down.until").exists(), "two slow calls in a row mark the daemon down: {}", engine_log(&e));
     assert_eq!(d.seen(), 2);
@@ -1317,7 +1318,7 @@ fn consecutive_slow_calls_mark_a_wedged_daemon_down_and_a_normal_reply_resets_th
     assert!(!e.state().join("daemon.down.until").exists(), "{}", engine_log(&e));
     // the second slow in a row trips it
     let (code, _, err) = slow_call(&e, &map, &n);
-    assert_eq!((code, err.as_str()), (0, ""), "a slow call fails open");
+    assert_eq!(code, 2, "a slow call answers by each entry's policy: the safety guards fail closed (Codex P1): {err:?}");
     assert!(e.state().join("daemon.down.until").exists(), "two slow calls in a row mark the daemon down: {}", engine_log(&e));
     // marked down: the next call does not reach the daemon
     let before = d.seen();
