@@ -33,6 +33,7 @@
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
 //! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
+//! | `fenceSweep(rel, infix)` / `writeFenced(rel, text, handle, infix, guard?)` | the fenced commit of a file guarded by a lock taken in this call, optionally discarded when a watched value moved past its bound: see [`write_fenced`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
 //! | `repoContext(dir)` | JSON `{unsure, toplevel, root}` of the checkout around `dir`: see [`repo_context`] |
@@ -458,6 +459,52 @@ pub fn lock_release(id: f64) -> bool {
     held.release()
 }
 
+/// `fenceSweep(rel, infix)`: remove every staged copy (`<rel><infix>*`) of the scoped file `rel`; a holder of the lock that guards
+/// `rel` runs it right after taking the lock, before reading `rel` (see `nodelock::fence_sweep`). Returns how many were removed.
+pub fn fence_sweep(home: &str, rel: &str, infix: &str) -> rquickjs::Result<f64> {
+    let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(0.0) };
+    Ok(crate::checks::guardkit::nodelock::fence_sweep(&path, infix) as f64)
+}
+
+/// `writeFenced(rel, text, handle, infix)`: the fenced commit of `text` to the scoped file `rel` under the lock `handle` taken in
+/// this call (see `nodelock::fenced_write`): `true` when published, `false` when the lock is not held by this call or was taken
+/// over before the commit (nothing of ours lands over the new holder's write), or on an I/O failure. `guard` (optional): a JSON
+/// array of `[rel, key, max]` triples, re-read after the ownership check immediately before the rename; when the number at `key`
+/// of any scoped JSON file `rel` is greater than `max`, the stage is discarded and `false` returned (GH #426: an idle AFK entry
+/// loses to an owner presence or `back` newer than its decision). A malformed guard publishes nothing.
+pub fn write_fenced(home: &str, rel: &str, text: &str, id: f64, infix: &str, guard: Option<&str>) -> rquickjs::Result<bool> {
+    let Some(path) = scoped_target(home, rel, text.len(), false)? else { return Ok(false) };
+    let mut watch: Vec<(std::path::PathBuf, String, f64)> = Vec::new();
+    if let Some(g) = guard {
+        let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(g) else { return Ok(false) };
+        for row in rows {
+            let (Some(r), Some(k), Some(max)) =
+                (row.get(0).and_then(|v| v.as_str()), row.get(1).and_then(|v| v.as_str()), row.get(2).and_then(serde_json::Value::as_f64))
+            else {
+                return Ok(false);
+            };
+            let Some(wp) = scoped_target(home, r, 0, false)? else { return Ok(false) };
+            watch.push((wp, k.to_string(), max));
+        }
+    }
+    let still_valid = || {
+        watch.iter().all(|(wp, k, max)| {
+            let v = std::fs::read_to_string(wp).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+            v.as_ref().and_then(|v| v.get(k.as_str())).and_then(serde_json::Value::as_f64).is_none_or(|n| n <= *max)
+        })
+    };
+    let started = std::time::Instant::now();
+    let sync = defaults::num("script.write_sync") != 0;
+    let r = HELD.with(|h| {
+        h.borrow()
+            .iter()
+            .find(|(n, _, _)| *n as f64 == id)
+            .map(|(_, held, _)| crate::checks::guardkit::nodelock::fenced_write_if(held, &path, text, infix, sync, &still_valid))
+    });
+    credit_blocking(started);
+    Ok(matches!(r, Some(Ok(true))))
+}
+
 /// `memory()`: `{"available": bytes|null, "total": bytes}` of this machine (available counts reclaimable cache; `null` when the
 /// read failed, `total` 0 when unknown).
 pub fn memory() -> String {
@@ -640,6 +687,21 @@ pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
         }
     };
     Ok(cfgstore::resolve_one(requested, &layers, &|_| None).value.to_string())
+}
+
+/// `metric(name, labels, by)`: add `by` (a finite, non-negative whole number) to the registered counter `name`, labelled by the
+/// string members of the JSON object `labels` in the order the metric registers its labels. Goes through [`crate::metrics::bump_by`],
+/// so a count made outside the daemon is dropped, and an unregistered name is ignored.
+pub fn metric_add(name: &str, labels: &str, by: f64) {
+    if !by.is_finite() || by < 0.0 {
+        return;
+    }
+    let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(labels).unwrap_or_default();
+    let order =
+        defaults::raw(&format!("metric.{name}")).get("labels").map(|v| v.strings().into_iter().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+    let pairs: Vec<(String, String)> = order.iter().filter_map(|l| obj.get(l).and_then(|v| v.as_str()).map(|v| (l.clone(), v.to_string()))).collect();
+    let refs: Vec<(&str, &str)> = pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    crate::metrics::bump_by(name, &refs, by as u64);
 }
 
 /// `tailLines(path, windowBytes, lineMax)`: the last `windowBytes` (clamped to `script.tail_max_bytes`) of a file as lines, the
@@ -1031,6 +1093,20 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
         })?,
     )?;
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
+    h.set(
+        "fenceSweep",
+        Function::new(c.clone(), |rel: String, infix: String| -> rquickjs::Result<f64> {
+            let home = with_settings(|st| st.home.clone())?;
+            fence_sweep(&home, &rel, &infix)
+        })?,
+    )?;
+    h.set(
+        "writeFenced",
+        Function::new(c.clone(), |rel: String, text: String, id: f64, infix: String, guard: Option<String>| -> rquickjs::Result<bool> {
+            let home = with_settings(|st| st.home.clone())?;
+            write_fenced(&home, &rel, &text, id, &infix, guard.as_deref())
+        })?,
+    )?;
     h.set("memory", Function::new(c.clone(), memory)?)?;
     h.set("agents", Function::new(c.clone(), |p: String| agents(&p))?)?;
     h.set("trackedAgents", Function::new(c.clone(), |s: String, p: String, d: String| tracked_agents(&s, &p, &d))?)?;
@@ -1065,13 +1141,8 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     )?;
     // one advisory event for advisory kind `kind` (flagged, asked, confirmed, injected, suppressed, jev_error)
     h.set("advisory", Function::new(c.clone(), |kind: String, metric: String| crate::obs::counters::advisory(&kind, &metric))?)?;
-    h.set(
-        "metric",
-        Function::new(c.clone(), |name: String, labels: Vec<String>| {
-            let pairs: Vec<(&str, &str)> = labels.iter().step_by(2).zip(labels.iter().skip(1).step_by(2)).map(|(k, v)| (k.as_str(), v.as_str())).collect();
-            crate::metrics::bump(&name, &pairs)
-        })?,
-    )?;
+    // add `by` to the registered counter `name` with the labels of the JSON object `labels` (an unregistered name is ignored)
+    h.set("metric", Function::new(c.clone(), |name: String, labels: String, by: f64| metric_add(&name, &labels, by))?)?;
     h.set("log", Function::new(c.clone(), |kind: String, text: String| crate::discard::note("script_log", &format!("{kind}: {text}")))?)?;
     h.set("deadlineLeftMs", Function::new(c.clone(), deadline_left_ms)?)?;
     h.set("realpathEx", Function::new(c.clone(), |p: String| realpath_ex(&p))?)?;
