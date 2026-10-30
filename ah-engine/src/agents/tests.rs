@@ -1990,3 +1990,86 @@ fn n430_nudge_scope_off_bypasses_a_recorded_done_hold() {
     println!("MEASURE n430 done-off: nudge_open={}", st.nudges.contains_key("abc"));
     assert!(st.nudges.contains_key("abc"), "agents.nudgeScope=false still honoured the done hold");
 }
+
+// ---- GH #430 Codex P1: done holds written by an older version (old field, no activity time) ---------------------------------------
+
+/// A child judged done at `n + 3 min` by a version that stored done holds in the old busy-hold field, saved to the state file the
+/// way that version wrote it (no new-format done hold), and read back as an upgraded engine does at start-up.
+fn n430_legacy_done_held(tag: &str) -> (PathBuf, u64, PathBuf, State) {
+    let (h, n, child, st) = n430_done_held(tag);
+    let mut v = serde_json::to_value(&st).unwrap();
+    let o = v.as_object_mut().unwrap();
+    o.remove("nudge_done_hold");
+    let until = n + 3 * MIN + nudge_lim("health_done_hold_ms");
+    o.insert("nudge_hold".into(), json!({ "abc": until }));
+    let e = nudge_env(&h, n + 3 * MIN, &[]);
+    let p = e.dir().join(pth("state"));
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, serde_json::to_string(&v).unwrap()).unwrap();
+    let st = load_state(&e);
+    assert_eq!(st.nudge_hold.get("abc"), Some(&until), "the seeded old-shape state file was not read back");
+    assert!(st.nudge_done_hold.is_empty(), "the seeded old-shape state file already had a new-format hold");
+    (h, n, child, st)
+}
+
+fn nudge_lim(k: &str) -> u64 {
+    crate::defaults::raw("agent_nudge.limits").get(k).and_then(crate::defaults::V::as_integer).and_then(|i| u64::try_from(i).ok()).unwrap()
+}
+
+/// (a) old version records a done hold -> upgrade -> the child resumes, then hangs: the legacy hold no longer covers it.
+#[test]
+fn n430_legacy_done_hold_is_released_when_the_child_resumes_after_the_upgrade() {
+    let (h, n, child, mut st) = n430_legacy_done_held("n430-legacy-resume");
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    assert!(!st.nudges.contains_key("abc"), "held while idle");
+    let b = n + 20 * MIN;
+    append(&child, &[asst(b, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    for m in [1, 18, 40] {
+        tick(&nudge_env(&h, b + m * MIN, &[]), &mut st);
+    }
+    println!("MEASURE n430 legacy-resume: nudge_open={} legacy_left={}", st.nudges.contains_key("abc"), st.nudge_hold.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "a legacy done hold still suppressed a child that worked again and went bad");
+}
+
+/// (a) the child resumed while the old version still ran (output newer than the hold's verdict time, before the first upgraded tick).
+#[test]
+fn n430_legacy_done_hold_is_released_by_output_written_before_the_upgrade() {
+    let (h, n, child, mut st) = n430_legacy_done_held("n430-legacy-pre");
+    let b = n + 10 * MIN;
+    append(&child, &[asst(b, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    for m in [1, 18, 40] {
+        tick(&nudge_env(&h, b + m * MIN, &[]), &mut st);
+    }
+    println!("MEASURE n430 legacy-pre: nudge_open={}", st.nudges.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "a legacy done hold ignored output the child wrote after the verdict");
+}
+
+/// (b) agents.nudgeScope=false: the legacy field is honoured exactly as before (held to its expiry even after new output).
+#[test]
+fn n430_legacy_done_hold_is_honoured_as_before_with_nudge_scope_off() {
+    let (h, n, child, mut st) = n430_legacy_done_held("n430-legacy-off");
+    let until = *st.nudge_hold.get("abc").unwrap();
+    let off = [("ANTIHALL_AGENT_NUDGE_SCOPE", "false")];
+    let b = n + 20 * MIN;
+    append(&child, &[asst(b, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    for m in [1, 18, 40, 90] {
+        tick(&nudge_env(&h, b + m * MIN, &off), &mut st);
+        assert!(!st.nudges.contains_key("abc"), "nudgeScope off: the legacy hold was not honoured at +{m} min");
+    }
+    assert_eq!(st.nudge_hold.get("abc"), Some(&until), "nudgeScope off: the legacy hold was changed");
+    assert!(st.nudge_done_hold.is_empty(), "nudgeScope off: the legacy hold was migrated");
+}
+
+/// (c) a legacy hold on a done child that stays idle keeps it held until the hold's own expiry.
+#[test]
+fn n430_legacy_done_hold_keeps_an_idle_done_child_held() {
+    let (h, n, _child, mut st) = n430_legacy_done_held("n430-legacy-idle");
+    let until = *st.nudge_hold.get("abc").unwrap();
+    for m in [18, 40, 90, 200] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+        assert!(!st.nudges.contains_key("abc"), "an idle legacy-held done child was nudged at +{m} min");
+    }
+    let held_until = st.nudge_done_hold.get("abc").map(|d| d.until).or_else(|| st.nudge_hold.get("abc").copied());
+    println!("MEASURE n430 legacy-idle: held_until={held_until:?} until={until}");
+    assert_eq!(held_until, Some(until), "the legacy hold's expiry was not kept");
+}
