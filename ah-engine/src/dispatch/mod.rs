@@ -549,7 +549,10 @@ fn degraded_pass(non_ok: bool, unanswered: bool, degraded: impl FnOnce() -> bool
 /// the defaults key `client.timeout_skip_name_key_by_check` names for it, else the check's own name. A check the daemon could not
 /// answer then passes instead of answering by its failure policy (Codex P1 (b) on #473: the timeout fallback ignored skips).
 fn skipped_check(env: &crate::reqenv::RequestEnv, check: &str) -> bool {
-    let name = defaults::raw("client.timeout_skip_name_key_by_check").get(check).and_then(defaults::V::as_str).map_or(check, defaults::text);
+    let name = match defaults::raw("client.timeout_skip_name_key_by_check").get(check).and_then(defaults::V::as_str) {
+        Some(key) => defaults::text(key),
+        None => check,
+    };
     crate::checks::guardkit::settings::is_skipped(&crate::checks::git::util::Settings::from_env(env), name)
 }
 

@@ -1433,7 +1433,13 @@ fn a_timed_out_non_guard_check_still_tells_the_session_once() {
 fn the_legacy_hook_path_without_event_passes_a_timeout() {
     let e = Env::new("slow-legacy");
     let _d = scripted_daemon(&e, vec![NEVER]);
-    let (code, _, err) = e.run_with(&["hook"], false, &bash("git push --force origin main", &e.dir), true, &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW]);
+    let (code, _, err) = e.run_with(
+        &["hook"],
+        false,
+        &bash("git push --force origin main", &e.dir),
+        true,
+        &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW],
+    );
     assert_eq!(code, 0, "{err:?}");
 }
 
