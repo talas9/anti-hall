@@ -679,4 +679,35 @@ mod shared_count_tests {
         assert_eq!(r.message_count_from_others("primary-x", &fam, prefix).unwrap(), 1);
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
     }
+
+    /// GH #429: a saved read position past the partition's message count is impossible. `count_for` (the descriptor count) read it as
+    /// 0 unread and `union_of` (the gate's store-only rows) as an empty list, so a Stop could pass; both must say "unknown" instead.
+    #[test]
+    fn a_store_position_past_the_message_count_is_unknown_in_the_count_and_the_union() {
+        let home = std::env::temp_dir().join(format!("ah-pg-pastpos-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let dir = crate::meshw::union::store_dir(Path::new(&st.home), "k1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let row = RegistryRow { id: "primary-x".into(), worktree_path: Some("/wt/p".into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+        assert!(w.upsert_registry(&row, 1, |_, _| true).unwrap());
+        for i in 0..2 {
+            w.append_message_from("primary-x", 10 + i, Some(&format!("in-{i}")), "from a child", Some("child-a")).unwrap();
+        }
+        let ns = defaults::text("mesh_write.cursor_ns_store").to_string();
+        let floor = |v: i64| CursorPut { partition: "primary-x".into(), ns: ns.clone(), reader: defaults::text("mesh_write.floor_reader").to_string(), value: v, retired_line: None, updated_at: 1 };
+        // control: a position inside the count reads normally (2 rows, position 0 -> 2 unread)
+        w.reader_cursor_txn(&[floor(0)]).unwrap();
+        let ok = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).unwrap();
+        assert_eq!((ok["state"].as_str(), ok["unread"].as_u64(), ok.get("unknown")), (Some("ok"), Some(2), None), "{ok}");
+        assert_eq!(union_of(&st, "k1", "primary-x", None, None, false, 100.0).unwrap()["state"], "ok");
+        // position 20 > total 2
+        w.reader_cursor_txn(&[floor(20)]).unwrap();
+        let c = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).unwrap();
+        assert_eq!(c["unknown"], json!(true), "count_for: a position past the total is unknown, not 0 unread: {c}");
+        let u = union_of(&st, "k1", "primary-x", None, None, false, 100.0).unwrap();
+        assert_eq!(u["state"], "unsure", "union_of: a position past the total is unknown, not an empty list: {u}");
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
+    }
 }

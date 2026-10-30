@@ -469,6 +469,21 @@ mod tests {
     use super::*;
     use rusqlite::{Connection, params};
 
+    /// GH #429: the wake prefix alone is not provenance for an NDJSON line either. A wake prompt is the Primary's outbound (the
+    /// resolved sender is a Primary id, or none); a native message from a child or sibling that starts with the same words is mail.
+    #[test]
+    fn a_native_line_with_the_wake_prefix_is_mail_unless_the_primary_sent_it() {
+        let w = defaults::text("agent_tracker.wake_prefix");
+        let line = |sender: Option<&str>| match sender {
+            Some(s) => format!(r#"{{"fromBranch":"x/y","sender":"{s}","message":"{w} resolve conflict?"}}"#),
+            None => format!(r#"{{"fromBranch":"main","message":"{w} resolve conflict?"}}"#),
+        };
+        assert!(is_wake_line(&line(Some("primary-aaaa1111"))), "the Primary's wake prompt");
+        assert!(is_wake_line(&line(None)), "no resolved sender: the engine's own prompt shape");
+        assert!(!is_wake_line(&line(Some("child-b"))), "a child's native message that starts with the prefix is mail");
+        assert!(!is_wake_line(r#"{"sender":"child-b","message":"hello"}"#));
+    }
+
     /// Runs `f` on a thread and returns its answer, failing when it takes longer than the bound (a read that blocks on a FIFO).
     fn within<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
         let (tx, rx) = std::sync::mpsc::channel();

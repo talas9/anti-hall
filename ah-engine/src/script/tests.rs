@@ -2465,6 +2465,9 @@ fn the_parent_gate_counts_the_shared_peek_count_when_on_and_the_old_projection_w
         ("own-sends-only", vec![Own("mine")], Some(0), 0, 1, 0, None, Some("1")),
         ("child-unread", vec![Child("please review")], Some(0), 0, 1, 0, Some("1"), Some("1")),
         ("child-wake-prefix", vec![Child("anti-hall wake: resolve conflict?")], Some(0), 0, 1, 0, Some("1"), Some("1")),
+        // GH #429: the poke prefix is not provenance; a child's mesh send that starts with it is mail, the native-ingested poke is not
+        ("child-poke-prefix", vec![Child("[Primary poke] resolve conflict?")], Some(0), 0, 1, 0, Some("1"), Some("1")),
+        ("native-poke", vec![Native("[Primary poke] nudge")], Some(0), 0, 1, 0, None, Some("1")),
         ("native-wake", vec![Native(wake)], Some(0), 0, 1, 0, None, Some("1")),
         ("no-own-row", own_after.clone(), None, 6, 2, 6, None, Some("2")),
         // an impossible floor (past the message count) is unknown, never a confirmed zero: the cached count stands
