@@ -388,7 +388,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `wide-search-guard` | PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
 | `advisor-guard` | Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing. |
 | `switch-notice` | Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
-| `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
+| `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets. |
@@ -4674,13 +4674,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `tasklist_hygiene.create_tool` | `TaskCreate` |  |  | The tool that creates a task. |
+| `tasklist_hygiene.delete_trigger` | `deleted` |  |  | The TaskUpdate statuses that count as deleting a task. |
+| `tasklist_hygiene.detail_done` | `Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own f...` |  |  | Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from. |
 | `tasklist_hygiene.done_trigger` | `completed` |  |  | The TaskUpdate status values that count as a task being finished and trigger the delete-it line. |
+| `tasklist_hygiene.event_deleted` | `deleted` |  |  | Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge). |
+| `tasklist_hygiene.event_nudge` | `nudge` |  |  | Counter event: a completed-task note was shown (one per TaskUpdate to a done status). |
+| `tasklist_hygiene.event_prune` | `prune_suggested` |  |  | Counter event: the prune suggestion (more finished tasks than the prune default) reached the model. |
 | `tasklist_hygiene.guard_name` | `tasklist-hygiene` |  |  | The guard id this check answers to in skip.json and in messages. |
 | `tasklist_hygiene.instead_block` | `shorten the subject and delete finished tasks first; put details in the histo...` |  |  | What to do, in the block message. |
 | `tasklist_hygiene.instead_budget` | `keep subjects as `T-<n> [P] title`, details in the history ledger; delete fin...` |  |  | What to do, in the advisory line. |
-| `tasklist_hygiene.instead_done` | `TaskUpdate status=deleted once logged there; the list holds open tasks only. ...` |  |  | What to do, in the done line. |
+| `tasklist_hygiene.instead_done` | `TaskUpdate status=deleted (own task entries are not user data).` |  |  | What to do, in the done line. |
 | `tasklist_hygiene.join` | ` ` |  |  | Separator between the parts of one line. |
-| `tasklist_hygiene.msg_done` | `task {id} done: task-list entries of this session are not user data; log its ...` |  |  | What the done line says; {id} is the task id. |
+| `tasklist_hygiene.msg_done` | `task {id} done: log Cause/Fix/Verified in the history ledger.` |  |  | What the done line says; {id} is the task id. |
 | `tasklist_hygiene.msg_open` | `{n} open tasks (budget {max}).` |  |  | The open-count breach; {n} is the open-task count and {max} handover.taskListBudget. |
 | `tasklist_hygiene.msg_subject` | `task subject is {n} chars (max {max}).` |  |  | The subject breach; {n} is the subject length and {max} handover.taskSubjectMax. |
 | `tasklist_hygiene.summary` | `Claude only (Codex has no task tools). After a task is marked completed, tell...` |  |  | One-line description of the tasklist-hygiene check in the generated reference. |
@@ -14163,6 +14168,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
+| `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
 | `devswarm_parent_gate_count_mismatch` | counter | counts |  | Parent-gate own-mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384). |
