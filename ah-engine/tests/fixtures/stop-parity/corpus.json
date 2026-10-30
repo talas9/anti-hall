@@ -1,0 +1,4325 @@
+{
+ "recorded": "2026-10-30",
+ "recorder": "the original Node task-guard and tasklist-guard hooks (plugins/anti-hall-node/hooks) run once on each scenario in an isolated HOME; decisions frozen in node{}",
+ "classes": "block | advise (non-blocking output) | allow",
+ "scenarios": [
+  {
+   "id": "tg-open-pending",
+   "class": "open-tasks",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:00.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:01.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x0",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "write docs",
+         "description": "write docs",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:02.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x0",
+        "content": "Task #1 created successfully: write docs"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:03.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x1",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "fix bug",
+         "description": "fix bug",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:04.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x1",
+        "content": "Task #2 created successfully: fix bug"
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-all-completed",
+   "class": "open-tasks",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:05.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:06.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x2",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:07.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x2",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:08.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x3",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-inprogress-unowned",
+   "class": "open-tasks",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:09.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:10.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x4",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:11.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x4",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:12.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x5",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "in_progress"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-owner-running-agent",
+   "class": "owner-liveness",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:13.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:14.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x6",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:15.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x6",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:16.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x7",
+        "name": "Agent",
+        "input": {
+         "description": "worker-1",
+         "name": "worker-1",
+         "prompt": "do it",
+         "run_in_background": true
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:17.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x7",
+        "content": "Async agent launched successfully.\nagentId: a8\nThe agent is working in the background."
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:18.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x8",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "in_progress",
+         "owner": "worker-1"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-owner-ended-agent",
+   "class": "owner-liveness",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:19.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:20.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x9",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:21.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x9",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:22.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x10",
+        "name": "Agent",
+        "input": {
+         "description": "worker-1",
+         "name": "worker-1",
+         "prompt": "do it",
+         "run_in_background": false
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:23.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x10",
+        "content": "done"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:24.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x11",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "in_progress",
+         "owner": "worker-1"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-pending-live-agents",
+   "class": "owner-liveness",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:25.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:26.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x12",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:27.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x12",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:28.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x13",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "b",
+         "description": "b",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:29.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x13",
+        "content": "Task #2 created successfully: b"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:30.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x14",
+        "name": "Agent",
+        "input": {
+         "description": "helper",
+         "name": "helper",
+         "prompt": "do it",
+         "run_in_background": true
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:31.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x14",
+        "content": "Async agent launched successfully.\nagentId: a15\nThe agent is working in the background."
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-owner-subject",
+   "class": "owner-decision",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:32.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:33.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x15",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "OWNER: decide the name",
+         "description": "OWNER: decide the name",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:34.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x15",
+        "content": "Task #1 created successfully: OWNER: decide the name"
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-blockedon-owner",
+   "class": "owner-decision",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:35.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:36.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x16",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "wait for hardware",
+         "description": "wait for hardware",
+         "status": "pending",
+         "metadata": {
+          "blockedOn": "owner"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:37.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x16",
+        "content": "Task #1 created successfully: wait for hardware"
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-blockedby-open",
+   "class": "blocked-by",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:38.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:39.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x17",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "first",
+         "description": "first",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:40.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x17",
+        "content": "Task #1 created successfully: first"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:41.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x18",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "second",
+         "description": "second",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:42.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x18",
+        "content": "Task #2 created successfully: second"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:43.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x19",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "2",
+         "addBlockedBy": [
+          "1"
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-blockedby-done",
+   "class": "blocked-by",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:44.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:45.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x20",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "first",
+         "description": "first",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:46.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x20",
+        "content": "Task #1 created successfully: first"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:47.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x21",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:48.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x22",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "second",
+         "description": "second",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:49.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x22",
+        "content": "Task #2 created successfully: second"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:50.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x23",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "2",
+         "addBlockedBy": [
+          "1"
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-renamed",
+   "class": "rename",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:51.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:52.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x24",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "old name",
+         "description": "old name",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:53.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x24",
+        "content": "Task #1 created successfully: old name"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:54.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x25",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "subject": "new name"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-deleted",
+   "class": "deleted",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:55.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:56.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x26",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:57.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x26",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:58.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x27",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "deleted"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-many-completed-prune",
+   "class": "prune",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:59.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:00.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x28",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t0",
+         "description": "t0",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:01.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x28",
+        "content": "Task #1 created successfully: t0"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:02.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x29",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:03.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x30",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t1",
+         "description": "t1",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:04.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x30",
+        "content": "Task #2 created successfully: t1"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:05.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x31",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "2",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:06.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x32",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t2",
+         "description": "t2",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:07.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x32",
+        "content": "Task #3 created successfully: t2"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:08.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x33",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "3",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:09.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x34",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t3",
+         "description": "t3",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:10.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x34",
+        "content": "Task #4 created successfully: t3"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:11.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x35",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "4",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:12.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x36",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t4",
+         "description": "t4",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:13.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x36",
+        "content": "Task #5 created successfully: t4"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:14.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x37",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "5",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:15.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x38",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t5",
+         "description": "t5",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:16.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x38",
+        "content": "Task #6 created successfully: t5"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:17.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x39",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "6",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:18.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x40",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t6",
+         "description": "t6",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:19.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x40",
+        "content": "Task #7 created successfully: t6"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:20.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x41",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "7",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:21.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x42",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t7",
+         "description": "t7",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:22.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x42",
+        "content": "Task #8 created successfully: t7"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:23.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x43",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "8",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:24.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x44",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t8",
+         "description": "t8",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:25.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x44",
+        "content": "Task #9 created successfully: t8"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:26.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x45",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "9",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:27.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x46",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t9",
+         "description": "t9",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:28.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x46",
+        "content": "Task #10 created successfully: t9"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:29.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x47",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "10",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:30.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x48",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t10",
+         "description": "t10",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:31.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x48",
+        "content": "Task #11 created successfully: t10"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:32.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x49",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "11",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:33.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x50",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t11",
+         "description": "t11",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:34.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x50",
+        "content": "Task #12 created successfully: t11"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:35.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x51",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "12",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:36.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x52",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t12",
+         "description": "t12",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:37.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x52",
+        "content": "Task #13 created successfully: t12"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:38.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x53",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "13",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:39.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x54",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "t13",
+         "description": "t13",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:40.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x54",
+        "content": "Task #14 created successfully: t13"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:41.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x55",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "14",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "advise"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-owner-by-description",
+   "class": "owner-liveness",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:42.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:43.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x56",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:44.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x56",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:45.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x57",
+        "name": "Agent",
+        "input": {
+         "description": "lane-x",
+         "name": "lane-x",
+         "prompt": "do it",
+         "run_in_background": true
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:46.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x57",
+        "content": "Async agent launched successfully.\nagentId: a58\nThe agent is working in the background."
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:47.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x58",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "in_progress",
+         "owner": "lane-x"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:48.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x59",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "b",
+         "description": "b",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:49.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x59",
+        "content": "Task #2 created successfully: b"
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-no-tasks",
+   "class": "open-tasks",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:50.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:51.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x60",
+        "name": "Bash",
+        "input": {
+         "command": "ls"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tg-two-inprogress-agent",
+   "class": "owner-liveness",
+   "hooks": [
+    "task-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:52.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:53.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x61",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:54.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x61",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:55.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x62",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "b",
+         "description": "b",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:56.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x62",
+        "content": "Task #2 created successfully: b"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:57.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x63",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "in_progress"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:58.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x64",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "2",
+         "status": "in_progress"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:59.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x65",
+        "name": "Agent",
+        "input": {
+         "description": "w",
+         "name": "w",
+         "prompt": "do it",
+         "run_in_background": true
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:00.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x65",
+        "content": "Async agent launched successfully.\nagentId: a66\nThe agent is working in the background."
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "task-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-3-edits-no-tasks-no-progress",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:01.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:02.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x66",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:03.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x67",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:04.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x68",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-2-edits",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:05.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:06.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x69",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:07.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x70",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-3-edits-tasks-fresh",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:08.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:09.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x71",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:10.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x72",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:11.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x73",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:12.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x74",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:13.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x74",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:14.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x75",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "fresh",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-3-edits-tasks-stale",
+   "class": "progress-stale",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:15.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:16.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x76",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:17.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x77",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:18.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x78",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:19.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x79",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:20.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x79",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:21.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x80",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "stale",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-3-edits-no-tasks-fresh",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:22.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:23.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x81",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:24.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x82",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:25.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x83",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "fresh",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-integration-only",
+   "class": "integration",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:26.000Z",
+     "message": {
+      "role": "user",
+      "content": "integrate"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:27.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x84",
+        "name": "Bash",
+        "input": {
+         "command": "git merge fix/a"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:28.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x85",
+        "name": "Bash",
+        "input": {
+         "command": "git cherry-pick abc123"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:29.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x86",
+        "name": "Bash",
+        "input": {
+         "command": "git checkout dev"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-curl-tmp",
+   "class": "scratch",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:30.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:31.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x87",
+        "name": "Bash",
+        "input": {
+         "command": "curl -s http://x/y > /tmp/a.json"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:32.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x88",
+        "name": "Bash",
+        "input": {
+         "command": "curl -s http://x/z > /tmp/b.json"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:33.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x89",
+        "name": "Bash",
+        "input": {
+         "command": "curl -s http://x/w > /tmp/c.json"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-scratchpad-cwd",
+   "class": "scratch",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:34.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:35.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x90",
+        "name": "Bash",
+        "input": {
+         "command": "echo a > /tmp/claude-1/scratchpad/a.txt"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:36.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x91",
+        "name": "Bash",
+        "input": {
+         "command": "echo b > /tmp/claude-1/scratchpad/b.txt"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:37.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x92",
+        "name": "Bash",
+        "input": {
+         "command": "echo c > /tmp/claude-1/scratchpad/c.txt"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-plan-mode",
+   "class": "plan-mode",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:38.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:39.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x93",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:40.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x94",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:41.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x95",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "permission_mode": "plan",
+   "node": {
+    "tasklist-guard": "advise"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-bash-writes",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:42.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:43.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x96",
+        "name": "Bash",
+        "input": {
+         "command": "echo a > {{PROJ}}/a.txt"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:44.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x97",
+        "name": "Bash",
+        "input": {
+         "command": "echo b > {{PROJ}}/b.txt"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:45.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x98",
+        "name": "Bash",
+        "input": {
+         "command": "sed -i s/a/b/ {{PROJ}}/c.txt"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-git-commits",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:46.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:47.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x99",
+        "name": "Bash",
+        "input": {
+         "command": "git add -A && git commit -m a"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:48.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x100",
+        "name": "Bash",
+        "input": {
+         "command": "git commit -am b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:49.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x101",
+        "name": "Bash",
+        "input": {
+         "command": "git commit -am c"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-housekeeping",
+   "class": "housekeeping",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:50.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:51.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x102",
+        "name": "Bash",
+        "input": {
+         "command": "git status"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:52.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x103",
+        "name": "Bash",
+        "input": {
+         "command": "ls -la"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:53.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x104",
+        "name": "Bash",
+        "input": {
+         "command": "cargo build"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:54.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x105",
+        "name": "Bash",
+        "input": {
+         "command": "git log"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-state-dir-writes",
+   "class": "state-files",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:55.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:56.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x106",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/.anti-hall/progress/x/a.md",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:57.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x107",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/.anti-hall/history/x/a.md",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:58.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x108",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/.anti-hall/progress/x/b.md",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-stale-inprogress",
+   "class": "progress-stale",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:59.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:00.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x109",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:01.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x110",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:02.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x111",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:03.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x112",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:04.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x112",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:05.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x113",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "in_progress"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "fresh",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-two-inprogress-no-agent",
+   "class": "progress-stale",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:06.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:07.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x114",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:08.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x115",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:09.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x116",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:10.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x117",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:11.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x117",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:12.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x118",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "b",
+         "description": "b",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:13.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x118",
+        "content": "Task #2 created successfully: b"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:14.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x119",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "in_progress"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:15.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x120",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "2",
+         "status": "in_progress"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "fresh",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-two-inprogress-agent",
+   "class": "progress-stale",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:16.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:17.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x121",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:18.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x122",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:19.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x123",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:20.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x124",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:21.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x124",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:22.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x125",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "b",
+         "description": "b",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:23.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x125",
+        "content": "Task #2 created successfully: b"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:24.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x126",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "in_progress"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:25.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x127",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "2",
+         "status": "in_progress"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:26.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x128",
+        "name": "Agent",
+        "input": {
+         "description": "w",
+         "name": "w",
+         "prompt": "do it",
+         "run_in_background": true
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:27.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x128",
+        "content": "Async agent launched successfully.\nagentId: a129\nThe agent is working in the background."
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "fresh",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-one-request-output-path",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:28.000Z",
+     "message": {
+      "role": "user",
+      "content": "write the report into {{PROJ}}/out/ please"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:29.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x129",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/out/a.md",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:30.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x130",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/out/b.md",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:31.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x131",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/out/c.md",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-heredoc-progress",
+   "class": "progress-stale",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:32.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:33.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x132",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:34.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x133",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:35.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x134",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:36.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x135",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:37.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x135",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:38.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x136",
+        "name": "TaskUpdate",
+        "input": {
+         "taskId": "1",
+         "status": "completed"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:39.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x137",
+        "name": "Bash",
+        "input": {
+         "command": "cat >> {{PROJ}}/.anti-hall/progress/{{DATE}}/sess1.md <<'EOF'\nnote\nEOF"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "stale",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-5-edits-both",
+   "class": "untracked-work",
+   "hooks": [
+    "task-guard",
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:40.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:41.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x138",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f0.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:42.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x139",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f1.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:43.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x140",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f2.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:44.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x141",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f3.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:45.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x142",
+        "name": "Edit",
+        "input": {
+         "file_path": "{{PROJ}}/src/f4.rs",
+         "old_string": "a",
+         "new_string": "b"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:46.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x143",
+        "name": "TaskCreate",
+        "input": {
+         "subject": "a",
+         "description": "a",
+         "status": "pending"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:47.000Z",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "x143",
+        "content": "Task #1 created successfully: a"
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "fresh",
+   "node": {
+    "task-guard": "block",
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-write-new-files",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:48.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:49.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x144",
+        "name": "Write",
+        "input": {
+         "file_path": "{{PROJ}}/n1.md",
+         "content": "x"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:50.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x145",
+        "name": "Write",
+        "input": {
+         "file_path": "{{PROJ}}/n2.md",
+         "content": "x"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:51.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x146",
+        "name": "Write",
+        "input": {
+         "file_path": "{{PROJ}}/n3.md",
+         "content": "x"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "block"
+   },
+   "kept": {}
+  },
+  {
+   "id": "tl-notebook-ignored",
+   "class": "untracked-work",
+   "hooks": [
+    "tasklist-guard"
+   ],
+   "lines": [
+    {
+     "type": "user",
+     "timestamp": "2026-10-29T10:00:52.000Z",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:53.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x147",
+        "name": "Read",
+        "input": {
+         "file_path": "{{PROJ}}/a"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:54.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x148",
+        "name": "Grep",
+        "input": {
+         "pattern": "x"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:55.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x149",
+        "name": "Glob",
+        "input": {
+         "pattern": "*"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:56.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x150",
+        "name": "Bash",
+        "input": {
+         "command": "rg foo"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "timestamp": "2026-10-29T10:00:57.000Z",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "x151",
+        "name": "Bash",
+        "input": {
+         "command": "cat a.txt"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "progress": "none",
+   "node": {
+    "tasklist-guard": "allow"
+   },
+   "kept": {}
+  }
+ ]
+}
