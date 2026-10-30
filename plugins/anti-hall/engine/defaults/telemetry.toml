@@ -364,8 +364,12 @@ doc = "Why a kept-walk lookup missed and the window was walked afresh: none (not
 value = { kind = "counter", unit = "lookups", labels = ["reason"] }
 
 [metric.transcript_line_skipped_oversize]
-doc = "Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan answers as if the line were not there."
+doc = "Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there."
 value = { kind = "counter", unit = "lines", labels = ["reader"] }
+
+[metric.agent_scan_degraded]
+doc = "Agent scans that returned unknown (the callers' unsure path: the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) because the window held a line longer than agent_scan.max_line_bytes that was skipped unparsed, by reader: scan_window or scan_kept. Any oversize line degrades the scan, noise or not, since the skipped line may have carried a completion."
+value = { kind = "counter", unit = "scans", labels = ["reader"] }
 
 [metric.dispatch_overhead_us]
 doc = "Wall time of a dispatched hook request that no built-in check accounts for (request wall minus the sum of the checks), by hook event: parsing, plan, locks, waits and queueing inside the daemon."
