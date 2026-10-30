@@ -736,3 +736,84 @@ fn by_default_an_identical_retry_of_a_credit_blocked_push_is_blocked_again() {
         assert!(err.contains(&sha) && err.contains("already public or other: tell the owner"), "try {n}: {err}");
     }
 }
+
+// ---- PR #469 round 8: a script run by path, a continued or editor merge with a push in the same call ----
+
+/// A script run by a literal path is scanned like a commit message: a credit line on any line denies and names the file and
+/// line; a commit whose message layer 1 cannot read plus a push in the script is refused; a clean script runs; a missing,
+/// oversized or non-literal one is let through with an advisory.
+#[test]
+fn a_script_run_by_path_is_scanned_for_credit_lines() {
+    let e = Env::new("script");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    std::fs::create_dir_all(work.join("sub")).unwrap();
+    let credited = format!("#!/bin/sh\ngit commit -q --allow-empty -m \"x\\n\\n{CO}\"\ngit {P} -q origin main\n");
+    std::fs::write(work.join("publish.sh"), &credited).unwrap();
+    std::fs::write(work.join("sub/publish.sh"), &credited).unwrap();
+    std::fs::write(work.join("m.txt"), "feat: from a file\n").unwrap();
+    std::fs::write(work.join("unread.sh"), format!("#!/bin/sh\ngit commit -q --allow-empty -F m.txt\ngit {P} -q origin main\n")).unwrap();
+    std::fs::write(work.join("clean.sh"), format!("#!/bin/sh\ngit commit -q --allow-empty -m 'feat: plain'\ngit {P} -q origin main\n")).unwrap();
+    std::fs::write(work.join("big.sh"), format!("#!/bin/sh\n{}git {P}\n", "# padding line\n".repeat(40_000))).unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for (cmd, cwd) in [
+        ("bash publish.sh".to_string(), w),
+        ("sh publish.sh".to_string(), w),
+        ("zsh publish.sh".to_string(), w),
+        ("./publish.sh".to_string(), w),
+        ("source publish.sh".to_string(), w),
+        (". ./publish.sh".to_string(), w),
+        ("bash sub/publish.sh".to_string(), w),
+        (format!("cd {w} && bash publish.sh"), "/tmp"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, cwd);
+        if code != 2 || !err.contains("publish.sh") || !err.contains("line 2") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    let (out, err, code) = e.hook_in("bash unread.sh", w);
+    if code != 2 || !err.contains("separate") {
+        missed.push(format!("unread: code={code} stdout={out} stderr={err}"));
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    assert_eq!(e.hook_in("bash clean.sh", w), (String::new(), String::new(), 0), "clean script");
+    for cmd in ["bash nope.sh", "bash big.sh", "S=publish.sh; bash \"$S\""] {
+        let (out, err, code) = e.hook_in(cmd, w);
+        assert!(code == 0 && out.contains("not checked"), "{cmd}: advisory, not a block: code={code} stdout={out} stderr={err}");
+    }
+}
+
+/// A continued merge, rebase, cherry-pick or revert, a merge without -m and a revert without --no-edit take a message layer 1
+/// cannot read (a prepared MERGE_MSG): a push in the same call is refused; alone, or with a literal message, they run.
+#[test]
+fn a_continued_or_prepared_merge_message_and_a_push_in_the_same_call_are_refused() {
+    let e = Env::new("contmerge");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("git merge --continue && git {P}"),
+        format!("git rebase --continue && git {P}"),
+        format!("git cherry-pick --continue && git {P}"),
+        format!("git revert --continue && git {P}"),
+        format!("git merge origin/x && git {P}"),
+        format!("git revert HEAD && git {P}"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("separate") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    for cmd in [
+        "git merge --continue".to_string(),
+        format!("git merge x -m \"plain\" && git {P}"),
+        format!("git revert --no-edit HEAD && git {P}"),
+        format!("git merge --ff-only origin/main && git {P}"),
+        format!("git merge --abort && git {P}"),
+    ] {
+        assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "{cmd}");
+    }
+}
