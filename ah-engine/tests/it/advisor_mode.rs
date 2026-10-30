@@ -748,9 +748,15 @@ fn counters_after_a_nudge_and_a_block_show_in_status_and_telemetry_summary() {
             .unwrap();
         serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stdout)))
     };
-    for (name, v) in [("status", report(&["status", "--json"])["advisory"].clone()), ("telemetry summary", report(&["telemetry", "summary", "--json"])["advisory"].clone())] {
+    for (name, v) in
+        [("status", report(&["status", "--json"])["advisory"].clone()), ("telemetry summary", report(&["telemetry", "summary", "--json"])["advisory"].clone())]
+    {
         let t = &v["advisor_thinking"];
-        assert_eq!((t["dispatch"].as_u64(), t["nudge"].as_u64(), t["blocked"].as_u64(), t["dispatch_fix"].as_u64()), (Some(2), Some(1), Some(1), Some(1)), "{name}: {v}");
+        assert_eq!(
+            (t["dispatch"].as_u64(), t["nudge"].as_u64(), t["blocked"].as_u64(), t["dispatch_fix"].as_u64()),
+            (Some(2), Some(1), Some(1), Some(1)),
+            "{name}: {v}"
+        );
         assert_eq!(v["advisor_availability"]["silent_unknown"].as_u64(), Some(1), "{name}: {v}");
     }
 }
