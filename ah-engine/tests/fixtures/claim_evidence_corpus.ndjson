@@ -167,3 +167,8 @@
 {"text": "Tests pass; unverified.", "expect": "allow", "source": "gh-427"}
 {"text": "If CI is green the change is merged.", "expect": "allow", "source": "gh-427"}
 {"text": "According to plan, tests pass.", "expect": "block", "source": "gh-427"}
+{"text": "Unverified: files are deployed.", "expect": "allow", "source": "gh-432-p1a"}
+{"text": "Unverified - files are deployed.", "expect": "allow", "source": "gh-432-p1a"}
+{"text": "(Unverified) files are deployed.", "expect": "allow", "source": "gh-432-p1a"}
+{"text": "Unverified: tasks are merged.", "expect": "allow", "source": "gh-432-p1a"}
+{"text": "Unverified files are deployed.", "expect": "block", "source": "gh-432-p1a"}
