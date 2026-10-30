@@ -24,17 +24,33 @@ impl Env {
         Env { dir }
     }
 
-    /// The owner's state-directory config.toml (written before the first hook starts the daemon).
-    fn config(&self, text: &str) {
-        std::fs::create_dir_all(self.dir.join("eng")).unwrap();
-        std::fs::write(self.dir.join("eng/config.toml"), text).unwrap();
+    /// Runs against a copy of the plugin's engine files with `git.<key>` set to `value` in both default sets (the in-process
+    /// check reads the plugin files, not the user layer). Call before the first hook starts the daemon.
+    fn set_git(&self, key: &str, value: i64) {
+        let plugin = self.dir.join("plugin");
+        copy_tree(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine"), &plugin.join("engine"));
+        for d in ["engine/defaults", "engine/defaults.pristine"] {
+            let f = plugin.join(d).join("git.toml");
+            let text = std::fs::read_to_string(&f).unwrap();
+            let at = text.find(&format!("[git.{key}]")).unwrap();
+            let v = at + text[at..].find("\nvalue = ").unwrap() + "\nvalue = ".len();
+            let end = v + text[v..].find('\n').unwrap();
+            std::fs::write(&f, format!("{}{value}{}", &text[..v], &text[end..])).unwrap();
+        }
     }
 
     fn cmd(&self) -> Command {
         let mut c = Command::new(BIN);
         c.env("HOME", self.dir.join("home"))
             // an external CARGO_TARGET_DIR cannot find the checkout by walking up from the executable
-            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
+            .env(
+                "AH_ENGINE_PLUGIN_ROOT",
+                if self.dir.join("plugin").exists() {
+                    self.dir.join("plugin")
+                } else {
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall")
+                },
+            )
             .env("AH_ENGINE_DIR", self.dir.join("eng"))
             .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
             .env("AH_ENGINE_VERSION", "0.1.0")
@@ -84,6 +100,18 @@ impl Drop for Env {
             ah_engine::discard::harmless(self.cmd().args(["ctl", "stop"]).output());
         });
         ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
+    }
+}
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let (p, q) = (e.path(), to.join(e.file_name()));
+        if p.is_dir() {
+            copy_tree(&p, &q);
+        } else {
+            std::fs::copy(&p, &q).unwrap();
+        }
     }
 }
 
@@ -664,7 +692,7 @@ fn only_annotated_tags_on_unpushed_commits_are_scanned() {
 #[test]
 fn a_pruned_tracking_ref_blocks_once_then_advises_on_the_identical_retry() {
     let e = Env::new("pruned");
-    e.config("[git]\npush_ack_max_shas = 20\n");
+    e.set_git("push_ack_max_shas", 20);
     let (work, _) = pushed_repo(&e);
     git_ok(&work, &["checkout", "-q", "-b", "old"]);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
