@@ -67,6 +67,23 @@ fn coordinator(st: &State) -> Option<String> {
     st.agents.values().filter(|m| m.kind == kind_name("main")).max_by_key(|m| m.last_output_ms).map(|m| m.id.clone())
 }
 
+/// The session that started the lock holder: the nearest ancestor of `top` (at most `wake_scope.walk_max` parents up) that is the
+/// process of a followed session. `None`: no followed session started it, so nobody is told to stop it.
+pub(super) fn lock_owner(st: &State, top: u32, ppid: &dyn Fn(u32) -> u32) -> Option<String> {
+    let max = defaults::raw("agent_tracker.wake_scope").get("walk_max").and_then(|v| v.as_integer()).unwrap_or(0).max(0);
+    let mut cur = top;
+    for _ in 0..=max {
+        if cur <= 1 {
+            break;
+        }
+        if let Some(a) = st.agents.values().find(|a| !a.dead && a.pid == cur) {
+            return Some(a.id.clone());
+        }
+        cur = ppid(cur);
+    }
+    None
+}
+
 /// One watchdog pass (throttled by `interval_ms`).
 pub(crate) fn tick(env: &Env, st: &mut State) {
     if !env.act {
@@ -158,7 +175,18 @@ fn check(env: &Env, st: &mut State, table: &[procs::Proc], lock: &str) {
         "msg.lock_stall",
         &[("lock", &lock), ("pid", &top), ("cmd", &cmd), ("idle_min", &(idle_for / fmtn("ms_per_s") / 60)), ("waiters", &waiters), ("term", &note)],
     );
-    let target = coordinator(st);
+    let scoped = env.switch("agent_nudge.scope_setting");
+    let target = if scoped { lock_owner(st, top, &ppid) } else { coordinator(st) };
+    if scoped && target.is_none() {
+        let ws = defaults::raw("agent_tracker.wake_scope");
+        super::signals::rec(
+            env,
+            ws.str_field("class"),
+            ws.str_field("dropped"),
+            Outcome::Skip,
+            crate::telemetry::event::Fields::new().num("pid", top as u64).tok("reason", ws.str_field("foreign_pid")),
+        );
+    }
     let delivered = target.as_ref().map(|k| {
         let r = Reminder {
             id: format!("{:x}", crate::health::fnv(&format!("{lock}{top}{now}"))),

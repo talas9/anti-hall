@@ -34,6 +34,7 @@ pub const NUMS: &[(&str, u64)] = &[
     ("launcher.io_drain_ms", 100),
     ("launcher.spool_max_bytes", 67108864),
     ("launcher.notice_sessions_max", 64),
+    ("launcher.notice_counters", 1),
     ("launcher.selftest_engine_timeout_ms", 3000),
     ("launcher.reaper", 1),
     ("launcher.cli_lowercase_verbs", 1),

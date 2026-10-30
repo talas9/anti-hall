@@ -133,6 +133,17 @@ pub struct Nudge {
     pub fallback_at: u64,
 }
 
+/// An agentHealth `done` verdict on a child (#430): no nudge about it before `until`, and only while the child shows no activity newer
+/// than `activity_ms` (its last output when the verdict was given). Read only while agents.nudgeScope is on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DoneHold {
+    /// No nudge about the child before this time.
+    pub until: u64,
+    /// The child's last output when the verdict was given: newer output releases the hold.
+    pub activity_ms: u64,
+}
+
 /// A snooze kept per child and trigger, outside the nudge it was given to: it holds a re-raised condition until it runs out and its
 /// count carries over to the next nudge about the same condition.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -267,7 +278,16 @@ fn emit(env: &Env, event: &str, n: &Nudge) {
 }
 
 fn answer_line(n: &Nudge) -> String {
-    defaults::render("msg.agent_nudge_answer", &[("cmd", &defaults::text("agent_nudge.cmd")), ("child", &n.child), ("ref", &n.ref_id)])
+    defaults::render(
+        "msg.agent_nudge_answer",
+        &[
+            ("cmd", &defaults::text("agent_nudge.cmd")),
+            ("child", &n.child),
+            ("ref", &n.ref_id),
+            ("max", &lim("snooze_max_min")),
+            ("other", &lim("snooze_default_min")),
+        ],
+    )
 }
 
 /// Put `text` in front of session `to`: its reminder queue (its hook delivers it at its next turn) and, while a wake-watch covers
@@ -396,6 +416,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             || a.dead
             || st.nudges.contains_key(&a.id)
             || st.nudge_hold.get(&a.id).is_some_and(|t| *t > now)
+            || done_held(env, st, a, now)
             || super::signals::owner_active(env, a, now)
         {
             continue;
@@ -476,6 +497,13 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
                     st.nudge_hold.insert(id.clone(), now + lim("health_recheck_ms"));
                     continue;
                 }
+                // done: the child's work is finished; hold the nudge (and the judge) for the longer done window
+                if env.switch("agent_nudge.scope_setting") && l == defaults::text("agent_nudge.health_done") {
+                    hold_done(st, &a, now);
+                    let sup = defaults::raw("agent_nudge.suppress");
+                    rec(env, word("class"), sup.str_field("event"), Outcome::Skip, base(&a).tok("reason", sup.str_field("judge_done")).tok("trigger", trig));
+                    continue;
+                }
             }
         }
         let (ev_text, idle_min, _, step) = evidence(&a, &sig, &flag, now, &why);
@@ -538,6 +566,47 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
         emit(env, word("ev_sent"), &n);
         st.nudges.insert(id, n);
     }
+}
+
+/// Record an agentHealth `done` verdict: the child is held un-nudged for limits.health_done_hold_ms.
+/// Kept apart from the busy holds so agents.nudgeScope off ignores it entirely and new activity from the child releases it.
+pub(super) fn hold_done(st: &mut State, a: &Agent, now: u64) {
+    st.nudge_done_hold.insert(a.id.clone(), DoneHold { until: now + lim("health_done_hold_ms"), activity_ms: a.last_output_ms });
+}
+
+/// Moves done holds an older version wrote into the busy-hold field (no activity time) into the done holds (#430), so new output
+/// from the child releases them. A busy hold is never set further ahead than limits.health_recheck_ms, so an entry further ahead
+/// can only be such an old done hold. Its baseline is the earlier of the child's last output and the verdict time the hold implies
+/// (its expiry less limits.health_done_hold_ms), so output written after the verdict, even before the upgrade, releases it; a child
+/// still idle stays held to the same expiry. Run only with agents.nudgeScope on: off, the old field is read exactly as before.
+/// Idempotent: a moved entry is no longer in the old field. Entries for a child no longer followed are left to expire as before.
+fn adopt_legacy_done_holds(st: &mut State, now: u64) {
+    let busy_max = now.saturating_add(lim("health_recheck_ms"));
+    let span = lim("health_done_hold_ms");
+    let old: Vec<(String, u64)> = st.nudge_hold.iter().filter(|(c, t)| **t > busy_max && st.agents.contains_key(*c)).map(|(c, t)| (c.clone(), *t)).collect();
+    for (c, until) in old {
+        let activity_ms = st.agents.get(&c).map_or(0, |a| a.last_output_ms).min(until.saturating_sub(span));
+        st.nudge_done_hold.entry(c.clone()).or_insert(DoneHold { until, activity_ms });
+        st.nudge_hold.remove(&c);
+    }
+}
+
+/// Whether a done verdict still holds this child: the scope rules are on, the hold has not run out and the child has produced no
+/// output since the verdict (a child that resumed work and went bad again is judged afresh).
+fn done_held(env: &Env, st: &State, a: &Agent, now: u64) -> bool {
+    env.switch("agent_nudge.scope_setting") && st.nudge_done_hold.get(&a.id).is_some_and(|h| h.until > now && a.last_output_ms <= h.activity_ms)
+}
+
+/// An answer at or after the last send proves the parent saw the nudge: the wake fallback never queues it again (a snooze moves the
+/// send clock, which read as "sent, never delivered"). Recorded once per send.
+fn answered_since_send(env: &Env, n: &mut Nudge) -> bool {
+    if !env.switch("agent_nudge.scope_setting") || n.answer_at < n.last_sent {
+        return false;
+    }
+    n.fallback_at = env.now_ms;
+    let sup = defaults::raw("agent_nudge.suppress");
+    rec(env, word("class"), sup.str_field("event"), Outcome::Skip, ev(n).tok("reason", sup.str_field("answered")));
+    true
 }
 
 fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
@@ -603,6 +672,7 @@ fn follow(env: &Env, st: &mut State) {
             && !n.last_text.is_empty()
             && now.saturating_sub(n.last_sent) >= lim("wake_fallback_ms")
             && live(st, &n.parent)
+            && !answered_since_send(env, &mut n)
         {
             let r = Reminder {
                 id: format!("{}-{}-q", n.id, n.reminders),
@@ -1057,11 +1127,16 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
     take_turns(env, st);
     follow(env, st);
     dead_notices(env, st);
+    if env.switch("agent_nudge.scope_setting") {
+        adopt_legacy_done_holds(st, env.now_ms);
+    }
     let mut budget = lim("health_per_tick");
     open_new(env, st, &mut budget);
     watch_parents(st);
     let now = env.now_ms;
     st.nudge_hold.retain(|_, t| *t > now);
+    let agents = &st.agents;
+    st.nudge_done_hold.retain(|c, h| h.until > now && agents.get(c).is_some_and(|a| a.last_output_ms <= h.activity_ms));
     let forget = lim("snooze_forget_ms");
     let agents = &st.agents;
     st.nudge_snooze.retain(|k, s| now < s.until.saturating_add(forget) && k.split_once('|').is_some_and(|(c, _)| agents.contains_key(c)));

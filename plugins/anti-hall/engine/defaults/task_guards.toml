@@ -306,7 +306,7 @@ value = { section = "guards", key = "taskGuard", env = "", aliases = [], option 
 
 [task_guard.prune_setting]
 doc = "Completed or cancelled tasks kept before the task tracker suggests pruning."
-value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
+value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 3 }
 
 [task_guard.state_prefix]
 doc = "Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`)."
@@ -1284,7 +1284,7 @@ value = "verify the handover and record the result."
 
 [tasklist_hygiene.summary]
 doc = "One-line description of the tasklist-hygiene check in the generated reference."
-value = "Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
+value = "Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
 
 [tasklist_hygiene.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -1304,11 +1304,35 @@ value = ["completed"]
 
 [tasklist_hygiene.msg_done]
 doc = "What the done line says; {id} is the task id."
-value = "task {id} done: task-list entries of this session are not user data; log its outcome in .anti-hall/history/<date>/<session>.md, then delete it."
+value = "task {id} done: log Cause/Fix/Verified in the history ledger."
 
 [tasklist_hygiene.instead_done]
 doc = "What to do, in the done line."
-value = "TaskUpdate status=deleted once logged there; the list holds open tasks only. Nothing else is exempt from the never-delete rule."
+value = "TaskUpdate status=deleted (own task entries are not user data)."
+
+[tasklist_hygiene.detail_done]
+doc = "Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from."
+value = "Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
+
+[tasklist_hygiene.event_nudge]
+doc = "Counter event: a completed-task note was shown (one per TaskUpdate to a done status)."
+value = "nudge"
+
+[tasklist_hygiene.event_deleted]
+doc = "Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge)."
+value = "deleted"
+
+[tasklist_hygiene.event_prune]
+doc = "Counter event: the prune suggestion (more finished tasks than the prune default) reached the model."
+value = "prune_suggested"
+
+[tasklist_hygiene.delete_trigger]
+doc = "The TaskUpdate statuses that count as deleting a task."
+value = ["deleted"]
+
+[metric.tasklist_hygiene]
+doc = "Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "tasklist_hygiene" }
 
 [tasklist_hygiene.msg_subject]
 doc = "The subject breach; {n} is the subject length and {max} handover.taskSubjectMax."

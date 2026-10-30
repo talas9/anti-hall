@@ -2552,3 +2552,43 @@ value = "version mismatch (sessions are not blocked): {detail}"
 [compat.log_join]
 doc = "What joins several mismatch lines in the engine log line."
 value = "; "
+
+[recent_tel.enabled]
+doc = "Record the telemetry of the recent fixes: cfg_cache (ah.cfg / ah.settings memo hits and misses), tail_newest_reads (capped against fallback full tail reads), requests_served and sigint_drains. 1 on, 0 off (the counters stop; what was recorded stays)."
+value = 1
+
+[recent_tel.cfg_hit]
+doc = "The `result` label of cfg_cache for a read answered from the per-call memo."
+value = "hit"
+
+[recent_tel.cfg_miss]
+doc = "The `result` label of cfg_cache for a read that went to the host."
+value = "miss"
+
+[recent_tel.tail_capped]
+doc = "The `mode` label of tail_newest_reads for a read that asked for at most `max` lines."
+value = "capped"
+
+[recent_tel.tail_full]
+doc = "The `mode` label of tail_newest_reads for a read with no cap (the fallback after a capped read found nothing)."
+value = "fallback_full"
+
+[launcher.notice_counters]
+doc = "Count the once-per-session notice in the launcher stats (launcher_counter names notice_shown, notice_suppressed, notice_evicted). 1 on, 0 off."
+value = 1
+
+[metric.cfg_cache]
+doc = "ah.cfg / ah.settings reads of check scripts, by whether the per-call memo answered (hit) or the host did (miss). Counted per check call and folded into the next call's single cfgGen host call."
+value = { kind = "counter", unit = "reads", labels = ["result"] }
+
+[metric.tail_newest_reads]
+doc = "Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap)."
+value = { kind = "counter", unit = "reads", labels = ["mode"] }
+
+[metric.requests_served]
+doc = "Requests the daemon ran checks for (not skipped because the client had already hung up: see client_gone_skipped)."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.sigint_drains]
+doc = "Graceful drains started by SIGINT (the same drain as SIGTERM)."
+value = { kind = "counter", unit = "drains", labels = [] }

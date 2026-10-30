@@ -110,7 +110,7 @@ pub fn bump(name: &str, labels: &[(&str, &str)]) {
     bump_by(name, labels, 1);
 }
 
-/// Add `by` to the counter `name` from code that has no `Metrics` at hand ([`bump`] with a count; the same bounds).
+/// Add `by` to the counter `name` from code that has no `Metrics` at hand ([`bump`] with a count; the same bounds); `0` adds nothing.
 pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
     if by == 0 || !is_registered(name) {
         return;
@@ -121,6 +121,11 @@ pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
         return;
     }
     g.entry(key).or_insert_with(|| (name.to_string(), labels.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect(), 0)).2 += by;
+}
+
+/// Whether the telemetry of the recent fixes (config cache, newest-tail reads, served requests, SIGINT drains) is on (`recent_tel.enabled`).
+pub fn recent_on() -> bool {
+    defaults::num("recent_tel.enabled") != 0
 }
 
 /// Move the counts [`bump`] gathered into `m`.

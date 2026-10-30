@@ -507,7 +507,7 @@ fn an_ignored_prune_advisory_blocks_the_stop_up_to_the_cap_then_lets_it_through(
 #[test]
 fn the_prune_block_is_silent_under_the_limit_and_before_the_advisory_was_shown() {
     let w = World::new("prune-quiet");
-    let few: Vec<(&str, &str)> = (0..5).map(|_| ("[P2] old", "completed")).collect();
+    let few: Vec<(&str, &str)> = (0..2).map(|_| ("[P2] old", "completed")).collect();
     assert!(!enforce_stop(&w, &few, true).contains("block"), "under the limit");
     let many: Vec<(&str, &str)> = (0..12).map(|_| ("[P2] old", "completed")).collect();
     assert!(!enforce_stop(&w, &many, false).contains("block"), "the advisory was never shown");

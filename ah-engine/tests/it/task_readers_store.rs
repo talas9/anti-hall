@@ -74,6 +74,26 @@ impl Scratch {
         let o = ch.wait_with_output().unwrap();
         format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
     }
+
+    /// The `advisory` counters of `ah-engine status --json` in the scratch state directory (no daemon: read from the counter journal).
+    fn advisory_counters(&self) -> Value {
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(["status", "--json"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", self.home())
+            .env("AH_ENGINE_DIR", self.dir.join("state"))
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .env("AH_ENGINE_PLUGIN_ROOT", &plugin)
+            .env("CLAUDE_PLUGIN_ROOT", &plugin)
+            .env("ANTIHALL_INGEST_DRY_RUN", "1")
+            .current_dir(&self.dir)
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("status --json: {e}: {}", String::from_utf8_lossy(&o.stdout)));
+        v["advisory"].clone()
+    }
 }
 
 impl Drop for Scratch {
@@ -120,6 +140,38 @@ fn tasklist_hygiene_counts_the_open_tasks_of_the_store() {
     let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskCreate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"subject": "one more"}});
     let out = s.check("tasklist-hygiene", &payload, &[]);
     assert!(out.contains("14 open tasks (budget 12)"), "13 pending in the store plus the new one: {out}");
+}
+
+#[test]
+fn the_task_done_note_leads_with_the_action_and_fits_before_the_cut() {
+    let s = Scratch::new("dn");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
+    let out = s.check("tasklist-hygiene", &payload, &[]);
+    let first = out.split("\\n").next().unwrap_or("");
+    assert!(first.contains("task 1 done: log Cause/Fix/Verified in the history ledger."), "the action leads the first line: {out}");
+    assert!(first.chars().count() < 115 + 40, "the first line stays short enough to survive the digest cut: {first}");
+    assert!(out.contains("TaskUpdate status=deleted (own task entries are not user data)"), "the delete instruction sits on the second line: {out}");
+}
+
+#[test]
+fn the_task_list_nudges_are_counted() {
+    let s = Scratch::new("tc");
+    std::fs::create_dir_all(s.dir.join("state")).unwrap(); // the counter journal is appended to, not created with its directory
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    let call = |status: &str| {
+        let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": status}});
+        s.check("tasklist-hygiene", &payload, &[]);
+    };
+    call("completed");
+    call("completed");
+    call("deleted");
+    call("in_progress"); // neither a nudge nor a deletion
+    let adv = s.advisory_counters();
+    assert_eq!(adv["tasklist_hygiene"]["nudge"], 2, "one per completed TaskUpdate: {adv}");
+    assert_eq!(adv["tasklist_hygiene"]["deleted"], 1, "one per status=deleted TaskUpdate: {adv}");
 }
 
 #[test]
