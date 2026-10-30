@@ -1223,7 +1223,6 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     Ok(())
 }
 
-
 /// `{"current": n, "top": [[rule, n], ..], "last": n}`: blocks recorded for `session`, its most frequent rules, and the block
 /// count of the most recent other session in the look-back window (`guard_rules.blocks_window_days`). Empty counts when the
 /// telemetry store cannot be opened.

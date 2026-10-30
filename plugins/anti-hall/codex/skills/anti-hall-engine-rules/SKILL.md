@@ -1,0 +1,147 @@
+---
+name: anti-hall-engine-rules
+description: "Use when an anti-hall block or nudge names a rule, or you need the exact wording and fix of a guard rule."
+---
+
+# Rules
+
+Every rule the engine enforces, with what, why and what to do instead.
+
+## Rules the engine enforces
+
+Generated from the same config the engine reads. Tier: essential rules are also in the session-start digest.
+
+- `advisor.review` (skill, switch `guards.advisorReview`): A review-shaped agent on ... is not allowed while the advisor is available. Instead: Use an Opus, Fable or Codex agent for the review, or call the advisor yourself; retry this spawn once if the model is deliberate.
+- `advisor.plan` (skill, switch `guards.advisorReview`): A plan is being written with no advisor call since the task began. Instead: Call the advisor on this plan first, then write it.
+- `advisor.retry` (skill, switch `guards.advisorReview`): ... is being edited again after a failed test or build, with no advisor call in between. Instead: Consult the advisor on the failure before editing again.
+- `ask_guard.advise` (skill): do not hold work on a question. Instead: continue with the recommended reversible option.
+- `ask_guard.block` (skill): this question would pause authorized work. Why: Work should not wait on a question. Instead: continue with the recommended reversible option.
+- `silent_nudge.msg` (skill): ... of your own ... have gone silent past the ...m threshold: ....... Why: Advisory only; nothing was auto-killed. Instead: check the silent agents for progress.
+- `broad_kill.pattern` (skill): `...` is blocked: it kills every process that matches a name or pattern, not one process you started.
+- `broad_kill.everyone` (skill): `...` is blocked: it signals every process you own, or your whole process group.
+- `broad_kill.lookup` (skill): `...` is blocked: it kills whatever a name or port lookup returns, not a process you started.
+- `burn.msg` (skill): this tool call is paused after work with no recorded outcome. Why: Tokens spent with nothing to show for them are wasted budget; running agents in parallel is fine. Instead: save a report of the outcome and stop.
+- `burn.waste` (skill): this tool call is paused after repeated work with no outcome.
+- `claim_evidence.claim` (skill, switch `guards.claimEvidence`): "..." (...) has no matching check run this turn. Instead: run the check and show its result, or say it was not verified.
+- `claim_evidence.pushed` (skill, switch `guards.claimEvidence`): pushed this turn, then called done, but CI and merge state were never checked. Instead: check the run (gh run list, gh pr checks), or report it as pushed, not done.
+- `codex_handover.avail_note` (skill): Codex unavailable until ... (...). Instead: route correctness review to ... until then.
+- `codex_handover.avail` (skill): Codex binary detected on PATH (per a SessionStart PATH probe). Why: Necessary but not sufficient: it does not prove Codex is authenticated or functional, only that a spawn is worth attempting. If a Codex spawn returns null at runtime, take the documented Opus/Sonnet fallback; that null-check is still the real backstop. Instead: use Codex for correctness review.
+- `codex_handover.neg` (skill): No session handover found under .anti-hall/handovers/. Why: If one was written this session, it may be in the wrong location. Instead: the handover skill writes under .anti-hall/handovers/; check there.
+- `codex_handover.nudge` (skill): ... edits across ... files have no Codex review. Why: An independent Codex review catches correctness bugs (off-by-one, races, subtle low-level bugs). Instead: request a Codex review of the diff.
+- `codex_handover.quota` (skill): codex:codex-rescue reported quota exhaustion (...). Why: Recorded to ~/.anti-hall/codex-availability.json until ...; Codex is unavailable until then. Instead: route correctness review to Sonnet.
+- `codex_handover.snaponly` (skill): a snapshot exists, but no session handover was saved. Why: It holds git state, a task-list snapshot and the last user messages verbatim, which may carry session rules the compact summary dropped. It is a crash dump, not a handover (no judgment went into it). Instead: read the snapshot before continuing.
+- `command.heavy` (skill): ...... can't run in the main thread. Why: Its raw output would flood the main conversation.
+- `command.edit` (skill): this shell file edit must run in a helper agent. Why: Hands-on edits belong to a worker, which reports back a short summary. Instead: spawn ... to make the edit and report a short summary.
+- `command.send` (skill): `hivecontrol workspace ...` is blocked. Why: anti-hall's shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically. Instead: send the message through the DevSwarm mesh.
+- `command.mailbox` (skill): a helper tried to drain the DevSwarm mailbox. Why: A subagent that acks or reads advances the shared cursor, so the main thread silently misses mail (defect f0958b13fe2b). Instead: report back so the main agent can drain it.
+- `command.stash` (skill): `git stash ...` is blocked for .... Why: A stash can swallow another agent's protected WIP (defect b08b26566b92). Instead: save the work in a WIP commit.
+- `command.rawread_inbox` (skill): a shell read of the raw DevSwarm inbox file is blocked. Why: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped. Instead: read the inbox through the mesh CLI.
+- `command.dsread_monitor` (skill): `hivecontrol workspace monitor` is blocked. Why: It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.
+- `command.dsread_rm` (skill): `hivecontrol workspace read-messages` is blocked. Why: It mark-reads and drains the native queue, losing messages the durable inbox still needs.
+- `ctxbudget.lc` (skill): limit conservation is active (...). Why: Usage is near a plan limit. Instead: route routine execution to Codex or cheaper Claude helpers.
+- `ctxbudget.ah_tokens` (skill): context is ~...K tokens, past your autoHandover.maxTokens ceiling...: write a handover now.
+- `ctxbudget.ah_pct` (skill): context is at ~...%...: write a handover now.
+- `ctxbudget.ah_nag` (skill): context is now ~...% (handover already saved earlier this session). Instead: remind the user to ....
+- `ctxbudget.ah_soft` (skill): context looks high (~...%, ESTIMATED). Why: This session's exact context window could not be determined, so treat this as a soft heads-up, not a command. Instead: offer to save a handover.
+- `ctxbudget.ah_pause` (skill): good stopping point: context is still ~...% and a handover is already saved. Instead: tell the user to ....
+- `ctxbudget.ah_gate` (skill): new work exceeds the post-handover budget (...). Why: Before starting this request, judge YOURSELF whether it needs more than that budget. Instead: ask whether to save the work for after ....
+- `ctxbudget.ah_backstop` (skill): context is ~...%, past the post-handover budget. Instead: refresh the handover with ....
+- `ctxbudget.ca` (skill): your reply recommends compacting ("...") but .... Why: "No background agents running" is necessary, not sufficient; only the auto-handover threshold directive (or genuinely high context) justifies a SAFE TO COMPACT line. Instead: retract the compact advice and continue.
+- `ctxbudget.hb` (skill): your reply declares ready to compact/restart ("...") but the handover is not consolidated: .... Why: A restart-ready declaration needs a consolidated task list and memory index, or the next session inherits the clutter. Instead: consolidate the task list and the MEMORY.md index within the budgets (handover skill, step 3), then declare again.
+- `devswarm_role.pg_warning` (skill, switch `devswarm.childRole`): workspace status needs attention. Instead: review the workspace status instructions.
+- `disk_watch.msg` (skill, switch `diskWatch.enabled`): Low disk space: .... Why: A full disk fails builds and writes, and a machine with almost no space left can panic or lose unsaved work. Instead: Free space before starting more builds, clones or worktrees; nothing was deleted....
+- `git.launcher` (skill): a write to the managed launcher folder was stopped. Why: anti-hall manages those files itself; overwriting one could run unwanted code under a trusted name. Instead: leave the launcher folder unchanged.
+- `git.reused_message` (skill): reused commit message has an AI co-author line. Why: Commits in this setup carry no AI co-author line, even when the message is reused. Instead: remove the credit and use an explicit commit message.
+- `git.gh_credit` (skill): PR, issue or release text has an AI credit line. Why: Pull requests and issues in this setup carry no AI credit. Instead: remove the credit line and retry.
+- `git.gh_credit_elsewhere` (skill): chained command text has an AI credit line. Why: The credit line is in the `...` part, not in the gh text; nothing here carries AI credit. Instead: remove the credit from the chained command.
+- `git.runner_placeholder` (skill): a runner hides the command beside a force or delete flag. Why: The placeholder is filled in at run time, so the command could secretly be a git push. Instead: run git directly with explicit arguments.
+- `git.runner_no_subcommand` (skill): a runner hides the git subcommand beside an unsafe flag. Why: ... supplies the subcommand later, so it could be a push with that flag. Instead: run git directly with explicit arguments.
+- `git.runner_push` (skill): a runner could hide a force-push argument. Why: ... adds words to the command, so a hidden --force can't be ruled out. Instead: run git push directly with explicit arguments.
+- `git.find_push` (skill): find could supply hidden force-push arguments. Why: find fills in the arguments, so a force push (`+ref`) can't be ruled out. Instead: run git push directly with explicit arguments.
+- `git.handover` (essential): this commit includes a private session handover. Why: Handovers are private session notes and are never committed. Instead: unstage the handover before committing.
+- `git.force_push` (essential): a force push was stopped. Why: Rewriting published history should be a deliberate human decision. Instead: push without rewriting published history.
+- `git.delete_ref` (skill): remote branch or tag deletion was stopped. Why: Deleting published refs needs the owner's explicit OK. Instead: get the owner’s approval for this exact deletion.
+- `git.push_cmdsubst` (skill): command substitution could hide a force-push flag. Why: It could hide a --force flag from the check. Instead: use literal arguments for git push.
+- `git.trailer_remap` (skill): a trailer setting adds AI credit. Why: Commits in this setup carry no AI co-author line. Instead: remove the trailer setting and commit again.
+- `git.commit_credit` (essential): commit has an AI co-author line. Why: Commits in this setup carry no AI co-author line. Instead: remove the Co-Authored-By line and commit again.
+- `git.commit_file_credit` (skill): commit message file has an AI co-author line. Why: Commits in this setup carry no AI co-author line. Instead: remove the Co-Authored-By line and commit again.
+- `git.gh_jev` (skill): PR, issue or release text credits an AI assistant. Why: Pull requests and issues in this setup carry no AI credit. Instead: remove the AI credit and retry.
+- `git.commit_jev` (skill): commit message credits an AI assistant. Why: Commits in this setup carry no AI co-author line. Instead: remove the AI credit and commit again.
+- `git.commit_file_jev` (skill): commit message file credits an AI assistant. Why: Commits in this setup carry no AI co-author line. Instead: remove the AI credit and commit again.
+- `git.creating_credit` (skill): git ... would create a commit with AI credit. Why: Commits in this setup carry no AI co-author line, however it reaches git. Instead: remove the Co-Authored-By line and commit again.
+- `git.creating_credit_elsewhere` (skill): git ... is chained with text containing AI credit. Why: The credit line is in the `...` part, not in the commit message. Instead: remove the credit from the chained command.
+- `edit_guard.msg` (essential): ... is not allowed: the ... does not edit files directly.
+- `edit_guard.self_edit` (skill): ... on .anti-hall/edit-allow.json is not allowed. Why: That file decides which files the main thread may edit, so the main thread never edits it. Instead: ask the user to update and re-trust the edit allowlist.
+- `edit_guard.outside` (skill): ... on a handover file outside the project is not allowed. Why: Handovers live inside the project, where they are found on resume. Instead: write it yourself at ...; no subagent or override is needed.
+- `edit_guard.new` (skill): a new handover must be written at the session path. Why: New handovers belong under .anti-hall/handovers/<date>/<session>/HANDOVER.md. Instead: write it at the session handover path.
+- `edit_guard.patch` (skill): this apply_patch could not be read (...), so its targets can't be checked. Why: Edits in the main thread are checked against the delegation rule. Instead: send a well-formed patch.
+- `api_guard_v1.msg` (essential): this edit references APIs missing from the installed runtime. Why: These attributes are absent from the real module/object; they look like fabrications. Instead: verify the API names and correct the references.
+- `compact_decl_v1.msg` (skill): new work started after a SAFE TO COMPACT declaration. Why: The declaration must be the last act of the turn; new work after it makes the handover stale. Instead: retract the declaration before continuing.
+- `inbox_read_v1.store` (skill): a raw DevSwarm store read was stopped. Why: The store is the write/derive layer; a raw read risks a partial view and a layering violation. Instead: read through the mesh inbox CLI.
+- `handovers.advisory` (skill): ... handover problem(s) and ... day brief(s) out of date in ... Why: Searches for earlier work and decisions read these briefs, and a malformed or unindexed handover is invisible to them. Instead: run the handover maintenance command.
+- `inference.msg` (skill): your reply states a cause as fact ('...') but no tool output in this session mentions it.
+- `speculation_judge.msg` (skill): your reply states an unchecked claim as fact. Why: Unverified claims read as facts. Instead: verify the claim or label it unverified.
+- `lane_test.policy` (skill, switch `guards.allowTestSuites`): tests are off by owner policy (...): ... Why: The owner chose to verify at deploy instead of running tests here. Instead: Build or check syntax, then report the change and that tests were not run.
+- `lane_test.msg` (skill, switch `guards.allowTestSuites`): a helper cannot run this full suite (...): ... Why: Full suites can queue behind a shared build lock and waste the work budget. Instead: Run a build check or one allowed module test, then report the result.
+- `queued_wait.bg` (skill): a helper cannot start this build or test in the background: ... Instead: Run the command in the foreground under the shared lock.
+- `queued_wait.sleep` (skill): this wait is too long (...s; limit ...s): ... Instead: End the turn and wait for the completion notification.
+- `queued_wait.loop` (skill): this poll loop waits too long (...s per round; limit ...s): ...
+- `wide_search.msg` (skill, switch `guards.allowWideSearch`): `...` was stopped: it would scan all of `...`. Why: Scanning a whole disk or home folder takes minutes and can overload this Mac. Instead: search within the project folder.
+- `procwatch.orphans` (skill, switch `procwatch.enabled`): ... processes remain from ended sessions. Why: They keep using ports, CPU and memory after their session ended. Modes: .... Instead: check the process owners before stopping any.
+- `procwatch.stuck` (skill, switch `procwatch.enabled`): ... background agent(s) printed nothing for ...+ minutes: ....... Why: They may be stuck, waiting for input, or finished without reporting, and they keep their slot and context until dealt with. Instead: check each silent agent for progress.
+- `idle_sweep.` (skill, switch `guards.idleAgentSweep`): ... finished agent... idle and not ...: ....... Why: ... until it is .... Instead: ... each finished agent you will not reuse.
+- `resource_watch.proc` (skill, switch `resourceWatch.enabled`): pid ... (..., session ...) is using ...; threshold ...
+- `resource_watch.msg` (skill, switch `resourceWatch.enabled`): Resource use is high: .... Why: A runaway process slows every session on this machine and can push it into swap. Instead: check whether the resource use is expected.
+- `speculation_guard.msg` (essential): your reply makes an unverified claim ("..."). Why: Unverified claims read as facts. Instead: verify the claim or label it unverified.
+- `speculation_guard.jev` (skill): your reply asserts a cause or outcome without evidence.
+- `output_verify.msg` (skill): command output contains conflicting results. Why: A mixed summary is not a clean pass. Instead: read the full output before reporting the result.
+- `jev_weekly.notice` (skill): ... is ready to switch .... Instead: run /anti-hall:jev.
+- `standdown.msg` (skill): spawning is stopped (...); doing this inline is allowed. Why: No agent can be spawned right now, so a guard that only says 'delegate' would leave no way forward.
+- `merge_side_pick.msg` (skill): a push follows a one-sided conflict resolution with no tests. Why: taking --ours/--theirs (or -X ours/theirs) silently drops the other side's changes, and nothing has verified the result. Instead: verify the conflict resolution before pushing.
+- `ship_it.block` (skill): L-risk file ... edited with no PLAN.md. Why: This path is a hard-risk trigger (migration / auth / CI-workflow / security); per the ship-it skill, L-tier changes go through plan mode and a PLAN.md before code. Instead: create PLAN.md (repo root) first.
+- `ship_it.adv` (skill): ... is missing from the plan phase file list. Why: It may be a legitimate shared-file touch (`files:` is free text, so false positives are expected) or scope drift. Instead: check the phase scope in PLAN.md.
+- `scan_throttle.group` (skill): a grouped command contains a heavy project scan. Instead: consider running the scan background-throttled, e.g. `... <that command>`.
+- `scan_throttle.first` (skill): a heavy project scan needs throttling. Why: To keep the machine responsive. Instead: re-run it background-throttled: `...`.
+- `coordinator_work.nudge` (skill): ... file-changing steps in the main thread within ... min. Instead: hand the rest to a subagent now.
+- `coordinator_work.block` (essential): this step was stopped after repeated main-thread edits. Why: Too much hands-on work in the main thread. This is not a question for the user; it clears by itself in about ... min. Instead: hand the remaining work to a helper agent.
+- `model_routing.update` (skill): a subagent spawn that runs the anti-hall update is blocked. Why: update.js runs migrations and the main session must judge the result. Instead: run `ah-engine update ...` directly in the main session.
+- `model_routing.handover` (skill): this spawn looks like it writes a session handover. Why: A subagent never lived this session, so its reconstruction loses decision/trial fidelity. Instead: invoke the handover skill yourself in the session that holds the memory.
+- `model_routing.deploy_omitted` (skill): deploy/migration/secret-shaped spawn sets no explicit model. Instead: set model:'...' or higher, never haiku.
+- `model_routing.deploy_low` (skill): deploy/migration/secret-shaped spawn runs on '...'. Instead: use model:'...' or higher....
+- `model_routing.row1` (essential): routine execution was assigned to a flagship model. Why: This hook cannot see the parent model; execution-only work needs an explicit cheap model. Instead: respawn with model:'haiku' (or 'sonnet' if it authors code).
+- `model_routing.row1_role` (skill): flagship spawn allowed for a debate role. Instead: if it is genuinely mechanical work, prefer model:'haiku'.
+- `model_routing.row1_research` (skill): flagship spawn allowed for research.
+- `model_routing.row2_block` (skill): execution-shaped spawn with no explicit model is blocked (strict default). Why: An omitted model inherits the orchestrator's and cannot be verified here; on a flagship orchestrator that silently makes an all-flagship swarm. Instead: set model:'haiku' (or 'sonnet' for code) on the spawn.
+- `model_routing.row2_adv` (skill): execution-shaped spawn sets no explicit model. Why: An omitted model inherits the orchestrator's, so mechanical work may run on a flagship. Instead: set model:'haiku' (or 'sonnet' if it authors code).
+- `model_routing.row1_jev` (skill): flagship spawn allowed after a non-mechanical verdict. Instead: if it is genuinely mechanical work, prefer model:'haiku'.
+- `model_routing.row2_jev` (skill): default-model spawn allowed after a non-mechanical verdict. Instead: if it is genuinely mechanical work, prefer model:'haiku'.
+- `model_routing.row3` (skill): a custom agent uses a flagship model for execution. Instead: choose a cheaper model unless the role requires a flagship.
+- `model_routing.row4` (skill): planning work was assigned to haiku. Instead: consider opus or fable for deeper reasoning.
+- `model_routing.row6` (skill): research/read-only-shaped spawn uses subagent_type:'general-purpose'. Why: general-purpose carries the Agent tool and can recurse; chains waste ~7x tokens by depth 5. Instead: use an Explore agent for read-only research.
+- `failure_nudge.msg` (skill): this command failed.... Instead: trace the failure before retrying or patching.
+- `merge_gate.msg` (skill): the merge is paused while recent work remains unverified. Why: Merging now could ship unfinished work. Instead: verify the agreed result before merging.
+- `edit_guard.launcher` (skill): an edit to the managed launcher folder was stopped. Why: anti-hall manages those files itself; overwriting one could run unwanted code under a trusted name. Instead: leave that folder alone.
+- `inbox_read.inbox` (skill): reading the raw DevSwarm inbox file directly is blocked. Why: It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped. Instead: read through the mesh inbox CLI.
+- `devswarm_comms.main` (skill): target "main" points back to this session.
+- `devswarm_comms.block` (skill): target "..." belongs to a DevSwarm workspace. Why: Direct Claude remote-agent messaging between a DevSwarm Primary/child and a workspace is prohibited (owner rule 2026-09-04, defect 1c74863863e5). Instead: send through the DevSwarm mesh.
+- `devswarm_comms.ok` (skill): target "..." is a live session; messaging is allowed.
+- `swarm_guard.rate` (skill): spawn limit reached (... in 60s, cap ...). Why: A runaway swarm can make the OS unusable. Instead: wait for running agents to finish before spawning more.
+- `swarm_guard.shared` (skill): another agent is already writing in this working tree. Why: Two such agents can stage and commit each other's uncommitted changes. Instead: give the new agent its own worktree.
+- `spawn_ceiling.msg` (skill): ... agents are running (limit ...). Why: More agents rarely add results, and each one costs tokens whether or not it finishes. Instead: wait for a running agent to finish.
+- `spawn_usage.block` (essential): new agents can't start: the ... usage limit is at ...% (stop at ...%, ...). Why: Another spawn could use up the limit and stop all work, including agents already running. Instead: wait for the usage limit to reset.
+- `spawn_usage.soft` (skill): the ... usage limit is at ...% (...). Why: Headroom is getting short; avoid spending tokens that produce no commit, finished step or passing check. Instead: use cheaper models for routine work.
+- `nested_spawn.msg` (essential): this agent is a worker and can't start agents of its own. Why: Nested agents hide their cost from the coordinator (one burned about 2.5M tokens in 30 minutes). Instead: report back to the coordinator if more agents are needed.
+- `task_guard.idle` (essential): ... open tasks have no agent working on them. Why: Work that could run in parallel is sitting idle. Instead: assign the pending tasks to agents.
+- `task_guard.generic` (skill): open tasks remain unfinished. Why: Open tasks should not be left behind when the session stops. Instead: finish the pending tasks before stopping.
+- `tasklist_guard.reset` (skill): the task list was lost during session restore. Why: The old tasks are gone, not finished. Instead: restore the open tasks, then stop again.
+- `tasklist_guard.no_tasks` (essential): ... files changed but no tasks tracked. Why: Work this size needs a task list and a progress file.
+- `tasklist_guard.stalled` (skill): ... tasks are marked in progress with no active agent. Why: They are stalled, not running in parallel. Instead: assign an agent to each stalled task.
+- `tasklist_guard.progress` (skill): ... files changed but progress is missing or stale. Why: The progress file must record what was done. Instead: update the progress file, then stop again.
+- `tasklist_guard.reduced` (skill): ... files changed but no work tracked. Why: Untracked work gets lost. Instead: list the open tasks and their status in your reply, priority first.
+- `task_tracker.full` (skill): requests need tracking before work starts.
+- `task_tracker.short` (skill): capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
+- `task_tracker.primary` (skill): workspace-sized work needs a child workspace. Instead: assign the feature, fix or deploy to a child workspace.
+- `uncommitted.msg` (skill): this edit is paused: ... lines are uncommitted (limit ...). Why: Large unsaved changes are harder to review and resume. Instead: Commit the working changes, then continue editing.
+- `fable_availability.msg` (skill): Fable is available this session (per ~/.claude.json). Why: Fable routing is re-enabled per MODEL-POLICY.md (2026-07-12); revisit if Fable's track record regresses. Instead: pass args.fableAvailable=true to the review workflow.
+
+_Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

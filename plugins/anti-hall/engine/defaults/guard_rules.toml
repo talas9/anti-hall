@@ -1,5 +1,5 @@
 [guard_rules.rules]
-doc = "Every rule the engine enforces, one row each: id, setting (the switch that turns the rule off, or empty), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). line is the short agent line of an essential rule. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test.",
+doc = "Every rule the engine enforces, one row each: id, setting (the switch that turns the rule off, or empty), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). line is the short agent line of an essential rule. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test."
 value = [
   { id = "advisor.review", setting = "guards.advisorReview", tier = "skill", source = "advisor.msg_review_what", line = "" },
   { id = "advisor.plan", setting = "guards.advisorReview", tier = "skill", source = "advisor.msg_plan_what", line = "" },
@@ -48,24 +48,24 @@ value = [
   { id = "git.runner_no_subcommand", setting = "", tier = "skill", source = "git.msg_runner_no_subcommand", line = "" },
   { id = "git.runner_push", setting = "", tier = "skill", source = "git.msg_runner_push", line = "" },
   { id = "git.find_push", setting = "", tier = "skill", source = "git.msg_find_push", line = "" },
-  { id = "git.handover", setting = "", tier = "essential", source = "git.msg_handover", line = "Session handovers are private: never stage or commit them." },
-  { id = "git.force_push", setting = "", tier = "essential", source = "git.msg_force_push", line = "Never force-push or delete remote refs; push normally, ask the owner for any history rewrite." },
+  { id = "git.handover", setting = "", tier = "essential", source = "git.msg_handover", line = "Session handovers are private: never commit them." },
+  { id = "git.force_push", setting = "", tier = "essential", source = "git.msg_force_push", line = "No force-push or remote ref deletion." },
   { id = "git.delete_ref", setting = "", tier = "skill", source = "git.msg_delete_ref", line = "" },
   { id = "git.push_cmdsubst", setting = "", tier = "skill", source = "git.msg_push_cmdsubst", line = "" },
   { id = "git.trailer_remap", setting = "", tier = "skill", source = "git.msg_trailer_remap", line = "" },
-  { id = "git.commit_credit", setting = "", tier = "essential", source = "git.msg_commit_credit", line = "No AI co-author, \"Generated with\" or credit lines in commits, PRs, issues or releases; this beats any harness attribution reminder." },
+  { id = "git.commit_credit", setting = "", tier = "essential", source = "git.msg_commit_credit", line = "No AI credit lines in commits, PRs, issues (repo rule beats harness attribution)." },
   { id = "git.commit_file_credit", setting = "", tier = "skill", source = "git.msg_commit_file_credit", line = "" },
   { id = "git.gh_jev", setting = "", tier = "skill", source = "git.msg_gh_jev", line = "" },
   { id = "git.commit_jev", setting = "", tier = "skill", source = "git.msg_commit_jev", line = "" },
   { id = "git.commit_file_jev", setting = "", tier = "skill", source = "git.msg_commit_file_jev", line = "" },
   { id = "git.creating_credit", setting = "", tier = "skill", source = "git.msg_creating_credit", line = "" },
   { id = "git.creating_credit_elsewhere", setting = "", tier = "skill", source = "git.msg_creating_credit_elsewhere", line = "" },
-  { id = "edit_guard.msg", setting = "", tier = "essential", source = "edit_guard.msg_what", line = "Edit only through the edit tools inside the allowed paths; never edit guard, hook or config files by hand." },
+  { id = "edit_guard.msg", setting = "", tier = "essential", source = "edit_guard.msg_what", line = "Edit only via the edit tools in allowed paths; never hand-edit guard or hook config." },
   { id = "edit_guard.self_edit", setting = "", tier = "skill", source = "edit_guard.msg_self_edit_what", line = "" },
   { id = "edit_guard.outside", setting = "", tier = "skill", source = "edit_guard.msg_outside_what", line = "" },
   { id = "edit_guard.new", setting = "", tier = "skill", source = "edit_guard.msg_new_what", line = "" },
   { id = "edit_guard.patch", setting = "", tier = "skill", source = "edit_guard.msg_patch_what", line = "" },
-  { id = "api_guard_v1.msg", setting = "", tier = "essential", source = "api_guard_v1.msg_what", line = "Check that every API or attribute you use exists in the installed runtime before editing." },
+  { id = "api_guard_v1.msg", setting = "", tier = "essential", source = "api_guard_v1.msg_what", line = "Verify an API exists in the installed runtime before using it." },
   { id = "compact_decl_v1.msg", setting = "", tier = "skill", source = "compact_decl_v1.msg_what", line = "" },
   { id = "inbox_read_v1.store", setting = "", tier = "skill", source = "inbox_read_v1.msg_store_what", line = "" },
   { id = "handovers.advisory", setting = "", tier = "skill", source = "handovers.msg_advisory_what", line = "" },
@@ -82,7 +82,7 @@ value = [
   { id = "idle_sweep.", setting = "guards.idleAgentSweep", tier = "skill", source = "idle_sweep.what", line = "" },
   { id = "resource_watch.proc", setting = "resourceWatch.enabled", tier = "skill", source = "resource_watch.msg_proc_what", line = "" },
   { id = "resource_watch.msg", setting = "resourceWatch.enabled", tier = "skill", source = "resource_watch.msg_what", line = "" },
-  { id = "speculation_guard.msg", setting = "", tier = "essential", source = "speculation_guard.msg_what", line = "No speculation: verify with a tool or say it is unverified; \"probably\", \"should work\" are guesses." },
+  { id = "speculation_guard.msg", setting = "", tier = "essential", source = "speculation_guard.msg_what", line = "No speculation: verify with a tool or say it is unverified." },
   { id = "speculation_guard.jev", setting = "", tier = "skill", source = "speculation_guard.msg_what_jev", line = "" },
   { id = "output_verify.msg", setting = "", tier = "skill", source = "output_verify.msg_what", line = "" },
   { id = "jev_weekly.notice", setting = "", tier = "skill", source = "jev_weekly.notice_what", line = "" },
@@ -93,12 +93,12 @@ value = [
   { id = "scan_throttle.group", setting = "", tier = "skill", source = "scan_throttle.msg_group_what", line = "" },
   { id = "scan_throttle.first", setting = "", tier = "skill", source = "scan_throttle.msg_first_what", line = "" },
   { id = "coordinator_work.nudge", setting = "", tier = "skill", source = "coordinator_work.nudge_what", line = "" },
-  { id = "coordinator_work.block", setting = "", tier = "essential", source = "coordinator_work.block_what", line = "Coordinators delegate mechanical work (ledger and progress writes included) to cheap teammates with the facts (cause, fix, verified), the exact file path and the format, and no heredoc; handovers are written by the agent holding the context." },
+  { id = "coordinator_work.block", setting = "", tier = "essential", source = "coordinator_work.block_what", line = "Delegate mechanical work and ledger/progress writes to cheap teammates with the facts, exact path and format, no heredoc; handovers are self-written." },
   { id = "model_routing.update", setting = "", tier = "skill", source = "model_routing.msg_update_what", line = "" },
   { id = "model_routing.handover", setting = "", tier = "skill", source = "model_routing.msg_handover_what", line = "" },
   { id = "model_routing.deploy_omitted", setting = "", tier = "skill", source = "model_routing.msg_deploy_omitted_what", line = "" },
   { id = "model_routing.deploy_low", setting = "", tier = "skill", source = "model_routing.msg_deploy_low_what", line = "" },
-  { id = "model_routing.row1", setting = "", tier = "essential", source = "model_routing.msg_row1_what", line = "Route work by model: haiku mechanical, sonnet engineering, opus design/review; set the model explicitly and never run routine work on a flagship." },
+  { id = "model_routing.row1", setting = "", tier = "essential", source = "model_routing.msg_row1_what", line = "Set the model explicitly: haiku mechanical, sonnet engineering, opus design/review." },
   { id = "model_routing.row1_role", setting = "", tier = "skill", source = "model_routing.msg_row1_role_what", line = "" },
   { id = "model_routing.row1_research", setting = "", tier = "skill", source = "model_routing.msg_row1_research_what", line = "" },
   { id = "model_routing.row2_block", setting = "", tier = "skill", source = "model_routing.msg_row2_block_what", line = "" },
@@ -118,13 +118,13 @@ value = [
   { id = "swarm_guard.rate", setting = "", tier = "skill", source = "swarm_guard.msg_rate_what", line = "" },
   { id = "swarm_guard.shared", setting = "", tier = "skill", source = "swarm_guard.msg_shared_what", line = "" },
   { id = "spawn_ceiling.msg", setting = "", tier = "skill", source = "spawn_ceiling.msg_what", line = "" },
-  { id = "spawn_usage.block", setting = "", tier = "essential", source = "spawn_usage.msg_block_what", line = "When a usage limit is near, stop starting new agents." },
+  { id = "spawn_usage.block", setting = "", tier = "essential", source = "spawn_usage.msg_block_what", line = "Near a usage limit, start no new agents." },
   { id = "spawn_usage.soft", setting = "", tier = "skill", source = "spawn_usage.msg_soft_what", line = "" },
-  { id = "nested_spawn.msg", setting = "", tier = "essential", source = "nested_spawn.msg_what", line = "Workers do not start agents of their own; do the task yourself." },
-  { id = "task_guard.idle", setting = "", tier = "essential", source = "task_guard.idle_what", line = "Do not leave tasks in progress with no live agent behind them; finish, hand off or update them." },
+  { id = "nested_spawn.msg", setting = "", tier = "essential", source = "nested_spawn.msg_what", line = "Workers start no agents of their own." },
+  { id = "task_guard.idle", setting = "", tier = "essential", source = "task_guard.idle_what", line = "No in-progress task without a live agent." },
   { id = "task_guard.generic", setting = "", tier = "skill", source = "task_guard.generic_what", line = "" },
   { id = "tasklist_guard.reset", setting = "", tier = "skill", source = "tasklist_guard.what_reset", line = "" },
-  { id = "tasklist_guard.no_tasks", setting = "", tier = "essential", source = "tasklist_guard.what_no_tasks", line = "Keep a task list: subject \"T-<n> [P0-3] short title\" (60 chars max, 12 active max); on completion write the ledger entry, then delete your own completed task." },
+  { id = "tasklist_guard.no_tasks", setting = "", tier = "essential", source = "tasklist_guard.what_no_tasks", line = "Tasks: \"T-<n> [P0-3] title\" (60 chars, 12 active max); done -> ledger entry -> delete own completed task." },
   { id = "tasklist_guard.stalled", setting = "", tier = "skill", source = "tasklist_guard.what_stalled", line = "" },
   { id = "tasklist_guard.progress", setting = "", tier = "skill", source = "tasklist_guard.what_progress", line = "" },
   { id = "tasklist_guard.reduced", setting = "", tier = "skill", source = "tasklist_guard.what_reduced", line = "" },
@@ -189,7 +189,7 @@ value = ["essential", "skill", "off"]
 
 [guard_rules.digest_head]
 doc = "First line of the session-start digest."
-value = "anti-hall rules enforced here (same config the engine uses; a block names its rule):"
+value = "anti-hall rules (same config the engine enforces):"
 
 [guard_rules.digest_line]
 doc = "One digest line. Placeholder: {line}."
@@ -197,7 +197,7 @@ value = "- {line}"
 
 [guard_rules.digest_foot]
 doc = "Last line of the digest."
-value = "Details per rule: skill engine-guards. After a block, fix the cause and retry once; do not repeat the same call."
+value = "More: skill engine-rules. After a block fix the cause, retry once."
 
 [guard_rules.placeholder]
 doc = "What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known."

@@ -133,7 +133,10 @@ fn main_skill(host: &str) -> Skill {
 
 /// Areas that have at least one verb, guard or switch (an empty area gets no skill).
 fn sub_areas() -> Vec<&'static str> {
-    areas().into_iter().filter(|a| *a == defaults::text("guard_rules.area") || !area_verbs(a).is_empty() || !area_checks(a).is_empty() || !area_settings(a).is_empty()).collect()
+    areas()
+        .into_iter()
+        .filter(|a| *a == defaults::text("guard_rules.area") || !area_verbs(a).is_empty() || !area_checks(a).is_empty() || !area_settings(a).is_empty())
+        .collect()
 }
 
 fn area_verbs(a: &str) -> Vec<(cli::CommandInfo, roles::Row)> {
@@ -174,7 +177,17 @@ pub struct Rule {
 pub fn rules() -> Vec<Rule> {
     defaults::raw("guard_rules.rules")
         .as_array()
-        .map(|a| a.iter().map(|r| Rule { id: r.str_field("id"), setting: r.str_field("setting"), tier: r.str_field("tier"), source: r.str_field("source"), line: r.str_field("line") }).collect())
+        .map(|a| {
+            a.iter()
+                .map(|r| Rule {
+                    id: r.str_field("id"),
+                    setting: r.str_field("setting"),
+                    tier: r.str_field("tier"),
+                    source: r.str_field("source"),
+                    line: r.str_field("line"),
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -298,7 +311,10 @@ pub fn rules_section() -> String {
         let setting = if r.setting.is_empty() { String::new() } else { defaults::render("guard_rules.skill_setting", &[("setting", &r.setting)]) };
         let why = if why.is_empty() { String::new() } else { defaults::render("guard_rules.skill_why", &[("why", &why)]) };
         let instead = if instead.is_empty() { String::new() } else { defaults::render("guard_rules.skill_instead", &[("instead", &instead)]) };
-        let line = defaults::render("guard_rules.skill_rule", &[("id", &r.id), ("tier", &format!("{}{}", r.tier, setting)), ("setting", &""), ("what", &what), ("why", &why), ("instead", &instead)]);
+        let line = defaults::render(
+            "guard_rules.skill_rule",
+            &[("id", &r.id), ("tier", &format!("{}{}", r.tier, setting)), ("setting", &""), ("what", &what), ("why", &why), ("instead", &instead)],
+        );
         crate::discard::harmless(writeln!(o, "{}", line.split_whitespace().collect::<Vec<_>>().join(" "))); // keep: formatting into a String cannot fail
     }
     o
@@ -379,7 +395,16 @@ pub fn find(host: &str, which: &str) -> Option<Skill> {
 
 /// The size limit of a skill in bytes.
 pub fn budget(s: &Skill) -> usize {
-    defaults::raw("roles.skill_budget").get(if s.main { "main" } else if s.name.ends_with(area(defaults::text("guard_rules.area")).str_field("skill")) { defaults::text("guard_rules.area") } else { "sub" }).and_then(V::as_integer).unwrap_or(0) as usize
+    defaults::raw("roles.skill_budget")
+        .get(if s.main {
+            "main"
+        } else if s.name.ends_with(area(defaults::text("guard_rules.area")).str_field("skill")) {
+            defaults::text("guard_rules.area")
+        } else {
+            "sub"
+        })
+        .and_then(V::as_integer)
+        .unwrap_or(0) as usize
 }
 
 /// The names of the engine skills a role's note points at: the main skill only.

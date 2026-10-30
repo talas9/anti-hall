@@ -3548,3 +3548,44 @@ mod afk_mode {
         drained();
     }
 }
+
+fn plugin_root() -> Value {
+    json!({"plugin_root": concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall")})
+}
+
+fn run_event(name: &str, event: &str, pairs: &[(&str, &str)], h: &str) -> Option<Option<Verdict>> {
+    let mut all = vec![("HOME", h)];
+    all.extend_from_slice(pairs);
+    super::run_forced(name, &json!({"session_id": "s-462", "hook_event_name": event}), &plugin_root(), event, &RequestEnv::from_pairs(all))
+}
+
+#[test]
+fn the_rule_digest_is_injected_within_its_budget_and_its_switch_turns_it_off() {
+    let h = home("digest");
+    let Some(Some(Verdict::Advisory(a))) = run_event("rule-digest", "SessionStart", &[], &h) else { panic!("digest on must answer with context") };
+    assert!(a.contains(defaults::text("guard_rules.digest_head")) && a.contains("force-push"), "{a}");
+    let ctx = serde_json::from_str::<Value>(&a).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().len();
+    assert!(ctx as u64 <= defaults::num("roles.digest_budget"), "digest {ctx} bytes is over roles.digest_budget");
+    assert_eq!(run_event("rule-digest", "SessionStart", &[("ANTIHALL_RULE_DIGEST", "false")], &h), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+#[test]
+fn the_banner_is_one_user_visible_line_and_its_switch_turns_it_off() {
+    let h = home("banner");
+    let Some(Some(Verdict::Advisory(a))) = run_event("session-banner", "SessionStart", &[], &h) else { panic!("banner on must speak") };
+    let m = serde_json::from_str::<Value>(&a).unwrap()["systemMessage"].as_str().unwrap().to_string();
+    assert!(m.starts_with("anti-hall ") && m.contains("active") && !m.contains('\n'), "{m}");
+    assert_eq!(run_event("session-banner", "SessionStart", &[("ANTIHALL_UI_BANNER", "false")], &h), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+#[test]
+fn the_session_summary_speaks_at_the_end_and_off_is_silent() {
+    let h = home("summary");
+    let Some(Some(Verdict::Advisory(a))) = run_event("session-summary", "SessionEnd", &[], &h) else { panic!("summary on must speak") };
+    let m = serde_json::from_str::<Value>(&a).unwrap()["systemMessage"].as_str().unwrap().to_string();
+    assert!(m.starts_with("anti-hall this session"), "{m}");
+    assert_eq!(run_event("session-summary", "SessionEnd", &[("ANTIHALL_UI_SESSION_SUMMARY", "off")], &h), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}

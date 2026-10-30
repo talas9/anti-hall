@@ -410,3 +410,31 @@ fn settings_tunables_lists_every_shipped_default_key() {
     assert_eq!(code, 0);
     assert!(one.contains("github_rt.enabled"), "{one}");
 }
+
+#[test]
+fn every_block_text_has_a_rule_row_and_every_listed_rule_is_in_the_generated_output() {
+    let problems = skillgen::rule_problems();
+    assert!(problems.is_empty(), "rule registry drift (fix guard_rules.toml, then run ah-regen): {problems:#?}");
+}
+
+#[test]
+fn the_digest_fits_its_budget_and_the_committed_digest_is_the_generated_one() {
+    let text = skillgen::digest_text();
+    assert!(text.len() as u64 <= ah_engine::defaults::num("roles.digest_budget"), "digest is {} bytes", text.len());
+    assert!(text.len() < 10_000, "10k injection cap");
+    let file = plugin().join(ah_engine::defaults::text("guard_rules.digest_file"));
+    assert_eq!(std::fs::read_to_string(file).unwrap_or_default(), skillgen::digest_file(), "stale: run ah-regen");
+}
+
+#[test]
+fn rules_json_keeps_no_message_text_of_its_own_where_a_defaults_text_exists() {
+    let rules: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plugin().join("engine/rules.json")).unwrap()).unwrap();
+    for r in rules["rules"].as_array().unwrap() {
+        if let Some(k) = r.get("message_ref").and_then(|v| v.as_str()) {
+            assert!(r.get("message").is_none(), "{} keeps its own message beside message_ref", r["id"]);
+            assert!(!skillgen::compose(k).is_empty(), "{} message_ref {k} has no text", r["id"]);
+        }
+    }
+    let text = serde_json::to_string(&rules).unwrap();
+    assert!(!text.contains("Rewriting published history"), "the force-push text is duplicated in rules.json");
+}
