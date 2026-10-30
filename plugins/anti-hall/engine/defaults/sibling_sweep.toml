@@ -190,6 +190,18 @@ value = [
   '^\s*(?:[-#]+\s*)?(?:the\s+)?(?:root\s+)?(?:cause|culprit)\s*:',
 ]
 
+[sibling_sweep.self_correction_family]
+doc = "The label of the self-correction cue family (the agent reports fixing its own typo or mistake): written to the per-scope state with the pending reminder so follow-through is counted for it. Empty is not allowed."
+value = "self_correction"
+
+[sibling_sweep.self_correction_cues]
+doc = "Regex sources, any of which is the agent reporting a correction of its own typo or mistake ('fixed a typo I made', 'found a mistake in my earlier edit', 'my mistake', 'should have been'). Matched like cause_cues (same hedge, negation, operational and attributed filters, same once-per-cause key, search evidence and per-scope cap) after fenced code, quoted lines and code spans are removed. An empty list turns the family off."
+value = [
+  '\b(?:fix(?:ed|ing)?|correct(?:ed|ing)?|repair(?:ed|ing)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e))\s+(?:a|an|the|my|one)\s+(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)\b[^.\n]{0,40}\b(?:i|my)\s+(?:made|introduced|wrote|added|left|earlier|previous|prior|own|last|edit|change|commit|patch|fix|code)\b',
+  '\bmy\s+(?:own\s+)?(?:mistake|bad|fault|typo|slip(?:-?up)?|oversight)\b',
+  '\bshould\s+have\s+(?:been|said|read|used)\b',
+]
+
 [sibling_sweep.hedge_any_re]
 doc = "Regex source of words that make the whole sentence a guess, a plan or a question rather than a finding: it is then no cause statement."
 value = '\b(?:probably|possibly|presumably|perhaps|maybe|apparently|supposedly|seems?|appears?|i\s+(?:suspect|think|guess|believe|assume)|suspect(?:s|ed)?|hypothes\w+|guess(?:ing)?|not\s+sure|unclear|unknown|undetermined|unresolved|unproven|unverified|inferred|partly|still\s+(?:open|undecided)|not\s+(?:yet\s+)?(?:proven|confirmed|verified|known|established|determined|identified|found)|could\s+be|might\s+be|may\s+be|could\s+have\s+been|might\s+have\s+been|if\s+the\s+(?:root\s+)?cause|whether|(?:root[- ]causes?|cause)\s+(?:\w+\s+)?first|no\s+(?:single\s+)?(?:root\s+)?cause|not\s+the\s+(?:root\s+)?cause|isn.t\s+the\s+(?:root\s+)?cause|wasn.t\s+the\s+(?:root\s+)?cause)\b'
@@ -367,3 +379,17 @@ value = "sibling-sweep: cannot write {what}: {error}"
 [sibling_sweep.msg_bad_setting]
 doc = "Daemon log line, written once per process, when a settings file holds an invalid value for a sibling_sweep setting (a pattern that does not compile, a rejected config file); the shipped value is used instead. Placeholder: {setting}."
 value = "sibling-sweep: ignoring an invalid value ({setting}), using the shipped one"
+
+# ---- the self-correction counters ---------------------------------------------------------------------------
+
+[metric.sibling_sweep_self_correction_fired]
+doc = "Sibling-sweep reminders sent because a reply reported fixing the agent's own typo or mistake (the self_correction_cues family) and the turn showed no search for other occurrences."
+value = { kind = "counter", unit = "reminders", labels = [] }
+
+[metric.sibling_sweep_self_correction_suppressed]
+doc = "Self-correction statements that did not remind, by reason: no_fix_context, swept (a search or a sweep statement was already there), continuation (the Stop already continues a Stop block), duplicate (the same cause was reminded this turn) or capped (the per-scope limit was reached)."
+value = { kind = "counter", unit = "statements", labels = ["reason"] }
+
+[metric.sibling_sweep_self_correction_followed_through]
+doc = "Self-correction reminders after which a search tool call followed within sibling_sweep.follow_window tool calls."
+value = { kind = "counter", unit = "reminders", labels = [] }

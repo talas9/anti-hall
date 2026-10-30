@@ -127,18 +127,24 @@ function swFindCauseIn(prepared) {
   var meta = swSpec('sibling_sweep.meta_re', 'i'), hedgeAny = swSpec('sibling_sweep.hedge_any_re', 'i');
   var hedgeBefore = swSpec('sibling_sweep.hedge_before_re', 'i'), cues = swSpecs('sibling_sweep.cause_cues');
   var operational = swSpec('sibling_sweep.operational_re', 'i'), attributed = swSpec('sibling_sweep.attributed_re', 'i');
+  // the cause cues first, then the self-correction cues (the agent reports fixing its own typo or mistake): same guards, same hash
+  var selfCues = swSpecs('sibling_sweep.self_correction_cues'), family = swCfg('sibling_sweep.self_correction_family');
+  var groups = [[cues, ''], [selfCues, family]];
   var ss = swSentences(prepared);
   for (var i = 0; i < ss.length; i++) {
     var sentence = ss[i][0], term = ss[i][1], masked = swMask(sentence);
     if ((term !== null && question.indexOf(term) >= 0) || swTest(meta, masked) || swTest(hedgeAny, masked)) continue;
     // an environment fact (lock file, load, disk) or a cause quoted from an agent's report is not the assistant's own code-bug finding
     if (swTest(operational, masked) || swTest(attributed, masked)) continue;
-    for (var k = 0; k < cues.length; k++) {
-      var m = ah.re.find(cues[k].src, cues[k].flags, masked);
-      if (m === null || m === undefined) continue;
-      if (swTest(hedgeBefore, swTail(masked.slice(0, m[0]), windowChars))) continue;
-      var norm = swCollapse(sentence.trim()).toLowerCase();
-      return { hash: ah.sha1(swHead(norm, swNum('sibling_sweep.hash_chars'))), pattern: swNamePattern(sentence, m[0]) };
+    for (var g = 0; g < groups.length; g++) {
+      var list = groups[g][0];
+      for (var k = 0; k < list.length; k++) {
+        var m = ah.re.find(list[k].src, list[k].flags, masked);
+        if (m === null || m === undefined) continue;
+        if (swTest(hedgeBefore, swTail(masked.slice(0, m[0]), windowChars))) continue;
+        var norm = swCollapse(sentence.trim()).toLowerCase();
+        return { hash: ah.sha1(swHead(norm, swNum('sibling_sweep.hash_chars'))), pattern: swNamePattern(sentence, m[0]), family: groups[g][1] };
+      }
     }
   }
   return null;
@@ -253,13 +259,15 @@ function swLoad(home, rel) {
   if (typeof v.fired === 'number' && v.fired >= 0 && Math.floor(v.fired) === v.fired) st.fired = v.fired;
   if (typeof v.turn === 'string') st.turn = v.turn;
   if (Array.isArray(v.causes)) st.causes = v.causes.filter(function (x) { return typeof x === 'string'; });
-  if (swIsObj(v.pending) && typeof v.pending.cause === 'string' && typeof v.pending.turn === 'string') st.pending = { cause: v.pending.cause, turn: v.pending.turn };
+  if (swIsObj(v.pending) && typeof v.pending.cause === 'string' && typeof v.pending.turn === 'string') st.pending = { cause: v.pending.cause, turn: v.pending.turn, family: typeof v.pending.family === 'string' ? v.pending.family : '' };
   return st;
 }
 
 // Keys in alphabetical order, as the engine's JSON writer has always ordered them.
 function swSave(rel, st) {
+  // the family is written only for a non-default one, so a state of the cause family keeps the bytes it always had
   var pending = st.pending === null ? null : { cause: st.pending.cause, turn: st.pending.turn };
+  if (pending !== null && st.pending.family) pending = { cause: pending.cause, family: st.pending.family, turn: pending.turn };
   return ah.state.writeAtomic(rel, JSON.stringify({ causes: st.causes, fired: st.fired, pending: pending, turn: st.turn }));
 }
 
@@ -272,6 +280,10 @@ var swHome = '';
 function swWarn(what) {
   ah.log('sibling-sweep', text.render(swCfg('sibling_sweep.msg_log_failed'), { what: what, error: 'write failed' }));
 }
+
+// Self-correction counters (registered metrics; a lost count never changes a decision).
+function swCount(name, labels) { try { ah.metric(name, labels); } catch (e) { /* counting never fails a hook */ } }
+function swSelf(cause) { return cause.family !== undefined && cause.family !== ''; }
 
 function swResolve(turn, pending) {
   if (turn.id !== pending.turn) return ['unknown', 0];
@@ -323,6 +335,7 @@ function decide(p) {
   if (state.pending !== null) {
     var res = swResolve(turn, state.pending);
     swLog({ cause: swShort(state.pending.cause), event: 'followthrough', outcome: res[0], scope: scope, tool_calls: res[1], ts: Date.now() });
+    if (state.pending.family && res[0] === 'followed') swCount('sibling_sweep_self_correction_followed_through', []);
     state.pending = null;
     dirty = true;
   }
@@ -331,6 +344,8 @@ function decide(p) {
   var cause = replyCause !== null ? replyCause : (reply !== null ? null : (latest !== null ? swFindCause(latest) : null));
   if (latest === null || cause === null) return finish('allow');
   var row = function (result) {
+    // the self-correction family is counted by outcome: fired when it reminds, suppressed (by reason) when it stays quiet
+    if (swSelf(cause)) swCount(result === 'reminded' ? 'sibling_sweep_self_correction_fired' : 'sibling_sweep_self_correction_suppressed', result === 'reminded' ? [] : ['reason', result]);
     return { cause: swShort(cause.hash), event: 'cause', result: result, scope: scope, skipped_lines: turn.skipped, ts: Date.now() };
   };
   var fix = swHasFix(latest) || turn.events.some(function (e) { return (e.k === 'text' && e.fix) || (e.k === 'tool' && e.kind === 'edit'); });
@@ -347,7 +362,7 @@ function decide(p) {
   state.fired += 1;
   state.causes.push(cause.hash);
   if (state.causes.length > swNum('sibling_sweep.max_causes')) state.causes.shift();
-  state.pending = { cause: cause.hash, turn: turn.id };
+  state.pending = { cause: cause.hash, turn: turn.id, family: swSelf(cause) ? cause.family : '' };
   // an unrecorded reminder would repeat on every Stop
   if (!swSave(rel, state)) { swWarn(swCfg('sibling_sweep.what_state')); return 'allow'; }
   ah.state.prune(swCfg('sibling_sweep.state_prefix'), rel.slice(rel.lastIndexOf('/') + 1));
