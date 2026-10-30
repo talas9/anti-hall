@@ -104,15 +104,22 @@ pub(crate) fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
 
 /// Whether `check` is skipped (shed) under load: `diagnostics.shed_checks` is on, the daemon is past its HARD CPU limit
 /// (`shedding`), the event cannot block (`guard_event` false) and the check is not listed in `diagnostics.shed_never`.
+/// Only a check of tier `diagnostics.shed_tier_optional` is shed (`diagnostics.shed_tier_by_check`, else `diagnostics.shed_tier_default`):
+/// a rule reminder the agent needs is never dropped to save CPU it barely uses (#464: the five reminders shed most cost 1 us to 8 ms).
 pub(crate) fn sheds(check: &str, guard_event: bool, shedding: bool) -> bool {
-    shedding && !guard_event && crate::defaults::num("diagnostics.shed_checks") == 1 && crate::defaults::raw("diagnostics.shed_never").get(check).is_none()
+    shedding
+        && !guard_event
+        && crate::defaults::num("diagnostics.shed_checks") == 1
+        && crate::defaults::raw("diagnostics.shed_never").get(check).is_none()
+        && shed_tier(check) == crate::defaults::text("diagnostics.shed_tier_optional")
 }
 
-/// How long past the hard request deadline `check` may still start (`diagnostics.deadline_grace_ms`, capped by
-/// `diagnostics.deadline_grace_cap_ms` so the reply stays inside the time the client waits for a late one). 0 for a check without a row.
-fn deadline_grace_ms(check: &str) -> u64 {
-    let grace = crate::defaults::raw("diagnostics.deadline_grace_ms").get(check).and_then(|v| v.as_integer()).unwrap_or(0).max(0) as u64;
-    grace.min(crate::defaults::num("diagnostics.deadline_grace_cap_ms"))
+/// The shed tier of `check`: its row in `diagnostics.shed_tier_by_check`, else `diagnostics.shed_tier_default`.
+pub(crate) fn shed_tier(check: &str) -> &'static str {
+    crate::defaults::raw("diagnostics.shed_tier_by_check")
+        .get(check)
+        .and_then(crate::defaults::V::as_str)
+        .unwrap_or_else(|| crate::defaults::text("diagnostics.shed_tier_default"))
 }
 
 /// Every matching entry with a built-in check, answered; entries without one are not listed.
@@ -153,6 +160,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
         let a = if sheds(check, guard_event, crate::budget::shedding()) {
             // past the HARD CPU limit (diagnostics.budget_cpu_hard_pct), when `diagnostics.shed_checks` is on, the pure-advice checks of events that cannot block wait (`diagnostics.shed_never` lists the ones that never do)
             crate::budget::note_shed_skipped();
+            crate::budget::note_shed_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default(), check);
             crate::budget::note_dropped(guard_event, check, &meta.event, "shed");
             Answer::Defer
         } else if crate::deadline::client_gone() {
@@ -162,11 +170,12 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             Answer::Defer
         } else if !crate::deadline::in_time()
             && crate::script::cut_at_deadline(check, &meta.event)
-            && crate::deadline::past_hard_ms() > deadline_grace_ms(check)
+            && crate::deadline::past_hard_ms() > crate::script::deadline_grace_ms(check)
         {
-            crate::script::cut(check, &meta.event);
+            // #463: the check answers by its own failure policy here; there is no Node hook to defer to
+            let v = crate::script::cut(check, &meta.event);
             crate::budget::note_dropped(guard_event, check, &meta.event, "hard_deadline");
-            Answer::Defer
+            answer_of(&e.id, Some(v))
         } else {
             let mark = crate::deadline::staged_mark();
             let a = if check == crate::defaults::text("upfront.check") {
