@@ -77,7 +77,8 @@ var ah = {
     // reading `rel`) removes earlier holders' staged copies `<rel><infix>*`; `writeFenced` stages, re-checks that `h` is still
     // ours, then renames; false when the lock was taken over (nothing of ours lands over the new holder's write).
     fenceSweep: function (rel, infix) { return ahHost.fenceSweep(rel, infix); },
-    writeFenced: function (rel, t, h, infix) { return ahHost.writeFenced(rel, ahWf(t), h, infix); },
+    // `guard` (optional): [[rel, key, max], ...]; the commit is discarded when a watched number is above its bound at the rename.
+    writeFenced: function (rel, t, h, infix, guard) { return guard === undefined ? ahHost.writeFenced(rel, ahWf(t), h, infix) : ahHost.writeFenced(rel, ahWf(t), h, infix, JSON.stringify(guard)); },
     // The retention sweep of the state files of one writer prefix (stale ones go; `keep` stays).
     // Scoped read of a file under the state directory (null when absent, unreadable or over the cap).
     readText: function (rel) { return ahNull(ahHost.stateRead(rel)); },

@@ -597,6 +597,27 @@ impl Held {
 #[cfg(test)]
 pub static FENCE_GATE: std::sync::Mutex<Vec<(std::path::PathBuf, std::sync::Arc<std::sync::Barrier>)>> = std::sync::Mutex::new(Vec::new());
 
+/// Test-only gates at the other points of [`fenced_write_if`] (GH #426): before the stage is written and after it is written
+/// (before the ownership check); same barrier protocol as [`FENCE_GATE`].
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FencePhase {
+    BeforeStage,
+    AfterStage,
+}
+
+#[cfg(test)]
+pub static FENCE_GATE_AT: std::sync::Mutex<Vec<(std::path::PathBuf, FencePhase, std::sync::Arc<std::sync::Barrier>)>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn gate_at(target: &std::path::Path, phase: FencePhase) {
+    let gate = FENCE_GATE_AT.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(p, ph, _)| p == target && *ph == phase).map(|(_, _, b)| b.clone());
+    if let Some(b) = gate {
+        b.wait();
+        b.wait();
+    }
+}
+
 /// The staged copies of `target` (`<target><infix><token>`) live in its directory.
 fn stage_prefix(target: &std::path::Path, infix: &str) -> Option<(std::path::PathBuf, String)> {
     if infix.is_empty() {
@@ -614,13 +635,24 @@ fn stage_prefix(target: &std::path::Path, infix: &str) -> Option<(std::path::Pat
 /// the lock, so its stage existed before the new holder's sweep; it either renamed before that sweep (the new holder then reads
 /// it) or its rename finds no stage. The order stage, check, rename is load-bearing.
 pub fn fenced_write(held: &Held, target: &std::path::Path, text: &str, infix: &str, sync: bool) -> std::io::Result<bool> {
+    fenced_write_if(held, target, text, infix, sync, &|| true)
+}
+
+/// [`fenced_write`] with a precondition `still_valid`, evaluated under the lock after the ownership check, immediately before the
+/// rename: when it is false the stage is discarded and nothing is published (`Ok(false)`). The AFK idle entry uses it to re-check
+/// that no owner presence or `back` newer than its idle decision landed while it was committing (GH #426).
+pub fn fenced_write_if(held: &Held, target: &std::path::Path, text: &str, infix: &str, sync: bool, still_valid: &dyn Fn() -> bool) -> std::io::Result<bool> {
     let Some((dir, prefix)) = stage_prefix(target, infix) else { return Ok(false) };
     let stage = dir.join(format!("{prefix}{}", held.token));
+    #[cfg(test)]
+    gate_at(target, FencePhase::BeforeStage);
     let staged = std::fs::File::create(&stage).and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| if sync { f.sync_all() } else { Ok(()) }));
     if let Err(e) = staged {
         crate::discard::harmless(std::fs::remove_file(&stage)); // keep: cleanup of our own stage; the failed write is the answer
         return Err(e);
     }
+    #[cfg(test)]
+    gate_at(target, FencePhase::AfterStage);
     if !held.owns() {
         crate::discard::harmless(std::fs::remove_file(&stage)); // keep: the lock is not ours; the stage must never land
         return Ok(false);
@@ -632,6 +664,10 @@ pub fn fenced_write(held: &Held, target: &std::path::Path, text: &str, infix: &s
             b.wait();
             b.wait();
         }
+    }
+    if !still_valid() {
+        crate::discard::harmless(std::fs::remove_file(&stage)); // keep: the decision is stale; the stage must never land
+        return Ok(false);
     }
     match std::fs::rename(&stage, target) {
         Ok(()) => Ok(true),

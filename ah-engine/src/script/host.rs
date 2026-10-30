@@ -33,7 +33,7 @@
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
 //! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
-//! | `fenceSweep(rel, infix)` / `writeFenced(rel, text, handle, infix)` | the fenced commit of a file guarded by a lock taken in this call: see [`write_fenced`] |
+//! | `fenceSweep(rel, infix)` / `writeFenced(rel, text, handle, infix, guard?)` | the fenced commit of a file guarded by a lock taken in this call, optionally discarded when a watched value moved past its bound: see [`write_fenced`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
 //! | `repoContext(dir)` | JSON `{unsure, toplevel, root}` of the checkout around `dir`: see [`repo_context`] |
@@ -468,13 +468,36 @@ pub fn fence_sweep(home: &str, rel: &str, infix: &str) -> rquickjs::Result<f64> 
 
 /// `writeFenced(rel, text, handle, infix)`: the fenced commit of `text` to the scoped file `rel` under the lock `handle` taken in
 /// this call (see `nodelock::fenced_write`): `true` when published, `false` when the lock is not held by this call or was taken
-/// over before the commit (nothing of ours lands over the new holder's write), or on an I/O failure.
-pub fn write_fenced(home: &str, rel: &str, text: &str, id: f64, infix: &str) -> rquickjs::Result<bool> {
+/// over before the commit (nothing of ours lands over the new holder's write), or on an I/O failure. `guard` (optional): a JSON
+/// array of `[rel, key, max]` triples, re-read after the ownership check immediately before the rename; when the number at `key`
+/// of any scoped JSON file `rel` is greater than `max`, the stage is discarded and `false` returned (GH #426: an idle AFK entry
+/// loses to an owner presence or `back` newer than its decision). A malformed guard publishes nothing.
+pub fn write_fenced(home: &str, rel: &str, text: &str, id: f64, infix: &str, guard: Option<&str>) -> rquickjs::Result<bool> {
     let Some(path) = scoped_target(home, rel, text.len(), false)? else { return Ok(false) };
+    let mut watch: Vec<(std::path::PathBuf, String, f64)> = Vec::new();
+    if let Some(g) = guard {
+        let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(g) else { return Ok(false) };
+        for row in rows {
+            let (Some(r), Some(k), Some(max)) = (row.get(0).and_then(|v| v.as_str()), row.get(1).and_then(|v| v.as_str()), row.get(2).and_then(serde_json::Value::as_f64)) else {
+                return Ok(false);
+            };
+            let Some(wp) = scoped_target(home, r, 0, false)? else { return Ok(false) };
+            watch.push((wp, k.to_string(), max));
+        }
+    }
+    let still_valid = || {
+        watch.iter().all(|(wp, k, max)| {
+            let v = std::fs::read_to_string(wp).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+            v.as_ref().and_then(|v| v.get(k.as_str())).and_then(serde_json::Value::as_f64).is_none_or(|n| n <= *max)
+        })
+    };
     let started = std::time::Instant::now();
     let sync = defaults::num("script.write_sync") != 0;
     let r = HELD.with(|h| {
-        h.borrow().iter().find(|(n, _, _)| *n as f64 == id).map(|(_, held, _)| crate::checks::guardkit::nodelock::fenced_write(held, &path, text, infix, sync))
+        h.borrow()
+            .iter()
+            .find(|(n, _, _)| *n as f64 == id)
+            .map(|(_, held, _)| crate::checks::guardkit::nodelock::fenced_write_if(held, &path, text, infix, sync, &still_valid))
     });
     credit_blocking(started);
     Ok(matches!(r, Some(Ok(true))))
@@ -1077,9 +1100,9 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     )?;
     h.set(
         "writeFenced",
-        Function::new(c.clone(), |rel: String, text: String, id: f64, infix: String| -> rquickjs::Result<bool> {
+        Function::new(c.clone(), |rel: String, text: String, id: f64, infix: String, guard: Option<String>| -> rquickjs::Result<bool> {
             let home = with_settings(|st| st.home.clone())?;
-            write_fenced(&home, &rel, &text, id, &infix)
+            write_fenced(&home, &rel, &text, id, &infix, guard.as_deref())
         })?,
     )?;
     h.set("memory", Function::new(c.clone(), memory)?)?;
