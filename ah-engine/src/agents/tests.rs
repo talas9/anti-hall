@@ -1845,3 +1845,57 @@ fn drift_is_not_raised_while_the_work_matches_the_task_description_and_is_remind
     assert!(agent(&st2, "s1").flags.contains_key("drift"), "raised again");
     assert_eq!(queue(&h2, "s1").len(), 1, "but the same step is not reminded twice");
 }
+
+// ---- GH #430: answered nudges, judge-done holds, wake rows scoped to the owning session ---------------------------------------
+
+/// A snooze answer moves the nudge's send clock; the wake fallback read that as "sent, never delivered" and queued the reminder the
+/// parent had already seen (`<id>-<n>-q`) a few minutes after the snooze. After the answer, nothing reaches the parent for an hour.
+#[test]
+fn n430_a_snoozed_nudge_is_not_requeued_by_the_wake_fallback() {
+    let (h, n, child) = nudge_home("n430-snooze");
+    let mut st = State::default();
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+        e
+    };
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick_at(&mut st, n + MIN);
+    append(&child, &spend);
+    let e = tick_at(&mut st, n + 18 * MIN);
+    let sig = defaults::raw("agent_nudge.words").str_field("signal");
+    let id = st.nudges.get("abc").expect("a nudge is open about the child").id.clone();
+    // the parent's wake-watch delivered the nudge line
+    let seen = json!({"signal": sig, "agent": "abc", "key": "parent", "id": format!("{id}-1")});
+    assert!(nudge::delivered(&mut st, &seen, n + 18 * MIN + 1000));
+    answer_snooze(&e, "abc", 180);
+    for m in [19, 23, 30, 45, 60, 78] {
+        tick_at(&mut st, n + m * MIN);
+    }
+    let rows: Vec<Value> = queue(&h, "parent").into_iter().chain(wake_rows(&h, "parent")).filter(|r| r["signal"] == sig).collect();
+    let requeued = rows.iter().filter(|r| r["id"].as_str().is_some_and(|i| i.ends_with("-q"))).count();
+    println!("MEASURE n430 snooze: delivery_rows={} requeued_after_answer={requeued}", rows.len());
+    assert_eq!(requeued, 0, "the snooze answer re-queued an already delivered reminder: {rows:?}");
+    assert_eq!(rows.len(), 1, "one delivery (the first wake line), nothing within the 180 min snooze: {rows:?}");
+}
+
+/// Two sessions on one machine: session B was active last, session A wrote the heartbeat. A's stale heartbeat goes to A, never B.
+#[test]
+fn n430_a_heartbeat_reminder_goes_to_the_session_that_wrote_it_not_the_newest_one() {
+    let h = home("n430-hb");
+    let n = now0();
+    let e = nudge_env(&h, n, &[]);
+    let mut st = State::default();
+    for (id, at) in [("sess-a", n - 20 * MIN), ("sess-b", n - MIN)] {
+        st.agents.insert(id.into(), Agent { id: id.into(), kind: kind_name("main").into(), parent: id.into(), last_output_ms: at, ..Agent::default() });
+    }
+    let hb = Agent { id: format!("{}{}", kind_name("heartbeat"), "x"), kind: kind_name("heartbeat").into(), name: sinks::key_of("sess-a"), hb_step: "build".into(), ..Agent::default() };
+    let to = signals::targets(&e, &st, &hb, "heartbeat_stale");
+    println!("MEASURE n430 heartbeat: targets={to:?}");
+    assert!(!to.is_empty(), "the writer's own session is told");
+    for t in &to {
+        assert!(matches!(t, signals::Target::Wake(k) | signals::Target::Session(k) if k == "sess-a"), "session B got A's heartbeat row: {to:?}");
+    }
+}

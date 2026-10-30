@@ -407,7 +407,8 @@ fn trim_series(env: &Env) {
 
 // ---- reminders ----------------------------------------------------------------------------------------------
 
-enum Target {
+#[derive(Debug, PartialEq)]
+pub(super) enum Target {
     Session(String),
     Wake(String),
     Mesh { ws: String, to_parent: bool },
@@ -450,7 +451,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
 
 /// The configured route targets: name -> (whose queue it addresses, which sink delivers). A new target is a row in
 /// `agent_tracker.targets`; only a new kind of sink needs code.
-fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target> {
+pub(super) fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target> {
     let routes = defaults::raw("agent_tracker.routes").get(sig).map(V::strings).unwrap_or_default();
     let table = defaults::raw("agent_tracker.targets");
     let mut out = Vec::new();
