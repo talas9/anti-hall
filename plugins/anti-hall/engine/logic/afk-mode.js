@@ -263,6 +263,7 @@ function afkPrompt(p, f, now) {
   var notOwner = ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); });
   if (notOwner) return null;
   afkPresent(now);
+  afkPlanStamp(p, 'promptAt', now); // an owner prompt makes every earlier advisor consult stale for plan auto-approve
   var word = prompt.trim().toLowerCase(), reply = null;
   if (ah.settings.bool('afk.set_prompt_commands')) {
     if (afkWordIn(ah.cfg('afk.words_on'), word)) {
@@ -366,10 +367,68 @@ function afkStop(p, f, now) {
   return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(afkR(ah.cfg('afk.msg_block'), vars)) }), err: '' } };
 }
 
-// PreToolUse while AFK: the question tool is denied every time with the ladder.
-function afkPre(p, f) {
-  if (!afkOn(f) || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+// ---- plan auto-approve (afk.planAutoApprove) ---------------------------------------------------------------------------------
+// One atomic per-session record (afk.plan_state_ns): the main thread's last advisor consult, plan-file write, plan-approval attempt
+// and owner prompt, wall-clock ms. Written by hooks (PostToolUse on the advisor tool, PostToolUse of a plan-file edit,
+// UserPromptSubmit), never inferred from transcript order. Subagents never write it (their consult is not the main thread's review).
+function afkPlanKey(p) { var sid = afkSid(p); return sid ? ah.sessionState.key(sid) : ''; }
+function afkPlanParse(t) { if (t === null) return {}; try { var v = JSON.parse(t); return v !== null && typeof v === 'object' ? v : {}; } catch (e) { return {}; } }
+function afkPlanNum(s, k) { return typeof s[k] === 'number' ? s[k] : 0; }
+function afkPlanStamp(p, field, now) {
+  if (!ah.settings.bool('afk.set_plan_autoapprove') || afkIsAgent(p) || coordinator.isCodexPayload(p)) return;
+  var key = afkPlanKey(p);
+  if (!key) return;
+  try {
+    ah.sessionState.update(ah.cfg('afk.plan_state_ns'), key, function (cur) {
+      var s = afkPlanParse(cur);
+      s[field] = Math.max(now, afkPlanNum(s, field)); // never backwards
+      return JSON.stringify(s);
+    });
+  } catch (e) { /* an unrecorded consult only means no auto-approval */ }
+}
+// PostToolUse: the advisor tool (advisor.tool_names) or an edit of a plan file (advisor.edit_tools + advisor.plan_file_re).
+function afkPlanRecord(p, now) {
   var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
+  if (ah.cfg('advisor.tool_names').indexOf(tool) >= 0) return afkPlanStamp(p, 'advisorAt', now);
+  if (ah.cfg('advisor.edit_tools').indexOf(tool) < 0) return;
+  var i = jx.isObj(p.tool_input) ? p.tool_input : {}, file = typeof i.file_path === 'string' ? i.file_path : '';
+  if (file !== '' && ah.re.test(ah.cfg('advisor.plan_file_re'), 'r', file)) afkPlanStamp(p, 'planAt', now);
+}
+function afkPlanDeny(reasonKey) { afkMetric('afk_plan_autoapprove_denied', { reason: ah.cfg(reasonKey) }); return 'allow'; }
+// PreToolUse of the plan-approval tool: allow + updatedInput only when every condition holds; every other path says nothing
+// (the host shows its normal approval prompt). The attempt is stamped in the same atomic update that reads the consult, so one
+// consult approves at most one attempt, and an attempt that cannot be stamped is never approved.
+function afkPlanPre(p, f, now) {
+  if (!ah.settings.bool('afk.set_plan_autoapprove') || ah.settings.skipped(ah.cfg('afk.guard_name'))) return afkPlanDeny('afk.plan_reason_off');
+  if (!afkOn(f)) return afkPlanDeny('afk.plan_reason_afk_off');
+  if (afkIsAgent(p)) return afkPlanDeny('afk.plan_reason_subagent');
+  var key = afkPlanKey(p);
+  if (!key || !jx.isObj(p.tool_input)) return afkPlanDeny('afk.plan_reason_no_input');
+  var reason = 'afk.plan_reason_state_error', wrote = false;
+  try {
+    wrote = ah.sessionState.update(ah.cfg('afk.plan_state_ns'), key, function (cur) {
+      var s = afkPlanParse(cur), at = afkPlanNum(s, 'advisorAt');
+      if (at <= 0) reason = 'afk.plan_reason_no_marker';
+      else if (at <= Math.max(afkPlanNum(s, 'planAt'), afkPlanNum(s, 'attemptAt'), afkPlanNum(s, 'promptAt'))) reason = 'afk.plan_reason_stale';
+      else reason = '';
+      s.attemptAt = Math.max(now, afkPlanNum(s, 'attemptAt'));
+      return JSON.stringify(s);
+    }) === true;
+    // read back: the host does not report a failed write, and an unrecorded attempt would leave the consult reusable
+    if (wrote) wrote = afkPlanNum(afkPlanParse(ah.sessionState.get(ah.cfg('afk.plan_state_ns'), key)), 'attemptAt') >= now;
+  } catch (e) { wrote = false; reason = 'afk.plan_reason_state_error'; }
+  if (reason === '' && !wrote) reason = 'afk.plan_reason_state_error';
+  if (reason !== '') return afkPlanDeny(reason);
+  afkMetric('afk_plan_autoapproved', {});
+  return { exact: { code: 0, out: afkR(ah.cfg('afk.plan_allow'), { reason: JSON.stringify(ah.cfg('afk.msg_plan_approved')), input: JSON.stringify(p.tool_input) }), err: '' } };
+}
+
+// PreToolUse while AFK: the question tool is denied every time with the ladder; the plan-approval tool goes to afkPlanPre.
+function afkPre(p, f, now) {
+  var ptool = typeof p.tool_name === 'string' ? p.tool_name : '';
+  if (ah.cfg('afk.plan_tools').indexOf(ptool) >= 0 && !coordinator.isCodexPayload(p)) return afkPlanPre(p, f, now);
+  if (!afkOn(f) || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+  var tool = ptool;
   if (ah.cfg('afk.question_tools').indexOf(tool) >= 0) {
     if (!ah.settings.bool('afk.set_no_questions')) return 'allow';
     afkMetric('afk_question_denied', { tool: tool });
@@ -414,7 +473,8 @@ function decide(p) {
   }
   f = afkFlush(afkIdleTrip(f, now));
   if (ev === 'Stop') return afkStop(p, f, now);
-  if (ev === 'PreToolUse') return afkPre(p, f);
+  if (ev === 'PreToolUse') return afkPre(p, f, now);
+  if (ev === 'PostToolUse') afkPlanRecord(p, now);
   if (ev === 'PostToolUse' && !afkIsAgent(p) && afkOn(f)) return afkInject(p, f, now, ev); // a subagent never gets the rule nor consumes the parent's once-per-session state
   return 'allow';
 }

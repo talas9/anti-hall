@@ -57,6 +57,10 @@ value = { section = "afk", key = "conciseCodex", kind = "bool", env = "", aliase
 doc = "The afk.noQuestions setting: while AFK, deny the harness question tool (afk.question_tools) every time with the question ladder, and hold (at most afk.question_max_holds times) a turn that ends on a plain-text question. Off = questions pass as usual."
 value = { section = "afk", key = "noQuestions", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
 
+[afk.set_plan_autoapprove]
+doc = "The afk.planAutoApprove setting: while AFK only, approve the plan-approval tool (afk.plan_tools) from its PreToolUse hook (allow + updatedInput, the documented contract) when this session's main thread consulted the advisor after its last plan-file write, its last plan-approval attempt and its last owner prompt. Anything else (no or stale consult, AFK off, a subagent, a state error, a hook error) leaves the normal approval prompt. Off = never auto-approved."
+value = { section = "afk", key = "planAutoApprove", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
 [afk.guard_name]
 doc = "The guard id this check answers to in skip.json and in its messages."
 value = "afk-mode"
@@ -348,6 +352,50 @@ value = ["AskUserQuestion"]
 doc = "The stdout line of a PreToolUse that denies the tool call with {reason} (JSON-quoted)."
 value = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":{reason}}}\n"
 
+[afk.plan_tools]
+doc = "Harness tools that ask the owner to approve a plan: auto-approved while AFK after a fresh advisor consult (afk.planAutoApprove). The dispatch entry afk-mode:pre must match them. Never list them in afk.question_tools (those are denied)."
+value = ["ExitPlanMode"]
+
+[afk.plan_state_ns]
+doc = "State namespace of the per-session plan auto-approve record (<state dir>/<ns>-<session>.json): the wall-clock ms of the main thread's last advisor consult (advisorAt), plan-file write (planAt), plan-approval attempt (attemptAt) and owner prompt (promptAt)."
+value = "afk-plan"
+
+[afk.plan_allow]
+doc = "The stdout line of a PreToolUse that approves the plan-approval tool: allow with {reason} (JSON-quoted) and updatedInput {input} (the tool input echoed unchanged as JSON; allow alone is not enough for this tool)."
+value = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":{reason},\"updatedInput\":{input}}}\n"
+
+[afk.msg_plan_approved]
+doc = "Reason of the AFK plan auto-approval."
+value = "anti-hall AFK: plan auto-approved (advisor consulted after the last plan write and owner prompt). Work on; append progress bullets."
+
+[afk.plan_reason_off]
+doc = "afk_plan_autoapprove_denied reason: the afk.planAutoApprove setting is off (or the AFK guard is skipped)."
+value = "off"
+
+[afk.plan_reason_afk_off]
+doc = "afk_plan_autoapprove_denied reason: AFK is not on."
+value = "afk_off"
+
+[afk.plan_reason_subagent]
+doc = "afk_plan_autoapprove_denied reason: the call came from a subagent (only the main thread's own consult can approve its own plan)."
+value = "subagent"
+
+[afk.plan_reason_no_input]
+doc = "afk_plan_autoapprove_denied reason: no session id or no tool input object to echo as updatedInput."
+value = "no_input"
+
+[afk.plan_reason_no_marker]
+doc = "afk_plan_autoapprove_denied reason: this session has no recorded advisor consult."
+value = "no_marker"
+
+[afk.plan_reason_stale]
+doc = "afk_plan_autoapprove_denied reason: the newest consult is not newer than the last plan-file write, plan-approval attempt or owner prompt (ties count as stale)."
+value = "stale"
+
+[afk.plan_reason_state_error]
+doc = "afk_plan_autoapprove_denied reason: the attempt could not be recorded in the state file (the consult would be reusable), so nothing is approved."
+value = "state_error"
+
 [afk.msg_ladder_deny]
 doc = "Reason of the AFK question-tool deny (the question ladder)."
 value = "AFK: the owner is away; questions are not allowed. Instead: (1) decide from the plan and context; (2) still unsure: ask the advisor; (3) only if still unclear AND not implied by the plan AND the choice is destructive/irreversible or would wreck the work if made the other way: park that ONE item, append `- [ ] NEEDS OWNER: <question, options, your default>` to your progress file, and CONTINUE the other parts of the plan (very rare)."
@@ -463,6 +511,14 @@ value = { kind = "counter", unit = "events", labels = [] }
 [metric.afk_question_denied]
 doc = "AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap)."
 value = { kind = "counter", unit = "events", labels = ["tool"] }
+
+[metric.afk_plan_autoapproved]
+doc = "Plan-approval tool calls auto-approved while AFK (afk.planAutoApprove) after a fresh advisor consult of the same session's main thread."
+value = { kind = "counter", unit = "events", labels = [] }
+
+[metric.afk_plan_autoapprove_denied]
+doc = "Plan-approval tool calls left to the normal approval prompt, by reason (afk.plan_reason_*: off, afk_off, subagent, no_input, no_marker, stale, state_error)."
+value = { kind = "counter", unit = "events", labels = ["reason"] }
 
 [metric.afk_question_parked]
 doc = "AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook)."
