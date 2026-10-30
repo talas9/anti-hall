@@ -496,3 +496,31 @@ max = 4096
 [diagnostics.shed_session_unknown]
 doc = "Session key of a shed answer whose request named no session, in status budget.shed_by_session."
 value = "-"
+
+[diagnostics.deadline_policy_by_check]
+doc = "Per check, what happens to a call still running (or not yet started) when its request's client deadline passes (#463): `cut` interrupts it there (after its diagnostics.deadline_grace_ms) and the check answers by its failure policy (script.failure_mode_by_check), counted at status advisory deadline_cut.<check>.<outcome>; `finish` never cuts it at the request deadline, it runs to its own script limits. sibling-sweep is `finish`: about 1.6 ms a call, yet it was the most-cut check (3,515 queued soft-deadline lines and 17 deadline cuts in the 2026-10-30 audit) because its SubagentStop/Stop requests waited in the queue, not because it is slow. A check not listed takes diagnostics.deadline_policy_default."
+value = { sibling-sweep = "finish" }
+
+[diagnostics.deadline_policy_default]
+doc = "Deadline policy of a check not listed in diagnostics.deadline_policy_by_check."
+value = "cut"
+
+[diagnostics.deadline_policy_finish]
+doc = "The diagnostics.deadline_policy_by_check value that is never cut at the request deadline (any other value is cut)."
+value = "finish"
+
+[diagnostics.deadline_cut_counter]
+doc = "Status advisory counter kind of a deadline cut, keyed <check>.<outcome> (outcome: diagnostics.deadline_cut_outcome_*). A cut answers by the check's failure policy; there is no Node hook to defer to (#463)."
+value = "deadline_cut"
+
+[diagnostics.deadline_cut_outcome_block]
+doc = "Outcome word of a deadline cut that blocked (a `closed` check on a guard event)."
+value = "block"
+
+[diagnostics.deadline_cut_outcome_notice]
+doc = "Outcome word of a deadline cut that allowed and told the user (the once-per-session guard-down notice)."
+value = "allow_notice"
+
+[diagnostics.deadline_cut_outcome_allow]
+doc = "Outcome word of a deadline cut that allowed (the session was already told, or there is no session)."
+value = "allow"

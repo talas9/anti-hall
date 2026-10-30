@@ -305,7 +305,15 @@ mod tests {
     /// while costing 1 us to 8 ms each) keep answering.
     #[test]
     fn shedding_under_cpu_pressure_keeps_the_rule_reminders() {
-        for check in ["switch-notice", "idle-agent-sweep", "limit-conserve-inject", "gh-rt-advisory", "procwatch-advisory", "engine-role-note", "failure-root-cause-nudge"] {
+        for check in [
+            "switch-notice",
+            "idle-agent-sweep",
+            "limit-conserve-inject",
+            "gh-rt-advisory",
+            "procwatch-advisory",
+            "engine-role-note",
+            "failure-root-cause-nudge",
+        ] {
             assert!(!sheds(check, false, true), "{check} is a rule reminder: never shed");
         }
         for check in ["claude-cli-version", "devswarm-version", "jev-weekly-scorecard"] {

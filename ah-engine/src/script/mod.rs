@@ -864,12 +864,12 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
     }
 }
 
-/// The deadline policy of check `name`: its entry in `script.deadline_policy_by_check`, else `script.deadline_policy_default`.
+/// The deadline policy of check `name`: its entry in `diagnostics.deadline_policy_by_check`, else `diagnostics.deadline_policy_default`.
 /// `cut` (the default): a call still running at its request's client deadline (plus its grace, [`deadline_grace_ms`]) is interrupted
 /// and the check answers by its failure policy ([`cut`]); `finish`: the call is never cut at the request deadline and runs to its own
 /// script limits, for a cheap check that carries a rule and is late only because its request waited in the queue (#463).
 pub fn deadline_policy(name: &str) -> &'static str {
-    defaults::raw("script.deadline_policy_by_check").get(name).and_then(defaults::V::as_str).unwrap_or_else(|| defaults::text("script.deadline_policy_default"))
+    defaults::raw("diagnostics.deadline_policy_by_check").get(name).and_then(defaults::V::as_str).unwrap_or_else(|| defaults::text("diagnostics.deadline_policy_default"))
 }
 
 /// Whether a call of check `name` on `event` is cut at its request's client deadline (`script.cut_at_request_deadline`). A cut call
@@ -877,7 +877,7 @@ pub fn deadline_policy(name: &str) -> &'static str {
 /// so that one keeps only its own limit, and so does a check whose deadline policy is `finish` ([`deadline_policy`]).
 pub fn cut_at_deadline(name: &str, event: &str) -> bool {
     defaults::num("script.cut_at_request_deadline") == 1
-        && deadline_policy(name) != defaults::text("script.deadline_policy_finish")
+        && deadline_policy(name) != defaults::text("diagnostics.deadline_policy_finish")
         && !(failure_mode(name) == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event))
 }
 
@@ -892,21 +892,21 @@ pub fn deadline_grace_ms(check: &str) -> u64 {
 /// A call cut at its request's client deadline (or not started past it): no failure of the script (nothing is counted as an error).
 /// There is no Node hook to defer to any more (#463), so the check answers here by its own failure policy ([`unanswered`]: `open`
 /// allows and tells the user once per session, `closed` blocks on a guard event), never a deferral. Counted per check and outcome
-/// (`status` advisory `<script.deadline_cut_counter>.<check>.<outcome>`).
+/// (`status` advisory `<diagnostics.deadline_cut_counter>.<check>.<outcome>`).
 pub fn cut(name: &str, event: &str) -> Verdict {
     crate::failopen::note(defaults::text("fail_open.reason_deadline"), name, event);
     crate::discard::note("script_deadline", &defaults::render("script.msg_deadline_cut", &[("check", &name), ("event", &event)]));
     let v = unanswered(name, event);
-    crate::obs::counters::advisory(defaults::text("script.deadline_cut_counter"), &format!("{name}.{}", cut_outcome(&v)));
+    crate::obs::counters::advisory(defaults::text("diagnostics.deadline_cut_counter"), &format!("{name}.{}", cut_outcome(&v)));
     v
 }
 
-/// The outcome word a deadline cut that answered `v` is counted under (`script.deadline_cut_outcome_*`).
+/// The outcome word a deadline cut that answered `v` is counted under (`diagnostics.deadline_cut_outcome_*`).
 pub fn cut_outcome(v: &Verdict) -> &'static str {
     match v {
-        Verdict::Block(_) => defaults::text("script.deadline_cut_outcome_block"),
-        Verdict::Advisory(_) => defaults::text("script.deadline_cut_outcome_notice"),
-        _ => defaults::text("script.deadline_cut_outcome_allow"),
+        Verdict::Block(_) => defaults::text("diagnostics.deadline_cut_outcome_block"),
+        Verdict::Advisory(_) => defaults::text("diagnostics.deadline_cut_outcome_notice"),
+        _ => defaults::text("diagnostics.deadline_cut_outcome_allow"),
     }
 }
 

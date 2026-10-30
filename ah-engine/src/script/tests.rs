@@ -302,9 +302,9 @@ fn a_call_past_its_request_deadline_is_cut_and_answers_by_its_policy_without_cou
     assert!(evs.is_empty(), "a cut is not a script error: {evs:?}");
     assert!(took < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.wall_limit_factor")), "{took:?}");
     // the cut is counted per check under the outcome it answered with
-    assert_eq!(super::cut_outcome(&v), defaults::text("script.deadline_cut_outcome_allow"));
-    assert_eq!(super::cut_outcome(&Verdict::Block("x".into())), defaults::text("script.deadline_cut_outcome_block"));
-    assert_eq!(super::cut_outcome(&Verdict::Advisory("{}".into())), defaults::text("script.deadline_cut_outcome_notice"));
+    assert_eq!(super::cut_outcome(&v), defaults::text("diagnostics.deadline_cut_outcome_allow"));
+    assert_eq!(super::cut_outcome(&Verdict::Block("x".into())), defaults::text("diagnostics.deadline_cut_outcome_block"));
+    assert_eq!(super::cut_outcome(&Verdict::Advisory("{}".into())), defaults::text("diagnostics.deadline_cut_outcome_notice"));
     // outside a request the same call runs to its own limit and takes the failure policy (this advisory allows)
     assert_eq!(go().flatten().map(without_notice), Some(Verdict::Allow));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
