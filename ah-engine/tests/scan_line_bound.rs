@@ -141,7 +141,7 @@ fn an_oversize_line_is_read_past_not_held_and_the_other_lines_still_count() {
     let plain = write_transcript(&dir, "plain.jsonl", 0);
     let huge = write_transcript(&dir, "huge.jsonl", 20 * MIB);
     // warm every lazy table once, so the measurement below sees the read and not the one-time set-up
-    let _ = scan_res(&huge, false);
+    drop(scan_res(&huge, false));
     let _ = scan(&plain, true);
     ah_engine::load::take_counts();
 
