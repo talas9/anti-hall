@@ -3994,6 +3994,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.rt_dur_minutes` | `{m} min` |  |  | The runtime format under one hour; {m} minutes. |
 | `silent_nudge.rt_state_file` | `runtime-escalation-stops.json` |  |  | Per-session count of the runtime-escalation Stop blocks given, under the engine state directory. |
 | `silent_nudge.rt_stop_cap` | `1` |  |  | How many times per session an open runtime escalation (agent_nudge.runtime_escalation) may block the coordinator's Stop (0 = never block); it never loops. |
+| `silent_nudge.rt_unrecorded_log` | `2 entries` |  |  | The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494). |
 | `silent_nudge.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES). |
 | `silent_nudge.session_id_len` | `36` |  |  | Length of a session id (the directory name that precedes tasks/ in an output file path). |
 | `silent_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.silentAgentNudge, default on). |
@@ -4087,6 +4088,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_ceiling.msg_more` | ` and {n} more` |  |  | The remainder clause when more agents run than are listed; {n} is how many are not listed. |
 | `spawn_ceiling.msg_what` | `{n} agents are running (limit {ceiling}).` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
 | `spawn_ceiling.msg_why` | `More agents rarely add results, and each one costs tokens whether or not it f...` |  |  | Why the ceiling block applies. |
+| `spawn_ceiling.reservation_file` | `spawn-reservations.json` |  |  | The open spawn reservations of the concurrent-agent cap (GH #494), under swarm_guard.state_dir: one row per allowed spawn whose launch is not yet in the transcript, {id (the tool call id), session, at}. |
+| `spawn_ceiling.reservation_lock` | `spawn-reservations.lock` |  |  | The lock that makes the cap's count and its reservation one step, under swarm_guard.state_dir (timings: the swarm_guard lock group). |
+| `spawn_ceiling.reservation_lock_wait_ms` | `2000` |  |  | How long a spawn check waits for the reservation lock (at most script.lock_wait_max_ms); still busy: the unreserved count decides and nothing is reserved. |
+| `spawn_ceiling.reservation_ttl_ms` | `30000` |  |  | How long a reservation holds its slot when its launch never shows in the transcript (a crashed or denied call). |
 | `spawn_ceiling.setting` | `6 entries` |  |  | On by default; off makes the fan-out ceiling a no-op. |
 | `spawn_ceiling.step_pct` | `70, 85, 92` |  |  | Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce. |
 | `spawn_ceiling.step_reduce` | `3, 6, 9` |  |  | How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies). |
@@ -14380,6 +14385,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_turns_measured` | counter | turns | mode | Main-session turns whose output tokens were measured, by mode (afk, present). |
 | `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
 | `idle_trips` | counter | events |  | AFK periods started by idle detection. |
+| `runtime_escalation_stop_unrecorded` | counter | stops |  | Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap). |
+| `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, write_failed (allowed unreserved), lock_busy (the unreserved count decided). |
 | `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
