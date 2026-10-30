@@ -753,4 +753,34 @@ mod shared_count_tests {
         assert_eq!(u["state"], "unsure", "union_of: a position past the total is unknown, not an empty list: {u}");
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
     }
+
+    /// GH #429 (PR #432 P1-B): `devswarm.noiseProvenance` comes from the REQUEST's settings, never from the environment of the
+    /// daemon that serves it. A child's native line that starts with the wake prefix is mail with the switch on and a wake prompt
+    /// with it off, whatever the serving process's own environment says.
+    #[test]
+    fn the_noise_provenance_switch_of_the_request_wins_over_the_daemon_environment() {
+        let var = "ANTIHALL_DEVSWARM_NOISE_PROVENANCE";
+        let home = std::env::temp_dir().join(format!("ah-pg-reqprov-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        std::fs::create_dir_all(&home).unwrap();
+        let inbox = home.join("inbox.ndjson");
+        let cursor = home.join("cursor");
+        let line = json!({"sender": "child-b", "message": format!("{}resolve conflict?", defaults::text("agent_tracker.wake_prefix"))});
+        std::fs::write(&inbox, format!("{line}\n")).unwrap();
+        std::fs::write(&cursor, "0").unwrap();
+        let (i, c) = (inbox.to_string_lossy().into_owned(), cursor.to_string_lossy().into_owned());
+        let req = |v: Option<&str>| Settings { home: home.to_string_lossy().into_owned(), env: v.map(|v| (var.to_string(), v.to_string())).into_iter().collect() };
+        let unread = |st: &Settings| count_for(st, None, "w", Some(&i), Some(&c), 100.0).ok().unwrap()["unread"].as_u64();
+        // a daemon started with the switch off; the request turns it on: the child's mail must show
+        unsafe { std::env::set_var(var, "false") };
+        let on = unread(&req(Some("true")));
+        let default_req = unread(&req(None));
+        // a default daemon; the request turns it off: the earlier prefix-only rule must apply
+        unsafe { std::env::remove_var(var) };
+        let off = unread(&req(Some("false")));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
+        assert_eq!(on, Some(1), "request on, daemon env off: a child's line with the wake prefix is mail");
+        assert_eq!(default_req, Some(1), "request default (on), daemon env off: still mail");
+        assert_eq!(off, Some(0), "request off, daemon env default: the prefix alone decides (a wake prompt, not mail)");
+    }
 }
