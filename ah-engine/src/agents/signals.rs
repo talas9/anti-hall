@@ -202,12 +202,12 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
         }
         (None, false) => None,
     };
-    // GH #458 classification doubt: a call of a doubt class still in flight (a build waiting on or holding the build lock) withholds the
-    // pause; the hard flag and its nudge stay. Counted per withheld tick by reason.
+    // GH #458: a build still in flight, or a recent soft outcome within the cap, holds off the pause; the hard flag and its nudge stay.
+    // Counted per held tick by reason.
     let doubt = defaults::raw("burn.doubt");
-    let body = match (body, building(a, env.now_ms)) {
-        (Some(_), true) => {
-            crate::metrics::bump(doubt.str_field("metric"), &[(doubt.str_field("label"), doubt.str_field("building"))]);
+    let body = match (body, hold_reason(a, env.now_ms)) {
+        (Some(_), Some(reason)) => {
+            crate::metrics::bump(doubt.str_field("metric"), &[(doubt.str_field("label"), reason)]);
             None
         }
         (b, _) => b,
@@ -227,6 +227,21 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
 }
 
 /// Whether a call of a doubt class (burn.doubt.classes: a build) is still in flight: the agent waits on work, not burning tokens.
+/// Why the pause is held off now, if it is: `building` (burn.doubt) or `soft` (burn.soft_hold: a soft outcome within hold_ms, and no more
+/// than cap of them inside the waste window, so a polling loop is still paused once it passes the cap).
+pub(crate) fn hold_reason(a: &Agent, now: u64) -> Option<&'static str> {
+    let doubt = defaults::raw("burn.doubt");
+    if building(a, now) {
+        return Some(doubt.str_field("building"));
+    }
+    let sh = defaults::raw("burn.soft_hold");
+    let n = |k: &str| sh.get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    let window = now.saturating_sub(lim("waste_window_ms"));
+    let recent = a.soft_ts.iter().filter(|t| **t >= window).count() as u64;
+    let last = a.soft_ts.iter().max().copied().unwrap_or(0);
+    (last > 0 && last >= now.saturating_sub(n("hold_ms")) && recent <= n("cap")).then(|| doubt.str_field("soft"))
+}
+
 /// A background build counts while its task has no end notice; both bounded by burn.doubt.max_ms.
 pub(crate) fn building(a: &Agent, now: u64) -> bool {
     let doubt = defaults::raw("burn.doubt");
@@ -450,7 +465,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
             &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
         ),
         "burn_hard" => defaults::render(
-            if building(a, a.samples.last().map_or(f.since, |x| x.t)) { "burn.msg_hard_withheld" } else { "burn.msg_hard" },
+            if hold_reason(a, a.samples.last().map_or(f.since, |x| x.t)).is_some() { "burn.msg_hard_withheld" } else { "burn.msg_hard" },
             &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
         ),
         "agent_waste" => super::waste::text(&who, a, f.evidence, &f.text),

@@ -560,25 +560,20 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         push_ring(&mut a.errs, (crate::health::fnv(&head), cap(&text, lim("text_cap")), ts), lim("error_window"));
         return;
     }
-    // GH #458: a file the shell created or appended (any path: probe output too), a passing check, a completed live probe
+    // GH #458 SOFT outcomes: a file the shell created or appended, a passing check, a completed live probe. They never reset the burn or
+    // waste accounting (command text can claim anything); each successful call of that shape is one soft event, which may only hold off
+    // the pause for a bounded, capped while (burn.soft_hold).
     let om = defaults::raw("agent_tracker.outcome_metric");
-    for path in &p.writes {
-        if !a.files.iter().any(|f| f == path) {
-            a.progress += if pat("report_path").is_some_and(|r| r.is_match(path)) { weight("report_file").max(weight("file")) } else { weight("file") };
-            push_ring(&mut a.files, path.clone(), lim("files_max"));
-            count_outcome(om.str_field("shell_file"));
-        }
-    }
-    if p.class == "check" {
-        a.progress += weight("check");
-        count_outcome(&p.class);
-    } else if p.class == "probe" {
-        let fp = crate::health::fnv(&p.label);
-        if !a.probes.contains(&fp) {
-            push_ring(&mut a.probes, fp, lim("files_max"));
-            a.progress += weight("probe");
-            count_outcome(&p.class);
-        }
+    let soft = if !p.writes.is_empty() {
+        Some(om.str_field("shell_file"))
+    } else if p.class == "check" || p.class == "probe" {
+        Some(p.class.as_str())
+    } else {
+        None
+    };
+    if let Some(kind) = soft {
+        push_ring(&mut a.soft_ts, ts, lim("loop_window"));
+        count_outcome(kind);
     }
     if p.push || p.class == "commit" || p.class == "merge" || p.class == "deploy" {
         a.last_ship_ms = ts;

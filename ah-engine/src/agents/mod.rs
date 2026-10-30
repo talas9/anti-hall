@@ -382,9 +382,10 @@ pub struct Agent {
     pub errs: Vec<(u64, String, u64)>,
     /// Files it edited.
     pub files: Vec<String>,
-    /// Fingerprints of the distinct live probes that completed (patterns.probe): a repeated probe is one outcome (GH #458).
+    /// When its soft outcomes happened (a file the shell wrote, a passing check, a completed live probe; GH #458): they never reset the
+    /// burn accounting, they may only hold off the pause (burn.soft_hold).
     #[serde(default)]
-    pub probes: Vec<u64>,
+    pub soft_ts: Vec<u64>,
     /// The declared step.
     pub step: String,
     /// The task whose subject is the declared step (empty when the step came from elsewhere).

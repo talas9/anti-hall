@@ -350,80 +350,62 @@ fn burn_without_outcome_warns_at_the_soft_line_blocks_at_the_hard_line_and_a_com
     assert!(!marker.exists());
 }
 
-/// GH #458 field harm: live-probe workers writing per-probe output files through the shell, live HTTP probes and passing checks were
-/// counted as no outcome (the agent tracker called them unhealthy, the breaker paused them); a lane waiting on a build behind the
-/// shared cargo lock was flagged "984k, 0 outcomes". A file the agent's shell created or appended (any path), a completed live-probe
-/// result, a passing check command are outcomes; a build in flight withholds the pause (classification doubt) but keeps the nudge.
+/// GH #458 hard/soft outcomes. Threat model: an ACCIDENTAL runaway (a loop, polling, waiting), not deliberate spoofing. Shell-written
+/// files, passing checks and live probes are SOFT outcomes: they never reset the burn accounting (command text can claim anything:
+/// `false && git diff --check; true`, `true # > /tmp/fake1`, rotating `curl --version #N`), they only hold off the pause for
+/// burn.soft_hold.hold_ms while at most burn.soft_hold.cap of them fall in the waste window, so a polling loop is paused after the cap.
+/// A build still in flight holds off the pause too (bounded by burn.doubt.max_ms) and the hard reminder says so.
 #[test]
-fn shell_written_files_live_probes_passing_checks_are_outcomes_and_a_running_build_withholds_the_pause_gh458() {
+fn soft_outcomes_never_reset_burn_hold_off_the_pause_up_to_the_cap_and_a_build_in_flight_holds_it_gh458() {
     let h = home("burn458");
     let n = now0();
     let p = sess(&h, "s1");
-    write(
-        &p,
-        &[
-            prompt(n - 9 * MIN, "/w"),
-            tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": "curl -s http://192.168.1.50/api/state > /w/probe/p1.json && echo ok"})),
-            result(n - 8 * MIN, "u1", "ok", false),
-            tool(n - 7 * MIN, "m2", 100, "u2", "Bash", json!({"command": "curl -s http://192.168.1.50/api/state | tee -a /w/probe/all.log"})),
-            result(n - 7 * MIN, "u2", "{\"mode\":\"test\"}", false),
-        ],
-    );
-    let mut st = State::default();
-    ticks(&h, &mut st, &[n - 6 * MIN]);
-    let a = agent(&st, "s1");
-    assert!(a.files.iter().any(|f| f == "/w/probe/p1.json") && a.files.iter().any(|f| f == "/w/probe/all.log"), "{:?}", a.files);
-    assert!(a.progress >= 2 * weight("file"), "files the shell wrote are outcomes: {}", a.progress);
-    // a live probe with no file and a passing check command are outcomes too; the same probe repeated is counted once
-    let before = a.progress;
-    append(
-        &p,
-        &[
-            tool(n - 5 * MIN, "m3", 100, "u3", "Bash", json!({"command": "curl -s -X PUT http://192.168.1.50/api/mode -d test"})),
-            result(n - 5 * MIN, "u3", "{\"ok\":true}", false),
-            tool(n - 4 * MIN, "m4", 100, "u4", "Bash", json!({"command": "curl -s -X PUT http://192.168.1.50/api/mode -d test"})),
-            result(n - 4 * MIN, "u4", "{\"ok\":true}", false),
-            tool(n - 3 * MIN, "m5", 100, "u5", "Bash", json!({"command": "cargo fmt --check"})),
-            result(n - 3 * MIN, "u5", "", false),
-        ],
-    );
-    ticks(&h, &mut st, &[n - 2 * MIN]);
-    let a = agent(&st, "s1");
-    assert_eq!(a.progress, before + weight("probe") + weight("check"), "one distinct probe and one passing check");
-    // text in an argument is no check, probe or file: only the program run counts
-    let before = a.progress;
-    append(
-        &p,
-        &[
-            tool(n - 2 * MIN, "m9", 100, "u9", "Bash", json!({"command": "printf 'git diff --check'"})),
-            result(n - 2 * MIN, "u9", "git diff --check", false),
-            tool(n - 2 * MIN, "m10", 100, "u10", "Bash", json!({"command": "echo \"curl http://x > /w/f.json; eslint .\""})),
-            result(n - 2 * MIN, "u10", "x", false),
-        ],
-    );
-    ticks(&h, &mut st, &[n - MIN]);
-    assert_eq!(agent(&st, "s1").progress, before, "printf/echo of a check, probe or redirect is no outcome");
-    // mid-build behind the cargo lock past the hard line: the hard flag stands (the nudge), the pause marker is withheld
     let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 7 * MIN, "/w"), asst(n - 6 * MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n - 5 * MIN]);
+    // past the hard line while a build waits on the cargo lock: hard flag (the nudge) stands, the pause is held off and not claimed
     append(
         &p,
         &[
-            asst(n + 10 * MIN, "m6", 3_500_000, 10, json!([{"type": "text", "text": "planning"}]), None),
-            tool(n + 11 * MIN, "m7", 10, "u7", "Bash", json!({"command": "lockf -t 3600 /x/cargo-heavy.lock nice -n 10 cargo build -j4"})),
+            asst(n + MIN, "m1", 3_500_000, 10, json!([{"type": "text", "text": "planning"}]), None),
+            tool(n + 2 * MIN, "m2", 10, "u2", "Bash", json!({"command": "lockf -t 3600 /x/cargo-heavy.lock nice -n 10 cargo build -j4"})),
         ],
     );
-    ticks(&h, &mut st, &[n + 12 * MIN]);
+    ticks(&h, &mut st, &[n + 3 * MIN]);
     assert!(agent(&st, "s1").flags.contains_key("burn_hard"), "{:?}", agent(&st, "s1").flags.keys().collect::<Vec<_>>());
-    assert!(!marker.exists(), "a running build withholds the pause");
+    assert!(!marker.exists(), "a running build holds off the pause");
     let note = queue(&h, "s1").iter().map(|r| r.to_string()).collect::<Vec<_>>().join(" ");
-    assert!(!note.contains("are paused"), "the hard reminder does not claim a pause it withheld: {note}");
-    // the build ends: no doubt left, the pause marker is written (the tokens were spent before the build)
-    append(
-        &p,
-        &[result(n + 13 * MIN, "u7", "error: could not compile `x`", false), asst(n + 13 * MIN, "m8", 10, 10, json!([{"type": "text", "text": "hm"}]), None)],
-    );
-    ticks(&h, &mut st, &[n + 14 * MIN]);
+    assert!(!note.contains("are paused"), "the hard reminder does not claim a pause it held off: {note}");
+    // the build fails: nothing holds the pause off any more
+    append(&p, &[result(n + 4 * MIN, "u2", "error: could not compile `x`", false)]);
+    ticks(&h, &mut st, &[n + 5 * MIN]);
     assert!(marker.exists(), "no build in flight: the pause stands");
+    // the reviewed spoof sequences: soft outcomes only, the accounting is never reset
+    let mut lines = Vec::new();
+    for (k, c) in ["printf '\\(git diff --check'", "false && git diff --check; true", "true # > /tmp/fake1", "curl --version #1"].iter().enumerate() {
+        let id = format!("s{k}");
+        lines.push(tool(n + 6 * MIN, &format!("ms{k}"), 10, &id, "Bash", json!({"command": c})));
+        lines.push(result(n + 6 * MIN, &id, "ok", false));
+    }
+    append(&p, &lines);
+    ticks(&h, &mut st, &[n + 7 * MIN]);
+    let a = agent(&st, "s1");
+    assert_eq!(a.progress, 0, "soft outcomes never add progress");
+    assert!(crate::agents::signals::tokens_since_outcome(a, n + 7 * MIN) >= 3_000_000, "the burn count is not reset");
+    assert!(a.flags.contains_key("burn_hard"));
+    assert!(!marker.exists(), "a few recent soft outcomes hold off the pause");
+    // a polling loop: past burn.soft_hold.cap soft outcomes in the window the pause comes back
+    let mut lines = Vec::new();
+    for k in 2..10 {
+        let id = format!("p{k}");
+        lines.push(tool(n + 8 * MIN, &format!("mp{k}"), 10, &id, "Bash", json!({"command": format!("curl -s http://dev/status?t={k}")})));
+        lines.push(result(n + 8 * MIN, &id, "{\"mode\":\"test\"}", false));
+    }
+    append(&p, &lines);
+    ticks(&h, &mut st, &[n + 9 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0);
+    assert!(marker.exists(), "a polling loop is paused once it passes the soft cap");
 }
 
 // ---- drift --------------------------------------------------------------------------------------------------

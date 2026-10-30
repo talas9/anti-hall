@@ -2317,6 +2317,13 @@ fn burn_breaker_never_pauses_a_commit_or_a_restore_gh458() {
         "restore=1 python3 -c 'while True: pass'",
         "RESTORE=1 restore=2 cargo test",
         "python3 -c 'restore()'",
+        "make restore heavy --eval=x",
+        "make restore heavy",
+        "make -f evil.mk restore",
+        "./restore.sh -c x",
+        "./restore.sh --from=x",
+        "git reset --hard HEAD~1 extra",
+        "git restore a b",
     ] {
         assert!(blocked(bad), "a restore word is no bypass: {bad:?}");
     }

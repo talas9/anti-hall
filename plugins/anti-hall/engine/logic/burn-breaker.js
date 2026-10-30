@@ -118,6 +118,8 @@ function bbHeredoc(cmd) {
 // redirect or comment (burn.forbidden_bash_re), or a segment the usual rules allow. At least one segment must be a restore.
 function bbRestoreSeg(seg) {
   if (ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', seg.plain)) return false;
+  var deny = ah.cfg('burn.restore_deny_res');
+  for (var d = 0; d < deny.length; d++) if (ah.re.test(deny[d], 'r', seg.plain)) return false;
   var res = ah.cfg('burn.restore_bash_res');
   for (var i = 0; i < res.length; i++) if (ah.re.test(res[i], 'r', seg.plain)) return true;
   return false;
