@@ -5,7 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report
 
-use ah_engine::checks::agent_scan::{Opts, Scan, read_line_bounded, scan_transcript, scan_transcript_uncached};
+use ah_engine::checks::agent_scan::{Opts, Res, Scan, Unsupported, read_line_bounded, scan_transcript, scan_transcript_uncached};
 use serde_json::{Value, json};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{BufReader, Cursor, Write};
@@ -121,13 +121,21 @@ fn snap(s: &Option<Scan>) -> String {
     format!("{:?}\n{:?}\n{:?}", s.launched.iter().collect::<Vec<_>>(), term, s.pending)
 }
 
-fn scan(p: &Path, kept: bool) -> Option<Scan> {
+fn scan_res(p: &Path, kept: bool) -> Res<Option<Scan>> {
     let (path, tail, o) = (p.to_str().unwrap(), 64 * MIB as u64, Opts { now_ms: NOW, ignore_unanswered_stops: false });
-    if kept { scan_transcript(path, tail, &o) } else { scan_transcript_uncached(path, tail, &o) }.unwrap()
+    if kept { scan_transcript(path, tail, &o) } else { scan_transcript_uncached(path, tail, &o) }
 }
 
-fn skipped(readers: &[&str]) -> usize {
-    ah_engine::load::take_counts().iter().filter(|(m, l, v)| *m == "transcript_line_skipped_oversize" && *l == "reader" && readers.contains(v)).count()
+fn scan(p: &Path, kept: bool) -> Option<Scan> {
+    scan_res(p, kept).unwrap()
+}
+
+
+/// (oversize lines skipped, scans degraded to unknown) counted since the last call.
+fn counts() -> (usize, usize) {
+    let c = ah_engine::load::take_counts();
+    let n = |metric: &str| c.iter().filter(|(m, l, v)| *m == metric && *l == "reader" && ["scan_window", "scan_kept"].contains(v)).count();
+    (n("transcript_line_skipped_oversize"), n("agent_scan_degraded"))
 }
 
 #[test]
@@ -142,20 +150,23 @@ fn an_oversize_line_is_read_past_not_held_and_the_other_lines_still_count() {
     let huge = write_transcript(&dir, "huge.jsonl", 20 * MIB);
     let want = snap(&scan(&plain, false));
     // warm every lazy table once, so the measurement below sees the read and not the one-time set-up
-    let _ = scan(&huge, false);
+    let _ = scan_res(&huge, false);
     let _ = scan(&plain, true);
     ah_engine::load::take_counts();
 
     let (_, base) = peak_of(|| scan(&plain, false));
     eprintln!("plain peak {base}");
-    // bound on (the shipped 4 MiB): the fresh read and the kept walk both stay far under the 20 MB line, and answer as the file
-    // without it does
+    // bound on (the shipped 4 MiB): the fresh read and the kept walk both stay far under the 20 MB line, and the scan is unknown
+    // (the skipped line may have carried a completion), not an answer made as if the line were absent
     for kept in [false, true] {
-        let (got, peak) = peak_of(|| scan(&huge, kept));
-        assert_eq!(snap(&got), want, "kept={kept}: the other lines still decide the answer");
+        let (got, peak) = peak_of(|| scan_res(&huge, kept));
+        assert_eq!(got.unwrap_err(), Unsupported, "kept={kept}: an oversize line makes the scan unknown");
         assert!(peak < 8 * MIB, "kept={kept}: peak {peak} B with a 20 MB line; the bound is 4 MiB plus the reader buffer");
-        assert_eq!(skipped(&["scan_window", "scan_kept"]), 1, "kept={kept}: the oversize line is counted once");
+        assert_eq!(counts(), (1, 1), "kept={kept}: the oversize line and the degraded scan are each counted once");
     }
+    // a second kept scan of the same file serves from the kept walk and is still unknown
+    assert_eq!(scan_res(&huge, true).unwrap_err(), Unsupported, "the kept walk remembers the oversize line");
+    assert_eq!(counts().1, 1);
 
     // off (0): the old read, the whole line buffered (the cause of #436)
     ah_engine::defaults::set_overlay(&[("agent_scan.max_line_bytes", json!(0))]);
@@ -164,8 +175,9 @@ fn an_oversize_line_is_read_past_not_held_and_the_other_lines_still_count() {
     // the whole line is parsed too, and the parse may decline it (the check then defers to Node): that is the old behaviour
     eprintln!("off: scan result is_ok={}", got.is_ok());
     assert!(peak >= 20 * MIB, "off: peak {peak} B; the whole line is held again");
-    assert_eq!(skipped(&["scan_window", "scan_kept"]), 0, "off: nothing is skipped");
+    assert_eq!(counts(), (0, 0), "off: nothing is skipped or degraded");
     ah_engine::defaults::set_overlay(&[]);
+    a_padded_completion_past_the_bound_makes_the_scan_unknown_and_the_bound_off_still_reads_it(&dir);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -193,4 +205,35 @@ fn the_reader_holds_a_line_at_the_bound_and_drops_one_byte_past_it() {
         lens.push(buf.len());
     }
     assert_eq!(lens, vec![4, 5, 6, 7, 4]);
+}
+
+/// Codex's input (#443 review P1): a small successful Agent launch, then a valid user-string completion notification for that agent
+/// padded past the bound. The skipped completion must not read as "still running": the scan is unknown, both readers, and counted.
+/// With the bound off (`max_line_bytes = 0`) the completion is read and the agent is terminal, as before the bound.
+///
+/// Run from the first test (the allocator counter, the settings overlay and the metric counts are process-wide).
+fn a_padded_completion_past_the_bound_makes_the_scan_unknown_and_the_bound_off_still_reads_it(dir: &Path) {
+    let p = dir.join("padded.jsonl");
+    let agent = format!("a{:015x}", 0);
+    let pad = "p".repeat(5 * MIB);
+    let note = format!("<task-notification>\n<task-id>{agent}</task-id>\n<status>completed</status>\n<summary>{pad}</summary>\n</task-notification>");
+    let l = json!({"type": "user", "message": {"role": "user", "content": note}, "timestamp": "2026-10-06T13:00:00.000Z"}).to_string();
+    assert!(l.len() > 4 * MIB);
+    let mut f = std::fs::File::create(&p).unwrap();
+    for x in launch(0) {
+        writeln!(f, "{x}").unwrap();
+    }
+    writeln!(f, "{l}").unwrap();
+    drop(f);
+    counts();
+    for kept in [false, true] {
+        assert_eq!(scan_res(&p, kept).unwrap_err(), Unsupported, "kept={kept}");
+        assert_eq!(counts(), (1, 1), "kept={kept}");
+    }
+    ah_engine::defaults::set_overlay(&[("agent_scan.max_line_bytes", json!(0))]);
+    for kept in [false, true] {
+        let s = scan(&p, kept).unwrap();
+        assert!(s.terminal.contains(&agent), "kept={kept}: off switch: the completion is read again");
+    }
+    ah_engine::defaults::set_overlay(&[]);
 }
