@@ -64,7 +64,7 @@ pub(crate) fn key_of(id: &str) -> String {
 pub struct SessionQueue;
 
 impl SessionQueue {
-    fn file(env: &Env, target: &str) -> PathBuf {
+    pub(crate) fn file(env: &Env, target: &str) -> PathBuf {
         env.dir().join(pth("reminders")).join(format!("{}{}", key_of(target), pth("queue_ext")))
     }
 }

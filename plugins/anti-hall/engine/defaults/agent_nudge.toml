@@ -214,7 +214,7 @@ doc = "Telemetry words of a nudge held back by the scope rules (class agent_nudg
 value = { event = "suppressed", judge_done = "judge_done", answered = "answered" }
 
 [metric.agent_nudge_sent]
-doc = "Nudges opened and delivered (or escalated when no parent is live), by trigger (hung, idle, loop, waste)."
+doc = "Nudges opened and delivered (or escalated to the owner when no parent is live), counted only when a delivery succeeded, by trigger (hung, idle, loop, waste)."
 value = { kind = "counter", unit = "nudges", labels = ["trigger"] }
 
 [metric.agent_nudge_suppressed]
@@ -232,6 +232,10 @@ value = { kind = "counter", unit = "holds", labels = [] }
 [metric.agent_nudge_to_owner]
 doc = "Notices sent to the owner's channel (escalations, acted-on notices, dead-child notices with no live parent), by where: session (the newest live armed main session of the child's project) or file (the owner notices file, when no such session exists)."
 value = { kind = "counter", unit = "notices", labels = ["where"] }
+
+[metric.agent_nudge_delivery_failed]
+doc = "Nudge deliveries that failed, by where: queue (the session's reminder queue could not be written), wake (its wake feed could not be written) or owner_file (the owner notices file could not be written). A failed delivery is not counted in agent_nudge_sent or agent_nudge_to_owner."
+value = { kind = "counter", unit = "deliveries", labels = ["where"] }
 
 [metric.agent_wake_dropped]
 doc = "Wake rows dropped because no followed session owns them (agents.nudgeScope on), by reason: foreign_agent (a heartbeat whose writer is no followed session), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started)."

@@ -290,6 +290,11 @@ fn answer_line(n: &Nudge) -> String {
     )
 }
 
+/// Count a delivery that failed, by the channel it failed on (`agent_nudge_delivery_failed`, label `where`: queue, wake or owner_file).
+fn delivery_failed(wher: &str) {
+    crate::metrics::bump("agent_nudge_delivery_failed", &[("where", wher)]);
+}
+
 /// Put `text` in front of session `to`: its reminder queue (its hook delivers it at its next turn) and, while a wake-watch covers
 /// it, its wake feed (so an idle session wakes). Returns the path word.
 fn send_to(env: &Env, to: &str, n: &Nudge, text: String) -> String {
@@ -298,11 +303,17 @@ fn send_to(env: &Env, to: &str, n: &Nudge, text: String) -> String {
     // a session a wake-watch covers gets the nudge on its wake feed alone (it reaches an active session too), so it is seen once; the
     // reminder queue is the fallback when no wake line was delivered in time (`follow`) and the road for a session nothing watches
     let armed = wake_armed(env, to);
-    if (!armed || !env.switch("agent_nudge.once_setting")) && SessionQueue.deliver(env, to, &r).is_ok() {
-        path.push(word("path_queue"));
+    if !armed || !env.switch("agent_nudge.once_setting") {
+        match SessionQueue.deliver(env, to, &r) {
+            Ok(()) => path.push(word("path_queue")),
+            Err(_) => delivery_failed("queue"),
+        }
     }
-    if armed && WakeFeed.deliver(env, to, &r).is_ok() {
-        path.push(word("path_wake"));
+    if armed {
+        match WakeFeed.deliver(env, to, &r) {
+            Ok(()) => path.push(word("path_wake")),
+            Err(_) => delivery_failed("wake"),
+        }
     }
     path.join(word("path_join"))
 }
@@ -327,34 +338,45 @@ fn owner_in_project(env: &Env, st: &State, n: &Nudge) -> Option<String> {
     cands.into_iter().find(|m| project_key(st, m).as_deref() == Some(want.as_str())).map(|m| m.id.clone())
 }
 
-fn to_owner(env: &Env, st: &State, n: &Nudge, text: String) -> (String, String) {
+/// Returns (where, path, delivered).
+fn to_owner(env: &Env, st: &State, n: &Nudge, text: String) -> (String, String, bool) {
     match owner_in_project(env, st, n) {
         Some(k) => {
             let p = send_to(env, &k, n, text);
-            crate::metrics::bump("agent_nudge_to_owner", &[("where", "session")]);
-            (k, p)
+            let ok = !p.is_empty();
+            if ok {
+                crate::metrics::bump("agent_nudge_to_owner", &[("where", "session")]); // a failed delivery is counted by send_to
+            }
+            (k, p, ok)
         }
         None => {
             let r = Reminder { id: format!("{}-{}", n.id, n.reminders), ts: env.now_ms, signal: word("signal").into(), agent: n.child.clone(), text };
-            crate::discard::harmless(OwnerNotices.deliver(env, "", &r)); // keep: the event below records the escalation either way
-            crate::metrics::bump("agent_nudge_to_owner", &[("where", "file")]);
-            (word("owner_file").to_string(), word("path_notices").to_string())
+            // keep: the event below records the escalation either way; the counter only counts a notice that was written
+            let ok = OwnerNotices.deliver(env, "", &r).is_ok();
+            if ok {
+                crate::metrics::bump("agent_nudge_to_owner", &[("where", "file")]);
+            } else {
+                delivery_failed("owner_file");
+            }
+            (word("owner_file").to_string(), word("path_notices").to_string(), ok)
         }
     }
 }
 
-fn escalate_now(env: &Env, st: &State, n: &mut Nudge, why: &str) {
+/// Returns whether the notice reached the owner's channel (false when already escalated or the delivery failed).
+fn escalate_now(env: &Env, st: &State, n: &mut Nudge, why: &str) -> bool {
     if n.escalated_at > 0 {
-        return;
+        return false;
     }
     let text = defaults::render(
         "msg.agent_nudge_escalate",
         &[("kind", &n.child_kind), ("name", &n.child_name), ("parent", &n.parent), ("evidence", &n.ev_text), ("why", &why), ("answer", &answer_line(n))],
     );
-    let (to, _) = to_owner(env, st, n, text);
+    let (to, _, ok) = to_owner(env, st, n, text);
     n.escalated_to = to;
     n.escalated_at = env.now_ms;
     emit(env, word("ev_escalated"), n);
+    ok
 }
 
 /// The evidence of an unhealthy child, in plain words.
@@ -562,12 +584,17 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             ],
         );
         n.last_text.clone_from(&text);
-        match to {
-            Some(p) => n.path = send_to(env, &p, &n, text),
+        let delivered = match to {
+            Some(p) => {
+                n.path = send_to(env, &p, &n, text);
+                !n.path.is_empty()
+            }
             None => escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_no_parent")),
-        }
+        };
         emit(env, word("ev_sent"), &n);
-        crate::metrics::bump("agent_nudge_sent", &[("trigger", trig)]);
+        if delivered {
+            crate::metrics::bump("agent_nudge_sent", &[("trigger", trig)]);
+        }
         st.nudges.insert(id, n);
     }
 }
@@ -725,7 +752,9 @@ fn follow(env: &Env, st: &mut State) {
                         n.parent.clone_from(&p);
                         n.path = send_to(env, &p, &n, text);
                     }
-                    None => escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_no_parent")),
+                    None => {
+                        escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_no_parent"));
+                    }
                 }
             }
             emit(env, word("ev_reminded"), &n);
