@@ -404,6 +404,36 @@ value = "advisory only; the stop is not blocked."
 doc = "One-line description of the silent-agent-nudge check in the generated reference."
 value = "Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge."
 
+[silent_nudge.rt_stop_cap]
+doc = "How many times per session an open runtime escalation (agent_nudge.runtime_escalation) may block the coordinator's Stop (0 = never block); it never loops."
+value = 1
+min = 0
+max = 20
+
+[silent_nudge.rt_state_file]
+doc = "Per-session count of the runtime-escalation Stop blocks given, under the engine state directory."
+value = "runtime-escalation-stops.json"
+
+[silent_nudge.msg_rt_what]
+doc = "What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder."
+value = "{names}{more} still running after repeated runtime nudges, not finished and not stopped."
+
+[silent_nudge.msg_rt_item]
+doc = "One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes)."
+value = "'{name}' (running {dur})"
+
+[silent_nudge.msg_rt_instead]
+doc = "What to do about an escalated agent."
+value = "check its output now, then stop it or re-task it with a tighter scope; this block is shown once per session."
+
+[silent_nudge.rt_dur_hours]
+doc = "The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes."
+value = "{h} h {m} min"
+
+[silent_nudge.rt_dur_minutes]
+doc = "The runtime format under one hour; {m} minutes."
+value = "{m} min"
+
 [silent_nudge.guard_name]
 doc = "The guard id this check answers to in skip.json."
 value = "silent-agent-nudge"

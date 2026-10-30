@@ -187,6 +187,37 @@ function snStuckAdvisory(p) {
   return { advisory: text.advisoryJson(ah.cfg('procwatch.stuck_event'), msg) };
 }
 
+// ---- Stop: a child whose runtime nudges keep repeating (agent_nudge.runtime_escalation, published by the nudge loop) blocks the
+// coordinator's Stop, at most rt_stop_cap times per session (GH #484). The rows leave the file when the child finishes or is stopped.
+function snRuntimeEscalation(p, home, session) {
+  var cap = ah.cfgNum('silent_nudge.rt_stop_cap');
+  if (cap < 1 || !session) return null;
+  var file = ah.cfg('agent_nudge.runtime_escalation').file;
+  var raw = ah.fs.readText(home + '/' + ah.cfg('paths.base_dir') + '/' + ah.cfg('agent_tracker.paths').dir + '/' + file);
+  if (raw === null) return null;
+  var doc; try { doc = JSON.parse(raw); } catch (e) { return null; }
+  var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session; }) : [];
+  if (rows.length === 0) return null;
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + ah.cfg('silent_nudge.rt_state_file');
+  var given = {}, sraw = ah.fs.readText(home + '/' + rel);
+  if (sraw !== null) { try { var o = JSON.parse(sraw); if (o !== null && typeof o === 'object' && !Array.isArray(o)) given = o; } catch (e) { given = {}; } }
+  if (typeof given[session] === 'number' && given[session] >= cap) return null;
+  given[session] = (typeof given[session] === 'number' ? given[session] : 0) + 1;
+  try { ah.state.writeAtomic(rel, JSON.stringify(given)); } catch (e) { return null; } // an unrecorded block could repeat: say nothing
+  var max = ah.cfgNum('silent_nudge.max_named');
+  var items = rows.slice(0, max).map(function (r) {
+    var mins = Math.floor((typeof r.dur_ms === 'number' ? r.dur_ms : 0) / 60000), h = Math.floor(mins / 60);
+    var dur = h > 0 ? text.render(ah.cfg('silent_nudge.rt_dur_hours'), { h: String(h), m: String(mins % 60) }) : text.render(ah.cfg('silent_nudge.rt_dur_minutes'), { m: String(mins) });
+    return text.render(ah.cfg('silent_nudge.msg_rt_item'), { name: snOneLine(String(r.name || ''), ah.cfgNum('silent_nudge.label_max')), dur: dur });
+  });
+  var more = rows.length > max ? text.render(ah.cfg('silent_nudge.msg_more'), { n: rows.length - max }) : '';
+  ah.advisory('flagged', 'runtime_escalation_stop');
+  var reason = text.message('block', ah.cfg('silent_nudge.guard_name'), {
+    what: text.render(ah.cfg('silent_nudge.msg_rt_what'), { names: items.join(ah.cfg('silent_nudge.msg_item_sep')), more: more }),
+    why: ah.cfg('silent_nudge.msg_why'), instead: ah.cfg('silent_nudge.msg_rt_instead') });
+  return { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } };
+}
+
 function decide(p, opts) { return snDecide(p, opts); }
 
 function snDecide(p, opts) {
@@ -202,6 +233,8 @@ function snDecide(p, opts) {
   if (ah.settings.skipped(guard)) return 'allow';
   if (p === null || typeof p !== 'object') return 'allow';
   var session = typeof p.session_id === 'string' ? p.session_id : '';
+  var rt = snRuntimeEscalation(p, home, session);
+  if (rt !== null) return rt;
   var minutes = ah.settings.num('silent_nudge.min_setting');
   if (!isFinite(minutes) || minutes < 1) minutes = ah.cfgNum('silent_nudge.min_default');
   var threshold = minutes * 60000, now = ah.clock.now();
