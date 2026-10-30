@@ -877,6 +877,8 @@ mod swarm {
     #[test]
     fn the_advisory_is_silent_whenever_node_is_silent() {
         let h = swarm_home("sw-quiet");
+        // many allowed spawns whose launches never reach the transcript: the concurrent-agent cap (GH #494) is not what this tests
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0}}"#).unwrap();
         let busy = transcript(&h, json!({"subagent_type": "general-purpose"}));
         let mut n = 0u64;
         let mut silent = |input: Value, t: &str| {
@@ -916,6 +918,8 @@ mod swarm {
     #[test]
     fn a_brief_naming_another_clone_shares_no_tree() {
         let h = swarm_home("sw-named");
+        // many allowed spawns whose launches never reach the transcript: the concurrent-agent cap (GH #494) is not what this tests
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0}}"#).unwrap();
         let proj = format!("{h}/proj");
         std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
         std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
