@@ -418,7 +418,9 @@ function afkPlanPoison(key) {
   } catch (e) { ok = false; }
   if (!ok) afkPlanFailed('poison');
 }
-function afkPlanPoisonPath(key) { return ah.home() + '/' + afkRel(ah.cfg('afk.plan_poison_ns') + '-' + key + ah.cfg('guardkit.state_ext')); }
+// The file of a session-state record (the host's layout: <home>/<guardkit.state_dir_name>/<ns>-<key><guardkit.state_ext>).
+function afkPlanFile(ns, key) { return ah.home() + '/' + ah.cfg('guardkit.state_dir_name') + '/' + ns + '-' + key + ah.cfg('guardkit.state_ext'); }
+function afkPlanPoisonPath(key) { return afkPlanFile(ah.cfg('afk.plan_poison_ns'), key); }
 function afkPlanPoisonClean(key, consultSeq) {
   try {
     if (ah.mem.has(afkPlanMemName(key))) return false;
@@ -432,11 +434,10 @@ function afkPlanPoisonClean(key, consultSeq) {
 }
 // A live consult record for this session: absent = none (owner prompts then skip the lock entirely); present but unreadable = live.
 function afkPlanLive(key) {
-  var path = ah.home() + '/' + afkRel(ah.cfg('afk.plan_state_ns') + '-' + key + ah.cfg('guardkit.state_ext'));
   try {
-    if (ah.fs.lstat(path) === null) return false;
+    if (ah.fs.lstat(afkPlanFile(ah.cfg('afk.plan_state_ns'), key)) === null) return false;
     var t = ah.sessionState.get(ah.cfg('afk.plan_state_ns'), key);
-    return t === null || afkPlanNum(afkPlanParse(t), 'consultSeq') > 0 || afkPlanParse(t).consultSeq !== undefined;
+    return t === null || afkPlanNum(afkPlanParse(t), 'consultSeq') > 0;
   } catch (e) { return true; }
 }
 function afkPlanBump(s, field, now) {

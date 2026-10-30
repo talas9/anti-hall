@@ -374,7 +374,7 @@ doc = "State namespace of the per-session owner-prompt witness (a counter bumped
 value = "afkplan-wit"
 
 [afk.plan_lock_prefix]
-doc = "Per-session cross-process lock file name prefix (under the per-user state directory, + the session key) every read-modify-write of the plan record and the owner-prompt witness takes (lock timings: the afk group). The in-process state mutex does not cover a one-shot hook process next to the daemon; a stamp or attempt that cannot take this lock is treated as a failed write (fail closed). The namespaces afk.plan_state_ns / afk.plan_prompt_ns / this prefix / afk.plan_poison_prefix must not be prefixes of one another plus '-', or one namespace's stale-file prune would remove the other's files."
+doc = "Per-session cross-process lock file name prefix (under the per-user state directory, + the session key) every read-modify-write of the plan record and the owner-prompt witness takes (lock timings: the afk group). The in-process state mutex does not cover a one-shot hook process next to the daemon; a stamp or attempt that cannot take this lock is treated as a failed write (fail closed). The namespaces afk.plan_state_ns / afk.plan_prompt_ns / afk.plan_poison_ns / this prefix must not be prefixes of one another plus '-', or one namespace's stale-file prune would remove the other's files."
 value = "afkplan-lock-"
 
 [afk.plan_poison_ns]
@@ -570,7 +570,7 @@ doc = "Plan-approval tool calls left to the normal approval prompt, by reason (a
 value = { kind = "counter", unit = "events", labels = ["reason"] }
 
 [metric.afk_plan_stamp_failed]
-doc = "Plan auto-approve stamps that could not be written and read back, by field (witness, promptSeq, planSeq, consultSeq); a failed consult stamp only means no auto-approval, a failed prompt stamp is caught by the witness."
+doc = "Plan auto-approve stamps that could not be written and read back, by field (witness, promptSeq, planSeq, consultSeq, poison); a failed consult stamp only means no auto-approval; a failed prompt or plan stamp sets the poison marker and an in-process mark."
 value = { kind = "counter", unit = "events", labels = ["field"] }
 
 [metric.afk_question_parked]

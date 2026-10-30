@@ -3316,7 +3316,10 @@ mod afk_mode {
         let h = home("afk-plan-prune");
         afk_on(&h);
         let (rec_ns, wit_ns) = (crate::defaults::text("afk.plan_state_ns"), crate::defaults::text("afk.plan_prompt_ns"));
-        assert!(!wit_ns.starts_with(&format!("{rec_ns}-")) && !rec_ns.starts_with(&format!("{wit_ns}-")), "{rec_ns} / {wit_ns}");
+        let poi_ns = crate::defaults::text("afk.plan_poison_ns");
+        for (a, b) in [(rec_ns, wit_ns), (rec_ns, poi_ns), (wit_ns, poi_ns)] {
+            assert!(!b.starts_with(&format!("{a}-")) && !a.starts_with(&format!("{b}-")), "{a} / {b}");
+        }
         std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
         let old = format!("{h}/.anti-hall/{wit_ns}-s9.json");
         std::fs::write(&old, r#"{"seq":3}"#).unwrap();
@@ -3324,6 +3327,117 @@ mod afk_mode {
         plan_write(&h, "s1"); // a record write runs the record namespace's prune
         assert!(std::path::Path::new(&old).exists(), "the witness of another session was pruned by the record namespace");
         drained();
+    }
+
+    // ---- GH #442 re-review: poison ordering and P3s ----
+
+    fn hold_lock(h: &str) -> crate::checks::guardkit::nodelock::Held {
+        let lock = format!("{h}/.anti-hall/{}s1", crate::defaults::text("afk.plan_lock_prefix"));
+        crate::checks::guardkit::nodelock::acquire(&lock, crate::checks::guardkit::nodelock::Params::from_group("afk").unwrap()).unwrap()
+    }
+
+    /// An unrecorded later consult must not clear the poison set by an owner prompt after the first consult.
+    #[test]
+    fn plan_unrecorded_second_consult_never_revives_the_first() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-revive");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1"); // consult #1 recorded
+        let held = hold_lock(&h);
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"})); // both stamps fail: poison set
+        advisor(&h, "s1"); // consult #2 cannot record (lock contended)
+        held.release();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "stamp_poisoned"), 1);
+    }
+
+    /// All three disk writes of an owner prompt failing (record, witness, poison) still deny: the in-process mark.
+    #[test]
+    fn plan_all_three_prompt_writes_failing_still_deny() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-allfail");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let paths = [rec_path(&h, "afk.plan_state_ns"), rec_path(&h, "afk.plan_prompt_ns"), rec_path(&h, "afk.plan_poison_ns")];
+        let saved: Vec<Option<String>> = paths.iter().map(|p| std::fs::read_to_string(p).ok()).collect();
+        for p in &paths {
+            if std::path::Path::new(p).exists() {
+                std::fs::remove_file(p).unwrap();
+            }
+            std::fs::create_dir_all(p).unwrap();
+        }
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
+        for (p, t) in paths.iter().zip(saved) {
+            std::fs::remove_dir(p).unwrap();
+            if let Some(t) = t {
+                std::fs::write(p, t).unwrap();
+            }
+        }
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "stamp_poisoned"), 1);
+        assert_eq!(m.counter("afk_plan_stamp_failed", &[("field", "poison")]), 1);
+    }
+
+    /// A directory (any non-regular file) at the poison path is poisoned, not clean.
+    #[test]
+    fn plan_poison_path_not_a_regular_file_denies() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-poisondir");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let poi = rec_path(&h, "afk.plan_poison_ns");
+        if std::path::Path::new(&poi).exists() {
+            std::fs::remove_file(&poi).unwrap();
+        }
+        std::fs::create_dir_all(&poi).unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        assert_eq!(denied(&drained(), "stamp_poisoned"), 1);
+    }
+
+    /// Poison files are pruned with the same policy as the other namespaces.
+    #[test]
+    fn plan_old_poison_files_are_pruned() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-poisonprune");
+        afk_on(&h);
+        drained();
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        let old = format!("{h}/.anti-hall/{}-s9.json", crate::defaults::text("afk.plan_poison_ns"));
+        std::fs::write(&old, r#"{"poisoned":true}"#).unwrap();
+        std::fs::File::options().write(true).open(old.as_str()).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
+        plan_write(&h, "s1");
+        advisor(&h, "s1"); // the consult writes this session's poison marker: that namespace's prune runs
+        assert!(!std::path::Path::new(&old).exists(), "an expired poison file was kept");
+        drained();
+    }
+
+    /// An owner prompt with no consult on record takes no lock and writes nothing (no lock wait when AFK is off).
+    #[test]
+    fn plan_owner_prompt_without_a_consult_skips_the_lock() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-nolock");
+        drained();
+        let held = hold_lock(&h);
+        let t0 = std::time::Instant::now();
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "hello"}));
+        let took = t0.elapsed();
+        held.release();
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_stamp_failed", &[("field", "witness")]), 0, "took {took:?}");
+        assert!(!std::path::Path::new(&rec_path(&h, "afk.plan_prompt_ns")).exists());
     }
 
     /// Fail-open never: every uncertain state leaves the normal prompt (no stdout) and approves nothing.
