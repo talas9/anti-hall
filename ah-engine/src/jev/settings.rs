@@ -619,6 +619,17 @@ mod tests {
         assert_eq!(k.mode("modelRouting", false), Mode::Off);
     }
 
+    /// #466: gitGuardSelfCredit ships `off`, but a mode a user already set keeps precedence (settings.json or the legacy file).
+    #[test]
+    fn git_guard_self_credit_defaults_off_and_an_explicit_mode_still_wins() {
+        let d = resolve(&[("ANTIHALL_JEV", "1")], json!({}), json!({}));
+        assert_eq!(d.mode("gitGuardSelfCredit", false), Mode::Off);
+        let legacy = resolve(&[("ANTIHALL_JEV", "1")], json!({}), json!({"integrations": {"gitGuardSelfCredit": "shadow"}}));
+        assert_eq!(legacy.mode("gitGuardSelfCredit", false), Mode::Shadow);
+        let file = resolve(&[("ANTIHALL_JEV", "1")], json!({"jevIntegrations": {"gitGuardSelfCredit": "on"}}), json!({}));
+        assert_eq!(file.mode("gitGuardSelfCredit", false), Mode::On);
+    }
+
     #[test]
     fn unknown_ids_default_to_shadow_and_the_legacy_on_ids_to_on() {
         let s = resolve(&[("ANTIHALL_JEV", "1")], json!({}), json!({}));
