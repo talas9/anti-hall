@@ -1899,3 +1899,34 @@ fn n430_a_heartbeat_reminder_goes_to_the_session_that_wrote_it_not_the_newest_on
         assert!(matches!(t, signals::Target::Wake(k) | signals::Target::Session(k) if k == "sess-a"), "session B got A's heartbeat row: {to:?}");
     }
 }
+
+/// Two sessions on one machine: session A started the cargo that holds the shared lock, session B was active last. Only A hears of it;
+/// a holder no followed session started reaches nobody (never "stop it by pid" to a session that did not start it).
+#[test]
+fn n430_a_lock_holder_event_goes_only_to_the_session_that_started_it() {
+    let mut st = State::default();
+    for (id, pid, at) in [("sess-a", 100u32, 1u64), ("sess-b", 200, 2)] {
+        st.agents.insert(id.into(), Agent { id: id.into(), kind: kind_name("main").into(), pid, last_output_ms: at, ..Agent::default() });
+    }
+    // holder 300 (cargo) <- 250 (the lock wrapper) <- 100 (session A's process)
+    let ppid = |p: u32| match p {
+        300 => 250,
+        250 => 100,
+        _ => 1,
+    };
+    assert_eq!(lockwatch::lock_owner(&st, 300, &ppid).as_deref(), Some("sess-a"));
+    assert_eq!(lockwatch::lock_owner(&st, 400, &ppid), None, "a holder no followed session started reaches nobody");
+}
+
+/// A stale heartbeat that names no step, or whose writer the tracker does not follow, is dropped, not sent to the newest session.
+#[test]
+fn n430_a_stale_heartbeat_with_no_step_or_no_owner_reaches_nobody() {
+    let h = home("n430-hb-drop");
+    let n = now0();
+    let e = nudge_env(&h, n, &[]);
+    let mut st = State::default();
+    st.agents.insert("sess-b".into(), Agent { id: "sess-b".into(), kind: kind_name("main").into(), parent: "sess-b".into(), last_output_ms: n, ..Agent::default() });
+    let foreign = Agent { kind: kind_name("heartbeat").into(), name: "not-followed".into(), hb_step: "build".into(), ..Agent::default() };
+    assert_eq!(signals::heartbeat_owner(&st, &foreign.name), None);
+    assert!(signals::targets(&e, &st, &foreign, "heartbeat_stale").is_empty(), "a foreign heartbeat goes to no session");
+}

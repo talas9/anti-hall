@@ -451,6 +451,15 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
 
 /// The configured route targets: name -> (whose queue it addresses, which sink delivers). A new target is a row in
 /// `agent_tracker.targets`; only a new kind of sink needs code.
+/// The session a heartbeat belongs to: its file is named by the writer's session key (`agents heartbeat`); a followed subagent reports
+/// to its parent. `None` for a writer the tracker does not follow (a stale or foreign file): nobody is told.
+pub(super) fn heartbeat_owner(st: &State, stem: &str) -> Option<String> {
+    st.agents
+        .values()
+        .find(|m| m.kind != kind_name("heartbeat") && super::sinks::key_of(&m.id) == stem)
+        .map(|m| if super::is_child(m) { m.parent.clone() } else { m.id.clone() })
+}
+
 pub(super) fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target> {
     let routes = defaults::raw("agent_tracker.routes").get(sig).map(V::strings).unwrap_or_default();
     let table = defaults::raw("agent_tracker.targets");
@@ -478,6 +487,7 @@ pub(super) fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target
             let session = match (&a.ws, a.kind.as_str()) {
                 (Some(_), _) => None,
                 (None, _) if super::is_child(a) => Some(a.parent.clone()),
+                (None, k) if k == kind_name("heartbeat") && env.switch("agent_nudge.scope_setting") => heartbeat_owner(st, &a.name),
                 (None, k) if k == kind_name("heartbeat") => {
                     st.agents.values().filter(|m| m.kind == kind_name("main")).max_by_key(|m| m.last_output_ms).map(|m| m.id.clone())
                 }
@@ -522,6 +532,22 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         None
     };
     let Some(flag) = a.flags.get(sig).cloned() else { return };
+    // a heartbeat row reaches only the session that wrote it, and only when it names a step
+    if why.is_none() && a.kind == kind_name("heartbeat") && env.switch("agent_nudge.scope_setting") {
+        let ws = defaults::raw("agent_tracker.wake_scope");
+        let drop = if a.hb_step.trim().is_empty() {
+            Some(ws.str_field("empty_step"))
+        } else if heartbeat_owner(st, &a.name).is_none() {
+            Some(ws.str_field("foreign_agent"))
+        } else {
+            None
+        };
+        if let Some(r) = drop {
+            rec(env, ws.str_field("class"), ws.str_field("dropped"), Outcome::Skip, base(a).tok("signal", sig).tok("reason", r));
+            a.last_sent.insert(sig.to_string(), now);
+            return;
+        }
+    }
     let tg = targets(env, st, a, sig);
     let mut sent = 0;
     for t in &tg {

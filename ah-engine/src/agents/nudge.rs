@@ -267,7 +267,7 @@ fn emit(env: &Env, event: &str, n: &Nudge) {
 }
 
 fn answer_line(n: &Nudge) -> String {
-    defaults::render("msg.agent_nudge_answer", &[("cmd", &defaults::text("agent_nudge.cmd")), ("child", &n.child), ("ref", &n.ref_id)])
+    defaults::render("msg.agent_nudge_answer", &[("cmd", &defaults::text("agent_nudge.cmd")), ("child", &n.child), ("ref", &n.ref_id), ("max", &lim("snooze_max_min")), ("other", &lim("snooze_default_min"))])
 }
 
 /// Put `text` in front of session `to`: its reminder queue (its hook delivers it at its next turn) and, while a wake-watch covers
@@ -476,6 +476,13 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
                     st.nudge_hold.insert(id.clone(), now + lim("health_recheck_ms"));
                     continue;
                 }
+                // done: the child's work is finished; hold the nudge (and the judge) for the longer done window
+                if env.switch("agent_nudge.scope_setting") && l == defaults::text("agent_nudge.health_done") {
+                    st.nudge_hold.insert(id.clone(), now + lim("health_done_hold_ms"));
+                    let sup = defaults::raw("agent_nudge.suppress");
+                    rec(env, word("class"), sup.str_field("event"), Outcome::Skip, base(&a).tok("reason", sup.str_field("judge_done")).tok("trigger", trig));
+                    continue;
+                }
             }
         }
         let (ev_text, idle_min, _, step) = evidence(&a, &sig, &flag, now, &why);
@@ -538,6 +545,18 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
         emit(env, word("ev_sent"), &n);
         st.nudges.insert(id, n);
     }
+}
+
+/// An answer at or after the last send proves the parent saw the nudge: the wake fallback never queues it again (a snooze moves the
+/// send clock, which read as "sent, never delivered"). Recorded once per send.
+fn answered_since_send(env: &Env, n: &mut Nudge) -> bool {
+    if !env.switch("agent_nudge.scope_setting") || n.answer_at < n.last_sent {
+        return false;
+    }
+    n.fallback_at = env.now_ms;
+    let sup = defaults::raw("agent_nudge.suppress");
+    rec(env, word("class"), sup.str_field("event"), Outcome::Skip, ev(n).tok("reason", sup.str_field("answered")));
+    true
 }
 
 fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
@@ -603,6 +622,7 @@ fn follow(env: &Env, st: &mut State) {
             && !n.last_text.is_empty()
             && now.saturating_sub(n.last_sent) >= lim("wake_fallback_ms")
             && live(st, &n.parent)
+            && !answered_since_send(env, &mut n)
         {
             let r = Reminder {
                 id: format!("{}-{}-q", n.id, n.reminders),
