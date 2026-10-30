@@ -350,7 +350,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `command` | command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook. |
 | `model-routing` | Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches. |
 | `failure-root-cause-nudge` | Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals, a shell glob/echo artefact beside output that printed fine, and repeats within a turn. |
-| `git-audit` | Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) that HEAD reaches and no remote has carries an AI self-credit. |
+| `git-audit` | Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) carries an AI self-credit; one HEAD reaches and no remote has is blocked until reworded, one a remote already has (committed and pushed in one call) is blocked once and reported as published. |
 | `verify-first-subagent` | SubagentStart context: injects the verify-first protocol (compact, or full when context.protocolLevel is full) into every spawned subagent. |
 | `verify-first-full` | SessionStart context: injects the verify-first protocol and discipline index for the session, Claude or Codex text. |
 | `fable-availability` | SessionStart: records whether a Fable model is available (from the host's model cache) in ~/.anti-hall/fable-availability.json and tells the session when it is. |
@@ -1202,12 +1202,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.origin_commit` | `commit `{ref}`` |  |  | Where a reused message came from: a named commit. Placeholder: {ref}. |
 | `git.origin_template` | `the commit template` |  |  | Where a reused message came from: the commit template. |
 | `git.parallel_separators` | `:::, ::::, :::+, ::::+` |  |  | GNU parallel argument-source separators. |
-| `git.push_all_opts` | `--all, --branches, --mirror` |  |  | git push options that publish every local branch; the backstop then reads the commits of all branches. |
+| `git.push_all_opts` | `--all, --branches` |  |  | git push options that publish every local branch; the backstop then reads the commits of all branches. |
 | `git.push_all_rev_arg` | `--branches` |  |  | The git log argument that stands for every local branch (push_all_opts). |
 | `git.push_argv_branch` | `-C, {dir}, symbolic-ref, -q, --short, HEAD` |  |  | git arguments printing the current branch name, to find the remote of a push that names none. |
 | `git.push_argv_config` | `-C, {dir}, config, --get, {key}` |  |  | git arguments reading one config value; {key} is the key. |
 | `git.push_argv_config_all` | `-C, {dir}, config, --get-all, {key}` |  |  | git arguments reading every value of one config key; {key} is the key. |
 | `git.push_argv_log` | `9 items` |  |  | git arguments listing the commits a push would publish: {dir} is the repository directory, {n} the most commits read (the cap plus one, to see an overflow), {refs} expands to the pushed refs and {exclude} to the remote exclusion. Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
+| `git.push_argv_refs_all` | `-C, {dir}, for-each-ref, --format=%(refname), refs/` |  |  | git arguments listing every ref a mirror push publishes (push_mirror_opts, push_mirror_key), one full ref name per line; when it lists nothing the backstop reads every branch and tag. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
 | `git.push_default_key` | `push.default` |  |  | Config key of the push mode used when no refspec is given or configured. |
 | `git.push_default_ref` | `HEAD` |  |  | The ref a push without refspecs publishes (the current branch). |
@@ -1218,6 +1219,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.push_matching_values` | `matching` |  |  | push.default values that publish every branch the remote also has; the backstop then reads all local branches. |
 | `git.push_max_commits` | `50` |  |  | Most unpushed commits the pre-push credit backstop reads; a push with more is refused (msg_push_over_cap), never allowed unread. |
 | `git.push_mirror_key` | `remote.{remote}.mirror` |  |  | Config key that makes a push without refspecs mirror every ref; {remote} is the remote. |
+| `git.push_mirror_opts` | `--mirror` |  |  | git push options that publish every ref under refs/ (a mirror); the backstop then reads the commits of every ref push_argv_refs_all lists. |
 | `git.push_refspec_key` | `remote.{remote}.push` |  |  | Config key holding the refspecs a push without refspecs publishes; {remote} is the remote. |
 | `git.push_remote_fallback` | `origin` |  |  | The remote of a push that names none when no push_remote_keys value is set. |
 | `git.push_remote_keys` | `branch.{branch}.pushRemote, remote.pushDefault, branch.{branch}.remote` |  |  | Config keys, in order, naming the remote of a push that names none; {branch} is the current branch. |
@@ -1225,7 +1227,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.push_skip_opts` | `--dry-run, -n, --delete, -d` |  |  | git push options after which nothing is published, so the pre-push credit backstop is skipped. |
 | `git.push_tag_keyword` | `tag` |  |  | The git push refspec keyword that names a tag (`git push origin tag v1`). |
 | `git.push_tag_prefix` | `refs/tags/` |  |  | The ref prefix a `tag <name>` refspec stands for. |
-| `git.push_tags_opts` | `--tags, --mirror` |  |  | git push options that publish every tag; the backstop then reads the commits of all tags. |
+| `git.push_tags_opts` | `--tags` |  |  | git push options that publish every tag; the backstop then reads the commits of all tags. |
 | `git.push_tags_rev_arg` | `--tags` |  |  | The git log argument that stands for every tag (push_tags_opts). |
 | `git.push_timeout_ms` | `4000` |  | ms | Timeout of each git query the pre-push credit backstop runs. |
 | `git.push_true_values` | `true, yes, on, 1` |  |  | Config values git reads as true (for push_mirror_key). |
@@ -1259,8 +1261,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `git_audit.argv_log` | `9 items` |  |  | git arguments of the audit's log query: the commits HEAD reaches that no remote has; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e). |
+| `git_audit.argv_published` | `-C, {dir}, log, --no-walk=unsorted, --format=%H%x1f%B%x1e, {shas}` |  |  | git arguments reading the stored messages of the commits the audit found written in its window that the unpushed log did not list (a remote already has them, or they were amended away). {dir} is the repository directory and {shas} expands to the hashes. Fields and records as in argv_log. |
 | `git_audit.argv_reflog` | `9 items` |  |  | git arguments reading HEAD's reflog (newest first): full hash, the entry's selector with its unix time, and git's own description of the step. {dir} and {n} as in argv_log. |
+| `git_audit.argv_remote_has` | `8 items` |  |  | git arguments naming one remote-tracking ref that contains a commit ({sha}); empty output means no remote has it (an amended-away commit, never reported). |
 | `git_audit.block_reason` | `audit_credit` |  |  | The reason label of git_blocked for an audit block. |
+| `git_audit.block_reason_published` | `audit_credit_published` |  |  | The reason label of git_blocked for an audit block on a credited commit a remote already has. |
 | `git_audit.cd_verb` | `cd` |  |  | The verb whose directory argument moves the audit's working directory. |
 | `git_audit.commits` | `20` |  |  | How many commits at HEAD the audit reads. |
 | `git_audit.dir_opt` | `-C` |  |  | The global git option that changes the repository directory. |
@@ -1270,10 +1275,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git_audit.max_buffer` | `1048576` |  |  | Largest log output, in bytes, the audit accepts from one repository (Node's child-process buffer cap: a larger output is dropped). |
 | `git_audit.max_depth` | `3` |  |  | How deep eval and shell -c payloads are followed when looking for commit-creating git commands. |
 | `git_audit.msg` | `4 entries` |  |  | Block after a commit git stored with an AI credit. Placeholders: {hits} (short hashes), {first} (the oldest one). |
+| `git_audit.msg_published` | `4 entries` |  |  | Block after a commit git stored with an AI credit that a remote already has (committed and pushed in one call). Placeholders: {hits} (short hashes), {remotes} (the remote-tracking refs that have them). |
 | `git_audit.opts_with_value` | `-c, --git-dir, --work-tree, --namespace, --config-env` |  |  | Global git options that take a value in the next word (skipped when looking for the repository directory). |
+| `git_audit.published_file` | `git-audit-published.json` |  |  | State file, under replykit.state_dir, holding the hashes of published credited commits already reported, so each one blocks once: the agent cannot clear it itself. |
+| `git_audit.published_memory` | `500` |  |  | How many reported published commit hashes the audit remembers (oldest dropped first). |
 | `git_audit.record_sep` | `` |  |  | The character that ends one commit record of the audit's log output (RS). |
 | `git_audit.reflog_creating` | `7 items` |  |  | Lower-case starts of the reflog descriptions of steps that write a commit (a checkout or reset only moves HEAD and is not read). |
-| `git_audit.summary` | `Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) t...` |  |  | One-line description of the git-audit check in the generated reference. |
+| `git_audit.summary` | `Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) c...` |  |  | One-line description of the git-audit check in the generated reference. |
 | `git_audit.timeout_ms` | `4000` |  | ms | Timeout of the git log the audit runs in each repository. |
 | `git_audit.window_s` | `900` |  |  | How recent, in seconds, a commit must be for the audit to look at it. |
 
@@ -14108,6 +14116,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |
+| `git.msg_push_config_env` | Block: a push names `--config-env <key>=<VAR>` but VAR is not set in the same command, so the config that decides what the push publishes cannot be read. Placeholder: {spec} (the --config-env value). |
 | `git.msg_push_credit` | Block: a push would publish commits that carry an AI credit. Placeholders: {shown} (short hashes), {first} (the first hash). |
 | `git.msg_push_over_cap` | Block: the commits a push would publish are more than the backstop reads, so a credit past the cap could not be ruled out. Placeholders: {cap}, {range} (the git log arguments of the range). |
 | `git.msg_reused_message` | Block: a reused commit message carries an AI self-credit. Placeholder: {origin}. |
