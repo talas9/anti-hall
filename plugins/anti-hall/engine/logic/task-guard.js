@@ -71,9 +71,14 @@ function tgLiveAgentOwner(owner, rows) {
   return tgMatchingOwners(owner, rows).some(function (r) { return r.live === true; });
 }
 
+// An owner is unresolved when it names agent work this session can see (a launched or tracked agent) whose liveness no source can
+// tell: that is advised, not blocked (#317). An owner that names nothing the session can see, or only work known to have ended, is
+// not unresolved and blocks like any open task, unless task_guard.advise_unmatched_owners says to advise it too.
 function tgUnresolvedOwner(t, rows) {
   if (!t.owner || tgCoordinator(t.owner) || tgOwnerBlocked(t) || tgChildAttended(t.owner)) return false;
-  return !tgMatchingOwners(t.owner, rows).some(function (r) { return r.live !== null; });
+  var m = tgMatchingOwners(t.owner, rows);
+  if (m.length === 0) return ah.cfg('task_guard.advise_unmatched_owners') === true;
+  return !m.some(function (r) { return r.live !== null; });
 }
 
 // The open tasks the generic block lists: a task waiting (through any chain) on an open task that is itself free or waiting on the

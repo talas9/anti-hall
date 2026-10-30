@@ -369,8 +369,12 @@ doc = "Case-insensitive phrases in a task owner, subject or description that mea
 value = ["owner-go", "waiting owner", "needs your OK"]
 
 [task_guard.advise_unresolved_owners]
-doc = "Advise instead of blocking Stop when a non-coordinator task owner cannot be resolved to known live or finished tracker work. False restores blocking for unresolved owners."
+doc = "Advise instead of blocking Stop when a non-coordinator task owner names agent work this session can see (a launched or tracked agent) whose liveness no source can tell. An owner whose agent is known to have ended is not unresolved and blocks. False restores blocking for unresolved owners."
 value = true
+
+[task_guard.advise_unmatched_owners]
+doc = "Advise instead of blocking Stop when a non-coordinator task owner names no agent, tracked agent or live DevSwarm workspace this session can see. False (the default) blocks such a task like any open task, as the Node task-guard did."
+value = false
 
 [task_guard.unresolved_owner_advisory]
 doc = "Fail-open advisory for unresolved task owners; {list} uses the existing bounded task renderer."

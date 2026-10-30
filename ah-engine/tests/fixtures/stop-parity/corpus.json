@@ -314,7 +314,7 @@
        {
         "type": "tool_result",
         "tool_use_id": "x7",
-        "content": "Async agent launched successfully.\nagentId: a8\nThe agent is working in the background."
+        "content": "Async agent launched successfully.\nagentId: a8f3c2e1b4d5a6c7\nThe agent is working in the background."
        }
       ]
      }
