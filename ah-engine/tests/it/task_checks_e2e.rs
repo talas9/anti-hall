@@ -533,3 +533,173 @@ fn a_free_text_priority_tag_blocks_the_stop_capped_and_p0_to_p3_pass() {
     let good = enforce_stop(&w, &[("T-3 [P1] Owner/blocked wait", "pending")], false);
     assert!(!good.contains("P0-P3"), "a P-tag with the label in the text is not flagged: {good}");
 }
+
+// ---- task-hook false positives: #459 #460 #461 #467 #468 ----
+
+/// One hook event through the dispatcher with every hook of the event mapped to a no-op except `only` (exit 99 = deferred to Node).
+/// Several calls of one world share its home, so advisory state carries over like in a session.
+fn event_run(w: &World, event: &str, tool: &str, only: &str, payload: &serde_json::Value, env: &[(&str, &str)]) -> (i32, String, String) {
+    let ids = ids_for(event, tool);
+    assert!(ids.iter().any(|i| i == only), "{only} not in {ids:?}");
+    let map: serde_json::Map<String, serde_json::Value> = ids.iter().map(|id| (id.clone(), if id == only { "exit 99" } else { "true" }.into())).collect();
+    let map_path = w.path("event-map.json");
+    std::fs::write(&map_path, serde_json::json!({ event: map }).to_string()).unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["hook", "--event", event]);
+    if !tool.is_empty() {
+        c.args(["--tool", tool]);
+    }
+    c.arg("--fallback-map")
+        .arg(&map_path)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", w.path("home"))
+        .env("AH_ENGINE_DIR", w.path("state"))
+        .env("AH_ENGINE_VERSION", "task-e2e")
+        .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+        .env("CLAUDE_PLUGIN_ROOT", &w.dir)
+        .envs(env.iter().copied())
+        .current_dir(&w.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
+}
+
+fn bash_use(n: u32, cmd: &str) -> String {
+    serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("b{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("bt{n}"), "name": "Bash", "input": {"command": cmd}}]}}).to_string()
+}
+
+fn edit_use(n: u32) -> String {
+    serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("e{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("et{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}}).to_string()
+}
+
+/// #459: commands that only touch /tmp, /private/tmp or /var/tmp are scratch even when TMPDIR points elsewhere (macOS), and the
+/// progress block states the no-heredoc rule in its own text.
+#[test]
+fn tasklist_guard_ignores_system_temp_commands_and_states_the_heredoc_rule() {
+    let w = World::new("fp459");
+    let cwd = std::fs::canonicalize(w.path("proj")).unwrap();
+    let payload = |f: &str| serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path(f)});
+    let run = |f: &str| {
+        let (code, out, _) = event_run(&w, "Stop", "", "tasklist-guard", &payload(f), &[("TMPDIR", "/var/folders/zz/T")]);
+        assert_eq!(code, 0);
+        out
+    };
+    let scratch = [
+        bash_use(1, "echo '{}' > /tmp/status.json"),
+        bash_use(2, "cat > /private/tmp/note.txt <<'EOF'\nprogress\nEOF"),
+        bash_use(3, "cp /tmp/status.json /var/tmp/status.bak"),
+    ];
+    std::fs::write(w.path("scratch.jsonl"), scratch.join("\n") + "\n").unwrap();
+    assert!(!run("scratch.jsonl").contains("\"decision\":\"block\""), "scratch/tmp commands are not changed files");
+    // the twin: the same number of project edits blocks, so the silence above is the temp exclusion and not a quiet guard
+    std::fs::write(w.path("edits.jsonl"), format!("{}\n{}\n{}\n", edit_use(1), edit_use(2), edit_use(3))).unwrap();
+    assert!(run("edits.jsonl").contains("\"decision\":\"block\""), "project edits still block");
+    // tasks exist, the progress file does not: the Stop text itself carries the rule, not only the details file
+    std::fs::write(w.path("tracked.jsonl"), format!("{}{}\n{}\n{}\n", task_list(&[("T-1 [P1] work", "in_progress")]), edit_use(1), edit_use(2), edit_use(3))).unwrap();
+    let out = run("tracked.jsonl");
+    assert!(out.contains("progress is missing or stale") && out.contains("heredoc"), "the Stop text states the heredoc rule: {out}");
+}
+
+/// #460: a research-shaped brief that also changes state (commit, build, settings, restore) is not nudged toward Explore.
+#[test]
+fn model_routing_does_not_nudge_explore_for_a_brief_that_mutates_state() {
+    let w = World::new("fp460");
+    let spawn = |prompt: &str| {
+        serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "s1", "cwd": w.path("proj"),
+            "tool_input": {"description": "probe", "prompt": prompt, "subagent_type": "general-purpose", "model": "sonnet"}})
+    };
+    let run = |prompt: &str| event_run(&w, "PreToolUse", "Agent", "model-routing-guard", &spawn(prompt), &[]).1;
+    let ro = run("Investigate which modules import the parser and list them. Read only.");
+    assert!(ro.contains("Explore"), "a read-only research brief is still nudged: {ro}");
+    for brief in [
+        "Investigate the device status, change the device settings to the test profile, then restore them afterwards.",
+        "Investigate why the build fails: run cargo build and cargo test in the clone and report the result.",
+        "Find the regression and commit the fix, then push the branch.",
+        "Research the flaky case, deploy to staging and check the live probe.",
+    ] {
+        let out = run(brief);
+        assert!(!out.contains("Explore"), "mutating brief {brief:?} must not be nudged: {out}");
+    }
+}
+
+/// #460 (a)+(b): the advisor review rule and the deploy floor weigh the task's own verb, not a quoted word.
+#[test]
+fn review_and_deploy_classifiers_weigh_the_tasks_own_verbs() {
+    let w = World::new("fp460b");
+    let user = r#"{"type":"user","message":{"role":"user","content":"go"}}"#;
+    let advisor = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"server_tool_use","name":"advisor","input":{}}]}}"#;
+    std::fs::write(w.path("a.jsonl"), format!("{user}\n{advisor}\n")).unwrap();
+    let run = |desc: &str, prompt: &str, model: &str| {
+        let p = serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("a.jsonl"),
+            "tool_input": {"description": desc, "prompt": prompt, "subagent_type": "general-purpose", "model": model}});
+        let w2 = World::new(&format!("fp460b-{}", desc.len()));
+        std::fs::copy(w.path("a.jsonl"), w2.path("a.jsonl")).unwrap();
+        let mut p = p;
+        p["transcript_path"] = serde_json::json!(w2.path("a.jsonl"));
+        let r = event_run(&w2, "PreToolUse", "Agent", "model-routing-guard", &p, &[]);
+        format!("{}|{}", r.0, r.1)
+    };
+    assert!(run("Review the diff", "check it", "sonnet").starts_with("2|"), "twin: a real review on sonnet is blocked");
+    assert_eq!(run("Fix the 5 findings the Codex review found", "fix them, run tests, commit", "sonnet"), "0|", "an implementation spawn quoting a review passes");
+    let twin = run("Deploy to production with the secrets", "run the production deploy using the secrets", "haiku");
+    assert!(twin.len() > 3, "twin: a real deploy on haiku is flagged: {twin}");
+    assert_eq!(run("Append ledger entry", "Append one line to the production deploy ledger and add a section to the progress file; secrets rotation was done earlier.", "haiku"), "0|", "bookkeeping on haiku passes");
+}
+
+/// #461: a pending task that waits on the owner (any T-<n> [P] prefix, or an owner-gated marker) is not idle work.
+#[test]
+fn the_idle_stop_check_ignores_tasks_blocked_on_the_owner() {
+    // one world per Stop: the per-prompt block budget would otherwise hide the later calls
+    let stop = |n: u32, subject: &str| enforce_stop(&World::new(&format!("fp461-{n}")), &[(subject, "pending")], false);
+    let idle = stop(0, "T-4 [P1] build the parser");
+    assert!(idle.contains("no agent working"), "the twin: a plain pending task is idle: {idle}");
+    for (n, subject) in ["T-4 [P1] OWNER: approve the flash", "T-5 [P2] needs owner decision on pricing", "T-6 [P1] hardware off limits - owner-gated"].iter().enumerate() {
+        let out = stop(n as u32 + 1, subject);
+        assert!(!out.contains("no agent working"), "owner-blocked {subject:?} is not idle: {out}");
+    }
+}
+
+/// #467: the over-long-subject advisory fires on every breach (two different subjects of one length are two breaches) for both tools,
+/// and a subject that is not `T-<n> [P] title` gets the shape advisory.
+#[test]
+fn the_subject_advisory_fires_per_breach_on_both_tools_and_checks_the_title_shape() {
+    let w = World::new("fp467");
+    let call = |tool: &str, subject: &str| {
+        let input = if tool == "TaskCreate" { serde_json::json!({"subject": subject}) } else { serde_json::json!({"taskId": "1", "subject": subject}) };
+        let p = serde_json::json!({"hook_event_name": "PostToolUse", "tool_name": tool, "session_id": "s1", "cwd": w.path("proj"), "tool_input": input});
+        event_run(&w, "PostToolUse", tool, "tasklist-hygiene:post", &p, &[]).1
+    };
+    let a = format!("T-1 [P1] {}", "a".repeat(100));
+    let b = format!("T-2 [P1] {}", "b".repeat(100));
+    assert_eq!(a.len(), b.len());
+    for (tool, s) in [("TaskCreate", &a), ("TaskCreate", &b), ("TaskUpdate", &a), ("TaskUpdate", &b)] {
+        assert!(call(tool, s).contains("chars (max"), "{tool}: every over-long subject gets the advisory");
+    }
+    assert!(call("TaskCreate", "fix the parser").contains("T-<n> [P0-P3] title"), "an untagged subject gets the shape advisory");
+    assert!(!call("TaskCreate", "T-9 [P2] fix the parser").contains("T-<n>"), "a well-shaped short subject is quiet");
+}
+
+/// #468: deleting a task that is not completed is denied (id and rule named); a completed one is allowed.
+#[test]
+fn an_open_task_cannot_be_deleted_and_the_tracker_nudge_quotes_the_request() {
+    let w = World::new("fp468");
+    std::fs::write(w.path("t.jsonl"), task_list(&[("T-1 [P1] open work", "pending"), ("T-2 [P1] done work", "completed")])).unwrap();
+    let del = |id: &str| {
+        let p = serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "TaskUpdate", "session_id": "s1", "cwd": w.path("proj"),
+            "transcript_path": w.path("t.jsonl"), "tool_input": {"taskId": id, "status": "deleted"}});
+        event_run(&w, "PreToolUse", "TaskUpdate", "tasklist-hygiene", &p, &[])
+    };
+    let (code, out, _) = del("1");
+    assert_eq!(code, 2, "deleting an open task is denied: {out}");
+    assert!(out.contains("task 1") && out.contains("not completed"), "the denial names the task and states the rule: {out}");
+    assert_eq!(del("2").0, 0, "a completed task may be deleted");
+    // the tracker nudge names the request it is about
+    let prompt = serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "cwd": w.path("proj"), "prompt": "please rotate the signing key and update the docs"});
+    let (_, out, _) = event_run(&w, "UserPromptSubmit", "", "task-tracker", &prompt, &[]);
+    assert!(out.contains("rotate the signing key"), "the nudge quotes the untracked request: {out}");
+}
