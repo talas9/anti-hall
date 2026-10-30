@@ -272,7 +272,7 @@ mod tests {
             for event in ["UserPromptSubmit", "SessionStart", "SubagentStart", "PostToolUse", "PostToolUseFailure"] {
                 assert!(!guards.contains(&event), "{event} is not a guard event");
                 let rows = crate::defaults::raw(&format!("dispatch.hooks_{host}_{event}"));
-                for r in rows.as_array().map(|a| a.as_slice()).unwrap_or_default() {
+                for r in rows.as_array().unwrap_or_default() {
                     let Some(check) = r.get("check").and_then(|v| v.as_str()) else { continue };
                     if ["afk-mode", "advisor-guard"].contains(&check) {
                         seen += 1;
