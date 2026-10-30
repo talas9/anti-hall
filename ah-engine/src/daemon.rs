@@ -1528,8 +1528,14 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     // (including one waiting out client.slow_fallback_max_ms) keeps its end open, so it is never skipped; a client that only
     // shut down its write side after sending (the legacy client always does) is not hung up either.
     if crate::deadline::hung_up(s.as_raw_fd()) {
-        sh.stats.gone_skipped.fetch_add(1, SeqCst);
-        sh.telemetry.with_metrics(|m| m.inc("client_gone_skipped", &[]));
+        // a peer that closed having sent nothing is a connect-only liveness probe (the launcher's gate), not an abandoned request: on
+        // Linux the hang-up is already visible when a worker pops it, so it is told apart here by the empty stream (nothing to peek)
+        if peer_gone(&s) {
+            sh.stats.probes.fetch_add(1, SeqCst);
+        } else {
+            sh.stats.gone_skipped.fetch_add(1, SeqCst);
+            sh.telemetry.with_metrics(|m| m.inc("client_gone_skipped", &[]));
+        }
         return After::Continue;
     }
     if crate::metrics::recent_on() {
