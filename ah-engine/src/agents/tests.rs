@@ -2202,6 +2202,63 @@ fn failed_delivery_is_not_counted_as_sent() {
     assert!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1);
 }
 
+/// A wake-only delivery that no wake line confirmed falls back to the reminder queue; an unwritable queue makes that fallback fail, and the failure is counted.
+#[test]
+fn failed_wake_fallback_queue_write_is_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("tel-fallback-fail");
+    drained();
+    let mut st = State::default();
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+        e
+    };
+    let e0 = nudge_env(&h, n + MIN, &[]);
+    std::fs::create_dir_all(sinks::SessionQueue::file(&e0, "parent")).unwrap(); // the queue file cannot be written
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick_at(&mut st, n + MIN);
+    append(&child, &spend);
+    tick_at(&mut st, n + 18 * MIN);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]), 0, "wake-only: the queue is not written at open");
+    for m in [19, 23, 30, 45, 60, 78] {
+        tick_at(&mut st, n + m * MIN);
+    }
+    assert!(
+        crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1,
+        "a failed wake-fallback queue write is counted"
+    );
+}
+
+/// The first delivery fails (nothing sent), the queue recovers, a later reminder lands: that success is counted as sent once.
+#[test]
+fn a_reminder_that_lands_after_a_failed_first_delivery_is_counted_as_sent() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("tel-recover");
+    drained();
+    let mut st = State::default();
+    let e0 = nudge_env(&h, n + MIN, &[]);
+    let q = sinks::SessionQueue::file(&e0, "parent");
+    std::fs::create_dir_all(&q).unwrap();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&e0, &mut st);
+    append(&child, &spend);
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    let sent = || crate::metrics::bumped_on_this_thread("agent_nudge_sent", &[("trigger", "waste")]);
+    assert_eq!(sent(), 0, "the first delivery failed");
+    assert!(st.nudges.contains_key("abc"), "the nudge is open");
+    std::fs::remove_dir(&q).unwrap(); // the queue works again
+    for m in [19, 23, 30, 45, 60, 78, 100, 130, 160] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+    }
+    let reminded = st.nudges.get("abc").map_or(0, |x| x.reminders);
+    assert!(reminded >= 1, "a reminder went out");
+    assert_eq!(sent(), 1, "the reminder that landed is counted once as sent");
+}
+
 /// The same scene with a writable queue: delivered, counted once as sent, no failure.
 #[test]
 fn successful_delivery_is_counted_as_sent() {
