@@ -211,11 +211,13 @@ pub(crate) fn digest(home: &str, epoch: &str) -> (String, u64, u64) {
 
 /// End AFK; with `print_digest`, print the digest of the period that ended (or of the last one). Owner presence is refreshed.
 fn turn_off(p: &Parsed, home: &str, print_digest: bool) -> i32 {
+    // presence first, without the lock (it only moves forward): when a paused hook keeps the lock busy, this is the signal its
+    // pending idle entry re-checks right before it publishes (GH #426)
+    mark_present(home);
     locked_or_busy(home, |held| turn_off_locked(p, home, print_digest, held))
 }
 
 fn turn_off_locked(p: &Parsed, home: &str, print_digest: bool, held: &crate::checks::guardkit::nodelock::Held) -> i32 {
-    mark_present(home);
     let Some(mut f) = read_json(&flag_path(home)) else {
         say(p, defaults::text("afk.msg_not_on"), json!({"on": false}));
         return 0;
@@ -227,8 +229,10 @@ fn turn_off_locked(p: &Parsed, home: &str, print_digest: bool, held: &crate::che
         defaults::text("afk.msg_not_on").to_string()
     };
     f.insert("on".into(), Value::Bool(false));
-    if was_on {
-        f.insert("ended".into(), json!(now_ms()));
+    // the owner-back watermark moves forward even when the flag is already OFF, so an idle entry pending in a hook loses (GH #426)
+    let now = now_ms();
+    if f.get("ended").and_then(Value::as_i64).is_none_or(|e| e < now) {
+        f.insert("ended".into(), json!(now));
     }
     let mut text = head;
     if print_digest {
@@ -239,7 +243,7 @@ fn turn_off_locked(p: &Parsed, home: &str, print_digest: bool, held: &crate::che
         f.insert("pending_parked".into(), json!(pending_parked + parked));
         text = format!("{text}\n{d}");
     }
-    if (was_on || print_digest) && !write_flag(home, held, &f) {
+    if !write_flag(home, held, &f) {
         return 1;
     }
     say(p, &text, json!({"on": false}));

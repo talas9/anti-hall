@@ -88,6 +88,8 @@ function afkIsAgent(p) { return coordinator.subagentByPayload(p); }
 // hook clock ah.clock.now() can be pinned).
 var afkLockBudget = { until: 0, failed: false };
 function afkLockReset() { afkLockBudget = { until: Date.now() + ah.cfgNum('afk.lock_wait_ms'), failed: false }; }
+// `fn` may return {flag, guard}: `guard` ([[rel, key, max], ...]) is re-checked by the host after the ownership check,
+// immediately before the rename; a watched number above its bound discards the commit (counted afk_idle_revoked, GH #426).
 function afkUpdate(fn) {
   if (afkLockBudget.failed) return null;
   var h = null;
@@ -98,32 +100,46 @@ function afkUpdate(fn) {
     // ours, so a holder whose expired lock was taken over can never land a stale ON over the new holder's OFF
     var rel = afkRel(ah.cfg('afk.flag_file')), infix = ah.cfg('afk.fence_infix');
     try { ah.state.fenceSweep(rel, infix); } catch (e) { /* nothing to sweep */ }
-    var cur = afkFlag(), next = fn(cur);
-    if (next === null) return { flag: cur };
+    var cur = afkFlag(), next = fn(cur), guard;
+    if (next === null) return { flag: cur, prev: cur };
+    if (next.guard !== undefined) { guard = next.guard; next = next.flag; }
     var ok = false;
-    try { ok = ah.state.writeFenced(rel, JSON.stringify(next), h, infix); } catch (e) { ok = false; }
-    if (!ok) afkMetric('afk_lock_lost', {});
-    return ok ? { flag: next } : null;
+    try { ok = ah.state.writeFenced(rel, JSON.stringify(next), h, infix, guard); } catch (e) { ok = false; }
+    if (!ok) afkMetric(guard !== undefined && afkGuardMoved(guard) ? 'afk_idle_revoked' : 'afk_lock_lost', {});
+    return ok ? { flag: next, prev: cur } : null;
   } finally {
     try { ah.state.unlock(h); } catch (e) { /* the host releases a lock still held when the call ends */ }
   }
 }
 
+// Whether a watched value of a discarded guarded commit moved past its bound (a newer owner presence or `back`).
+function afkGuardMoved(guard) {
+  return guard.some(function (g) { var v = afkReadJson(g[0]); return v !== null && typeof v[g[1]] === 'number' && v[g[1]] > g[2]; });
+}
+
 function afkStart(how, now) {
   var r = afkUpdate(function (cur) {
     if (afkOn(cur)) return null;
-    // idle: re-checked against the flag as it is NOW, so a `back` written after this hook read the flag wins
-    if (how === ah.cfg('afk.how_idle') && !afkIdleDue(cur, now)) return null;
-    return { on: true, how: how, since: now, epoch: String(now), counted: false };
+    var on = { on: true, how: how, since: now, epoch: String(now), counted: false };
+    if (how !== ah.cfg('afk.how_idle')) return on;
+    // idle: re-checked against the flag as it is NOW, so a `back` written after this hook read the flag wins; and again by the
+    // host right before the rename, so an owner presence or `back` that lands while this commit is pending wins too (GH #426)
+    var base = afkIdleBase(cur);
+    if (base === null || now - base < ah.settings.num('afk.set_idle_minutes') * 60000) return null;
+    return { flag: on, guard: [[afkRel(ah.cfg('afk.presence_file')), 'last', base], [afkRel(ah.cfg('afk.flag_file')), 'ended', base]] };
   });
   return r !== null && afkOn(r.flag) ? r.flag : null;
 }
 
+// idleOnly: end an idle period only. Otherwise (the owner's `back` / `afk off`): ALWAYS bump the `ended` watermark under the lock,
+// even when the published flag is OFF (and with no flag yet), so an idle entry pending in another hook loses (GH #426).
 function afkEnd(f, now, idleOnly) {
   return afkUpdate(function (cur) {
-    if (!afkOn(cur) || (idleOnly && cur.how !== ah.cfg('afk.how_idle'))) return null;
-    cur.on = false; cur.ended = now;
-    return cur;
+    if (idleOnly && (!afkOn(cur) || cur.how !== ah.cfg('afk.how_idle'))) return null;
+    var next = cur !== null ? cur : { on: false };
+    next.on = false;
+    next.ended = typeof next.ended === 'number' && next.ended > now ? next.ended : now;
+    return next;
   });
 }
 
@@ -203,11 +219,15 @@ function afkPresent(now) {
 
 // Idle due: no owner prompt on this machine for afk.idleMinutes, counted from the later of the last prompt and the last end of AFK
 // (`ended`, the back watermark). Never due without a recorded prompt.
-function afkIdleDue(f, now) {
+// The idle base: the later of the last owner prompt and the flag's `ended`; null without a recorded prompt.
+function afkIdleBase(f) {
   var pr = afkReadJson(afkRel(ah.cfg('afk.presence_file')));
-  if (pr === null || typeof pr.last !== 'number') return false;
-  var base = f !== null && typeof f.ended === 'number' && f.ended > pr.last ? f.ended : pr.last;
-  return now - base >= ah.settings.num('afk.set_idle_minutes') * 60000;
+  if (pr === null || typeof pr.last !== 'number') return null;
+  return f !== null && typeof f.ended === 'number' && f.ended > pr.last ? f.ended : pr.last;
+}
+function afkIdleDue(f, now) {
+  var base = afkIdleBase(f);
+  return base !== null && now - base >= ah.settings.num('afk.set_idle_minutes') * 60000;
 }
 
 function afkIdleTrip(f, now) {
@@ -254,8 +274,10 @@ function afkPrompt(p, f, now) {
     } else if (afkWordIn(ah.cfg('afk.words_off'), word) || afkWordIn(ah.cfg('afk.words_progress'), word)) {
       var off = afkWordIn(ah.cfg('afk.words_off'), word), d = afkDigestHere(f), head = '';
       if (off) {
-        head = afkOn(f) ? afkR(ah.cfg('afk.msg_off'), { how: f.how, since: afkFmt(f.since) }) : ah.cfg('afk.msg_not_on');
-        if (afkOn(f) && afkEnd(f, now, false) === null) head = ah.cfg('afk.msg_lock_busy'); // the flag is still ON: say so
+        // under the lock, whatever the published flag says (an idle ON may be pending); the head reflects the flag as it was then
+        var e = afkEnd(f, now, false), was = e !== null ? e.prev : null;
+        if (e === null) head = ah.cfg('afk.msg_lock_busy'); // the watermark was not written: say so
+        else head = afkOn(was) ? afkR(ah.cfg('afk.msg_off'), { how: was.how, since: afkFmt(was.since) }) : ah.cfg('afk.msg_not_on');
       }
       afkMetric('digest_entries', {}, d.entries);
       if (d.parked > 0) afkMetric('afk_question_parked', { action: ah.cfg('afk.action_listed') }, d.parked);
