@@ -271,7 +271,11 @@ mod tests {
         for host in ["claude", "codex"] {
             for event in ["UserPromptSubmit", "SessionStart", "SubagentStart", "PostToolUse", "PostToolUseFailure"] {
                 assert!(!guards.contains(&event), "{event} is not a guard event");
-                let rows = crate::defaults::raw(&format!("dispatch.hooks_{host}_{event}"));
+                let key = format!("dispatch.hooks_{host}_{event}");
+                if !crate::defaults::has(&key) {
+                    continue; // the host has no hooks on this event
+                }
+                let rows = crate::defaults::raw(&key);
                 for r in rows.as_array().unwrap_or_default() {
                     let Some(check) = r.get("check").and_then(|v| v.as_str()) else { continue };
                     if ["afk-mode", "advisor-guard"].contains(&check) {
