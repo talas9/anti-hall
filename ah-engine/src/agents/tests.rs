@@ -468,7 +468,10 @@ fn a1_a_shell_file_write_is_a_hard_outcome_and_resets_the_burn_pr472() {
 fn a2_a_passing_check_is_a_hard_outcome_and_resets_the_burn_pr472() {
     let (h, p, marker, mut st, n) = burned("a2-472");
     // a failing check (non-zero exit: the tool result is an error) is no outcome
-    append(&p, &[tool(n + 20 * MIN, "m1f", 10, "c0", "Bash", json!({"command": "cargo fmt --all -- --check"})), result(n + 20 * MIN, "c0", "Exit code 1", true)]);
+    append(
+        &p,
+        &[tool(n + 20 * MIN, "m1f", 10, "c0", "Bash", json!({"command": "cargo fmt --all -- --check"})), result(n + 20 * MIN, "c0", "Exit code 1", true)],
+    );
     ticks(&h, &mut st, &[n + 21 * MIN]);
     assert_eq!(agent(&st, "s1").progress, 0, "a failing check adds nothing");
     append(&p, &[tool(n + 21 * MIN, "m2", 10, "c1", "Bash", json!({"command": "cargo fmt --all -- --check"})), result(n + 21 * MIN, "c1", "", false)]);
