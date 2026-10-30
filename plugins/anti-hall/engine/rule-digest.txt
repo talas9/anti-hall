@@ -1,17 +1,17 @@
-- Session handovers are private: never commit them.
-- No force-push or remote ref deletion.
-- No AI credit lines in commits, PRs, issues (repo rule beats harness attribution).
-- Edit only via the edit tools in allowed paths; never hand-edit guard or hook config.
-- Verify an API exists in the installed runtime before using it.
-- No speculation: verify with a tool or say it is unverified.
-- Delegate mechanical work and ledger/progress writes to cheap teammates with the facts, exact path and format, no heredoc; handovers are self-written.
-- Set the model explicitly: haiku mechanical, sonnet engineering, opus design/review.
-- Near a usage limit, start no new agents.
-- Workers start no agents of their own.
-- No in-progress task without a live agent.
-- Never delete data (rm -rf, branches, rows, cloud objects) without the owner's explicit confirmation.
-- Write files with the Write/Edit tools, never a Bash heredoc (the git guard scans its body as shell).
-- Tasks: "T-<n> [P0-3] title" (60 chars, 12 active max); done -> ledger entry -> delete own completed task.
+- this commit includes a private session handover. unstage the handover before committing.
+- a force push was stopped. push without rewriting published history.
+- commit has an AI co-author line. remove the Co-Authored-By line and commit again.
+- ... is not allowed: the ... does not edit files directly.
+- this edit references APIs missing from the installed runtime. verify the API names and correct the references.
+- your reply makes an unverified claim ("..."). verify the claim or label it unverified.
+- this step was stopped after repeated main-thread edits. hand the remaining work to a helper agent.
+- routine execution was assigned to a flagship model. respawn with model:'haiku' (or 'sonnet' if it authors code).
+- new agents can't start: the ... usage limit is at ...% (stop at ...%, ...). wait for the usage limit to reset.
+- this agent is a worker and can't start agents of its own. report back to the coordinator if more agents are needed.
+- ... open tasks have no agent working on them. assign the pending tasks to agents.
+- `rm -rf` on / or the home directory. confirm with the owner before deleting data, and delete only the exact paths you created.
+- a file written through a Bash heredoc. write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.
+- ... files changed but no tasks tracked.
 --
 - advisor.review: A review-shaped agent on ... is not allowed while the advisor is available.
 - advisor.plan: A plan is being written with no advisor call since the task began.

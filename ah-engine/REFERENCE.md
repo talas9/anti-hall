@@ -3048,16 +3048,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.banner_text` | `anti-hall {version} active: {rules} rules enforced{last}.` |  |  | The session banner. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause. |
 | `guard_rules.blocks_limit` | `2000` |  |  | How many recorded blocks the banner and summary read at most. |
 | `guard_rules.blocks_window_days` | `14` |  | days | How many days of recorded blocks the banner and summary look back over to find a session. |
+| `guard_rules.digest_entry` | `{what} {instead}` |  |  | How an essential rule's digest text is built from its enforced message entry (the same `source` the block uses). Placeholders: {what}, {instead}. |
 | `guard_rules.digest_file` | `engine/rule-digest.txt` |  |  | The generated digest, relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above. |
 | `guard_rules.digest_foot` | `More: skill engine-rules. After a block fix the cause, retry once.` |  |  | Last line of the digest. |
 | `guard_rules.digest_head` | `anti-hall rules (same config the engine enforces):` |  |  | First line of the session-start digest. |
-| `guard_rules.digest_line` | `- {line}` |  |  | One digest line. Placeholder: {line}. |
+| `guard_rules.digest_line` | `- {line}` |  |  | One essential digest line. Placeholder: {line}, the enforced rule's own text (what, instead) composed by `guard_rules.digest_entry`; no separate copy. |
 | `guard_rules.digest_sep` | `--` |  |  | The line that splits the essential lines from the extra lines (tier skill) in the generated digest file. |
 | `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
 | `guard_rules.enum_digest_tier` | `7 entries` |  |  | Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget. |
 | `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
 | `guard_rules.exempt` | `42 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording. |
-| `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, rules without a line of their own). Placeholders: {id}, {what}. |
+| `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
 | `guard_rules.msg_no_heredoc` | `3 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
@@ -3065,17 +3066,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
 | `guard_rules.problem_digest` | `{id}: missing from the generated digest` |  |  | Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}. |
 | `guard_rules.problem_id` | `rule id empty or duplicate: {id}` |  |  | Registry problem: a rule id that is empty or repeated. Placeholder: {id}. |
-| `guard_rules.problem_line` | `{id}: essential rule without a line` |  |  | Registry problem: an essential rule has no digest line. Placeholder: {id}. |
+| `guard_rules.problem_line` | `{id}: essential rule whose source has no text` |  |  | Registry problem: an essential rule whose source yields no digest text. Placeholder: {id}. |
 | `guard_rules.problem_skill` | `{id}: missing from the generated skill` |  |  | Registry problem: a rule is missing from the generated rules skill. Placeholder: {id}. |
 | `guard_rules.problem_source` | `{id}: source {source} does not exist` |  |  | Registry problem: the source key of a rule does not exist. Placeholders: {id}, {source}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
-| `guard_rules.rules` | `134 items` |  |  | Every rule the engine enforces, one row each: id, setting (the switch that turns the rule off, or empty), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). line is the short agent line of an essential rule. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `134 items` |  |  | Every rule the engine enforces, one row each: id, setting (the switch that turns the rule off, or empty), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
+| `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
+| `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
 | `guard_rules.skill_head` | `Rules the engine enforces` |  |  | Heading of the rules section in the engine-guards skill. |
 | `guard_rules.skill_instead` | `Instead: {instead}` |  |  | Label in front of a rule's instead. Placeholder: {instead}. |
 | `guard_rules.skill_intro` | `Generated from the same config the engine reads. Tier: essential rules are al...` |  |  | Lead-in of the rules section in the engine-guards skill. |
 | `guard_rules.skill_rule` | `- `{id}` ({tier}{setting}): {what} {why} {instead}` |  |  | One rule in the skill. Placeholders: {id}, {tier}, {setting}, {what}, {why}, {instead}. |
 | `guard_rules.skill_setting` | `, switch `{setting}`` |  |  | Appended to the tier of a rule that has a setting. Placeholder: {setting}. |
+| `guard_rules.skill_use_when` | `Use when {use_when}.` |  |  | The description of a generated sub-skill: the sentence that makes the host load it. Placeholder: {use_when}, the area's `use_when` in `roles.areas`. |
 | `guard_rules.skill_why` | `Why: {why}` |  |  | Label in front of a rule's why. Placeholder: {why}. |
 | `guard_rules.summary` | `SessionStart: puts the essential rules the engine enforces (one source with t...` |  |  | One-line description of the rule-digest check in the generated reference. |
 | `guard_rules.summary_banner` | `SessionStart: one user-visible line with the plugin version, the rules enforc...` |  |  | One-line description of the session-banner check in the generated reference. |
