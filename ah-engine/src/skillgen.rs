@@ -235,23 +235,66 @@ pub fn compose(action: &str, source: &str) -> String {
     t.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The digest text of an essential rule: composed from the enforced message entry itself (`source`), never from a copy.
-pub fn digest_entry(source: &str) -> String {
-    let (what, _, instead) = rule_parts(source);
-    let instead = if instead.is_empty() { what.clone() } else { instead }; // an entry with no instead text speaks with its what
-    defaults::render("guard_rules.digest_entry", &[("what", &what), ("instead", &instead)]).split_whitespace().collect::<Vec<_>>().join(" ")
+/// The `digest` field of a rule for `host`: a `digest` key inside an inline what/why/instead table, or the sibling key with `what`
+/// replaced by `digest` (the same place `why` and `instead` live); a string for every host, or a table by host. Empty when absent.
+pub fn digest_field(source: &str, host: &str) -> String {
+    if !defaults::has(source) {
+        return String::new();
+    }
+    let v = defaults::raw(source);
+    let d = if v.get("what").is_some() {
+        v.get("digest")
+    } else {
+        let (sec, key) = source.split_once('.').unwrap_or(("", source));
+        let k = format!("{sec}.{}", key.replacen("what", "digest", 1));
+        if defaults::has(&k) { Some(defaults::raw(&k)) } else { None }
+    };
+    d.and_then(|d| d.as_str().or_else(|| d.get(host).and_then(V::as_str))).map(plain).unwrap_or_default()
 }
 
-/// The generated digest file: the essential lines, then the separator, then one extra line per other listed rule.
+/// The digest text of an essential rule for `host`: its own short `digest` field (one line: the rule and what to do), rendered by
+/// `guard_rules.digest_entry`. Empty when the rule has no digest field for that host.
+pub fn digest_entry(source: &str, host: &str) -> String {
+    let digest = digest_field(source, host);
+    if digest.is_empty() {
+        return String::new();
+    }
+    let (what, _, instead) = rule_parts(source);
+    defaults::render("guard_rules.digest_entry", &[("digest", &digest), ("what", &what), ("instead", &instead)]).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The hosts a digest is generated for (`guard_rules.digest_hosts`).
+pub fn digest_hosts() -> Vec<&'static str> {
+    defaults::list("guard_rules.digest_hosts")
+}
+
+/// The plugin-relative path of `host`'s generated digest: `guard_rules.digest_file_<host>`, else the default `guard_rules.digest_file`.
+pub fn digest_rel(host: &str) -> &'static str {
+    let k = format!("guard_rules.digest_file_{host}");
+    if defaults::has(&k) { defaults::text(&k) } else { defaults::text("guard_rules.digest_file") }
+}
+
+/// The generated digest file of the default host (`dispatch.default_host`): see [`digest_file_for`].
 pub fn digest_file() -> String {
+    digest_file_for(defaults::text("dispatch.default_host"))
+}
+
+/// The generated digest file of `host`: the essential lines (the injected part), the separator, one extra line per other listed
+/// rule (tier skill), the separator, then each essential rule's full enforced text, which the session never reads but which makes
+/// the committed digest stale when an enforced message changes, so its digest line is reviewed with it.
+pub fn digest_file_for(host: &str) -> String {
     let mut ess = Vec::new();
     let mut extra = Vec::new();
+    let mut src = Vec::new();
     for r in rules() {
         if r.tier == "essential" {
-            let line = digest_entry(r.source);
+            let line = digest_entry(r.source, host);
             if !line.is_empty() {
                 ess.push(defaults::render("guard_rules.digest_line", &[("line", &line)]));
             }
+            let (what, why, instead) = rule_parts(r.source);
+            let full = defaults::render("guard_rules.source_line", &[("id", &r.id), ("what", &what), ("why", &why), ("instead", &instead)]);
+            src.push(full.split_whitespace().collect::<Vec<_>>().join(" "));
         } else if r.tier != "off" {
             let (what, _, _) = rule_parts(r.source);
             if !what.is_empty() {
@@ -259,7 +302,8 @@ pub fn digest_file() -> String {
             }
         }
     }
-    format!("{}\n{}\n{}\n", ess.join("\n"), defaults::text("guard_rules.digest_sep"), extra.join("\n"))
+    let sep = defaults::text("guard_rules.digest_sep");
+    format!("{}\n{sep}\n{}\n{sep}\n{}\n", ess.join("\n"), extra.join("\n"), src.join("\n"))
 }
 
 /// The digest as the session shows it at the default tier: head, the essential lines, foot.
@@ -276,7 +320,8 @@ pub fn rule_problems() -> Vec<String> {
     let tiers = defaults::list("guard_rules.tiers");
     let mut ids = std::collections::BTreeSet::new();
     let mut sources = std::collections::BTreeSet::new();
-    let digest = digest_file();
+    let digests: Vec<(&str, String)> = digest_hosts().into_iter().map(|h| (h, digest_file_for(h))).collect();
+    let filler = defaults::text("guard_rules.placeholder");
     let skill = rules_section();
     for r in rules() {
         if r.id.is_empty() || !ids.insert(r.id) {
@@ -288,15 +333,17 @@ pub fn rule_problems() -> Vec<String> {
         if !defaults::has(r.source) {
             p.push(defaults::render("guard_rules.problem_source", &[("id", &r.id), ("source", &r.source)]));
         }
-        if r.tier == "essential" && digest_entry(r.source).is_empty() {
-            p.push(defaults::render("guard_rules.problem_line", &[("id", &r.id)]));
+        for (h, digest) in digests.iter().filter(|_| r.tier == "essential") {
+            let line = digest_entry(r.source, h);
+            if line.is_empty() || line.contains(filler) {
+                p.push(defaults::render("guard_rules.problem_line", &[("id", &r.id), ("host", h)]));
+            } else if !digest.contains(&line) {
+                p.push(defaults::render("guard_rules.problem_digest", &[("id", &r.id)]));
+            }
         }
         sources.insert(r.source);
         if r.tier != "off" && !skill.contains(&format!("`{}`", r.id)) {
             p.push(defaults::render("guard_rules.problem_skill", &[("id", &r.id)]));
-        }
-        if r.tier == "essential" && !digest.contains(&digest_entry(r.source)) {
-            p.push(defaults::render("guard_rules.problem_digest", &[("id", &r.id)]));
         }
     }
     let exempt: std::collections::BTreeSet<&str> = defaults::list("guard_rules.exempt").into_iter().collect();

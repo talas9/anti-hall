@@ -17,7 +17,9 @@ function decide(p, opts, event) {
   if (!on) return 'allow';
   var root = sess.pluginRoot(opts);
   if (root === null) return 'allow';
-  var raw = ah.fs.readText(root + '/' + ah.cfg('guard_rules.digest_file'));
+  // the host's own digest (its own model guidance): a Codex request reads guard_rules.digest_file_codex
+  var host = (ah.request && ah.request.host) || (opts && opts.host) || p.host || (coordinator.isCodexPayload(p) ? ah.cfg('standdown.codex_host') : ah.cfg('dispatch.default_host'));
+  var raw = ah.fs.readText(root + '/' + ah.cfg(host === ah.cfg('standdown.codex_host') ? 'guard_rules.digest_file_codex' : 'guard_rules.digest_file'));
   if (raw === null) { ah.unable('rule-digest:no_file'); return 'allow'; }
   var sep = ah.cfg('guard_rules.digest_sep'), parts = raw.split('\n' + sep + '\n');
   var lines = parts[0].split('\n').filter(function (l) { return l !== ''; });

@@ -13,6 +13,7 @@
 //! * [`route`]: routing events joined to spawn results, and the NET savings estimate (D77);
 //! * [`report`]: the `telemetry` and `impact` report bodies.
 pub mod cli;
+pub mod cohort;
 pub mod emit;
 pub mod event;
 pub mod persist;
@@ -372,6 +373,7 @@ impl Telemetry {
             Verdict::Routed(_, _) => (Outcome::Allow, 0),
         };
         self.record(Kind::Check, check, event, outcome, micros, injected);
+        cohort::observe(check, &who.session, outcome);
         {
             let mut m = lk(&self.metrics);
             m.inc("check_calls", &[("check", check)]);
