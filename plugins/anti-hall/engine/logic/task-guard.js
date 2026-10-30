@@ -77,7 +77,8 @@ function tgLiveAgentOwner(owner, rows) {
 function tgUnresolvedOwner(t, rows) {
   if (!t.owner || tgCoordinator(t.owner) || tgOwnerBlocked(t) || tgChildAttended(t.owner)) return false;
   var m = tgMatchingOwners(t.owner, rows);
-  if (m.length === 0) return ah.cfg('task_guard.advise_unmatched_owners') === true;
+  // a scan that could not read the agents (rows.scanUnknown) proves nothing about this owner: advise, never block on missing evidence
+  if (m.length === 0) return rows.scanUnknown === true || ah.cfg('task_guard.advise_unmatched_owners') === true;
   return !m.some(function (r) { return r.live !== null; });
 }
 
@@ -408,6 +409,7 @@ function tgDecideCore(p) {
   if (open.some(function (t) { return t.owner && !tgCoordinator(t.owner); })) {
     var own = tgAgents();
     if (own !== null && own.unsure) { ah.unable('task-guard:owner_agents_unsure'); own = null; }
+    var scanUnknown = own === null;
     var tracked = ah.transcript.trackedAgents(p);
     rows = (own === null ? [] : own.rows).map(function (r) {
       r.live = ah.transcript.trackedLiveness(r.id, tracked);
@@ -416,6 +418,7 @@ function tgDecideCore(p) {
     tracked.forEach(function (r) {
       rows.push({ id: r.id, description: r.name, live: ah.transcript.trackedLiveness(r.id, tracked) });
     });
+    rows.scanUnknown = scanUnknown;
   }
   var unresolved = ah.cfg('task_guard.advise_unresolved_owners') ? open.filter(function (t) { return tgUnresolvedOwner(t, rows); }) : [];
   if (unresolved.length > 0) out += text.render(ah.cfg('task_guard.unresolved_owner_advisory'), { list: tgRenderList(unresolved) });
