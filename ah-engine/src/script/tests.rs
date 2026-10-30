@@ -3362,11 +3362,12 @@ mod afk_mode {
         std::thread::sleep(std::time::Duration::from_millis(stale + stale / 20));
         let params = nodelock::Params::from_group("afk").expect("afk.lock_* keys");
         let taker = nodelock::acquire(&lp, params).expect("the expired lock is taken over");
+        // unregister the gate first: the taker's own commit must not meet the barrier the paused hook is parked on
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| p != std::path::Path::new(&fp));
         nodelock::fence_sweep(std::path::Path::new(&fp), &infix);
         let off = json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 3}).to_string();
         assert!(nodelock::fenced_write(&taker, std::path::Path::new(&fp), &off, &infix, false).expect("io"), "the new holder publishes OFF");
         assert!(taker.release());
-        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| p != std::path::Path::new(&fp));
         gate.wait(); // resume the paused hook
         t.join().expect("hook thread");
         assert_eq!(flag(&h)["on"], json!(false), "the stale holder never resurrects ON");
