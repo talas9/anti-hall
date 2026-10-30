@@ -155,7 +155,7 @@ pub(super) fn regex_totals() -> (u64, u64, u64, u64) {
 #[cfg(test)]
 thread_local! {
     /// Test-only: how many regex calls (`reTest`/`reFind`/`reFindAll`) the scripts made on this thread, to measure a prefilter.
-    static RE_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static RE_CALLS: std::cell::Cell<u64> = std::cell::Cell::default();
 }
 
 /// Test-only: the regex calls scripts have made on this thread so far.
