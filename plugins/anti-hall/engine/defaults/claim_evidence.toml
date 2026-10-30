@@ -146,8 +146,8 @@ doc = "Text that ends right before an honest-label word and negates it (strict m
 value = '\b(?:not|never|no|n.t)\s+$'
 
 [claim_evidence.ack_after_not_re]
-doc = "Text that starts right after an honest-label word and shows it is no label (strict mode): 'unverified is false', 'unverified meaning not', 'unchecked boxes remain', 'unverified claims aside'. Rust regular expression, case-insensitive, matched against the text after the label."
-value = '^\W*(?:(?:is|are|was|were)\s+(?:false|untrue|wrong|incorrect|not)\b|meaning\s+not\b|(?:\w+\s+)?aside\b|(?:boxes|checkboxes|items?|tasks?|files?)\b)'
+doc = "Text that starts right after an honest-label word and shows it is no label (strict mode): 'unverified is false', 'unverified meaning not', 'unchecked boxes remain', 'unverified claims aside'. A noun ('boxes', 'files') only counts right after the word with nothing but spaces between, so an explicit label with punctuation keeps its effect: 'Unverified: files are deployed', 'Unverified - files ...', '(Unverified) files ...'. Rust regular expression, case-insensitive, matched against the text after the label."
+value = '^(?:\W*(?:(?:is|are|was|were)\s+(?:false|untrue|wrong|incorrect|not)\b|meaning\s+not\b|(?:\w+\s+)?aside\b)|\s+(?:boxes|checkboxes|items?|tasks?|files?)\b)'
 
 [claim_evidence.reported_res]
 doc = "A reporting verb, or 'according to' a named source, that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed', 'according to the PR body the change is merged' ('according to plan' names no source). Quoted text is a claim like any other unless one of these opens its clause. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
@@ -199,8 +199,8 @@ doc = "Quote marks taken out of the reply before claims are looked for (an apost
 value = '["“”]|\B[\x27‘’]|[\x27‘’]\B'
 
 [claim_evidence.gap_word_re]
-doc = "One word of the text between a suppressor and the claim (punctuation is not a word). Rust regular expression."
-value = '[\w#@\x27\x{2019}/-]+'
+doc = "One word of the text between a suppressor and the claim (punctuation is not a word: a lone dash in 'Unverified - files are deployed' counts nothing). Rust regular expression."
+value = '[\w#@][\w#@\x27\x{2019}/-]*'
 
 [claim_evidence.gap_skip_re]
 doc = "Words that never count against a reach: articles, determiners, possessives, quantifiers, 'of'/'and'/'or', 'it'/'this'/'that', '#refs' and numbers (they belong to the claim's subject). Every other word counts, so a word the list does not know uses up the reach instead of extending it. Rust regular expression, case-insensitive, matched against one whole word."
