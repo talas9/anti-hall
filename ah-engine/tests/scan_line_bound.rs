@@ -114,13 +114,6 @@ fn write_transcript(dir: &Path, name: &str, big: usize) -> PathBuf {
     p
 }
 
-fn snap(s: &Option<Scan>) -> String {
-    let s = s.as_ref().expect("a scan");
-    let mut term: Vec<&String> = s.terminal.iter().collect();
-    term.sort();
-    format!("{:?}\n{:?}\n{:?}", s.launched.iter().collect::<Vec<_>>(), term, s.pending)
-}
-
 fn scan_res(p: &Path, kept: bool) -> Res<Option<Scan>> {
     let (path, tail, o) = (p.to_str().unwrap(), 64 * MIB as u64, Opts { now_ms: NOW, ignore_unanswered_stops: false });
     if kept { scan_transcript(path, tail, &o) } else { scan_transcript_uncached(path, tail, &o) }
@@ -148,7 +141,6 @@ fn an_oversize_line_is_read_past_not_held_and_the_other_lines_still_count() {
     ah_engine::defaults::init().unwrap();
     let plain = write_transcript(&dir, "plain.jsonl", 0);
     let huge = write_transcript(&dir, "huge.jsonl", 20 * MIB);
-    let want = snap(&scan(&plain, false));
     // warm every lazy table once, so the measurement below sees the read and not the one-time set-up
     let _ = scan_res(&huge, false);
     let _ = scan(&plain, true);

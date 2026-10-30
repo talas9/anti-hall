@@ -1349,7 +1349,7 @@ fn scan_window(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
 /// A line the scan skipped as oversize may have carried a launch, a completion or a stop: what the walk shows is then incomplete, and an
 /// incomplete scan must never read as a complete one (a completion that vanished would leave its agent "running"). The scan is unknown, so
 /// the Node-side callers take their `unsure` path (the silent-agent nudge judges no transcript agents and does not block the Stop).
-fn degraded(reader: &str) -> Res<Option<Scan>> {
+fn degraded(reader: &'static str) -> Res<Option<Scan>> {
     crate::load::note_count("agent_scan_degraded", "reader", reader);
     Err(Unsupported)
 }
