@@ -22,7 +22,12 @@
 #      one lock budget per call (afk.lock_wait_ms) and writes nothing without the lock; `ah-engine afk` / `back` wait at most
 #      afk.cli_lock_wait_ms, never take over a live holder, and exit non-zero writing nothing when the lock stays busy;
 #   9. owner presence (afk.presence_file) never moves backwards, and idle detection counts from the later of the last owner prompt
-#      and the flag's `ended` time (the last `back`), so a stale presence write cannot re-enter AFK right after `back`.
+#      and the flag's `ended` time (the last `back`), so a stale presence write cannot re-enter AFK right after `back`;
+#  10. plan auto-approve (afk.planAutoApprove, Claude only): while AFK the PreToolUse hook approves the plan-approval tool
+#      (afk.plan_tools) with allow + updatedInput (the input echoed) only when this session's main thread has a hook-recorded advisor
+#      consult (PostToolUse on advisor.tool_names) newer than its last plan-file write, plan-approval attempt and owner prompt; one
+#      consult approves one attempt; every other case is counted (afk_plan_autoapprove_denied{reason}) and gets the normal prompt.
+#      Codex has no plan-approval tool in the anti-hall hook table, so nothing is approved there.
 # Logic: engine/logic/afk-mode.js. Every phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax.
 
 [afk.set_enabled]

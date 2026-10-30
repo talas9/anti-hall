@@ -67,6 +67,12 @@ Texts, limits and patterns: `engine/defaults/afk.toml`.
 `afk_output_tokens{mode}`, `afk_turns_measured{mode}` (tokens / turns = output tokens per turn, AFK vs present),
 `afk_question_denied{tool}` and `afk_question_parked{action}` (nudged, capped, listed).
 
+## Plan auto-approve
+
+Claude only (`afk.planAutoApprove`, default on, effective only while AFK): a plan exit (`ExitPlanMode`) is approved by the hook
+when the main thread called the advisor after its last plan write and the last owner prompt; otherwise the normal approval prompt
+appears. Counters: `afk_plan_autoapproved`, `afk_plan_autoapprove_denied{reason}`.
+
 ## Concise style
 
 The plugin ships the output style `concise` (lead with the answer, 1-3 lines, no recap, no narration). It is forced while the

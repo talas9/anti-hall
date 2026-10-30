@@ -6,7 +6,8 @@
 // a turn ending on a plain-text question, NEEDS OWNER bullets listed first). Subagents never get the rule nor touch the parent's
 // once-per-session state; their question-tool calls are denied too. The flag is only rewritten under its lock, re-read inside it
 // (OFF wins), with one lock budget per hook call (afk.lock_wait_ms); owner presence never goes backwards and idle detection never
-// re-enters AFK before the last `back` plus the idle time. Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
+// re-enters AFK before the last `back` plus the idle time. While AFK the plan-approval tool is approved (allow + updatedInput) only
+// after a hook-recorded advisor consult newer than the last plan write, attempt and owner prompt (afk.planAutoApprove). Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
 // the `ah-engine back` command and the typed `back` share it.
 'use strict';
 
