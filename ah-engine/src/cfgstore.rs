@@ -641,33 +641,6 @@ fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
     }
 }
 
-/// Keys whose configured value was out of range and replaced by the shipped default, waiting to be counted as
-/// `config_invalid_fallback{key}` (drained into the telemetry by [`drain_invalid_into`]).
-static INVALID: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Log and count a config file rejected for a value out of range (the shipped default runs instead).
-pub fn note_invalid(e: &ConfigError) {
-    health::log_event("config_invalid", e.code(), &e.to_string());
-    if let ConfigError::Range { key, .. } = e {
-        let mut p = INVALID.lock().unwrap_or_else(|x| x.into_inner());
-        if (p.len() as u64) < defaults::num("fail_open.pending_max") {
-            p.push(key.clone());
-        }
-    }
-}
-
-/// Add the out-of-range fallbacks noted so far to the telemetry counters.
-pub fn drain_invalid_into(t: &crate::telemetry::Telemetry) {
-    let batch = std::mem::take(&mut *INVALID.lock().unwrap_or_else(|x| x.into_inner()));
-    if !batch.is_empty() {
-        t.with_metrics(|m| {
-            for k in &batch {
-                m.inc("config_invalid_fallback", &[("key", k)]);
-            }
-        });
-    }
-}
-
 pub(crate) fn toml_to_json(path: &Path, key: &str, v: &toml::Value) -> Result<Json, ConfigError> {
     let unsupported = || ConfigError::Unsupported { path: path.to_path_buf(), key: key.to_string() };
     Ok(match v {
@@ -932,7 +905,7 @@ impl ConfigStore {
         let env = |n: &str| std::env::var(n).ok();
         let (layers, errs) = load_layers_cold(&paths);
         for e in &errs {
-            note_invalid(e);
+            health::log_event("config_invalid", e.code(), &e.to_string());
         }
         let mut snap = Snapshot::build(1, &layers, &env, None);
         snap.last_error = errs.first().map(|e| format!("{}: {e}", e.code()));
@@ -1012,7 +985,7 @@ impl ConfigStore {
             Err(e) => (prev.layers.clone(), Some(e)),
         };
         if let Some(e) = &user_err {
-            note_invalid(e);
+            health::log_event("config_invalid", e.code(), &e.to_string());
             if !defaults_applied {
                 let mut s = (*prev).clone();
                 s.last_error = Some(format!("{}: {e}", e.code()));

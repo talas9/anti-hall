@@ -1640,7 +1640,6 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     crate::deadline::end();
     let (event, session) = crate::load::take_request();
     crate::failopen::drain_into(&sh.telemetry);
-    crate::cfgstore::drain_invalid_into(&sh.telemetry);
     crate::failopen::sync_notice(false);
     if let Some(res) = res {
         record_wire(sh, &event, wait, judge, res);
@@ -2557,7 +2556,6 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
                 crate::failopen::note(defaults::text("fail_open.reason_busy"), defaults::text("fail_open.check_none"), defaults::text("msg.reply_busy_detail"));
                 crate::failopen::drain_into(&sh.telemetry);
-    crate::cfgstore::drain_invalid_into(&sh.telemetry);
                 let mut s = s;
                 s.set_nonblocking(true).ok_logged("daemon_busy_nonblocking");
                 let frame = Reply::Busy.frame();

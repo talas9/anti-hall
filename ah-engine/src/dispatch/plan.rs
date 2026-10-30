@@ -212,7 +212,7 @@ pub fn load_config(cwd: &str) -> HookCfg {
     let user = match crate::cfgstore::load_layers(&crate::cfgstore::Paths::from_env()) {
         Ok(l) => l.hooks,
         Err(e) => {
-            crate::cfgstore::note_invalid(&e);
+            crate::health::log_event("config_invalid", e.code(), &e.to_string());
             Default::default()
         }
     };

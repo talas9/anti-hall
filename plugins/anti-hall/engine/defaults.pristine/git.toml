@@ -373,21 +373,21 @@ doc = "Most symlink hops followed when resolving a dangling launcher link."
 value = 10
 
 [git.inline_depth]
-doc = "Nesting depth of inline shells (`bash -c`), eval and command substitutions the git check follows into (the git-guard.js `d < 3`; the command check has its own command.max_depth)."
+doc = "Nesting depth of inline shells (`bash -c`), eval and command substitutions the git check follows into (the git-guard.js `d < 3`; the command check has its own command.max_depth). The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed."
 value = 3
-min = 0
+min = 3
 max = 16
 
 [git.heredoc_levels]
-doc = "Deepest nesting of heredoc bodies the git check reads for a git command fed through a heredoc; a deeper body is not scanned."
+doc = "Deepest nesting of heredoc bodies the git check reads for a git command fed through a heredoc; a deeper body is not scanned. The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed."
 value = 6
-min = 0
+min = 6
 max = 32
 
 [git.var_hops]
-doc = "Most variable indirections (`$A` naming `$B` ...) followed when deciding whether a path variable names the hook launcher."
+doc = "Most variable indirections (`$A` naming `$B` ...) followed when deciding whether a path variable names the hook launcher. The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed."
 value = 4
-min = 0
+min = 4
 max = 32
 
 [git.cd_max_chars]
