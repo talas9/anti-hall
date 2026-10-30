@@ -265,3 +265,50 @@ fn retry_ignores_unrelated_and_settled_failures() {
     assert_eq!(fail("ret8", &tp, "cargo test"), 0, "expected failure");
     assert_eq!(edit("ret8", &tp, "/r/tests/a_test.rs", &[]), 0, "first re-edit of the test is not blocked");
 }
+
+/// The per-session adherence tally kept in the retry state file of `session` (phase 2 monitoring).
+fn stats(session: &str) -> Value {
+    fn find(d: &std::path::Path, name: &str) -> Option<PathBuf> {
+        for e in std::fs::read_dir(d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if let Some(f) = find(&p, name) {
+                    return Some(f);
+                }
+            } else if p.file_name().is_some_and(|n| n.to_string_lossy() == name) {
+                return Some(p);
+            }
+        }
+        None
+    }
+    let f = find(&dir(), &format!("advisor-retry-{session}.json")).expect("retry state file");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
+    v["stats"].clone()
+}
+
+#[test]
+fn monitoring_counts_armed_blocked_acted_on_and_consults() {
+    let tp = transcript("mon1", &[USER, ADVISOR, WORK]);
+    assert_eq!(edit("mon1", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("mon1", &tp, "cargo test -p x"), 0);
+    assert_eq!(edit("mon1", &tp, "/r/a.rs", &[]), 2, "block fired");
+    append(&tp, ADVISOR);
+    assert_eq!(edit("mon1", &tp, "/r/c.rs", &[]), 0, "advisor consulted after the block");
+    let s = stats("mon1");
+    assert_eq!(s["armed"], 1, "{s}");
+    assert_eq!(s["acted_on"], 1, "block followed by a consult: {s}");
+    assert_eq!(s["consults"], 2, "both advisor calls counted once each: {s}");
+    assert!(s["consulted"].is_null(), "no consult before the block: {s}");
+}
+
+#[test]
+fn monitoring_counts_consult_after_failure() {
+    let tp = transcript("mon2", &[USER, ADVISOR, WORK]);
+    assert_eq!(edit("mon2", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("mon2", &tp, "npm test"), 0);
+    append(&tp, ADVISOR);
+    assert_eq!(edit("mon2", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(edit("mon2", &tp, "/r/a.rs", &[]), 0, "no double count");
+    let s = stats("mon2");
+    assert_eq!((s["armed"].as_u64(), s["consulted"].as_u64(), s["consults"].as_u64()), (Some(1), Some(1), Some(2)), "{s}");
+}

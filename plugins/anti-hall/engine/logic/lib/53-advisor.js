@@ -25,7 +25,7 @@ var advisorKit = {
       [['type'], ['message', 'content'], ['message', 'content', '*', 'type'], ['message', 'content', '*', 'name']], ah.cfgNum('advisor.max_lines'));
     if (r === null || !r.lines) return null;
     var names = ah.cfg('advisor.tool_names'), types = ah.cfg('advisor.block_types');
-    var out = { lastAdvisor: -1, lastUser: -1, any: false };
+    var out = { lastAdvisor: -1, lastUser: -1, any: false, calls: [] };
     for (var i = 0; i < r.lines.length; i++) {
       var off = r.lines[i][0], e = r.lines[i][1];
       if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { continue; } }
@@ -38,7 +38,7 @@ var advisorKit = {
       } else if (e.type === 'assistant' && Array.isArray(c)) {
         for (var b = 0; b < c.length; b++) {
           var blk = c[b];
-          if (jx.isObj(blk) && types.indexOf(blk.type) >= 0 && names.indexOf(blk.name) >= 0) { out.any = true; if (off > out.lastAdvisor) out.lastAdvisor = off; }
+          if (jx.isObj(blk) && types.indexOf(blk.type) >= 0 && names.indexOf(blk.name) >= 0) { out.any = true; out.calls.push(off); if (off > out.lastAdvisor) out.lastAdvisor = off; }
         }
       }
     }
@@ -77,6 +77,24 @@ var advisorKit = {
       if (!r.unsure && !r.invalid && jx.isObj(r.v) && jx.isObj(r.v.edits)) return r.v;
     }
     return { fail: null, edits: {} };
+  },
+  // Adherence monitoring (GH #404 phase 2): count one event of `name` (a key of advisor.stat_names) in the session's own tally and in the
+  // engine-wide advisory counters (kind `kindKey`, metric `metric`, a key of advisory.metric_names).
+  bump: function (st, name, kindKey, metric) {
+    if (!jx.isObj(st.stats)) st.stats = {};
+    st.stats[name] = (typeof st.stats[name] === 'number' ? st.stats[name] : 0) + 1;
+    adv.metric(ah.cfg(kindKey), metric);
+  },
+  // Count the advisor calls the transcript scan shows that were not counted yet (offsets past st.counted), once each.
+  // Returns true when the state changed.
+  consults: function (st, scan) {
+    if (scan === null || !Array.isArray(scan.calls)) return false;
+    var done = typeof st.counted === 'number' ? st.counted : -1, top = done;
+    for (var i = 0; i < scan.calls.length; i++) {
+      if (scan.calls[i] > done) { advisorKit.bump(st, 'consults', 'advisor.kind_consult', 'consult'); if (scan.calls[i] > top) top = scan.calls[i]; }
+    }
+    st.counted = top;
+    return top !== done;
   },
   save: function (p, st) { try { ah.state.writeAtomic(advisorKit.stateRel(p), JSON.stringify(st)); } catch (e) { /* best effort */ } },
 };

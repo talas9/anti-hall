@@ -112,6 +112,10 @@ value = "advisor_plan"
 doc = "Advisory kind (counters and cap) of the retry rule."
 value = "advisor_retry"
 
+[advisor.kind_consult]
+doc = "Advisory kind (counter) of the advisor calls seen in the transcript. Adherence monitoring (phase 2): the engine report's `advisory` section shows, per session-independent total, advisor_consult.consult (consults), advisor_retry.armed (failures watched), advisor_retry.consulted (consulted after the failure), advisor_retry.injected (retry blocks fired), advisor_retry.acted_on (blocks followed by a consult), advisor_review.injected and .suppressed (non-flagship review/plan spawns blocked and held back). The same tallies are kept per session in the retry state file."
+value = "advisor_consult"
+
 [advisor.msg_review_what]
 doc = "Block text of the review rule. Placeholder: {model}."
 value = "A review-shaped agent on {model} is not allowed while the advisor is available."
