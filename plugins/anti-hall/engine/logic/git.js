@@ -104,7 +104,7 @@ function gitFreshState(raw, cwd, session) {
     launcherFsBudget: ah.cfg('git.budget_launcher_fs'), launcherCmdText: '',
     handoverQueryBudget: ah.cfg('git.budget_handover_queries'), handoverSkipped: 0, handoverEvalBudget: ah.cfg('git.budget_handover_evals'),
     handoverQueryCache: new Map(), handoverAdds: [], handoverOn: null,
-    keyOf: new Map(), pushNote: null, creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
+    keyOf: new Map(), creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
     quotedLiteralsCache: null, stdinCandidateCache: null, hdOn: null, aliasOn: null, reuseOn: null,
     gitCache: new Map(), aliasCache: new Map(), shellDefsCache: new Map(), depthGuard: 0,
   };
@@ -1993,7 +1993,6 @@ function pushCreditVerdict(ev, lastCdDir) {
       if (!src || src.charAt(0) === '-') continue; // `:dst` deletes (the force/delete check owns it); never pass an option as a ref
       refs.push(src.split('').some((ch) => globChars.indexOf(ch) >= 0) ? sub(ah.cfg('git.push_glob_rev_arg'), { ref: src }) : src);
     }
-    if (!refs.length) refs.push(ah.cfg('git.push_default_ref'));
     if (remote === null) remote = repoOpt;
     if (remote === null) {
       const branch = (run('git.push_argv_branch', {}) || '').trim();
@@ -2004,9 +2003,11 @@ function pushCreditVerdict(ev, lastCdDir) {
       }
       if (remote === null) remote = ah.cfg('git.push_remote_fallback');
     }
-    // the commits the target remote lacks; a remote with no remote-tracking refs (a URL, never fetched) is approximated and said so
-    const exact = remote.charAt(0) !== '-' && !!(run('git.push_argv_tracking', { remote: remote }) || '').trim();
-    const exclude = exact ? sub(ah.cfg('git.push_exclude_remote'), { remote: remote }) : ah.cfg('git.push_exclude_any');
+    // a push naming no refspec publishes what git's own config says: remote.<name>.mirror, remote.<name>.push, push.default
+    if (!refs.length) refs.push(...bareSources(run, sub, remote, globChars));
+    // the commits the destination lacks, read from its own remote-tracking refs only: a destination with none (a URL, never
+    // fetched) lacks everything, so commits other remotes have are still read, and the cap applies to every destination
+    const exclude = sub(ah.cfg('git.push_exclude_remote'), { remote: remote });
     const argv = [];
     for (const a of ah.cfg('git.push_argv_log')) {
       if (a === '{refs}') argv.push(...refs);
@@ -2028,14 +2029,32 @@ function pushCreditVerdict(ev, lastCdDir) {
       const shown = hits.slice(0, TB.shown).join(', ') + (hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
       return gmKey('msg_push_credit', { shown: shown, first: hits[hits.length - 1] });
     }
-    // more commits than the cap: a credit past it cannot be ruled out, so an exact range is refused, never allowed unread (P2 of PR #469)
-    if (count > cap && exact) return gmKey('msg_push_over_cap', { cap: cap, range: refs.concat(['--not', exclude]).join(' ') });
-    if (!exact) S.pushNote = text.render(ah.cfg('git.push_range_note'), { remote: remote, cap: cap });
+    // more commits than the cap, to any destination: a credit past it cannot be ruled out, so the push is refused, never allowed unread (PR #469)
+    if (count > cap) return gmKey('msg_push_over_cap', { cap: cap, range: refs.concat(['--not', exclude]).join(' ') });
     return null;
   } catch (e) {
     if (gitFatal(e)) throw e;
     return null; // fail open
   }
+}
+
+// the sources of a push with no refspec, resolved from git config (Codex P1 of PR #469: a bare push follows remote.<name>.push)
+function bareSources(run, sub, remote, globChars) {
+  const v = (key) => (run('git.push_argv_config_all', { key: sub(ah.cfg(key), { remote: remote }) }) || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  if (v('git.push_mirror_key').some((x) => ah.cfg('git.push_true_values').indexOf(x.toLowerCase()) >= 0)) {
+    return [ah.cfg('git.push_all_rev_arg'), ah.cfg('git.push_tags_rev_arg')];
+  }
+  const out = [];
+  for (const spec of v('git.push_refspec_key')) {
+    let src = spec.charAt(0) === '+' ? spec.slice(1) : spec;
+    if (src.indexOf(':') >= 0) src = src.slice(0, src.indexOf(':'));
+    if (src === '' && spec.indexOf(':') >= 0) { out.push(ah.cfg('git.push_all_rev_arg')); continue; } // `:` pushes matching branches
+    if (!src || src.charAt(0) === '^') continue;
+    out.push(src.split('').some((ch) => globChars.indexOf(ch) >= 0) ? sub(ah.cfg('git.push_glob_rev_arg'), { ref: src }) : src);
+  }
+  if (out.length) return out;
+  const mode = (v('git.push_default_key')[0] || '').toLowerCase();
+  return [ah.cfg('git.push_matching_values').indexOf(mode) >= 0 ? ah.cfg('git.push_all_rev_arg') : ah.cfg('git.push_default_ref')];
 }
 
 function handoverCommitVerdict(ev, lastCdDir) {
@@ -2893,7 +2912,6 @@ function decideScan(p, opts, event) {
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
   const notes = [];
   if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
-  if (S.pushNote) notes.push(S.pushNote);
   if (notes.length) {
     return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.join('\n') } }) };
   }

@@ -1,9 +1,8 @@
-// check = "git-audit" (PostToolUse on Bash): the audit pass of the git guard. The PreToolUse scan only sees the command line; a
-// self-credit trailer can still land from outside it (a repository commit-msg hook, a commit template, a cherry-picked message,
-// an editor). After a command that ran a commit-creating git verb, this reads the commits HEAD points at that were committed in
-// the last git_audit.window_s seconds and advises the agent to reword any that carry a self-credit trailer before pushing. It
-// never writes and never blocks. Built on git.js (script.includes): the tokenizer, the alias expansion and the credit patterns
-// are the guard's. Mirrors hooks/git-guard.js `commitRepoDirs`, `auditRecentCommits` and the `--audit` branch of `main`.
+// check = "git-audit" (PostToolUse on Bash): the authoritative commit layer of the git guard. The PreToolUse scan only reads
+// the command text, which a shell form can hide a credit from; this pass reads what git stored. After any Bash call it reads
+// HEAD's reflog for commits written in the last git_audit.window_s seconds (commit, amend, merge, cherry-pick, rebase) and
+// blocks with "reword before pushing" when one HEAD still reaches and no remote has carries a self-credit. It never writes.
+// Off switch: guards.gitCommitAudit. Built on git.js (script.includes): the credit patterns and git runner are the guard's.
 'use strict';
 
 function auditCommitRepoDirs(cmd, base, depth, out) {
@@ -46,20 +45,47 @@ function auditCommitRepoDirs(cmd, base, depth, out) {
   return out;
 }
 
+// The authoritative commit check (Codex re-review of PR #469): which commits a Bash call created is read from git, not from
+// the command text. HEAD's reflog names every commit an amend, merge, cherry-pick or rebase step wrote, and when; the ones
+// written in the last git_audit.window_s seconds that HEAD still reaches and no remote has are read with `git log` and their
+// stored messages scanned. A credit therefore is found whatever shell form wrote it (here-strings, positional parameters,
+// abbreviated options, a message file, ANSI-C escapes, a commit-msg hook or a template). An amended-away commit is no longer
+// reachable from HEAD, so it is never reported again.
+function auditCreatedShas(dir, nowS) {
+  const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
+  const argv = ah.cfg('git_audit.argv_reflog').map((a) => a.split('{dir}').join(dir).split('{n}').join(String(ah.cfg('git_audit.commits'))));
+  const out = gitRun(argv, null, null, ah.cfg('git_audit.timeout_ms'));
+  if (!out || out.length > ah.cfg('git_audit.max_buffer')) return [];
+  const verbs = ah.cfg('git_audit.reflog_creating'), window = ah.cfg('git_audit.window_s');
+  const shas = [];
+  for (const rec of out.split(rs)) {
+    const f = rec.replace(/^\n/, '').split(us);
+    const sha = (f[0] || '').trim(), at = /\{(\d+)\}/.exec(f[1] || ''), what = (f[2] || '').toLowerCase();
+    if (!sha || !at) continue;
+    if (Number(at[1]) < nowS - window) break; // the reflog is newest first
+    if (verbs.some((v) => what.startsWith(v)) && shas.indexOf(sha) < 0) shas.push(sha);
+  }
+  return shas;
+}
+
 function auditRecentCommits(cmd, cwd) {
-  const dirs = auditCommitRepoDirs(cmd, cwd, 0, []);
-  const nowS = Math.floor(Date.now() / 1000), window = ah.cfg('git_audit.window_s');
+  const dirs = [cwd];
+  try { auditCommitRepoDirs(cmd, cwd, 0, dirs); } catch (e) { if (gitFatal(e)) throw e; } // extra repositories named by the command
+  const nowS = Math.floor(Date.now() / 1000);
   const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
   const hits = [];
   for (const dir of dirs) {
+    const created = auditCreatedShas(dir, nowS);
+    if (!created.length) continue;
     const argv = ah.cfg('git_audit.argv_log').map((a) => a.split('{dir}').join(dir).split('{n}').join(String(ah.cfg('git_audit.commits'))));
     const out = gitRun(argv, null, null, ah.cfg('git_audit.timeout_ms'));
     if (out === null || out === '' || out.length > ah.cfg('git_audit.max_buffer')) continue;
     for (const rec of out.split(rs)) {
       const f = rec.replace(/^\n/, '').split(us);
-      const sha = f[0], ct = f[1], body = f[2];
-      if (!sha || !body || Number(ct) < nowS - window) continue;
-      if (hasSelfCredit(body)) hits.push(sha.trim() + (dirs.length > 1 ? ' (' + dir + ')' : ''));
+      const sha = (f[0] || '').trim(), body = f[1];
+      if (!sha || !body || created.indexOf(sha) < 0) continue;
+      const short = sha.slice(0, TB.commitHashShort) + (dirs.length > 1 ? ' (' + dir + ')' : '');
+      if (hasSelfCredit(body) && hits.indexOf(short) < 0) hits.push(short);
     }
   }
   return hits;
@@ -70,7 +96,7 @@ function decide(p, opts, event) {
   const ti = p.tool_input;
   if (!ti || typeof ti !== 'object' || typeof ti.command !== 'string') return null;
   TB = gitTables();
-  if (!gitSettingOn('git.setting_git_guard') || ah.settings.skipped(ah.cfg('git.guard_name')) || ti.command === '') return 'allow';
+  if (!gitSettingOn('git.setting_git_guard') || !gitSettingOn('git_audit.setting') || ah.settings.skipped(ah.cfg('git.guard_name')) || ti.command === '') return 'allow';
   // Node falls back to its own process directory without a cwd (or resolves a relative one against it): lib/78-hook-proc.js
   // a relative payload cwd resolves against the stand-in for the hook process's directory (counted)
   if (typeof p.cwd === 'string' && p.cwd !== '' && p.cwd.charAt(0) !== '/') ah.unable('git-audit:relative_cwd'); // resolved against the stand-in directory (hookProc.cwd)
@@ -84,7 +110,8 @@ function decide(p, opts, event) {
   shellScan.reset();
   const hits = auditRecentCommits(ti.command, cwd);
   if (!hits.length) return 'allow';
-  try { ah.metric('git_audit_warned', []); } catch (e) { /* counting never fails a hook */ }
-  const t = text.render(ah.cfg('git_audit.msg'), { window_min: Math.floor(ah.cfg('git_audit.window_s') / 60), hits: hits.join(', ') });
-  return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: ah.cfg('git_audit.event'), additionalContext: t } }) };
+  try { ah.metric('git_audit_blocked', []); ah.metric('git_blocked', ['reason', ah.cfg('git_audit.block_reason')]); } catch (e) { /* counting never fails a hook */ }
+  const m = ah.cfg('git_audit.msg'), args = { hits: hits.join(', '), first: hits[hits.length - 1].split(' ')[0] };
+  const r = (x) => (x === undefined ? '' : text.render(x, args));
+  return { block: gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) }) };
 }
