@@ -1680,6 +1680,38 @@ fn interpreter_memory_stays_in_a_band_over_many_calls() {
     assert!(sizes[rounds - 1] as f64 <= sizes[1] as f64 * 1.05, "growth over calls: {sizes:?}");
 }
 
+/// Hardening bar, load (nightly): a worker that sees the ordinary event mix calls nearly every shipped check, so a soft limit below
+/// the size of ALL of them loaded unloads the coldest checks after every load and rebuilds them on their next call: the load bar
+/// measured `ensure_entry` at about a third of busy worker CPU and every Stop past the client deadline. Every shipped check, loaded
+/// once into one interpreter, must fit `mem.quickjs_soft_bytes` with nothing unloaded.
+#[test]
+fn every_shipped_check_fits_one_interpreter_without_unloading() {
+    let h = home("fitall");
+    let ext = defaults::text("script.ext");
+    let dir = defaults::root().expect("plugin root").join(defaults::text("script.logic_dir"));
+    let mut names: Vec<String> =
+        std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.file_name().to_string_lossy().strip_suffix(ext).map(str::to_string)).collect();
+    names.sort();
+    let soft = defaults::num("mem.quickjs_soft_bytes") as i64;
+    let want = names.len();
+    let (loaded, bytes) = std::thread::spawn(move || {
+        let e = env(&h);
+        let payload = json!({"hook_event_name": "Notification", "cwd": h});
+        for name in &names {
+            crate::discard::harmless(super::run_forced(name, &payload, &Value::Null, "Notification", &e).ok_or(())); // keep: only the load matters
+        }
+        let loaded = POOL.with(|c| c.borrow().as_ref().map_or(0, |p| p.checks.len()));
+        let (_, bytes, ..) = super::pool_usage().expect("ran scripts");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        (loaded, bytes)
+    })
+    .join()
+    .expect("the scripts ran");
+    println!("every shipped check loaded: {loaded}/{want} entries, {bytes} bytes after a collection, soft limit {soft}");
+    assert_eq!(loaded, want, "{bytes} bytes for all {want} checks, soft limit {soft}: checks were unloaded and will be rebuilt on every round");
+    assert!(bytes < soft, "{bytes} bytes for all {want} checks reaches the soft limit {soft}");
+}
+
 /// R0 soak (train live18): cyclic garbage waited for QuickJS's own collector, which runs only at 1.5 times the size after its previous
 /// run, so a worker holding every check (~5.7 MB) kept up to ~2.8 MB of garbage the memory registry never saw, and the soak's footprint
 /// rose for the whole run. With `maintain` called after each request (as the daemon's worker loop does), the garbage waiting between
