@@ -487,7 +487,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
                 }
                 // done: the child's work is finished; hold the nudge (and the judge) for the longer done window
                 if env.switch("agent_nudge.scope_setting") && l == defaults::text("agent_nudge.health_done") {
-                    st.nudge_hold.insert(id.clone(), now + lim("health_done_hold_ms"));
+                    hold_done(st, &a, now);
                     let sup = defaults::raw("agent_nudge.suppress");
                     rec(env, word("class"), sup.str_field("event"), Outcome::Skip, base(&a).tok("reason", sup.str_field("judge_done")).tok("trigger", trig));
                     continue;
@@ -554,6 +554,11 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
         emit(env, word("ev_sent"), &n);
         st.nudges.insert(id, n);
     }
+}
+
+/// Record an agentHealth `done` verdict: the child is held un-nudged for limits.health_done_hold_ms.
+pub(super) fn hold_done(st: &mut State, a: &Agent, now: u64) {
+    st.nudge_hold.insert(a.id.clone(), now + lim("health_done_hold_ms"));
 }
 
 /// An answer at or after the last send proves the parent saw the nudge: the wake fallback never queues it again (a snooze moves the

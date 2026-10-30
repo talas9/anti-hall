@@ -1938,3 +1938,55 @@ fn n430_a_stale_heartbeat_with_no_step_or_no_owner_reaches_nobody() {
     assert_eq!(signals::heartbeat_owner(&st, &foreign.name), None);
     assert!(signals::targets(&e, &st, &foreign, "heartbeat_stale").is_empty(), "a foreign heartbeat goes to no session");
 }
+
+// ---- GH #430 P1: a judge-done hold is released by new activity and bypassed with agents.nudgeScope off ---------------------------
+
+/// A child discovered and spending (waste trigger raised once a tick sees it), with a judge-done hold recorded at `n + 3 min`.
+fn n430_done_held(tag: &str) -> (PathBuf, u64, PathBuf, State) {
+    let (h, n, child) = nudge_home(tag);
+    let mut st = State::default();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&nudge_env(&h, n + MIN, &[]), &mut st);
+    append(&child, &spend);
+    tick(&nudge_env(&h, n + 3 * MIN, &[]), &mut st);
+    let a = st.agents.get("abc").expect("the child is followed").clone();
+    nudge::hold_done(&mut st, &a, n + 3 * MIN);
+    (h, n, child, st)
+}
+
+/// A done child that stays idle stays held: no nudge for the whole hold.
+#[test]
+fn n430_a_done_child_that_stays_idle_stays_held() {
+    let (h, n, _child, mut st) = n430_done_held("n430-done-idle");
+    for m in [18, 40, 90, 200] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+        assert!(!st.nudges.contains_key("abc"), "an idle done child was nudged at +{m} min");
+    }
+}
+
+/// Sequence: health said done (hold recorded) -> the child resumes work -> it hangs again. The hold no longer covers it.
+#[test]
+fn n430_a_done_hold_is_released_when_the_child_shows_new_activity() {
+    let (h, n, child, mut st) = n430_done_held("n430-done-resume");
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    assert!(!st.nudges.contains_key("abc"), "held while idle");
+    let b = n + 20 * MIN;
+    let (commit, spend) = spend_cycle(&child, 1, b);
+    append(&child, &commit);
+    tick(&nudge_env(&h, b + MIN, &[]), &mut st);
+    append(&child, &spend);
+    tick(&nudge_env(&h, b + 18 * MIN, &[]), &mut st);
+    println!("MEASURE n430 done-resume: nudge_open={}", st.nudges.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "a child that worked again after the done verdict and then went bad was not nudged");
+}
+
+/// With agents.nudgeScope off the done hold is bypassed completely: the child is nudged exactly as without the scope rules.
+#[test]
+fn n430_nudge_scope_off_bypasses_a_recorded_done_hold() {
+    let (h, n, _child, mut st) = n430_done_held("n430-done-off");
+    let off = [("ANTIHALL_AGENT_NUDGE_SCOPE", "false")];
+    tick(&nudge_env(&h, n + 18 * MIN, &off), &mut st);
+    println!("MEASURE n430 done-off: nudge_open={}", st.nudges.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "agents.nudgeScope=false still honoured the done hold");
+}
