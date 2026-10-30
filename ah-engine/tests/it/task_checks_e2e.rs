@@ -600,7 +600,8 @@ fn tasklist_guard_ignores_system_temp_commands_and_states_the_heredoc_rule() {
     std::fs::write(w.path("edits.jsonl"), format!("{}\n{}\n{}\n", edit_use(1), edit_use(2), edit_use(3))).unwrap();
     assert!(run("edits.jsonl").contains("\"decision\":\"block\""), "project edits still block");
     // tasks exist, the progress file does not: the Stop text itself carries the rule, not only the details file
-    std::fs::write(w.path("tracked.jsonl"), format!("{}{}\n{}\n{}\n", task_list(&[("T-1 [P1] work", "in_progress")]), edit_use(1), edit_use(2), edit_use(3))).unwrap();
+    std::fs::write(w.path("tracked.jsonl"), format!("{}{}\n{}\n{}\n", task_list(&[("T-1 [P1] work", "in_progress")]), edit_use(1), edit_use(2), edit_use(3)))
+        .unwrap();
     let out = run("tracked.jsonl");
     assert!(out.contains("progress is missing or stale") && out.contains("heredoc"), "the Stop text states the heredoc rule: {out}");
 }
@@ -632,7 +633,8 @@ fn model_routing_does_not_nudge_explore_for_a_brief_that_mutates_state() {
 fn review_and_deploy_classifiers_weigh_the_tasks_own_verbs() {
     let w = World::new("fp460b");
     let user = r#"{"type":"user","message":{"role":"user","content":"go"}}"#;
-    let advisor = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"server_tool_use","name":"advisor","input":{}}]}}"#;
+    let advisor =
+        r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"server_tool_use","name":"advisor","input":{}}]}}"#;
     std::fs::write(w.path("a.jsonl"), format!("{user}\n{advisor}\n")).unwrap();
     let run = |desc: &str, prompt: &str, model: &str| {
         let p = serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("a.jsonl"),
@@ -645,10 +647,22 @@ fn review_and_deploy_classifiers_weigh_the_tasks_own_verbs() {
         format!("{}|{}", r.0, r.1)
     };
     assert!(run("Review the diff", "check it", "sonnet").starts_with("2|"), "twin: a real review on sonnet is blocked");
-    assert_eq!(run("Fix the 5 findings the Codex review found", "fix them, run tests, commit", "sonnet"), "0|", "an implementation spawn quoting a review passes");
+    assert_eq!(
+        run("Fix the 5 findings the Codex review found", "fix them, run tests, commit", "sonnet"),
+        "0|",
+        "an implementation spawn quoting a review passes"
+    );
     let twin = run("Deploy to production with the secrets", "run the production deploy using the secrets", "haiku");
     assert!(twin.len() > 3, "twin: a real deploy on haiku is flagged: {twin}");
-    assert_eq!(run("Append ledger entry", "Append one line to the production deploy ledger and add a section to the progress file; secrets rotation was done earlier.", "haiku"), "0|", "bookkeeping on haiku passes");
+    assert_eq!(
+        run(
+            "Append ledger entry",
+            "Append one line to the production deploy ledger and add a section to the progress file; secrets rotation was done earlier.",
+            "haiku"
+        ),
+        "0|",
+        "bookkeeping on haiku passes"
+    );
 }
 
 /// #461: a pending task that waits on the owner (any T-<n> [P] prefix, or an owner-gated marker) is not idle work.
@@ -658,7 +672,9 @@ fn the_idle_stop_check_ignores_tasks_blocked_on_the_owner() {
     let stop = |n: u32, subject: &str| enforce_stop(&World::new(&format!("fp461-{n}")), &[(subject, "pending")], false);
     let idle = stop(0, "T-4 [P1] build the parser");
     assert!(idle.contains("no agent working"), "the twin: a plain pending task is idle: {idle}");
-    for (n, subject) in ["T-4 [P1] OWNER: approve the flash", "T-5 [P2] needs owner decision on pricing", "T-6 [P1] hardware off limits - owner-gated"].iter().enumerate() {
+    for (n, subject) in
+        ["T-4 [P1] OWNER: approve the flash", "T-5 [P2] needs owner decision on pricing", "T-6 [P1] hardware off limits - owner-gated"].iter().enumerate()
+    {
         let out = stop(n as u32 + 1, subject);
         assert!(!out.contains("no agent working"), "owner-blocked {subject:?} is not idle: {out}");
     }
