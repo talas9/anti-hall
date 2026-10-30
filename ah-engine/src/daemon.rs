@@ -2707,6 +2707,12 @@ mod tests {
         serve_conn(server, &sh, Duration::ZERO, 0);
         assert_eq!(sh.stats.gone_skipped.load(SeqCst), 1, "the abandoned request is counted as skipped");
         assert_eq!(sh.stats.requests.load(SeqCst), 1, "and no check ran for it");
+        // a peer that closed having sent nothing is a connect-only probe: counted as one, not as an abandoned request
+        let (client, server) = UnixStream::pair().unwrap();
+        drop(client);
+        serve_conn(server, &sh, Duration::ZERO, 0);
+        assert_eq!(sh.stats.probes.load(SeqCst), 1, "a hung-up empty connection is a probe");
+        assert_eq!(sh.stats.gone_skipped.load(SeqCst), 1, "and not another skipped request");
     }
     fn call(req: &str, own: &str) -> (Reply, After) {
         let mut sh = shared();
