@@ -41,7 +41,7 @@ function bbSegments(cmd) {
     var end = i < seps.length ? seps[i][0] : cmd.length;
     var raw = cmd.slice(at, end), plain = blank.slice(at, end);
     var tail = ah.re.find(ah.cfg('burn.allowed_suffix_re'), 'r', plain);
-    if (tail !== null) { raw = raw.slice(0, tail[0]); plain = plain.slice(0, tail[0]); }
+    if (tail) { raw = raw.slice(0, tail[0]); plain = plain.slice(0, tail[0]); }
     if (plain.replace(/\s+/g, '') !== '') out.push({ raw: raw, plain: plain });
     at = i < seps.length ? seps[i][1] : at;
   }
@@ -103,12 +103,12 @@ function bbHeredoc(cmd) {
   var lines = cmd.split('\n'), n = lines.length;
   if (n < 3) return null;
   var open = ah.re.find(h.open_re, 'r', lines[0]);
-  if (open === null) return null;
+  if (!open) return null;
   var delim = lines[0].slice(open[0], open[1]).split(h.quote)[1];
   if (!delim || lines[n - 2] !== delim) return null;
   for (var i = 1; i < n - 2; i++) if (lines[i].trim() === delim) return null;
   var close = ah.re.find(h.close_re, 'r', lines[n - 1]);
-  if (close === null) return null;
+  if (!close) return null;
   return lines[0].slice(0, open[0]) + h.placeholder + lines[n - 1].slice(close[1]);
 }
 
