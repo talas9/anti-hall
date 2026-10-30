@@ -202,6 +202,16 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
         }
         (None, false) => None,
     };
+    // GH #458 classification doubt: a call of a doubt class still in flight (a build waiting on or holding the build lock) withholds the
+    // pause; the hard flag and its nudge stay. Counted per withheld tick by reason.
+    let doubt = defaults::raw("burn.doubt");
+    let body = match (body, building(a)) {
+        (Some(_), true) => {
+            crate::metrics::bump(doubt.str_field("metric"), &[(doubt.str_field("label"), doubt.str_field("building"))]);
+            None
+        }
+        (b, _) => b,
+    };
     match body {
         Some(body) => {
             if std::fs::create_dir_all(&dir).is_ok() {
@@ -214,6 +224,12 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
             }
         }
     }
+}
+
+/// Whether a call of a doubt class (burn.doubt.classes: a build) is still in flight: the agent waits on work, not burning tokens.
+pub(crate) fn building(a: &Agent) -> bool {
+    let classes = defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default();
+    a.pending.values().any(|p| classes.iter().any(|c| *c == p.class))
 }
 
 /// Remove markers older than `burn.marker_ttl_ms` (an agent that left the state without clearing its flag).

@@ -394,7 +394,9 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     if !step.is_empty() && trigger_of(sig) != Some(defaults::raw("agent_nudge.triggers").str_field("agent_waste")) {
         parts.push(defaults::fill(ef.str_field("stuck"), &[("step", &step)]));
     }
-    if spent > 0 && a.progress == f.base_progress {
+    if super::signals::building(a) {
+        parts.push(ef.str_field("building").to_string());
+    } else if spent > 0 && a.progress == f.base_progress {
         parts.push(defaults::fill(ef.str_field("waste"), &[("tokens", &tokens(spent))]));
     }
     if super::signals::waiting_on_ci(a) {

@@ -205,6 +205,10 @@ pub struct Pending {
     /// A background subagent launch: its result is only the launch acknowledgement, the report comes later as a task notice.
     #[serde(default)]
     pub ack: bool,
+    /// Files the shell command creates or appends (`>`, `>>`, `tee`, a download's output option; patterns.shell_write): each new one is
+    /// an outcome when the command succeeds (GH #458).
+    #[serde(default)]
+    pub writes: Vec<String>,
 }
 
 /// A raised signal on one agent.
@@ -378,6 +382,9 @@ pub struct Agent {
     pub errs: Vec<(u64, String, u64)>,
     /// Files it edited.
     pub files: Vec<String>,
+    /// Fingerprints of the distinct live probes that completed (patterns.probe): a repeated probe is one outcome (GH #458).
+    #[serde(default)]
+    pub probes: Vec<u64>,
     /// The declared step.
     pub step: String,
     /// The task whose subject is the declared step (empty when the step came from elsewhere).

@@ -374,6 +374,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     let is_edit = tools("edit").contains(&name);
     push_ring(&mut a.recent, (format!("{name}:{:x}", crate::health::fnv(&input.to_string())), format!("{name} {label}"), is_edit, ts), lim("loop_window"));
     let mut class = String::new();
+    let mut writes = Vec::new();
     let mut push = false;
     if is_edit {
         a.edits += 1;
@@ -408,7 +409,12 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
             class = "test".into();
         } else if pat("build").is_some_and(|r| r.is_match(arg)) {
             class = "build".into();
+        } else if pat("check").is_some_and(|r| r.is_match(arg)) {
+            class = "check".into();
+        } else if pat("probe").is_some_and(|r| r.is_match(arg)) {
+            class = "probe".into();
         }
+        writes = shell_writes(arg);
         if input.get(tr("background")).and_then(Value::as_bool) == Some(true) {
             push_ring(&mut a.bg_bash, ts, lim("loop_window"));
         }
@@ -449,7 +455,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
         let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -551,6 +557,26 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         push_ring(&mut a.errs, (crate::health::fnv(&head), cap(&text, lim("text_cap")), ts), lim("error_window"));
         return;
     }
+    // GH #458: a file the shell created or appended (any path: probe output too), a passing check, a completed live probe
+    let om = defaults::raw("agent_tracker.outcome_metric");
+    for path in &p.writes {
+        if !a.files.iter().any(|f| f == path) {
+            a.progress += if pat("report_path").is_some_and(|r| r.is_match(path)) { weight("report_file").max(weight("file")) } else { weight("file") };
+            push_ring(&mut a.files, path.clone(), lim("files_max"));
+            count_outcome(om.str_field("shell_file"));
+        }
+    }
+    if p.class == "check" {
+        a.progress += weight("check");
+        count_outcome(&p.class);
+    } else if p.class == "probe" {
+        let fp = crate::health::fnv(&p.label);
+        if !a.probes.contains(&fp) {
+            push_ring(&mut a.probes, fp, lim("files_max"));
+            a.progress += weight("probe");
+            count_outcome(&p.class);
+        }
+    }
     if p.push || p.class == "commit" || p.class == "merge" || p.class == "deploy" {
         a.last_ship_ms = ts;
     }
@@ -580,6 +606,27 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
             a.progress += weight("test");
         }
     }
+}
+
+/// The files a shell command creates or appends: every capture of patterns.shell_write (the first group that matched), minus the
+/// paths patterns.shell_write_skip names (a device such as /dev/null).
+fn shell_writes(cmd: &str) -> Vec<String> {
+    let (Some(re), skip) = (pat("shell_write"), pat("shell_write_skip")) else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    for c in re.captures_iter(cmd) {
+        let Some(m) = c.iter().skip(1).flatten().next() else { continue };
+        let path = m.as_str();
+        if !skip.as_ref().is_some_and(|s| s.is_match(path)) && !out.iter().any(|o| o == path) {
+            out.push(path.to_string());
+        }
+    }
+    out
+}
+
+/// Count one outcome of a kind GH #458 added (shell_file, probe, check) in the registered counter agent_tracker.outcome_metric.
+fn count_outcome(kind: &str) {
+    let m = defaults::raw("agent_tracker.outcome_metric");
+    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), kind)]);
 }
 
 /// The path of a subagent's metadata file next to its transcript.
