@@ -2097,8 +2097,6 @@ fn burn_breaker_blocks_a_flagged_subagent_except_commit_push_status_and_its_repo
         "git -c core.pager=evil log",
         "ls $(rm -rf y)",
         "find . -exec rm {} +",
-        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
-        "git commit -m \"a; b & c\"",
         "git commit -m 'x $HOME'",
         "git commit",
     ] {
@@ -2152,7 +2150,10 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
     let bypasses: Vec<String> = [
         "ls # \"$(cat <<'EOF'\ntouch /x\nEOF\n)\"",
         "git commit -m \"$(cat <<'EOF'\r\nEOF\r\n)\"\ntouch /x\nEOF\n)\"",
-        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\ntouch /x\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" && touch /x",
+        "git commit -m \"$(cat <<EOF\nmsg $(id)\nEOF\n)\"",
+        "touch /x && git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
         "rg '--pre=./evil' foo",
         "git diff '--output=/abs/f'",
         "ls \\'; touch /x; \\'",
@@ -2246,7 +2247,7 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
     assert!(blocked(&spaces));
     assert!(t.elapsed().as_millis() < 50, "oversized input took {:?}", t.elapsed());
     // lifts only on a real commit: reads, status and a refused commit leave the marker; a plain commit and a report write remove it
-    for keep in ["git status", "git diff", "ls", "git commit -m \"a; b\"", "git commit -m 'x'; touch /x"] {
+    for keep in ["git status", "git diff", "ls", "git commit -m 'x'; touch /x"] {
         raise();
         let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": keep}});
         let _ = run_forced("burn-breaker", &p, &e);
@@ -2257,6 +2258,56 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
         let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": lift}});
         let _ = run_forced("burn-breaker", &p, &e);
         assert!(!std::path::Path::new(&marker).exists(), "{lift} must lift the breaker");
+    }
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// GH #458 field harm: the breaker paused a worker's `git commit` (the heredoc message form every Claude worker writes, a message
+/// holding an apostrophe or `;` inside double quotes, `-q`/`--no-verify`) although its own block text lists commit/add/push as the way
+/// out, and paused a subagent's RESTORE call that put a live device back. A commit in any of those forms and a command of the configured
+/// restore class (burn.restore_bash_res) are never paused; a heredoc that ends early or expands is still blocked; every pass and pause
+/// is counted (metrics burn_breaker_paused, burn_breaker_bypass).
+#[test]
+fn burn_breaker_never_pauses_a_commit_or_a_restore_gh458() {
+    let h = home("burn-breaker-458");
+    let e = env(&h);
+    let dir = format!("{h}/.anti-hall/agent-tracker/breaker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = format!("{dir}/a1.json");
+    let raise = || {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        std::fs::write(&marker, json!({"ts": now, "tokens": 3_500_000u64, "agent": "a1"}).to_string()).unwrap();
+    };
+    let blocked = |c: &str| {
+        raise();
+        let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": c}});
+        matches!(run_forced("burn-breaker", &p, &e), Some(Some(Verdict::Exact(x))) if x.code == 2)
+    };
+    for commit in [
+        "git commit -m \"$(cat <<'EOF'\nfix(x): don't pause a commit\n\nBody with; & | < > and \u{2014} dashes.\nEOF\n)\"",
+        "git add -A && git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+        "cd /w && git add a.rs b.rs && git commit -q -m \"$(cat <<'EOF'\nmsg\n\n  EOF is fine indented\nEOF\n)\" && git push -u origin fix/x",
+        "git commit -m \"it's fixed; really & truly\"",
+        "git commit -m 'say \"hi\" | ok'",
+        "git commit -q --no-verify -m 'x'",
+        "git commit -s -m 'x' -m 'y'",
+        "git commit --amend --no-edit",
+    ] {
+        assert!(!blocked(commit), "a commit is never paused: {commit:?}");
+        assert!(!std::path::Path::new(&marker).exists(), "a commit lifts the breaker: {commit:?}");
+    }
+    for restore in [
+        "curl -s -X POST http://192.168.1.50/api/config/restore -d @/w/probe/backup.json",
+        "./scripts/restore-device.sh --from /w/probe/backup.json",
+        "python3 tools/rollback_config.py --device dev1",
+        "git restore src/main.rs",
+        "git checkout -- src/main.rs",
+        "make teardown",
+    ] {
+        assert!(!blocked(restore), "a restore is never paused: {restore:?}");
+    }
+    for bad in ["curl -s http://192.168.1.50/api/flash -d @fw.bin", "./scripts/run-probe.sh", "git commit -m \"$(cat <<'EOF'\nm\nEOF\n)\"; touch /x"] {
+        assert!(blocked(bad), "still paused: {bad:?}");
     }
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
