@@ -102,6 +102,12 @@ pub(crate) fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
     }
 }
 
+/// Whether `check` is skipped (shed) under load: `diagnostics.shed_checks` is on, the daemon is past its HARD CPU limit
+/// (`shedding`), the event cannot block (`guard_event` false) and the check is not listed in `diagnostics.shed_never`.
+pub(crate) fn sheds(check: &str, guard_event: bool, shedding: bool) -> bool {
+    shedding && !guard_event && crate::defaults::num("diagnostics.shed_checks") == 1 && crate::defaults::raw("diagnostics.shed_never").get(check).is_none()
+}
+
 /// How long past the hard request deadline `check` may still start (`diagnostics.deadline_grace_ms`, capped by
 /// `diagnostics.deadline_grace_cap_ms` so the reply stays inside the time the client waits for a late one). 0 for a check without a row.
 fn deadline_grace_ms(check: &str) -> u64 {
@@ -122,7 +128,6 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
         crate::gate::global().turn(sid);
     }
     let guard_event = crate::defaults::list("dispatch.guard_events").contains(&meta.event.as_str());
-    let shed_checks = crate::defaults::num("diagnostics.shed_checks") == 1;
     let mut out = Vec::new();
     for e in table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
         .into_iter()
@@ -145,7 +150,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
         // a check that gets no answer takes its failure policy in the dispatcher (the entries answered in time still count), so a slow
         // machine costs single checks, never the event; every dropped answer is recorded with its reason (`budget::note_dropped`)
         let cpu_before = crate::limits::thread_cpu_us();
-        let a = if shed_checks && !guard_event && crate::budget::shedding() && crate::defaults::raw("diagnostics.shed_never").get(check).is_none() {
+        let a = if sheds(check, guard_event, crate::budget::shedding()) {
             // past the HARD CPU limit (diagnostics.budget_cpu_hard_pct), when `diagnostics.shed_checks` is on, the pure-advice checks of events that cannot block wait (`diagnostics.shed_never` lists the ones that never do)
             crate::budget::note_shed_skipped();
             crate::budget::note_dropped(guard_event, check, &meta.event, "shed");
@@ -254,6 +259,33 @@ mod tests {
             payload_sha1: None,
             deadline_ms: None,
         }
+    }
+
+    #[test]
+    fn enforcement_rows_of_non_guard_events_are_never_shed_under_load() {
+        // The non-guard halves of these checks carry enforcement: afk-mode handles the owner's typed `afk`/`back`, records owner
+        // presence and injects the AFK rule; advisor-guard arms/disarms the retry rule its PreToolUse half blocks on. Shedding them
+        // under load silently disables the rule (or leaves a stale arm), so a simulated load must still run them.
+        let guards = crate::defaults::list("dispatch.guard_events");
+        let mut seen = 0;
+        for host in ["claude", "codex"] {
+            for event in ["UserPromptSubmit", "SessionStart", "SubagentStart", "PostToolUse", "PostToolUseFailure"] {
+                assert!(!guards.contains(&event), "{event} is not a guard event");
+                let rows = crate::defaults::raw(&format!("dispatch.hooks_{host}_{event}"));
+                for r in rows.as_array().map(|a| a.as_slice()).unwrap_or_default() {
+                    let Some(check) = r.get("check").and_then(|v| v.as_str()) else { continue };
+                    if ["afk-mode", "advisor-guard"].contains(&check) {
+                        seen += 1;
+                        assert!(!sheds(check, false, true), "{host} {event} row {:?} ({check}) is shed under load", r.get("id"));
+                    }
+                }
+            }
+        }
+        assert!(seen >= 6, "the enforcement rows were found in the dispatch table ({seen})");
+        // the simulation is real: a pure-advice check of the same events IS shed under load, and nothing is shed without load
+        assert!(sheds("procwatch-advisory", false, true));
+        assert!(!sheds("procwatch-advisory", false, false));
+        assert!(!sheds("procwatch-advisory", true, true));
     }
 
     #[test]
