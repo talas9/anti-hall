@@ -359,6 +359,24 @@ pub fn lstat(path: &str) -> String {
     serde_json::json!({"kind": kind, "size": m.len(), "mtimeMs": m.mtime() as f64 * 1000.0 + (m.mtime_nsec() / 1_000_000) as f64, "mode": m.mode(), "nlink": m.nlink()}).to_string()
 }
 
+/// Process-local named marks (`ah.mem`): a fail-closed signal for scripts that must survive a failed disk write within this process.
+static MEM_FLAGS: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// `memFlagSet` / `memFlagHas` / `memFlagClear`: `op` is `set` (always true), `clear` (whether it was set) or anything else (whether set).
+pub fn mem_flag(op: &str, name: String) -> bool {
+    let mut g = MEM_FLAGS.lock().unwrap_or_else(|e| e.into_inner());
+    match op {
+        "set" => g.insert(name) || true,
+        "clear" => g.remove(&name),
+        _ => g.contains(&name),
+    }
+}
+
+/// `textSha256(text)`: lowercase hex SHA-256 of the UTF-8 bytes of `text` (hash exactly the text a script read and compares).
+pub fn text_sha256(t: &str) -> String {
+    ring::digest::digest(&ring::digest::SHA256, t.as_bytes()).as_ref().iter().map(|x| format!("{x:02x}")).collect()
+}
+
 /// `fileSha256(path)`: lowercase hex SHA-256 of a regular file's bytes (at most `script.read_max_bytes`; links are not followed), or `null`
 /// when it is absent, not a regular file, over the cap or unreadable.
 pub fn file_sha256(path: &str) -> Option<String> {
@@ -1163,6 +1181,10 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("readdir", Function::new(c.clone(), |p: String| readdir(&p))?)?;
     h.set("uid", Function::new(c.clone(), || crate::checks::jsport::home::uid() as f64)?)?;
     h.set("fileSha256", Function::new(c.clone(), |p: String| file_sha256(&p))?)?;
+    h.set("textSha256", Function::new(c.clone(), |t: String| text_sha256(&t))?)?;
+    h.set("memFlagSet", Function::new(c.clone(), |n: String| mem_flag("set", n))?)?;
+    h.set("memFlagHas", Function::new(c.clone(), |n: String| mem_flag("has", n))?)?;
+    h.set("memFlagClear", Function::new(c.clone(), |n: String| mem_flag("clear", n))?)?;
     h.set("readHeadHex", Function::new(c.clone(), |p: String, n: f64| read_head_hex(&p, n))?)?;
     h.set("readlink", Function::new(c.clone(), |p: String| std::fs::read_link(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
     h.set(

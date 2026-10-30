@@ -66,6 +66,14 @@ Texts, limits and patterns: `engine/defaults/afk.toml`.
 `afk_output_tokens{mode}`, `afk_turns_measured{mode}` (tokens / turns = output tokens per turn, AFK vs present),
 `afk_question_denied{tool}` and `afk_question_parked{action}` (nudged, capped, listed).
 
+## Plan auto-approve
+
+Claude only (`afk.planAutoApprove`, default on, effective only while AFK): a plan exit (`ExitPlanMode`) is approved by the hook
+when the main thread called the advisor after its last plan write and the last owner prompt (ordered by sequence, not clock), the
+plan file still has the consulted content, and AFK is still on in the same period when re-checked. It fails closed: a clock
+rollback, a state read/write error, a changed plan or an AFK switch leaves the normal approval prompt. Counters:
+`afk_plan_autoapproved`, `afk_plan_autoapprove_denied{reason}`, `afk_plan_stamp_failed{field}`. anti-hall registers no plan-approval hook on Codex, so nothing is approved there.
+
 ## Concise style
 
 Codex has no output styles: the concise reply rule (lead with the answer, 1-3 lines, no recap, no narration) is injected at

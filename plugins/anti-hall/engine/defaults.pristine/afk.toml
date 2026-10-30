@@ -22,7 +22,16 @@
 #      one lock budget per call (afk.lock_wait_ms) and writes nothing without the lock; `ah-engine afk` / `back` wait at most
 #      afk.cli_lock_wait_ms, never take over a live holder, and exit non-zero writing nothing when the lock stays busy;
 #   9. owner presence (afk.presence_file) never moves backwards, and idle detection counts from the later of the last owner prompt
-#      and the flag's `ended` time (the last `back`), so a stale presence write cannot re-enter AFK right after `back`.
+#      and the flag's `ended` time (the last `back`), so a stale presence write cannot re-enter AFK right after `back`;
+#  10. plan auto-approve (afk.planAutoApprove, Claude only), FAIL CLOSED: while AFK the PreToolUse hook approves the plan-approval
+#      tool (afk.plan_tools) with allow + updatedInput (the input echoed) only when this session's main thread has a hook-recorded
+#      advisor consult (PostToolUse on advisor.tool_names) that is SEQUENCE-newer (not wall-clock) than its last plan-file write,
+#      plan-approval attempt and owner prompt; the consult is bound to the plan file's path + SHA-256, the AFK period (flag epoch) and
+#      the per-session owner-prompt witness (afk.plan_prompt_ns); a clock earlier than the newest one seen, an unreadable/unwritable
+#      record (read back after every write), a changed plan file or plan text, or a flag that is not on with the same epoch when
+#      re-read at decision time: nothing is approved. One consult approves one attempt. Every denial is counted
+#      (afk_plan_autoapprove_denied{reason}); a stamp that could not be recorded is counted (afk_plan_stamp_failed{field}).
+#      Codex has no plan-approval tool in the anti-hall hook table, so nothing is approved there.
 # Logic: engine/logic/afk-mode.js. Every phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax.
 
 [afk.set_enabled]
@@ -56,6 +65,10 @@ value = { section = "afk", key = "conciseCodex", kind = "bool", env = "", aliase
 [afk.set_no_questions]
 doc = "The afk.noQuestions setting: while AFK, deny the harness question tool (afk.question_tools) every time with the question ladder, and hold (at most afk.question_max_holds times) a turn that ends on a plain-text question. Off = questions pass as usual."
 value = { section = "afk", key = "noQuestions", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.set_plan_autoapprove]
+doc = "The afk.planAutoApprove setting: while AFK only, approve the plan-approval tool (afk.plan_tools) from its PreToolUse hook (allow + updatedInput, the documented contract) when this session's main thread consulted the advisor after (by sequence, not wall clock) its last plan-file write, plan-approval attempt and owner prompt, the plan file still has the consulted content, the clock never went backwards and AFK is still on in the same period when re-read. Fail closed: anything else (no or stale consult, AFK off or cycled, a subagent, a state read/write error, a changed plan, a clock rollback, a hook error) leaves the normal approval prompt. Off = never auto-approved."
+value = { section = "afk", key = "planAutoApprove", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
 
 [afk.guard_name]
 doc = "The guard id this check answers to in skip.json and in its messages."
@@ -348,6 +361,90 @@ value = ["AskUserQuestion"]
 doc = "The stdout line of a PreToolUse that denies the tool call with {reason} (JSON-quoted)."
 value = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":{reason}}}\n"
 
+[afk.plan_tools]
+doc = "Harness tools that ask the owner to approve a plan: auto-approved while AFK after a fresh advisor consult (afk.planAutoApprove). The dispatch entry afk-mode:pre must match them. Never list them in afk.question_tools (those are denied)."
+value = ["ExitPlanMode"]
+
+[afk.plan_state_ns]
+doc = "State namespace of the per-session plan auto-approve record (<state dir>/<ns>-<session>.json): a sequence counter (seq) and the seq of the main thread's last advisor consult (consultSeq), plan-file write (planSeq), plan-approval attempt (attemptSeq) and owner prompt (promptSeq); the newest wall-clock ms seen (wall) and the seq of the last clock rollback (backSeq); the plan file path (planPath) and the consult's bound path, SHA-256, AFK epoch and owner-prompt witness."
+value = "afkplan-rec"
+
+[afk.plan_prompt_ns]
+doc = "State namespace of the per-session owner-prompt witness (a counter bumped on every owner prompt, in a file separate from afk.plan_state_ns): a consult records it and a changed or unreadable witness at decision time denies, so an owner prompt whose record write failed still voids the consult."
+value = "afkplan-wit"
+
+[afk.plan_lock_prefix]
+doc = "Per-session cross-process lock file name prefix (under the per-user state directory, + the session key) every read-modify-write of the plan record and the owner-prompt witness takes (lock timings: the afk group). The in-process state mutex does not cover a one-shot hook process next to the daemon; a stamp or attempt that cannot take this lock is treated as a failed write (fail closed). The namespaces afk.plan_state_ns / afk.plan_prompt_ns / afk.plan_poison_ns / this prefix must not be prefixes of one another plus '-', or one namespace's stale-file prune would remove the other's files."
+value = "afkplan-lock-"
+
+[afk.plan_poison_ns]
+doc = "State namespace of the per-session poison marker (<state dir>/<ns>-<session>.json, pruned like the other namespaces): a consult writes {clear: its seq} under the lock only after its own record was read back; a stamp that could not be recorded writes {poisoned: true} (and sets an in-process mark). Approval needs a regular file naming the consult being used; absent, not a regular file, unreadable or set = stamp_poisoned. Must not collide with the other plan namespaces (see afk.plan_lock_prefix)."
+value = "afkplan-poison"
+
+[afk.plan_allow]
+doc = "The stdout line of a PreToolUse that approves the plan-approval tool: allow with {reason} (JSON-quoted) and updatedInput {input} (the tool input echoed unchanged as JSON; allow alone is not enough for this tool)."
+value = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":{reason},\"updatedInput\":{input}}}\n"
+
+[afk.msg_plan_approved]
+doc = "Reason of the AFK plan auto-approval."
+value = "anti-hall AFK: plan auto-approved (advisor consulted after the last plan write and owner prompt). Work on; append progress bullets."
+
+[afk.plan_reason_off]
+doc = "afk_plan_autoapprove_denied reason: the afk.planAutoApprove setting is off (or the AFK guard is skipped)."
+value = "off"
+
+[afk.plan_reason_afk_off]
+doc = "afk_plan_autoapprove_denied reason: AFK is not on."
+value = "afk_off"
+
+[afk.plan_reason_subagent]
+doc = "afk_plan_autoapprove_denied reason: the call came from a subagent (only the main thread's own consult can approve its own plan)."
+value = "subagent"
+
+[afk.plan_reason_no_input]
+doc = "afk_plan_autoapprove_denied reason: no session id or no tool input object to echo as updatedInput."
+value = "no_input"
+
+[afk.plan_reason_no_marker]
+doc = "afk_plan_autoapprove_denied reason: this session has no recorded advisor consult."
+value = "no_marker"
+
+[afk.plan_reason_stale]
+doc = "afk_plan_autoapprove_denied reason: the newest consult is not newer than the last plan-file write, plan-approval attempt or owner prompt (ties count as stale)."
+value = "stale"
+
+[afk.plan_reason_state_error]
+doc = "afk_plan_autoapprove_denied reason: the attempt could not be recorded and read back in the state file (the consult would be reusable), so nothing is approved."
+value = "state_error"
+
+[afk.plan_reason_stamp_poisoned]
+doc = "afk_plan_autoapprove_denied reason: an owner-prompt or plan-write stamp after the consult could not be recorded (the poison marker is set or cannot be read)."
+value = "stamp_poisoned"
+
+[afk.plan_reason_clock_backwards]
+doc = "afk_plan_autoapprove_denied reason: the wall clock is earlier than the newest time the record saw, or went backwards at or after the consult."
+value = "clock_backwards"
+
+[afk.plan_reason_owner_prompt]
+doc = "afk_plan_autoapprove_denied reason: the per-session owner-prompt witness (afk.plan_prompt_ns) changed since the consult, or cannot be read."
+value = "owner_prompt"
+
+[afk.plan_reason_plan_unbound]
+doc = "afk_plan_autoapprove_denied reason: the consult is not bound to a plan file (no recorded plan-file write or no hash at consult time), or the attempt names no absolute planFilePath or a different one."
+value = "plan_unbound"
+
+[afk.plan_reason_plan_changed]
+doc = "afk_plan_autoapprove_denied reason: the plan file's SHA-256 now differs from the consulted one (or it cannot be read)."
+value = "plan_changed"
+
+[afk.plan_reason_plan_mismatch]
+doc = "afk_plan_autoapprove_denied reason: the plan text in the tool input (what would be approved) is not the consulted file's text (surrounding whitespace aside)."
+value = "plan_mismatch"
+
+[afk.plan_reason_afk_changed]
+doc = "afk_plan_autoapprove_denied reason: the AFK flag re-read at decision time is in another AFK period (epoch) than the consult or than the start of this hook (switched off and on since)."
+value = "afk_changed"
+
 [afk.msg_ladder_deny]
 doc = "Reason of the AFK question-tool deny (the question ladder)."
 value = "AFK: the owner is away; questions are not allowed. Instead: (1) decide from the plan and context; (2) still unsure: ask the advisor; (3) only if still unclear AND not implied by the plan AND the choice is destructive/irreversible or would wreck the work if made the other way: park that ONE item, append `- [ ] NEEDS OWNER: <question, options, your default>` to your progress file, and CONTINUE the other parts of the plan (very rare)."
@@ -463,6 +560,18 @@ value = { kind = "counter", unit = "events", labels = [] }
 [metric.afk_question_denied]
 doc = "AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap)."
 value = { kind = "counter", unit = "events", labels = ["tool"] }
+
+[metric.afk_plan_autoapproved]
+doc = "Plan-approval tool calls auto-approved while AFK (afk.planAutoApprove) after a fresh advisor consult of the same session's main thread."
+value = { kind = "counter", unit = "events", labels = [] }
+
+[metric.afk_plan_autoapprove_denied]
+doc = "Plan-approval tool calls left to the normal approval prompt, by reason (afk.plan_reason_*: off, afk_off, subagent, no_input, no_marker, stale, state_error, stamp_poisoned, clock_backwards, owner_prompt, plan_unbound, plan_changed, plan_mismatch, afk_changed)."
+value = { kind = "counter", unit = "events", labels = ["reason"] }
+
+[metric.afk_plan_stamp_failed]
+doc = "Plan auto-approve stamps that could not be written and read back, by field (witness, promptSeq, planSeq, consultSeq, poison); a failed consult stamp only means no auto-approval; a failed prompt or plan stamp sets the poison marker and an in-process mark."
+value = { kind = "counter", unit = "events", labels = ["field"] }
 
 [metric.afk_question_parked]
 doc = "AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook)."

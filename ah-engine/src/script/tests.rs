@@ -3029,6 +3029,506 @@ mod afk_mode {
         format!("{h}/.anti-hall/progress/{date}/s1.md")
     }
 
+    // ---- plan auto-approve (afk.planAutoApprove): ExitPlanMode approved while AFK only after a recorded advisor consult ----
+
+    fn afk_on(h: &str) {
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": true}).to_string())
+            .unwrap();
+    }
+
+    /// One step of the plan flow in session `sid`, a few ms after the previous one (the markers compare wall-clock ms strictly).
+    fn step(h: &str, sid: &str, ev: &str, extra: Value) -> String {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut x = extra;
+        x["session_id"] = json!(sid);
+        out(&run(h, ev, x, &[]))
+    }
+
+    const PLAN: &str = "## P\n1. do";
+    /// The plan file is really written (the consult binds to its content hash), then the PostToolUse of that write.
+    fn plan_write(h: &str, sid: &str) -> String {
+        std::fs::create_dir_all(format!("{h}/.claude/plans")).unwrap();
+        std::fs::write(format!("{h}/.claude/plans/p.md"), PLAN).unwrap();
+        step(h, sid, "PostToolUse", json!({"tool_name": "Write", "tool_input": {"file_path": format!("{h}/.claude/plans/p.md"), "content": PLAN}}))
+    }
+    fn denied(m: &crate::metrics::Metrics, reason: &str) -> u64 {
+        m.counter("afk_plan_autoapprove_denied", &[("reason", reason)])
+    }
+    fn advisor(h: &str, sid: &str) -> String {
+        step(h, sid, "PostToolUse", json!({"tool_name": "advisor", "tool_input": {}}))
+    }
+    fn exit_plan(h: &str, sid: &str) -> String {
+        step(
+            h,
+            sid,
+            "PreToolUse",
+            json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. do", "planFilePath": format!("{h}/.claude/plans/p.md")}}),
+        )
+    }
+    fn approved(o: &str) -> bool {
+        let Ok(v) = serde_json::from_str::<Value>(o.trim()) else { return false };
+        v["hookSpecificOutput"]["permissionDecision"] == json!("allow") && v["hookSpecificOutput"]["updatedInput"]["plan"] == json!("## P\n1. do")
+    }
+
+    #[test]
+    fn plan_afk_on_and_a_fresh_advisor_marker_allow_with_updated_input_once() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-ok");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let o = exit_plan(&h, "s1");
+        let v: Value = serde_json::from_str(o.trim()).unwrap_or_else(|e| panic!("{o}: {e}"));
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], json!("PreToolUse"));
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], json!("allow"), "{o}");
+        assert_eq!(v["hookSpecificOutput"]["updatedInput"], json!({"plan": "## P\n1. do", "planFilePath": format!("{h}/.claude/plans/p.md")}), "{o}");
+        assert_eq!(drained().counter("afk_plan_autoapproved", &[]), 1);
+        // the marker is consumed: a second attempt with no new consult gets the normal prompt
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 1);
+        // the setting off: never approved
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"planAutoApprove": false}}).to_string()).unwrap();
+        advisor(&h, "s1");
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "off")]), 1);
+    }
+
+    #[test]
+    fn plan_afk_off_is_never_auto_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-off");
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "afk_off")]), 1);
+    }
+
+    #[test]
+    fn plan_a_stale_marker_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-stale");
+        afk_on(&h);
+        drained();
+        // the plan was rewritten after the consult
+        advisor(&h, "s1");
+        plan_write(&h, "s1");
+        assert!(exit_plan(&h, "s1").is_empty());
+        // an owner prompt after the consult (the per-session prompt witness moved)
+        advisor(&h, "s1");
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
+        assert!(exit_plan(&h, "s1").is_empty());
+        let m = drained();
+        assert_eq!(denied(&m, "stale"), 1);
+        assert_eq!(denied(&m, "owner_prompt"), 1);
+        // a subagent's consult or plan exit never counts for approval
+        advisor(&h, "s1");
+        let o = step(&h, "s1", "PreToolUse", json!({"agent_id": "a1", "tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. do"}}));
+        assert!(!approved(&o), "{o}");
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "subagent")]), 1);
+        // a subagent rewriting the plan after the consult makes it stale
+        advisor(&h, "s1");
+        step(&h, "s1", "PostToolUse", json!({"agent_id": "a1", "tool_name": "Edit", "tool_input": {"file_path": format!("{h}/.claude/plans/p.md")}}));
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 1);
+    }
+
+    // ---- GH #442 review P1s: every uncertainty fails closed ----
+
+    /// P1-1: a clock that goes backwards must not reopen a consult (wall-clock stamps were clamped with max, so an owner prompt
+    /// after a rollback stamped an older time than the consult and the consult stayed "fresh").
+    #[test]
+    fn plan_clock_rollback_never_reopens_a_consult() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-rollback");
+        afk_on(&h);
+        drained();
+        let base = crate::checks::replykit::io::now_ms() + 100_000.0;
+        super::super::host::set_clock(Some(base));
+        plan_write(&h, "s1");
+        super::super::host::set_clock(Some(base + 10.0));
+        advisor(&h, "s1");
+        super::super::host::set_clock(Some(base - 50_000.0));
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "stop, change step 1"}));
+        super::super::host::set_clock(Some(base - 49_000.0));
+        let o = exit_plan(&h, "s1");
+        super::super::host::set_clock(None);
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "clock_backwards"), 1);
+    }
+
+    /// P1-2: an owner prompt whose stamp could not be written must still make the consult unusable (it failed open).
+    #[test]
+    fn plan_owner_prompt_write_failure_fails_closed() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-promptfail");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let rec = rec_path(&h, "afk.plan_state_ns");
+        let saved = std::fs::read_to_string(&rec).unwrap();
+        std::fs::remove_file(&rec).unwrap();
+        std::fs::create_dir_all(&rec).unwrap(); // the record cannot be read or replaced during the owner prompt
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
+        std::fs::remove_dir(&rec).unwrap();
+        std::fs::write(&rec, saved).unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        // the witness moved AND the failed record write poisoned the consult; the poison is checked first
+        assert_eq!(denied(&m, "stamp_poisoned"), 1);
+        assert_eq!(m.counter("afk_plan_stamp_failed", &[("field", "promptSeq")]), 1, "the failed record write is counted");
+    }
+
+    /// P1-3: the plan edited after the consult (any writer, any mtime) is never approved: the consult is bound to the content hash.
+    #[test]
+    fn plan_edited_after_the_consult_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-toctou");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let pf = format!("{h}/.claude/plans/p.md");
+        std::fs::write(&pf, "## P\n1. something else").unwrap();
+        std::fs::File::options().write(true).open(&pf).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "plan_changed"), 1);
+    }
+
+    /// P1-4: AFK switched off (and on again) after the consult: the flag is re-read at decision time and the consult is bound to
+    /// the AFK period (epoch) it was made in.
+    #[test]
+    fn plan_afk_cycled_after_the_consult_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-epoch");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "manual", "since": 2, "epoch": "2", "counted": true}).to_string())
+            .unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "afk_changed"), 1);
+    }
+
+    // ---- GH #442 review P2s ----
+
+    fn rec_path(h: &str, ns_key: &str) -> String {
+        format!("{h}/.anti-hall/{}-s1.json", crate::defaults::text(ns_key))
+    }
+
+    /// P2-1: owner prompts while afk.enabled is off still void an earlier consult (the gate is re-enabled before the attempt).
+    #[test]
+    fn plan_owner_prompt_while_afk_disabled_still_voids_the_consult() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-disabled");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"enabled": false}}).to_string()).unwrap();
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "actually, do step 2 first"}));
+        std::fs::remove_file(format!("{h}/.anti-hall/settings.json")).unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "owner_prompt"), 1);
+    }
+
+    /// P2-2: both owner-prompt stamps (witness and record) failing must poison the consult.
+    #[test]
+    fn plan_both_prompt_stamps_failing_poison_the_consult() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-bothfail");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let (rec, wit) = (rec_path(&h, "afk.plan_state_ns"), rec_path(&h, "afk.plan_prompt_ns"));
+        let saved = std::fs::read_to_string(&rec).unwrap();
+        let saved_w = std::fs::read_to_string(&wit).ok();
+        std::fs::remove_file(&rec).unwrap();
+        if saved_w.is_some() {
+            std::fs::remove_file(&wit).unwrap();
+        }
+        std::fs::create_dir_all(&rec).unwrap();
+        std::fs::create_dir_all(&wit).unwrap();
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
+        std::fs::remove_dir(&rec).unwrap();
+        std::fs::remove_dir(&wit).unwrap();
+        std::fs::write(&rec, saved).unwrap();
+        if let Some(w) = saved_w {
+            std::fs::write(&wit, w).unwrap();
+        }
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "stamp_poisoned"), 1);
+    }
+
+    /// P2-3: the approval hashes the very text it compares (one read), so the text hash must equal the file hash of the same bytes.
+    #[test]
+    fn plan_text_hash_matches_the_file_hash_of_the_same_bytes() {
+        let h = home("afk-plan-texthash");
+        let pf = format!("{h}/p.md");
+        std::fs::write(&pf, PLAN).unwrap();
+        assert_eq!(super::super::host::text_sha256(PLAN), super::super::host::file_sha256(&pf).unwrap());
+    }
+
+    /// P2-4: the record's read-modify-write takes a cross-process lock; while another process holds it nothing is approved.
+    #[test]
+    fn plan_record_lock_held_elsewhere_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-lock");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let lock = format!("{h}/.anti-hall/{}s1", crate::defaults::text("afk.plan_lock_prefix"));
+        let held = crate::checks::guardkit::nodelock::acquire(&lock, crate::checks::guardkit::nodelock::Params::from_group("afk").unwrap()).unwrap();
+        let o = exit_plan(&h, "s1");
+        held.release();
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "state_error"), 1);
+    }
+
+    /// P2-5: the record namespace's prune never matches the witness files (no prefix collision).
+    #[test]
+    fn plan_record_prune_never_removes_witness_files() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-prune");
+        afk_on(&h);
+        let (rec_ns, wit_ns) = (crate::defaults::text("afk.plan_state_ns"), crate::defaults::text("afk.plan_prompt_ns"));
+        let poi_ns = crate::defaults::text("afk.plan_poison_ns");
+        for (a, b) in [(rec_ns, wit_ns), (rec_ns, poi_ns), (wit_ns, poi_ns)] {
+            assert!(!b.starts_with(&format!("{a}-")) && !a.starts_with(&format!("{b}-")), "{a} / {b}");
+        }
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        let old = format!("{h}/.anti-hall/{wit_ns}-s9.json");
+        std::fs::write(&old, r#"{"seq":3}"#).unwrap();
+        std::fs::File::options().write(true).open(old.as_str()).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
+        plan_write(&h, "s1"); // a record write runs the record namespace's prune
+        assert!(std::path::Path::new(&old).exists(), "the witness of another session was pruned by the record namespace");
+        drained();
+    }
+
+    // ---- GH #442 re-review: poison ordering and P3s ----
+
+    fn hold_lock(h: &str) -> crate::checks::guardkit::nodelock::Held {
+        let lock = format!("{h}/.anti-hall/{}s1", crate::defaults::text("afk.plan_lock_prefix"));
+        crate::checks::guardkit::nodelock::acquire(&lock, crate::checks::guardkit::nodelock::Params::from_group("afk").unwrap()).unwrap()
+    }
+
+    /// An unrecorded later consult must not clear the poison set by an owner prompt after the first consult.
+    #[test]
+    fn plan_unrecorded_second_consult_never_revives_the_first() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-revive");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1"); // consult #1 recorded
+        let held = hold_lock(&h);
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"})); // both stamps fail: poison set
+        advisor(&h, "s1"); // consult #2 cannot record (lock contended)
+        held.release();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "stamp_poisoned"), 1);
+    }
+
+    /// All three disk writes of an owner prompt failing (record, witness, poison) still deny: the in-process mark.
+    #[test]
+    fn plan_all_three_prompt_writes_failing_still_deny() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-allfail");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let paths = [rec_path(&h, "afk.plan_state_ns"), rec_path(&h, "afk.plan_prompt_ns"), rec_path(&h, "afk.plan_poison_ns")];
+        let saved: Vec<Option<String>> = paths.iter().map(|p| std::fs::read_to_string(p).ok()).collect();
+        for p in &paths {
+            if std::path::Path::new(p).exists() {
+                std::fs::remove_file(p).unwrap();
+            }
+            std::fs::create_dir_all(p).unwrap();
+        }
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
+        for (p, t) in paths.iter().zip(saved) {
+            std::fs::remove_dir(p).unwrap();
+            if let Some(t) = t {
+                std::fs::write(p, t).unwrap();
+            }
+        }
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "stamp_poisoned"), 1);
+        assert_eq!(m.counter("afk_plan_stamp_failed", &[("field", "poison")]), 1);
+    }
+
+    /// A directory (any non-regular file) at the poison path is poisoned, not clean.
+    #[test]
+    fn plan_poison_path_not_a_regular_file_denies() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-poisondir");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let poi = rec_path(&h, "afk.plan_poison_ns");
+        if std::path::Path::new(&poi).exists() {
+            std::fs::remove_file(&poi).unwrap();
+        }
+        std::fs::create_dir_all(&poi).unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        assert_eq!(denied(&drained(), "stamp_poisoned"), 1);
+    }
+
+    /// Poison files are pruned with the same policy as the other namespaces.
+    #[test]
+    fn plan_old_poison_files_are_pruned() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-poisonprune");
+        afk_on(&h);
+        drained();
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        let old = format!("{h}/.anti-hall/{}-s9.json", crate::defaults::text("afk.plan_poison_ns"));
+        std::fs::write(&old, r#"{"poisoned":true}"#).unwrap();
+        std::fs::File::options().write(true).open(old.as_str()).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
+        plan_write(&h, "s1");
+        advisor(&h, "s1"); // the consult writes this session's poison marker: that namespace's prune runs
+        assert!(!std::path::Path::new(&old).exists(), "an expired poison file was kept");
+        drained();
+    }
+
+    /// An owner prompt with no consult on record takes no lock and writes nothing (no lock wait when AFK is off).
+    #[test]
+    fn plan_owner_prompt_without_a_consult_skips_the_lock() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-nolock");
+        drained();
+        let held = hold_lock(&h);
+        let t0 = std::time::Instant::now();
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "hello"}));
+        let took = t0.elapsed();
+        held.release();
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_stamp_failed", &[("field", "witness")]), 0, "took {took:?}");
+        assert!(!std::path::Path::new(&rec_path(&h, "afk.plan_prompt_ns")).exists());
+    }
+
+    /// Fail-open never: every uncertain state leaves the normal prompt (no stdout) and approves nothing.
+    #[test]
+    fn plan_uncertainty_never_fails_open() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        type Case = (&'static str, &'static str, fn(&str) -> Value);
+        let cases: Vec<Case> = vec![
+            ("state_error", "state", |h| {
+                let rec = rec_path(h, "afk.plan_state_ns");
+                std::fs::remove_file(&rec).unwrap();
+                std::fs::create_dir_all(&rec).unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+            ("plan_unbound", "relative", |_| json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": "p.md"}})),
+            ("plan_unbound", "other-path", |h| {
+                std::fs::write(format!("{h}/.claude/plans/q.md"), PLAN).unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/q.md")}})
+            }),
+            ("plan_changed", "gone", |h| {
+                std::fs::remove_file(format!("{h}/.claude/plans/p.md")).unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+            (
+                "plan_mismatch",
+                "input-differs",
+                |h| json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. other", "planFilePath": format!("{h}/.claude/plans/p.md")}}),
+            ),
+            ("afk_off", "afk-off", |h| {
+                std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": false, "epoch": "1", "ended": 3}).to_string()).unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+            ("afk_off", "afk-unreadable", |h| {
+                std::fs::write(format!("{h}/.anti-hall/afk.json"), "{not json").unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+        ];
+        for (reason, tag, setup) in cases {
+            let h = home(&format!("afk-plan-never-{tag}"));
+            afk_on(&h);
+            drained();
+            plan_write(&h, "s1");
+            advisor(&h, "s1");
+            let payload = setup(&h);
+            let o = step(&h, "s1", "PreToolUse", payload);
+            assert!(o.is_empty(), "{tag}: {o}");
+            let m = drained();
+            assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0, "{tag}");
+            assert_eq!(denied(&m, reason), 1, "{tag}");
+        }
+    }
+
+    #[test]
+    fn plan_no_advisor_call_or_a_marker_of_another_session_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-other");
+        afk_on(&h);
+        drained();
+        // advisor tool absent: no consult was ever recorded
+        plan_write(&h, "s1");
+        assert!(exit_plan(&h, "s1").is_empty());
+        // the consult happened in another session
+        advisor(&h, "s2");
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "no_marker")]), 2);
+    }
+
+    #[test]
+    fn plan_two_sessions_keep_their_own_markers() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-two");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        plan_write(&h, "s2");
+        advisor(&h, "s1");
+        advisor(&h, "s2");
+        // s2's owner prompt makes only s2's marker stale
+        step(&h, "s2", "UserPromptSubmit", json!({"prompt": "wait"}));
+        assert!(approved(&exit_plan(&h, "s1")));
+        assert!(exit_plan(&h, "s2").is_empty());
+        // s1 consuming its marker leaves s2's fresh consult untouched
+        advisor(&h, "s2");
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert!(approved(&exit_plan(&h, "s2")));
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 2);
+        assert_eq!(denied(&m, "owner_prompt"), 1);
+        assert_eq!(denied(&m, "stale"), 1);
+    }
+
     #[test]
     fn typed_afk_starts_it_counts_it_and_is_not_sent_to_the_model() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
