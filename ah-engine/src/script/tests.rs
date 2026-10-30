@@ -3029,6 +3029,130 @@ mod afk_mode {
         format!("{h}/.anti-hall/progress/{date}/s1.md")
     }
 
+    // ---- plan auto-approve (afk.planAutoApprove): ExitPlanMode approved while AFK only after a recorded advisor consult ----
+
+    fn afk_on(h: &str) {
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": true}).to_string()).unwrap();
+    }
+
+    /// One step of the plan flow in session `sid`, a few ms after the previous one (the markers compare wall-clock ms strictly).
+    fn step(h: &str, sid: &str, ev: &str, extra: Value) -> String {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut x = extra;
+        x["session_id"] = json!(sid);
+        out(&run(h, ev, x, &[]))
+    }
+
+    fn plan_write(h: &str, sid: &str) -> String {
+        step(h, sid, "PostToolUse", json!({"tool_name": "Write", "tool_input": {"file_path": format!("{h}/.claude/plans/p.md"), "content": "x"}}))
+    }
+    fn advisor(h: &str, sid: &str) -> String {
+        step(h, sid, "PostToolUse", json!({"tool_name": "advisor", "tool_input": {}}))
+    }
+    fn exit_plan(h: &str, sid: &str) -> String {
+        step(h, sid, "PreToolUse", json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. do", "planFilePath": format!("{h}/.claude/plans/p.md")}}))
+    }
+    fn approved(o: &str) -> bool {
+        let Ok(v) = serde_json::from_str::<Value>(o.trim()) else { return false };
+        v["hookSpecificOutput"]["permissionDecision"] == json!("allow") && v["hookSpecificOutput"]["updatedInput"]["plan"] == json!("## P\n1. do")
+    }
+
+    #[test]
+    fn plan_afk_on_and_a_fresh_advisor_marker_allow_with_updated_input_once() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-ok");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let o = exit_plan(&h, "s1");
+        let v: Value = serde_json::from_str(o.trim()).unwrap_or_else(|e| panic!("{o}: {e}"));
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], json!("PreToolUse"));
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], json!("allow"), "{o}");
+        assert_eq!(v["hookSpecificOutput"]["updatedInput"], json!({"plan": "## P\n1. do", "planFilePath": format!("{h}/.claude/plans/p.md")}), "{o}");
+        assert_eq!(drained().counter("afk_plan_autoapproved", &[]), 1);
+        // the marker is consumed: a second attempt with no new consult gets the normal prompt
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 1);
+        // the setting off: never approved
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"planAutoApprove": false}}).to_string()).unwrap();
+        advisor(&h, "s1");
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "off")]), 1);
+    }
+
+    #[test]
+    fn plan_afk_off_is_never_auto_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-off");
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "afk_off")]), 1);
+    }
+
+    #[test]
+    fn plan_a_stale_marker_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-stale");
+        afk_on(&h);
+        drained();
+        // the plan was rewritten after the consult
+        advisor(&h, "s1");
+        plan_write(&h, "s1");
+        assert!(exit_plan(&h, "s1").is_empty());
+        // an owner prompt after the consult
+        advisor(&h, "s1");
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 2);
+        // a subagent's consult or plan exit never counts for approval
+        advisor(&h, "s1");
+        let o = step(&h, "s1", "PreToolUse", json!({"agent_id": "a1", "tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. do"}}));
+        assert!(!approved(&o), "{o}");
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "subagent")]), 1);
+    }
+
+    #[test]
+    fn plan_no_advisor_call_or_a_marker_of_another_session_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-other");
+        afk_on(&h);
+        drained();
+        // advisor tool absent: no consult was ever recorded
+        plan_write(&h, "s1");
+        assert!(exit_plan(&h, "s1").is_empty());
+        // the consult happened in another session
+        advisor(&h, "s2");
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "no_marker")]), 2);
+    }
+
+    #[test]
+    fn plan_two_sessions_keep_their_own_markers() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-two");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        plan_write(&h, "s2");
+        advisor(&h, "s1");
+        advisor(&h, "s2");
+        // s2's owner prompt makes only s2's marker stale
+        step(&h, "s2", "UserPromptSubmit", json!({"prompt": "wait"}));
+        assert!(approved(&exit_plan(&h, "s1")));
+        assert!(exit_plan(&h, "s2").is_empty());
+        // s1 consuming its marker leaves s2's fresh consult untouched
+        advisor(&h, "s2");
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert!(approved(&exit_plan(&h, "s2")));
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 2);
+        assert_eq!(m.counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 2);
+    }
+
     #[test]
     fn typed_afk_starts_it_counts_it_and_is_not_sent_to_the_model() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
