@@ -986,3 +986,25 @@ doc = "How long the `git status` question about a script file may take (command-
 value = 2000
 unit = "ms"
 min = 100
+
+[command.name_segment_setting]
+doc = "Off switch (guards.commandNameSegment, default on): a heavy-command block in a chain names the heavy segment and says the other segments are fine to run on their own."
+value = { section = "guards", key = "commandNameSegment", type = "boolean", env = "ANTIHALL_COMMAND_NAME_SEGMENT", aliases = [], option = "", default = true }
+
+[command.segment_label_max]
+doc = "Longest text (characters) of the named heavy segment; a longer one is cut (the visible block text holds 115 characters)."
+value = 24
+min = 8
+
+[command.segment_ellipsis]
+doc = "Appended to a cut segment."
+value = "..."
+
+
+[command.msg_heavy_segment]
+doc = "Added to the heavy-command block of a chain; {seg} is the heavy segment (whitespace collapsed, cut), {n} the number of other segments. The block is all-or-nothing: the hook cannot run part of a command."
+value = " Heavy: {seg}. The other {n} are fine alone."
+
+[metric.command_heavy_segment_named]
+doc = "Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }

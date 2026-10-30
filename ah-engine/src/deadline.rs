@@ -78,6 +78,31 @@ pub fn client_gone() -> bool {
     gone
 }
 
+/// True when the peer has closed the whole connection, so nobody can read a reply (`daemon.skip_when_client_gone`). A peer that
+/// only shut down its write side, as the legacy client does right after sending its request, is still waiting for the reply and
+/// is not hung up: `recv` returning 0 cannot tell the two apart, and on macOS neither can `poll`'s POLLHUP.
+pub fn hung_up(fd: std::os::fd::RawFd) -> bool {
+    if crate::defaults::raw("daemon.skip_when_client_gone").as_bool() != Some(true) {
+        return false;
+    }
+    // SAFETY: a zero-length `send` reads no memory (the pointer is never dereferenced) and is non-blocking; it only reports
+    // EPIPE when the peer has closed the connection (macOS, measured; Linux reports it too once the peer socket is released).
+    let n = unsafe { libc::send(fd, std::ptr::NonNull::<u8>::dangling().as_ptr().cast(), 0, libc::MSG_DONTWAIT) };
+    if n < 0 && matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset) {
+        return true;
+    }
+    // Linux sets POLLHUP only when both directions are down (a write-side shutdown alone is POLLRDHUP), so it is exact there.
+    #[cfg(target_os = "linux")]
+    {
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: `pfd` is a live, writable `pollfd`, the count is 1 and the timeout 0 (a non-blocking readiness query).
+        let r = unsafe { libc::poll(&mut pfd, 1, 0) };
+        return r > 0 && pfd.revents & libc::POLLHUP != 0;
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
 /// How many checks were skipped on this thread because their client had gone, since the last call.
 pub fn take_client_gone_skips() -> u64 {
     GONE_SKIPS.with(|c| c.replace(0))

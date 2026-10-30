@@ -2355,6 +2355,133 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     assert!(details.contains("c-1"), "{details}");
 }
 
+/// One row of a parent-gate fixture: who sent it and how it reached the store.
+#[derive(Clone, Copy)]
+enum PgRow {
+    /// A `mesh send` from a child (`mtype` direct), with `needsReply`.
+    Child(&'static str),
+    /// A `mesh send` from the Primary itself to its own partition.
+    Own(&'static str),
+    /// A native-ingested row (no `mtype`), as DevSwarm's `reactivate-child` prompt reaches the store.
+    Native(&'static str),
+}
+
+/// Drive the shipped parent gate script with the shipped defaults over one fixture: the Primary's partition holds `rows`, this hook's
+/// own reader row sits at `own_row` (`None`: no own row, only the `#floor` row at `floor`), and the summary names `raw` unread at
+/// `cursor`. `shared` sets devswarm.parentGateSharedCount. `Some(n)`: the gate blocked naming n unread; `None`: it allowed.
+fn pg_fixture(tag: &str, shared: bool, rows: &[PgRow], own_row: Option<i64>, floor: i64, raw: u32, cursor: u32) -> Option<String> {
+    use crate::meshw::ident;
+    use crate::meshw::store::{CursorPut, MeshStore, RegistryRow, mesh_message_row};
+    let case = golden::lay(&json!({
+        "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex",
+                "ANTIHALL_DEVSWARM_PARENT_GATE_SHARED_COUNT": if shared { "true" } else { "false" }},
+        "event": "Stop", "opts": {"payload_sha1": format!("gate-{tag}")},
+        "payload": {"hook_event_name": "Stop", "session_id": format!("gate-{tag}"), "cwd": "{HOME}/repo"},
+        "files": {}
+    }));
+    let repo = format!("{}/repo", case.home);
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q", &repo]).status().unwrap().success());
+    let ctx = ident::resolve_context(&repo, true).expect("a git work tree resolves");
+    let top = ctx.worktree_root.clone().expect("a work tree root");
+    let key = ctx.repo_key.clone().expect("a project key");
+    let own = ident::primary_workspace_id(&top).unwrap();
+    let dir = crate::meshw::union::store_dir(Path::new(&case.home), &key);
+    std::fs::create_dir_all(&dir).unwrap();
+    let w = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+    let reg = RegistryRow {
+        id: own.clone(),
+        worktree_path: Some(top.clone()),
+        session_id: Some("s-p".into()),
+        inbox_path: None,
+        cursor_path: None,
+        nudge_command: None,
+    };
+    assert!(w.upsert_registry(&reg, 1, |_, _| true).unwrap());
+    for (i, r) in rows.iter().enumerate() {
+        let (ts, h) = (10 + i as i64, format!("h-{i}"));
+        match *r {
+            PgRow::Child(b) => {
+                assert!(w.append_mesh_row(&mesh_message_row(Some("child-a"), Some(&own), false, b, ts, "normal", &h, true, None)).unwrap().inserted)
+            }
+            PgRow::Own(b) => assert!(w.append_mesh_row(&mesh_message_row(Some(&own), Some(&own), false, b, ts, "normal", &h, false, None)).unwrap().inserted),
+            PgRow::Native(b) => assert!(w.append_message_from(&own, ts, Some(&h), b, Some(&own)).unwrap()),
+        }
+    }
+    // a hook runs under a harness process: this test process stands in for it (a session record names its pid), so the gate has a reader key
+    let sess = Path::new(&case.home).join(defaults::text("mesh_write.claude_dir")).join(defaults::text("mesh_write.sessions_dir"));
+    std::fs::create_dir_all(&sess).unwrap();
+    let pid = std::process::id();
+    std::fs::write(sess.join(format!("{pid}{}", defaults::text("mesh_write.json_suffix"))), json!({"pid": pid, "startedAt": 1}).to_string()).unwrap();
+    let ns = defaults::text("mesh_write.cursor_ns_store").to_string();
+    let mut puts = vec![CursorPut {
+        partition: own.clone(),
+        ns: ns.clone(),
+        reader: defaults::text("mesh_write.floor_reader").to_string(),
+        value: floor,
+        retired_line: None,
+        updated_at: 1,
+    }];
+    if let Some(v) = own_row {
+        let st = crate::checks::git::util::Settings { home: case.home.clone(), env: std::collections::HashMap::new() };
+        let reader = super::host_mesh::own_reader_key(&st).expect("the hook's own reader key");
+        puts.push(CursorPut { partition: own.clone(), ns, reader, value: v, retired_line: None, updated_at: 1 });
+    }
+    w.reader_cursor_txn(&puts).unwrap();
+    let total = rows.len();
+    let sum = json!({"workspaces": {own.clone(): {"id": own, "worktreePath": top, "unread": raw, "cursor": cursor, "total": total}}}).to_string();
+    let sum_path = format!("{}/.anti-hall/devswarm/summaries/{key}.json", case.home);
+    std::fs::create_dir_all(Path::new(&sum_path).parent().unwrap()).unwrap();
+    std::fs::write(&sum_path, sum).unwrap();
+    let got = golden::run_case("devswarm-parent-gate", &case, 1).expect("a shipped gate");
+    let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap_or_default();
+    match got {
+        Some(Verdict::Allow) => None,
+        Some(Verdict::Exact(out)) => {
+            let answer: Value = serde_json::from_str(&out.out).expect("Stop decision JSON");
+            assert_eq!(answer["decision"], "block", "{tag}: {}", out.out);
+            let n = details.split(" unread").next().and_then(|h| h.rsplit(|c: char| !c.is_ascii_digit()).next()).unwrap_or("?").to_string();
+            Some(n)
+        }
+        other => panic!("{tag}: unexpected verdict {other:?} {details}"),
+    }
+}
+
+/// GH #384 / PR #428: the parent gate's own-mailbox count, driven through the shipped gate script with the shipped defaults, for each
+/// fixture with devswarm.parentGateSharedCount on and off. Off must give what the base (`max(countFor, messageCount - own)`) gives.
+#[test]
+fn the_parent_gate_counts_the_shared_peek_count_when_on_and_the_old_projection_when_off() {
+    use PgRow::*;
+    let esc = defaults::text("devswarm_role.pg_escalation");
+    let (peek, defect) = (esc.find("peek-primary"), esc.find("defect"));
+    assert!(peek.is_some() && defect.is_some() && peek < defect, "the escalation names the peek-primary step, then defect: {esc}");
+    let six = [Child("c0"), Child("c1"), Child("c2"), Child("c3"), Child("c4"), Child("c5")];
+    let own_after = [&six[..], &[Own("mine 1"), Own("mine 2")]].concat();
+    let wake = "anti-hall wake: a mesh message is waiting for workspace x.";
+    // (tag, rows, own row, floor, summary raw, summary cursor, expected ON, expected OFF = base)
+    type Case = (&'static str, Vec<PgRow>, Option<i64>, i64, u32, u32, Option<&'static str>, Option<&'static str>);
+    let cases: Vec<Case> = vec![
+        ("own-sends-past-cursor", own_after.clone(), Some(6), 6, 2, 6, None, Some("2")),
+        ("own-sends-only", vec![Own("mine")], Some(0), 0, 1, 0, None, Some("1")),
+        ("child-unread", vec![Child("please review")], Some(0), 0, 1, 0, Some("1"), Some("1")),
+        ("child-wake-prefix", vec![Child("anti-hall wake: resolve conflict?")], Some(0), 0, 1, 0, Some("1"), Some("1")),
+        ("native-wake", vec![Native(wake)], Some(0), 0, 1, 0, None, Some("1")),
+        ("no-own-row", own_after.clone(), None, 6, 2, 6, None, Some("2")),
+        // an impossible floor (past the message count) is unknown, never a confirmed zero: the cached count stands
+        ("floor-past-total", vec![Child("please review")], None, 20, 1, 0, Some("1"), Some("1")),
+        ("floor-equals-total", vec![Child("please review")], None, 1, 1, 0, None, Some("1")),
+        ("floor-below-total", vec![Child("q1"), Child("q2")], None, 1, 1, 0, Some("1"), Some("1")),
+    ];
+    let mut table = Vec::new();
+    for (tag, rows, own_row, floor, raw, cursor, on, off) in &cases {
+        let got_on = pg_fixture(&format!("{tag}-on"), true, rows, *own_row, *floor, *raw, *cursor);
+        let got_off = pg_fixture(&format!("{tag}-off"), false, rows, *own_row, *floor, *raw, *cursor);
+        table.push(format!("{tag}: on={got_on:?} (want {on:?}) off={got_off:?} (want {off:?})"));
+        assert_eq!((got_on.as_deref(), got_off.as_deref()), (*on, *off), "{}", table.join("\n"));
+    }
+    eprintln!("parent-gate fixtures:\n{}", table.join("\n"));
+}
+
 // ---- claim-evidence-guard (GH #313): a claim needs a tool call of this turn; pushed is not done ----
 
 mod claim_evidence_guard {
@@ -2373,6 +2500,14 @@ mod claim_evidence_guard {
 
     /// One Stop of a fresh session: the transcript is `lines`, the reply is `reply`. Returns the verdict and the home.
     fn stop(tag: &str, lines: &[Value], reply: &str, extra: &[(&str, &str)], payload_extra: Value) -> (Option<Option<Verdict>>, String) {
+        let _shared = COUNTS.read().unwrap_or_else(|e| e.into_inner());
+        stop_unlocked(tag, lines, reply, extra, payload_extra)
+    }
+
+    /// Every Stop counts into the process-wide metric table; the counter test holds the write side so nothing else counts meanwhile.
+    static COUNTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+    fn stop_unlocked(tag: &str, lines: &[Value], reply: &str, extra: &[(&str, &str)], payload_extra: Value) -> (Option<Option<Verdict>>, String) {
         let h = home(tag);
         let t = format!("{h}/t.jsonl");
         let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
@@ -2447,7 +2582,13 @@ mod claim_evidence_guard {
             let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[])];
             stop("ce-honest", &lines, reply, &[], extra).0
         };
+        assert_eq!(t("Tests pass (unverified).", json!({})), ALLOW);
+        // a label that closes the sentence as its own clause covers the claims before it (claim_evidence.trailing_label_re)
         assert_eq!(t("Tests pass in my head but I did not run them; unverified.", json!({})), ALLOW);
+        // any other label covers only a claim within claim_evidence.reach_label words of it: a second clause between them ends its reach
+        assert!(blocked(&t("Tests pass in my head but I did not run the linter.", json!({}))).is_some());
+        // a claim in bare quotes is a claim: quote marks alone cover nothing (claim_evidence.quote_mark_re)
+        assert!(blocked(&t("CI is \"green\".", json!({}))).is_some());
         assert_eq!(t("The rename is in; nothing was run.", json!({})), ALLOW);
         assert_eq!(t("The old line said \"all tests pass\" and was wrong.", json!({})), ALLOW);
         assert_eq!(t("All tests pass.", json!({"agent_id": "a1", "agent_type": "worker"})), ALLOW);
@@ -2528,7 +2669,6 @@ mod claim_evidence_guard {
             "After it is merged the docs go out.",
             "It will be merged when review ends.",
             "The fix needs to be verified before release.",
-            "If CI is green the change is merged by the bot.",
             "Waiting until the PR is merged.",
         ]
         .iter()
@@ -2538,17 +2678,178 @@ mod claim_evidence_guard {
         }
         assert!(bare("ce-fut-after", "After the fix, all tests pass."), "a time word in an earlier clause does not excuse a claim");
         assert!(bare("ce-fut-past", "The change is deployed."));
+        // a claim right after a claim the opener covered is its consequent (suppress chain, reach_consequent) ...
+        assert!(!bare("ce-fut-second", "If CI is green the change is merged by the bot."));
+        // ... but an opener whose own clause holds no claim covers nothing past its second predicate, and an idiom opener nothing at all
+        assert!(bare("ce-fut-wait", "If we wait for review the change is merged."));
+        assert!(bare("ce-fut-idiom", "Once again CI is green."));
+        assert!(bare("ce-fut-idiom2", "Once again CI is green the change is merged."));
     }
 
     #[test]
     fn a_claim_reported_from_someone_elses_text_is_not_held() {
-        for (i, r) in
-            ["The bot reported that all tests pass.", "According to the PR body the change is merged.", "The old comment said it is fixed and was wrong."]
-                .iter()
-                .enumerate()
+        for (i, r) in ["The bot reported that all tests pass.", "The PR body says the change is merged.", "The old comment said it is fixed and was wrong."]
+            .iter()
+            .enumerate()
         {
             assert!(!bare(&format!("ce-rep{i}"), r), "must allow: {r}");
         }
+        // 'according to' opens the claim's clause only with a named source (reported_res); 'according to plan' names none
+        assert!(!bare("ce-rep-pp", "According to the PR body the change is merged."));
+        assert!(bare("ce-rep-plan", "According to plan the service is live."));
+    }
+
+    #[test]
+    fn live_false_positives_are_allowed_and_genuine_claims_beside_them_are_still_held() {
+        let mut wrongly_held: Vec<&str> = Vec::new();
+        for (i, r) in [
+            // (a) a future condition on CI
+            "I'll merge once CI is green.",
+            "Merge only if CI is green.",
+            "I will merge it as soon as the build is green, then clean up.",
+            // (b) a criterion inside a rule
+            "SAFE-TO-REMOVE requires that the branch is merged or fully pushed.",
+            "A clone is safe to remove only when its work is merged or fully pushed.",
+            // (c) the word, not a claim
+            "Understood. That is your explicit go-ahead, so I treat it as confirmed permission.",
+            "The word 'verified' in that description is a label, and the word \"confirmed\" is too.",
+            // (d) a negated claim
+            "I haven't verified any of this.",
+            "I haven\u{2019}t verified or confirmed any of this.",
+            "None of this is verified yet.",
+            // (e) pending / not confirmed
+            "Waiting on tests-passed from the runner.",
+            "CI is not confirmed green.",
+            "Still waiting on CI to be green before the merge.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            if bare(&format!("ce-live{i}"), r) {
+                wrongly_held.push(*r);
+            }
+        }
+        assert!(wrongly_held.is_empty(), "must allow: {wrongly_held:#?}");
+        for (i, r) in [
+            "PR #405 is merged.",
+            "All tests pass.",
+            "CI is green.",
+            "I verified the fix.",
+            "Confirmed: the fix works.",
+            "It is verified and deployed to prod.",
+            "I'll merge once CI is green. PR #405 is merged.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(bare(&format!("ce-genuine{i}"), r), "must hold: {r}");
+        }
+    }
+
+    #[test]
+    fn a_genuine_claim_that_only_borrows_a_criterion_or_label_word_is_still_held() {
+        for (i, r) in [
+            "All required tests pass.",
+            "Required changes are merged.",
+            "The criteria are met and PR #405 is merged.",
+            "It is safe to remove because PR #405 is merged.",
+            "The criteria require that PR #405 is merged; PR #406 is merged.",
+            "Confirmed successful deployment.",
+            "Personally verified every endpoint.",
+            "Verified production works.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(bare(&format!("ce-borrow{i}"), r), "must hold: {r}");
+        }
+        for (i, r) in ["The criteria require that PR #405 is merged.", "Safe to remove only when PR #405 is merged."].iter().enumerate() {
+            assert!(!bare(&format!("ce-crit{i}"), r), "must allow: {r}");
+        }
+    }
+
+    #[test]
+    fn a_requirement_does_not_reach_a_claim_that_follows_a_causal_or_temporal_connector() {
+        for (i, r) in [
+            "We must hurry because PR #405 is merged.",
+            "We must celebrate because CI is green.",
+            "We must stop waiting because the suite is passing.",
+            "We must hurry now that PR #405 is merged.",
+            "The criterion requires that records be retained since PR #405 is merged.",
+            "The criterion requires that checks be documented because CI is green.",
+            "We must ship today as CI is green.",
+            "We must move on since all tests pass.",
+            "We must note that PR #405 is merged.",
+            "The policy requires that we ship so PR #405 is merged.",
+            "The service is live.",
+            "The criteria require review given that PR #405 is merged.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(bare(&format!("ce-cause{i}"), r), "must hold: {r}");
+        }
+        for (i, r) in [
+            "The checklist requires that CI is green.",
+            "Each clone must be merged into main.",
+            "The rule requires that all tests pass.",
+            "Ready once a NAS that has it is deployed.",
+            "The release is not live yet.",
+            "The report said \"the service is live\" but I have not checked.",
+            "The criteria require that PR #405 is merged.",
+            "Safe to remove only when PR #405 is merged.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(!bare(&format!("ce-req{i}"), r), "must allow: {r}");
+        }
+    }
+
+    /// The regression corpus (tests/fixtures/claim_evidence_corpus.ndjson): every row {text, expect: block|allow, source} must get its
+    /// expected verdict. A suppressor covers a claim only when it is local to it (claim_evidence.suppress reach).
+    #[test]
+    fn every_row_of_the_claim_corpus_gets_its_expected_verdict() {
+        let corpus = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claim_evidence_corpus.ndjson"))
+            .expect("the corpus file is readable");
+        let mut wrong: Vec<String> = Vec::new();
+        let mut n = 0;
+        for (i, line) in corpus.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let (text, expect) = (row["text"].as_str().unwrap(), row["expect"].as_str().unwrap());
+            assert!(matches!(expect, "block" | "allow"), "row {i}: expect must be block or allow");
+            let held = bare(&format!("ce-corpus{i}"), text);
+            if held != (expect == "block") {
+                wrong.push(format!("{expect} <- {} ({}): {text}", if held { "block" } else { "allow" }, row["source"]));
+            }
+            n += 1;
+        }
+        assert!(n >= 80, "the corpus is read ({n} rows)");
+        assert!(wrong.is_empty(), "corpus rows with the wrong verdict: {wrong:#?}");
+    }
+
+    #[test]
+    fn the_guard_counts_what_it_holds_and_what_it_lets_pass_and_the_switch_turns_it_off() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |name: &str, labels: &[(&str, &str)]| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter(name, labels)
+        };
+        let lines = |r: &str| [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", r, &[])];
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let r = "The criteria require that PR #405 is merged.";
+        let (v, _) = stop_unlocked("ce-cnt-sup", &lines(r), r, &[], json!({}));
+        assert!(blocked(&v).is_none());
+        assert_eq!(count("claim_evidence_suppressed", &[("reason", "criterion")]), 1, "a suppressed hit is counted with its reason");
+        let r = "We must hurry because PR #405 is merged.";
+        let (v, _) = stop_unlocked("ce-cnt-fire", &lines(r), r, &[], json!({}));
+        assert!(blocked(&v).is_some());
+        assert_eq!(count("claim_evidence_fired", &[("rule", "claim")]), 1, "a held reply is counted with its rule");
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let (v, _) = stop_unlocked("ce-cnt-off", &lines(r), r, &[("ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", "0")], json!({}));
+        assert!(blocked(&v).is_some(), "the switch never changes the decision");
+        assert_eq!(count("claim_evidence_fired", &[("rule", "claim")]), 0, "off: nothing is counted");
     }
 
     #[test]

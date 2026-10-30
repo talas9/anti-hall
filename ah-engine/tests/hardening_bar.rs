@@ -1369,10 +1369,11 @@ fn load_sustained_and_burst_meet_the_bar_with_per_stage_timings() {
     let late = st["slow_replies"].as_u64().unwrap_or(0) - late0;
     phase_checks(&mut r, "burst", &mut burst, &st, since, late);
     r.note(format!(
-        "burst: {} clients x {} calls, released together; machine load average {:.1}",
+        "burst: {} clients x {} calls, released together; machine load average {:.1}; abandoned requests skipped unserved {}",
         n("load.burst_clients"),
         n("load.burst_calls_per_client"),
-        loadavg()
+        loadavg(),
+        st["gone_skipped"]
     ));
     watch.end();
     let same = lab.pid() == pid;

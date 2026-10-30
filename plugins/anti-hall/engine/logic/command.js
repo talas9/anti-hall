@@ -2705,6 +2705,22 @@ function isHeavyCommand(command, depth) {
   return false;
 }
 
+// The note that names the heavy segment of a chain, or '' (a single command, a heavy part inside a payload or substitution, or the
+// setting off). The hook can only allow or deny the whole command, so the note says which part to take out, not that it was skipped.
+const RX_SEG_LEAD = /^(?:do|then|else|elif|\{|\()\s+/;
+function heavySegmentNote(command) {
+  if (!ah.settings.bool('command.name_segment_setting')) return '';
+  const segs = splitSegments(command).filter(function (s) { return s.trim() !== ''; });
+  if (segs.length < 2) return '';
+  const idx = segs.findIndex(function (s) { return isHeavySegment(s, command); });
+  if (idx < 0) return '';
+  const max = ah.cfgNum('command.segment_label_max');
+  let seg = segs[idx].replace(/\s+/g, ' ').replace(/`/g, "'").trim().replace(RX_SEG_LEAD, '');
+  if (seg.length > max) seg = seg.slice(0, max) + ah.cfg('command.segment_ellipsis');
+  ah.advisory('flagged', 'command_heavy_segment_named');
+  return text.render(ah.cfg('command.msg_heavy_segment'), { seg: seg, n: String(segs.length - 1) });
+}
+
 // Produce a SAFE classification label for the block reason — describes WHY the
 // command was flagged WITHOUT reflecting any arbitrary user/command text back into
 // the model-visible reason (injection hygiene). Returns either a detected heavy
@@ -5114,6 +5130,7 @@ function mainFlow(payload) {
   const codexHost = H.isCodex(payload);
   const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), detail: detail });
   const SUB = codexHost ? H.CODEX_SUBAGENT : ah.cfg('command.claude_subagent');
+  const segNote = guarded(() => heavySegmentNote(command)) || '';
   const delegateTo = text.render(ah.cfg('command.msg_heavy_delegate'), { to: codexHost ? H.CODEX_CHEAP : SUB });
   // while spawning is stopped (the usage hard stop) there is nobody to delegate to: a heavy command with bounded output runs inline
   const standStop = guarded(() => sd.applies(payload, ah.cfg('command.guard_name')));
@@ -5129,8 +5146,9 @@ function mainFlow(payload) {
     why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),
     instead: (devswarmPrimary && tierText
       ? text.render(ah.cfg('command.msg_heavy_instead_tier'), { delegate: delegateTo, sub: SUB })
-      : delegateTo + '.') + cdJoinHint,
+      : delegateTo + '.') + cdJoinHint + segNote,
     allowed: allowedShapes,
+    briefExtra: segNote,
   }, payload && payload.session_id);
   return blockExact(reason);
 }

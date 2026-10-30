@@ -127,7 +127,7 @@ value = "Allowed here: {forms}"
 
 [repeat.allowed_keys]
 doc = "Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line."
-value = { command-guard = "command.msg_heavy_allowed", coordinator-work-guard = "coordinator_work.block_allowed", edit-guard = "edit_guard.msg_new_allowed", wide-search-guard = "wide_search.msg_instead", lane-test-guard = "lane_test.msg_instead", queued-wait-guard = "queued_wait.msg_instead_bg" }
+value = { command-guard = "command.msg_heavy_allowed", coordinator-work-guard = "coordinator_work.block_allowed", edit-guard = "edit_guard.msg_new_allowed", wide-search-guard = "wide_search.msg_instead", lane-test-guard = "lane_test.msg_instead", queued-wait-guard = "queued_wait.msg_instead_bg", devswarm-parent-gate = "devswarm_role.pg_repeat_step" }
 
 [upfront.check]
 doc = "The check the dispatcher runs for the up-front line (engine/logic/<name>.js); it is an engine-only dispatch row."

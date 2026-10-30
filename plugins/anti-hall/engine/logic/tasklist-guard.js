@@ -83,17 +83,26 @@ function tlToolUses(node, out) {
   }
 }
 
+// Remember what one counted action touched (a file path, or the start of a command) so the block can name it; only the first few are kept.
+function tlName(out, label) {
+  if (!out.names) out.names = [];
+  out.nameTotal = (out.nameTotal || 0) + 1;
+  if (out.names.length >= tlN('counted_max')) return;
+  var l = String(label).replace(/\s+/g, ' ').trim(), max = tlN('counted_label_max');
+  out.names.push(l.length > max ? l.slice(0, max) + tlT('counted_ellipsis') : l);
+}
+
 // One tool use of the work count: `tu` is {name, input: {file_path, command}} (the fields the count reads), `ts` its entry's time in ms
 // or null; updates `out` ({work, lastWork, lastProgressWrite}).
 function tlCountUse(tu, ts, out, progressAbs, cx) {
   var name = typeof tu.name === 'string' ? tu.name : '';
   if (ah.cfg('workdetect.mutating_tools').indexOf(name) >= 0) {
     var fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
-    if (wd.counted(tu, cx)) { out.work++; if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
+    if (wd.counted(tu, cx)) { out.work++; tlName(out, fp.slice(fp.lastIndexOf('/') + 1)); if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
     if (progressAbs && ts !== null && fp === progressAbs && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
   } else if (name === 'Bash') {
     var cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
-    if (wd.counted(tu, cx)) { out.work++; if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
+    if (wd.counted(tu, cx)) { out.work++; tlName(out, cmd); if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
     if (progressAbs && ts !== null && cmd && wd.bashWork(wd.neutralize(cmd)) && tlWritesTo(cmd, progressAbs) && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
   }
 }
@@ -358,6 +367,24 @@ function tlPriorState(root, date, sid) {
   return best;
 }
 
+// The progress file this session already keeps under an earlier date (a session that crossed midnight): its path segments, or null
+// when today's file exists, no earlier one does, or the directory cannot be read.
+function tlCarriedProgress(root, date, sid) {
+  var base = root + '/' + tlT('progress_dir').join('/');
+  var own = ah.fs.lstat(base + '/' + date + '/' + sid + '.md');
+  if (own && own.kind === 'file') return null;
+  var days = ah.fs.listDir(base);
+  if (days === null) return null;
+  var best = null;
+  for (var i = 0; i < days.length; i++) {
+    var d = days[i];
+    if (!new RegExp(tlT('date_dir_re')).test(d) || d >= date) continue;
+    var st = ah.fs.lstat(base + '/' + d + '/' + sid + '.md');
+    if (st && st.kind === 'file' && (best === null || d > best)) best = d;
+  }
+  return best === null ? null : tlT('progress_dir').concat([best, sid + '.md']);
+}
+
 // The handover advisory that rides this block, if one is due: {marker (relative to the home), body, text} or null (none).
 function tlHandover(f, state, safe, reason) {
   var segs = tlT('handovers_dir').concat([f.date, f.sid]);
@@ -488,6 +515,10 @@ function tlFire(f) {
     if (prior2) { why += text.render(tlT('prior_snapshot'), { path: prior2 }); priorPath = prior2; }
   } else if (stale) { what = text.render(tlT('what_stalled'), { n: String(scan.inProgressCount) }); why = tlT('why_stalled'); }
   else { what = text.render(tlT('what_progress'), { n: String(work), path: progressPath }); why = tlT('why_progress'); }
+  if (scan.names.length > 0 && ah.settings.bool('tasklist_guard.name_counted_setting')) {
+    var more = scan.nameTotal > scan.names.length ? text.render(tlT('counted_more'), { n: String(scan.nameTotal - scan.names.length) }) : '';
+    what += text.render(tlT('counted_text'), { list: scan.names.join(tlT('counted_sep')), more: more });
+  }
   var instead;
   if (reduced) {
     if (!scan.taskStoreReset) { what = text.render(tlT('what_reduced'), { n: String(work) }); why = tlT('why_reduced'); }
@@ -602,7 +633,12 @@ function decide(p, opts) {
   }
   var progressAbs = root !== null ? tlJoin(root, progressSegs) : null, historyAbs = root !== null ? tlJoin(root, historySegs) : null;
   var codexPlat = typeof p.turn_id === 'string' && p.turn_id !== '' || new RegExp(ah.cfg('taskkit.codex_rollout')).test(transcript) || new RegExp(ah.cfg('taskkit.codex_dir')).test(transcript);
-  var cx = { tmp: wd.tmpdir(), cwd: cwd !== null && cwd.charAt(0) === '/' ? cwd : null };
+  // a session that crossed midnight keeps its progress file under the date it started: use that one, not a new file under today's date
+  if (root !== null && ah.settings.bool('tasklist_guard.carry_setting')) {
+    var carried = tlCarriedProgress(root, date, sid);
+    if (carried !== null) { progressSegs = carried; progressAbs = tlJoin(root, progressSegs); ah.advisory('suppressed', 'tasklist_progress_carried'); }
+  }
+  var cx = { tmp: wd.tmpdir(), cwd: cwd !== null && cwd.charAt(0) === '/' ? cwd : null, skipIntegration: ah.settings.bool('tasklist_guard.integration_skip_setting'), integrationSkipped: 0 };
   var work;
   work = tlScanWork(transcript, progressAbs, cx);
   if (work === 'quiet') return 'allow';
@@ -613,6 +649,7 @@ function decide(p, opts) {
   if (stored !== null) { t.openTaskIds = stored.openTaskIds; t.inProgressCount = stored.inProgressCount; }
   var scan = {
     work: work.work, lastWork: work.lastWork, lastProgressWrite: work.lastProgressWrite,
+    names: work.names || [], nameTotal: work.nameTotal || 0,
     sawTaskActivity: !!t.sawTaskActivity, taskStoreReset: !!t.taskStoreReset, inProgressCount: t.inProgressCount || 0, openTaskIds: t.openTaskIds || [],
   };
   var needsAgents = scan.inProgressCount > 1 && !codexPlat;
@@ -624,10 +661,10 @@ function decide(p, opts) {
   if (cwd !== null && root !== null) {
     if (cwd.charAt(0) !== '/') ah.unable('tasklist-guard:relative_cwd'); // Node resolves it against its own directory; the progress file is not judged
     else if (ah.fs.isDir(cwd)) {
-      var dirRel = tlT('progress_dir').concat([date]).join('/');
+      var dirRel = progressSegs.slice(0, -1).join('/');
       if (ah.state.op(root, 'mkdir', dirRel)) {
         var ps = ah.fs.lstat(progressAbs);
-        if (ps && ps.kind === 'file') { tlIndex(root, date, sid, 'progress'); progressFresh = tlFresh(ps.mtimeMs, scan.lastWork, freshMs, now); }
+        if (ps && ps.kind === 'file') { tlIndex(root, progressSegs[progressSegs.length - 2], sid, 'progress'); progressFresh = tlFresh(ps.mtimeMs, scan.lastWork, freshMs, now); }
         else progressFresh = false;
       }
     }
@@ -641,7 +678,10 @@ function decide(p, opts) {
     var rr = text.message('block', tlT('guard_name'), { what: 'the resumed handover is not verified.', instead: tlT('resume_instead'), extra: [resume], details: true }, sid);
     return { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: rr }) + '\n', err: '' } };
   }
-  if (scan.work < threshold) return 'allow';
+  if (scan.work < threshold) {
+    if (scan.work + cx.integrationSkipped >= threshold) ah.advisory('suppressed', 'tasklist_integration_skipped'); // the integration commands alone would have reached the threshold
+    return 'allow';
+  }
   // two or more tasks in progress on a Claude session are stalled only when no agent is running, which the block path finds out
   if (!needsAgents && scan.sawTaskActivity && progressFresh) return 'allow';
   var pluginRoot = opts !== null && typeof opts === 'object' && typeof opts.plugin_root === 'string' ? opts.plugin_root : ah.env.get(ah.cfg('env.plugin_root')) || '';

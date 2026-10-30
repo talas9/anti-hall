@@ -62,8 +62,8 @@ value = 1
 min = 1
 
 [advisory.metric_names]
-doc = "The metric names the scripts count per advisory kind, by role: a rule flagged a candidate, a question was put to Jev, Jev confirmed, the advisory reached the model, it was held back (unchanged table, repeat, cap, Jev declined, rate-limited fallback), a Jev question failed, an advisory fired past its soft cap."
-value = { flagged = "flagged", asked = "asked", confirmed = "confirmed", injected = "injected", suppressed = "suppressed", jev_error = "jev_error", over_soft = "over_soft_cap" }
+doc = "The metric names the scripts count per advisory kind, by role: a rule flagged a candidate, a question was put to Jev, Jev confirmed, the advisory reached the model, it was held back (unchanged table, repeat, cap, Jev declined, rate-limited fallback), a Jev question failed, an advisory fired past its soft cap; the advisor-mode adherence counts: a failure armed the retry rule, the advisor was consulted after that failure, a retry block was acted on (advisor consulted before the next edit), an advisor call was seen."
+value = { flagged = "flagged", asked = "asked", confirmed = "confirmed", injected = "injected", suppressed = "suppressed", jev_error = "jev_error", over_soft = "over_soft_cap", armed = "armed", consulted = "consulted", acted_on = "acted_on", consult = "consult" }
 
 [advisory.kind_task_open_line]
 doc = "The advisory kind name of the per-prompt open-tasks line of the task tracker."

@@ -37,6 +37,7 @@ What the automatic guards check and how to read a block.
 
 - `guards.allowSubagentMailbox` = false: a one-off allow of the subagent mailbox verbs (default off)
 - `guards.editGuardAllow` = "": extra file globs edit-guard allows (comma or colon separated, empty by default)
+- `guards.commandNameSegment` = true: Off switch (guards.commandNameSegment, default on): a heavy-command block in a chain names the...
 - `guards.allowBackgroundScratchScripts` = true: Allowance for background scratch scripts (default on)
 - `guards.allowGcloudReads` = true: the narrow read-only Google Cloud access (default on)
 - `guards.allowPlainPush` = true: the plain git push chain allowance (default on)
