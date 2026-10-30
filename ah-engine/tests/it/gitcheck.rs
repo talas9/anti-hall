@@ -598,6 +598,8 @@ fn a_credited_unpushed_commit_in_a_submodule_refuses_the_push() {
 fn a_credited_annotated_tag_message_refuses_the_push() {
     let e = Env::new("tagmsg");
     let (work, _) = pushed_repo(&e);
+    // in scope only on a commit no remote has (a tag on an already-public commit is public: round 6)
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "release prep"]);
     git_ok(&work, &["tag", "-a", "rel-credit-1", "-m", CREDITED]);
     let w = work.to_str().unwrap();
     let _ = e.hook("echo warm");
@@ -625,4 +627,56 @@ fn the_push_block_names_the_branch_and_never_suggests_a_rebase() {
     assert!(err.contains("feat-credit-x") && err.contains(&sha), "branch and sha named: {err}");
     assert!(err.contains("switch to it") && err.contains("amend") && err.contains("owner"), "the plain fix: {err}");
     assert!(!err.contains("rebase -i") && !err.contains("rebase the"), "never a rebase: {err}");
+}
+
+// ---- PR #469 round 6: a fetched (public) credited tag never blocks; a pruned tracking ref blocks once, then advises ----
+
+/// A credited annotated tag fetched from the remote on a public commit does not block an unrelated clean push; one on an
+/// unpushed commit does, naming the tag.
+#[test]
+fn only_annotated_tags_on_unpushed_commits_are_scanned() {
+    let e = Env::new("fetchedtag");
+    let (work, origin) = pushed_repo(&e);
+    let elsewhere = e.dir.join("elsewhere");
+    git_ok(&e.dir, &["clone", "-q", origin.to_str().unwrap(), elsewhere.to_str().unwrap()]);
+    git_ok(&elsewhere, &["tag", "-a", "pub-credit-1", "-m", CREDITED]);
+    git_ok(&elsewhere, &[P, "-q", "origin", "pub-credit-1"]);
+    git_ok(&work, &["fetch", "-q", "--tags", "origin"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "feat: clean"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    assert_eq!(e.hook_in(&format!("git {P} origin main"), w), (String::new(), String::new(), 0), "fetched public tag");
+    git_ok(&work, &["tag", "-a", "loc-credit-2", "-m", CREDITED]);
+    let (out, err, code) = e.hook_in(&format!("git {P} origin main"), w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("loc-credit-2") && !err.contains("pub-credit-1"), "names the local tag only: {err}");
+}
+
+/// A public credited commit whose remote-tracking ref was pruned looks unpushed: the push is blocked once (naming the sha and
+/// "already public"), the identical retry gets an advisory, and a new credited commit still blocks.
+#[test]
+fn a_pruned_tracking_ref_blocks_once_then_advises_on_the_identical_retry() {
+    let e = Env::new("pruned");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["checkout", "-q", "-b", "old"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &[P, "-q", "origin", "old"]);
+    let sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
+    git_ok(&work, &["update-ref", "-d", "refs/remotes/origin/old"]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "feat: clean"]);
+    let w = work.to_str().unwrap();
+    let cmd = format!("git {P} origin main");
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&cmd, w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains(&sha) && err.contains("old") && err.contains("already public"), "first push blocks: {err}");
+    let (out, err, code) = e.hook_in(&cmd, w);
+    assert_eq!(code, 0, "the identical retry is let through: stdout={out} stderr={err}");
+    assert!(out.contains(&sha) && out.contains("AI credit"), "with an advisory naming the sha: {out}");
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let new_sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
+    let (out, err, code) = e.hook_in(&cmd, w);
+    assert_eq!(code, 2, "a new credited commit still blocks: stdout={out} stderr={err}");
+    assert!(err.contains(&new_sha) && !err.contains(&sha), "only the new sha: {err}");
 }
