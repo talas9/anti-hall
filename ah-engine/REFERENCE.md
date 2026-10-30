@@ -3058,12 +3058,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
 | `guard_rules.exempt` | `42 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording. |
 | `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, rules without a line of their own). Placeholders: {id}, {what}. |
-| `guard_rules.guard_name` | `rule-digest` |  |  | The name the digest carries in the context. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
 | `guard_rules.msg_no_heredoc` | `3 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
 | `guard_rules.msg_rm_rf_root` | `3 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
 | `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
+| `guard_rules.problem_digest` | `{id}: missing from the generated digest` |  |  | Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}. |
+| `guard_rules.problem_id` | `rule id empty or duplicate: {id}` |  |  | Registry problem: a rule id that is empty or repeated. Placeholder: {id}. |
+| `guard_rules.problem_line` | `{id}: essential rule without a line` |  |  | Registry problem: an essential rule has no digest line. Placeholder: {id}. |
+| `guard_rules.problem_skill` | `{id}: missing from the generated skill` |  |  | Registry problem: a rule is missing from the generated rules skill. Placeholder: {id}. |
+| `guard_rules.problem_source` | `{id}: source {source} does not exist` |  |  | Registry problem: the source key of a rule does not exist. Placeholders: {id}, {source}. |
+| `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
+| `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
 | `guard_rules.rules` | `134 items` |  |  | Every rule the engine enforces, one row each: id, setting (the switch that turns the rule off, or empty), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). line is the short agent line of an essential rule. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.skill_head` | `Rules the engine enforces` |  |  | Heading of the rules section in the engine-guards skill. |
 | `guard_rules.skill_instead` | `Instead: {instead}` |  |  | Label in front of a rule's instead. Placeholder: {instead}. |

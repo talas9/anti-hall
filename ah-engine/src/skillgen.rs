@@ -278,23 +278,23 @@ pub fn rule_problems() -> Vec<String> {
     let skill = rules_section();
     for r in rules() {
         if r.id.is_empty() || !ids.insert(r.id) {
-            p.push(format!("rule id empty or duplicate: {:?}", r.id));
+            p.push(defaults::render("guard_rules.problem_id", &[("id", &r.id)]));
         }
         if !tiers.contains(&r.tier) {
-            p.push(format!("{}: tier {:?} is not one of {tiers:?}", r.id, r.tier));
+            p.push(defaults::render("guard_rules.problem_tier", &[("id", &r.id), ("tier", &r.tier), ("tiers", &tiers.join(", "))]));
         }
         if !defaults::has(r.source) {
-            p.push(format!("{}: source {} does not exist", r.id, r.source));
+            p.push(defaults::render("guard_rules.problem_source", &[("id", &r.id), ("source", &r.source)]));
         }
         if r.tier == "essential" && r.line.is_empty() {
-            p.push(format!("{}: essential rule without a line", r.id));
+            p.push(defaults::render("guard_rules.problem_line", &[("id", &r.id)]));
         }
         sources.insert(r.source);
         if r.tier != "off" && !skill.contains(&format!("`{}`", r.id)) {
-            p.push(format!("{}: missing from the generated skill", r.id));
+            p.push(defaults::render("guard_rules.problem_skill", &[("id", &r.id)]));
         }
         if r.tier == "essential" && !digest.contains(r.line) {
-            p.push(format!("{}: missing from the generated digest", r.id));
+            p.push(defaults::render("guard_rules.problem_digest", &[("id", &r.id)]));
         }
     }
     let exempt: std::collections::BTreeSet<&str> = defaults::list("guard_rules.exempt").into_iter().collect();
@@ -303,7 +303,7 @@ pub fn rule_problems() -> Vec<String> {
         let inline = e.value.get("what").is_some();
         let split = e.value.as_str().is_some() && key.split('_').any(|w| w == "what");
         if (inline || split) && !sources.contains(e.key) && !exempt.contains(e.key) && sec != "guard_rules" {
-            p.push(format!("{}: a block text with no rule row (add it to guard_rules.rules with a tier, or to guard_rules.exempt)", e.key));
+            p.push(defaults::render("guard_rules.problem_unregistered", &[("key", &e.key)]));
         }
     }
     p
