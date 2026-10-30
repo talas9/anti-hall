@@ -384,6 +384,8 @@ pub struct FsProbe {
     cache: Option<Arc<ReadCache>>,
     plans: OnceLock<HashMap<String, PathBuf>>,
     descs: OnceLock<Vec<crate::dswire::facts::Desc>>,
+    /// `devswarm.noiseProvenance` of the request, `None` = no request (the engine's own settings).
+    provenance: Option<bool>,
 }
 
 /// Files the probes read and their bytes, since the process started (the `status --threads` work counters).
@@ -451,7 +453,12 @@ fn count_hit() {
 impl FsProbe {
     /// A probe over `home`'s DevSwarm directory; `now` is the clock the unread union uses.
     pub fn new(home: &Path, now: i64) -> FsProbe {
-        FsProbe { home: home.to_path_buf(), now, cache: None, plans: OnceLock::new(), descs: OnceLock::new() }
+        FsProbe { home: home.to_path_buf(), now, cache: None, plans: OnceLock::new(), descs: OnceLock::new(), provenance: None }
+    }
+    /// Classify wake lines with the `devswarm.noiseProvenance` of the request this probe serves ([`union::provenance_of`], GH #429).
+    pub fn with_provenance(mut self, provenance: bool) -> FsProbe {
+        self.provenance = Some(provenance);
+        self
     }
     /// Answer the file reads of this probe from `cache` where the files are unchanged (the reconcile's own probe; an action's
     /// re-check reads the sources again and uses none).
@@ -549,6 +556,8 @@ impl Probe for FsProbe {
         };
         // the floor view (the statusline has no reader of its own), through the one unread helper: the mail the workspace's own
         // identity family sent is not unread
+        // the request's switch when one drives this probe (the live view); the engine's own settings for its reconcile and wake loops
+        let provenance = self.provenance.unwrap_or_else(|| union::provenance_of_process(&self.home));
         let Some(r) = &reader else {
             let u = union::union_unread(&union::UnionIn {
                 inbox: inbox.as_deref(),
@@ -558,6 +567,7 @@ impl Probe for FsProbe {
                 store_base: 0.0,
                 nd_base: 0.0,
                 now: self.now,
+                provenance,
             })
             .ok()?;
             return Some(u.unread);
@@ -570,7 +580,7 @@ impl Probe for FsProbe {
             .filter_map(|row| Some((row.get("id")?.as_str()?.to_string(), row.get("sessionId").and_then(|x| x.as_str()).map(str::to_string))))
             .collect(); // keep: an unreadable registry means no family: every row counts, as before
         let family = union::family_ids(id, &pairs);
-        let u = union::unread_at(r, id, inbox.as_deref(), cursor.as_deref(), bases, &family, self.now).ok()?;
+        let u = union::unread_at(r, id, inbox.as_deref(), cursor.as_deref(), bases, &family, self.now, provenance).ok()?;
         crate::meshw::tick::note_own_excluded(&u);
         Some(u.unread)
     }

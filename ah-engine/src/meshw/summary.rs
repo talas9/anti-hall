@@ -699,6 +699,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
                     (cursor, nd_floor),
                     &family,
                     inv.now,
+                    crate::meshw::union::provenance_of(&inv.settings()),
                 )?;
                 crate::meshw::tick::note_own_excluded(&u);
                 unread = u.union.unread as f64;

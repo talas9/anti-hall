@@ -1190,6 +1190,23 @@ mod tests {
         }
     }
 
+    /// The git scan caps carry a plugin `min` equal to their pre-config literal: a user file under it is rejected (the shipped value
+    /// runs), a settings/env value under it is clamped UP to it, and a larger value is kept.
+    #[test]
+    fn a_git_scan_cap_below_its_minimum_lands_on_the_shipped_value() {
+        let p = Path::new("t.toml");
+        for (key, shipped) in [("inline_depth", 3), ("heredoc_levels", 6), ("var_hops", 4)] {
+            let full = format!("git.{key}");
+            assert_eq!(parse_user(p, &format!("[git]\n{key} = 0\n")).unwrap_err().code(), "range", "{key} = 0 in the user file");
+            assert!(parse_user(p, &format!("[git]\n{key} = {}\n", shipped + 2)).is_ok(), "{key} raised");
+            let at = |v: i64| {
+                Effective::resolve(&Layers { settings: json!({ "git": { key: v } }), ..Default::default() }, &no_env).get(&full).unwrap().value.clone()
+            };
+            assert_eq!(at(0), json!(shipped), "{key} = 0 in settings clamps up to the shipped value");
+            assert_eq!(at(shipped + 2), json!(shipped + 2), "{key} raised in settings is kept");
+        }
+    }
+
     #[test]
     fn the_user_file_is_strict() {
         let p = Path::new("t.toml");

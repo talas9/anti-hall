@@ -190,13 +190,34 @@ fn count_for(st: &Settings, key: Option<&str>, id: &str, inbox: Option<&str>, cu
         None => None,
     };
     let Some(store) = store else {
-        let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: None, store_base: 0.0, nd_base: position.unwrap_or(0.0), now: now as i64 })
-            .map_err(|_| No)?;
+        let u = union_unread(&UnionIn {
+            inbox,
+            cursor_file: cursor,
+            id,
+            store: None,
+            store_base: 0.0,
+            nd_base: position.unwrap_or(0.0),
+            now: now as i64,
+            provenance: crate::meshw::union::provenance_of(st),
+        })
+        .map_err(|_| No)?;
         return Ok(json!({"state": "nd", "unread": if known { u.unread } else { 0 }, "known": known}));
     };
     let reader = own_reader(st)?;
     let Ok((sb, nb)) = floor_positions(&store, &st.home, id, cursor, reader.as_deref()) else { return unknown("mesh_write.unread_reason_cursors") };
-    let Ok(u) = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }) else {
+    if base_past_total(st, &store, id, sb, "count_for").unwrap_or(false) {
+        return unknown("mesh_write.unread_reason_cursors");
+    }
+    let Ok(u) = union_unread(&UnionIn {
+        inbox,
+        cursor_file: cursor,
+        id,
+        store: Some(&store),
+        store_base: sb,
+        nd_base: nb,
+        now: now as i64,
+        provenance: crate::meshw::union::provenance_of(st),
+    }) else {
         return unknown("mesh_write.unread_reason_union");
     };
     Ok(json!({"state": "ok", "unread": u.unread, "known": known, "age": u.oldest_unread_age_ms.filter(|a| a.is_finite())}))
@@ -281,16 +302,59 @@ fn message_count(st: &Settings, key: &str, id: &str) -> Result<Value, No> {
     })
 }
 
+/// GH #429: whether a store read base is past the partition's message count (an impossible position: the count read from it is
+/// unknown, never a confirmed zero). Counted in `mesh_unread_position_unknown`; `devswarm.unreadPositionGuard` off restores the old read.
+fn base_past_total(st: &Settings, store: &crate::mesh::MeshReader, id: &str, base: f64, site: &str) -> Result<bool, No> {
+    if !switch_on(st, "devswarm_role.pg_sw_pos_guard") {
+        return Ok(false);
+    }
+    let total = store.message_count(id).map_err(|_| No)?;
+    let past = base.is_finite() && base > total as f64;
+    if past {
+        crate::metrics::bump("mesh_unread_position_unknown", &[("site", site)]);
+    }
+    Ok(past)
+}
+
+/// A boolean settings switch (its entry's default when unset).
+fn switch_on(st: &Settings, key: &str) -> bool {
+    crate::checks::guardkit::settings::get_bool(st, defaults::raw(key))
+}
+
 fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Option<&str>, own: bool, now: f64) -> Result<Value, No> {
     let Some(store) = open_store(st, key)? else { return Ok(json!({"state": "none"})) };
     let reader = if own { own_reader(st)? } else { None };
     let (sb, nb) = floor_positions(&store, &st.home, id, cursor, reader.as_deref())?;
-    let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
+    if base_past_total(st, &store, id, sb, "union_of")? {
+        return Ok(json!({"state": "unsure"})); // the gate reads `unsure` as unknown (the stricter reading), never as an empty list
+    }
+    let u = union_unread(&UnionIn {
+        inbox,
+        cursor_file: cursor,
+        id,
+        store: Some(&store),
+        store_base: sb,
+        nd_base: nb,
+        now: now as i64,
+        provenance: crate::meshw::union::provenance_of(st),
+    })
+    .map_err(|_| No)?;
+    // a `[Primary poke]` mirror is told apart by provenance (no `mtype`), not by its text; one that carries an `mtype` is a mesh send and counts
+    let prov = switch_on(st, "devswarm_role.pg_sw_provenance");
+    let poke = |r: &Value| prov && crate::meshw::union::is_poke_row(r);
+    let lookalikes = u
+        .store_only_unread
+        .iter()
+        .filter(|r| prov && !poke(r) && r["body"].as_str().is_some_and(|b| b.trim_start().starts_with(defaults::text("devswarm_role.pg_poke_prefix"))))
+        .count();
+    for _ in 0..lookalikes {
+        crate::metrics::bump("mesh_noise_lookalike_kept", &[("kind", "poke")]);
+    }
     let age = u.oldest_unread_age_ms.filter(|a| a.is_finite());
     // the partition's identity family (`recipientFamilyIds`): the gate leaves its own sends out of the count, as peek does
     let family: Vec<String> = crate::meshw::tick::family_of(id, &ident::rows_of(&store.roster().map_err(|_| No)?)).into_iter().collect();
     Ok(
-        json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r)).collect::<Vec<_>>(), "age": age, "family": family}),
+        json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r) && !poke(r)).collect::<Vec<_>>(), "age": age, "family": family}),
     )
 }
 
@@ -314,7 +378,17 @@ fn own_view(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     let shared = shared_unread(st, &store, id, inbox, cursor, &reader, now).ok();
     let Some(value) = own else { return Ok(json!({"reader": true, "state": "ok", "own": null, "shared": shared})) };
     let (sb, nb) = floor_positions(&store, &st.home, id, cursor, Some(&reader))?;
-    let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
+    let u = union_unread(&UnionIn {
+        inbox,
+        cursor_file: cursor,
+        id,
+        store: Some(&store),
+        store_base: sb,
+        nd_base: nb,
+        now: now as i64,
+        provenance: crate::meshw::union::provenance_of(st),
+    })
+    .map_err(|_| No)?;
     let total = store.message_count(id).map_err(|_| No)?;
     Ok(json!({"reader": true, "state": "ok", "own": value, "unread": u.unread, "total": total, "shared": shared}))
 }
@@ -333,10 +407,20 @@ fn shared_unread(
 ) -> Result<usize, No> {
     let rows = ident::rows_of(&store.roster().map_err(|_| No)?);
     let family = crate::meshw::tick::family_of(id, &rows);
-    let c = crate::meshw::union::unread_for(store, Path::new(&st.home), id, inbox, cursor, Some(reader), &family, now as i64).map_err(|_| No)?;
+    let c = crate::meshw::union::unread_for(
+        store,
+        Path::new(&st.home),
+        id,
+        inbox,
+        cursor,
+        Some(reader),
+        &family,
+        now as i64,
+        crate::meshw::union::provenance_of(st),
+    )
+    .map_err(|_| No)?;
     // a store base past the partition's message count is impossible: a count read from it is unknown, never a confirmed zero
-    let total = store.message_count(id).map_err(|_| No)?;
-    if c.store_base.is_finite() && c.store_base > total as f64 {
+    if base_past_total(st, store, id, c.store_base, "shared_unread")? {
         return Err(No);
     }
     crate::meshw::tick::note_own_excluded(&c);
@@ -678,5 +762,108 @@ mod shared_count_tests {
         assert_eq!(shared_unread(&st, &r, "primary-x", None, None, "r1", 100.0).ok(), Some(1), "a child's mesh send with the prefix is mail");
         assert_eq!(r.message_count_from_others("primary-x", &fam, prefix).unwrap(), 1);
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
+    }
+
+    /// GH #429: a saved read position past the partition's message count is impossible. `count_for` (the descriptor count) read it as
+    /// 0 unread and `union_of` (the gate's store-only rows) as an empty list, so a Stop could pass; both must say "unknown" instead.
+    #[test]
+    fn a_store_position_past_the_message_count_is_unknown_in_the_count_and_the_union() {
+        let home = std::env::temp_dir().join(format!("ah-pg-pastpos-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let dir = crate::meshw::union::store_dir(Path::new(&st.home), "k1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let row = RegistryRow {
+            id: "primary-x".into(),
+            worktree_path: Some("/wt/p".into()),
+            session_id: None,
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
+        assert!(w.upsert_registry(&row, 1, |_, _| true).unwrap());
+        for i in 0..2 {
+            w.append_message_from("primary-x", 10 + i, Some(&format!("in-{i}")), "from a child", Some("child-a")).unwrap();
+        }
+        let ns = defaults::text("mesh_write.cursor_ns_store").to_string();
+        let floor = |v: i64| CursorPut {
+            partition: "primary-x".into(),
+            ns: ns.clone(),
+            reader: defaults::text("mesh_write.floor_reader").to_string(),
+            value: v,
+            retired_line: None,
+            updated_at: 1,
+        };
+        // control: a position inside the count reads normally (2 rows, position 0 -> 2 unread)
+        w.reader_cursor_txn(&[floor(0)]).unwrap();
+        let ok = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).ok().unwrap();
+        assert_eq!((ok["state"].as_str(), ok["unread"].as_u64(), ok.get("unknown")), (Some("ok"), Some(2), None), "{ok}");
+        assert_eq!(union_of(&st, "k1", "primary-x", None, None, false, 100.0).ok().unwrap()["state"], "ok");
+        // GH #429: a native-ingested `[Primary poke]` mirror (no mtype) is noise; a mesh send that starts with the same text is mail
+        let poke = defaults::text("devswarm_role.pg_poke_prefix");
+        w.append_message_from("primary-x", 20, Some("poke-native"), &format!("{poke} nudge"), Some("primary-x")).unwrap();
+        let m = crate::meshw::store::mesh_message_row(
+            Some("child-a"),
+            Some("primary-x"),
+            false,
+            &format!("{poke} resolve conflict?"),
+            21,
+            "normal",
+            "poke-child",
+            true,
+            None,
+        );
+        assert!(w.append_mesh_row(&m).unwrap().inserted);
+        let u = union_of(&st, "k1", "primary-x", None, None, false, 100.0).ok().unwrap();
+        let bodies: Vec<String> = u["storeOnly"].as_array().unwrap().iter().map(|r| r["body"].as_str().unwrap_or("").to_string()).collect();
+        assert!(bodies.iter().any(|b| b.ends_with("resolve conflict?")), "a child's mesh send with the poke prefix is mail: {bodies:?}");
+        assert!(!bodies.iter().any(|b| b.ends_with("nudge")), "the native poke mirror is noise: {bodies:?}");
+        let off = Settings { home: st.home.clone(), env: [("ANTIHALL_DEVSWARM_NOISE_PROVENANCE".to_string(), "false".to_string())].into() };
+        let u = union_of(&off, "k1", "primary-x", None, None, false, 100.0).ok().unwrap();
+        assert!(
+            u["storeOnly"].as_array().unwrap().iter().any(|r| r["body"].as_str().unwrap_or("").ends_with("nudge")),
+            "switch off: the host no longer drops by provenance: {u}"
+        );
+        // position 20 > total 2
+        w.reader_cursor_txn(&[floor(20)]).unwrap();
+        let c = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).ok().unwrap();
+        assert_eq!(c["unknown"], json!(true), "count_for: a position past the total is unknown, not 0 unread: {c}");
+        let u = union_of(&st, "k1", "primary-x", None, None, false, 100.0).ok().unwrap();
+        assert_eq!(u["state"], "unsure", "union_of: a position past the total is unknown, not an empty list: {u}");
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
+    }
+
+    /// GH #429 (PR #432 P1-B): `devswarm.noiseProvenance` comes from the REQUEST's settings, never from the environment of the
+    /// daemon that serves it. A child's native line that starts with the wake prefix is mail with the switch on and a wake prompt
+    /// with it off, whatever the serving process's own environment says.
+    #[test]
+    fn the_noise_provenance_switch_of_the_request_wins_over_the_daemon_environment() {
+        let var = "ANTIHALL_DEVSWARM_NOISE_PROVENANCE";
+        let home = std::env::temp_dir().join(format!("ah-pg-reqprov-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        std::fs::create_dir_all(&home).unwrap();
+        let inbox = home.join("inbox.ndjson");
+        let cursor = home.join("cursor");
+        let line = json!({"sender": "child-b", "message": format!("{}resolve conflict?", defaults::text("agent_tracker.wake_prefix"))});
+        std::fs::write(&inbox, format!("{line}\n")).unwrap();
+        std::fs::write(&cursor, "0").unwrap();
+        let (i, c) = (inbox.to_string_lossy().into_owned(), cursor.to_string_lossy().into_owned());
+        let req =
+            |v: Option<&str>| Settings { home: home.to_string_lossy().into_owned(), env: v.map(|v| (var.to_string(), v.to_string())).into_iter().collect() };
+        let unread = |st: &Settings| count_for(st, None, "w", Some(&i), Some(&c), 100.0).ok().unwrap()["unread"].as_u64();
+        // a daemon started with the switch off; the request turns it on: the child's mail must show
+        // SAFETY: test-only; this test is the only code that touches this variable, and it runs before any thread it spawns reads it.
+        unsafe { std::env::set_var(var, "false") };
+        let on = unread(&req(Some("true")));
+        let default_req = unread(&req(None));
+        // a default daemon; the request turns it off: the earlier prefix-only rule must apply
+        // SAFETY: as above, test-only and single-writer for this variable.
+        unsafe { std::env::remove_var(var) };
+        let off = unread(&req(Some("false")));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
+        assert_eq!(on, Some(1), "request on, daemon env off: a child's line with the wake prefix is mail");
+        assert_eq!(default_req, Some(1), "request default (on), daemon env off: still mail");
+        assert_eq!(off, Some(0), "request off, daemon env default: the prefix alone decides (a wake prompt, not mail)");
     }
 }

@@ -20,6 +20,14 @@ value = { section = "guards", key = "pushedNotDone", type = "boolean", env = "AN
 doc = "Switch guards.claimEvidenceTelemetry (default on): off stops the claim-evidence fired / suppressed counters (metrics claim_evidence_fired, claim_evidence_suppressed; advisory counters in status); the guard's decisions do not change."
 value = { section = "guards", key = "claimEvidenceTelemetry", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", option = "", default = true }
 
+[claim_evidence.sw_strict]
+doc = "Switch guards.claimEvidenceStrict (default on): a suppressor must not let a bare factual claim through (GH #427). A filler opener ('If you ask', 'If true'), a reporting word that is a noun after an article ('the reports') or the start of a compound ('doc-string'), a negated or noun-like label ('not unverified', 'unchecked boxes', 'unverified aside') and a source phrase closed by a comma are judged by the lists below. Off restores the earlier looser reading."
+value = { section = "guards", key = "claimEvidenceStrict", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_STRICT", option = "", default = true }
+
+[metric.claim_evidence_suppressor_rejected]
+doc = "Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427)."
+value = { kind = "counter", unit = "candidates", labels = ["reason"] }
+
 [metric.claim_evidence_fired]
 doc = "Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed)."
 value = { kind = "counter", unit = "replies", labels = ["rule"] }
@@ -117,6 +125,34 @@ value = ['\b(?:once|after|when|whenever|if|until|unless|before|as soon as|assumi
 doc = "The words after a clause opener (future_res) that make it an idiom, not a condition on the claim: 'Once again CI is green', 'If anything', 'If needed', 'Until now', 'After all', 'whether ... or not' stay claims, while 'once all PRs are merged' is a condition. Each idiom is paired with its opener. Only an opener followed by the claim's own subject covers it. Rust regular expression, case-insensitive, matched against the opener and the text after it up to the claim."
 value = '^(?:once\s+(?:again|more)|(?:if|when|whenever)\s+(?:asked|anything|needed|necessary|possible|so|ever)|until\s+(?:now|today|tonight|then|yesterday|recently)|after\s+all\s+(?:it|this|that|they|we|the|everything)|before\s+(?:now|today))\b|^after\s+all\W*$|^whether\b.*\bor\s+(?:not|no)\b'
 
+[claim_evidence.opener_filler_re]
+doc = "Filler words after a clause opener (future_res) that make it no condition on the claim, only when guards.claimEvidenceStrict is on: 'If you ask tests pass', 'If true CI is green', 'When convenient ...'. Rust regular expression, case-insensitive, matched against the opener and the text after it up to the claim."
+value = '^(?:if|when|whenever)\s+(?:you\s+(?:ask|want|like|prefer|need|wish|insist)|you.d\s+(?:like|prefer)|true|convenient|desired|curious|wanted|preferred|requested)\b'
+
+[claim_evidence.noun_before_re]
+doc = "Text that ends right before a reporting word and makes it a noun, not a verb (strict mode): 'According to the reports CI is green' ('reports' after 'the'). Rust regular expression, case-insensitive, matched against the clause up to the reporting word; it must end with $."
+value = '\b(?:the|a|an|its|this|these|those|our|their|my|your)\s+$'
+
+[claim_evidence.compound_after_re]
+doc = "Text that starts right after a source word and makes it the start of a compound, not the source itself (strict mode): 'doc-string', 'report-card', 'issue-tracker'. Rust regular expression matched against the text after the source word."
+value = '^[-_/]\w'
+
+[claim_evidence.clause_join_re]
+doc = "A phrase that, when it ends right before a clause break, keeps the clause going (strict mode): 'According to the PR body, the change is merged' stays one clause so the source still governs it. Rust regular expression, case-insensitive, matched against the sentence up to the break; it must end with $."
+value = '\baccording\s+to\s+(?:[\w#\x27-]+\s+){0,3}[\w#\x27-]+$'
+
+[claim_evidence.clause_join_break_re]
+doc = "Which clause break may keep a clause going after a source phrase (strict mode): only a comma ('According to the docs, CI is green' stays one clause); a semicolon, dash or other break ends it ('I updated the config according to the docs; CI is green' leaves the second claim bare). Rust regular expression, case-insensitive, matched against the break text itself."
+value = '^,$'
+
+[claim_evidence.ack_before_not_re]
+doc = "Text that ends right before an honest-label word and negates it (strict mode): 'not unverified', 'never unverified'. Rust regular expression, case-insensitive, matched against the sentence up to the label; it must end with $."
+value = '\b(?:not|never|no|n.t)\s+$'
+
+[claim_evidence.ack_after_not_re]
+doc = "Text that starts right after an honest-label word and shows it is no label (strict mode): 'unverified is false', 'unverified meaning not', 'unchecked boxes remain', 'unverified claims aside'. A noun ('boxes', 'files') only counts right after the word with nothing but spaces between, so an explicit label with punctuation keeps its effect: 'Unverified: files are deployed', 'Unverified - files ...', '(Unverified) files ...'. Rust regular expression, case-insensitive, matched against the text after the label."
+value = '^(?:\W*(?:(?:is|are|was|were)\s+(?:false|untrue|wrong|incorrect|not)\b|meaning\s+not\b|(?:\w+\s+)?aside\b)|\s+(?:boxes|checkboxes|items?|tasks?|files?)\b)'
+
 [claim_evidence.reported_res]
 doc = "A reporting verb, or 'according to' a named source, that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed', 'according to the PR body the change is merged' ('according to plan' names no source). Quoted text is a claim like any other unless one of these opens its clause. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
 value = [
@@ -167,8 +203,8 @@ doc = "Quote marks taken out of the reply before claims are looked for (an apost
 value = '["“”]|\B[\x27‘’]|[\x27‘’]\B'
 
 [claim_evidence.gap_word_re]
-doc = "One word of the text between a suppressor and the claim (punctuation is not a word). Rust regular expression."
-value = '[\w#@\x27\x{2019}/-]+'
+doc = "One word of the text between a suppressor and the claim (punctuation is not a word: a lone dash in 'Unverified - files are deployed' counts nothing). Rust regular expression."
+value = '[\w#@][\w#@\x27\x{2019}/-]*'
 
 [claim_evidence.gap_skip_re]
 doc = "Words that never count against a reach: articles, determiners, possessives, quantifiers, 'of'/'and'/'or', 'it'/'this'/'that', '#refs' and numbers (they belong to the claim's subject). Every other word counts, so a word the list does not know uses up the reach instead of extending it. Rust regular expression, case-insensitive, matched against one whole word."
@@ -184,8 +220,8 @@ value = [
   { reason = "negated", list = "claim_evidence.neg_res", reach = "claim_evidence.reach_verb" },
   { reason = "negated", list = "claim_evidence.neg_subject_res", reach = "claim_evidence.reach_subject", idiom = "claim_evidence.no_idiom_re" },
   { reason = "future", list = "claim_evidence.modal_res", reach = "claim_evidence.reach_verb" },
-  { reason = "future", list = "claim_evidence.future_res", reach = "claim_evidence.reach_clause", idiom = "claim_evidence.opener_idiom_re", chain = true },
-  { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause" },
+  { reason = "future", list = "claim_evidence.future_res", reach = "claim_evidence.reach_clause", idiom = "claim_evidence.opener_idiom_re", idiom_strict = "claim_evidence.opener_filler_re", chain = true },
+  { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
   { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
 ]
 

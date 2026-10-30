@@ -2465,6 +2465,9 @@ fn the_parent_gate_counts_the_shared_peek_count_when_on_and_the_old_projection_w
         ("own-sends-only", vec![Own("mine")], Some(0), 0, 1, 0, None, Some("1")),
         ("child-unread", vec![Child("please review")], Some(0), 0, 1, 0, Some("1"), Some("1")),
         ("child-wake-prefix", vec![Child("anti-hall wake: resolve conflict?")], Some(0), 0, 1, 0, Some("1"), Some("1")),
+        // GH #429: the poke prefix is not provenance; a child's mesh send that starts with it is mail, the native-ingested poke is not
+        ("child-poke-prefix", vec![Child("[Primary poke] resolve conflict?")], Some(0), 0, 1, 0, Some("1"), Some("1")),
+        ("native-poke", vec![Native("[Primary poke] nudge")], Some(0), 0, 1, 0, None, Some("1")),
         ("native-wake", vec![Native(wake)], Some(0), 0, 1, 0, None, Some("1")),
         ("no-own-row", own_after.clone(), None, 6, 2, 6, None, Some("2")),
         // an impossible floor (past the message count) is unknown, never a confirmed zero: the cached count stands
@@ -2851,6 +2854,36 @@ mod claim_evidence_guard {
         let (v, _) = stop_unlocked("ce-cnt-off", &lines(r), r, &[("ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", "0")], json!({}));
         assert!(blocked(&v).is_some(), "the switch never changes the decision");
         assert_eq!(count("claim_evidence_fired", &[("rule", "claim")]), 0, "off: nothing is counted");
+    }
+
+    /// GH #427: the strict suppressor checks hold a bare claim, count each refused suppressor, and `guards.claimEvidenceStrict` off restores the old reading.
+    #[test]
+    fn the_strict_switch_holds_the_leaks_counts_the_refusals_and_off_restores_the_old_reading() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |reason: &str| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("claim_evidence_suppressor_rejected", &[("reason", reason)])
+        };
+        let lines = |r: &str| [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", r, &[])];
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        for (i, (r, reason)) in [
+            ("If true CI is green.", "filler_opener"),
+            ("According to the doc-string CI is green.", "source_compound"),
+            ("According to the reports CI is green.", "source_noun"),
+            ("CI is green; not unverified.", "label_not_a_label"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (v, _) = stop_unlocked(&format!("ce-strict{i}"), &lines(r), r, &[], json!({}));
+            assert!(blocked(&v).is_some(), "must hold: {r}");
+            assert!(count(reason) >= 1, "{r}: refusal counted as {reason}");
+            crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+            let (v, _) = stop_unlocked(&format!("ce-strict-off{i}"), &lines(r), r, &[("ANTIHALL_CLAIM_EVIDENCE_STRICT", "0")], json!({}));
+            assert!(blocked(&v).is_none(), "switch off restores the old reading: {r}");
+            assert_eq!(count(reason), 0, "off: nothing is refused or counted");
+        }
     }
 
     #[test]

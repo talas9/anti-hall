@@ -108,6 +108,10 @@ const ALLOW: &[(&str, &str)] = &[
         "`workspace_owns`, the GitHub poller (daemon background duty, no request): locates the DevSwarm app database from the engine process's own environment, like the DevSwarm layer's startup in `dswire/mod.rs`; `github_rt.ready_app_db` overrides it",
     ),
     (
+        "src/meshw/union.rs",
+        "`provenance_of_process`, for the engine's own mesh reads that no request drives (reconcile, live and wake probes): the settings file under the home plus this process's own environment are that read's settings; every request-driven read takes the request's `Settings` through `provenance_of` instead (GH #429)",
+    ),
+    (
         "src/dswire/cli.rs",
         "the `ah-engine devswarm` command-line process (and its one-shot state read): its own environment IS the caller's (the daemon is not involved, D76)",
     ),

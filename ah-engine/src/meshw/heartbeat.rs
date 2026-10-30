@@ -288,6 +288,7 @@ fn pending_for(inv: &Inv, desc: &OVal) -> Pending {
         store_base,
         nd_base,
         now: inv.now,
+        provenance: union::provenance_of(&inv.settings()),
     }) {
         Ok(u) => u,
         Err(e) => return failed(&e.0),
