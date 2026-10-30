@@ -364,6 +364,7 @@ function jrBuildReport(rows, opts) {
         agreeHashesFresh: new Map(),
         realCostSum: 0, realCostKnown: false,
         timeouts: 0, fallbackCount: 0, overOneSecFresh: 0,
+        offCalls: 0, errorsByKind: {},
       });
     }
     var bucket = byId.get(row.id);
@@ -375,6 +376,8 @@ function jrBuildReport(rows, opts) {
     if (row.backend === 'cache') bucket.cacheHits++;
     if (row.backend === 'baseline-only' && jrIsHttpFailure(row.reason)) bucket.failures++;
     if (row.reason === 'timeout') bucket.timeouts++;
+    if (row.mode === 'off') bucket.offCalls++;
+    if (row.backend === 'baseline-only' && typeof row.reason === 'string' && row.reason) bucket.errorsByKind[row.reason] = (bucket.errorsByKind[row.reason] || 0) + 1;
     if (row.backend === 'baseline-only' && row.mode === 'on') bucket.fallbackCount++;
     if (row.backend !== 'cache' && Number.isFinite(row.ms) && row.ms > JR_C.over_ms) bucket.overOneSecFresh++;
     if (Number.isFinite(row.costUsd)) {
@@ -476,10 +479,18 @@ function jrBuildReport(rows, opts) {
     var keepYieldRate = isChoiceIntegration ? labelWouldChangeRate : changedRate;
 
     var suggestion;
-    if (bucket.calls < JR_C.min_calls) {
+    // every call ran with the integration switched off: Jev was never asked, so there is nothing to judge (#466)
+    var isOff = bucket.calls > 0 && bucket.offCalls === bucket.calls;
+    // no regex comparison, no outcome rows and no labels: nothing can ever say whether Jev helped (#466)
+    var noSignal = !isLabelOnly && known === 0 && labeledSample === 0 && agreeTotal === 0 && bucket.labeled === 0 && totalChangedUnique === 0;
+    if (isOff) {
+      suggestion = jrT('verdict_off', { calls: bucket.calls });
+    } else if (bucket.calls < JR_C.min_calls) {
       suggestion = jrT('verdict_not_enough', { calls: bucket.calls, min: JR_C.min_calls });
     } else if (isLabelOnly) {
       suggestion = jrT('verdict_label_only');
+    } else if (noSignal) {
+      suggestion = jrT('verdict_no_signal');
     } else if (labeledSample < JR_C.min_labeled) {
       suggestion = jrT('verdict_needs_labels', { n: labeledSample, min: JR_C.min_labeled });
     } else if (
@@ -510,6 +521,7 @@ function jrBuildReport(rows, opts) {
     }
 
     var integrationRow = {
+      errorsByKind: bucket.errorsByKind, offCalls: bucket.offCalls,
       id: bucket.id,
       calls: bucket.calls,
       freshCalls: freshCalls,
@@ -654,6 +666,20 @@ function jrBuildTriggerCounts(rows) {
 }
 
 // ---- rendering ------------------------------------------------------------------------------------------------------------
+
+// Failed calls per integration, by kind (`timeout`, `no-key`, `circuit-open`, `http-<status>`, ...) (#466).
+function jrPrintErrorKinds(report) {
+  var lines = [];
+  (report.integrations || []).forEach(function (r) {
+    var kinds = Object.keys(r.errorsByKind || {});
+    if (!kinds.length) return;
+    kinds.sort();
+    lines.push(jrT('errors_by_kind_line', { id: r.id, kinds: kinds.map(function (k) { return k + '=' + r.errorsByKind[k]; }).join(' ') }));
+  });
+  if (!lines.length) return;
+  jrLog(jrT('errors_by_kind_title'));
+  lines.forEach(function (l) { jrLog(l); });
+}
 
 function jrPrintTransports(report) {
   var t = report.transports || [];
@@ -1041,6 +1067,7 @@ function jevReportRun(input) {
     jrPrintWindow(windowInfo);
     jrPrintTable(report);
     jrPrintHeadlines(report);
+    jrPrintErrorKinds(report);
     jrPrintTransports(report);
     jrPrintTriggers(triggers, report);
     jrPrintRollupHistory(rollupHistory);
