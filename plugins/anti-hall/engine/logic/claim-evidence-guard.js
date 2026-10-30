@@ -49,15 +49,31 @@ function ceSentences(t) {
 }
 
 // Where the text of `sent` that governs a claim found at `a` starts: after the last clause break before it (or `win` chars back, the nearer).
+// With guards.claimEvidenceStrict on, a break that closes an 'according to <source>' phrase (claim_evidence.clause_join_re) does not end the
+// clause: the source still governs the words after its comma ('According to the PR body, the change is merged').
 function ceStart(sent, a) {
-  var br = ah.cfg('claim_evidence.clause_break_re'), before = sent.slice(0, a), from = 0, off = 0;
+  var br = ah.cfg('claim_evidence.clause_break_re'), before = sent.slice(0, a), from = 0, off = 0, strict = ceStrict();
   for (;;) {
     var m = ah.re.find(br, 'i', before.slice(off));
     if (!m || m[1] <= m[0]) break;
+    if (strict && ah.re.find(ah.cfg('claim_evidence.clause_join_re'), 'i', before.slice(0, off + m[0])) !== null) {
+      off = off + m[1];
+      continue;
+    }
     from = off + m[1];
     off = from;
   }
   return Math.max(from, a - ah.cfgNum('claim_evidence.skip_window'));
+}
+
+// Switch guards.claimEvidenceStrict: the suppressor checks of GH #427 (compound or noun source words, filler openers, negated labels).
+function ceStrict() { return ah.settings.bool('claim_evidence.sw_strict'); }
+
+// Counter (guards.claimEvidenceTelemetry): a suppressor candidate the strict checks refused, by reason. A lost count never changes a decision.
+function ceRejected(reason) {
+  if (!ah.settings.bool('claim_evidence.sw_telemetry')) return;
+  ah.metric('claim_evidence_suppressor_rejected', ['reason', reason]);
+  ah.advisory('claim_evidence', 'rejected_' + reason);
 }
 
 // How far `gap` (the text between a suppressor and the claim) is from the claim: the number of counted words in it. Words of
@@ -74,12 +90,26 @@ function ceGapWords(gap) {
 }
 
 // True when some hit of a pattern of `list` in `head` ends within `reach` counted words of the end of `head` (where the claim starts)
-// and is not an idiom (`idiom`, a regex or null, matched against the hit and the text after it: 'Once again ...', 'No doubt ...' cover nothing).
-function ceInReach(list, head, reach, idiom) {
+// and is not an idiom (`row.idiom`, a regex key or absent, matched against the hit and the text after it: 'Once again ...', 'No doubt ...' cover nothing).
+// With guards.claimEvidenceStrict on, three more checks refuse a hit (GH #427): `row.idiom_strict` (filler openers: 'If you ask', 'If true'),
+// `row.noun_before` (a reporting verb that is a noun after an article: 'the reports') and `row.compound` (a source word that is the start of
+// a compound: 'doc-string', 'report-card'); each refusal is counted in claim_evidence_suppressor_rejected {reason}.
+function ceInReach(list, head, reach, row) {
+  var strict = ceStrict();
+  var idiom = row.idiom ? ah.cfg(row.idiom) : null;
+  var filler = strict && row.idiom_strict ? ah.cfg(row.idiom_strict) : null;
+  var noun = strict && row.noun_before ? ah.cfg(row.noun_before) : null;
+  var comp = strict && row.compound ? ah.cfg(row.compound) : null;
   for (var i = 0; i < list.length; i++) {
     var all = ah.re.findAll(list[i], 'i', head);
     for (var j = 0; j < all.length; j++) {
-      if (ceGapWords(head.slice(all[j][1])) <= reach && (idiom === null || !ah.re.find(idiom, 'i', head.slice(all[j][0])))) return true;
+      if (ceGapWords(head.slice(all[j][1])) > reach) continue;
+      var from = head.slice(all[j][0]);
+      if (idiom !== null && ah.re.find(idiom, 'i', from)) continue;
+      if (filler !== null && ah.re.find(filler, 'i', from)) { ceRejected('filler_opener'); continue; }
+      if (noun !== null && ah.re.find(noun, 'i', head.slice(0, all[j][0]))) { ceRejected('source_noun'); continue; }
+      if (comp !== null && ah.re.find(comp, 'i', head.slice(all[j][1]))) { ceRejected('source_compound'); continue; }
+      return true;
     }
   }
   return false;
@@ -87,10 +117,15 @@ function ceInReach(list, head, reach, idiom) {
 
 // True when an honest label (claim_evidence.ack_res) in the claim's own sentence sits within reach_label counted words of the claim.
 function ceLabelled(sent, hit) {
-  var list = ah.cfg('claim_evidence.ack_res'), reach = ah.cfgNum('claim_evidence.reach_label');
+  var list = ah.cfg('claim_evidence.ack_res'), reach = ah.cfgNum('claim_evidence.reach_label'), strict = ceStrict();
   for (var i = 0; i < list.length; i++) {
     var all = ah.re.findAll(list[i], 'i', sent);
     for (var j = 0; j < all.length; j++) {
+      // GH #427: a label word that is itself negated ('not unverified') or used as a noun/aside ('unchecked boxes', 'unverified aside') is no label
+      if (strict && (ah.re.find(ah.cfg('claim_evidence.ack_before_not_re'), 'i', sent.slice(0, all[j][0])) !== null || ah.re.find(ah.cfg('claim_evidence.ack_after_not_re'), 'i', sent.slice(all[j][1])) !== null)) {
+        ceRejected('label_not_a_label');
+        continue;
+      }
       var gap = all[j][1] <= hit[0] ? sent.slice(all[j][1], hit[0]) : all[j][0] >= hit[1] ? sent.slice(hit[1], all[j][0]) : '';
       if (ceGapWords(gap) <= reach) return true;
     }
@@ -107,8 +142,7 @@ function ceLabelled(sent, hit) {
 function ceReason(sent, hit, prev) {
   var sup = ah.cfg('claim_evidence.suppress'), from = ceStart(sent, hit[0]), head = sent.slice(from, hit[0]);
   for (var i = 0; i < sup.length; i++) {
-    var idiom = sup[i].idiom ? ah.cfg(sup[i].idiom) : null;
-    if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach), idiom)) return { reason: sup[i].reason, chain: sup[i].chain === true };
+    if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach), sup[i])) return { reason: sup[i].reason, chain: sup[i].chain === true };
   }
   if (prev !== null && prev.start === from && prev.end <= hit[0] && ceGapWords(sent.slice(prev.end, hit[0])) <= ah.cfgNum('claim_evidence.reach_consequent')) {
     return { reason: prev.reason, chain: true };
