@@ -350,10 +350,9 @@ fn burn_without_outcome_warns_at_the_soft_line_blocks_at_the_hard_line_and_a_com
     assert!(!marker.exists());
 }
 
-/// GH #458 hard/soft outcomes. Threat model: an ACCIDENTAL runaway (a loop, polling, waiting), not deliberate spoofing. Shell-written
-/// files, passing checks and live probes are SOFT outcomes: they never reset the burn accounting (command text can claim anything:
-/// `false && git diff --check; true`, `true # > /tmp/fake1`, rotating `curl --version #N`), they only hold off the pause for
-/// burn.soft_hold.hold_ms while at most burn.soft_hold.cap of them fall in the waste window, so a polling loop is paused after the cap.
+/// GH #458 / PR #472 soft outcomes. Threat model: an ACCIDENTAL runaway (a loop, polling, waiting), not deliberate spoofing. A live probe
+/// is a SOFT outcome: it never resets the burn accounting, it only holds off the pause for burn.soft_hold.hold_ms inside a burn episode
+/// that has not spent its cap, so a polling loop is paused after the cap (a shell-file write and a passing check are HARD: tests a1/a2).
 /// A build still in flight holds off the pause too (bounded by burn.doubt.max_ms) and the hard reminder says so.
 #[test]
 fn soft_outcomes_never_reset_burn_hold_off_the_pause_up_to_the_cap_and_a_build_in_flight_holds_it_gh458() {
@@ -381,11 +380,11 @@ fn soft_outcomes_never_reset_burn_hold_off_the_pause_up_to_the_cap_and_a_build_i
     append(&p, &[result(n + 4 * MIN, "u2", "error: could not compile `x`", false)]);
     ticks(&h, &mut st, &[n + 5 * MIN]);
     assert!(marker.exists(), "no build in flight: the pause stands");
-    // the reviewed spoof sequences: soft outcomes only, the accounting is never reset
+    // a few live probes are soft outcomes: no progress, the burn count stands, but a recent one inside the episode holds off the pause
     let mut lines = Vec::new();
-    for (k, c) in ["printf '\\(git diff --check'", "false && git diff --check; true", "true # > /tmp/fake1", "curl --version #1"].iter().enumerate() {
+    for k in 0..2 {
         let id = format!("s{k}");
-        lines.push(tool(n + 6 * MIN, &format!("ms{k}"), 10, &id, "Bash", json!({"command": c})));
+        lines.push(tool(n + 6 * MIN, &format!("ms{k}"), 10, &id, "Bash", json!({"command": format!("curl --version #{k}")})));
         lines.push(result(n + 6 * MIN, &id, "ok", false));
     }
     append(&p, &lines);

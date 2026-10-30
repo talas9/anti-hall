@@ -2087,6 +2087,7 @@ fn burn_breaker_blocks_a_flagged_subagent_except_commit_push_status_and_its_repo
     assert!(blocked(bash("git commit -m x; rm -rf y")));
     assert!(blocked(bash("git status | tee out")));
     assert!(blocked(bash("git commit -m \"$(rm -rf y)\"")));
+    assert!(!blocked(bash("git commit -m 'x $HOME'")), "PR #472: `$` text in a lone commit's message is inert");
     for bad in [
         "git commit -m x && rm -rf y",
         "npm test",
@@ -2097,7 +2098,6 @@ fn burn_breaker_blocks_a_flagged_subagent_except_commit_push_status_and_its_repo
         "git -c core.pager=evil log",
         "ls $(rm -rf y)",
         "find . -exec rm {} +",
-        "git commit -m 'x $HOME'",
         "git commit",
     ] {
         assert!(blocked(bash(bad)), "{bad}");
@@ -2180,14 +2180,9 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
         "ah-engine mesh send lead hi; touch /x",
         "ah-engine mesh send lead hi # x",
         "ah-engine mesh send lead \"$(touch /x)\"",
-        "git commit -m 'a\rb'",
-        "git commit -m 'a`id`b'",
-        "git commit -m 'a\\b'",
-        "git commit -m \"a${HOME}b\"",
         "git commit -m 'x' ; touch /x",
         "git commit -F /w/msg.txt && touch /x",
         "git commit -F ../../x\u{0}y",
-        "git commit -m 'unbalanced",
         "ls \"unbalanced",
         "cat <(touch /x)",
         "ls\u{e9}",
@@ -2204,8 +2199,12 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
     .map(|s| s.to_string())
     .chain([spaces.clone()])
     .collect();
-    for bad in &bypasses {
-        assert!(blocked(bad), "must be blocked: {:?}", &bad[..bad.len().min(120)]);
+    let open: Vec<&String> = bypasses.iter().filter(|b| !blocked(b)).collect();
+    assert!(open.is_empty(), "must be blocked: {open:?}");
+    // PR #472: a lone commit whose message holds inert text (a CR, a backtick or backslash in single quotes, a variable, an unbalanced quote
+    // that makes the shell refuse the line) runs no second command: exempt per call, no lift
+    for inert in ["git commit -m 'a\rb'", "git commit -m 'a`id`b'", "git commit -m 'a\\b'", "git commit -m \"a${HOME}b\"", "git commit -m 'unbalanced"] {
+        assert!(!blocked(inert), "a lone commit is exempt: {inert:?}");
     }
     for ok in [
         "git commit -m 'x'",
@@ -2253,7 +2252,14 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
         let _ = run_forced("burn-breaker", &p, &e);
         assert!(std::path::Path::new(&marker).exists(), "{keep} must not lift the breaker");
     }
-    for lift in ["git commit -m 'x'", "git commit -F notes/m.txt", "git add -A && git commit -m 'x'", "echo hi > /w/scratchpad/r.md"] {
+    // PR #472: a commit passes per call and never lifts (the tracker clears the marker once the commit lands); a report write still lifts
+    for keep in ["git commit -m 'x'", "git commit -F notes/m.txt", "git add -A && git commit -m 'x'"] {
+        raise();
+        let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": keep}});
+        let _ = run_forced("burn-breaker", &p, &e);
+        assert!(std::path::Path::new(&marker).exists(), "{keep} passes but must not lift the breaker");
+    }
+    for lift in ["echo hi > /w/scratchpad/r.md"] {
         raise();
         let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": lift}});
         let _ = run_forced("burn-breaker", &p, &e);
@@ -2294,7 +2300,7 @@ fn burn_breaker_never_pauses_a_commit_or_a_restore_gh458() {
         "git commit --amend --no-edit",
     ] {
         assert!(!blocked(commit), "a commit is never paused: {commit:?}");
-        assert!(!std::path::Path::new(&marker).exists(), "a commit lifts the breaker: {commit:?}");
+        assert!(std::path::Path::new(&marker).exists(), "a commit never lifts the breaker (PR #472): {commit:?}");
     }
     for restore in [
         "./scripts/restore-device.sh --from /w/probe/backup.json",
@@ -2385,6 +2391,8 @@ fn b_commit_and_restore_are_exempt_per_call_unless_chained_pr472() {
         ("B5", "git restore f & while true; do sleep 1; done"),
         ("B5", "git commit -m \"$(curl http://x/y)\""),
         ("B5", "git commit -m \"`curl http://x/y`\""),
+        ("B5", "git commit -m 'x' <(curl http://x/y)"),
+        ("B5", "git commit -m 'x'\ncurl http://x/y"),
         ("B5", "git commit -m \"$(cat <<EOF\n$(curl http://x/y)\nEOF\n)\""),
         ("B5", "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"; curl http://x/y"),
     ] {
