@@ -535,11 +535,29 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         None => {
             // no store behind the count (`countFor(null, ...)`): the NDJSON side alone, from the cursor file's position
             let nd_base = crate::migrate::readercur::legacy_nd_floor(cursor_in);
-            let u = union::union_unread(&union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: None, store_base: 0.0, nd_base, now: inv.now, provenance })?;
+            let u = union::union_unread(&union::UnionIn {
+                inbox: inbox_in,
+                cursor_file: cursor_in,
+                id,
+                store: None,
+                store_base: 0.0,
+                nd_base,
+                now: inv.now,
+                provenance,
+            })?;
             (u.unread, 0.0, nd_base, u)
         }
     };
-    let input = union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: opened.as_ref().map(|o| &o.reader), store_base, nd_base, now: inv.now, provenance };
+    let input = union::UnionIn {
+        inbox: inbox_in,
+        cursor_file: cursor_in,
+        id,
+        store: opened.as_ref().map(|o| &o.reader),
+        store_base,
+        nd_base,
+        now: inv.now,
+        provenance,
+    };
     let total = if nd_known {
         union::merged_total(&input)?
     } else {

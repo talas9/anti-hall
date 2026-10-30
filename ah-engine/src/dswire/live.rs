@@ -91,7 +91,8 @@ impl RtLive<'_> {
         });
         let merged = self.merged_fact(app, b, &wt, head.as_deref(), done["boundToHead"] == json!(true) && done["done"] == json!(true), verified.as_deref());
         let (clean, why) = if fresh { git.clean_now(&wt) } else { git.clean(&wt) };
-        let probe = FsProbe::new(&self.home, self.now).with_provenance(crate::meshw::union::provenance_of(&crate::checks::git::util::Settings::from_env(&self.env)));
+        let probe =
+            FsProbe::new(&self.home, self.now).with_provenance(crate::meshw::union::provenance_of(&crate::checks::git::util::Settings::from_env(&self.env)));
         // Node's real-work clock never reads earlier than the newest inbound message or the last commit: both floor it here, and a
         // clock that cannot be floored (the store cannot be read) or a turn that cannot be shown finished holds the workspace
         let mut act = facts::activity_ms(&self.home, &probe, b, &mine);
@@ -181,7 +182,8 @@ impl RtLive<'_> {
         let cfg = self.rt.cfg();
         let lifecycle = crate::devswarm_rt::state::lifecycle_of(b);
         let paused = crate::devswarm_rt::state::paused_of(cfg, b, &app, lifecycle);
-        let probe = FsProbe::new(&self.home, self.now).with_provenance(crate::meshw::union::provenance_of(&crate::checks::git::util::Settings::from_env(&self.env)));
+        let probe =
+            FsProbe::new(&self.home, self.now).with_provenance(crate::meshw::union::provenance_of(&crate::checks::git::util::Settings::from_env(&self.env)));
         let hb = probe.heartbeat_ms(id);
         let others = probe.other_activity_ms(id, b.worktree.as_deref());
         let silence = crate::devswarm_rt::state::silence(cfg, hb, &others, self.now);
@@ -352,7 +354,8 @@ impl LiveState for RtLive<'_> {
         let wt = b.worktree.clone()?;
         let descs = facts::descriptors(&self.home);
         let mine = facts::descs_of(&descs, b);
-        let probe = FsProbe::new(&self.home, self.now).with_provenance(crate::meshw::union::provenance_of(&crate::checks::git::util::Settings::from_env(&self.env)));
+        let probe =
+            FsProbe::new(&self.home, self.now).with_provenance(crate::meshw::union::provenance_of(&crate::checks::git::util::Settings::from_env(&self.env)));
         Some(json!({"head": self.git().head(&wt), "activityMs": facts::activity_ms(&self.home, &probe, b, &mine)}))
     }
 

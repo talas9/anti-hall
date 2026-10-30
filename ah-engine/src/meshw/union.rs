@@ -556,7 +556,8 @@ mod tests {
         assert!(within("non_empty_lines", move || non_empty_lines(&i2).is_err()));
         assert!(within("cursor_position", move || cursor_position(&c2).is_err()));
         let got = within("union_unread", move || {
-            union_unread(&UnionIn { inbox: Some(&i), cursor_file: Some(&c), id: "w", store: None, store_base: 0.0, nd_base: 0.0, now: 0, provenance: true }).is_err()
+            union_unread(&UnionIn { inbox: Some(&i), cursor_file: Some(&c), id: "w", store: None, store_base: 0.0, nd_base: 0.0, now: 0, provenance: true })
+                .is_err()
         });
         assert!(got, "a FIFO inbox defers");
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup of a scratch directory
