@@ -674,8 +674,11 @@ fn g4_subagent_reads_only_its_own_transcript() {
         run_out("advisor-guard", &[], &p)
     };
     assert!(sub("b1", &tp).1.contains(NUDGE), "main transcript_path: the subagent's own file found by the layout");
-    let direct = own.join("agent-b1.jsonl").to_string_lossy().to_string();
-    assert_eq!(sub("b1", &direct).0, 2, "transcript_path already the subagent's file: used as is (same state, second hit)");
+    assert_eq!(sub("b1", &tp).0, 2, "its own state: the second hit is the block");
+    let wf = own.join("workflows").join("wf_run1");
+    std::fs::create_dir_all(&wf).unwrap();
+    std::fs::write(wf.join("agent-w1.jsonl"), [head("w1").as_str(), ATTACH, SONNET].join("\n") + "\n").unwrap();
+    assert!(sub("w1", &tp).1.contains(NUDGE), "a workflow agent's file one level down (subagents/workflows/<run>/) is found");
     assert_eq!(sub("b2", &tp), (0, String::new()), "its first line names another agent: silent");
     assert_eq!(sub("b3", &tp), (0, String::new()), "no own transcript: silent, the main one's consult is never credited");
 }
@@ -703,4 +706,74 @@ fn unwritable_state_never_blocks() {
         assert_eq!(dispatch("uw1", &tp, "Fix the parser bug", &[]), (0, String::new()), "dispatch {i}: unpersisted cap, allow");
         assert_eq!(stop("uw1", &tp, &[], false), 0, "stop {i}: allow");
     }
+}
+
+#[test]
+fn rewritten_longer_transcript_at_the_same_path_is_read_afresh() {
+    let tp = transcript("rot1", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("rot1", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    let longer = [ATTACH_OFF, OWNER2, SONNET, &filler(8)].join("\n") + "\n"; // longer, and its head says the advisor is off
+    std::fs::write(&tp, &longer).unwrap();
+    assert_eq!(dispatch("rot1", &tp, "Investigate the crash", &[]), (0, String::new()), "the rewrite was detected: its head (advisor off) was read");
+    assert_eq!(tx("rot1")["pos"].as_u64(), Some(longer.len() as u64));
+}
+
+/// `run_out` with its own engine state dir (counters journal), so the counts belong to this test alone.
+fn run_in(state: &std::path::Path, check: &str, p: &Value) -> (i32, String) {
+    run_out(check, &[("AH_ENGINE_DIR", state.to_str().unwrap())], p)
+}
+
+#[test]
+fn counters_after_a_nudge_and_a_block_show_in_status_and_telemetry_summary() {
+    let state = dir().join("tel-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let tp = transcript("tel1", &[ATTACH, OWNER, SONNET]);
+    let p = |d: &str| json!({"session_id": "tel1", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"description": d, "prompt": "x"}, "transcript_path": tp});
+    assert!(run_in(&state, "advisor-guard", &p("Fix the parser bug")).1.contains(NUDGE));
+    assert_eq!(run_in(&state, "advisor-guard", &p("Investigate the crash")).0, 2);
+    let none = transcript("tel2", &[OWNER, SONNET]);
+    let q = json!({"session_id": "tel2", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"description": "Fix it", "prompt": "x"}, "transcript_path": none});
+    assert_eq!(run_in(&state, "advisor-guard", &q), (0, String::new()), "no advisor signal: silent, counted");
+    let report = |args: &[&str]| -> Value {
+        let d = dir();
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", d.join("home"))
+            .env("AH_ENGINE_DIR", &state)
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+            .output()
+            .unwrap();
+        serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stdout)))
+    };
+    for (name, v) in [("status", report(&["status", "--json"])["advisory"].clone()), ("telemetry summary", report(&["telemetry", "summary", "--json"])["advisory"].clone())] {
+        let t = &v["advisor_thinking"];
+        assert_eq!((t["dispatch"].as_u64(), t["nudge"].as_u64(), t["blocked"].as_u64(), t["dispatch_fix"].as_u64()), (Some(2), Some(1), Some(1), Some(1)), "{name}: {v}");
+        assert_eq!(v["advisor_availability"]["silent_unknown"].as_u64(), Some(1), "{name}: {v}");
+    }
+}
+
+#[test]
+fn concurrent_rules_on_one_agent_state_give_exactly_one_nudge_and_one_block() {
+    let tp = transcript("cc1", &[ATTACH, OWNER, SONNET]);
+    let hs: Vec<_> = (0..8)
+        .map(|i| {
+            let tp = tp.clone();
+            std::thread::spawn(move || {
+                if i % 2 == 0 {
+                    dispatch("cc1", &tp, &format!("Fix the parser bug {i}"), &[])
+                } else {
+                    run_out("model-routing", &[], &spawn("cc1", &tp, &format!("Write module {i}"), Some("sonnet"), json!({})))
+                }
+            })
+        })
+        .collect();
+    let outs: Vec<(i32, String)> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+    let guard: Vec<&(i32, String)> = outs.iter().step_by(2).collect();
+    assert_eq!(guard.iter().filter(|o| o.0 == 0 && o.1.contains(NUDGE)).count(), 1, "one nudge: {outs:?}");
+    assert_eq!(guard.iter().filter(|o| o.0 == 2).count(), 1, "one block, never turned back into a nudge: {outs:?}");
+    let s = stats("cc1");
+    assert_eq!((s["dispatch"].as_u64(), s["nudge"].as_u64(), s["blocked"].as_u64(), s["block_capped"].as_u64()), (Some(4), Some(1), Some(1), Some(2)), "{s}");
 }
