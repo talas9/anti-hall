@@ -3554,9 +3554,52 @@ fn plugin_root() -> Value {
 }
 
 fn run_event(name: &str, event: &str, pairs: &[(&str, &str)], h: &str) -> Option<Option<Verdict>> {
+    run_as(name, event, "s-462", "claude", pairs, h)
+}
+
+fn run_as(name: &str, event: &str, sid: &str, host: &str, pairs: &[(&str, &str)], h: &str) -> Option<Option<Verdict>> {
     let mut all = vec![("HOME", h)];
     all.extend_from_slice(pairs);
-    super::run_forced(name, &json!({"session_id": "s-462", "hook_event_name": event}), &plugin_root(), event, &RequestEnv::from_pairs(all))
+    let mut opts = plugin_root();
+    opts["host"] = json!(host);
+    super::run_forced(name, &json!({"session_id": sid, "hook_event_name": event}), &opts, event, &RequestEnv::from_pairs(all))
+}
+
+/// The digest field of an essential rule's message entry for `host` (#462): a string, or a table by host.
+fn digest_of(source: &str, host: &str) -> String {
+    let v = defaults::raw(source).get("digest").unwrap_or_else(|| panic!("{source} has no digest field"));
+    v.as_str().or_else(|| v.get(host).and_then(|x| x.as_str())).unwrap_or_else(|| panic!("{source} digest has no {host} text")).to_string()
+}
+
+#[test]
+fn the_codex_digest_carries_codex_lines_within_the_budget_and_no_claude_model_name() {
+    let h = home("digest-codex");
+    let got = run_as("rule-digest", "SessionStart", "s-462c", "codex", &[], &h);
+    let Some(Some(Verdict::Advisory(a))) = got else { panic!("codex digest must answer with context, got {got:?}") };
+    let ctx = serde_json::from_str::<Value>(&a).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
+    assert!(ctx.contains(&digest_of("git.msg_force_push", "codex")), "{ctx}");
+    assert!(ctx.contains(&digest_of("model_routing.msg_row1_what", "codex")), "codex model guidance missing: {ctx}");
+    for m in ["haiku", "sonnet", "opus", "fable"] {
+        assert!(!ctx.to_lowercase().contains(m), "codex digest names the Claude model {m}: {ctx}");
+    }
+    assert!(ctx.len() as u64 <= defaults::num("roles.digest_budget"), "codex digest {} bytes is over roles.digest_budget", ctx.len());
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+#[test]
+fn a_session_started_with_the_banner_off_is_still_recorded_so_the_next_banner_counts_it_as_the_last_session() {
+    // Codex round 2: banner on for A, off for B, on for C: C's previous session is B, not A
+    let h = home("banner-cycle");
+    assert!(matches!(run_as("session-banner", "SessionStart", "sess-a", "claude", &[], &h), Some(Some(Verdict::Advisory(_)))));
+    assert_eq!(run_as("session-banner", "SessionStart", "sess-b", "claude", &[("ANTIHALL_UI_BANNER", "false")], &h), Some(Some(Verdict::Allow)));
+    assert!(matches!(run_as("session-banner", "SessionStart", "sess-c", "claude", &[], &h), Some(Some(Verdict::Advisory(_)))));
+    let st = crate::checks::guardkit::state::FileState::new(&h).unwrap();
+    use crate::checks::guardkit::state::SessionState;
+    let raw = st.get(defaults::text("guard_rules.sessions_ns"), defaults::text("guard_rules.sessions_key")).unwrap_or_default();
+    let list: Vec<(String, u64)> = serde_json::from_str(&raw).unwrap_or_default();
+    let ids: Vec<&str> = list.iter().map(|(s, _)| s.as_str()).collect();
+    assert_eq!(ids, ["sess-a", "sess-b", "sess-c"], "every session start is recorded whatever the banner switch says");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
 #[test]
@@ -3564,7 +3607,7 @@ fn the_rule_digest_is_injected_within_its_budget_and_its_switch_turns_it_off() {
     let h = home("digest");
     let got = run_event("rule-digest", "SessionStart", &[], &h);
     let Some(Some(Verdict::Advisory(a))) = got else { panic!("digest on must answer with context, got {got:?}") };
-    assert!(a.contains(defaults::text("guard_rules.digest_head")) && a.contains("force-push"), "{a}");
+    assert!(a.contains(defaults::text("guard_rules.digest_head")) && a.contains(&digest_of("git.msg_force_push", "claude")), "{a}");
     let ctx = serde_json::from_str::<Value>(&a).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().len();
     assert!(ctx as u64 <= defaults::num("roles.digest_budget"), "digest {ctx} bytes is over roles.digest_budget");
     assert_eq!(run_event("rule-digest", "SessionStart", &[("ANTIHALL_RULE_DIGEST", "false")], &h), Some(Some(Verdict::Allow)));
