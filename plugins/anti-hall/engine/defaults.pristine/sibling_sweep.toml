@@ -195,11 +195,13 @@ doc = "The label of the self-correction cue family (the agent reports fixing its
 value = "self_correction"
 
 [sibling_sweep.self_correction_cues]
-doc = "Regex sources, any of which is the agent reporting a correction of its own typo or mistake ('fixed a typo I made', 'found a mistake in my earlier edit', 'my mistake', 'should have been'). Each cue needs a first-person word (I, me, my) so another person's correction is no statement; text inside inline_quote_re spans is ignored. Matched like cause_cues (same hedge, negation, operational and attributed filters, same once-per-cause key, search evidence and per-scope cap) after fenced code, quoted lines and code spans are removed."
+doc = "Regex sources, any of which is the agent reporting a correction of its own typo or mistake. Each cue binds the agent as the actor of the mistake or its fix, not a first-person word anywhere in the sentence: 'I/I've/I'd fixed (found, made ...) a typo', 'found a mistake I made' or 'in my earlier edit', 'my (own) mistake', 'I used (typed, set ...) X, which should have been Y' or 'my edit ... should have been'; 'I reviewed Alice's fix: X should have been Y' is no statement. Matched like cause_cues (same hedge, negation, operational and attributed filters, same once-per-cause key, search evidence and per-scope cap) after fenced code and quoted lines are removed, on the whole reply with code spans and then inline_quote_re quotations blanked before it is split into sentences."
 value = [
-  '\b(?:fix(?:ed|ing)?|correct(?:ed|ing)?|repair(?:ed|ing)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e))\s+(?:a|an|the|my|one)\s+(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)\b[^.\n]{0,40}\b(?:i|my)\s+(?:made|introduced|wrote|added|left|earlier|previous|prior|own|last|edit|change|commit|patch|fix|code)\b',
+  '''\bi(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:just\s+|now\s+|also\s+|then\s+)?(?:fix(?:ed)?|correct(?:ed)?|repair(?:ed)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e)|made|introduced|left)\s+(?:a|an|the|my|one|this|that)\s+(?:own\s+)?(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)s?\b''',
+  '''\b(?:fix(?:ed|ing)?|correct(?:ed|ing)?|repair(?:ed|ing)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e))\s+(?:a|an|the|one)\s+(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)s?\s+(?:(?:that|which)\s+)?(?:i(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:made|introduced|wrote|added|left)|(?:in|from)\s+my\s+(?:own\s+)?(?:\w+\s+){0,2}(?:edit|change|commit|patch|fix|code|diff|update)s?)\b''',
   '\bmy\s+(?:own\s+)?(?:mistake|bad|fault|typo|slip(?:-?up)?|oversight)\b',
-  '\b(?:i|me|my)\b[^.\n]{0,80}\bshould\s+have\s+(?:been|said|read|used)\b',
+  '''\bi(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:used|typed|got|put|set|passed|named|picked|spelled|spelt|entered|chose|gave|pointed|added|left)\b[^.\n]{0,80}\bshould\s+have\s+(?:been|said|read|used)\b''',
+  '\bmy\s+(?:own\s+)?(?:\w+\s+)?(?:edit|change|commit|patch|code|diff)s?\b[^.\n]{0,80}\bshould\s+have\s+(?:been|said|read|used)\b',
 ]
 
 [sibling_sweep.hedge_any_re]
@@ -227,11 +229,15 @@ doc = "Regex source of a fenced code block (backtick or tilde fence), which is r
 value = '```[\s\S]*?```|~~~[\s\S]*?~~~'
 
 [sibling_sweep.code_span_double_re]
-doc = "Regex source of a double-backtick inline code span, which is blanked (with the single-backtick spans) before the cues are matched, so a phrase quoted inside one is no statement."
+doc = "Regex source of a double-backtick inline code span. It is blanked over the whole reply before it is split into sentences (so a span that holds a terminator is masked as one piece), before code_span_single_re, so a phrase inside one is no statement."
 value = '``.*?``'
 
+[sibling_sweep.code_span_single_re]
+doc = "Regex source of a single-backtick inline code span (one line at most), blanked over the whole reply after code_span_double_re and before it is split into sentences, so a phrase inside one is no statement."
+value = '`[^`\n]*`'
+
 [sibling_sweep.inline_quote_re]
-doc = "Regex source of an inline quotation (straight or curly double quotes) that is blanked before the self_correction_cues are matched: someone else's words quoted in the reply are not the agent's own correction."
+doc = "Regex source of an inline quotation (straight or curly double quotes) that is blanked before the self_correction_cues are matched: someone else's words quoted in the reply are not the agent's own correction. It is found over the whole reply after the code spans are blanked (a quote character inside a code span is inert) and before the reply is split into sentences, so a quotation that holds a terminator is masked as one piece."
 value = '"[^"\n]{0,400}"|\u201c[^\u201d\n]{0,400}\u201d'
 
 [sibling_sweep.quote_line_re]

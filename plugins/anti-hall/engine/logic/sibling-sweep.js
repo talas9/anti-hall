@@ -86,6 +86,7 @@ function swPrepare(t) {
 // (The scan is one native regular expression built from the settings, so its cost does not grow with an interpreter loop.)
 var SW_SPACE_CLASS = '\\t-\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'; // swIsSpace's set
 function swClass(chars) { return chars.map(function (c) { return /[\\\]\[^-]/.test(c) ? '\\' + c : c; }).join(''); }
+// [start, end, terminator|null] of each sentence of `t` (UTF-16 offsets).
 function swSentences(t) {
   var id = 'sentence-re';
   if (!Object.prototype.hasOwnProperty.call(sws.memo, id)) {
@@ -94,21 +95,32 @@ function swSentences(t) {
   }
   var re = sws.memo[id], out = [], start = 0, m;
   re.lastIndex = 0;
-  while ((m = re.exec(t)) !== null) { out.push([t.slice(start, m.index), m[0]]); start = m.index + m[0].length; }
-  if (start < t.length) out.push([t.slice(start), null]);
+  while ((m = re.exec(t)) !== null) { out.push([start, m.index, m[0]]); start = m.index + m[0].length; }
+  if (start < t.length) out.push([start, t.length, null]);
   return out;
 }
 
-// The sentence with every inline code span blanked out to spaces (one per UTF-16 unit, so offsets index the original).
-function swMask(sentence) {
-  // double-backtick spans first (blanked to spaces, one per UTF-16 unit), then the single-tick spans
-  var dbl = swSpec('sibling_sweep.code_span_double_re', '');
-  var ms = ah.re.findAll(dbl.src, dbl.flags, sentence);
-  for (var q = 0; q < ms.length; q++) sentence = sentence.slice(0, ms[q][0]) + ' '.repeat(ms[q][1] - ms[q][0]) + sentence.slice(ms[q][1]);
-  var tick = swChars(swCfg('sibling_sweep.code_span'))[0];
-  if (tick === undefined) return sentence;
-  // the parts between ticks alternate outside / inside a span; inside parts and the ticks themselves become spaces
-  return sentence.split(tick).map(function (part, i) { return i % 2 === 1 ? ' '.repeat(part.length) : part; }).join(' '.repeat(tick.length));
+// `t` with every match of `spec` blanked to spaces, one per UTF-16 unit, so offsets into the result index `t` too. Built in
+// one pass (pieces joined once), so the cost is linear in the text however many spans it holds.
+function swBlankAll(spec, t) {
+  var ms = ah.re.findAll(spec.src, spec.flags, t);
+  if (ms.length === 0) return t;
+  var parts = [], at = 0;
+  for (var i = 0; i < ms.length; i++) {
+    if (ms[i][0] < at) continue;
+    parts.push(t.slice(at, ms[i][0]), ' '.repeat(ms[i][1] - ms[i][0]));
+    at = ms[i][1];
+  }
+  parts.push(t.slice(at));
+  return parts.join('');
+}
+
+// The masked views of the whole prepared reply, made BEFORE it is split into sentences, so a span or a quotation that holds
+// a terminator is masked as one piece: `code` has the double-backtick and then the single-backtick code spans blanked; `quote`
+// is `code` with the inline quotations blanked too (found in `code`, so a quote character inside a code span is inert).
+function swMasks(prepared) {
+  var code = swBlankAll(swSpec('sibling_sweep.code_span_single_re', ''), swBlankAll(swSpec('sibling_sweep.code_span_double_re', ''), prepared));
+  return { code: code, quote: swBlankAll(swSpec('sibling_sweep.inline_quote_re', ''), code) };
 }
 
 function swNamePattern(sentence, cueStart) {
@@ -126,35 +138,42 @@ function swNamePattern(sentence, cueStart) {
 
 // The first assertive cause statement in `text`: {hash, pattern}, or null.
 function swFindCause(t) { return swFindCauseIn(swPrepare(t)); }
-function swFindCauseIn(prepared) {
+// The first sentence of `view` (split where `view` has a terminator) that holds one of `list`: the guards read the
+// code-masked text of the sentence, the cues read `view`'s text, the hash and the named pattern the prepared text. Sentences
+// that start at or after `limit` are not looked at. {at, hash, pattern, family} or null.
+function swFirst(prepared, code, view, list, family, limit) {
   var windowChars = swNum('sibling_sweep.window_chars'), question = swCfg('sibling_sweep.question_terminator');
   var meta = swSpec('sibling_sweep.meta_re', 'i'), hedgeAny = swSpec('sibling_sweep.hedge_any_re', 'i');
-  var hedgeBefore = swSpec('sibling_sweep.hedge_before_re', 'i'), cues = swSpecs('sibling_sweep.cause_cues');
+  var hedgeBefore = swSpec('sibling_sweep.hedge_before_re', 'i');
   var operational = swSpec('sibling_sweep.operational_re', 'i'), attributed = swSpec('sibling_sweep.attributed_re', 'i');
-  // the cause cues first, then the self-correction cues (the agent reports fixing its own typo or mistake): same guards, same hash
-  var selfCues = swSpecs('sibling_sweep.self_correction_cues'), family = swCfg('sibling_sweep.self_correction_family');
-  var groups = [[cues, ''], [selfCues, family]], quoteSpec = swSpec('sibling_sweep.inline_quote_re', '');
-  var ss = swSentences(prepared);
-  for (var i = 0; i < ss.length; i++) {
-    var sentence = ss[i][0], term = ss[i][1], masked = swMask(sentence);
+  var ss = swSentences(view);
+  for (var i = 0; i < ss.length && ss[i][0] < limit; i++) {
+    var a = ss[i][0], b = ss[i][1], term = ss[i][2], masked = code.slice(a, b);
     if ((term !== null && question.indexOf(term) >= 0) || swTest(meta, masked) || swTest(hedgeAny, masked)) continue;
     // an environment fact (lock file, load, disk) or a cause quoted from an agent's report is not the assistant's own code-bug finding
     if (swTest(operational, masked) || swTest(attributed, masked)) continue;
-    // the self-correction cues also ignore inline quotations (someone else's words)
-    var selfMasked = masked, qs = ah.re.findAll(quoteSpec.src, quoteSpec.flags, sentence);
-    for (var r = 0; r < qs.length; r++) selfMasked = selfMasked.slice(0, qs[r][0]) + ' '.repeat(qs[r][1] - qs[r][0]) + selfMasked.slice(qs[r][1]);
-    for (var g = 0; g < groups.length; g++) {
-      var list = groups[g][0], subject = groups[g][1] === '' ? masked : selfMasked;
-      for (var k = 0; k < list.length; k++) {
-        var m = ah.re.find(list[k].src, list[k].flags, subject);
-        if (m === null || m === undefined) continue;
-        if (swTest(hedgeBefore, swTail(subject.slice(0, m[0]), windowChars))) continue;
-        var norm = swCollapse(sentence.trim()).toLowerCase();
-        return { hash: ah.sha1(swHead(norm, swNum('sibling_sweep.hash_chars'))), pattern: swNamePattern(sentence, m[0]), family: groups[g][1] };
-      }
+    var subject = view.slice(a, b);
+    for (var k = 0; k < list.length; k++) {
+      var m = ah.re.find(list[k].src, list[k].flags, subject);
+      if (m === null || m === undefined) continue;
+      if (swTest(hedgeBefore, swTail(subject.slice(0, m[0]), windowChars))) continue;
+      var sentence = prepared.slice(a, b), norm = swCollapse(sentence.trim()).toLowerCase();
+      return { at: a, hash: ah.sha1(swHead(norm, swNum('sibling_sweep.hash_chars'))), pattern: swNamePattern(sentence, m[0]), family: family };
     }
   }
   return null;
+}
+
+function swFindCauseIn(prepared) {
+  // mask the whole reply first (code spans, then quotations), then split: a span or quotation never straddles a sentence
+  var mk = swMasks(prepared);
+  // the cause cues read the code-masked text (a quoted cause is still the reply's statement); the self-correction cues (the
+  // agent reports fixing its own typo or mistake) also skip quotations (someone else's words): same guards, same hash. The
+  // earlier sentence wins, the cause family on a tie.
+  var cause = swFirst(prepared, mk.code, mk.code, swSpecs('sibling_sweep.cause_cues'), '', prepared.length + 1);
+  var self = swFirst(prepared, mk.code, mk.quote, swSpecs('sibling_sweep.self_correction_cues'), swCfg('sibling_sweep.self_correction_family'),
+    cause === null ? prepared.length + 1 : cause.at);
+  return self !== null ? self : cause;
 }
 function swHasFix(t) { return swHasFixIn(swPrepare(t)); }
 function swHasFixIn(p) { return swTest(swSpec('sibling_sweep.fix_context_re', 'i'), p); }

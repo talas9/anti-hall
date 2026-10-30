@@ -1414,6 +1414,47 @@ mod sibling {
         loud("o5c", "The root cause was a stale cache. Fixed.");
     }
 
+    /// PR #455 review: spans and quotations are masked over the whole reply before it is split into sentences, and a
+    /// self-correction cue binds the agent as the actor of the mistake or its fix.
+    #[test]
+    fn masks_precede_the_sentence_split_and_a_self_correction_needs_the_agent_as_the_actor() {
+        let verdict = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            (go(&d, &stop(&d, &p, text)), d)
+        };
+        let mut wrong = Vec::new();
+        for (tag, text) in [
+            ("m1", "The user wrote \"my mistake. Config should have been lower-case\" in the ticket."),
+            ("m2", "The string ``example. The root cause was a stale cache`` is in the fix."),
+            ("m3", "I reviewed Alice's fix: the option should have been false."),
+            ("m3b", "I reviewed the patch Alice made, which should have been smaller."),
+        ] {
+            if verdict(tag, text).0 != Verdict::Allow {
+                wrong.push(format!("silent expected: {text}"));
+            }
+        }
+        // a quote character inside a code span erases no prose
+        let (v, d) = verdict("m4", "I wrote `\"` and fixed my mistake around `\"`.");
+        let family = std::fs::read_to_string(format!("{d}/.anti-hall/sibling-sweep-s1.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .map(|s| s["pending"]["family"].clone());
+        if !is_adv(&v) || family != Some(json!("self_correction")) {
+            wrong.push(format!("self_correction reminder expected (m4): {v:?} {family:?}"));
+        }
+        for (tag, text) in [
+            ("a1", "I've fixed a typo in the loader."),
+            ("a2", "I typed `retries`, which should have been `retry`, now corrected."),
+            ("a3", "Corrected: my edit set the flag, which should have been off."),
+        ] {
+            if !is_adv(&verdict(tag, text).0) {
+                wrong.push(format!("reminder expected: {text}"));
+            }
+        }
+        assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
+    }
+
     #[test]
     fn the_self_correction_family_follows_through_and_the_cue_list_is_a_settings_edit() {
         let d = h("self-ft");
