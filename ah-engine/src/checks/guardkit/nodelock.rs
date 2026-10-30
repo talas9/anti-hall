@@ -602,10 +602,13 @@ pub static FENCE_GATE: std::sync::Mutex<Vec<(std::path::PathBuf, std::sync::Arc<
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FencePhase {
+    /// Before the stage is written.
     BeforeStage,
+    /// After the stage is written, before the ownership check.
     AfterStage,
 }
 
+/// The registered gates of [`FencePhase`] points (target, phase, barrier).
 #[cfg(test)]
 pub static FENCE_GATE_AT: std::sync::Mutex<Vec<(std::path::PathBuf, FencePhase, std::sync::Arc<std::sync::Barrier>)>> = std::sync::Mutex::new(Vec::new());
 
