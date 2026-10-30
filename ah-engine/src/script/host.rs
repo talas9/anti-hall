@@ -362,6 +362,7 @@ pub fn lstat(path: &str) -> String {
 /// Process-local named marks (`ah.mem`): a fail-closed signal for scripts that must survive a failed disk write within this process.
 static MEM_FLAGS: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
 
+/// `memFlagSet` / `memFlagHas` / `memFlagClear`: `op` is `set` (always true), `clear` (whether it was set) or anything else (whether set).
 pub fn mem_flag(op: &str, name: String) -> bool {
     let mut g = MEM_FLAGS.lock().unwrap_or_else(|e| e.into_inner());
     match op {
