@@ -456,6 +456,10 @@ value = { kind = "counter", unit = "events", labels = ["action"] }
 doc = "Flag writes of a hook that did not publish: the flag lock was taken over before the fenced commit (afk.fence_infix), or the write failed. Nothing of that hook landed."
 value = { kind = "counter", unit = "events", labels = [] }
 
+[metric.afk_idle_revoked]
+doc = "Idle AFK entries discarded at the rename of their fenced commit: the owner presence or the flag's `ended` watermark (a `back`) moved past the value the idle decision used while the commit was pending. Nothing of that hook landed."
+value = { kind = "counter", unit = "events", labels = [] }
+
 [metric.afk_question_denied]
 doc = "AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap)."
 value = { kind = "counter", unit = "events", labels = ["tool"] }

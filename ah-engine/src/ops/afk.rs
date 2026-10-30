@@ -114,6 +114,7 @@ fn locked_or_busy(home: &str, f: impl FnOnce(&crate::checks::guardkit::nodelock:
 /// moves backwards (a newer time already recorded stays).
 fn mark_present(home: &str) {
     let path = state_dir(home).join(defaults::text("afk.presence_file"));
+    crate::discard::harmless(std::fs::create_dir_all(state_dir(home))); // keep: a missing directory surfaces as the write error below
     let now = now_ms();
     if read_json(&path).and_then(|m| m.get("last").and_then(Value::as_i64)).is_some_and(|last| last >= now) {
         return;
