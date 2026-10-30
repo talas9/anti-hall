@@ -220,6 +220,10 @@ value = '‘[^‘’\n]*’'
 doc = "Block headline; {marker} is the hedge found."
 value = "your reply makes an unverified claim (\"{marker}\")."
 
+[speculation_guard.msg_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "No unverified claims: verify with a tool or label the claim unverified."
+
 [speculation_guard.msg_why]
 doc = "Block reason."
 value = "Unverified claims read as facts."

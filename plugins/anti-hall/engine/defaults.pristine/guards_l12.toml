@@ -6,6 +6,10 @@
 doc = "Heading of the delegation block ({tool} is the tool name, {who} the next text)."
 value = "{tool} is not allowed: the {who} does not edit files directly."
 
+[edit_guard.msg_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "A role that may not edit files must not edit: hand the change to a worker."
+
 [edit_guard.msg_self_edit_what]
 doc = "Heading of the block on an edit of the repository's own edit allowlist ({tool} is the tool name)."
 value = "{tool} on .anti-hall/edit-allow.json is not allowed."

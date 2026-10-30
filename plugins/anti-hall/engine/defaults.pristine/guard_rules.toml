@@ -198,8 +198,8 @@ doc = "One essential digest line. Placeholder: {line}, the enforced rule's own t
 value = "- {line}"
 
 [guard_rules.digest_entry]
-doc = "How an essential rule's digest text is built from its enforced message entry (the same `source` the block uses): the entry's own instead text, so the digest tells the agent what to do. Placeholders: {what}, {instead}."
-value = "{instead}"
+doc = "How an essential rule's digest text is built: from the rule's own `digest` field, which sits beside its enforced message entry (a `digest` key inside an inline what/why/instead table, or the sibling key with `what` replaced by `digest`; a string, or a table by host). One short line naming the rule and what to do; the enforced message is too long for the budget. Placeholders: {digest}, {what}, {instead}."
+value = "{digest}"
 
 [guard_rules.skill_use_when]
 doc = "The description of a generated sub-skill: the sentence that makes the host load it. Placeholder: {use_when}, the area's `use_when` in `roles.areas`."
@@ -302,8 +302,33 @@ doc = "State file, relative to the home directory and under script.write_root (a
 value = ".anti-hall/logs/rule-digest-sessions.log"
 
 [guard_rules.digest_file]
-doc = "The generated digest, relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above."
+doc = "The generated digest of the default host (dispatch.default_host), relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above. Another host's digest is `guard_rules.digest_file_<host>`."
 value = "engine/rule-digest.txt"
+
+[guard_rules.digest_file_codex]
+doc = "The generated digest of the Codex host (its own model guidance), relative to the plugin root; the session script picks it on a Codex request (standdown.codex_host)."
+value = "engine/rule-digest.codex.txt"
+
+[guard_rules.digest_hosts]
+doc = "The hosts a digest is generated for, each from the host's own digest text (a `digest` table by host, or one string for all)."
+value = ["claude", "codex"]
+
+[guard_rules.source_line]
+doc = "One line of the generated digest file's third section (after the second separator): an essential rule's full enforced text. The session script never reads it; it is there so an edit of the enforced message makes the committed digest stale (`ah-regen --check`) and the digest line is reviewed with it. Placeholders: {id}, {what}, {why}, {instead}."
+value = "- {id}: {what} {why} {instead}"
+
+[guard_rules.digest_check]
+doc = "The check whose answer marks a session's digest state for the cohort counters: an advisory (the digest was injected) is on, anything else off."
+value = "rule-digest"
+
+[guard_rules.cohort_labels]
+doc = "Label values of the #462 counters: the digest state of a session (on, off) in rule_digest_calls, and the result of the next call of a check after it blocked (compliant: not blocked again; repeat: blocked again) in rule_retry_compliant."
+value = { on = "on", off = "off", compliant = "compliant", repeat = "repeat" }
+
+[guard_rules.cohort_track_max]
+doc = "How many sessions (digest state) and session-check pairs (a block waiting for its retry) the daemon tracks in memory for the cohort counters; past it new ones are not tracked until the daemon restarts."
+value = 4096
+min = 16
 
 [guard_rules.msg_compose]
 doc = "How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}."
@@ -311,11 +336,11 @@ value = { deny = "anti-hall: BLOCKED. {what} {why} {instead}", warn = "anti-hall
 
 [guard_rules.msg_rm_rf_root]
 doc = "Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref."
-value = { what = "`rm -rf` on / or the home directory.", why = "Deleting data cannot be undone and needs the owner's explicit confirmation.", instead = "confirm with the owner before deleting data, and delete only the exact paths you created." }
+value = { what = "`rm -rf` on / or the home directory.", why = "Deleting data cannot be undone and needs the owner's explicit confirmation.", instead = "confirm with the owner before deleting data, and delete only the exact paths you created.", digest = "Never delete data without the owner's explicit OK; delete only paths you created." }
 
 [guard_rules.msg_no_heredoc]
 doc = "Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread."
-value = { what = "a file written through a Bash heredoc.", why = "The git and command guards scan the heredoc body as shell, so file content gets blocked or misread.", instead = "write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same." }
+value = { what = "a file written through a Bash heredoc.", why = "The git and command guards scan the heredoc body as shell, so file content gets blocked or misread.", instead = "write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.", digest = "Write files with the edit tools, never a Bash heredoc." }
 
 [guard_rules.problem_id]
 doc = "Registry problem: a rule id that is empty or repeated. Placeholder: {id}."
@@ -330,8 +355,8 @@ doc = "Registry problem: the source key of a rule does not exist. Placeholders: 
 value = "{id}: source {source} does not exist"
 
 [guard_rules.problem_line]
-doc = "Registry problem: an essential rule whose source yields no digest text. Placeholder: {id}."
-value = "{id}: essential rule whose source has no text"
+doc = "Registry problem: an essential rule with no digest field for a host, or a digest line with a placeholder left in it. Placeholders: {id}, {host}."
+value = "{id}: essential rule without a usable digest field for {host}"
 
 [guard_rules.problem_skill]
 doc = "Registry problem: a rule is missing from the generated rules skill. Placeholder: {id}."
@@ -344,6 +369,14 @@ value = "{id}: missing from the generated digest"
 [guard_rules.problem_unregistered]
 doc = "Registry problem: a block text has no rule row. Placeholder: {key}."
 value = "{key}: a block text with no rule row (add it to guard_rules.rules with a tier, or to guard_rules.exempt)"
+
+[metric.rule_digest_calls]
+doc = "Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted."
+value = { kind = "counter", unit = "calls", labels = ["state", "outcome"] }
+
+[metric.rule_retry_compliant]
+doc = "The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant)."
+value = { kind = "counter", unit = "retries", labels = ["check", "result"] }
 
 [metric.rule_digest]
 doc = "Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off."

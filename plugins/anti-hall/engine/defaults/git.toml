@@ -608,11 +608,11 @@ value = { what = "find could supply hidden force-push arguments.", why = "find f
 
 [git.msg_handover]
 doc = "Block: a commit that includes a session handover. Placeholders: {shown}, {skip}."
-value = { what = "this commit includes a private session handover.", why = "Handovers are private session notes and are never committed.", instead = "unstage the handover before committing.", override = "tell the agent \"skip git-guard\", only if you want this file committed." }
+value = { what = "this commit includes a private session handover.", why = "Handovers are private session notes and are never committed.", instead = "unstage the handover before committing.", override = "tell the agent \"skip git-guard\", only if you want this file committed.", digest = "Never commit a session handover: unstage it before committing." }
 
 [git.msg_force_push]
 doc = "Block: a force push."
-value = { what = "a force push was stopped.", why = "Rewriting published history should be a deliberate human decision.", instead = "push without rewriting published history." }
+value = { what = "a force push was stopped.", why = "Rewriting published history should be a deliberate human decision.", instead = "push without rewriting published history.", digest = "Never force push (--force, -f, +ref): push normally or ask the owner." }
 
 [git.msg_delete_ref]
 doc = "Block: remote ref deletion. Placeholder: {skip}."
@@ -632,7 +632,7 @@ value = { what = "a trailer setting adds AI credit.", why = "Commits in this set
 
 [git.msg_commit_credit]
 doc = "Block: an inline commit message with an AI self-credit."
-value = { what = "commit has an AI co-author line.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the Co-Authored-By line and commit again." }
+value = { what = "commit has an AI co-author line.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the Co-Authored-By line and commit again.", digest = "No AI co-author or credit line in commits or PRs: remove it, then commit." }
 
 [git.msg_commit_file_credit]
 doc = "Block: a commit message read from a file or heredoc with an AI self-credit."
