@@ -31,8 +31,15 @@ function agClassify(input) {
     for (var i = 0; i < types.length; i++) if (jx.isObj(types[i]) && ah.re.test(types[i].re, 'r', srcs[s])) { type = types[i].type; break; }
   }
   if (type === null) return null;
-  var key = ah.re.find(ah.cfg('advisor.issue_key_re'), 'r', desc) || ah.re.find(ah.cfg('advisor.issue_key_re'), 'r', prompt) || '';
-  return { type: type, key: typeof key === 'string' ? key.toLowerCase().replace(/^(?:issue|gh)[ -]?/, '#') : '' };
+  var key = agMatch(desc) || agMatch(prompt);
+  return { type: type, key: key.toLowerCase() };
+}
+
+// The first issue key (advisor.issue_key_re) in `s`, '' when none (reFind gives [start, end] in UTF-16 units, or null).
+function agMatch(s) {
+  if (s === '') return '';
+  var m = ah.re.find(ah.cfg('advisor.issue_key_re'), 'r', s);
+  return Array.isArray(m) && m.length >= 2 ? s.slice(m[0], m[1]) : '';
 }
 
 // Phase 3 on PreToolUse Agent/Task.

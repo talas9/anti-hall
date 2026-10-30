@@ -25,9 +25,9 @@ var advisorKit = {
     if (typeof p.agent_id !== 'string' || p.agent_id === '') return tp;
     var keys = ah.cfg('advisor.agent_transcript_keys');
     for (var i = 0; i < keys.length; i++) if (typeof p[keys[i]] === 'string' && p[keys[i]] !== '') return p[keys[i]];
-    if (!tp || !/\.jsonl$/.test(tp)) return '';
-    var cut = tp.lastIndexOf('/');
-    var own = text.render(ah.cfg('advisor.agent_transcript_tpl'), { dir: tp.slice(0, cut), session: tp.slice(cut + 1).replace(/\.jsonl$/, ''), agent: p.agent_id });
+    var ext = ah.cfg('advisor.transcript_ext'), cut = tp.lastIndexOf('/');
+    if (!tp || cut < 0 || tp.slice(-ext.length) !== ext) return '';
+    var own = text.render(ah.cfg('advisor.agent_transcript_tpl'), { dir: tp.slice(0, cut), session: tp.slice(cut + 1, tp.length - ext.length), agent: p.agent_id });
     return ah.fs.isFile(own) ? own : '';
   },
   // Is a user entry the owner typing (not harness text, a reminder, a task notification or a peer)?

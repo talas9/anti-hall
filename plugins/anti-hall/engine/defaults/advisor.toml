@@ -295,3 +295,7 @@ value = "A non-flagship main gets one attempt at thinking work; design, investig
 [advisor.dispatch_tools]
 doc = "Tool names that dispatch an agent: the thinking and second-attempt rules judge their brief (description, prompt)."
 value = ["Agent", "Task"]
+
+[advisor.transcript_ext]
+doc = "File extension of a transcript; the main transcript's name without it is the {session} of advisor.agent_transcript_tpl."
+value = ".jsonl"
