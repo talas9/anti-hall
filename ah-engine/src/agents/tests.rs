@@ -499,7 +499,9 @@ fn w1_a_redirect_in_a_comment_or_heredoc_body_is_no_write_pr472() {
 fn w2_a_write_is_hard_only_when_the_target_exists_and_is_fresh_pr472() {
     let (h, p, marker, mut st, n) = burned_in("w2-472", "");
     touch(&h.join("w/out/stale.txt"), n - 60 * MIN);
-    for (k, c) in ["printf x > out/missing.txt", "printf x >> out/stale.txt", "printf x > /dev/stderr", "printf x > ../../../../../../dev/null"].iter().enumerate() {
+    for (k, c) in
+        ["printf x > out/missing.txt", "printf x >> out/stale.txt", "printf x > /dev/stderr", "printf x > ../../../../../../dev/null"].iter().enumerate()
+    {
         let t = n + (21 + k as u64) * MIN;
         let id = format!("s{k}");
         append(&p, &[tool(t, &format!("ms{k}"), 10, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
@@ -543,7 +545,43 @@ fn bg1_a_check_backgrounded_with_an_ampersand_is_at_most_soft_pr472() {
     let (h, p, _marker, mut st, n) = burned_in("bg1-472", "");
     append(&p, &[tool(n + 21 * MIN, "m2", 10, "c1", "Bash", json!({"command": "npx tsc --noEmit >/dev/null 2>&1 &"})), result(n + 21 * MIN, "c1", "", false)]);
     ticks(&h, &mut st, &[n + 22 * MIN]);
-    assert_eq!(agent(&st, "s1").progress, 0, "a `&` check is no HARD outcome (a SOFT one may hold the pause off within burn.soft_hold)");
+    let a = agent(&st, "s1");
+    assert_eq!(a.progress, 0, "a `&` check is no HARD outcome");
+    assert_eq!(a.soft_ts.len(), 1, "it is exactly one SOFT outcome (which may hold the pause off within burn.soft_hold)");
+}
+
+/// PR #472 round 3: a commit or push backgrounded with a top-level `&` earns no credit from its launching shell's exit status.
+#[test]
+fn bg2_a_commit_or_push_backgrounded_with_an_ampersand_earns_no_credit_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("bg2-472", "");
+    for (k, c) in ["git commit -m x >/dev/null 2>&1 &", "git push &"].iter().enumerate() {
+        let t = n + (21 + k as u64) * MIN;
+        let id = format!("g{k}");
+        append(&p, &[tool(t, &format!("mg{k}"), 10, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
+        ticks(&h, &mut st, &[t + 30_000]);
+        let a = agent(&st, "s1");
+        assert_eq!((a.progress, a.commits, a.pushes), (0, 0, 0), "no credit for {c:?}");
+    }
+}
+
+/// PR #472 round 3: run_in_background plus a top-level `&` inside the task: the task's completion notice is only the launching shell's,
+/// so the check earns nothing from it.
+#[test]
+fn bg3_run_in_background_with_an_inner_ampersand_is_no_hard_outcome_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("bg3-472", "");
+    let t = n + 21 * MIN;
+    append(
+        &p,
+        &[
+            tool(t, "m2", 10, "c1", "Bash", json!({"command": "npx tsc --noEmit &", "run_in_background": true})),
+            result(t, "c1", "Command running in background with ID: bgx", false),
+        ],
+    );
+    ticks(&h, &mut st, &[t + 30_000]);
+    let done = "<task-notification>\n<task-id>bgx</task-id>\n<status>completed</status>\n</task-notification>";
+    append(&p, &[user_text(t + MIN, done)]);
+    ticks(&h, &mut st, &[t + 2 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0, "an inner `&` check is never HARD");
 }
 
 /// PR #472 acceptance A2: a passing check is a HARD outcome: it adds progress and resets the burn episode.
@@ -2656,7 +2694,11 @@ fn p2_writes_to_distinct_quoted_paths_are_distinct_hard_outcomes_pr472() {
     ticks(&h, &mut st, &[n + 24 * MIN]);
     let a = agent(&st, "s1");
     assert!(a.progress > first, "a write to a second distinct quoted path is a new hard outcome");
-    assert!(a.files.iter().any(|f| f.ends_with("/w/out/first.txt")) && a.files.iter().any(|f| f.ends_with("/w/out/second.txt")), "the real paths are kept: {:?}", a.files);
+    assert!(
+        a.files.iter().any(|f| f.ends_with("/w/out/first.txt")) && a.files.iter().any(|f| f.ends_with("/w/out/second.txt")),
+        "the real paths are kept: {:?}",
+        a.files
+    );
     // quoted text that is no redirect target still names no file
     append(&p, &[tool(n + 25 * MIN, "m4", 10, "w3", "Bash", json!({"command": "echo \"a > b.txt\""})), result(n + 25 * MIN, "w3", "", false)]);
     ticks(&h, &mut st, &[n + 26 * MIN]);

@@ -148,7 +148,7 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
             }
             if str_of(b, tr("type_key")) == tr("tool_use") {
                 a.running = true;
-                tool_use(a, b, ts);
+                tool_use(a, b, ts, str_of(v, tr("cwd")));
             }
         }
     } else if ty == tr("user") {
@@ -337,11 +337,12 @@ fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
             a.bg_ids.remove(id);
             a.exited.push((id.to_string(), ts));
             // PR #472: a background check or shell write earns its HARD outcome only now, when it ended with success
-            let start = a.bg_starts.remove(id).unwrap_or(u64::MAX);
+            let call = a.bg_starts.remove(id);
             if let Some((check, writes)) = a.bg_outcomes.remove(id)
+                && let Some((start, cwd)) = call
                 && defaults::raw("agent_tracker.bg_success_statuses").strings().iter().any(|w| w.eq_ignore_ascii_case(st))
             {
-                hard_outcome(a, check, &writes, start);
+                hard_outcome(a, check, &writes, start, &cwd);
             }
         }
     }
@@ -367,7 +368,7 @@ fn usage(a: &mut Agent, m: &Value) {
     a.tcw += n("cw_tok");
 }
 
-fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
+fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let name = str_of(b, tr("name"));
     let input = b.get(tr("input")).cloned().unwrap_or(Value::Null);
     let id = str_of(b, "id").to_string();
@@ -481,7 +482,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
         let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: cwd.to_string() });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -574,9 +575,10 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == p.class) {
             push_ring(&mut a.bg_builds, id.clone(), lim("loop_window"));
         }
-        if p.class == "check" || !p.writes.is_empty() {
+        // a task backgrounded inside the task as well (a top-level `&`) ends when its launching shell does: no outcome waits for it
+        if !p.amp && (p.class == "check" || !p.writes.is_empty()) {
             a.bg_outcomes.insert(id.clone(), (p.class == "check", p.writes.clone()));
-            a.bg_starts.insert(id.clone(), p.ts);
+            a.bg_starts.insert(id.clone(), (p.ts, p.cwd.clone()));
         }
         a.bg_ids.insert(id, ts);
         while a.bg_ids.len() > lim("loop_window") as usize {
@@ -600,11 +602,16 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     // waits for its completion notice (task_ends). A command backgrounded with a top-level `&` (p.amp) has no completion notice at all:
     // it is never more than SOFT.
     let om = defaults::raw("agent_tracker.outcome_metric");
-    let hard = !p.bg && !p.amp && hard_outcome(a, p.class == "check", &p.writes, p.ts);
+    let hard = !p.bg && !p.amp && hard_outcome(a, p.class == "check", &p.writes, p.ts, &p.cwd);
     if !hard && (p.class == "probe" || p.class == "check" || !p.writes.is_empty()) {
         push_ring(&mut a.soft_ts, ts, lim("loop_window"));
         episode_event(a, ts);
         count_outcome(if p.class == "probe" || p.class == "check" { p.class.as_str() } else { om.str_field("shell_file") });
+    }
+    // a command backgrounded with a top-level `&` has not done its work when the launching shell exits: no commit, push, merge, deploy,
+    // build or test credit either (PR #472)
+    if p.amp {
+        return;
     }
     if p.push || p.class == "commit" || p.class == "merge" || p.class == "deploy" {
         a.last_ship_ms = ts;
@@ -653,10 +660,12 @@ pub(crate) fn episode_sync(a: &mut Agent, ts: u64) {
 }
 
 /// A HARD outcome of a shell command that began at `start` and ended with success (PR #472): a file it created or appended for the
-/// first time (the shell_file weight), else a passing check (the check weight). False when it earned neither. A claimed write counts
+/// first time (the shell_file weight), else a passing check (the check weight); `cwd` is the call's working directory (the transcript
+/// line's, else the agent's; a `cd` inside the call itself is not followed, so a relative write after it is at most SOFT). False when it earned neither. A claimed write counts
 /// only when the file is there: `written_since` finds it on disk, modified at or after `start`; the command text alone earns nothing.
-fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64) -> bool {
-    let fresh: Vec<String> = writes.iter().filter_map(|w| written_since(&a.cwd, w, start)).filter(|w| !a.files.contains(w)).collect();
+fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64, cwd: &str) -> bool {
+    let dir = if cwd.is_empty() { a.cwd.clone() } else { cwd.to_string() };
+    let fresh: Vec<String> = writes.iter().filter_map(|w| written_since(&dir, w, start)).filter(|w| !a.files.contains(w)).collect();
     if !fresh.is_empty() {
         for w in fresh {
             push_ring(&mut a.files, w, lim("files_max"));

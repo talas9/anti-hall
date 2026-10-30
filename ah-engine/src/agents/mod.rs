@@ -213,6 +213,9 @@ pub struct Pending {
     /// its success is only the launching shell's, so it earns no HARD outcome (PR #472).
     #[serde(default)]
     pub amp: bool,
+    /// The working directory of the transcript line that made the call (a relative written path is taken from it).
+    #[serde(default)]
+    pub cwd: String,
 }
 
 /// A raised signal on one agent.
@@ -428,9 +431,10 @@ pub struct Agent {
     /// files it writes. A background launch is at most a SOFT outcome; its completion notice with a success status is the HARD one.
     #[serde(default)]
     pub bg_outcomes: BTreeMap<String, (bool, Vec<String>)>,
-    /// When the call that launched each task in `bg_outcomes` began: a file it claims counts only when modified at or after that.
+    /// When the call that launched each task in `bg_outcomes` began and its working directory: a file it claims counts only when
+    /// modified at or after that.
     #[serde(default)]
-    pub bg_starts: BTreeMap<String, u64>,
+    pub bg_starts: BTreeMap<String, (u64, String)>,
     /// Background shell tasks that ended and are not yet reported: task id, when it ended.
     #[serde(default)]
     pub exited: Vec<(String, u64)>,
