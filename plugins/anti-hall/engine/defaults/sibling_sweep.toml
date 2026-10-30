@@ -202,6 +202,7 @@ value = [
   '\bmy\s+(?:own\s+)?(?:mistake|bad|fault|typo|slip(?:-?up)?|oversight)\b',
   '''\bi(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:used|typed|got|put|set|passed|named|picked|spelled|spelt|entered|chose|gave|pointed|added|left)\b[^.\n]{0,80}\bshould\s+have\s+(?:been|said|read|used)\b''',
   '\bmy\s+(?:own\s+)?(?:\w+\s+)?(?:edit|change|commit|patch|code|diff)s?\b[^.\n]{0,80}\bshould\s+have\s+(?:been|said|read|used)\b',
+  '''\b(?:wrong|incorrect|mistyped|misspelled|misspelt)\s+(?:\w+\s+){0,2}(?:that\s+)?i(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:used|typed|set|passed|named|picked|spelled|spelt|entered|chose|wrote|gave|added|left|put)\b''',
 ]
 
 [sibling_sweep.hedge_any_re]
@@ -220,6 +221,14 @@ value = '\b(?:git\s+lock|index\.lock|(?:leftover|left-?over|orphaned?|hung)\s+(?
 doc = "Regex source of a cause that is quoted from someone else's report (an agent, worker, lane, reviewer or Codex says it, or 'according to', 'the report says'): it is the report's claim, not a finding the assistant states itself, so it is no cause statement here. First-person findings ('I found the root cause') never match."
 value = '\b(?:(?:sub)?agents?|workers?|lanes?|reviewers?|auditors?|critics?|codex|explorers?|builders?|the\s+report|reports?)(?:.s)?\s+(?:report(?:s|ed)?|says?|said|found|finds|claims?|claimed|states?|stated|notes?|noted|identified|diagnosed|blames?|blamed|attributes?|attributed|summary|result|finding)\b|\b(?:agent|lane|worker|subagent|codex|reviewer)\s+(?:report|summary|result|finding)s?\b|\baccording\s+to\b|\bper\s+the\s+(?:agent|report|lane|worker)\b'
 
+[sibling_sweep.reported_speech_re]
+doc = "Regex source of reported speech by another party ('Alice said: ...', 'Bob told me that ...', 'the reviewer wrote, ...'): a self-correction cue inside such a sentence is someone else's claim, not the agent's own correction. The speaker must be a word other than the bare 'I', so the agent's own 'I said, ...' still counts. Applies to the self-correction family only."
+value = '''\b(?:[a-hj-z]\w*|i\w+)\s+(?:(?:said|says|wrote|writes|replied|replies|commented|claimed|claims|answered)|(?:told|tells|asked|asks)\s+\w+)(?:\s*[:,]|\s+that\b)'''
+
+[sibling_sweep.prefilter_re]
+doc = "Regex source of one cheap whole-text scan that every cue needs: text (or a sentence) with none of these words cannot hold a cause or self-correction statement, so the per-sentence guard and cue patterns are skipped and neutral text costs one regex pass. It must match a word of every shipped cause_cues and self_correction_cues entry (a test checks the shipped corpora); when either cue list is edited away from the shipped one the prefilter is not used, and an empty value turns it off."
+value = '\b(?:cause[sd]?|culprit|bug|stems?|issue|problem|failure|crash|regression|defect|typo|mistake|slip|misspell\w*|misspelt|oversight|bad|fault|should\s+have|wrong|incorrect|mistyped)'
+
 [sibling_sweep.meta_re]
 doc = "Regex source of mentions of the root-cause machinery itself (the skill, the nudge, a guard, a protocol): a sentence that holds one is about the tooling, not a bug cause."
 value = '\broot[- ]cause[- ](?:claim|attribution|statement|skill|nudge|guard|hook|protocol|discipline|playbook|analysis|investigation|check|rule|section|step|field|label|column|template|tracer|nudges)\b|anti-hall:root-cause|/root-cause|root-cause\.md|root_cause|\brca\b'
@@ -237,8 +246,8 @@ doc = "Regex source of a single-backtick inline code span (one line at most), bl
 value = '`[^`\n]*`'
 
 [sibling_sweep.inline_quote_re]
-doc = "Regex source of an inline quotation (straight or curly double quotes) that is blanked before the self_correction_cues are matched: someone else's words quoted in the reply are not the agent's own correction. It is found over the whole reply after the code spans are blanked (a quote character inside a code span is inert) and before the reply is split into sentences, so a quotation that holds a terminator is masked as one piece."
-value = '"[^"\n]{0,400}"|\u201c[^\u201d\n]{0,400}\u201d'
+doc = "Regex source of an inline quotation (straight or curly double quotes) that is blanked before the self_correction_cues are matched: someone else's words quoted in the reply are not the agent's own correction. It is found over the whole reply after the code spans are blanked (a quote character inside a code span is inert) and before the reply is split into sentences, so a quotation that holds a terminator is masked as one piece. Single-quoted spans (straight or curly) are masked too: a straight opening quote must not follow a word character and a closing one must not precede one, so an apostrophe inside a word (it's, don't, users') never opens or closes a span."
+value = '''"[^"\n]{0,400}"|\u201c[^\u201d\n]{0,400}\u201d|\B'(?:[^'\n]|\b'\b){0,400}'\B|\u2018(?:[^\u2019\n]|\b\u2019\b){0,400}\u2019'''
 
 [sibling_sweep.quote_line_re]
 doc = "Regex source of a quoted line (a Markdown quote), removed before matching."

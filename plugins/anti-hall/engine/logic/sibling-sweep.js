@@ -40,6 +40,19 @@ function swSpecs(key) {
   sws.memo[id] = out;
   return out;
 }
+// The prefilter spec (one regex every cue needs), or null when it is off: empty, or a cue list the owner edited (the prefilter
+// words are those of the shipped cues, so it cannot judge a replaced list).
+function swPre() {
+  var id = 'prefilter';
+  if (Object.prototype.hasOwnProperty.call(sws.memo, id)) return sws.memo[id];
+  var pre = null;
+  if (swCfg('sibling_sweep.prefilter_re') !== '' &&
+      ['sibling_sweep.cause_cues', 'sibling_sweep.self_correction_cues'].every(function (k) { return JSON.stringify(swCfg(k)) === JSON.stringify(ah.cfg(k)); })) {
+    pre = swSpec('sibling_sweep.prefilter_re', 'i');
+  }
+  sws.memo[id] = pre;
+  return pre;
+}
 function swTest(spec, t) { return ah.re.test(spec.src, spec.flags, t); }
 
 // Unicode White_Space (Rust's char::is_whitespace), which the sentence splitter uses.
@@ -55,6 +68,8 @@ function swCollapse(s) { return s.replace(/\s+/g, ' '); }
 // `s` cut to at most `max` UTF-8 bytes, at a character boundary.
 function swCutBytes(s, max) {
   if (s.length * 3 <= max) return s;
+  // all-ASCII text (one native scan): a byte is a unit, so the cut is a slice, not a loop over the text
+  if (!ah.re.test('[^\\x00-\\x7f]', '', s)) return s.length <= max ? s : s.slice(0, max);
   var bytes = 0, out = 0;
   for (var i = 0; i < s.length; i++) {
     var c = s.charCodeAt(i), n, step = 1;
@@ -141,18 +156,22 @@ function swFindCause(t) { return swFindCauseIn(swPrepare(t)); }
 // The first sentence of `view` (split where `view` has a terminator) that holds one of `list`: the guards read the
 // code-masked text of the sentence, the cues read `view`'s text, the hash and the named pattern the prepared text. Sentences
 // that start at or after `limit` are not looked at. {at, hash, pattern, family} or null.
-function swFirst(prepared, code, view, list, family, limit) {
+function swFirst(prepared, code, view, list, family, limit, pre, reported) {
   var windowChars = swNum('sibling_sweep.window_chars'), question = swCfg('sibling_sweep.question_terminator');
   var meta = swSpec('sibling_sweep.meta_re', 'i'), hedgeAny = swSpec('sibling_sweep.hedge_any_re', 'i');
   var hedgeBefore = swSpec('sibling_sweep.hedge_before_re', 'i');
   var operational = swSpec('sibling_sweep.operational_re', 'i'), attributed = swSpec('sibling_sweep.attributed_re', 'i');
   var ss = swSentences(view);
   for (var i = 0; i < ss.length && ss[i][0] < limit; i++) {
-    var a = ss[i][0], b = ss[i][1], term = ss[i][2], masked = code.slice(a, b);
+    var a = ss[i][0], b = ss[i][1], term = ss[i][2], subject = view.slice(a, b);
+    // a sentence with none of the prefilter words holds no cue: one regex call instead of the guards and every cue
+    if (pre !== null && !swTest(pre, subject)) continue;
+    var masked = code.slice(a, b);
     if ((term !== null && question.indexOf(term) >= 0) || swTest(meta, masked) || swTest(hedgeAny, masked)) continue;
     // an environment fact (lock file, load, disk) or a cause quoted from an agent's report is not the assistant's own code-bug finding
     if (swTest(operational, masked) || swTest(attributed, masked)) continue;
-    var subject = view.slice(a, b);
+    // a correction another party reports ("Alice said: I fixed a typo") is theirs, not the agent's
+    if (reported !== null && swTest(reported, masked)) continue;
     for (var k = 0; k < list.length; k++) {
       var m = ah.re.find(list[k].src, list[k].flags, subject);
       if (m === null || m === undefined) continue;
@@ -165,14 +184,17 @@ function swFirst(prepared, code, view, list, family, limit) {
 }
 
 function swFindCauseIn(prepared) {
+  // one regex pass: text with none of the words every cue needs holds no statement
+  var pre = swPre();
+  if (pre !== null && !swTest(pre, prepared)) return null;
   // mask the whole reply first (code spans, then quotations), then split: a span or quotation never straddles a sentence
   var mk = swMasks(prepared);
   // the cause cues read the code-masked text (a quoted cause is still the reply's statement); the self-correction cues (the
   // agent reports fixing its own typo or mistake) also skip quotations (someone else's words): same guards, same hash. The
   // earlier sentence wins, the cause family on a tie.
-  var cause = swFirst(prepared, mk.code, mk.code, swSpecs('sibling_sweep.cause_cues'), '', prepared.length + 1);
+  var cause = swFirst(prepared, mk.code, mk.code, swSpecs('sibling_sweep.cause_cues'), '', prepared.length + 1, pre, null);
   var self = swFirst(prepared, mk.code, mk.quote, swSpecs('sibling_sweep.self_correction_cues'), swCfg('sibling_sweep.self_correction_family'),
-    cause === null ? prepared.length + 1 : cause.at);
+    cause === null ? prepared.length + 1 : cause.at, pre, swSpec('sibling_sweep.reported_speech_re', 'i'));
   return self !== null ? self : cause;
 }
 function swHasFix(t) { return swHasFixIn(swPrepare(t)); }
