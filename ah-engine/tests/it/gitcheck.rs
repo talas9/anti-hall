@@ -411,3 +411,74 @@ fn an_untracked_destination_over_the_cap_is_refused() {
     assert_eq!(code, 2, "stdout={out} stderr={err}");
     assert!(err.contains("more than 50 commits"), "{err}");
 }
+
+/// Layer (b): command-scoped config (`-c`, `--config-env`, GIT_CONFIG_COUNT/KEY/VALUE) decides what a push publishes
+/// (Codex P1 of PR #469 at 375cf8fe).
+#[test]
+fn a_push_is_checked_on_command_scoped_push_config() {
+    let e = Env::new("cfgpush");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["branch", "other"]);
+    git_ok(&work, &["checkout", "-q", "other"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("git -c remote.origin.{P}=refs/heads/other:refs/heads/other {P} origin"),
+        format!("git -c remote.origin.mirror=true {P} origin"),
+        format!("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.{P} GIT_CONFIG_VALUE_0=other:other git {P} origin"),
+        format!("V=other:other git --config-env=remote.origin.{P}=V {P} origin"),
+        format!("export V=other:other; git --config-env remote.origin.{P}=V {P} origin"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    assert_eq!(e.hook_in(&format!("git -c {P}.default=current {P} origin"), w), (String::new(), String::new(), 0), "clean HEAD stays allowed");
+}
+
+/// Layer (a): a credited commit pushed in the same Bash call is reached by a remote, and is still blocked once, with the
+/// publish named (Codex P1 of PR #469 at 375cf8fe).
+#[test]
+fn a_credit_committed_and_pushed_in_one_call_is_still_blocked() {
+    let e = Env::new("commitpush");
+    let (work, _) = pushed_repo(&e);
+    std::fs::write(work.join("m.txt"), format!("credited\n\n{CO}\n")).unwrap();
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let cmd = format!("F=m.txt; git commit -q --allow-empty -F \"$F\" && git {P} -q origin main");
+    bash_in(&e, &work, &cmd);
+    let (out, err, code) = e.hook_ev("PostToolUse", &cmd, w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("already on a remote"), "{err}");
+    // reported once: the agent cannot clear it itself, so later calls are not blocked again
+    assert_eq!(e.hook_ev("PostToolUse", "git log -1", w), (String::new(), String::new(), 0), "reported once");
+}
+
+/// Layer (b): a mirror push publishes every ref, not only branches and tags (Codex P1 of PR #469 at 375cf8fe).
+#[test]
+fn a_mirror_push_is_checked_on_every_ref() {
+    let e = Env::new("mirror");
+    let (work, _) = pushed_repo(&e);
+    let sha = git_ok(&work, &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", CREDITED]);
+    git_ok(&work, &["update-ref", "refs/custom/x", &sha]);
+    let mirror = e.dir.join("mirror.git");
+    std::fs::create_dir_all(&mirror).unwrap();
+    git_ok(&mirror, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&work, &["remote", "add", "m", mirror.to_str().unwrap()]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    for cmd in [format!("git {P} --mirror origin"), format!("git {P} --mirror m")] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
+    }
+    git_ok(&work, &["config", "remote.m.mirror", "true"]);
+    let (out, err, code) = e.hook_in(&format!("git {P} m"), w);
+    assert_eq!(code, 2, "remote.m.mirror: stdout={out} stderr={err}");
+    git_ok(&work, &["update-ref", "-d", "refs/custom/x"]);
+    assert_eq!(e.hook_in(&format!("git {P} --mirror m"), w), (String::new(), String::new(), 0), "clean mirror allowed");
+}
