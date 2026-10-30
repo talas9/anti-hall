@@ -3338,6 +3338,126 @@ mod afk_mode {
         assert_eq!(denied(&m, "ambiguous"), 2);
     }
 
+    fn allowed(o: &str) -> bool {
+        serde_json::from_str::<Value>(o.trim()).is_ok_and(|v| v["hookSpecificOutput"]["permissionDecision"] == json!("allow"))
+    }
+    /// The advisor call and its result as two separate host-written entries, `between` written while the consult is pending.
+    fn consult_around(h: &str, sid: &str, between: impl FnOnce()) {
+        let id = next_id("srvtoolu_");
+        tlines(h, sid, &[asst(json!([{"type": "server_tool_use", "id": id, "name": "advisor", "input": {}}]))]);
+        between();
+        tlines(h, sid, &[asst(json!([{"type": "advisor_tool_result", "tool_use_id": id, "content": {"type": "advisor_result", "text": "ok"}}]))]);
+    }
+
+    /// (GH #442 P1) the consult window starts at the advisor CALL: owner input or a plan rewrite while the consult is pending is
+    /// something the advice never saw, so it denies; the clean call -> result -> attempt flow approves.
+    #[test]
+    fn plan_change_while_the_consult_is_pending_denies() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drained();
+        // owner message between the call and the result
+        let h = home("afk-plan-pend-owner");
+        afk_on(&h);
+        plan_write(&h, "s1");
+        consult_around(&h, "s1", || {
+            tlines(&h, "s1", &[json!({"type": "user", "isSidechain": false, "message": {"role": "user", "content": "change step 2"}})]);
+        });
+        assert!(!allowed(&exit_plan(&h, "s1")), "owner message while pending");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "owner_prompt"), 1);
+    }
+
+    #[test]
+    fn plan_rewrite_while_the_consult_is_pending_denies() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drained();
+        // Write(B) between the call and the result, then the attempt approves plan B
+        let h = home("afk-plan-pend-write");
+        afk_on(&h);
+        plan_write(&h, "s1");
+        let b = "## P\n1. plan B";
+        consult_around(&h, "s1", || {
+            plan_write_text(&h, "s1", b);
+        });
+        assert!(!allowed(&exit_with(&h, "s1", json!({"plan": b, "planFilePath": pfile(&h)}))), "Write(B) while pending");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "stale"), 1);
+    }
+
+    #[test]
+    fn plan_clean_call_then_result_then_attempt_approves() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drained();
+        // clean: Write(A) -> call -> result -> ExitPlanMode(A)
+        let h = home("afk-plan-pend-clean");
+        afk_on(&h);
+        plan_write(&h, "s1");
+        consult_around(&h, "s1", || {});
+        assert!(approved(&exit_plan(&h, "s1")));
+        assert_eq!(drained().counter("afk_plan_autoapproved", &[]), 1);
+    }
+
+    /// (GH #442 P2) an unknown entry between the plan Write and the consult denies (the binding cannot skip it).
+    #[test]
+    fn plan_unknown_entry_before_the_consult_denies() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drained();
+        let h = home("afk-plan-unknown-before");
+        afk_on(&h);
+        plan_write(&h, "s1");
+        tlines(&h, "s1", &[json!({"type": "brand-new-entry", "x": 1})]);
+        advisor(&h, "s1");
+        assert!(!allowed(&exit_plan(&h, "s1")));
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "ambiguous"), 1);
+    }
+
+    /// (GH #442 P2) a JSON line that is not an object (array, null, boolean) after the consult is an unknown record: denied.
+    #[test]
+    fn plan_non_object_line_after_the_consult_denies() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drained();
+        for (tag, line) in [("array", "[1,2]"), ("null", "null"), ("bool", "true")] {
+            let h = ready(&format!("afk-plan-nonobj-{tag}"));
+            {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().append(true).open(tpath(&h, "s1")).unwrap();
+                writeln!(f, "{line}").unwrap();
+            }
+            assert!(!allowed(&exit_plan(&h, "s1")), "{tag}");
+        }
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "ambiguous"), 3);
+    }
+
+    /// (GH #442 P2) a plan of exactly the read cap with bytes appended on disk after the consult: the whole file is compared, so
+    /// it denies (an over-cap plan never verifies on a prefix).
+    #[test]
+    fn plan_at_the_read_cap_with_appended_bytes_denies() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drained();
+        let cap = crate::defaults::num("afk.read_max_bytes") as usize;
+        let text = format!("## P\n{}", "x".repeat(cap - 5));
+        assert_eq!(text.len(), cap);
+        let h = home("afk-plan-cap");
+        afk_on(&h);
+        plan_write_text(&h, "s1", &text);
+        advisor(&h, "s1");
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(pfile(&h)).unwrap();
+            f.write_all(b"\n2. appended after the consult").unwrap();
+        }
+        assert!(!allowed(&exit_with(&h, "s1", json!({"plan": text, "planFilePath": pfile(&h)}))));
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "plan_changed"), 1);
+    }
+
     #[test]
     fn plan_subagent_or_no_tool_use_id_is_not_approved() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
