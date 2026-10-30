@@ -3053,7 +3053,7 @@ mod afk_mode {
         step(h, sid, "PostToolUse", json!({"tool_name": "Write", "tool_input": {"file_path": format!("{h}/.claude/plans/p.md"), "content": PLAN}}))
     }
     fn denied(m: &crate::metrics::Metrics, reason: &str) -> u64 {
-        m.counter("afk_plan_autoapprove_denied", &[("reason", reason)]) as u64
+        m.counter("afk_plan_autoapprove_denied", &[("reason", reason)])
     }
     fn advisor(h: &str, sid: &str) -> String {
         step(h, sid, "PostToolUse", json!({"tool_name": "advisor", "tool_input": {}}))
@@ -3243,9 +3243,11 @@ mod afk_mode {
                 std::fs::remove_file(format!("{h}/.claude/plans/p.md")).unwrap();
                 json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
             }),
-            ("plan_mismatch", "input-differs", |h| {
-                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. other", "planFilePath": format!("{h}/.claude/plans/p.md")}})
-            }),
+            (
+                "plan_mismatch",
+                "input-differs",
+                |h| json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. other", "planFilePath": format!("{h}/.claude/plans/p.md")}}),
+            ),
             ("afk_off", "afk-off", |h| {
                 std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": false, "epoch": "1", "ended": 3}).to_string()).unwrap();
                 json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
