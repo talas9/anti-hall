@@ -1,1 +1,0 @@
-{"version":1,"rules":[{"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny"}]}
