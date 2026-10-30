@@ -19,7 +19,7 @@ impl Env {
         let dir = PathBuf::from("/tmp").join(format!("ah-gc-{}-{}", tag, std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
-        let rules = r#"{"version":1,"rules":[{"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny","options":{"plugin_root":"/plugin"}}]}"#;
+        let rules = r#"{"version":1,"rules":[{"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny","options":{"plugin_root":"/plugin"}},{"id":"git-guard:audit","events":["PostToolUse"],"tools":["Bash"],"check":"git-audit","action":"deny"}]}"#;
         std::fs::write(dir.join("rules.json"), rules).unwrap();
         Env { dir }
     }
@@ -42,8 +42,12 @@ impl Env {
     }
 
     fn hook_in(&self, command: &str, cwd: &str) -> (String, String, i32) {
+        self.hook_ev("PreToolUse", command, cwd)
+    }
+
+    fn hook_ev(&self, event: &str, command: &str, cwd: &str) -> (String, String, i32) {
         let payload =
-            serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": cwd, "session_id": "s", "tool_input": {"command": command}})
+            serde_json::json!({"hook_event_name": event, "tool_name": "Bash", "cwd": cwd, "session_id": "s", "tool_input": {"command": command}})
                 .to_string();
         let mut last = (String::new(), String::new(), 0);
         for _ in 0..2 {
@@ -277,4 +281,102 @@ fn a_push_over_the_commit_cap_is_refused_naming_the_cap() {
     let (out, err, code) = e.hook_in("git push origin main", w);
     assert_eq!(code, 2, "stdout={out} stderr={err}");
     assert!(err.contains("more than 50 commits"), "{err}");
+}
+
+/// Runs `script` with bash in `dir` (scratch HOME, fixed identity), the way the agent's Bash tool would.
+fn bash_in(e: &Env, dir: &std::path::Path, script: &str) {
+    let o = Command::new("bash")
+        .args(["-c", script])
+        .current_dir(dir)
+        .env("HOME", e.dir.join("home"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "bash {script}: {}", String::from_utf8_lossy(&o.stderr));
+}
+
+const CO: &str = "Co-Authored-By: Claude Opus <noreply@anthropic.com>";
+
+/// Layer (a): each commit-message form the PreToolUse text scan cannot resolve (Codex re-review of PR #469 at 503630f1) is
+/// caught after the call from what git stored, never from the shell text.
+#[test]
+fn a_credit_git_stored_is_blocked_after_the_call_whatever_shell_form_wrote_it() {
+    let e = Env::new("audit");
+    let (work, _) = pushed_repo(&e);
+    std::fs::write(work.join("m.txt"), format!("credited\n\n{CO}\n")).unwrap();
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let cases = [
+        ("heredoc + here-string", format!("cat >/dev/null <<'EOF'\nx\nEOF\nT=\"credited\n\n{CO}\"; git commit -q --allow-empty -F - <<<\"$T\"")),
+        ("positional params", format!("set -- credited \"{CO}\"; git commit -q --allow-empty -m \"$1\" -m \"$2\"")),
+        ("abbreviated --mess", format!("T=\"{CO}\"; git commit -q --allow-empty -m credited --mess=\"$T\"")),
+        ("-F $MSGFILE", "MSGFILE=m.txt; git commit -q --allow-empty -F \"$MSGFILE\"".to_string()),
+        ("ANSI-C escapes", "git commit -q --allow-empty -m $'credited\\n\\n\\x43o-Authored-By: Claude \\103pus <noreply@anthropic.com>'".to_string()),
+    ];
+    for (name, cmd) in cases {
+        bash_in(&e, &work, &cmd);
+        let (out, err, code) = e.hook_ev("PostToolUse", &cmd, w);
+        assert!(out.contains("\"decision\":\"block\"") && out.contains("AI credit"), "{name}: code={code} stdout={out} stderr={err}");
+        // the agent fixes it: an amend without the credit clears the block on the next call
+        bash_in(&e, &work, "git commit -q --amend --allow-empty -m clean");
+        let (out, _, _) = e.hook_ev("PostToolUse", "git log -1", w);
+        assert!(!out.contains("block"), "{name}: still blocked after the amend: {out}");
+    }
+    // an ordinary commit, and a command outside any repository, stay silent
+    bash_in(&e, &work, "git commit -q --allow-empty -m 'feat: ordinary'");
+    assert_eq!(e.hook_ev("PostToolUse", "git commit -q --allow-empty -m 'feat: ordinary'", w), (String::new(), String::new(), 0));
+    assert_eq!(e.hook_ev("PostToolUse", "ls", "/tmp"), (String::new(), String::new(), 0));
+}
+
+/// Layer (b): a bare push publishes what `remote.<name>.push` says, not HEAD.
+#[test]
+fn a_bare_push_is_checked_on_the_configured_push_refspec() {
+    let e = Env::new("pushspec");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["branch", "other"]);
+    git_ok(&work, &["checkout", "-q", "other"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    git_ok(&work, &["config", "remote.origin.push", "refs/heads/other:refs/heads/other"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in("git push", w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    git_ok(&work, &["config", "--unset", "remote.origin.push"]);
+    assert_eq!(e.hook_in("git push", w), (String::new(), String::new(), 0), "a clean HEAD push stays allowed");
+}
+
+/// Layer (b): a destination with no tracking refs lacks what other remotes have, and the cap applies to it too.
+#[test]
+fn an_untracked_destination_reads_commits_other_remotes_have_and_is_capped() {
+    let e = Env::new("untracked");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["checkout", "-q", "-b", "feature"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["push", "-q", "origin", "feature"]);
+    let other = e.dir.join("other.git");
+    std::fs::create_dir_all(&other).unwrap();
+    git_ok(&other, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&work, &["remote", "add", "newremote", other.to_str().unwrap()]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in("git push newremote feature", w);
+    assert_eq!(code, 2, "commit on origin, not on newremote: stdout={out} stderr={err}");
+    assert!(err.contains("reword"), "{err}");
+    // over the cap on an untracked destination: refused, never allowed unread
+    git_ok(&work, &["checkout", "-q", "-b", "big", "main"]);
+    for i in 0..51 {
+        git_ok(&work, &["commit", "-q", "--allow-empty", "-m", &format!("clean {i}")]);
+    }
+    let (out, err, code) = e.hook_in("git push newremote big", w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("more than 50 commits"), "{err}");
+    // an ordinary push to the tracked remote stays allowed
+    git_ok(&work, &["checkout", "-q", "main"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "feat: ordinary"]);
+    assert_eq!(e.hook_in("git push origin main", w), (String::new(), String::new(), 0));
 }
