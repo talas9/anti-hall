@@ -1604,16 +1604,26 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         // value (`readCursor`: 0 when it gives none)
         let cf_ref = cursor_file.as_deref();
         let nd_known = union::non_empty_lines(inbox)?.is_some() && cf_ref.map(union::cursor_position).transpose()?.flatten().is_some();
-        let input = union::UnionIn { inbox: Some(inbox), cursor_file: cf_ref, id, store: Some(&o.reader), store_base, nd_base, now: inv.now };
+        let input = union::UnionIn {
+            inbox: Some(inbox),
+            cursor_file: cf_ref,
+            id,
+            store: Some(&o.reader),
+            store_base,
+            nd_base,
+            now: inv.now,
+            provenance: union::provenance_of(&inv.settings()),
+        };
         let me = crate::meshw::cursors::reader_key(tick::reader_nonce_cached(&inv.home).as_deref());
-        let counted = union::unread_for(&o.reader, &inv.home, id, Some(inbox), cf_ref, me.as_deref(), &tick::family_of(id, &o.rows), inv.now)?;
+        let counted =
+            union::unread_for(&o.reader, &inv.home, id, Some(inbox), cf_ref, me.as_deref(), &tick::family_of(id, &o.rows), inv.now, input.provenance)?;
         tick::note_own_excluded(&counted);
         let u = counted.union;
         let merged_total = union::merged_total(&input)?;
         let family = tick::family_of(id, &o.rows);
         for (i, line) in u.nd_unread_lines.iter().enumerate() {
             let mut m = ndjson_msg(line)?;
-            m.own = union::line_sender(line).is_some_and(|x| family.contains(&x)) || union::is_wake_line(line);
+            m.own = union::line_sender(line).is_some_and(|x| family.contains(&x)) || union::is_wake_line(line, u.provenance);
             m.src_idx = i;
             msgs.push(m);
         }

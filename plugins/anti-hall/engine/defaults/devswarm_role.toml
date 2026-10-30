@@ -834,6 +834,22 @@ value = "review the workspace status instructions."
 doc = "Switch devswarm.parentGateSharedCount (default on): the parent gate counts the Primary's own unread mail with the ONE shared count `mesh inbox peek-primary` reports (own-family sends and wake rows left out, re-checked live even with no own reader row), and leaves a partition's own-family sends out of the descriptor count (GH #384). Off restores the old `max(countFor, messageCount - own)` projection, which can block on a stale count peek shows as 0."
 value = { section = "devswarm", key = "parentGateSharedCount", type = "boolean", env = "ANTIHALL_DEVSWARM_PARENT_GATE_SHARED_COUNT", option = "", default = true }
 
+[devswarm_role.pg_sw_provenance]
+doc = "Switch devswarm.noiseProvenance (default on): a `[Primary poke]` row is told apart by provenance, not by its text (GH #429). A store row is a poke mirror only when it carries no `mtype` (the native ingest writes none; every mesh send has one), an inbox-file line only when its resolved sender is a Primary id or none, so a child's message that merely starts with the same words counts as unread mail. Off restores the text-prefix rule."
+value = { section = "devswarm", key = "noiseProvenance", type = "boolean", env = "ANTIHALL_DEVSWARM_NOISE_PROVENANCE", option = "", default = true }
+
+[devswarm_role.pg_sw_pos_guard]
+doc = "Switch devswarm.unreadPositionGuard (default on): a saved store read position past the partition's message count is unknown (the gate keeps its cached count and does not pass a Stop on it), never 0 unread or an empty list (GH #429). Off restores the old read."
+value = { section = "devswarm", key = "unreadPositionGuard", type = "boolean", env = "ANTIHALL_DEVSWARM_UNREAD_POSITION_GUARD", option = "", default = true }
+
+[metric.mesh_unread_position_unknown]
+doc = "Unread counts reported unknown because the saved store read position was past the partition's message count, by site (count_for, union_of, shared_unread)."
+value = { kind = "counter", unit = "counts", labels = ["site"] }
+
+[metric.mesh_noise_lookalike_kept]
+doc = "Rows or lines that start with a system prefix (poke, wake) but carry a mail provenance (an mtype, or a non-Primary sender), so they were counted as unread mail, by kind."
+value = { kind = "counter", unit = "rows", labels = ["kind"] }
+
 [devswarm_role.pg_repeat_step]
 doc = "The concrete next step the repeated-block hint adds once to a repeated parent-gate block (repeat.allowed_keys)."
 value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox peek-primary <id>`; if it shows unreadCount 0 the gate's count disagrees: report it (`~/.anti-hall/ah-engine/bin/ah-engine defect`) instead of re-reading."
