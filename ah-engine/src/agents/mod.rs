@@ -508,6 +508,9 @@ pub struct State {
     /// Children the health judge called busy: no nudge until the time given.
     #[serde(default)]
     pub nudge_hold: BTreeMap<String, u64>,
+    /// Children the health judge called done (#430): held while idle, read only with agents.nudgeScope on.
+    #[serde(default)]
+    pub nudge_done_hold: BTreeMap<String, nudge::DoneHold>,
     /// Snoozes by child and trigger (`<child>|<trigger>`): they outlive the nudge they were given to (#333).
     #[serde(default)]
     pub nudge_snooze: BTreeMap<String, nudge::Snooze>,
