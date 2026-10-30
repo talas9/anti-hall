@@ -3445,7 +3445,43 @@ mod afk_mode {
         let infix = crate::defaults::text("afk.fence_infix");
         let stages = std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(infix)).count();
         assert_eq!(stages, 0, "no stage left behind");
+        // the discarded commit is counted as revoked: the `ended` watermark its guard watches moved past its idle base
+        assert_eq!(drained().counter("afk_idle_revoked", &[]), 1);
+    }
+
+    /// GH #426: the host's own re-check, with the lock still ours (no takeover): the idle entry is paused after its ownership
+    /// check, before the rename, well under afk.lock_stale_ms; an owner presence newer than its idle base lands meanwhile (as the
+    /// CLI `back` writes before it waits on the lock). The stage is discarded: final OFF, no stage left, counted afk_idle_revoked.
+    #[test]
+    fn an_idle_on_pending_at_the_rename_loses_to_a_newer_presence() {
+        use crate::checks::guardkit::nodelock;
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-presence-rename");
         drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2}).to_string()).unwrap();
+        let pp = format!("{h}/.anti-hall/afk-presence.json");
+        std::fs::write(&pp, json!({"last": 0}).to_string()).unwrap();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let target = std::path::PathBuf::from(&fp);
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).push((target.clone(), gate.clone()));
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        });
+        gate.wait(); // the idle entry owns the lock and is paused right before its re-check and rename
+        std::fs::write(&pp, json!({"last": 3}).to_string()).unwrap();
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| p != &target);
+        gate.wait();
+        t.join().expect("hook thread");
+        let f = flag(&h);
+        assert_eq!(f["on"], json!(false), "a presence newer than the idle base discards the pending idle ON: {f}");
+        let infix = crate::defaults::text("afk.fence_infix");
+        let stages = std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(infix)).count();
+        assert_eq!(stages, 0, "no stage left behind");
+        let m = drained();
+        assert_eq!(m.counter("afk_idle_revoked", &[]), 1);
+        assert_eq!(m.counter("afk_lock_lost", &[]), 0);
     }
 
     #[test]

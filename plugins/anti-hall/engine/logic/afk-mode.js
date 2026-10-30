@@ -100,13 +100,14 @@ function afkUpdate(fn) {
     // ours, so a holder whose expired lock was taken over can never land a stale ON over the new holder's OFF
     var rel = afkRel(ah.cfg('afk.flag_file')), infix = ah.cfg('afk.fence_infix');
     try { ah.state.fenceSweep(rel, infix); } catch (e) { /* nothing to sweep */ }
-    var cur = afkFlag(), next = fn(cur), guard;
-    if (next === null) return { flag: cur, prev: cur };
+    // `prev`: a copy of the flag as read under the lock, before `fn` may change `cur` in place
+    var cur = afkFlag(), prev = cur === null ? null : JSON.parse(JSON.stringify(cur)), next = fn(cur), guard;
+    if (next === null) return { flag: cur, prev: prev };
     if (next.guard !== undefined) { guard = next.guard; next = next.flag; }
     var ok = false;
     try { ok = ah.state.writeFenced(rel, JSON.stringify(next), h, infix, guard); } catch (e) { ok = false; }
     if (!ok) afkMetric(guard !== undefined && afkGuardMoved(guard) ? 'afk_idle_revoked' : 'afk_lock_lost', {});
-    return ok ? { flag: next, prev: cur } : null;
+    return ok ? { flag: next, prev: prev } : null;
   } finally {
     try { ah.state.unlock(h); } catch (e) { /* the host releases a lock still held when the call ends */ }
   }
