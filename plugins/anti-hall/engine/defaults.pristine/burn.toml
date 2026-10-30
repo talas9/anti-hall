@@ -1,7 +1,8 @@
 # Burn breaker (GH #270): tokens spent versus outcome. The agent tracker (src/agents/signals.rs) counts the tokens an agent spent since its
 # last outcome (a commit, a finished step, a passing check, a new file) inside the waste window. Soft line: warn the agent through its
 # next tool-call context and notify the coordinator's wake feed. Hard line: the `burn-breaker` check (engine/logic/burn-breaker.js,
-# PreToolUse on every tool, subagents only) blocks the subagent's tool calls except commit, push, status and its report. An outcome
+# PreToolUse on every tool, subagents only) blocks the subagent's tool calls except commit, push, status, the restore class and its
+# report; a build still in flight withholds the pause (GH #458). An outcome (also a file the shell wrote, a passing check, a live probe)
 # resets the count. Every number, list, pattern and text is here (D88).
 
 [burn.sw]
@@ -14,7 +15,7 @@ value = "burn-breaker"
 
 [burn.summary]
 doc = "One-line description of the burn-breaker check in the generated reference."
-value = "PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag (tokens spent since the last commit, finished step, passing check or new file past burn.hard_tokens_no_outcome) blocks every call except commit, push, status and read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (the report)."
+value = "PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag (tokens spent since the last commit, finished step, passing check or new file past burn.hard_tokens_no_outcome) blocks every call except commit (any message form, burn.heredoc), push, status, the restore class (burn.restore_bash_res), read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (the report); an error while judging allows (GH #458)."
 
 [burn.soft_tokens_no_outcome]
 doc = "Soft line: tokens (cache reads weighted by agent_tracker.limits.cache_read_pct) spent since the last outcome, within agent_tracker.limits.waste_window_ms, at which the agent is warned and the coordinator notified. 0 = no soft line. Chosen from the 2026-10-23 incident (alerts of 1.5M to 7.7M per 30 minutes with no commit)."
@@ -138,7 +139,7 @@ value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {
 
 [burn.msg_hard]
 doc = "Hard advisory, delivered to the agent and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}."
-value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window} with no commit, finished step, passing check or new file. Its tool calls are paused except commit, push, status and its report: commit what works, report, stop."
+value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window} with no commit, finished step, passing check or new file. Its tool calls are paused except commit, push, status, restore/rollback/cleanup and its report: commit what works, report, stop."
 
 [burn.msg_what]
 doc = "Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome."
