@@ -2317,3 +2317,28 @@ fn unowned_heartbeat_drop_is_counted() {
     ticks(&h, &mut st, &[n, n + MIN]);
     assert!(drained().counter("agent_wake_dropped", &[("reason", "foreign_agent")]) >= 1, "the dropped row is counted with its reason");
 }
+
+/// GH #484 T5/T6: a child whose nudge reaches `agent_nudge.runtime_escalation.after_reminders` reminders without finishing or being stopped
+/// is escalated once (counted), and the open escalation is published for the Stop check; a finished child leaves the file.
+#[test]
+fn repeated_nudges_escalate_a_still_running_child_once() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt-escalate");
+    drained();
+    let mut st = State::default();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&nudge_env(&h, n + MIN, &[]), &mut st);
+    append(&child, &spend);
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    let esc = || crate::metrics::bumped_on_this_thread("runtime_escalations", &[]);
+    assert_eq!(esc(), 0, "one nudge is not an escalation");
+    for m in [34, 50, 66, 82, 98] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+    }
+    assert!(st.nudges.get("abc").map_or(0, |x| x.reminders) >= 3, "the reminders went out");
+    assert_eq!(esc(), 1, "counted once, however many reminders follow");
+    let f = h.join(".anti-hall/agent-tracker/runtime-escalations.json");
+    let body = std::fs::read_to_string(&f).unwrap_or_default();
+    assert!(body.contains("\"reminders\""), "the open escalation is published for the Stop check: {body}");
+}
