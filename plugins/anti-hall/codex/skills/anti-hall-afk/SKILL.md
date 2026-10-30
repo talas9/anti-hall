@@ -22,8 +22,9 @@ digest ("progress"), or wants AFK settings changed.
 
 A typed `afk` / `back` / `progress` prompt (the whole prompt, any case, surrounding spaces ignored) is answered by the hook and
 not sent to the model. `ah-engine back` is the always-available escape: it works from any terminal, even when a typed `back`
-is not recognised (quoted, or inside a longer prompt) or the flag is busy (the typed reply then says so and the flag stays ON).
-`ah-engine afk` / `back` exit non-zero, changing nothing, when another hook holds the flag lock past `afk.cli_lock_wait_ms`.
+is not recognised (quoted, or inside a longer prompt). A typed `back` that finds the flag busy says so and the flag stays ON;
+`ah-engine afk` / `back` wait longer for the flag lock (`afk.cli_lock_wait_ms`), and only if it stays busy that long do they
+exit non-zero, changing nothing: run them again.
 AFK also starts by itself after `afk.idleMinutes` without an owner prompt on this machine; that idle AFK ends on the owner's
 next prompt. A manual AFK lasts until `back`.
 
