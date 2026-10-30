@@ -1202,37 +1202,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.origin_commit` | `commit `{ref}`` |  |  | Where a reused message came from: a named commit. Placeholder: {ref}. |
 | `git.origin_template` | `the commit template` |  |  | Where a reused message came from: the commit template. |
 | `git.parallel_separators` | `:::, ::::, :::+, ::::+` |  |  | GNU parallel argument-source separators. |
-| `git.push_all_opts` | `--all, --branches` |  |  | git push options that publish every local branch; the backstop then reads the commits of all branches. |
-| `git.push_all_rev_arg` | `--branches` |  |  | The git log argument that stands for every local branch (push_all_opts). |
-| `git.push_argv_branch` | `-C, {dir}, symbolic-ref, -q, --short, HEAD` |  |  | git arguments printing the current branch name, to find the remote of a push that names none. |
-| `git.push_argv_config` | `-C, {dir}, config, --get, {key}` |  |  | git arguments reading one config value; {key} is the key. |
-| `git.push_argv_config_all` | `-C, {dir}, config, --get-all, {key}` |  |  | git arguments reading every value of one config key; {key} is the key. |
-| `git.push_argv_log` | `9 items` |  |  | git arguments listing the commits a push would publish: {dir} is the repository directory, {n} the most commits read (the cap plus one, to see an overflow), {refs} expands to the pushed refs and {exclude} to the remote exclusion. Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
-| `git.push_argv_refs_all` | `-C, {dir}, for-each-ref, --format=%(refname), refs/` |  |  | git arguments listing every ref a mirror push publishes (push_mirror_opts, push_mirror_key), one full ref name per line; when it lists nothing the backstop reads every branch and tag. |
+| `git.push_argv_log` | `12 items` |  |  | git arguments listing every local commit no remote has (the pre-push credit check reads all of them, whatever the push would publish): {dir} is the repository directory, {repo} expands to the command's --git-dir/--work-tree, {n} the most commits read (the cap plus one, to see an overflow). Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
-| `git.push_config_keys` | `^remote\..+\.(push\\|mirror)$, ^push\.default$, ^remote\.pushdefault$, ^branch...` |  |  | Regular expressions (JavaScript syntax, case-insensitive) for the config keys that decide what a push publishes or where it goes. A `--config-env` naming one of them whose variable is not set in the same command is refused (msg_push_config_env); any other key (for example http.extraHeader) is left alone. |
-| `git.push_default_key` | `push.default` |  |  | Config key of the push mode used when no refspec is given or configured. |
-| `git.push_default_ref` | `HEAD` |  |  | The ref a push without refspecs publishes (the current branch). |
-| `git.push_exclude_remote` | `--remotes={remote}` |  |  | The exclusion of the commits the destination already has: its own remote-tracking refs. A destination with none (a URL, or a remote never fetched) excludes nothing, so commits only other remotes have are still read (the push_max_commits cap applies). |
-| `git.push_glob_chars` | `*?[` |  |  | Characters that make a refspec source a wildcard pattern. |
-| `git.push_glob_rev_arg` | `--glob={ref}` |  |  | The git log argument for a wildcard refspec source; {ref} is the source pattern. |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
-| `git.push_matching_values` | `matching` |  |  | push.default values that publish every branch the remote also has; the backstop then reads all local branches. |
-| `git.push_max_commits` | `50` |  |  | Most unpushed commits the pre-push credit backstop reads; a push with more is refused (msg_push_over_cap), never allowed unread. |
-| `git.push_mirror_key` | `remote.{remote}.mirror` |  |  | Config key that makes a push without refspecs mirror every ref; {remote} is the remote. |
-| `git.push_mirror_opts` | `--mirror` |  |  | git push options that publish every ref under refs/ (a mirror); the backstop then reads the commits of every ref push_argv_refs_all lists. |
-| `git.push_refspec_key` | `remote.{remote}.push` |  |  | Config key holding the refspecs a push without refspecs publishes; {remote} is the remote. |
-| `git.push_remote_fallback` | `origin` |  |  | The remote of a push that names none when no push_remote_keys value is set. |
-| `git.push_remote_keys` | `branch.{branch}.pushRemote, remote.pushDefault, branch.{branch}.remote` |  |  | Config keys, in order, naming the remote of a push that names none; {branch} is the current branch. |
-| `git.push_repo_opts` | `--repo` |  |  | git push options whose value names the remote (used when no remote is given as an argument). |
+| `git.push_max_commits` | `50` |  |  | Most unpushed local commits (on any ref, pushed or not by this push) the pre-push credit check reads; more is refused (msg_push_over_cap), never allowed unread. |
+| `git.push_same_call_always` | `am, cherry-pick` |  |  | Subcommands that write a commit message layer 1 never reads (a patch, a copied commit); with a push in the same Bash call they are refused. |
+| `git.push_same_call_here_string` | `<<<` |  |  | Regular expression (JavaScript syntax) for a here-string on the commit's command; it expands, so -F - fed by one is unread. |
+| `git.push_same_call_need_message` | `commit` |  |  | Subcommands of push_same_call_subs that open an editor or reuse a message without a literal -m (or -F - fed by a quoted heredoc): with none, the message counts as unread. |
+| `git.push_same_call_opts` | `^-[A-Za-z]*[Cct], ^--(?:reuse-message\\|reedit-message\\|template\\|edit)(?:=\\|$)` |  |  | Regular expressions (JavaScript syntax) for options that take the message from somewhere layer 1 does not read (a reused or edited commit, a template, an editor); any one makes the message unread. |
+| `git.push_same_call_quoted_heredoc` | `<<-?[ \t]*(?:'[^']+'\|"[^"]+"\|\\\S)` |  |  | Regular expression (JavaScript syntax) for a quoted heredoc on the commit's own command: -F - fed by one is read by layer 1 (its body never expands). |
+| `git.push_same_call_subs` | `commit, commit-tree, tag, merge` |  |  | Subcommands whose message the same-call check reads: with a push in the same Bash call, one whose message layer 1 cannot read is refused (msg_push_same_call). |
 | `git.push_skip_opts` | `--dry-run, -n, --delete, -d` |  |  | git push options after which nothing is published, so the pre-push credit backstop is skipped. |
-| `git.push_tag_keyword` | `tag` |  |  | The git push refspec keyword that names a tag (`git push origin tag v1`). |
-| `git.push_tag_prefix` | `refs/tags/` |  |  | The ref prefix a `tag <name>` refspec stands for. |
-| `git.push_tags_opts` | `--tags` |  |  | git push options that publish every tag; the backstop then reads the commits of all tags. |
-| `git.push_tags_rev_arg` | `--tags` |  |  | The git log argument that stands for every tag (push_tags_opts). |
 | `git.push_timeout_ms` | `4000` |  | ms | Timeout of each git query the pre-push credit backstop runs. |
-| `git.push_true_values` | `true, yes, on, 1` |  |  | Config values git reads as true (for push_mirror_key). |
-| `git.push_value_opts` | `-o, --push-option, --repo, --receive-pack, --exec` |  |  | git push options that take the next argument as their value (it is neither the remote nor a refspec). |
+| `git.push_unchecked_advisory` | `anti-hall: this push was not checked for AI credit lines (git could not run o...` |  |  | Advisory when the pre-push credit check could not run git (unavailable, or past push_timeout_ms): the push is let through unchecked. |
 | `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
 | `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
 | `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
@@ -1281,7 +1263,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git_audit.published_file` | `git-audit-published.json` |  |  | State file, under replykit.state_dir, holding the hashes of published credited commits already reported, so each one blocks once: the agent cannot clear it itself. |
 | `git_audit.published_memory` | `500` |  |  | How many reported published commit hashes the audit remembers (oldest dropped first). |
 | `git_audit.record_sep` | `` |  |  | The character that ends one commit record of the audit's log output (RS). |
-| `git_audit.reflog_creating` | `7 items` |  |  | Lower-case starts of the reflog descriptions of steps that write a commit (a checkout or reset only moves HEAD and is not read). |
+| `git_audit.reflog_creating` | `commit, merge, cherry-pick, rebase, revert, am` |  |  | Lower-case starts of the reflog descriptions of steps that write a commit (a checkout, reset or pull only moves HEAD and is not read). |
+| `git_audit.reflog_skip` | `^[a-z -]*\((?:start\\|finish\\|abort)\), : fast-forward$` |  |  | Regular expressions (JavaScript syntax) for reflog descriptions of reflog_creating steps that write no commit (a fast-forward, the start, finish or abort of a rebase): HEAD then points at a commit that already existed, often public history (PR #469 P2). |
 | `git_audit.summary` | `Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) c...` |  |  | One-line description of the git-audit check in the generated reference. |
 | `git_audit.timeout_ms` | `4000` |  | ms | Timeout of the git log the audit runs in each repository. |
 | `git_audit.window_s` | `900` |  |  | How recent, in seconds, a commit must be for the audit to look at it. |
@@ -14117,9 +14100,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |
-| `git.msg_push_config_env` | Block: a push names `--config-env <key>=<VAR>` for a key in push_config_keys but VAR is not set in the same command, so the config that decides what the push publishes cannot be read. Placeholder: {spec} (the --config-env value). |
 | `git.msg_push_credit` | Block: a push would publish commits that carry an AI credit. Placeholders: {shown} (short hashes), {first} (the first hash). |
-| `git.msg_push_over_cap` | Block: the commits a push would publish are more than the backstop reads, so a credit past the cap could not be ruled out. Placeholders: {cap}, {range} (the git log arguments of the range). |
+| `git.msg_push_over_cap` | Block: more local commits are on no remote than the pre-push credit check reads, so a credit past the cap could not be ruled out. Placeholder: {cap}. |
+| `git.msg_push_same_call` | Block: one Bash call creates a commit whose message layer 1 cannot read and pushes. Placeholder: {sub} (the subcommand). |
 | `git.msg_reused_message` | Block: a reused commit message carries an AI self-credit. Placeholder: {origin}. |
 | `git.msg_runner_no_subcommand` | Block: a runner with git and no subcommand beside a force or delete flag. Placeholder: {runner}. |
 | `git.msg_runner_placeholder` | Block: a runner placeholder stands for the command or subcommand beside a force or delete flag. |

@@ -1,0 +1,595 @@
+# ah-engine shipped defaults for the spawn and comms guards ported from Node: swarm-guard and
+# devswarm-comms-guard. Format: see the header of engine.toml. Regex sources use
+# JavaScript syntax (the Node guards are the authority) and are translated by `checks::guardkit::jsre`.
+
+# ---- devswarm-comms-guard ----------------------------------------------------------------------------------
+
+[devswarm_comms.summary]
+doc = "One-line description of the devswarm-comms-guard check in the generated reference."
+value = "Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets."
+
+[devswarm_comms.guard_name]
+doc = "Guard name in the block message and the skip file."
+value = "devswarm-comms-guard"
+
+[devswarm_comms.label_name]
+doc = "Guard name in the advisory labels."
+value = "devswarm-comms"
+
+[devswarm_comms.setting]
+doc = "The switch devswarm.commsGuard (on by default); off makes the guard a no-op."
+value = { section = "devswarm", key = "commsGuard", type = "boolean", env = "", option = "devswarm_comms_guard", default = true }
+
+[devswarm_comms.supervisor_setting]
+doc = "The setting devswarm.supervisorMode (auto, on or off): whether DevSwarm counts as active for this session."
+value = { section = "devswarm", key = "supervisorMode", type = "enum", values = ["auto", "on", "off"], env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto" }
+
+[devswarm_comms.disable_env]
+doc = "Environment variable that, set to its off value, switches the DevSwarm integration off."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_comms.disable_value]
+doc = "The value of the disable variable that switches the DevSwarm integration off."
+value = "1"
+
+[devswarm_comms.repo_id_env]
+doc = "Environment variable DevSwarm sets in a session it runs; in auto mode its presence means DevSwarm is active."
+value = "DEVSWARM_REPO_ID"
+
+[devswarm_comms.tool]
+doc = "The only tool this guard decides on."
+value = "SendMessage"
+
+[devswarm_comms.coordinator_target]
+doc = "The SendMessage target that is the session's own coordinator address, not a peer."
+value = "main"
+
+[devswarm_comms.sessions_dir]
+doc = "Where the host keeps one JSON file per session, relative to the home directory."
+value = ".claude/sessions"
+
+[devswarm_comms.repos_root]
+doc = "The DevSwarm workspace registry root, relative to the home directory."
+value = ".devswarm/repos"
+
+[devswarm_comms.session_file_suffix]
+doc = "Suffix of a session index file."
+value = ".json"
+
+[devswarm_comms.agent_id_re]
+doc = "A background agent's raw id: a, then hex digits, optionally dash-separated groups (JavaScript regex, case-insensitive)."
+value = '^a[0-9a-f]{4,}(?:-[0-9a-f-]+)?$'
+
+[devswarm_comms.ref_re]
+doc = "A target with a trailing bracketed reference such as `name [3fa9c1]`; group 1 is the bare name (JavaScript regex, case-insensitive)."
+value = '^(.*?)\s*\[[0-9a-f]{4,16}\]\s*$'
+
+[devswarm_comms.msg_main_what]
+doc = "What the label says for the coordinator address."
+value = "target \"main\" points back to this session."
+
+[devswarm_comms.msg_block_what]
+doc = "What the block says; {to} is the target and {cwd} the peer session's directory."
+value = "target \"{to}\" belongs to a DevSwarm workspace."
+
+[devswarm_comms.msg_block_why]
+doc = "Why the block applies."
+value = "Direct Claude remote-agent messaging between a DevSwarm Primary/child and a workspace is prohibited (owner rule 2026-09-04, defect 1c74863863e5)."
+
+[devswarm_comms.msg_block_instead]
+doc = "What to do instead of the blocked send."
+value = "send through the DevSwarm mesh."
+
+[devswarm_comms.msg_ok_what]
+doc = "What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory."
+value = "target \"{to}\" is a live session; messaging is allowed."
+
+# ---- swarm-guard -------------------------------------------------------------------------------------------
+
+[swarm_guard.summary]
+doc = "One-line description of the swarm-guard check in the generated reference."
+value = "Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the shared-tree advisory to an allowed write-capable spawn that shares a working tree with a running write-capable agent."
+
+[swarm_guard.guard_name]
+doc = "Guard name in the block message and the skip file."
+value = "swarm-guard"
+
+[swarm_guard.setting]
+doc = "The switch safety.swarmGuard (on by default); off makes the guard a no-op."
+value = { section = "safety", key = "swarmGuard", type = "boolean", env = "ANTIHALL_SWARM_GUARD", option = "safety_swarm_guard", default = true }
+
+[swarm_guard.shared_tree_setting]
+doc = "Shared-tree spawn advisory switch. The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent."
+value = { section = "guards", key = "sharedTreeAgentNote", type = "boolean", env = "ANTIHALL_SHARED_TREE_AGENT_NOTE", option = "", default = true }
+
+[swarm_guard.spawn_cap]
+doc = "How many agent spawns are allowed inside the window before the next one is blocked."
+value = 20
+min = 1
+max = 100000
+
+[swarm_guard.window_ms]
+doc = "The rolling window the spawn cap counts in."
+value = 60000
+unit = "ms"
+min = 1000
+max = 3600000
+
+[swarm_guard.mem_floor_percent]
+doc = "A spawn is blocked when available memory is below this percent of total memory."
+value = 4
+min = 1
+max = 50
+
+[swarm_guard.lock_stale_ms]
+doc = "A spawn-log lock older than this is taken over, whatever its holder."
+value = 5000
+unit = "ms"
+min = 100
+max = 600000
+
+[swarm_guard.lock_wait_ms]
+doc = "How long a spawn waits for the spawn-log lock before it is allowed unrecorded (the guard never deadlocks a spawn)."
+value = 50
+unit = "ms"
+min = 1
+max = 10000
+
+[swarm_guard.lock_step_ms]
+doc = "The pause between attempts to take the spawn-log lock."
+value = 5
+unit = "ms"
+min = 1
+max = 1000
+
+[swarm_guard.lock_reclaim_stale_ms]
+doc = "A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over."
+value = 5000
+unit = "ms"
+min = 100
+max = 600000
+
+[swarm_guard.lock_release_tries]
+doc = "How many times releasing the lock tries to take the takeover marker before it removes its own lock unguarded."
+value = 5
+min = 1
+max = 100
+
+[swarm_guard.lock_release_step_ms]
+doc = "The pause between those tries."
+value = 10
+unit = "ms"
+min = 1
+max = 1000
+
+[swarm_guard.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution)."
+value = 5
+unit = "s"
+min = 0
+max = 3600
+
+[swarm_guard.state_dir]
+doc = "The directory of the spawn log, lock and trip log, relative to the home directory."
+value = ".anti-hall"
+
+[swarm_guard.log_file]
+doc = "The spawn log: one millisecond timestamp per allowed spawn."
+value = "swarm-spawns.log"
+
+[swarm_guard.lock_file]
+doc = "The lock that serializes the read-count-append of the spawn log."
+value = "swarm-spawns.lock"
+
+[swarm_guard.trip_file]
+doc = "The trip log: one line per blocked spawn, never read by the rate decision."
+value = "swarm-trips.log"
+
+[swarm_guard.vm_stat_path]
+doc = "The macOS tool that reports memory pages (an absolute path, so a changed PATH cannot shadow it)."
+value = "/usr/bin/vm_stat"
+
+[swarm_guard.vm_stat_timeout_ms]
+doc = "How long the memory tool may run before the memory gate is skipped."
+value = 1500
+unit = "ms"
+min = 50
+max = 60000
+
+[swarm_guard.meminfo_path]
+doc = "The Linux memory report."
+value = "/proc/meminfo"
+
+[swarm_guard.vm_page_size_re]
+doc = "The page size line of the memory tool's output (JavaScript regex)."
+value = 'page size of (\d+) bytes'
+
+[swarm_guard.vm_pages_re]
+doc = "A pages line of the memory tool's output, with {label} replaced by free, inactive or speculative (JavaScript regex)."
+value = 'Pages {label}:\s+(\d+)'
+
+[swarm_guard.vm_labels]
+doc = "The page kinds that count as available memory (reclaimable on demand)."
+value = ["free", "inactive", "speculative"]
+
+[swarm_guard.vm_default_page_size]
+doc = "The page size assumed when the memory tool does not print one."
+value = 4096
+
+[swarm_guard.meminfo_available_re]
+doc = "The available-memory line of the Linux memory report, in kB (JavaScript regex)."
+value = 'MemAvailable:\s+(\d+)\s+kB'
+
+[swarm_guard.meminfo_total_key]
+doc = "The total-memory line prefix of the Linux memory report, in kB."
+value = "MemTotal:"
+
+[swarm_guard.read_only_types]
+doc = "Agent types that cannot edit files (their definitions exclude the editing tools), lower-case."
+value = [
+  "explore", "plan", "claude-code-guide", "web-fetch",
+  "oh-my-claudecode:explore", "oh-my-claudecode:analyst", "oh-my-claudecode:architect",
+  "oh-my-claudecode:code-reviewer", "oh-my-claudecode:critic", "oh-my-claudecode:document-specialist",
+  "oh-my-claudecode:scientist", "oh-my-claudecode:security-reviewer", "oh-my-claudecode:verifier",
+]
+
+[swarm_guard.write_tools]
+doc = "Tools that make an agent write-capable, lower-case."
+value = ["edit", "write", "multiedit", "notebookedit"]
+
+[swarm_guard.write_tools_every]
+doc = "The write tools a disallowed list must all contain for the agent to count as read-only."
+value = ["edit", "write", "multiedit"]
+
+[swarm_guard.isolation_values]
+doc = "Values of the spawn's isolation field that give the agent its own working tree, lower-case."
+value = ["worktree", "remote"]
+
+[swarm_guard.unknown_label]
+doc = "The spawn label in the trip log when the payload names no tool."
+value = "unknown"
+
+[swarm_guard.msg_mem]
+doc = "The block reason for critical memory pressure; {avail} and {total} are megabytes."
+value = "anti-hall swarm-guard: memory pressure critical ({avail} MB available of {total} MB total, < 4%). Blocking new agent spawn to protect OS stability. Let running agents finish and free memory before spawning more."
+
+[swarm_guard.msg_rate_what]
+doc = "What the rate block says; {count} is the spawns in the window and {cap} the cap."
+value = "spawn limit reached ({count} in 60s, cap {cap})."
+
+[swarm_guard.msg_rate_why]
+doc = "Why the rate block applies."
+value = "A runaway swarm can make the OS unusable."
+
+[swarm_guard.msg_rate_instead]
+doc = "What to do instead of spawning past the cap."
+value = "wait for running agents to finish before spawning more."
+
+[swarm_guard.sysctl_boottime]
+doc = "The macOS sysctl name that holds the boot time (the lock records it to tell machines apart)."
+value = "kern.boottime"
+
+[swarm_guard.sysctl_memsize]
+doc = "The macOS sysctl name that holds the total physical memory in bytes."
+value = "hw.memsize"
+
+[swarm_guard.proc_uptime]
+doc = "The Linux file that holds the uptime in seconds."
+value = "/proc/uptime"
+
+[swarm_guard.proc_pidns]
+doc = "The Linux link that names this process's pid namespace."
+value = "/proc/self/ns/pid"
+
+[swarm_guard.lock_hb_infix]
+doc = "The text between a lock file's name and the temporary file a heartbeat (refresh) of that lock is written through (lock.js: `<lock>.hb.<pid>-<rand>`)."
+value = ".hb."
+
+[swarm_guard.vm_stat_poll_ms]
+doc = "How often the wait for the memory tool checks whether it has finished."
+value = 2
+unit = "ms"
+min = 1
+max = 100
+
+[swarm_guard.allow_fields]
+doc = "Spawn input fields that list the tools an agent may use, first non-empty one wins."
+value = ["tools", "allowed_tools", "allowedTools"]
+
+[swarm_guard.deny_fields]
+doc = "Spawn input fields that list the tools an agent may not use, first non-empty one wins."
+value = ["disallowedTools", "disallowed_tools"]
+
+[swarm_guard.agent_type_fields]
+doc = "Spawn input fields that name the agent type, first non-empty one wins (the trip log label)."
+value = ["subagent_type", "agentType", "agent_type"]
+
+[swarm_guard.exact_int_limit]
+doc = "The largest integer a JavaScript number prints exactly in decimal (2 to the 53rd); a spawn log holding a larger entry is left to the Node hook."
+value = 9007199254740992
+
+# ---- swarm-guard: the shared-tree advisory -----------------------------------------
+
+[swarm_guard.shared_tree_label]
+doc = "Guard name in the shared-tree advisory."
+value = "shared-tree"
+
+[swarm_guard.scratch_path]
+doc = "JavaScript regex source for a scratch location in a spawn prompt (a /tmp, /private/tmp, /var/folders or scratchpad path); {path} in the scratch alternatives is replaced by it."
+value = '''[\x60'"]?(?:\/private\/tmp\/|\/tmp\/|\/var\/folders\/|[^\s\x60'"]*scratchpad\b)'''
+
+[swarm_guard.scratch_alternatives]
+doc = "JavaScript regex sources, joined with | and matched case-insensitively against the spawn's prompt and description: the statements that establish a scratch working location outside the session's git tree."
+value = [
+  '''\bwork(?:ing)?\s+(?:in|inside)\s+(?:a|an|the|your)?\s*scratch\s+(?:clone|dir(?:ectory)?|copy)\b''',
+  '''\b(?:cwd\s+is|cwd|work(?:ing)?\s+(?:in|inside)|working\s+dir(?:ectory)?|cd(?:\s+into)?)\s*[:=]?\s*{path}''',
+  '''\bscratch\s+(?:clone|dir(?:ectory)?|copy)\s+(?:under|at|in)\s+{path}''',
+  '''\bclone\s+(?:\S+\s+)?into\s+{path}[^\s]*\s+and\s+(?:work|edit|make|fix)\b''',
+  '''\bgit\s+(?:-C\s+\S+\s+)?worktree\s+add\s+(?:-\S+\s+)*[\x60'"]?(?:~\/|\/|\$HOME\/)''',
+  '''\b(?:its|your|their)\s+own\s+(?:git\s+)?worktrees?\b''',
+]
+
+[swarm_guard.re_named_tree]
+doc = "JavaScript regex source (case-insensitive): a statement that names the spawn's own working tree (\"a|your|its|scratch… clone\", worktree, checkout, cd, cwd or work-in target; a bare \"git clone <src>\" names a source, not a tree) followed by an absolute, ~ or $HOME path. When that path lies outside the session's git tree (and outside its cwd), the spawn works in another checkout and shares no tree; the scratch negation and in-place statements still cancel it."
+value = '''\b(?:(?:a|an|the|your|its|their|own|scratch|separate|fresh|lane)\s+(?:clone|worktree|checkout)|worktree|cwd(?:\s+is)?|cd(?:\s+into)?|work(?:ing)?\s+(?:in|inside|from)|working\s+dir(?:ectory)?)\s*(?:(?:at|in|under|into|is|to)\s+)?[:=]?\s*[\x60'"]?(?:~|\$HOME)?\/[^\s\x60'",;)]+'''
+
+[swarm_guard.re_named_tree_path]
+doc = "JavaScript regex source: the path inside a re_named_tree match (the first absolute, ~ or $HOME path)."
+value = '''(?:~|\$HOME)?\/[^\s\x60'",;)]+'''
+
+[swarm_guard.re_named_tree_trim]
+doc = "JavaScript regex source: trailing sentence punctuation cut from a named-tree path."
+value = '''[.:]+$'''
+
+[swarm_guard.re_named_tree_home]
+doc = "JavaScript regex source: the home prefix of a named-tree path (~ or $HOME), replaced by the user's home directory."
+value = '''^(?:~|\$HOME)'''
+
+[swarm_guard.re_scratch_negated]
+doc = "JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading."
+value = '''\b(?:not|no|without|instead\s+of)\s+(?:in\s+|a\s+|the\s+|any\s+)?scratch\b'''
+
+[swarm_guard.quiet_no_worktrees_setting]
+doc = "Quiets the shared-tree note when worktrees are forbidden. Where the switch is read from that silences the shared-tree advisory when a CLAUDE.md, AGENTS.md or memory rule forbids worktrees (guards.sharedTreeQuietNoWorktrees, default on)."
+value = { section = "guards", key = "sharedTreeQuietNoWorktrees", env = "ANTIHALL_SHARED_TREE_QUIET_NO_WORKTREES", aliases = [], option = "", default = true }
+
+[swarm_guard.memory_sources]
+doc = "Folders under the home directory whose .md files are read for the no-worktrees rule; {slug} is the working directory with every re of memory_slug_re replaced by a dash (the host's project folder name)."
+value = [".claude/projects/{slug}/memory"]
+
+[swarm_guard.memory_slug_re]
+doc = "JavaScript regex source of the characters of a working directory path that the host's project folder name replaces with a dash."
+value = '[^A-Za-z0-9-]'
+
+[swarm_guard.memory_files_max]
+doc = "The most memory files read in one folder."
+value = 200
+min = 1
+
+[swarm_guard.scratch_only_setting]
+doc = "Report-only agents share no tree. Where the switch is read from that treats an agent whose brief only writes a report or results under the scratch location as sharing no tree (guards.sharedTreeScratchOnly, default on)."
+value = { section = "guards", key = "sharedTreeScratchOnly", env = "ANTIHALL_SHARED_TREE_SCRATCH_ONLY", aliases = [], option = "", default = true }
+
+[swarm_guard.re_scratch_only]
+doc = "JavaScript regex source (case-insensitive; {path} is the scratch path): a brief that writes, saves or puts a report, findings, results or output under the scratch location."
+value = '''\b(?:writ(?:e|es|ing)|sav(?:e|es|ing)|put|puts|output|outputs)\b[^\n]{0,80}?\b(?:to|into|under|in|at)\s+{path}'''
+
+[swarm_guard.re_repo_write]
+doc = "JavaScript regex source (case-insensitive): a brief that also edits, commits or pushes repo files, which cancels the scratch-only reading."
+value = '''\b(?:edit|modify|patch|refactor|fix|implement|commit|push)\b|\bwrit(?:e|es|ing)\s+(?:code|tests?|source)\b'''
+
+[swarm_guard.re_api_only]
+doc = "JavaScript regex source (case-insensitive): a statement that the spawn only calls the GitHub API or gh CLI and edits no checkout (gh-API-only, only calls the GitHub API, no checkout, do not touch the working tree). Such a spawn shares no working tree, so the shared-tree advisory does not apply; an in-place statement still cancels it."
+value = '''\b(?:gh|github)[- ](?:api|cli)[- ]only\b|\bonly\s+(?:calls?|uses?|runs?|via)\s+(?:the\s+)?(?:github\s+api|gh\s+(?:api|cli|commands?))\b|\b(?:via|through|using)\s+the\s+github\s+api\s+only\b|\bno\s+(?:local\s+)?(?:checkout|file\s+(?:edits|writes|changes)|working[- ]tree)\b|\b(?:does\s+not|doesn'?t|do\s+not|don'?t|never)\s+(?:touch|write\s+to|edit|modify)\s+(?:the\s+|any\s+|a\s+)?(?:local\s+)?(?:checkout|working\s+tree|repo\s+files?)\b'''
+
+[swarm_guard.re_in_place]
+doc = "JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading."
+value = '''\bin\s+place\b|\bin\s+(?:the\s+)?(?:session\s+)?repo\b|\brepo\s+files\b|\b(?:session|main)\s+(?:checkout|working\s+tree)\b|\bin\s+the\s+(?:working\s+tree|checkout)\b|\bworking\s+copy\b|\bchecked[- ]out\s+(?:files?|tree|copy|branch)\b|\bon\s+main\b|\bmain\s+branch\b'''
+
+[swarm_guard.re_negated_in_place]
+doc = "Negated write/location spans removed before affirmative in-place detection; {place} expands to re_in_place. Other affirmative clauses remain effective."
+value = '''\b(?:(?:do|does|did|must|will|should|can)\s+not|don'?t|doesn'?t|didn'?t|won'?t|shouldn'?t|can'?t|never|without|no|not)\s+(?:(?:touch(?:ing)?|edit(?:s|ing)?|modify|modifying|write|writing|writes|change(?:s)?|changing|work(?:ing)?)(?:\s+(?:to|on|in|with))?\s+)?(?:(?:the|any|a|local)\s+)*(?:{place})(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:(?:the|any|a|local)\s+)*(?:{place}))*'''
+
+[swarm_guard.re_no_worktrees]
+doc = "JavaScript regex source (case-insensitive) matched against the CLAUDE.md / AGENTS.md files of the repo: a rule that forbids worktrees, which drops the isolation hint from the advisory."
+value = '''\bno\s+(?:git\s+)?worktrees?\b'''
+
+[swarm_guard.repo_docs]
+doc = "The files read at each directory level when looking for the no-worktrees rule."
+value = ["CLAUDE.md", "AGENTS.md"]
+
+[swarm_guard.repo_docs_levels]
+doc = "How many directory levels up from the spawn's working directory the rule search climbs at most."
+value = 8
+min = 1
+max = 64
+
+[swarm_guard.msg_shared_what]
+doc = "What the shared-tree advisory says."
+value = "another agent is already writing in this working tree."
+
+[swarm_guard.msg_shared_why]
+doc = "Why the shared-tree advisory applies."
+value = "Two such agents can stage and commit each other's uncommitted changes."
+
+[swarm_guard.msg_shared_instead]
+doc = "What to do instead, when the repo does not forbid worktrees."
+value = "give the new agent its own worktree."
+
+[swarm_guard.msg_shared_instead_no_worktrees]
+doc = "What to do instead, when the repo forbids worktrees."
+value = "serialize them or give each its own scratch clone."
+
+# ---- spawn-ceiling: the fan-out safety ceiling (GH #270) ---------------------------------------------------------
+# Parallelism is fine; this is a generous safety net, not a throttle. It counts the agents the session transcript shows as running
+# and blocks a spawn past the ceiling, naming them. The ceiling shrinks in steps as the 5-hour or weekly limit nears.
+
+[spawn_ceiling.setting]
+doc = "On by default; off makes the fan-out ceiling a no-op."
+value = { section = "guards", key = "spawnCeiling", type = "boolean", env = "ANTIHALL_SPAWN_CEILING", option = "", default = true }
+
+[spawn_ceiling.guard_name]
+doc = "Guard name in the block message and the skip file (a per-session owner override goes through ~/.anti-hall/skip.json)."
+value = "spawn-ceiling"
+
+[spawn_ceiling.ignore_unknown_liveness]
+doc = "Do not count a transcript row toward the spawn ceiling unless the agent tracker proves it live; missing, unreadable or stale evidence fails open. False retains the legacy count for unknown rows."
+value = true
+
+[spawn_ceiling.excluded_task_types]
+doc = "Background task types that do not consume an agent spawn slot; their owners can still cover task-guard work."
+value = ["local_bash"]
+
+[spawn_ceiling.base]
+doc = "The ceiling at full usage headroom: a spawn is blocked when this many agents already run."
+value = 12
+min = 1
+max = 1000
+
+[spawn_ceiling.step_pct]
+doc = "Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce."
+value = [70, 85, 92]
+
+[spawn_ceiling.step_reduce]
+doc = "How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies)."
+value = [3, 6, 9]
+
+[spawn_ceiling.floor]
+doc = "The ceiling never drops below this, whatever the usage."
+value = 2
+min = 1
+max = 1000
+
+[spawn_ceiling.list_max]
+doc = "How many running agents the block message names."
+value = 8
+min = 1
+max = 100
+
+[spawn_ceiling.desc_max]
+doc = "How many characters of an agent description the message keeps."
+value = 60
+min = 10
+max = 500
+
+[spawn_ceiling.unnamed]
+doc = "The name of a running agent with no description."
+value = "(unnamed)"
+
+[spawn_ceiling.control_re]
+doc = "JavaScript regex source (global): control characters cut from an agent description before it is shown."
+value = '[\x00-\x1f\x7f]+'
+
+[spawn_ceiling.join]
+doc = "The separator between the listed agent names."
+value = "; "
+
+[spawn_ceiling.msg_what]
+doc = "What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause."
+value = "{n} agents are running (limit {ceiling})."
+
+[spawn_ceiling.msg_more]
+doc = "The remainder clause when more agents run than are listed; {n} is how many are not listed."
+value = " and {n} more"
+
+[spawn_ceiling.msg_why]
+doc = "Why the ceiling block applies."
+value = "More agents rarely add results, and each one costs tokens whether or not it finishes."
+
+[spawn_ceiling.msg_instead]
+doc = "What to do instead of spawning past the ceiling."
+value = "wait for a running agent to finish."
+
+# ---- spawn-usage: usage-aware dispatch (GH #270) -----------------------------------------------------------------
+# Reads the usage cache the limit-conserve check reads. Soft: allow, plus advice to use cheaper models and fewer agents (counted).
+# Hard (block_pct): block the spawn, naming the limit near and its reset.
+
+[spawn_usage.setting]
+doc = "On by default; off makes usage-aware dispatch a no-op."
+value = { section = "guards", key = "usageAwareDispatch", type = "boolean", env = "ANTIHALL_USAGE_AWARE_DISPATCH", option = "", default = true }
+
+[spawn_usage.guard_name]
+doc = "Guard name in the messages and the skip file."
+value = "spawn-usage"
+
+[spawn_usage.soft_pct]
+doc = "Soft threshold: at or above this usage percent a spawn is allowed with advice to use cheaper models and fewer agents."
+value = 75
+min = 1
+max = 100
+
+[spawn_usage.block_pct]
+doc = "Hard threshold (spawn_block_pct): at or above this usage percent (the fullest of the 5-hour and weekly buckets) new agent spawns are blocked until the limit resets."
+value = 90
+min = 1
+max = 100
+
+[spawn_usage.bucket_pct]
+doc = "The usage-cache fields holding each bucket percent (the 5-hour and weekly limits; there is no separate Sonnet pool)."
+value = ["fiveHourPercent", "weeklyPercent"]
+
+[spawn_usage.bucket_resets]
+doc = "The usage-cache fields holding each bucket reset time, parallel to bucket_pct."
+value = ["fiveHourResetsAt", "weeklyResetsAt"]
+
+[spawn_usage.bucket_names]
+doc = "The name each bucket has in the messages, parallel to bucket_pct."
+value = ["5-hour", "weekly"]
+
+[spawn_usage.msg_resets_at]
+doc = "The reset clause when the reset time is known; {at} is an ISO time to the minute (UTC)."
+value = "resets at {at}"
+
+[spawn_usage.msg_resets_unknown]
+doc = "The reset clause when the reset time is not in the usage cache."
+value = "reset time unknown"
+
+[spawn_usage.msg_block_what]
+doc = "What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause."
+value = "new agents can't start: the {limit} usage limit is at {pct}% (stop at {cap}%, {resets})."
+
+[spawn_usage.msg_block_why]
+doc = "Why the hard block applies."
+value = "Another spawn could use up the limit and stop all work, including agents already running."
+
+[spawn_usage.msg_block_instead]
+doc = "What to do instead of the blocked spawn."
+value = "wait for the usage limit to reset."
+
+[spawn_usage.msg_soft_what]
+doc = "What the soft advice says; {limit}, {pct} and {resets} as in msg_block_what."
+value = "the {limit} usage limit is at {pct}% ({resets})."
+
+[spawn_usage.msg_soft_why]
+doc = "Why the soft advice applies."
+value = "Headroom is getting short; avoid spending tokens that produce no commit, finished step or passing check."
+
+[spawn_usage.msg_soft_instead]
+doc = "What to do instead, in the soft advice."
+value = "use cheaper models for routine work."
+
+# ---- nested spawns (a subagent or teammate starting agents of its own) ----------------------------------------
+
+[nested_spawn.setting]
+doc = "On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them."
+value = { section = "guards", key = "allowNestedSpawns", type = "boolean", env = "ANTIHALL_ALLOW_NESTED_SPAWNS", option = "", default = false }
+
+[nested_spawn.guard_name]
+doc = "Guard name in the block message and the skip file."
+value = "nested-spawn-guard"
+
+[nested_spawn.summary]
+doc = "One-line description of the nested-spawn check in the generated reference."
+value = "Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): blocks a spawn whose caller is a subagent or teammate unless guards.allowNestedSpawns is on. The spawn rate and budget gates of swarm-guard stay Claude-only."
+
+[nested_spawn.msg_what]
+doc = "What the block says."
+value = "this agent is a worker and can't start agents of its own."
+
+[nested_spawn.msg_why]
+doc = "Why nested spawns are blocked."
+value = "Nested agents hide their cost from the coordinator (one burned about 2.5M tokens in 30 minutes)."
+
+[nested_spawn.msg_instead]
+doc = "What to do instead of a nested spawn."
+value = "report back to the coordinator if more agents are needed."

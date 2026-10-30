@@ -1,0 +1,2184 @@
+# ah-engine shipped defaults for the small Bash guards ported from Node (merge-side-pick, ship-it-guard,
+# scan-throttle, coordinator-work-guard, compact-declaration-guard) and the helpers they share (D17, D30).
+#
+# Every pattern, message, setting name and limit of these checks lives here. Regex sources use JavaScript syntax
+# (the Node guards are the authority) and are translated by `checks::guardkit::jsre`; they are written as TOML
+# literal strings so no backslash is doubled. Format: see the header of engine.toml.
+
+# ---- shared helpers (checks::guardkit) --------------------------------------------------------------------
+
+[guardkit.js_space]
+doc = "Characters JavaScript treats as white space, written as the body of a regex character class; used to translate the JS escapes for white space exactly (Rust's own class differs: it has U+0085 and lacks U+FEFF)."
+value = '\t\n\x0b\x0c\r    -     　﻿'
+
+[guardkit.line_terminators]
+doc = "Characters JavaScript's dot excludes, as the body of a regex character class."
+value = '\n\r  '
+
+[guardkit.settings_file]
+doc = "Settings file, relative to the home directory."
+value = ".anti-hall/settings.json"
+
+[guardkit.skip_file]
+doc = "Skip file, relative to the home directory (a skipped guard is allowed until its expiry time)."
+value = ".anti-hall/skip.json"
+
+[guardkit.skip_session_separator]
+doc = "Separator between a guard name and its session id in skip.json; bare names remain global."
+value = "@"
+
+[guardkit.skip_session_env]
+doc = "Session identity fallbacks for skip writers and readers; hook payload session_id takes precedence."
+value = ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "ANTIHALL_SESSION_ID", "CODEX_THREAD_ID"]
+
+[guardkit.claude_settings_file]
+doc = "The host's own settings file, relative to the home directory, where plugin options are stored."
+value = ".claude/settings.json"
+
+[guardkit.plugin_config_keys]
+doc = "Keys of the host settings file's pluginConfigs map under which this plugin's options may be stored, lowest priority first."
+value = ["anti-hall", "anti-hall@anti-hall"]
+
+[guardkit.plugin_option_prefix]
+doc = "Prefix of the environment variables the host sets from plugin options."
+value = "CLAUDE_PLUGIN_OPTION_"
+
+[guardkit.true_tokens]
+doc = "Environment or settings strings that mean on (compared after trimming and lower-casing)."
+value = ["1", "on", "true", "yes"]
+
+[guardkit.false_tokens]
+doc = "Environment or settings strings that mean off (compared after trimming and lower-casing)."
+value = ["0", "off", "false", "no"]
+
+[guardkit.destructive_guards]
+doc = "Guards that a broad skip of everything does not cover; they must be named in the skip file."
+value = ["git-guard", "devswarm-read-guard", "git-stash-guard"]
+
+[guardkit.skip_all_key]
+doc = "Key of the skip file that skips every guard not listed in destructive_guards."
+value = "all"
+
+[guardkit.state_cap]
+doc = "How many per-session state entries the in-memory guard state keeps before it evicts the least recently written one."
+value = 4096
+min = 16
+max = 1000000
+
+[guardkit.session_key_max]
+doc = "Longest session key, in UTF-16 units, after the characters outside letters, digits, dot, underscore and hyphen are replaced (the Node state file name limit)."
+value = 120
+
+[guardkit.plugin_manifest]
+doc = "The plugin manifest, relative to the plugin root (its version is the one the settings migration stamp is compared with)."
+value = ".claude-plugin/plugin.json"
+
+[guardkit.migration_markers_file]
+doc = "The per-migration marker file, relative to the home directory."
+value = ".anti-hall/update-sweep-state.json"
+
+[guardkit.jev_legacy_file]
+doc = "The legacy Jev settings file (settings.js reads it below settings.json for the Jev keys), relative to the home directory."
+value = ".anti-hall/jev.json"
+
+[guardkit.settings_migration_key]
+doc = "Key of the marker that says the legacy settings were forward-migrated into settings.json for a plugin version."
+value = "migrateSettingsFromLegacy"
+
+[guardkit.settings_dir]
+doc = "The anti-hall directory under the home directory, where the legacy settings files live."
+value = ".anti-hall"
+
+[guardkit.icons]
+doc = "Leading icon of a block or advisory message, by kind."
+value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "💡", update = "💡", error = "⛔" }
+
+[guardkit.msg_head]
+doc = "Text between the icon and the guard name in every block or advisory message."
+value = " "
+
+[guardkit.msg_labels]
+doc = "Labels of the optional lines of a block or advisory message."
+value = { "why" = "Why: ", "instead" = "Do instead: ", "allowed" = "Allowed here: ", "override" = "To allow this once: ", "details" = "details: " }
+
+[messages.style_guide]
+doc = "Every guard message uses at most two lines and one leading emoji: block ⛔, warning ⚠️, tip 💡. Line 1: <emoji> <plain name>: <what stopped, short>. Line 2: Do instead: <one action>. No emoji on labels; no separate Why, override or Details line. Fold a short reason into line 1 only when needed to understand the action. Aim for 160 characters; never exceed 250 including filled placeholders and a details tail. Save skip instructions, long instructions and paths in a details file. Link it only when the action needs them, as (details: <path>) at the end of line 2. Plain text, no markdown. Both Claude/OMC and Codex/OMX use this shared renderer."
+value = "⛔ <plain name>: <what stopped>\nDo instead: <one action>"
+
+# ---- merge-side-pick ----------------------------
+
+[merge_side_pick.summary]
+doc = "One-line description of the merge-side-pick check in the generated reference."
+value = "Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since."
+
+[merge_side_pick.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "merge-side-pick"
+
+[merge_side_pick.setting]
+doc = "Where the on/off switch is read from (guards.mergeSidePickAdvisory, default on)."
+value = { section = "guards", key = "mergeSidePickAdvisory", env = "ANTIHALL_MERGE_SIDE_PICK_ADVISORY", aliases = [], option = "", default = true }
+
+[merge_side_pick.state_ns]
+doc = "Namespace of this check's per-session state in the guard state store."
+value = "merge-side-pick"
+
+[merge_side_pick.heredoc_open]
+doc = "JavaScript regex source for the opener of a heredoc (<<TAG, <<-TAG, <<'TAG'; capture 1 = the optional quote, capture 2 = the tag). The lines up to the tag line are text, blanked before a command is split into segments."
+value = '''<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1'''
+
+[merge_side_pick.quote_masks]
+doc = "Regexes whose matches (quoted spans, which may span lines such as a multi-line commit message) are blanked before a command is split into segments, so quoted text is never mistaken for a command (maskShellQuotes). One alternation, so the quote that opens first wins."
+value = ['\x27[^\x27]*\x27|"(?:[^"\\]|\\.)*"']
+
+[merge_side_pick.segment_split]
+doc = "Regex that splits a masked command into segments (semicolon, ampersand, pipe, newline)."
+value = '[;&|\n]+'
+
+[merge_side_pick.git_prefix]
+doc = "Regex source that every git pattern starts with: the git word with optional -C, -c and --no-pager options."
+value = '(?:^|\s)git(?:\s+-C\s+\S+|\s+-c\s+\S+|\s+--no-pager)*\s+'
+
+[merge_side_pick.pick_tails]
+doc = "Regex sources, each appended to git_prefix, that recognise taking one side of a conflict wholesale (checkout or restore --ours, -X ours, -s ours)."
+value = [
+  '(?:checkout|restore)\b[^\n]*?\s--(?:ours|theirs)\b',
+  '(?:merge|pull|rebase|cherry-pick|revert)\b[^\n]*?\s(?:-X\s*|--strategy-option[= ])(?:ours|theirs)\b',
+  '(?:merge|pull)\b[^\n]*?\s(?:-s\s*|--strategy[= ])ours\b',
+]
+
+[merge_side_pick.push_tail]
+doc = "Regex source appended to git_prefix that recognises a push."
+value = 'push\b'
+
+[merge_side_pick.dry_run]
+doc = "Regex that marks a push segment as a dry run, which is not a push."
+value = '\s(?:--dry-run|-n)\b'
+
+[merge_side_pick.test_patterns]
+doc = "Regex sources that recognise a test run in a command segment."
+value = [
+  '(?:^|\s)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)\b',
+  '(?:^|\s)(?:npx|bunx|pnpm\s+exec)\s+(?:jest|vitest|mocha|ava)\b',
+  '(?:^|\s)(?:jest|vitest|mocha|pytest|py\.test|tox|nox|rspec|phpunit|ctest)\b',
+  '(?:^|\s)node\s+(?:\S+\s+)*--test\b',
+  '(?:^|\s)python3?\s+-m\s+(?:pytest|unittest)\b',
+  '(?:^|\s)(?:go|cargo|flutter|dart|deno)\s+test\b',
+  '(?:^|\s)cargo\s+nextest\b',
+  '(?:^|\s)(?:\./)?(?:mvn|mvnw|gradle|gradlew)\s+(?:\S+\s+)*(?:test|verify|check)\b',
+  '(?:^|\s)(?:make|just)\s+(?:test|tests|check)\b',
+  '(?:^|\s)(?:bundle\s+exec\s+)?rake\s+test\b',
+  '(?:^|\s)dotnet\s+test\b',
+]
+
+[merge_side_pick.cmd_keep]
+doc = "How many UTF-16 units of the side-pick command are kept for the advisory."
+value = 120
+
+[merge_side_pick.msg_what]
+doc = "Advisory headline; {pick} is the recorded side-pick command."
+value = "a push follows a one-sided conflict resolution with no tests."
+
+[merge_side_pick.msg_why]
+doc = "Advisory reason."
+value = "taking --ours/--theirs (or -X ours/theirs) silently drops the other side's changes, and nothing has verified the result."
+
+[merge_side_pick.msg_instead]
+doc = "Advisory advice."
+value = "verify the conflict resolution before pushing."
+
+[merge_side_pick.scope_unknown_re]
+doc = "Regex source: a segment after which the checkout a git command runs in cannot be told (cd, pushd, GIT_DIR, GIT_WORK_TREE, --git-dir, --work-tree). A push then keeps the advisory."
+value = '(?:^|\s)(?:cd|pushd|GIT_DIR=|GIT_WORK_TREE=|--git-dir|--work-tree)(?:\s|=|$)'
+
+[merge_side_pick.git_dir_levels]
+doc = "How many directory levels up from the working directory the search for the checkout's .git climbs at most."
+value = 64
+min = 1
+max = 256
+
+[merge_side_pick.git_file_max]
+doc = "Most bytes read from a .git file or a HEAD file."
+value = 4096
+min = 64
+max = 65536
+
+[merge_side_pick.gitdir_line_re]
+doc = "Regex source (multi-line): the gitdir line of a .git file (a linked worktree)."
+value = '^gitdir:[^\n]+'
+
+[merge_side_pick.gitdir_prefix]
+doc = "Regex source: the prefix cut from the gitdir line to leave the path."
+value = '^gitdir:\s*'
+
+[merge_side_pick.head_ref_re]
+doc = "Regex source: the ref line of a HEAD file (a detached HEAD has none, and the branch is then unknown)."
+value = '^ref:\s*refs/heads/[^\s]+'
+
+[merge_side_pick.head_ref_prefix]
+doc = "Regex source: the prefix cut from the HEAD ref line to leave the branch name."
+value = '^ref:\s*refs/heads/'
+
+[merge_side_pick.push_unscoped_opts_re]
+doc = "Regex source: a push argument that pushes more than the named refs or takes its value as the next word (--all, --mirror, --tags, --follow-tags, --prune, --branches, -o, --push-option, --repo, --receive-pack, --exec). The advisory stays for such a push."
+value = '^(?:--(?:all|mirror|tags|follow-tags|prune|branches|push-option|repo|receive-pack|exec)|-o)$'
+
+[merge_side_pick.head_word]
+doc = "The refspec word that means the current branch."
+value = "HEAD"
+
+[merge_side_pick.heads_prefix]
+doc = "The prefix of a full local branch ref in a refspec."
+value = "refs/heads/"
+
+[merge_side_pick.plain_branch_re]
+doc = "Regex source: a plain local branch name in a refspec (anything else, such as a tag, a sha or a revision, keeps the advisory)."
+value = '^[A-Za-z0-9][A-Za-z0-9._/@-]*$'
+
+[merge_side_pick.fallback_cmd]
+doc = "Text used for the side-pick command when none was recorded."
+value = "a side-pick"
+
+# ---- ship-it-guard ----------------------------------------------------------------
+
+[ship_it.summary]
+doc = "One-line description of the ship-it-guard check in the generated reference."
+value = "Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's phases do not declare."
+
+[ship_it.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "ship-it-guard"
+
+[ship_it.setting]
+doc = "Where the opt-in switch is read from (guards.shipitGate, default off)."
+value = { section = "guards", key = "shipitGate", env = "ANTIHALL_SHIPIT_GATE", aliases = [], option = "guards_shipit_gate", default = false }
+
+[ship_it.plan_file]
+doc = "Name of the plan file looked for in the working directory."
+value = "PLAN.md"
+
+[ship_it.hard_risk]
+doc = "Regex sources (case-insensitive) of hard-risk paths: CI workflows, migrations, auth, security."
+value = [
+  '(^|[\\/])\.github[\\/]workflows[\\/]',
+  '(^|[\\/])migrations?[\\/]',
+  '(^|[\\/])migrate[\\/]',
+  '[._-]migration[s]?\.[a-z]+$',
+  '(^|[\\/])(auth|authn|authz)[\\/]',
+  '[._-](auth|authn|authz|login|session|password|credential|token|secret)s?\.[a-z]+$',
+  '(^|[\\/])(security|crypto)[\\/]',
+]
+
+[ship_it.non_code_name]
+doc = "Lower-cased base name that is never gated (the plan file itself)."
+value = "plan.md"
+
+[ship_it.non_code_ext]
+doc = "Regex source (case-insensitive), tested on the lower-cased base name, for documentation extensions that are never gated."
+value = '\.(md|mdx|markdown|txt|rst)$'
+
+[ship_it.non_code_test_file]
+doc = "Regex source (case-insensitive), tested on the lower-cased base name, for test file names that are never gated."
+value = '\.(test|spec)\.[a-z0-9]+$'
+
+[ship_it.non_code_test_dir]
+doc = "Regex source (case-insensitive), tested on the whole path, for test directories that are never gated."
+value = '(^|[\\/])(tests?|__tests__|spec)([\\/]|$)'
+
+[ship_it.phases_head]
+doc = "Regex source (case-insensitive) of the line that opens the Phases section of a plan."
+value = '(?:^|\n)##[ \t]+Phases\b'
+
+[ship_it.phases_end]
+doc = "Regex source that finds where the Phases section ends: the next level-two heading."
+value = '\n##[ \t]+\S'
+
+[ship_it.phase_split]
+doc = "Regex source that finds the line break before each phase heading, where the Phases section is split."
+value = '\n###[ \t]+'
+
+[ship_it.phase_head]
+doc = "Regex source a phase section must start with."
+value = '^###[ \t]+'
+
+[ship_it.files_head]
+doc = "Regex source (case-insensitive) of the files field a phase declares, up to where its value starts."
+value = '\n-[ \t]*files:[ \t]*'
+
+[ship_it.files_end]
+doc = "Regex source (case-insensitive) that finds where a files value ends: the next field bullet or phase heading."
+value = '\n-[ \t]*[\w][\w ]*:|\n###[ \t]'
+
+[ship_it.token_separators]
+doc = "Characters that separate path tokens inside a files value, besides white space."
+value = ",`\"'()"
+
+[ship_it.token_trim]
+doc = "Trailing characters stripped from a path token."
+value = ".,;:"
+
+[ship_it.token_ext_max]
+doc = "Longest dotted extension that makes a token without a slash look like a path."
+value = 10
+
+[ship_it.msg_block_what]
+doc = "Block headline; {file} is the first hard-risk file."
+value = "L-risk file {file} edited with no PLAN.md."
+
+[ship_it.msg_block_why]
+doc = "Block reason."
+value = "This path is a hard-risk trigger (migration / auth / CI-workflow / security); per the ship-it skill, L-tier changes go through plan mode and a PLAN.md before code."
+
+[ship_it.msg_block_instead]
+doc = "Block advice."
+value = "create PLAN.md (repo root) first."
+
+[ship_it.msg_block_override]
+doc = "Block override hint."
+value = "if this is genuinely a smaller change, unset ANTIHALL_SHIPIT_GATE or use the documented skip hatch"
+
+[ship_it.msg_adv_what]
+doc = "Advisory headline; {file} is the first target outside the declared files and {plan} the plan path."
+value = "{file} is missing from the plan phase file list."
+
+[ship_it.msg_adv_why]
+doc = "Advisory reason."
+value = "It may be a legitimate shared-file touch (`files:` is free text, so false positives are expected) or scope drift."
+
+[ship_it.msg_adv_instead]
+doc = "Advisory advice."
+value = "check the phase scope in PLAN.md."
+
+# ---- scan-throttle ----------------------------------------------------------------
+
+[scan_throttle.summary]
+doc = "One-line description of the scan-throttle check in the generated reference."
+value = "Advisory: recommends the background-throttled form of a user-configured heavy scan command."
+
+[scan_throttle.guard_name]
+doc = "The guard id this check answers to in messages."
+value = "scan-throttle"
+
+[scan_throttle.setting]
+doc = "Where the on/off switch is read from (guards.scanThrottle, default on; the old ANTI_HALL_SCAN_THROTTLE name is an alias)."
+value = { section = "guards", key = "scanThrottle", env = "ANTIHALL_SCAN_THROTTLE", aliases = ["ANTI_HALL_SCAN_THROTTLE"], option = "guards_scan_throttle", default = true }
+
+[scan_throttle.patterns_env]
+doc = "Environment variable holding the comma-separated regex sources of the scan commands to advise on; with none set the check matches nothing."
+value = "ANTI_HALL_THROTTLE_PATTERNS"
+
+[scan_throttle.known_prefixes]
+doc = "Every throttle prefix this check itself generates; a command that already starts with one is left alone."
+value = ["taskpolicy -c utility nice -n 19 ", "ionice -c 3 nice -n 19 ", "nice -n 19 "]
+
+[scan_throttle.darwin]
+doc = "The macOS throttle tool that must exist on PATH, and the prefix it gives."
+value = { tool = "taskpolicy", prefix = "taskpolicy -c utility nice -n 19 " }
+
+[scan_throttle.linux]
+doc = "The Linux throttle tool that must exist on PATH, the prefix it gives, and the optional I/O tool with its own prefix."
+value = { tool = "nice", prefix = "nice -n 19 ", io_tool = "ionice", io_prefix = "ionice -c 3 " }
+
+[scan_throttle.path_separator]
+doc = "Separator of the entries of the PATH variable."
+value = ":"
+
+[scan_throttle.path_var]
+doc = "Name of the variable that holds the executable search path."
+value = "PATH"
+
+[scan_throttle.assign_one]
+doc = "Regex source of one leading NAME=value assignment (quoted or unquoted value)."
+value = '^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|[^\s]*)'
+
+[scan_throttle.unsafe_start_chars]
+doc = "Characters that, as the first character where the prefix would go, make the position unsafe (subshell, group, separator, backtick)."
+value = ")(;{}|&`"
+
+[scan_throttle.unsafe_start_subst]
+doc = "Text that, at the position where the prefix would go, starts a command substitution and makes the position unsafe."
+value = "$("
+
+[scan_throttle.msg_group_what]
+doc = "Advisory headline when the scan is not the first simple command."
+value = "a grouped command contains a heavy project scan."
+
+[scan_throttle.msg_group_instead]
+doc = "Advice when the scan is not the first simple command; {prefix} is the throttle prefix without its trailing space."
+value = "consider running the scan background-throttled, e.g. `{prefix} <that command>`."
+
+[scan_throttle.msg_first_what]
+doc = "Advisory headline when the scan is the first simple command."
+value = "a heavy project scan needs throttling."
+
+[scan_throttle.msg_first_why]
+doc = "Advisory reason when the scan is the first simple command."
+value = "To keep the machine responsive."
+
+[scan_throttle.msg_first_instead]
+doc = "Advice when the scan is the first simple command; {throttled} is the command with the prefix in place."
+value = "re-run it background-throttled: `{throttled}`."
+
+# ---- coordinator-work-guard -----------------
+
+[coordinator_work.summary]
+doc = "One-line description of the coordinator-work-guard check in the generated reference."
+value = "Main-thread work window. PreToolUse: allows subagent Bash calls in the engine and defers the rest (the classification and the block stay with Node). PostToolUse: records the call in the window, nudges once per crossing and folds stale session files, when the call's classification is already known (the Node pre-verdict of the same tool call) or provably not work; otherwise defers."
+
+[coordinator_work.agent_markers]
+doc = "Payload fields the host puts on a subagent's hook payload and never on the main thread's."
+value = ["agent_id", "agent_type"]
+
+[coordinator_work.codex_markers]
+doc = "Payload fields that, both non-empty strings, identify a Codex payload."
+value = ["turn_id", "model"]
+
+# ---- compact-declaration-guard ------------
+
+[compact_decl.summary]
+doc = "One-line description of the compact-declaration-guard check in the generated reference."
+value = "Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks."
+
+[compact_decl.setting]
+doc = "Where the on/off switch is read from (guards.compactDeclarationGuard, default on; it has no environment variable)."
+value = { section = "guards", key = "compactDeclarationGuard", env = "", aliases = [], option = "guards_compact_declaration_guard", default = true }
+
+[compact_decl.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "compact-declaration-guard"
+
+[compact_decl.agent_markers]
+doc = "Payload fields that, present and non-null, prove the call comes from a subagent."
+value = ["agent_id", "agent_type"]
+
+[compact_decl.work_tools]
+doc = "Tools that always start new work (spawns and file edits)."
+value = ["Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit"]
+
+[compact_decl.handover_file]
+doc = "Rust regex source, tested on a resolved path, for a file inside the handovers directory: writing it is the very thing a block tells the agent to do, so it is never new work."
+value = '(?s)(?:^|/)\.anti-hall/handovers/[^/]'
+
+[compact_decl.bash_work_always]
+doc = "Regex sources (case-insensitive) of shell commands that change state wherever they appear in a command with quoted text blanked."
+value = [
+  '\bgit\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\b',
+  '\bgit\s+(?:checkout|switch|restore|clean)\b',
+  '\bsed\s+-i',
+  '\bnpm\s+(?:install|i|ci)\b',
+  '\b(?:pnpm|yarn)\s+(?:add|install)\b',
+  '\bpip\s+install\b',
+  '\bpatch\b',
+]
+
+[compact_decl.bash_work_command_position]
+doc = "Regex source (case-insensitive) of the bare state-changing verbs, which count only at command position (line start, or after a separator, parenthesis, backtick or substitution)."
+value = '(?:\A|[\n\r  ;&|`(]|\$\()\s*(?:rm|cp|mv|tee|mkdir|touch|make|chmod)\b'
+
+[compact_decl.bash_work_extra]
+doc = "Regex source (case-insensitive) of the pushes, tags and pull-request writes this guard counts as work on top of the shared list."
+value = '\bgit\s+(?:push|tag)\b|\bgh\s+pr\s+(?:merge|create)\b'
+
+[compact_decl.tail_bytes]
+doc = "How many bytes from the end of the transcript are read (the Node guard reads the same)."
+value = 1572864
+min = 1024
+
+[compact_decl.safe_word]
+doc = "Word a declaration must contain (compared without regard to ASCII case); a turn without it cannot hold one."
+value = "safe"
+
+[compact_decl.not_typed]
+doc = "Regex source for injected user content that never starts a turn (task notification, local command output, system reminder, shell output)."
+value = '^\s*<(task-notification|local-command-|system-reminder|bash-std(out|err))'
+
+[compact_decl.notify]
+doc = "Regex source for a background task notification."
+value = '^\s*<task-notification>'
+
+[compact_decl.compact_command]
+doc = "Regex source for the compact command line the host writes as a user entry."
+value = '^\s*<command-name>\s*/compact\s*</command-name>'
+
+[compact_decl.reminder_tags]
+doc = "Opening and closing tag of an injected system reminder, which may precede the real prompt."
+value = { open = "<system-reminder>", close = "</system-reminder>" }
+
+[compact_decl.deep_json_depth]
+doc = "Nesting depth beyond which a transcript line the engine cannot parse is deferred to Node (the Node parser has no such limit)."
+value = 100
+
+[compact_decl.codex_text_types]
+doc = "Content block types that carry assistant text in a Codex rollout entry."
+value = ["output_text", "text"]
+
+# ---- model-routing-guard ----------------------------------------------------
+
+[model_routing.summary]
+doc = "One-line description of the model-routing check in the generated reference."
+value = "Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches."
+
+[model_routing.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "model-routing-guard"
+
+[model_routing.message_guard]
+doc = "The guard label used in ordinary routing advisory text."
+value = "model-routing"
+
+[model_routing.handover_guard]
+doc = "The guard label used in the handover-delegation advisory."
+value = "handover"
+
+[model_routing.update_setting]
+doc = "Where the update-in-session switch is read from (guards.updateInSession, default on)."
+value = { section = "guards", key = "updateInSession", env = "ANTIHALL_UPDATE_IN_SESSION", aliases = [], option = "guards_update_in_session", default = true }
+
+[model_routing.mode_setting]
+doc = "Model-routing mode. Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then the plugin option; strict when none holds a valid value."
+value = { section = "guards", key = "modelRouting", env = "ANTIHALL_MODEL_ROUTING", aliases = [], option = "guards_model_routing", default = "strict", values = ["strict", "advisory", "off"] }
+
+[model_routing.deploy_floor_setting]
+doc = "Model floor for deploys and secrets. Where the deploy/migration/secret model floor (sonnet, opus, off) is read from (guards.modelRoutingDeployFloor): the environment variable, settings.json, then the plugin option; sonnet when none holds a valid value."
+value = { section = "guards", key = "modelRoutingDeployFloor", env = "ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR", aliases = [], option = "guards_model_routing_deploy_floor", default = "sonnet", values = ["sonnet", "opus", "off"] }
+
+[model_routing.advisory_mode]
+doc = "Routing-mode value that downgrades omitted-model strict blocks to advisories."
+value = "advisory"
+
+[model_routing.off_mode]
+doc = "Routing-mode value that disables model-routing."
+value = "off"
+
+[model_routing.deploy_floor_default]
+doc = "Default deploy/migration/secret model floor."
+value = "sonnet"
+
+[model_routing.deploy_floor_off]
+doc = "Deploy-floor value that disables the deploy/migration/secret floor."
+value = "off"
+
+[model_routing.scan_limit]
+doc = "Maximum JavaScript UTF-16 code units of description plus prompt scanned for routing keywords (String.prototype.slice parity)."
+value = 131072
+min = 1
+unit = "utf16-code-units"
+
+[model_routing.deploy_weak_threshold]
+doc = "Number of distinct weak deploy/migration/secret signal kinds needed to activate the deploy floor."
+value = 2
+min = 1
+
+[model_routing.generic_type]
+doc = "The generic subagent type whose spawns are eligible for the generic-agent routing rows."
+value = "general-purpose"
+
+[model_routing.explore_type]
+doc = "Subagent type recommended for read-only research-shaped generic spawns."
+value = "Explore"
+
+[model_routing.key_prefix_chars]
+doc = "Characters of the spawn prompt hashed (never stored) into the route event's spawn_key, with the session, parent agent and subagent type, so a retry after a deny (new tool_use_id, changed model) joins the first decision. Known limit: two spawns by one agent in one session whose prompts share this prefix and subagent type share a key."
+value = 256
+min = 1
+unit = "characters"
+
+[model_routing.flagship_models]
+doc = "Explicit model enum values treated as flagship tiers for row 1 and row 3."
+value = ["opus", "fable"]
+
+[model_routing.tier_haiku]
+doc = "The cheap execution model tier recommended by rows 1, 2 and 3."
+value = "haiku"
+
+[model_routing.tier_opus]
+doc = "The planning advisory's default stronger tier."
+value = "opus"
+
+[model_routing.tier_main]
+doc = "Pseudo-tier used when the guard forces work back to the main session."
+value = "main"
+
+[model_routing.tier_inherit]
+doc = "Pseudo-tier used in telemetry when an omitted model inherits from the parent."
+value = "inherit"
+
+[model_routing.model_rank]
+doc = "Rank table for the deploy/migration/secret model floor."
+value = { haiku = 1, sonnet = 2, opus = 3, fable = 3 }
+
+[model_routing.mechanical]
+doc = "Mechanical execution-only signal phrases, matched as token phrases after compatibility folding."
+value = ["fetch", "download", "curl", "grep", "glob", "search files", "run command", "run script", "install", "build", "run tests", "git push", "deploy", "dump", "export", "tail", "read logs", "list", "check status"]
+
+[model_routing.hard_execution]
+doc = "Mechanical signals that suppress the row-1 research exemption."
+value = ["run script", "install", "build", "run tests", "git push", "deploy"]
+
+[model_routing.complex]
+doc = "Complex/planning signal phrases whose presence vetoes rows that steer to haiku."
+value = ["plan", "planning", "design", "architect", "review", "audit", "regression", "coupling", "merge order", "critique", "debate", "validate", "simulate", "root cause", "workflow analysis", "logic", "mockup", "security"]
+
+[model_routing.role_word_re]
+doc = "Debate-role exemption regex matched against the description only."
+value = '\b(reviewer|auditor|critic|debate|deadly[- ]?loop)\b'
+
+[model_routing.research_re]
+doc = "Research/read-only regex for the row-1 research exemption and row-6 Explore advisory."
+value = '\b(research|investigate|find|search|audit|survey|read[ -]?only|locate|map|gather|explore|scout|look\s+up|trace|reconnaissance)\b'
+
+[model_routing.write_re]
+doc = "Write/execute regex that suppresses the row-6 Explore advisory."
+value = '\b(write|edit|modif|commit|push|changelog|create\s+(?:an?\s+|the\s+|new\s+)?files?|migrat|refactor|implement)\b'
+
+[model_routing.write_imperative_re]
+doc = "Instruction-position ambiguous write/execute regex that suppresses the row-6 Explore advisory."
+value = '(?:^|[\n\r\u2028\u2029]|[.;:!?]\s+|\b(?:then|and|also|please|to)\s+)(?:tag|release|bump|apply|patch|build|deploy|install|fix)\b'
+
+[model_routing.write_phrase_re]
+doc = "Explicit write phrase regex (a save-to, clone, git clone/format-patch/mv/rm, opening a PR, running the generators or tests) that suppresses the row-6 Explore advisory even when read-only override words are present."
+value = '\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch|mv|rm)\b|\bopen(?:s|ing)?\s+(?:an?\s+|the\s+)?(?:pr|pull\s+request)\b|(?:^|[\n\r\u2028\u2029]|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b'
+
+[model_routing.commit_phrase_re]
+doc = "Regex (case-insensitive) of a brief that tells the agent to commit or open a git worktree: a writing brief however many read-only words it quotes, so it suppresses the row-6 Explore advisory and cannot be overridden by an explicit read-only statement. A negated commit is removed first (negated_commit_re)."
+value = '\bgit\s+(?:commit|push|worktree\s+add|checkout\s+-b)\b|\bcommit(?:s|ting)?\s+(?:per|each|every|it\b|them\b|your\b|after|before|the\s+(?:fix|fixes|change|changes|work)|with\s+a)\b|\bcommit\s+(?:and|&)\s+push\b'
+
+[model_routing.quoted_text_re]
+doc = "Regex (global) of quoted text in a brief: a single-quoted span that opens after a non-word character (so an apostrophe in a contraction never opens one) or a double-quoted span, at most 1000 characters (a quoted issue comment or log excerpt can span lines). The deploy floor reads the brief with these spans blanked (group 1 is kept): a word that is only quoted ('deploy' in a question about the word) is not a deploy task."
+value = '''(^|[^\w'])'[^']{1,1000}'|"[^"]{1,1000}"'''
+
+[model_routing.explore_exec_setting]
+doc = "Withholds the Explore hint for file-writing briefs. Where the switch is read from that withholds the row-6 Explore hint when the brief writes a file or report or runs a script or shell commands (guards.exploreHintExec, default on): an Explore agent cannot write files."
+value = { section = "guards", key = "exploreHintExec", env = "ANTIHALL_EXPLORE_HINT_EXEC", aliases = [], option = "", default = true }
+
+[model_routing.exec_report_re]
+doc = "Regex (case-insensitive) of a brief that writes a file or report (writes a report, a report file, saves findings to a file) or runs a script or shell commands (run a script, shell commands, invoking an interpreter on a script file): such an agent needs a general-purpose type, not Explore, so the row-6 Explore hint is withheld whatever read-only words the brief quotes. A negated write is removed first (negated_write_re)."
+value = '''\bwrit(?:e|es|ing|ten)\s+(?:\S+\s+){0,4}?(?:reports?|summar(?:y|ies)|findings|results?|notes|files?|output|logs?)\b|\b(?:reports?|findings|results?|output)\s+files?\b|\b(?:run|runs|running|execut(?:e|es|ing))\s+(?:\S+\s+){0,3}?(?:scripts?|shell|bash|commands?)\b|\bshell\s+(?:commands?|scripts?)\b|\b(?:bash|sh|python3?|node)\s+(?:-\S+\s+)*\S+\.(?:sh|py|js)\b'''
+
+[model_routing.negated_commit_re]
+doc = "Regex (case-insensitive, global) of a negated commit, push or worktree instruction ('never commit', 'do not push'); removed from the brief before commit_phrase_re is tested."
+value = '''\b(?:do\s+not|don'?t|never|without|no)\s+(?:\w+\s+){0,3}?(?:git\s+)?(?:commit|push|worktree)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+)?(?:commit|push|worktree)\w*)*'''
+
+[model_routing.strong_write_re]
+doc = "Regex (case-insensitive) of a brief that clearly writes: commits files or changes, pushes, creates issues, labels, branches, PRs or files, labels issues, edits or writes files or code, or runs a state-changing gh command (gh issue/label/pr/release/secret create|edit|comment|close|merge|delete|set, gh api -X POST|PATCH|PUT|DELETE). A writing brief whatever read-only words it quotes, so it suppresses the row-6 Explore advisory. Negated forms are removed first (negated_write_re)."
+value = '''\bgh\s+(?:issue|label|pr|release|secret|repo|milestone)\s+(?:create|edit|comment|close|merge|delete|set|reopen)\b|\bgh\s+api\b[^\n]{0,200}?(?:-X|--method)[\s=]*(?:POST|PATCH|PUT|DELETE)\b|\bcommit(?:s|ting)?\s+(?:(?:the|all|its|your|each|every|those|these|any)\s+)?(?:files?|changes?|fix(?:es)?|work|results?|edits?|patch(?:es)?)\b|\bpush(?:es|ing)?\s+(?:it|them|the\s+\w+|to\s+\S+|your\s+\w+|its\s+\w+|branch\w*)\b|\b(?:and|then)\s+push(?:es)?\b|\bcreat(?:e|es|ing)\s+(?:(?:a|an|the|new|any|its|missing|all|\d+)\s+)?(?:gh\s+|github\s+)?(?:issues?|labels?|milestones?|pull\s+requests?|prs?|branch(?:es)?|commits?|files?|tests?)\b|\blabel(?:s|ling)?\s+(?:(?:the|each|all|every|its)\s+)?(?:issues?|prs?|pull\s+requests?)\b|\b(?:edit|write|modify|update)s?\s+(?:(?:the|a|its|your|this|that|these|those)\s+)?(?:files?|code|tests?|source|config)\b|\b(?:edit|write|modify)s?\s+\S+\.(?:js|ts|rs|toml|md|json|py|sh|ya?ml)\b'''
+
+[model_routing.negated_write_re]
+doc = "Regex (case-insensitive, global) of a negated write instruction ('never commit', 'do not push', 'don't create files', 'no edits or commits'); removed from the brief before strong_write_re is tested."
+value = '''\b(?:do\s+not|don'?t|never|without|no|not)\s+(?:\w+\s+){0,3}?(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*)*'''
+
+[model_routing.session_model_families]
+doc = "Model families an omitted model can inherit, matched in order as a substring of the session's model id (the payload's parent model, else the newest transcript assistant entry); each must be a model_rank key. An omitted model whose inherited family ranks at or above the deploy floor gets no deploy-floor advisory."
+value = ["fable", "opus", "sonnet", "haiku"]
+
+[model_routing.session_model_window_bytes]
+doc = "Bytes of the transcript tail read to find the session's model for an omitted-model spawn."
+value = 262144
+unit = "bytes"
+min = 4096
+max = 8388608
+
+[model_routing.session_model_line_max_bytes]
+doc = "The longest transcript line parsed when looking for the session's model (longer lines are skipped)."
+value = 1048576
+unit = "bytes"
+min = 1024
+max = 16777216
+
+[model_routing.session_model_max_lines]
+doc = "The newest transcript lines examined when looking for the session's model."
+value = 400
+min = 1
+max = 100000
+
+[model_routing.readonly_override_re]
+doc = "Explicit read-only statement regex that overrides ambiguous write words for row 6."
+value = '''\b(?:report\s+only|read[- ]?only|(?:do\s+not|don'?t|never)\s+(?:edit|modify|write|change|commit)|no\s+(?:edits|changes|writes))\b'''
+
+[model_routing.deploy_strong_re]
+doc = "Strong deploy/migration/secret regex that activates the deploy floor."
+value = '\b(deploy\w*|redeploy\w*|migrat\w*|rollbacks?|roll\s+back|token\s+rotation|rotat\w*\s+(?:the\s+|a\s+)?(?:api\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|terraform|kubectl\s+apply|helm\s+(?:install|upgrade)|firebase\s+deploy|db\s+migrate)\b'
+
+[model_routing.deploy_weak_re]
+doc = "Weak deploy/migration/secret words; two distinct kinds activate the deploy floor."
+value = '\b(prod|production|secrets?|credentials?)\b'
+
+[model_routing.deploy_weak_aliases]
+doc = "Weak deploy/migration/secret words normalized before distinct-kind counting. This mirrors Node's production -> prod policy."
+value = { production = "prod" }
+
+[model_routing.update_qualifier]
+doc = "Lowercase qualifier required with a generic update.js command before it is treated as an anti-hall update-in-session."
+value = "anti-hall"
+
+[model_routing.update_node_re]
+doc = "Regex for node commands that run an update.js script."
+value = '''\bnode\s+["']?\S*update\.js\b'''
+
+[model_routing.update_skill_path_re]
+doc = "Regex for node commands that run anti-hall's update skill script."
+value = '''\bnode\s+["']?\S*skills[\\/]update[\\/]scripts[\\/]update\.js\b'''
+
+[model_routing.update_slash_re]
+doc = "Regex for explicit requests to invoke the anti-hall update skill."
+value = '\b(?:run|invoke|execute)\s+`?/anti-hall:update\b'
+
+[model_routing.planning_intent_re]
+doc = "Strict planning-intent regex for the row-4 haiku advisory."
+value = '\b(architect(?:ure)?|brainstorm|design\s+(?:a|the|an)\b|plan\s+(?:a|the|an|out)\b|deep\s+review|code\s+review|design\s+review|security\s+review|review\s+the\s+(?:code|design|architecture|plan)|review\s+(?:this|the|a)\s+(?:pr|pull\s+request|diff|patch|change(?:s|set)?)|audit\s+(?:the|this)\b|critique|debate|merge\s+order|workflow\s+analysis|root[- ]cause\s+analysis|(?:find|identify|determine|diagnose|trace)\s+(?:the\s+)?root[- ]cause|root[- ]cause\s+(?:why|how|the|this)|regression\s+analysis|security\s+audit)\b'
+
+[model_routing.readonly_re]
+doc = "Read-only/mechanical marker regex used to suppress row-4 false positives."
+value = '\b(verbatim|read[- ]?only|mechanical|append\s*only|run\s+exactly|do\s+nothing\s+else|nothing\s+else|no\s+other\s+file\s+edits|no\s+repo\s+edits|no\s+source\s+edits)\b'
+
+[model_routing.mechanical_shape_re]
+doc = "Fixed-command or bounded-output regex used to suppress row-4 false positives."
+value = '\b(run\s+exactly|run\s+only|run\s+(?:this|these|the\s+following)\s+(?:exact\s+)?commands?|exactly\s+(?:this|these)\s+commands?|verbatim|append\s*only|do\s+nothing\s+else|nothing\s+else|return\s+(?:only\s+)?(?:at\s+most\s+|no\s+more\s+than\s+|under\s+|up\s+to\s+)?\d+\s+lines?)\b|return\s+(?:only\s+)?(?:≤|<=)\s*\d+\s+lines?\b'
+
+[model_routing.review_design_verb_re]
+doc = "Review/design/analysis verb regex that keeps row 4 live despite read-only markers."
+value = '\b(review|audit|design|architect(?:ure)?|plan|brainstorm|critique|analy[sz]e|analysis|investigate|root[- ]cause)\b'
+
+[model_routing.reasoning_re]
+doc = "Heavy reading and synthesis regex that vetoes rows steering to haiku."
+value = '\b(analy[sz]\w*|synthesi[sz]\w*|summari[sz]\w*|reconcil\w*|evaluat\w*|interpret\w*|distill\w*|compare|comparison)\b|\bread\w*\b[^.\n]{0,60}\b(?:pdf|pdfs|pages?|papers?|documents?|specs?|transcripts?|articles?|books?|manuals?|whitepapers?)\b|\b\d+[- ]page\b|\bpage[- ]by[- ]page\b'
+
+[model_routing.handover_noun_re]
+doc = "Handover noun regex for the handover-delegation advisory."
+value = '\b(handover|handoff)\b'
+
+[model_routing.handover_verb_re]
+doc = "Handover write-verb regex for the handover-delegation advisory."
+value = '\b(write|prepare|create|author|draft)\b'
+
+[model_routing.code_fence_re]
+doc = "Regex for fenced code spans stripped before planning and reasoning regexes."
+value = '```[\s\S]*?```'
+
+[model_routing.inline_code_re]
+doc = "Regex for inline code spans stripped before planning and reasoning regexes."
+value = '`[^`]*`'
+
+[model_routing.session_safe_re]
+doc = "Regex whose non-matching characters are replaced in the handover advisory state file name."
+value = '[^A-Za-z0-9_.-]'
+
+[model_routing.state_dir]
+doc = "State directory, relative to home, for the handover-delegation advisory cap."
+value = ".anti-hall"
+
+[model_routing.handover_state_prefix]
+doc = "Prefix of the per-session handover-delegation advisory cap file."
+value = "model-routing-guard-handover-state-"
+
+[model_routing.handover_state_suffix]
+doc = "Suffix of the per-session handover-delegation advisory cap file."
+value = ".json"
+
+[model_routing.unknown_session]
+doc = "Fallback session id used in the handover advisory state file name."
+value = "unknown-session"
+
+[model_routing.handover_state_json]
+doc = "JSON written to cap the handover-delegation advisory."
+value = '{"advised":true}'
+
+[model_routing.msg_update_what]
+doc = "Update-in-session block headline."
+value = "a subagent spawn that runs the anti-hall update is blocked."
+
+[model_routing.msg_update_why]
+doc = "Update-in-session block reason."
+value = "update.js runs migrations and the main session must judge the result."
+
+[model_routing.msg_update_instead]
+doc = "Update-in-session block advice."
+value = "run `ah-engine update ...` directly in the main session."
+
+[model_routing.msg_handover_what]
+doc = "Handover-delegation advisory headline."
+value = "this spawn looks like it writes a session handover."
+
+[model_routing.msg_handover_why]
+doc = "Handover-delegation advisory reason."
+value = "A subagent never lived this session, so its reconstruction loses decision/trial fidelity."
+
+[model_routing.msg_handover_instead]
+doc = "Handover-delegation advisory advice."
+value = "invoke the handover skill yourself in the session that holds the memory."
+
+[model_routing.msg_deploy_omitted_what]
+doc = "Deploy-floor advisory headline for omitted-model spawns."
+value = "deploy/migration/secret-shaped spawn sets no explicit model."
+
+[model_routing.msg_deploy_omitted_instead]
+doc = "Deploy-floor advisory advice for omitted-model spawns."
+value = "set model:'{floor}' or higher, never haiku."
+
+[model_routing.msg_deploy_low_what]
+doc = "Deploy-floor advisory headline for too-low explicit model spawns."
+value = "deploy/migration/secret-shaped spawn runs on '{model}'."
+
+[model_routing.msg_deploy_low_instead]
+doc = "Deploy-floor advisory advice for too-low explicit model spawns."
+value = "use model:'{floor}' or higher.{extra}"
+
+[model_routing.msg_deploy_low_extra]
+doc = "Extra row-4 planning note appended to a haiku deploy-floor advisory when applicable."
+value = " It also looks planning-shaped; consider opus or fable for deeper reasoning."
+
+[model_routing.msg_deploy_why]
+doc = "Deploy-floor advisory reason."
+value = "Auth/secret edge cases get mishandled by a cheap model."
+
+[model_routing.msg_row1_what]
+doc = "Row-1 block headline."
+value = "routine execution was assigned to a flagship model."
+
+[model_routing.msg_row1_why]
+doc = "Row-1 block reason."
+value = "This hook cannot see the parent model; execution-only work needs an explicit cheap model."
+
+[model_routing.msg_row1_instead]
+doc = "Row-1 block advice."
+value = "respawn with model:'haiku' (or 'sonnet' if it authors code)."
+
+[model_routing.msg_row1_role_what]
+doc = "Row-1 role-exempt advisory headline."
+value = "flagship spawn allowed for a debate role."
+
+[model_routing.msg_row1_role_instead]
+doc = "Row-1 role-exempt advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.msg_row1_research_what]
+doc = "Row-1 research-exempt advisory headline."
+value = "flagship spawn allowed for research."
+
+[model_routing.msg_row2_block_what]
+doc = "Row-2 strict block headline."
+value = "execution-shaped spawn with no explicit model is blocked (strict default)."
+
+[model_routing.msg_row2_block_why]
+doc = "Row-2 strict block reason."
+value = "An omitted model inherits the orchestrator's and cannot be verified here; on a flagship orchestrator that silently makes an all-flagship swarm."
+
+[model_routing.msg_row2_block_instead]
+doc = "Row-2 strict block advice."
+value = "set model:'haiku' (or 'sonnet' for code) on the spawn."
+
+[model_routing.msg_row2_block_override]
+doc = "Row-2 strict block override text."
+value = "set ANTIHALL_MODEL_ROUTING=advisory to downgrade this block to an advisory"
+
+[model_routing.msg_row2_adv_what]
+doc = "Row-2 advisory headline."
+value = "execution-shaped spawn sets no explicit model."
+
+[model_routing.msg_row2_adv_instead]
+doc = "Row-2 advisory advice."
+value = "set model:'haiku' (or 'sonnet' if it authors code)."
+
+[model_routing.msg_row2_adv_why]
+doc = "Row-2 advisory reason."
+value = "An omitted model inherits the orchestrator's, so mechanical work may run on a flagship."
+
+[model_routing.msg_row1_jev_what]
+doc = "Row-1 Jev relaxation advisory headline."
+value = "flagship spawn allowed after a non-mechanical verdict."
+
+[model_routing.msg_row1_jev_instead]
+doc = "Row-1 Jev relaxation advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.msg_row2_jev_what]
+doc = "Row-2 Jev relaxation advisory headline."
+value = "default-model spawn allowed after a non-mechanical verdict."
+
+[model_routing.msg_row2_jev_instead]
+doc = "Row-2 Jev relaxation advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.jev_id]
+doc = "Jev integration id used by the Node model-routing guard."
+value = "modelRouting"
+
+[model_routing.jev_question_instructions]
+doc = "Jev choice-question instructions for model-routing relaxation."
+value = "Classify the SHAPE of this agent-spawn task from its description/prompt."
+
+[model_routing.jev_choice_mechanical]
+doc = "Jev choice description for mechanical tasks."
+value = "Execution-only: running commands, fetching/building/testing/deploying, no authoring or judgment calls required."
+
+[model_routing.jev_choice_authoring]
+doc = "Jev choice description for authoring tasks."
+value = "Writing or editing substantial code/content that requires judgment."
+
+[model_routing.jev_choice_research]
+doc = "Jev choice description for research tasks."
+value = "Investigation, research, or audit work — read-only or reporting."
+
+[model_routing.jev_choice_plan_review]
+doc = "Jev choice description for planning/review tasks."
+value = "Planning, architecture, review, critique, or debate work."
+
+[model_routing.jev_state_limit]
+doc = "Maximum JavaScript UTF-16 code units sent to Jev for model-routing relaxation."
+value = 4000
+min = 1
+unit = "utf16-code-units"
+
+[model_routing.jev_budget_ms]
+doc = "Synchronous Jev budget for model-routing relaxation, matching the Node hook."
+value = 1200
+min = 1
+unit = "ms"
+
+[model_routing.jev_label_mechanical]
+doc = "Jev answer label that keeps the model-routing block."
+value = "mechanical"
+
+[model_routing.jev_label_authoring]
+doc = "Jev answer label for authoring work."
+value = "authoring"
+
+[model_routing.jev_label_research]
+doc = "Jev answer label for research work."
+value = "research"
+
+[model_routing.jev_label_plan_review]
+doc = "Jev answer label for planning/review work."
+value = "plan-review"
+
+[model_routing.msg_row3_what]
+doc = "Row-3 advisory headline."
+value = "a custom agent uses a flagship model for execution."
+
+[model_routing.msg_row3_instead]
+doc = "Row-3 advisory advice."
+value = "choose a cheaper model unless the role requires a flagship."
+
+[model_routing.msg_row4_what]
+doc = "Row-4 advisory headline."
+value = "planning work was assigned to haiku."
+
+[model_routing.msg_row4_instead]
+doc = "Row-4 advisory advice."
+value = "consider opus or fable for deeper reasoning."
+
+[model_routing.msg_row6_what]
+doc = "Row-6 advisory headline."
+value = "research/read-only-shaped spawn uses subagent_type:'general-purpose'."
+
+[model_routing.msg_row6_instead]
+doc = "Row-6 advisory advice."
+value = "use an Explore agent for read-only research."
+
+[model_routing.msg_row6_why]
+doc = "Row-6 advisory reason."
+value = "general-purpose carries the Agent tool and can recurse; chains waste ~7x tokens by depth 5."
+
+# ---- file-backed guard state (checks::guardkit::fsio) -----------------------------
+
+[guardkit.state_dir_name]
+doc = "Name of the directory under the home directory that holds the per-session state files the Node guards share with the engine."
+value = ".anti-hall"
+
+[guardkit.state_ext]
+doc = "Extension of a per-session state file."
+value = ".json"
+
+[guardkit.prune_ttl_ms]
+doc = "How old, in milliseconds, a per-session state file must be before the pruning sweep removes it (7 days)."
+value = 604800000
+min = 60000
+max = 31536000000
+
+[guardkit.prune_throttle_ms]
+doc = "Minimum time, in milliseconds, between two pruning sweeps of one state-file family (6 hours)."
+value = 21600000
+min = 0
+max = 31536000000
+
+[guardkit.prune_stamp]
+doc = "Name of the stamp file that throttles the pruning sweep; {prefix} is the state-file family."
+value = ".prune-stamp-{prefix}.json"
+
+[guardkit.prune_stamp_key]
+doc = "Key of the stamp file that holds the time of the last sweep."
+value = "lastSweep"
+
+# ---- turn gate ---------------------------------------------------------------------
+
+[turn_gate.dir]
+doc = "Directory under the state directory that holds the per-session turn-gate files."
+value = "turn-gate"
+
+[turn_gate.prefix]
+doc = "Family name of a turn-gate state file: the file is `<prefix>-<session>.json` and the pruning sweep takes the same name (the Node hook passes `tg` and the sweep appends the dash itself, commit ef0a30b)."
+value = "tg"
+
+[turn_gate.session_max]
+doc = "Longest session id part, in UTF-16 units, of a turn-gate file name."
+value = 80
+
+[turn_gate.tail_bytes]
+doc = "How many bytes at the end of the transcript are read to find the newest human prompt."
+value = 524288
+min = 4096
+max = 67108864
+
+[turn_gate.max_sigs]
+doc = "How many distinct advisory signatures one key remembers per turn."
+value = 16
+min = 1
+max = 1024
+
+[turn_gate.sig_max]
+doc = "Longest signature, in UTF-16 units, kept for one advisory (a longer one is cut)."
+value = 200
+min = 8
+
+[turn_gate.injected_re]
+doc = "Regex source (JavaScript syntax) of the text an injected, non-human user entry starts with."
+value = '^\s*<(?:task-notification|system-reminder|local-command|command-name|command-message)'
+
+[turn_gate.agent_prefix]
+doc = "Prefix of the turn id of a subagent (its whole run is one turn)."
+value = "agent:"
+
+[turn_gate.main_label]
+doc = "The slot label used for the main thread."
+value = "main"
+
+# ---- shared Stop block-cap windows (Claude transcripts and Codex rollouts) -----------
+
+[block_cap.owner_turn_scope]
+doc = "The cap_scope value that re-arms a guard after a real owner turn; session is the alternative, retaining the session-wide cap."
+value = "owner_turn"
+
+[block_cap.record_types]
+doc = "Transcript record and content types used to identify real owner turns on both hosts; Codex response_item duplicates are not owner-turn boundaries. The read window is turn_gate.tail_bytes."
+value = { claude_user = "user", codex_event = "event_msg", codex_user = "user_message", text = "text", tool_result = "tool_result" }
+
+[block_cap.non_owner_flags]
+doc = "Truthy record or message flags that mark injected, sidechain or compacted content rather than a real owner turn."
+value = ["isMeta", "isSidechain", "isCompactSummary"]
+
+[block_cap.owner_origins]
+doc = "Allowed origin kinds on an owner record or message when origin is present; absent origin is accepted on native user records."
+value = ["human", "user"]
+
+[block_cap.injected_re]
+doc = "Case-insensitive JavaScript regex identifying non-owner text: task notifications, reminders, command and hook output, teammate messages and cross-session mail on either host. These never reopen a block-cap window."
+value = '^\s*(<(?:task-notification|system-reminder|command-name|command-message|local-command[^\s>]*|user-prompt-submit-hook|cross-session-message|teammate-message|bash-std(?:out|err))\b|Stop hook feedback:|Message Type:\s*(?:MESSAGE|FINAL_ANSWER)\b)|Another (?:Claude|Codex) session sent a message|<cross-session-message\b'
+
+[block_cap.leading_reminders_re]
+doc = "Case-insensitive JavaScript regex removing leading system reminders before classifying the remaining owner text; reminders alone do not start a turn."
+value = '^(?:\s*<system-reminder>[\s\S]*?</system-reminder>)+'
+
+[block_cap.owner_id_fields]
+doc = "Record fields tried in order for a stable owner-turn identity (Claude uuid, then Codex timestamp); a record with neither falls back to its line hash. Unknown or unreadable turns retain the current window. The last block time is saved too, so rediscovering an older prompt does not reopen an unidentified window."
+value = ["uuid", "timestamp"]
+
+[block_cap.backup_suffix]
+doc = "Suffix appended to a guard state path for its pre-window-migration byte-for-byte backup. Created exclusively and read back before rewriting state; existing backups are never overwritten. An unreadable, incomplete or conflicting backup leaves state intact and the guard fails open."
+value = ".pre-owner-turn.bak"
+
+# ---- expected-failure classifier -------------------------------------------
+
+[expected_failure.predicate_verbs]
+doc = "Verbs whose exit status 1 means no, different or false rather than broken."
+value = ["grep", "egrep", "fgrep", "ugrep", "rg", "ag", "ack", "test", "[", "[[", "diff", "cmp", "pgrep", "which", "type"]
+
+[expected_failure.trivial_verbs]
+doc = "Statements that cannot fail on their own and may sit in an && chain."
+value = ["echo", "printf", "true", ":"]
+
+[expected_failure.pass_through]
+doc = "Wrappers that pass the inner command's exit status through unchanged."
+value = ["command", "builtin", "env", "time", "nice", "nohup"]
+
+[expected_failure.predicate_exit]
+doc = "The only exit code (as text) that counts as a predicate's answer."
+value = "1"
+
+[expected_failure.command_v_verb]
+doc = "The verb name reported for the command -v form."
+value = "command -v"
+
+[expected_failure.git_verb]
+doc = "The verb whose read-only predicate forms are recognised by git_predicates."
+value = "git"
+
+[expected_failure.git_predicates]
+doc = "Regex sources (JavaScript syntax) over the arguments of a git command that make it a predicate (exit 1 is the answer)."
+value = [
+  '^(?:-C\s+\S+\s+)?diff\b.*(?:--quiet|--exit-code)\b',
+  '^(?:-C\s+\S+\s+)?merge-base\b.*--is-ancestor\b',
+  '^(?:-C\s+\S+\s+)?grep\b',
+  '^(?:-C\s+\S+\s+)?cat-file\b.*\s-e\b',
+  '^(?:-C\s+\S+\s+)?ls-files\b.*--error-unmatch\b',
+  '^(?:-C\s+\S+\s+)?show-ref\b.*(?:--verify|--quiet|-q)\b',
+]
+
+[expected_failure.bail]
+doc = "Regex source of the constructs that make the last statement not decide the exit status (heredocs, set -e, pipefail, trap, exec, eval, shells run with -e)."
+value = '<<|\bset\s+-[A-Za-z]*e|\bset\s+-o\b|\bpipefail\b|\berrexit\b|\btrap\b|\bexec\b|\beval\b|\bbash\s+-[A-Za-z]*e\b|\bsh\s+-[A-Za-z]*e\b'
+
+[expected_failure.assign]
+doc = "Regex source of a leading VAR=value assignment word."
+value = '^[A-Za-z_][A-Za-z0-9_]*='
+
+[expected_failure.command_v]
+doc = "Regex source of the command -v / command -V form (with optional leading assignments)."
+value = '^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*command\s+-[vV]\b'
+
+[expected_failure.control]
+doc = "Regex source of a statement that starts a shell control construct (never classified)."
+value = '^(?:if|for|while|until|case|select|function|do|then|else|fi|done|esac)\b'
+
+[expected_failure.trailing_bg]
+doc = "Regex source of a statement ending in an ampersand."
+value = '&\s*$'
+
+[expected_failure.trailing_and]
+doc = "Regex source of a statement ending in a double ampersand."
+value = '&&\s*$'
+
+[expected_failure.comment_or_empty]
+doc = "Regex source of a statement that is a comment or empty."
+value = '^\s*(?:#|$)'
+
+[expected_failure.subst]
+doc = "Regex source of a command substitution (dollar-parenthesis or backtick)."
+value = '\$\(|`'
+
+[expected_failure.redirect_split]
+doc = "Regex source that finds the first redirection in a deciding command."
+value = '\s(?:2?>|&>|<)'
+
+[expected_failure.exit_code]
+doc = "Regex source of the exit code stated in a failed tool call's error text; group 1 is the number."
+value = '^\s*Exit code (\d+)\b'
+
+[expected_failure.refusal]
+doc = "Regex source of an error text that is a harness refusal: the command never ran."
+value = '^\s*This (?:agent|session) is isolated in the worktree\b'
+
+# ---- failure-root-cause-nudge -------------------------------------------
+
+[failure_nudge.summary]
+doc = "One-line description of the failure-root-cause-nudge check in the generated reference."
+value = "Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals, a shell glob/echo artefact beside output that printed fine, and repeats within a turn."
+
+[failure_nudge.guard_name]
+doc = "The skip.json key that silences this hook."
+value = "failure-root-cause-nudge"
+
+[failure_nudge.message_guard]
+doc = "The guard label shown in the advisory."
+value = "root-cause"
+
+[failure_nudge.setting]
+doc = "Where the on/off switch is read from (guards.failureRootCauseNudge, default on)."
+value = { section = "guards", key = "failureRootCauseNudge", env = "ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE", aliases = [], option = "guards_failure_root_cause_nudge", default = true }
+
+[failure_nudge.filter_setting]
+doc = "Where the noise-filter switch is read from (guards.failureNudgeFilter, default on)."
+value = { section = "guards", key = "failureNudgeFilter", env = "ANTIHALL_FAILURE_NUDGE_FILTER", aliases = [], option = "", default = true }
+
+[failure_nudge.harmless_setting]
+doc = "Where the harmless-failure switch is read from (guards.failureNudgeHarmless, default on): stay silent when the only error text is a shell glob or echo artefact and the call's real output printed fine."
+value = { section = "guards", key = "failureNudgeHarmless", env = "ANTIHALL_FAILURE_NUDGE_HARMLESS", aliases = [], option = "", default = true }
+
+[failure_nudge.artifact_line]
+doc = "Regex source (JavaScript syntax) of a line that is only the shell's complaint about a glob that matched nothing (zsh `no matches found`, `no match`), not a failure of the command itself. A failure whose error text holds such a line, other non-empty output and no error_marker word printed fine."
+value = '^(?:-?(?:zsh|bash|sh|ksh|dash)):\s*(?:\d+:\s*)?(?:no matches found|no match)\b'
+
+[failure_nudge.error_marker]
+doc = "Regex source (JavaScript syntax, case-insensitive) of the words that make a line of output an error: a failure whose other output holds one is not harmless and is nudged."
+value = '\b(?:error|errors|fatal|failed|failure|traceback|exception|panic|panicked|denied|not found|no such|cannot|can.t|unable|segfault|segmentation|aborted|killed|refused|timed out|timeout|invalid|illegal)\b'
+
+[failure_nudge.min_output_lines]
+doc = "Non-empty lines of output, besides the glob complaint, a failure must have printed to count as harmless."
+value = 1
+min = 1
+max = 100
+
+[failure_nudge.gate_key]
+doc = "The turn-gate key under which the once-per-turn state of this advisory is kept."
+value = "failure-root-cause-nudge"
+
+[failure_nudge.event]
+doc = "The hook event name in the advisory's output."
+value = "PostToolUseFailure"
+
+[failure_nudge.max_cmd_len]
+doc = "Longest command text, in UTF-16 units, shown in the advisory before it is cut."
+value = 80
+min = 8
+max = 1000
+
+[failure_nudge.ellipsis]
+doc = "Text appended to a cut command."
+value = "…"
+
+[failure_nudge.cmd_open]
+doc = "Text before the shown command in the advisory headline."
+value = " (`"
+
+[failure_nudge.cmd_close]
+doc = "Text after the shown command in the advisory headline."
+value = "`)"
+
+[failure_nudge.msg_what]
+doc = "Advisory headline; {cmd} is the shown command part or empty."
+value = "this command failed{cmd}."
+
+[failure_nudge.msg_instead]
+doc = "Advisory advice."
+value = "trace the failure before retrying or patching."
+
+# ---- coordinator-work-guard, PostToolUse pass ----
+
+[coordinator_work.post_event]
+doc = "The event name of the pass that records calls into the window."
+value = "PostToolUse"
+
+[coordinator_work.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "coordinator-work-guard"
+
+[coordinator_work.command_guard_name]
+doc = "The skip.json key of command-guard, which also silences the work window."
+value = "command-guard"
+
+[coordinator_work.command_guard_setting]
+doc = "Switch for command-guard. Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it."
+value = { section = "safety", key = "commandGuard", env = "ANTIHALL_COMMAND_GUARD", aliases = [], option = "safety_command_guard", default = true }
+
+[coordinator_work.window_setting]
+doc = "Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns the window off."
+value = { section = "guards", key = "coordinatorWorkWindowMinutes", env = "ANTIHALL_COORDINATOR_WORK_WINDOW_MINUTES", default = 10, min = 0 }
+
+[coordinator_work.nudge_setting]
+doc = "Work calls that trigger the advisory. Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory."
+value = { section = "guards", key = "coordinatorWorkNudgeAt", env = "ANTIHALL_COORDINATOR_WORK_NUDGE_AT", default = 4, min = 0 }
+
+[coordinator_work.block_setting]
+doc = "The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never."
+value = { section = "guards", key = "coordinatorWorkBlockAt", env = "ANTIHALL_COORDINATOR_WORK_BLOCK_AT", default = 7, min = 0 }
+
+[coordinator_work.cap_setting]
+doc = "Safety cap on the stored window timestamps per session (guards.coordinatorWorkMaxEntries)."
+value = { section = "guards", key = "coordinatorWorkMaxEntries", env = "ANTIHALL_COORDINATOR_WORK_MAX_ENTRIES", default = 50, min = 1 }
+
+[coordinator_work.subagent_entrypoint]
+doc = "CLAUDE_CODE_ENTRYPOINT value of a subagent process."
+value = "agent_tool"
+
+[coordinator_work.entrypoint_env]
+doc = "The environment variable that names the host entry point."
+value = "CLAUDE_CODE_ENTRYPOINT"
+
+[coordinator_work.session_file_prefix]
+doc = "Prefix of a per-session window file under the state directory."
+value = "coordinator-work-session-"
+
+[coordinator_work.session_id_max]
+doc = "Longest session id part, in UTF-16 units, of a window file name."
+value = 80
+
+[coordinator_work.metrics_file]
+doc = "Name of the metrics file under the state directory."
+value = "coordinator-work-metrics.json"
+
+[coordinator_work.fold_stamp_file]
+doc = "Name of the stamp file that throttles folding stale window files into the metrics."
+value = ".coordinator-work-fold-stamp.json"
+
+[coordinator_work.trips_file]
+doc = "Name of the JSONL log of nudges and blocks."
+value = "coordinator-work-trips.log"
+
+[coordinator_work.trips_max_bytes]
+doc = "Size at which the trips log is rotated to its .1 file."
+value = 1048576
+min = 1024
+
+[coordinator_work.fold_throttle_ms]
+doc = "Minimum time between two folds of stale window files into the metrics (6 hours)."
+value = 21600000
+min = 0
+
+[coordinator_work.session_start_ms]
+doc = "How long before now a session with no recorded first call is taken to have started (the classifier's freshness reference for script files)."
+value = 21600000
+min = 0
+
+[coordinator_work.pre_cap]
+doc = "How many pre-call verdicts (kept until the matching post-call) a window file holds."
+value = 20
+min = 1
+
+[coordinator_work.lock_wait_ms]
+doc = "How long a lock held by another process is waited for before the call is handed to the Node hook."
+value = 250
+min = 0
+
+[coordinator_work.lock_stale_ms]
+doc = "Age after which another process's window or metrics lock is considered abandoned and taken over (the lock group of the coordinator-work-guard script)."
+value = 5000
+min = 1
+
+[coordinator_work.lock_step_ms]
+doc = "Pause between two attempts to take a held window or metrics lock."
+value = 5
+min = 1
+
+[coordinator_work.lock_reclaim_stale_ms]
+doc = "Age after which another process's takeover marker of a window or metrics lock is taken over."
+value = 5000
+min = 1
+
+[coordinator_work.lock_release_tries]
+doc = "How many times releasing a window or metrics lock tries to take its takeover marker."
+value = 5
+min = 1
+
+[coordinator_work.lock_release_step_ms]
+doc = "Pause between those tries."
+value = 10
+min = 1
+
+[coordinator_work.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot (window and metrics locks)."
+value = 5
+min = 0
+
+[coordinator_work.lock_wait_env]
+doc = "Test-only variable that overrides the lock wait (honoured only with the isolation flag set)."
+value = "ANTIHALL_COORDINATOR_WORK_LOCK_WAIT_MS"
+
+[coordinator_work.lock_isolation_env]
+doc = "The variable that marks an isolated test home (enables the lock wait override)."
+value = "ANTIHALL_TEST_HOME_ISOLATED"
+
+[coordinator_work.lock_suffix]
+doc = "Suffix of a lock file next to the file it guards."
+value = ".lock"
+
+[coordinator_work.plugin_json]
+doc = "Path of the plugin manifest, relative to the plugin root; its version stamps new window files."
+value = ".claude-plugin/plugin.json"
+
+[coordinator_work.unknown_version]
+doc = "The version text used when the manifest cannot be read."
+value = "unknown"
+
+[coordinator_work.safe_command]
+doc = "Regex source (JavaScript syntax) of the only characters a command may hold to be provably not work."
+value = '^[A-Za-z0-9 \t\n_.\/:=@%+,&|;-]*$'
+
+[coordinator_work.safe_arg]
+doc = "Regex source of an argument word of a command that is provably not work."
+value = '^[A-Za-z0-9_.\/:=@%+,-]+$'
+
+[coordinator_work.safe_verb]
+doc = "Regex source of the verb word of a command that is provably not work."
+value = '^[a-z-]+$'
+
+[coordinator_work.segment_split]
+doc = "Regex source that splits a provably-not-work candidate into segments (&&, ||, ;, |, newline)."
+value = '&&|\|\||;|\||\n'
+
+[coordinator_work.safe_max_len]
+doc = "Longest command, in UTF-16 units, that is tested for being provably not work."
+value = 4096
+
+[coordinator_work.bookkeeping_verbs]
+doc = "DevSwarm CLI verbs that only talk to the mesh store (heartbeat, mailbox, send, roster reads); a command made only of calls to these is not work."
+value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose", "help", "verbs", "verb", "pull", "ack", "read"]
+
+[coordinator_work.never_block_verbs]
+doc = "DevSwarm CLI verbs whose call is never counted as work and never blocked by the coordinator-work window, whatever the rest of the line holds (escalation to the parent must always get through)."
+value = ["send"]
+
+[coordinator_work.bookkeeping_filters]
+doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe without making the command work."
+value = ["tail", "head", "wc", "grep", "egrep", "rg", "sort", "uniq", "cut", "nl"]
+
+[coordinator_work.bookkeeping_cli]
+doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the DevSwarm CLI (`ah-engine mesh|agents|devswarm`, or the old `devswarm.js` and `ah-hook mesh` names), then one of the verbs ({verbs})."
+value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-(?:hook|engine)\s+mesh|ah-engine\s+(?:agents|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'''
+
+[coordinator_work.bookkeeping_filter]
+doc = "Regex source of one output-filter segment ({filters} are the allowed filter words); its arguments are flags, plain words or quoted strings."
+value = '^\s*(?:{filters})(?:\s+(?:-{1,2}[0-9A-Za-z][0-9A-Za-z-]*(?:=\S+)?|[0-9A-Za-z_.:\/,@=-]+|"[^"$`]*"|\x27[^\x27]*\x27))*\s*$'
+
+[coordinator_work.bookkeeping_quoted]
+doc = "Regex source of a quoted string that expands nothing (single-quoted, or double-quoted without `$` or a backtick); it is blanked before a bookkeeping candidate is checked and cut into segments, so a pipe or `>` inside a message is not a pipe or redirect."
+value = '\x27[^\x27]*\x27|"[^"$`]*"'
+
+[coordinator_work.bookkeeping_heredoc]
+doc = "Regex source of a heredoc with a QUOTED delimiter, opener to closing line; its body is inert data (a mesh message) and is dropped before a bookkeeping candidate is judged."
+value = '''<<-?\s*(["\x27])([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\2[ \t]*(?:\n|$)'''
+
+[coordinator_work.bookkeeping_devnull]
+doc = "Regex source of a redirect into /dev/null, which a bookkeeping call may carry besides the stderr merge."
+value = '[0-9]?>\s*/dev/null'
+
+[coordinator_work.bookkeeping_loop_lead]
+doc = "Regex source of the shell keyword that may open a segment of a polling loop (`do`, `then`, `else`); it is stripped before the segment is tested."
+value = '^\s*(?:do|then|else)\s+'
+
+[coordinator_work.bookkeeping_inert]
+doc = "Regex source of a segment that does nothing by itself and may sit between bookkeeping calls: loop scaffolding (`while true`, `for i in 1 2 3`, `do`, `done`) and `sleep N`."
+value = '^\s*(?:do|done|then|fi|else|true|:|sleep\s+[0-9.]+|(?:while|until)\s+(?:true|:)|for\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+[A-Za-z0-9_ .{},:$-]+)\s*$'
+
+[coordinator_work.bookkeeping_reject]
+doc = "Regex source of what disqualifies a command from the bookkeeping shortcut: command substitution, a backtick, a heredoc, a carriage return."
+value = '\$\(|`|<<|\r'
+
+[coordinator_work.bookkeeping_stderr_merge]
+doc = "The one redirect a bookkeeping command may carry; any other `>` disqualifies it."
+value = "2>&1"
+
+[coordinator_work.readonly_verbs]
+doc = "Verbs that only read; a command built from these is not work."
+value = ["ls", "cat", "head", "tail", "pwd", "wc", "grep", "rg", "which", "whoami", "stat", "du", "df", "basename", "dirname", "realpath", "readlink", "id", "uname", "hostname", "true", "false"]
+
+[coordinator_work.readonly_git_subs]
+doc = "git subcommands that only read."
+value = ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe"]
+
+[coordinator_work.git_verb]
+doc = "The verb of a git command."
+value = "git"
+
+[coordinator_work.git_output_flag]
+doc = "Regex source of a git argument that writes output to a file (so the command is not read-only)."
+value = 'output|^-o'
+
+[coordinator_work.nudge_what]
+doc = "Advisory headline; {count} is the number of work calls in the window and {minutes} the window length."
+value = "{count} file-changing steps in the main thread within {minutes} min."
+
+[coordinator_work.nudge_instead]
+doc = "Advisory advice without a block threshold."
+value = "hand the rest to a subagent now."
+
+[coordinator_work.nudge_instead_block]
+doc = "Advisory advice with a block threshold; {block_at} is the call that is blocked."
+value = "hand the rest to a subagent now; step {block_at} in this window will be blocked."
+
+[coordinator_work.block_what]
+doc = "Block headline; {count} is the number of work calls in the window and {minutes} the window length."
+value = "this step was stopped after repeated main-thread edits."
+
+[coordinator_work.block_why]
+doc = "Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed."
+value = "Too much hands-on work in the main thread. This is not a question for the user; it clears by itself in about {clear_min} min."
+
+[coordinator_work.block_instead]
+doc = "What to do instead of a blocked work call. {clear_min} is the minutes until the window clears."
+value = "hand the remaining work to a helper agent."
+
+[coordinator_work.block_allowed]
+doc = "What stays allowed past the block threshold."
+value = "reads, recovery commands (--abort/--quit, stash pop/apply) and loosely matched inline code."
+
+[coordinator_work.block_override]
+doc = "The override line of the block ({skip} is the skip command)."
+value = "{skip} (15-min TTL)"
+
+[coordinator_work.trip_skipped]
+doc = "The trip-log event of a call the window would have blocked but a skip let through."
+value = "skipped"
+
+[coordinator_work.trip_block]
+doc = "The trip-log event of a blocked call."
+value = "block"
+
+[coordinator_work.trip_nudge]
+doc = "The event name a nudge is logged under in the trips log."
+value = "nudge"
+
+[coordinator_work.counters]
+doc = "The counters a window file keeps and the metrics fold, by their key in the files."
+value = ["calls", "work", "blocks", "skippedWouldBlock"]
+
+[coordinator_work.version_keys]
+doc = "The keys of one version's entry in the metrics file, in file order: the number of folded sessions, then the counters."
+value = ["sessions", "calls", "work", "blocks", "skippedWouldBlock"]
+
+# ---- merge-gate ---------------------------------------------------------------------
+
+[merge_gate.summary]
+doc = "One-line description of the merge-gate check in the generated reference."
+value = "Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair."
+
+[merge_gate.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "merge-gate"
+
+[merge_gate.setting]
+doc = "Where the opt-in switch is read from (guards.mergeGate, default off)."
+value = { section = "guards", key = "mergeGate", env = "ANTIHALL_MERGE_GATE", aliases = [], option = "guards_merge_gate", default = false }
+
+[merge_gate.window_bytes]
+doc = "How much of the end of the transcript is scanned for a self-hedge (the same bounded tail the Node gate reads)."
+value = 131072
+unit = "bytes"
+min = 1024
+max = 16777216
+
+[merge_gate.hedge_phrases]
+doc = "Self-hedge phrases, matched case-insensitively as plain text in the recent assistant output."
+value = ["pending owner", "do not merge", "pending review", "needs your review", "needs your eyes", "review it in the build", "built, pending"]
+
+[merge_gate.hedge_patterns]
+doc = "Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output."
+value = ['first[- ]pass', 'not pixel[- ]perfect']
+
+[merge_gate.resolutions]
+doc = "Phrases that resolve a hedge when a REAL user prompt typed after the hedge contains one (case-insensitive plain text); the assistant can never clear its own hedge."
+value = ["owner approved", "owner signed off", "sign-off received", "fidelity verified", "verified against", "resolved:"]
+
+[merge_gate.injected_user]
+doc = "Regex source (case-insensitive) of the user-role bodies that are not a human typing (task notifications, system reminders, hook feedback, cross-session messages)."
+value = '^\s*(<(task-notification|system-reminder|command-name|command-message|local-command|user-prompt-submit-hook|cross-session-message)\b|Stop hook feedback:)|Another Claude session sent a message|<cross-session-message\b'
+
+[merge_gate.system_reminder]
+doc = "Regex source (case-insensitive) of a system-reminder block, removed from a user prompt before it is judged."
+value = '<system-reminder>[\s\S]*?<\/system-reminder>'
+
+[merge_gate.non_human_origins]
+doc = "The origin kinds of a user record that still count as a human typing."
+value = ["human", "user"]
+
+[merge_gate.jev_id]
+doc = "The Jev integration id of the shadow question asked when a hedge is found on a merge command."
+value = "mergeGateHedge"
+
+[merge_gate.jev_instructions]
+doc = "The Noul question text of the mergeGateHedge shadow ask (byte-identical to the Node gate's)."
+value = 'Does the recent reply text below contain an UNRESOLVED self-hedge (e.g. "pending review", "first-pass", "do not merge") that was never followed by a resolution/sign-off?'
+
+[merge_gate.jev_true]
+doc = "The label for a true answer of the mergeGateHedge question."
+value = "unresolved hedge present"
+
+[merge_gate.jev_false]
+doc = "The label for a false answer of the mergeGateHedge question."
+value = "no unresolved hedge"
+
+[merge_gate.jev_state_chars]
+doc = "How many trailing UTF-16 units of the assistant text the mergeGateHedge ask evaluates (Node: text.slice(-4000))."
+value = 4000
+min = 1
+
+[merge_gate.msg_what]
+doc = "The block message's first line; {hedge} is the last hedge phrase found."
+value = "the merge is paused while recent work remains unverified."
+
+[merge_gate.msg_why]
+doc = "The block message's reason."
+value = "Merging now could ship unfinished work."
+
+[merge_gate.msg_instead]
+doc = "The block message's alternative."
+value = "verify the agreed result before merging."
+
+[merge_gate.msg_override]
+doc = "The block message's override line."
+value = "tell the agent \"skip merge-gate\""
+
+[merge_gate.segment_split]
+doc = "Regex source that splits a Bash command into the segments the auto-merge scan looks at (shell separators; quotes are not honoured, on purpose, as in the Node gate)."
+value = '&&|\|\||[;&|\n]'
+
+[merge_gate.env_assign]
+doc = "Regex source of a leading environment assignment the scan skips before the command word."
+value = '^[A-Za-z_][A-Za-z0-9_]*='
+
+[merge_gate.protected_target]
+doc = "Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge."
+value = '^(main|master|develop|origin\/(main|master|develop))$'
+
+[merge_gate.merge_rules]
+doc = "The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target."
+value = [
+  { verb = "gh", prefix = ["pr", "merge"] },
+  { verb = "gh", prefix = ["pr", "review"], includes_any = ["--approve"] },
+  { verb = "git", prefix = ["merge"], includes_any = ["--no-ff", "--ff", "--ff-only"], needs_target = true },
+  { verb = "hivecontrol", prefix = ["workspace", "merge-into-source"] },
+  { verb = "hivecontrol", prefix = ["workspace", "merge-from-source"] },
+]
+
+# ---- api-guard -----------------------------------------------------------------------
+
+[api_guard.summary]
+doc = "One-line description of the api-guard check in the generated reference."
+value = "Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook."
+
+[api_guard.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "api-guard"
+
+[api_guard.setting]
+doc = "Switch for the fabricated-API guard. Where the guard's own on/off switch is read from (guards.apiGuard, default on)."
+value = { section = "guards", key = "apiGuard", env = "", aliases = [], option = "guards_api_guard", default = true }
+
+[api_guard.shell_setting]
+doc = "Switch for checking code a shell write adds. Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on)."
+value = { section = "guards", key = "shellWriteChecks", env = "ANTIHALL_SHELL_WRITE_CHECKS", aliases = [], option = "", default = true }
+
+[api_guard.thirdparty_setting]
+doc = "Switch for verifying third-party packages. Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off)."
+value = { section = "guards", key = "apiGuardThirdparty", env = "ANTIHALL_API_GUARD_THIRDPARTY", aliases = [], option = "", default = false }
+
+[api_guard.tool_write]
+doc = "Tool whose code is `tool_input.content`."
+value = "Write"
+
+[api_guard.tool_edit]
+doc = "Tool whose code is `tool_input.new_string`."
+value = "Edit"
+
+[api_guard.tool_multi]
+doc = "Tool whose code is the `new_string` of each entry of `tool_input.edits`."
+value = "MultiEdit"
+
+[api_guard.tool_shell]
+doc = "Tool whose command can write a code file."
+value = "Bash"
+
+[api_guard.tool_patch]
+doc = "Codex tool whose patch text carries the code."
+value = "apply_patch"
+
+[api_guard.python_extensions]
+doc = "File extensions (lower-case) the guard checks as Python."
+value = ["py", "pyi"]
+
+[api_guard.js_extensions]
+doc = "File extensions (lower-case) the guard checks as JavaScript or TypeScript."
+value = ["js", "mjs", "cjs", "ts", "tsx", "jsx"]
+
+[api_guard.extension_pattern]
+doc = "Regex source (case-insensitive) of a file name's extension, group 1."
+value = '\.([a-z]+)$'
+
+[api_guard.code_name_pattern]
+doc = "Regex source (case-insensitive) that finds a code file name inside a Bash command or an apply_patch text. Written without a word boundary, so it finds every spelling the Node guard's own pattern finds, and more."
+value = '\.(?:py|pyi|js|mjs|cjs|ts|tsx|jsx)'
+
+[api_guard.shell_write_pattern]
+doc = "Regex source (case-sensitive) of the Node pre-filter that says a Bash command could write a file (a redirect, tee, an in-place editor, cp or mv, an inline-code write); a command it does not match yields no code chunk, so the guard allows it."
+value = '[>]|\btee\b|\bsed\b|\bperl\b|\bcp\b|\bmv\b|\bopen\b|createWriteStream|File(?:Sync)?\s*\(|\.write\('
+
+[api_guard.python_stdlib]
+doc = "Python standard-library modules whose attributes the Node guard verifies by default."
+value = ["os", "sys", "math", "cmath", "random", "json", "re", "collections", "itertools", "functools", "pathlib", "asyncio", "datetime", "time", "statistics", "heapq", "bisect", "string", "textwrap", "shutil", "glob", "csv", "sqlite3", "decimal", "fractions", "secrets", "uuid", "contextlib", "operator", "inspect", "abc", "numbers", "array", "enum", "dataclasses", "typing", "io", "struct", "hashlib", "base64", "binascii", "copy", "pprint", "queue", "threading", "socket"]
+
+[api_guard.node_builtins]
+doc = "Node built-in modules whose attributes the Node guard verifies by default."
+value = ["fs", "path", "os", "crypto", "util", "stream", "buffer", "events", "url", "querystring", "http", "https", "net", "dns", "zlib", "readline", "child_process", "assert", "timers", "string_decoder", "tls", "dgram", "process"]
+
+[api_guard.js_globals]
+doc = "JavaScript global builtins whose members the Node guard verifies by default."
+value = ["Array", "String", "Object", "Promise", "Map", "Set", "WeakMap", "WeakSet", "Number", "Math", "JSON", "Reflect", "Symbol", "Date", "RegExp", "BigInt", "Buffer"]
+
+# ---- edit-guard ---------------------------------------------------------------------
+
+[edit_guard.summary]
+doc = "One-line description of the edit-guard check in the generated reference."
+value = "Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch: blocks a write into the launcher directory for every agent, lets a subagent pass, and decides every main-thread target as the Node edit-guard does (the coordinator allowlist with its symlink and hard-link honesty checks, the trusted per-project allowlist, the harness plan file, the session scratchpad, handover documents, plan mode, DevSwarm child workers and the DevSwarm wording); a call that needs the hook process's own working directory or home defers to the Node hook."
+
+[edit_guard.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "edit-guard"
+
+[edit_guard.setting]
+doc = "Where the guard's on/off switch is read from (safety.editGuard, default on)."
+value = { section = "safety", key = "editGuard", env = "ANTIHALL_EDIT_GUARD", aliases = [], option = "safety_edit_guard", default = true }
+
+[edit_guard.edit_tools]
+doc = "The tools whose target file the guard checks."
+value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+[edit_guard.notebook_tool]
+doc = "The tool whose target is `tool_input.notebook_path` instead of `tool_input.file_path`."
+value = "NotebookEdit"
+
+[edit_guard.patch_tool]
+doc = "The Codex tool whose targets are the files of a patch (parsed with the shared apply_patch parser)."
+value = "apply_patch"
+
+[edit_guard.launcher_dir]
+doc = "Path of the stable launcher directory under the home directory, as its parts. A write into it is blocked for every agent."
+value = [".anti-hall", "bin"]
+
+[edit_guard.msg_launcher_what]
+doc = "Launcher-directory block headline; {tool} is the tool name."
+value = "an edit to the managed launcher folder was stopped."
+
+[edit_guard.msg_launcher_why]
+doc = "Launcher-directory block reason."
+value = "anti-hall manages those files itself; overwriting one could run unwanted code under a trusted name."
+
+[edit_guard.msg_launcher_instead]
+doc = "Launcher-directory block advice."
+value = "leave that folder alone."
+
+[edit_guard.msg_launcher_allowed]
+doc = "What stays allowed next to the launcher directory."
+value = "the rest of .anti-hall/** (handovers, progress, history, state)."
+
+# ---- coordinator detection --------------------------------------------------
+
+[coordinator_work.main_entrypoints]
+doc = "Entry point values (exact) of a main-thread session."
+value = ["cli", "vscode", "jetbrains", "vim", "emacs"]
+
+[coordinator_work.main_entrypoint_prefix]
+doc = "Entry point prefix of a main-thread session started from a terminal inside an IDE."
+value = "terminal_ide_"
+
+[coordinator_work.codex_tool]
+doc = "The tool name only Codex sends; a payload naming it is a Codex payload."
+value = "apply_patch"
+# ---- DevSwarm prompt gates -------------------------------
+
+[devswarm_prompt.parent_summary]
+doc = "One-line description of the devswarm-parent-inbox check in the generated reference."
+value = "DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) and every active Primary turn, in a git checkout or not, in the engine: the communication-override reminder through emit-dedupe, the ingest-daemon banners and summary refresh, the mailbox-wake line, the session-drift and maintainer-notice feeds, the live workspace table of the project's summary with its nudges, archive recommendation and not-draining / stale-build labels, the orphaned-mesh, stale-registry and broadcast segments, the Primary's own inbox with the questions it was asked, the screenshot-sync ask and the parked supervisor escalations. A seat conflict still owed its repeat, a setting of the hook set anywhere, an unseen maintainer notice, a row the supervisor's auto-archive owns and the other rare states defer to the Node hook, each cause logged as parent-inbox-defer."
+
+[devswarm_prompt.child_summary]
+doc = "One-line description of the devswarm-child-turn check in the generated reference."
+value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) and every active child turn in the engine: the heartbeat (with the git push state in a checkout), the descriptor and registry row under the workspace lock, the fixed reminder block through emit-dedupe, the step plan, unread parent mail and the archive request. An archived workspace, an ingest daemon that is not healthy, mesh-direct unread mail, a store Node would first create and the other rare states defer to the Node hook."
+
+[devswarm_prompt.parent_setting]
+doc = "Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+value = { section = "devswarm", key = "parentInbox", env = "", aliases = [], option = "devswarm_parent_inbox", default = true }
+
+[devswarm_prompt.child_setting]
+doc = "Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+value = { section = "devswarm", key = "childTurn", env = "", aliases = [], option = "devswarm_child_turn", default = true }
+
+[devswarm_prompt.judge_env]
+doc = "Environment variable that marks a Jev judge child process; its hooks do nothing. Only the exact value in judge_value counts."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[devswarm_prompt.judge_value]
+doc = "The value of judge_env that silences the hook."
+value = "1"
+
+[devswarm_prompt.kill_env]
+doc = "Hard kill switch of the DevSwarm integration: the exact value in kill_value makes the integration inactive."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_prompt.kill_value]
+doc = "The value of kill_env that deactivates the DevSwarm integration."
+value = "1"
+
+[devswarm_prompt.repo_env]
+doc = "Environment variable whose non-blank value makes the DevSwarm integration active in auto mode."
+value = "DEVSWARM_REPO_ID"
+
+[devswarm_prompt.branch_env]
+doc = "Environment variable whose non-blank value marks a child workspace."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[devswarm_prompt.event]
+doc = "The hook event name of the prompt hooks' answer."
+value = "UserPromptSubmit"
+
+[devswarm_prompt.override_key]
+doc = "The emit-dedupe key of the Primary's communication-override reminder."
+value = "parent-inbox-comms-override"
+
+[devswarm_prompt.override_reassert]
+doc = "The Primary's per-turn communication-override reminder, byte for byte."
+value = "\U0001F4A1 anti-hall \u00B7 devswarm-comms: mesh only \u2014 native hivecontrol messaging blocked. Check: `roster` / `mesh read`. Direct: `send --to <meshId>`."
+
+[devswarm_prompt.seat_dir]
+doc = "The directory, under the anti-hall directory, of the per-session seat-conflict markers the SessionStart hook writes."
+value = "devswarm/primary-seat"
+
+[devswarm_prompt.seat_shown_max]
+doc = "A seat-conflict marker is owed a repeat while the number of times it was shown is below this."
+value = 2
+min = 1
+max = 1000
+
+[devswarm_prompt.child_override]
+doc = "The child workspace's communication-override reminder of every turn, byte for byte."
+value = '''
+💡 anti-hall · devswarm-comms: mesh only — native hivecontrol messaging blocked. Report: `heartbeat <id> --summary`. Direct: `send --to-primary`.'''
+
+[devswarm_prompt.child_autonomy]
+doc = "The child's self-continue reminder, byte for byte."
+value = '''
+💡 anti-hall · devswarm-autonomy: if you are running a multi-round autonomous task (deadly-loop, iterative fix waves, a long staged build), do NOT end your turn to wait between rounds — keep issuing tool calls and proceed to the next round within the SAME turn. End your turn (Stop) ONLY at: (a) a genuine BLOCK needing a parent decision, (b) your final completion / merge-gate report, or (c) an unrecoverable error. Ending your turn just to 'check in' between rounds costs a full wake-cycle of latency and is the main cause of slow workspace work.'''
+
+[devswarm_prompt.child_reminder]
+doc = "The child's per-turn report reminder; {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id."
+value = '''
+💡 anti-hall · devswarm-child-workspace: (per turn) keep the parent orchestrator updated — run `{cli} heartbeat <DEVSWARM_BUILDER_ID> --summary "<status>"` to report progress/blockers as you make them — this is what satisfies your Stop-gate report (`send --to-primary --message-file <path>` is a SEPARATE direct message, not a substitute) — and check for + act on any parent messages before continuing, so you stay visible on the parent's task list instead of drifting off it.'''
+
+[devswarm_prompt.child_receive]
+doc = "The child's reception reminder; {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id."
+value = '''
+💡 anti-hall · devswarm-child-reception: to RECEIVE parent messages, run `{cli} inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm CLI) — a SAFE, bounded drain that folds the native parent->child queue into your durable inbox (non-destructive count gate, one bounded read, never `monitor`). Then read them via `{cli} inbox read-primary <DEVSWARM_BUILDER_ID>` (read-only; after handling, run the `ackCommand` it returns). Substitute your own DEVSWARM_BUILDER_ID for <...>.'''
+
+[devswarm_prompt.id_token]
+doc = "The placeholder of the builder id in the child's reminders."
+value = "<DEVSWARM_BUILDER_ID>"
+
+[devswarm_prompt.child_block_joiner]
+doc = "Between the segments of the child's answer."
+value = "\n\n"
+
+[devswarm_prompt.child_static_key]
+doc = "The emit-dedupe key of the child's fixed per-turn block."
+value = "child-turn-static"
+
+[devswarm_prompt.child_plan_key]
+doc = "The emit-dedupe key of the child's plan segment."
+value = "child-turn-plan"
+
+[devswarm_prompt.child_plan_keepalive]
+doc = "Delivered turns after which an unchanged plan segment is sent again."
+value = 10
+min = 0
+max = 100000
+
+[devswarm_prompt.heartbeat_dir]
+doc = "The directory, under the anti-hall directory, of the per-builder heartbeat files."
+value = "devswarm/heartbeats"
+
+[devswarm_prompt.heartbeat_source]
+doc = "The `source` of a heartbeat the child's prompt hook writes."
+value = "child-turn"
+
+[devswarm_prompt.heartbeat_branch_unsafe]
+doc = "The characters of a branch name that become a dash in a heartbeat file name when the branch is not a safe id."
+value = "[^A-Za-z0-9._-]"
+
+[devswarm_prompt.heartbeat_name_max]
+doc = "The longest sanitized branch name of a heartbeat file name."
+value = 80
+min = 1
+max = 255
+
+[devswarm_prompt.heartbeat_name_fallback]
+doc = "The heartbeat file name for a branch that sanitizes to nothing."
+value = "branch"
+
+[devswarm_prompt.heartbeat_hash_len]
+doc = "Characters of the branch's SHA-1 appended to a sanitized heartbeat file name."
+value = 8
+min = 1
+max = 40
+
+[devswarm_prompt.descriptor_dir]
+doc = "The directory, under the anti-hall directory, of the workspace descriptors."
+value = "devswarm/workspaces"
+
+[devswarm_prompt.plan_dir]
+doc = "The directory, under the anti-hall directory, of the step-plan files of the workspaces."
+value = "devswarm/plans"
+
+[devswarm_prompt.uuid_full_re]
+doc = "A full UUID (a builder id of this shape is a real id)."
+value = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+[devswarm_prompt.uuid_truncated_re]
+doc = "A UUID cut short in its last group (a builder id of this shape was truncated; Node recovers or skips it and says so on stderr)."
+value = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1,11}$"
+
+[devswarm_prompt.plan_tracking_setting]
+doc = "The setting devswarm.planTracking (on by default): the child is shown its step plan each turn."
+value = { section = "devswarm", key = "planTracking", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_TRACKING", option = "devswarm_plan_tracking", default = true }
+
+[devswarm_prompt.plan_required_setting]
+doc = "The setting devswarm.planRequired (off by default): a child without a step plan is asked to write one every turn."
+value = { section = "devswarm", key = "planRequired", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_REQUIRED", option = "devswarm_plan_required", default = false }
+
+[devswarm_prompt.plan_none]
+doc = "The plan segment of a child with no step plan when one is required. Placeholders: {cli}, {id}."
+value = '''
+💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `{cli} plan set {id} --steps "1. …\n2. …"` — then report each step with `heartbeat {id} --step N --status doing|done|blocked`.'''
+
+[devswarm_prompt.plan_head]
+doc = "The first sentence of the plan segment. Placeholders: {done}, {total}, {n}, {blocked}, {text}."
+value = '''
+💡 anti-hall · devswarm-plan: {done}/{total} steps done; latest touched step {n}{blocked} — "{text}".'''
+
+[devswarm_prompt.plan_blocked]
+doc = "Added to the plan head when the latest touched step is blocked."
+value = " (blocked)"
+
+[devswarm_prompt.plan_all_done]
+doc = "The first sentence of the plan segment when every step is done. Placeholders: {total}, {cli}."
+value = '''
+💡 anti-hall · devswarm-plan: all {total} steps are done — report it with `{cli} done`.'''
+
+[devswarm_prompt.plan_tail]
+doc = "The rest of the plan segment. Placeholders: {cli}, {id}."
+value = '''
+ Report step progress as it happens: `{cli} heartbeat {id} --step N --status doing|done|blocked` (it is what the Primary's roster shows). If a user prompt asks you for work outside this plan, record it first: `{cli} scope add {id} --glob '<paths>' --note '<what the user asked>'` — the Primary sees the note and may challenge it.'''
+
+[devswarm_prompt.builder_env]
+doc = "Environment variable that holds a child workspace's builder id."
+value = "DEVSWARM_BUILDER_ID"
+
+[devswarm_prompt.builder_name_env]
+doc = "Environment variable that holds a child workspace's builder name."
+value = "DEVSWARM_BUILDER_NAME"
+
+[devswarm_prompt.mode_setting]
+doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset)."
+value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", manifest_default = "auto", values = ["auto", "on", "off"] }
+
+[devswarm_prompt.summary_dir]
+doc = "The directory, under the anti-hall directory, of the per-project mailbox summaries the registration refreshes and the hook reads."
+value = "devswarm/summaries"
+
+[devswarm_prompt.archived_stop_setting]
+doc = "The setting devswarm.archivedChildStop (on by default): an archived child workspace is told to save a handover and stop, and its descriptor is not rewritten. The engine leaves an archived workspace to the Node hook."
+value = { section = "devswarm", key = "archivedChildStop", type = "boolean", env = "ANTIHALL_DEVSWARM_ARCHIVED_CHILD_STOP", option = "devswarm_archived_child_stop", default = true }
+
+[devswarm_prompt.git_push_args]
+doc = "The git arguments, after `-C <worktree>`, of the push-state probe the heartbeat carries: the commits ahead of the upstream."
+value = ["rev-list", "--count", "@{u}..HEAD"]
+
+[devswarm_prompt.git_env]
+doc = "The environment the push-state probe adds to the request's: the read-only git environment, so the probe never takes a repository lock."
+value = { GIT_OPTIONAL_LOCKS = "0" }
+
+[devswarm_prompt.git_timeout_ms]
+doc = "How long the push-state probe may run; a probe that does not finish leaves the push keys out of the heartbeat."
+value = 4000
+min = 10
+unit = "ms"
+
+[devswarm_prompt.not_repo_re]
+doc = "What git says on stderr when the directory is no repository: the probe then has no answer, which is not the same as 'no upstream'."
+value = "not a git repository"
+
+[devswarm_prompt.stale_key]
+doc = "The emit-dedupe key of the ingest-daemon stale banner; a healthy daemon forgets it."
+value = "devswarm-ingest-stale"
+
+[devswarm_prompt.fault_key]
+doc = "The emit-dedupe key of the ingest monitor-fault banner; a healthy daemon forgets it."
+value = "devswarm-ingest-monitor-fault"
+
+[devswarm_prompt.archive_marker]
+doc = "The token a parent embeds in a message to ask the child to archive its own workspace."
+value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
+
+[devswarm_prompt.unread_segment]
+doc = "The child's unread-parent-mail segment. Placeholders: {count}, {cli}, {id}."
+value = '''
+⚠️ anti-hall · devswarm-child-inbox: priority — you have {count} unread parent message(s). STOP and address these parent message(s) FIRST before continuing. Read them the SAFE way via the durable inbox cursor — `{cli} inbox read-primary {id}` (anti-hall devswarm CLI) (read-only; after handling, run the `ackCommand` it returns). Do NOT run `hivecontrol workspace read-messages` or `monitor` — those DESTRUCTIVELY drain the native queue.'''
+
+[devswarm_prompt.archive_request]
+doc = "The segment that relays a parent's request to archive the workspace. Placeholders: {cli}, {id}."
+value = '''
+💡 anti-hall · devswarm-archive-request: your parent asks you to archive this workspace. Confirm with YOUR user, then run `{cli} archive {id}`. NEVER auto-archive.'''
+
+[devswarm_prompt.proto_key]
+doc = "A descriptor key JavaScript reads as the prototype of the merged object (JSON.parse makes it an own field, Object.assign then sets the prototype): the child-turn registration merges it the same way."
+value = "__proto__"
+
+[devswarm_prompt.escape_marker]
+doc = "The text that marks a JSON escape sequence; a descriptor the engine's parser rejects and that holds one is left to the Node hook (JavaScript may parse it)."
+value = "\\u"
+
+[devswarm_prompt.skip_descriptor_unreadable]
+doc = "The cause logged when the child's old descriptor cannot be merged because it is no regular file (a FIFO, socket or device a read could block on) or is over the read cap; the registration is left for the turn and retried on the next. The refusal reason follows."
+value = "descriptor not merged: "
+
+[devswarm_prompt.skip_descriptor_surrogate]
+doc = "The cause logged when the child's old descriptor holds a lone-surrogate JSON escape (JavaScript parses it, a Rust string cannot carry it), so rewriting it would change its text; the registration is left for the turn."
+value = "descriptor holds a lone-surrogate escape"
+
+[devswarm_prompt.skip_phantom_marker]
+doc = "Why a truncated-id phantom descriptor is kept: an archive marker of that id already exists."
+value = "archive marker already exists"
+
+[devswarm_prompt.skip_phantom_unread]
+doc = "Why a truncated-id phantom descriptor is kept this turn: its partition still holds unread mail that has not been forwarded to the registered id."
+value = "unread mail not forwarded yet"
+
+[devswarm_prompt.skip_phantom_lock]
+doc = "Why a truncated-id phantom descriptor is kept this turn: its workspace lock stayed busy."
+value = "workspace lock busy"
+
+[devswarm_prompt.log_verb]
+doc = "The verb name the registration's summary-refresh failures are logged under."
+value = "child-turn"
+
+[devswarm_prompt.defer_log_kind]
+doc = "The event-log kind of the line the child-turn check writes when it hands a turn to the Node hook; the line's text is the cause."
+value = "child-turn-defer"
+
+[devswarm_prompt.mesh_direct]
+doc = "The child's nudge for mesh mail addressed to it. Placeholders: {count}, {age}, {cli}, {id}."
+value = '''
+⚠️ anti-hall · devswarm-mesh-direct: you have {count} unread mesh direct message(s){age} addressed to you. Read them via `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns).'''
+
+[devswarm_prompt.mesh_direct_urgent]
+doc = "The loudest form of the mesh-direct nudge, for urgent or high-urgency mail. Placeholders: {count}, {age}, {cli}, {id}."
+value = '''
+⚠️ anti-hall · devswarm-mesh-direct: urgent — you have {count} unread mesh direct message(s){age} addressed to you. STOP and read them FIRST via `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns), before continuing.'''
+
+[devswarm_prompt.mesh_direct_age]
+doc = "The age of the oldest unread mesh mail, appended to the nudge. Placeholder: {minutes}."
+value = " (oldest {minutes}m)"
+
+[devswarm_prompt.urgent_levels]
+doc = "The urgency values (the summary's urgencyMax) that make the mesh-direct nudge loud."
+value = ["urgent", "high"]
+
+[devswarm_prompt.ms_per_minute]
+doc = "Milliseconds in the minute the age of unread mail is counted in."
+value = 60000
+min = 1
+unit = "ms"
+
+[devswarm_prompt.relative_none]
+doc = "How an unknown or unset time reads in a banner."
+value = "—"
+
+[devswarm_prompt.launchd_platform]
+doc = "The platform name (as the host reports it) on which the ingest job is a launchd job whose disabled state the stale banner looks up."
+value = "macos"
+
+[devswarm_prompt.test_markers]
+doc = "Environment variables that mark a test run; under one the service manager is never asked."
+value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST_ISOLATION"]
+
+[devswarm_prompt.launchctl_args]
+doc = "The arguments of the launchd query that lists the disabled jobs of the user's domain. Placeholder: {uid}."
+value = ["print-disabled", "gui/{uid}"]
+
+[devswarm_prompt.launchctl_timeout_ms]
+doc = "How long the launchd query may run."
+value = 3000
+min = 10
+unit = "ms"
+
+[devswarm_prompt.launchd_label_prefix]
+doc = "The prefix of a project's ingest job label; the project key follows."
+value = "com.anti-hall.devswarm-ingest."
+
+[devswarm_prompt.banner_keepalive]
+doc = "Delivered turns after which an unchanged ingest banner is sent again."
+value = 50
+min = 0
+max = 100000
+
+[devswarm_prompt.banner_grace_ms]
+doc = "A stale ingest heartbeat younger than this, with the daemon's lock held by a live process, is a hand-over in progress and gets no banner."
+value = 300000
+min = 0
+unit = "ms"
+
+[devswarm_prompt.stale_banner]
+doc = "The ingest-daemon stale banner. Placeholders: {age}, {tail}."
+value = '''
+⚠️ anti-hall · devswarm-stale-data: ingest daemon last alive {age} ago — roster/app-state freshness may be stale (the daemon may have stopped or never started for this worktree). Mesh sends are written directly to the store and are NOT affected. {tail}Shown once per stale episode.'''
+
+[devswarm_prompt.stale_doctor]
+doc = "The stale banner's advice when the daemon's launchd job is not disabled."
+value = "Run /anti-hall:doctor to check the DevSwarm ingest daemon. "
+
+[devswarm_prompt.stale_disabled]
+doc = "The stale banner's advice when launchd lists the daemon's job disabled. Placeholders: {label}, {uid}."
+value = "The launchd job {label} is DISABLED, so it cannot auto-start and self-heal is skipped; if that was not intentional, re-enable with: launchctl enable gui/{uid}/{label} (anti-hall never does this for you). "
+
+[devswarm_prompt.fault_banner]
+doc = "The banner for a live ingest daemon whose app monitor is not answering and that is not a configuration fault (buildMonitorFaultBanner). Placeholders: {beat}, {what}, {err}."
+value = '''
+⚠️ anti-hall · devswarm-ingest-failing: the ingest daemon is healthy (heartbeat {beat} ago) but the DevSwarm app's `hivecontrol workspace monitor` is not answering ({what}{err}). Native-queue ingestion is paused until it answers; anti-hall mesh messages sent through the shared store are not affected. /anti-hall:doctor cannot repair this — check or restart the DevSwarm app.'''
+
+[devswarm_prompt.fault_config]
+doc = "The banner for a live ingest daemon whose monitor fails with a configuration error code. Placeholders: {beat}, {what}, {code}, {err}."
+value = '''
+⚠️ anti-hall · devswarm-ingest-failing: the daemon is alive (heartbeat {beat} ago) but {what} ({code}){err} — ingesting NOTHING. Run /anti-hall:doctor to repair the ingest daemon.'''
+
+[devswarm_prompt.fault_no_ok]
+doc = "What a monitor fault says when no poll has succeeded since the daemon started. Placeholder: {rel}."
+value = "no monitor poll has succeeded since the daemon started {rel} ago"
+
+[devswarm_prompt.fault_ok_stale]
+doc = "What a monitor fault says when the last successful poll is too old. Placeholder: {rel}."
+value = "the last successful monitor poll was {rel} ago"
+
+[devswarm_prompt.fault_failing]
+doc = "What a monitor fault says otherwise. Placeholder: {n}."
+value = "`hivecontrol workspace monitor` has failed {n}x in a row"
+
+[devswarm_prompt.fault_error]
+doc = "The last monitor error, appended to a fault banner. Placeholder: {error}."
+value = "; last error: {error}"
+
+[devswarm_prompt.fault_error_max]
+doc = "The most characters of the last monitor error a fault banner quotes."
+value = 160
+min = 1
+max = 4096
+
+[guardkit.render_reserve]
+doc = "Extra bytes reserved beyond a message template's length when its placeholders are filled (a capacity hint, not a limit)."
+value = 32
+unit = "bytes"
+min = 0
+max = 65536
+
+[guardkit.plain_names]
+doc = "Human names on the first line; unknown guard ids fall back to themselves."
+value = { "tasklist-guard" = "task list check", "git-guard" = "git safety", "command-guard" = "command check", "edit-guard" = "file-edit check", "spawn-usage" = "usage limit", "wide-search-guard" = "wide search", "burn-breaker" = "runaway-work breaker", "task-guard" = "idle tasks check", "coordinator-work-guard" = "coordinator workload", "procwatch" = "process watch", "lane-test-guard" = "test run check", "queued-wait-guard" = "waiting check", "uncommitted-guard" = "uncommitted work check", "sibling-sweep" = "similar bugs check", "merge-gate" = "merge check", "speculation-guard" = "claim check", "swarm-guard" = "agent spawn check", "api-guard" = "API check", "ship-it-guard" = "change plan check", "merge-side-pick" = "merge review", "scan-throttle" = "search workload", "devswarm-child-gate" = "workspace check", "agent-reminders" = "agent reminders", "task-tracker" = "task tracker", "devswarm-parent-gate" = "workspace check", "idle-agents" = "idle agents", "devswarm-comms-guard" = "devswarm comms", "spawn-ceiling" = "spawn ceiling", "nested-spawn-guard" = "nested spawn", "broad-kill-guard" = "broad kill", "ask-guard" = "ask", "stale-stop" = "stale stop", "silent-agent-nudge" = "silent agent nudge", "engine-role-guard" = "engine role", "fable-availability" = "fable availability", "compact-declaration-guard" = "compact declaration", "model-routing-guard" = "model routing", "model-routing" = "model routing", "failure-root-cause-nudge" = "failure root cause nudge", "root-cause" = "root cause", "jev-scorecard" = "jev scorecard", "repair-on-reload" = "repair on reload", "handover-hygiene" = "handover hygiene", "speculation-judge" = "speculation judge", "claim-ledger" = "claim ledger", "output-verify-guard" = "output verify" }
+
+[guardkit.override_human]
+doc = "Human consent hint; the id is the skip key."
+value = "tell the agent \"skip {guard}\""
+
+[guardkit.details_dir]
+doc = "Details files relative to the anti-hall directory."
+value = "block-details"
+
+[guardkit.details_ext]
+doc = "Details file extension."
+value = ".md"
+
+[guardkit.details_session_default]
+doc = "Details file suffix when a session id is unavailable."
+value = "session"
+
+[guardkit.brief_what]
+doc = "Short headlines; full context is saved in the details file."
+value = { "burn-breaker" = "this tool call is paused after work with no recorded outcome.", "edit-guard" = "the main agent cannot make this project edit.", "command-guard" = "this heavy command was stopped in the main thread." }
+
+[guardkit.brief_why]
+doc = "Short reasons; full context is saved in the details file."
+value = { "burn-breaker" = "Further work needs a saved outcome.", "edit-guard" = "A helper makes the edit and reports back.", "command-guard" = "Long output would crowd the main conversation." }
+
+[guardkit.brief_instead]
+doc = "Short actions; full instructions are saved in the details file."
+value = { "burn-breaker" = "Save working changes in a commit, or write your report and stop.", "edit-guard" = "Hand the edit to a helper agent.", "command-guard" = "hand the command to a helper agent." }
+
+[guardkit.long_instructions]
+doc = "Full instructions retained when visible guard text is shortened; placeholders describe the original command fields. Saved only in details files."
+value = { "api-guard" = "msg_what: this code references API(s) that do not exist in your installed runtime ({versions}):\n\nmsg_instead: verify the correct name (check the docs or run a quick `hasattr` / `typeof` probe) and fix the reference before writing.", "ask-guard" = "advise_instead: take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.\n\nblock_instead: decide the recommended option yourself, state it in your reply, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.", "auto-handover" = "lc_instead: route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet, or Haiku for trivial work, uses less of the shared Claude pool; no Claude model is a separate bucket); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff).\n\nah_nag_instead: {bloat} Mention {reset} to the user again when convenient.\n\nah_soft_instead: consider checking with the user about writing a handover and compacting/clearing soon. {bloat}\n\nah_pause_instead: {bloat} Mention {reset} to the user now.\n\nah_gate_what: post-handover new-work gate (context ~{pct}%, handover saved at ~{hp}%; budget {budget}).\n\nah_gate_instead: if it is bigger than the budget, do not start it; {ask}: (a) add it to the task list and the handover, then start it after {reset}; (b) proceed now anyway.\n\nah_backstop_what: post-handover budget exceeded: context is ~{pct}%, more than {b} points past the ~{hp}% at which the handover was saved.\n\nah_backstop_instead: refresh the handover now ({skill}: write the next HANDOVER-<n>.md) so it covers the work since, then offer the user to park the rest in the task list + handover and continue after {reset}. This reminder fires once per handover.\n\nca_instead: retract it in one line, e.g. \"RETRACT SAFE TO COMPACT: context is {ctx}; no need to compact\", then continue or end the turn.", "broad-kill-guard" = "msg_instead: kill by PID after checking the process: record the PID when you start it (`cmd & echo $!`), check it with `ps -p <pid> -o pid,command`, then `kill <pid>`. To stop your own children only, `pkill -P $$` is allowed.", "burn-breaker" = "msg_what: this tool call is paused: about {tokens} tokens were spent with no commit, finished step, passing check or new file.\n\nmsg_what_waste: this tool call is paused: the waste sensor scores this session {score} (limit {hard}; about {tokens} tokens in the window) - {reason}.\n\nmsg_instead: commit what works (`git commit`, then push), or write your report to a file and stop. The pause lifts within about a minute.", "command-guard" = "msg_edit_what: a Bash file write (sed -i, tee, cp, mv, redirect, inline code) is not allowed: the {who} does not edit files directly.\n\nmsg_send_instead: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat <id> --summary \"<text>\"` to report status.\n\nmsg_mailbox_what: a DevSwarm mailbox verb (inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, reap-orphans, register, archive, heartbeat) is blocked in a subagent.\n\nmsg_mailbox_instead: report what you learned to your parent; the main thread drains the mailbox itself. Never delegate mailbox verbs.\n\nmsg_rawread_inbox_instead: `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>`.\n\nmsg_dsread_instead: `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>` (durable cursor). Do not delegate this to a subagent either.", "compact-declaration-guard" = "msg_what: you declared SAFE TO COMPACT this turn (\"{phrase}\") and then started new work ({tool}).\n\nmsg_instead: stop, or retract: write a line \"RETRACT SAFE TO COMPACT: <why>\", then refresh the handover before declaring again.", "coordinator-work-guard" = "block_instead: hand this and the remaining steps to a subagent that returns a short summary, or read for about {clear_min} min and retry. Test suites run here once the window clears.", "devswarm-comms-guard" = "msg_block_what: SendMessage target \"{to}\" resolves to a DevSwarm workspace-backed peer session (cwd: {cwd}).\n\nmsg_block_instead: use the DevSwarm mesh: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name).\n\nmsg_ok_what: target \"{to}\" resolves to a live session (cwd: {cwd}) that is not a DevSwarm workspace path; allowed.", "edit-guard" = "msg_launcher_what: {tool} into ~/.anti-hall/bin/ (the anti-hall launcher folder) is not allowed.", "fable-availability" = "msg_instead: pass args.fableAvailable=true into ship-it/deadly-loop Workflow invocations so the Reviewer seat tries Fable first, falling back to Sonnet then Opus.", "failure-root-cause-nudge" = "msg_instead: before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) rather than guessing a fix from the symptom.", "git-guard" = "msg_launcher: writing into ~/.anti-hall/bin/ (the anti-hall launcher folder) is not allowed.\nanti-hall manages those files itself; overwriting one could run unwanted code under a trusted name.\nleave that folder alone; if the path is only text in a note, write the note with the Write tool.\n\nmsg_reused_message: this commit would reuse a message ({origin}) that has an AI co-author line.\nCommits in this setup carry no AI co-author line, even when the message is reused.\nremove the Co-Authored-By line and commit again with an explicit message (-m or -F).\n\nmsg_gh_credit: this gh pr/issue/release text has an AI credit line (\"Generated with\", Co-Authored-By or a claude.com link).\nPull requests and issues in this setup carry no AI credit.\nremove that line and run the command again.\n\nmsg_gh_credit_elsewhere: this gh command is chained with `{elsewhere}`, which has an AI credit line.\nThe credit line is in the `{elsewhere}` part, not in the gh text; nothing here carries AI credit.\nremove the credit line from the `{elsewhere}` text and run again.\n\nmsg_runner_placeholder: a force or delete flag next to an xargs/find/parallel placeholder command is not allowed.\nThe placeholder is filled in at run time, so the command could secretly be a git push.\nrun the git command directly, naming the subcommand.\n\nmsg_runner_no_subcommand: `{runner} git` with no subcommand next to a force or delete flag is not allowed.\n{runner} supplies the subcommand later, so it could be a push with that flag.\nrun the git command directly, naming the subcommand.\n\nmsg_runner_push: a force push through `{runner} git push` is not allowed.\n{runner} adds words to the command, so a hidden --force can't be ruled out.\nrun the git push directly with explicit arguments.\n\nmsg_find_push: pushing through `find -exec git push ... {}` is not allowed.\nfind fills in the arguments, so a force push (`+ref`) can't be ruled out.\nrun the git push directly with explicit arguments.\n\nmsg_handover: this commit includes a session handover ({shown}).\nHandovers are private session notes and are never committed.\nunstage it with `git restore --staged <path>` (if already tracked: `git rm --cached <path>` and commit that removal).\ntell the agent \"skip git-guard\", only if you want this file committed.\n\nmsg_force_push: a force push is not allowed.\nRewriting published history should be a deliberate human decision.\nask the owner to run it themselves, or push normally.\n\nmsg_delete_ref: deleting a remote branch or tag is not allowed.\nDeleting published refs needs the owner's explicit OK.\nleave the remote ref alone.\ntell the agent \"skip git-guard\", only for this exact deletion.\n\nmsg_push_cmdsubst: a git push with an argument built by command substitution or backticks is not allowed.\nIt could hide a --force flag from the check.\nrun the push with plain, literal arguments. If it is only message text inside printf/echo, write that file with the Write tool.\n\nmsg_trailer_remap: a git config that remaps a trailer to an AI credit line is not allowed.\nCommits in this setup carry no AI co-author line.\nremove the trailer setting and commit again.\n\nmsg_commit_credit: this commit message has an AI co-author line (Co-Authored-By or \"Generated with\").\nCommits in this setup carry no AI co-author line.\nremove the Co-Authored-By line and commit again.\n\nmsg_commit_file_credit: this commit message (from -F, a file or a heredoc) has an AI co-author line.\nCommits in this setup carry no AI co-author line.\nremove the Co-Authored-By line from it and commit again.\n\nmsg_gh_jev: this gh pr/issue/release text appears to credit an AI assistant (worded freely, caught by the Jev check).\nPull requests and issues in this setup carry no AI credit.\nreword it without the credit and run the command again.\n\nmsg_commit_jev: this commit message appears to credit an AI assistant (worded freely, caught by the Jev check).\nCommits in this setup carry no AI co-author line.\nreword the message without the credit and commit again.\n\nmsg_commit_file_jev: this commit message (from -F or a file) appears to credit an AI assistant (worded freely, caught by the Jev check).\nCommits in this setup carry no AI co-author line.\nreword the message without the credit and commit again.\n\nmsg_creating_credit: this command creates a commit (git {sub}) with an AI co-author line in it.\nCommits in this setup carry no AI co-author line, however it reaches git.\nremove the Co-Authored-By line and commit again.\n\nmsg_creating_credit_elsewhere: this command creates a commit (git {sub}) and is chained with `{elsewhere}`, which has an AI credit line.\nThe credit line is in the `{elsewhere}` part, not in the commit message.\nremove the credit line from the `{elsewhere}` text and run again.\n\nmsg: anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last {window_min} min) {hits} carry an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") - added by a git hook, template, cherry-pick/rebase, or an editor. Commits carry no AI co-author credit: reword them now (`git commit --amend` for HEAD, `git rebase -i` for older ones) BEFORE pushing.", "handover-hygiene" = "msg_advisory_instead: run `{cmd}` (the scheduled job also repairs the briefs); it never edits handover files.", "handover-resume" = "avail_instead: Workflow scripts have no filesystem and cannot read this fact, so pass args.codexAvailable=true into ship-it/deadly-loop Workflow invocations (same pattern as args.fableAvailable) so the Critic seat attempts agentType:'codex:codex-rescue' first. Outside a Workflow, prefer agentType:'codex:codex-rescue' for the deadly-loop/ship-it Critic seat and for everyday correctness-review plus a share of implementation load; coordinators there should read ~/.anti-hall/codex-availability.json instead of re-probing.\n\nnudge_instead: before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:rescue) on the diff; keep planning/architecture review on Opus.\n\nnudge_what: this session made {edits} substantial code edit(s) across {files} file(s) ({names}{more}) with no Codex second opinion (advisory).\n\nsnaponly_instead: read it fully before trusting the compact summary; once state is re-established, write a real handover with the anti-hall handover skill.\n\nsnaponly_what: no HANDOVER*.md was written for this session, but a pre-compaction snapshot exists: {path} (written {written}).", "idle-agents" = "instead: if you have no more work for them, {verb} each one, e.g. {call} (one call per agent). Keep any you will re-task.", "inbox-read-guard" = "msg_store_instead: `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>` (or `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` first to import).", "merge-side-pick" = "msg_what: pushing after a conflict was resolved by taking one side wholesale ({pick}) with no test run since", "model-routing-guard" = "msg_row1_role_what: execution-shaped spawn on a flagship model ('{model}'), exempt because a debate-role word is in its description.\n\nmsg_row1_research_what: execution-shaped spawn on a flagship model ('{model}'), exempt from blocking because it reads as research with no unambiguous execution verb.\n\nmsg_row1_jev_what: execution-shaped spawn on a flagship model ('{model}'); Jev judged it non-mechanical, so the block is downgraded.\n\nmsg_row2_jev_what: omitted-model spawn looks execution-shaped; Jev judged it non-mechanical, so the strict block is downgraded.\n\nmsg_row3_what: execution-shaped task on a flagship model ('{model}') via custom subagent_type '{subagent_type}'.\n\nmsg_row6_instead: re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent tool, so it cannot recurse). Keep general-purpose only if it must write files or spawn sub-agents.", "nested-spawn-guard" = "msg_instead: do the task yourself and report back; if it needs more agents, say so and the coordinator will spawn them. To allow it, tell the agent \"skip nested-spawn-guard\".", "output-verify-guard" = "msg_what: this Bash command's output contains {bits} in the same run (advisory, not a block).\n\nmsg_instead: before reporting \"tests pass\" / \"build succeeded\", re-read the full output and confirm the actual pass/fail counts and exit code.", "procwatch" = "msg_orphans_what: {n} leftover process(es) from ended Claude sessions, with the folder each ran in (some may belong to other projects): {list}{more}.\n\nmsg_orphans_instead: nothing was stopped. Check each folder and end the ones that are yours, or set procwatch.<class>Mode=kill in /anti-hall:settings.\n\nmsg_stuck_instead: check each one's output file or message it, then stop it with TaskStop if it is dead. Nothing was stopped.", "scan-throttle" = "msg_group_what: a repo-wide scan command was detected in a compound or grouped command (not the first simple command); it was NOT modified.", "ship-it-guard" = "msg_adv_what: {file} does not appear in any phase's declared \"files:\" list in {plan} (advisory, not a block).\n\nmsg_adv_instead: if intentional, proceed; if not, update the PLAN.md Blast radius / phase `files:` list, or re-plan this phase.", "silent-agent-nudge" = "msg_instead: check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (TaskStop first, per orchestration rule I). Verify, do not assume.", "spawn-ceiling" = "msg_what: {n} agents are already running (limit {ceiling}): {names}{more}.\n\nmsg_instead: wait for or stop a finished or idle agent, then spawn. The limit rises when usage headroom returns; to lift it now, tell the agent \"skip spawn-ceiling\".", "spawn-usage" = "msg_block_instead: finish the running work, do small steps yourself, or wait for the reset. To allow spawning anyway, tell the agent \"skip spawn-usage\".\n\nmsg_soft_instead: use cheaper models for routine work, start fewer agents, and give each a tight brief with a clear finish.", "speculation-guard" = "msg_what: your reply states something speculative ('{marker}') without verifying it or flagging it as unverified.\n\nmsg_instead: verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue.\n\nmsg_what_jev: your reply asserts a cause or outcome without citing evidence (command output, a test result, or a file:line reference).", "swarm-guard" = "msg_rate_instead: pause new agents and let running ones finish, then launch the next wave; respect the concurrency cap (~min(16, cores-2)).\n\nmsg_shared_what: another write-capable agent is still running in this working tree, and this spawn is write-capable too.", "task-guard" = "idle_what: can't stop yet: {n} task(s) have no agent working on them: {list}{more}.\n\nidle_instead: start a background agent for each (up to {cap}), or tell the user which task truly needs them. Waiting on another task: set blockedBy ({upd} addBlockedBy). Already covered by an agent: set it as owner ({upd} owner).{devswarm}\n\ngeneric_what: can't stop yet: open tasks remain: {list}{more}.\n\ngeneric_instead: start agents to finish them in parallel, mark them completed or deferred ({upd}), or tell the user what is pending and why you are stopping.", "tasklist-guard" = "resume_text: A session handover was resumed this session ({file}) but no `resume-verified:` marker was recorded in it. Run the resume-verification checklist (git status, pwd, smoke command) and append `resume-verified: <ISO timestamp> -- <summary>` to that file before continuing.\n\nwhat_no_tasks: can't stop yet: {n} file changes this session and no tasks tracked.\n\nwhat_stalled: can't stop yet: {n} tasks are marked in progress but no agent is working on them.\n\nwhat_progress: can't stop yet: {n} file changes and the progress file is missing or out of date.\n\nwhat_reduced: can't stop yet: {n} file changes and nothing tracked.", "wide-search-guard" = "msg_instead: search the project: give a path, e.g. `rg <pattern> {repo}` or `find {repo} -name <name>` (git grep and git ls-files cover tracked files).\n\nmsg_instead_no_repo: search one project folder: give the command that folder's absolute path (git grep and git ls-files cover tracked files)." }
+
+[guardkit.details_actions]
+doc = "Compact guard message text."
+value = ["send the message through the DevSwarm mesh.", "read the inbox through the mesh CLI.", "read through the mesh inbox CLI.", "send through the DevSwarm mesh.", "ask the user to update and re-trust the edit allowlist.", "write it at the session handover path.", "run the handover maintenance command."]

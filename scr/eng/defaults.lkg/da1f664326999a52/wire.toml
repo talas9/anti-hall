@@ -1,0 +1,266 @@
+# The ack protocol between the hook client (the process the launcher starts) and the daemon, and the phase telemetry it carries.
+# A request that opts in sends its byte length in the head line's pre-release suffix (old daemons ignore everything after the first `-`
+# of the version, so they stay compatible); the daemon answers ACK(req) as soon as the request is read and parsed, the client answers
+# ACK(res) when the verdict has been handed to the host. See ah-engine/src/wire.rs.
+
+[wire.ack]
+doc = "1 = the client asks the daemon for ACK(req)/ACK(res) (retry-safe requests, undelivered verdicts counted, per-phase latency); 0 = the original request/reply exchange, no acks. The client only opts in when the daemon has announced the protocol (wire.caps_file), so an older daemon is never sent an ack-mode request."
+value = 1
+env = "AH_ENGINE_WIRE_ACK"
+max = 1
+unit = "flag"
+
+[wire.caps_file]
+doc = "File in the state directory the daemon writes at start (and removes when it exits) to announce it speaks the ack protocol; the client checks for it before opting in."
+value = "wire-ack"
+
+[wire.head_tag]
+doc = "Marker inside the request head line's version suffix that announces an ack-mode request; the digits after it are the byte length of the request body, so the daemon needs no end-of-stream to know the request is complete."
+value = "-w1."
+
+[wire.ack_magic]
+doc = "First word of an ack line (ACK(req) from the daemon, ACK(res) from the client); the digit is the ack protocol version."
+value = "AHK1"
+
+[wire.req_word]
+doc = "Second word of ACK(req): the daemon has read and parsed the request and will judge it."
+value = "REQ"
+
+[wire.res_word]
+doc = "Second word of ACK(res): the client has the verdict and handed it to the host."
+value = "RES"
+
+[wire.ack_timeout_ms]
+doc = "How long the client waits for ACK(req). No ack means the daemon has not started on the request (and, finding the connection closed when it does, will not judge it), so within the call's deadline the client retries; once acked it never retries and waits up to its hard deadline. A daemon that accepts and parses in well under a millisecond acks long before this."
+value = 100
+unit = "ms"
+min = 5
+max = 5000
+
+[wire.retry_min_ms]
+doc = "The client retries a request that was not acked only when at least this much of its deadline is left."
+value = 150
+unit = "ms"
+
+[wire.max_retries]
+doc = "How many times the client resends a request that was not acked (a retry is a fresh connection after the first was closed)."
+value = 1
+max = 5
+
+[wire.res_wait_ms]
+doc = "How long the daemon waits, after writing a reply, for the client's ACK(res), sent once the reply is handed over (printed by a hook call, taken in by the dispatcher, before any work of its own). A reply whose ACK(res) is missing, late or malformed is counted and logged as an undelivered_verdict fail-open (a client that died closes its end, so that case is answered at once)."
+value = 250
+unit = "ms"
+min = 5
+max = 5000
+
+[wire.res_max_bytes]
+doc = "Longest ACK(res) line the daemon reads (the client's phase timings and the launcher counters ride in it)."
+value = 1024
+unit = "bytes"
+min = 64
+
+[wire.phase_connect]
+doc = "Phase label: the client's connect to the daemon socket."
+value = "connect"
+
+[wire.phase_req_ack]
+doc = "Phase label: from the client finishing writing the request to receiving ACK(req) (daemon accept, queue wait, read and parse, seen from the client)."
+value = "req_ack"
+
+[wire.phase_ack_response]
+doc = "Phase label: from ACK(req) to the complete reply (the daemon's judging, seen from the client)."
+value = "ack_response"
+
+[wire.phase_delivery]
+doc = "Phase label: from the daemon finishing the reply write to receiving ACK(res) (the client reading, validating and handing over the verdict)."
+value = "delivery"
+
+[wire.phase_queue_wait]
+doc = "Phase label: the time the request waited in the daemon's queue before a worker took it."
+value = "queue_wait"
+
+[wire.phase_judge]
+doc = "Phase label: the daemon's own time from ACK(req) to the reply being ready (all checks)."
+value = "judge"
+
+[wire.phase_launcher_startup]
+doc = "Phase label: the launcher's own time from process start to its stats being sent (reported by the launcher counters)."
+value = "launcher_startup"
+
+[wire.event_none]
+doc = "Event label used for a request whose hook event is unknown."
+value = "-"
+
+[wire.kind_ack_timeout]
+doc = "wire_events label: a request was not acked within wire.ack_timeout_ms."
+value = "ack_timeout"
+
+[wire.kind_retry]
+doc = "wire_events label: a request was resent after a missing ACK(req)."
+value = "retry"
+
+[wire.kind_abandoned]
+doc = "wire_events label: the client had closed the connection before the daemon could ack, so the request was not judged."
+value = "abandoned"
+
+[wire.kind_acked]
+doc = "wire_events label: a request was acked and judged."
+value = "acked"
+
+[wire.kind_delivered]
+doc = "wire_events label: the client confirmed the verdict with ACK(res)."
+value = "delivered"
+
+[wire.reason_undelivered]
+doc = "fail_open reason for a verdict the client never confirmed with ACK(res)."
+value = "undelivered_verdict"
+
+[wire.msg_undelivered]
+doc = "Health-log detail for a missing ACK(res). Placeholders: {why}, {event}."
+value = "verdict for {event} not confirmed by the client: {why}"
+
+[wire.msg_abandoned]
+doc = "Health-log detail for a request the client had abandoned before ACK(req). Placeholders: {why}."
+value = "client gone before ACK(req), request not judged: {why}"
+
+[wire.why_timeout]
+doc = "Why text: no ACK(res) arrived within wire.res_wait_ms."
+value = "timeout"
+
+[wire.why_closed]
+doc = "Why text: the client closed the connection without ACK(res)."
+value = "closed"
+
+[wire.why_garbled]
+doc = "Why text: the bytes after the reply were not an ACK(res) line."
+value = "garbled"
+
+[fail_open.window_s]
+doc = "Length of the sliding window the engine counts its own fail-opens in (missing config, deadline cut, script timeout, Jev breaker open, busy, internal error; reporting-only reasons such as undelivered_verdict are counted apart and do not count toward the limits)."
+value = 60
+unit = "s"
+min = 1
+
+[fail_open.soft_per_window]
+doc = "Soft limit: this many fail-opens inside the window and the engine reports itself degraded (status, a doctor WARN and a one-line session notice). Counting continues."
+value = 5
+min = 1
+
+[fail_open.hard_per_window]
+doc = "Hard limit: this many fail-opens inside the window and the doctor check fails. The engine keeps failing open, it never blocks a session."
+value = 20
+min = 1
+
+[fail_open.log_detail_max]
+doc = "Longest detail text a fail-open writes to the health log, in characters."
+value = 200
+unit = "chars"
+min = 20
+
+[fail_open.msg_log]
+doc = "Health-log detail of one fail-open. Placeholders: {check}, {detail}."
+value = "check={check} {detail}"
+
+[fail_open.msg_notice]
+doc = "One-line session notice while the engine is degraded by fail-opens. Only skipped-class reasons count toward it (see fail_open.reporting_reasons). Placeholders: {n}, {window}, {top}, {effect} (the fail_open.effects text of {top})."
+value = "anti-hall: the engine failed open {n} times in the last {window}s (most often {top}: {effect}). Run the doctor."
+
+[fail_open.state_ok]
+doc = "Degraded state name: below the soft limit."
+value = "ok"
+
+[fail_open.state_soft]
+doc = "Degraded state name: at or past the soft limit."
+value = "degraded"
+
+[fail_open.state_hard]
+doc = "Degraded state name: at or past the hard limit."
+value = "failing"
+
+[fail_open.reason_internal]
+doc = "fail_open reason: the daemon panicked or hit an internal error while serving a request."
+value = "internal_error"
+
+[fail_open.reason_busy]
+doc = "fail_open reason: the request was shed (queue full or rate limited)."
+value = "busy"
+
+[fail_open.reason_deadline]
+doc = "fail_open reason: a check was cut at the request's deadline."
+value = "deadline_cut"
+
+[fail_open.reason_script_timeout]
+doc = "fail_open reason: a scripted check ran out of time."
+value = "script_timeout"
+
+[fail_open.reason_jev_breaker]
+doc = "fail_open reason: the Jev circuit breaker was open, so the judgement was skipped."
+value = "jev_breaker_open"
+
+[fail_open.reason_missing_key]
+doc = "fail_open reason: the shipped defaults were unavailable or missing a key, so the check could not run."
+value = "missing_key"
+
+[fail_open.check_none]
+doc = "check label of a fail-open that is not tied to one check."
+value = "-"
+
+[fail_open.pending_max]
+doc = "Most fail-opens held between two drains into the telemetry counters (the daemon drains after every request); past it the extra ones still reach the window and the log."
+value = 1024
+min = 16
+
+[wire.fo_word]
+doc = "Second word of the line that carries a fail-open to an ack-mode client: `AHK1 FO <reason> <check>`, sent just before the reply frame."
+value = "FO"
+
+[fail_open.notice_file]
+doc = "File in the state directory that holds the one-line session notice while the engine is degraded by fail-opens; the daemon writes it past the soft limit and removes it when the rate falls back, the hook client adds its text to one answer per session."
+value = "fail-open-notice"
+
+[fail_open.notice_tag]
+doc = "Tag of the once-per-session stamp of the degraded notice (distinct from the other advisories')."
+value = "fail-open"
+
+[fail_open.reporting_reasons]
+doc = "Reporting-only fail_open reasons: the verdict WAS applied and only its delivery or telemetry failed (undelivered_verdict: the client's confirmation was late, missing or the write failed). They stay in the counters and in status (reporting_in_window) but do not count toward the soft/hard limits, the degraded state or the session notice. Every other reason is skipped-class: a check or verdict really did not apply."
+value = ["undelivered_verdict"]
+
+[fail_open.effects]
+doc = "What each fail_open reason means for the session, as reason=text entries; the text fills {effect} of the degraded notice and the doctor findings. A reason without an entry uses fail_open.effect_default."
+value = [
+  "internal_error=a request hit an internal error and got no verdict from the engine",
+  "busy=requests were shed because the engine was busy and got no verdict from the engine",
+  "deadline_cut=a check was cut at the client deadline and took its failure policy (an allow, or a block for a fail-closed guard)",
+  "script_timeout=a scripted check ran out of time and gave no verdict",
+  "jev_breaker_open=the Jev judgement was skipped because its circuit breaker is open",
+  "missing_key=a config reload was rejected, the previous settings keep serving and checks needing the new settings cannot run",
+  "undelivered_verdict=the verdict was applied, only the client's confirmation of it was missing (reporting only)",
+]
+
+[fail_open.effect_default]
+doc = "{effect} text for a fail_open reason that has no fail_open.effects entry (and for an empty window)."
+value = "some requests got no verdict from the engine"
+
+# ---- why a request was shed (BUSY) ------------------------------------------------------------------------------------
+
+[busy_reason.queue]
+doc = "Label of a request shed because the request queue was full (status `busy_by_reason`, daemon log)."
+value = "queue_full"
+
+[busy_reason.session]
+doc = "Label of a request shed by the per-session rate limit."
+value = "rate_limit_session"
+
+[busy_reason.project]
+doc = "Label of a request shed by the per-project rate limit."
+value = "rate_limit_project"
+
+[busy_reason.log_kind]
+doc = "Kind of the daemon-log line that names why requests are being shed (logged for the 1st shed of a reason and each power of two after, so the log stays bounded)."
+value = "busy_shed"
+
+[busy_reason.log_detail]
+doc = "Detail of that log line. Placeholder: {count} (sheds of this reason so far)."
+value = "shed so far: {count}"

@@ -1,0 +1,455 @@
+# ah-engine shipped defaults for the `task-tracker` check: the UserPromptSubmit task-list discipline
+# reminder. Format: see the header of engine.toml.
+#
+# The hook injects the full directive on the first prompt of a session and again when its window elapses or the transcript has
+# grown by the growth threshold, a short reminder in between (rationed by the injection keepalive), plus a one-line note about the
+# open tasks. It also asks Jev (integration newRequest) to label each prompt, and scores the previous turn's dispatch demand.
+# What the engine leaves to Node is stated in the summary below.
+
+[task_tracker.summary]
+doc = "One-line description of the task-tracker check in the generated reference."
+value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node."
+
+[task_tracker.setting]
+doc = "Where the check's on/off switch is read from (context.taskTracker, default on)."
+value = { section = "context", key = "taskTracker", env = "", aliases = [], option = "context_task_tracker", default = true }
+
+[task_tracker.dd_setting]
+doc = "Where the per-turn dispatch demand switch is read from (guards.dispatchDemand, default on): while it is on, a session with a task the demand line would name is left to Node."
+value = { section = "guards", key = "dispatchDemand", env = "ANTIHALL_DISPATCH_DEMAND", aliases = [], option = "", default = true }
+
+[task_tracker.guard_name]
+doc = "The guard name in the message header and in the skip file."
+value = "task-tracker"
+
+[task_tracker.what_full]
+doc = "The first line of the full directive."
+value = "requests need tracking before work starts."
+
+[task_tracker.instead_head]
+doc = "The start of the full directive's 'Do instead' line."
+value = "track each request as a priority-sorted task."
+
+[task_tracker.non_blocking]
+doc = "The clause the compact protocol level leaves out of the directive (the session core already carries it)."
+value = "keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; "
+
+[task_tracker.instead_tail]
+doc = "The end of the full directive's 'Do instead' line."
+value = ""
+
+[task_tracker.what_short]
+doc = "The short per-turn reminder."
+value = "capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
+
+[task_tracker.codex_from]
+doc = "The words of the directive that name the Claude-only task tool; the Codex text swaps the first occurrence."
+value = "as a task (TaskCreate) "
+
+[task_tracker.codex_to]
+doc = "What the Codex text says in their place."
+value = "as an item in your task/plan list "
+
+[task_tracker.full_level]
+doc = "The protocol level at which the directive keeps the non-blocking clause (any other level drops it)."
+value = "full"
+
+[task_tracker.prune_line]
+doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model. It leads the tracker's text on a line of its own and its first line stays under digest_line_chars, because the prompt digest shows only the first line of an advisory inline. It says plainly that these entries are not user data and names the ledger path (the relative form: the tracker has no cheap bounded way to render the absolute one) so a session that follows a never-delete rule still acts."
+value = "[task-guard] REQUIRED NOW, before other work: delete your {n} completed tasks (limit {limit}) with TaskUpdate status=deleted. Not optional.\nThey are not user data; log them first in .anti-hall/history/<date>/<session>.md. It is your owner's setting (guards.pruneCompletedTasksAfter): do not ignore it, and do not postpone it. Only this session's own task entries may be deleted; nothing else is exempt from the never-delete rule."
+
+[task_tracker.event]
+doc = "The hook event name in the output."
+value = "UserPromptSubmit"
+
+[task_tracker.dedupe_key]
+doc = "The emit-dedupe key of the directive and the combined text."
+value = "task-tracker"
+
+[task_tracker.dedupe_short_key]
+doc = "The emit-dedupe key of the short reminder, kept apart so the keepalive can ration it."
+value = "task-tracker-short"
+
+[task_tracker.segment_joiner]
+doc = "What joins the short reminder and the open-tasks line in the output (a separate segment, so the dedupe store sees it consumed)."
+value = "\n\n"
+
+[task_tracker.note_joiner]
+doc = "What joins the directive or the reminder and the open-tasks line inside one text."
+value = " "
+
+[task_tracker.state_prefix]
+doc = "Prefix of the per-session state file that remembers when the full directive was last injected."
+value = "task-tracker-"
+
+[task_tracker.state_suffix]
+doc = "Suffix of the per-session state file."
+value = ".json"
+
+[task_tracker.prune_prefix]
+doc = "The prefix the sweep of stale per-session state files is stamped under."
+value = "task-tracker"
+
+[task_tracker.session_hash_len]
+doc = "How many hexadecimal digits of the working directory's hash name a session that has no id."
+value = 16
+
+[task_tracker.window_ms]
+doc = "How long the full directive stays fresh before it is injected again."
+value = 21600000
+unit = "ms"
+
+[task_tracker.growth_bytes]
+doc = "How much the transcript may grow after a full directive before the next prompt injects it again (about 60 thousand tokens, where adherence to an instruction starts to decay)."
+value = 245760
+unit = "bytes"
+
+[task_tracker.growth_min_gap_ms]
+doc = "The least time since the last full directive before transcript growth alone injects it again. In a session whose transcript grows by the growth threshold every turn, growth alone re-sent the whole directive on every prompt; the window (window_ms) still re-sends it on expiry."
+value = 1800000
+unit = "ms"
+min = 0
+
+[task_tracker.future_tolerance_ms]
+doc = "How far ahead of now a stored timestamp may be (clock skew) before it counts as corrupt and the window is treated as expired."
+value = 300000
+unit = "ms"
+
+[task_tracker.open_zero]
+doc = "The open-tasks line when no countable task is open; `{blocked}` is the blocked-tasks tail."
+value = "open tasks: 0{blocked}."
+
+[task_tracker.open_some]
+doc = "The open-tasks line when tasks are open; `{n}` the count, `{blocked}` the blocked-tasks tail, `{tail}` the oldest in-progress subject."
+value = "open tasks: {n}{blocked}{tail} — update or close them."
+
+[task_tracker.blocked_tail]
+doc = "The tail naming tasks that wait on someone else; `{n}` is how many and `{why}` who."
+value = " (+{n} blocked: {why})"
+
+[task_tracker.subject_tail]
+doc = "The tail naming the oldest in-progress task; `{subject}` is its quoted subject."
+value = " (oldest in_progress subject: {subject})"
+
+[task_tracker.subject_unknown]
+doc = "What stands for a subject that was never learned."
+value = "(subject unknown)"
+
+[task_tracker.owner_word]
+doc = "Who a blocked task waits on when it names nobody."
+value = "owner"
+
+[task_tracker.why_joiner]
+doc = "What joins the distinct reasons tasks are blocked."
+value = "/"
+
+[task_tracker.subject_max]
+doc = "The longest subject the open-tasks line quotes, in UTF-16 units."
+value = 50
+
+[task_tracker.ellipsis]
+doc = "What ends a subject that was cut."
+value = "…"
+
+[task_tracker.control_re]
+doc = "JavaScript regex source (case-sensitive) of the control characters a quoted subject replaces with a space."
+value = '[\x00-\x1F\x7F-\x9F]'
+
+[task_tracker.in_progress_re]
+doc = "JavaScript regex source (case-insensitive) of a status that means in progress."
+value = 'in[-_]?progress'
+
+[task_tracker.pending_status]
+doc = "The status (lowercase) of a task nobody has started."
+value = "pending"
+
+[task_tracker.main_owner_re]
+doc = "JavaScript regex source (case-insensitive) of an owner that still counts as unowned (the coordinator itself)."
+value = '^(main|orchestrator|coordinator)$'
+
+[task_tracker.done_statuses]
+doc = "Statuses (lowercase) that mean a task no longer blocks the ones waiting on it."
+value = ["completed", "done", "cancelled", "canceled"]
+
+[task_tracker.unknown_tag]
+doc = "The tag the unknown-state note is throttled under."
+value = "tracker"
+
+[task_tracker.jev_id]
+doc = "The Jev integration that labels each prompt."
+value = "newRequest"
+
+[task_tracker.jev_instructions]
+doc = "The instruction Jev gets with the prompt."
+value = "Classify the user's message below."
+
+[task_tracker.jev_labels]
+doc = "The labels Jev may answer with, in order."
+value = ["new-request", "follow-up", "correction", "question"]
+
+[task_tracker.jev_label_texts]
+doc = "What each label means, in the order of the labels."
+value = [
+  "a new, previously-unstated request or task",
+  "continuing or elaborating on work already in progress",
+  "correcting or redirecting prior work",
+  "a question seeking information, not asking for new work",
+]
+
+[task_tracker.jev_state_limit]
+doc = "How much of the prompt Jev sees, in UTF-16 units."
+value = 4000
+
+[task_tracker.metrics_file]
+doc = "The file that counts the dispatch demands shown, followed and ignored."
+value = "dispatch-demand-metrics.json"
+
+[task_tracker.metrics_counters]
+doc = "The counters of the metrics file, in the order a fresh file lists them."
+value = ["demandsShown", "demandsFollowed", "demandsIgnored", "idleNeglectBlocks"]
+
+[task_tracker.metrics_followed]
+doc = "The counter of demands a spawn followed."
+value = "demandsFollowed"
+
+[task_tracker.metrics_ignored]
+doc = "The counter of demands no spawn followed."
+value = "demandsIgnored"
+
+[task_tracker.metrics_pending]
+doc = "The key of the metrics file that holds the demands still to be scored, per session."
+value = "pending"
+
+[task_tracker.metrics_pending_ttl_ms]
+doc = "How long a demand waits to be scored before it is dropped."
+value = 86400000
+unit = "ms"
+
+[task_tracker.session_key_max]
+doc = "How many characters of a session id name its metrics entry."
+value = 80
+
+[task_tracker.unknown_session]
+doc = "The session name used when a request has none."
+value = "unknown"
+
+[task_tracker.spawn_marker]
+doc = "The text a transcript line must hold to be looked at as a possible spawn."
+value = '"tool_use"'
+
+[task_tracker.spawn_name_re]
+doc = "JavaScript regex source (case-sensitive) of the tool name field of a spawn line."
+value = '"name":\s*"(Agent|Task|Workflow)"'
+
+[task_tracker.spawn_names]
+doc = "The tools that spawn an agent."
+value = ["Agent", "Task", "Workflow"]
+
+[task_tracker.primary_what]
+doc = "The 'what' line of the DevSwarm Primary dispatch-tier block."
+value = "workspace-sized work needs a child workspace."
+
+[task_tracker.primary_instead]
+doc = "The 'instead' line of the DevSwarm Primary dispatch-tier block."
+value = "assign the feature, fix or deploy to a child workspace."
+
+[task_tracker.primary_key]
+doc = "The emit-dedupe key of the Primary block, rationed apart from the reminder."
+value = "task-tracker-primary"
+
+[task_tracker.peer_prompt_re]
+doc = "Regex source (case-insensitive) of a prompt that is another Claude session's message, not a person typing: the tracker stays silent for it (task-tracker.js, the cross-session test). Matched against the first peer_prompt_chars characters."
+value = '^\s*<cross-session-message\b|Another Claude session sent a message'
+
+[task_tracker.peer_prompt_chars]
+doc = "How many characters at the start of a prompt are tested against peer_prompt_re."
+value = 400
+unit = "chars"
+min = 40
+max = 5000
+
+# ---- the per-turn DISPATCH NOW line and the running-agent proof -----------------------------
+
+[task_tracker.demand_line]
+doc = "The per-turn demand line; `{running}` the running agents, `{cap}` the parallel cap, `{shown}` the labelled tasks, `{more}` the tail for tasks past the shown ones."
+value = "DISPATCH NOW in parallel \u2014 one background agent EACH, this turn ({running} running, cap {cap}): {shown}{more}. Pending, unblocked, unowned, and no in-flight agent names them. Hold one only if it truly needs the user (then mark it metadata.blockedOn:'owner'). If a running agent already covers a task, set the task's owner to it (TaskUpdate owner) and it counts as attended."
+
+[task_tracker.demand_more]
+doc = "The tail of the demand line when more tasks are dispatchable than are shown; `{n}` is how many more."
+value = ", +{n} more"
+
+[task_tracker.demand_show_max]
+doc = "How many dispatchable tasks the demand line names."
+value = 12
+min = 1
+
+[task_tracker.demand_joiner]
+doc = "What joins the labelled tasks of the demand line."
+value = ", "
+
+[task_tracker.annotation_joiner]
+doc = "What stands between a task label and its tier annotation."
+value = " "
+
+[task_tracker.footer_joiner]
+doc = "What stands between the demand line and the Jev footer."
+value = " "
+
+[task_tracker.freshness_joiner]
+doc = "What stands between the demand block and the open-tasks line."
+value = " "
+
+[task_tracker.unknown_head]
+doc = "The start of the note that the running-agent count is unknown."
+value = "Background-agent running-agent count unknown ("
+
+[task_tracker.unknown_saw]
+doc = "Part of that note when launches were seen; `{n}` how many, `{ids}` the first of them."
+value = "saw {n} launched, all finished: {ids}; "
+
+[task_tracker.unknown_none]
+doc = "Part of that note when no launch was seen."
+value = "none seen; "
+
+[task_tracker.unknown_older]
+doc = "Part of that note when launches older than the scanned window cannot be checked; `{mb}` the window in whole megabytes."
+value = "launches older than the last {mb}MB of transcript cannot be checked"
+
+[task_tracker.unknown_unreadable]
+doc = "Part of that note when the transcript could not be read."
+value = "transcript unreadable"
+
+[task_tracker.unknown_tail]
+doc = "The end of the note that the running-agent count is unknown."
+value = "): check before dispatching more. "
+
+[task_tracker.unknown_ids_max]
+doc = "How many seen launches the unknown-count note names."
+value = 3
+min = 1
+
+[task_tracker.unknown_ids_more]
+doc = "What follows the named launches when more were seen; `{n}` is how many more."
+value = " +{n} more"
+
+[task_tracker.unknown_ids_joiner]
+doc = "What joins the launch ids in the unknown-count note."
+value = ", "
+
+[task_tracker.bytes_per_mb]
+doc = "Bytes in one megabyte, for the window named in the unknown-count note."
+value = 1048576
+min = 1
+
+[task_tracker.metrics_shown]
+doc = "The counter of per-turn demand lines shown."
+value = "demandsShown"
+
+# ---- the dispatchTier annotation and outcome tracking  --------------
+
+[task_tracker.tier_names]
+doc = "The tiers a cached Jev verdict may name, in the order of the question."
+value = ["workspace", "workflow", "subagent"]
+
+[task_tracker.tier_default]
+doc = "The tier a low-confidence or repo-overridden verdict is shown as (the cheapest)."
+value = "subagent"
+
+[task_tracker.tier_workspace]
+doc = "The tier a repository that forbids workspaces never gets recommended."
+value = "workspace"
+
+[task_tracker.tier_workflow]
+doc = "The tier of breadth-first work."
+value = "workflow"
+
+[task_tracker.tier_conf_floor]
+doc = "A workspace or workflow verdict below this confidence (a decimal, written as text) is shown as the default tier."
+value = "0.6"
+
+[task_tracker.tier_arrow]
+doc = "What starts a tier annotation."
+value = "\u2192 "
+
+[task_tracker.tier_conf]
+doc = "The confidence part of a tier annotation; `{conf}` is the confidence rounded to two decimals."
+value = " ({conf})"
+
+[task_tracker.tier_footer]
+doc = "The footer of a demand line that carried tier annotations."
+value = "Jev recommendation \u2014 final call is yours."
+
+[task_tracker.tier_text_joiner]
+doc = "What joins a task's subject and description in the text Jev classifies."
+value = "\n"
+
+[task_tracker.tier_done_re]
+doc = "JavaScript regex source (case-insensitive) of a task status that counts as done for outcome tracking."
+value = '^(completed|done)$'
+
+[task_tracker.tier_spawn_agent_tools]
+doc = "The tool names whose description naming `#<id>` is an agent dispatch."
+value = ["Agent", "Task"]
+
+[task_tracker.tier_spawn_workflow_tool]
+doc = "The tool name whose input naming `#<id>` is a workflow dispatch."
+value = "Workflow"
+
+[task_tracker.tier_spawn_shell_tool]
+doc = "The tool name whose command naming `#<id>` is a workspace dispatch when it matches the spawn pattern."
+value = "Bash"
+
+[task_tracker.tier_spawn_shell_re]
+doc = "JavaScript regex source of a shell command that spawns a workspace."
+value = 'devswarm(\.js)?\s+spawn\b'
+
+[task_tracker.tier_use_marker]
+doc = "The text a transcript line must hold to be looked at as a tool call for outcome tracking."
+value = '"tool_use"'
+
+[task_tracker.tier_id_ok_re]
+doc = "JavaScript regex source of a task id the evidence search can use as a pattern; any other id is left to Node."
+value = '^[A-Za-z0-9_-]+$'
+
+[task_tracker.tier_id_after]
+doc = "JavaScript regex source that must not follow `#<id>` for the id to be named (so #1 does not match #12)."
+value = '(?!\d)'
+
+[task_tracker.tier_words]
+doc = "The words of the outcome records. dispatched: prefix of the dispatch outcome; followed, overridden: the recommendation against the dispatch; repo_override, low_conf: why a verdict was shown as the default tier; one_lane, escalated, fanned_out, no_fanout, not_applicable: the result of a dispatch; verdict: prefix of the verdict counters; the *_counter names count the results."
+value = { dispatched = "dispatched-", followed = "followed", overridden = "overridden", repo_override = "repo-override-subagent", low_conf = "low-confidence-subagent", one_lane = "one-lane", escalated = "escalated", fanned_out = "fanned-out", no_fanout = "no-fanout", not_applicable = "n/a", verdict = "verdict.", one_lane_counter = "subagentOneLane", escalated_counter = "subagentEscalated", fanned_out_counter = "workflowFannedOut", no_fanout_counter = "workflowNoFanout", metrics_key = "tier" }
+
+[task_tracker.tier_min_workflow_agents]
+doc = "Agents dispatched for one workflow-tier task at which the dispatch counts as a fan-out."
+value = 3
+min = 1
+
+# ---- prompt-noise cut (#338): what the demand line leaves out, and when the short reminder speaks ----------------
+
+[task_tracker.held_setting]
+doc = "Skips held tasks in DISPATCH NOW. Where the switch is read from that keeps held tasks out of the DISPATCH NOW line (guards.dispatchSkipHeld, default on): a task with any metadata.blockedOn value, or a status that says it waits, is never named."
+value = { section = "guards", key = "dispatchSkipHeld", env = "ANTIHALL_DISPATCH_SKIP_HELD", aliases = [], option = "", default = true }
+
+[task_tracker.held_status_re]
+doc = "JavaScript regex source (case-insensitive) of a task status that means the task waits (on the owner or anything else) and is not dispatchable."
+value = 'blocked|waiting|on[-_ ]?hold|deferred|parked'
+
+[task_tracker.conflict_setting]
+doc = "Skips tasks whose file a running agent holds. Where the switch is read from that keeps a task out of the DISPATCH NOW line when a running agent already works on a file it names (guards.dispatchSkipFileConflict, default on)."
+value = { section = "guards", key = "dispatchSkipFileConflict", env = "ANTIHALL_DISPATCH_SKIP_FILE_CONFLICT", aliases = [], option = "", default = true }
+
+[task_tracker.file_token_re]
+doc = "JavaScript regex source (global) of the words of a task that name a file: a path with a directory, or a name with a known extension."
+value = '(?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:rs|js|ts|tsx|toml|md|json|py|sh|yml|yaml|go|java|kt|swift|dart|css|html)\b'
+
+[task_tracker.stop_setting]
+doc = "Quiets DISPATCH NOW during the spawn stop. Where the switch is read from that silences the DISPATCH NOW line while the weekly-usage spawn stop is active (guards.dispatchQuietSpawnStop, default on)."
+value = { section = "guards", key = "dispatchQuietSpawnStop", env = "ANTIHALL_DISPATCH_QUIET_SPAWN_STOP", aliases = [], option = "", default = true }
+
+[task_tracker.change_setting]
+doc = "Short reminder speaks only on list change. Where the switch is read from that makes the short reminder speak only when the open-task list changed or the list stayed untouched for untracked_prompts prompts (context.taskTrackerChangeOnly, default on). The full directive keeps its window."
+value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
+
+[task_tracker.untracked_prompts]
+doc = "Prompts before the short reminder repeats. Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts)."
+value = { section = "context", key = "taskTrackerUntrackedPrompts", env = "ANTIHALL_TASK_TRACKER_UNTRACKED_PROMPTS", aliases = [], option = "", default = 8, min = 1 }

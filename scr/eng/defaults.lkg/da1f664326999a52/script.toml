@@ -1,0 +1,414 @@
+# ah-engine shipped defaults for scripted check logic (D88 spike): hook DECISION logic lives in editable plugin JavaScript
+# (`engine/logic/<check>.js`, shared helpers in `engine/logic/lib/*.js`), run by an embedded QuickJS-NG runtime. The engine
+# keeps only generic, read-only primitives the scripts call. Format: see the header of engine.toml.
+
+[script.enabled]
+doc = "1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline)."
+value = 1
+env = "AH_ENGINE_SCRIPT"
+min = 0
+max = 1
+
+[script.logic_dir]
+doc = "Directory of the shipped check scripts, relative to the plugin root."
+value = "engine/logic"
+
+[script.override_dir]
+doc = "Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one."
+value = ".anti-hall/logic"
+
+[script.lib_dir]
+doc = "Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script."
+value = "lib"
+
+[script.fingerprint_ttl_ms]
+doc = "How long the listing of the shared lib files (names, sizes, modification times) of the logic directories is reused by all checks before it is read again. A check call checks whether its scripts changed by comparing this fingerprint, and listing the library directory and stating every lib file on every call cost about 40 file operations per check (live: the workers' file work was most of the daemon's CPU). An edited, added or removed lib file takes effect within this interval; the check's own script file is still stat-ed on every call. 0 = list on every call."
+value = 1000
+min = 0
+unit = "ms"
+
+[script.ext]
+doc = "File extension of a check script and of a lib file."
+value = ".js"
+
+[script.entry]
+doc = "Global function a check script defines; it is called with the hook payload and returns the verdict."
+value = "decide"
+
+[script.check_scope]
+doc = "How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB."
+value = "(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : undefined;\n}).call(globalThis)"
+
+[script.heap_budget_base_bytes]
+doc = "Memory budget the interpreter test holds one worker thread to (DECISIONS.md 1.111): this much for the runtime, the shared context, the host bindings and the lib files, plus script.heap_budget_per_check_bytes for every check script it has run. Measured 2026-10-09: 224 KB base, 1.04 MB with all 16 shipped scripts (git.js 365 KB, the others 1-195 KB); a context per check held 3.3 MB."
+value = 524288
+unit = "bytes"
+
+[script.heap_budget_per_check_bytes]
+doc = "Per check script share of the interpreter budget above (DECISIONS.md 1.111)."
+value = 98304
+unit = "bytes"
+
+[script.registry_global]
+doc = "Global object of the shared context that holds each loaded check's entry function, by check name."
+value = "__ahCheckEntries"
+
+[script.msg_no_entry]
+doc = "Reason logged (then the failure policy applies) when a check's script defines no entry function. Placeholders: {check}, {entry}."
+value = "{check}: the script defines no {entry} function"
+
+[script.msg_call_error]
+doc = "Reason logged when a loaded script call fails. Placeholders: {name}, {func}, {check}, {event}, {error}."
+value = "{name}.{func} check={check} event={event}: {error}"
+
+[script.time_limit_ms]
+doc = "SOFT CPU-time limit of one script call (the interpreter thread's own CPU time): a call that used more is logged (script_soft) and counted, and keeps running. The HARD limit that interrupts it is this value times script.time_hard_factor (the call then defers to Node, never a silent allow); script.wall_limit_factor sets the wall-clock backstop from the hard limit."
+value = 50
+env = "AH_ENGINE_SCRIPT_TIME_MS"
+min = 1
+unit = "ms"
+
+[script.time_hard_factor]
+doc = "The HARD CPU limit of a script call as a multiple of its SOFT limit (script.time_limit_ms, or the per-check entry of script.time_limit_by_check). Past the soft limit a call is only logged and counted; the interpreter is interrupted at the hard one."
+value = 10
+min = 1
+max = 1000
+
+[script.time_hard_cap_ms]
+doc = "Ceiling of the HARD CPU limit of a script call that has a normal soft limit; a soft limit already above it (a batch job's, in script.time_limit_by_check) is its own hard limit."
+value = 5000
+min = 1
+unit = "ms"
+
+[script.cut_at_request_deadline]
+doc = "1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry takes its check's failure policy while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up). Not counted as a script error. A check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline (the Node parity harness sets AH_ENGINE_SCRIPT_CUT_AT_DEADLINE=0 so its daemon answers every case, however loaded the machine)."
+value = 1
+env = "AH_ENGINE_SCRIPT_CUT_AT_DEADLINE"
+min = 0
+max = 1
+
+[script.msg_deadline_cut]
+doc = "Log detail (code script_deadline, rate-limited) of a check cut or not started at its request's client deadline; it takes its failure policy. Placeholders: {check}, {event}."
+value = "{check} ({event}): past the client's deadline, no answer (failure policy applies)"
+
+[script.msg_scan_cut]
+doc = "Exception a native transcript scan raises in a script call cut at its request's client deadline; the call then takes its check's failure policy."
+value = "the request's client stopped waiting during the scan"
+
+[script.wall_limit_factor]
+doc = "The wall-clock backstop of a script call, as a multiple of its HARD CPU limit (script.time_limit_ms times script.time_hard_factor). The limit itself counts the interpreter thread's CPU time, so a thread kept waiting for a core by a loaded machine is not interrupted; the backstop ends a script that waits without using CPU. Time a host function spends blocked (a child process, a lock) is credited back to the backstop."
+value = 4
+min = 1
+max = 1000
+
+[script.call_memory_bytes]
+doc = "Heap a single script call may allocate above the runtime's size after its scripts were loaded; past it the call fails and defers."
+value = 16777216
+min = 1048576
+unit = "bytes"
+
+[script.stack_bytes]
+doc = "Largest interpreter stack one script call may use."
+value = 262144
+min = 65536
+unit = "bytes"
+
+[script.read_max_bytes]
+doc = "Upper bound of one `ah.fs.readText` read, whatever the script asks for."
+value = 4194304
+min = 1024
+unit = "bytes"
+
+[script.regex_entry_base_bytes]
+doc = "Fixed part of the ESTIMATED weight of one cached compiled regular expression. The estimate is only the fallback: an entry is weighed by the heap its build kept, measured by the counting allocator (diagnostics.check_mem), and by this estimate where that is off. Measured on 85 shipped programs: 1.25 MB kept against 3.8 MB estimated."
+value = 8192
+min = 0
+unit = "bytes"
+
+[script.regex_bytes_per_src_byte]
+doc = "Estimated compiled size per byte of a pattern's translated source, the fallback weight where the heap of a build is not measured (see script.regex_entry_base_bytes). Programs measure about 13 KB plus 17 bytes per source byte on average, but the `\\s`, `.` and `i`-flag expansions make them uneven (a 152-byte pattern kept 52 KB), so the estimate stays on the high side."
+value = 300
+min = 1
+unit = "bytes"
+
+[script.regex_size_limit]
+doc = "Largest compiled program one `ah.re.*` pattern may have (regex builder size_limit); a pattern past it does not compile and the script sees the invalid-pattern error. The largest shipped pattern compiles to about 0.3 MB."
+value = 2097152
+min = 65536
+unit = "bytes"
+
+[script.regex_dfa_size_limit]
+doc = "Lazy-DFA scratch space one thread may grow per compiled `ah.re.*` pattern (regex builder dfa_size_limit); at the limit the engine falls back to a slower matcher instead of growing. This is the worst-case ceiling per pattern and thread (about patterns x daemon.workers x this x 2 for the forward and reverse DFAs); the typical use is script.regex_scratch_bytes."
+value = 262144
+min = 32768
+unit = "bytes"
+
+[script.regex_scratch_bytes]
+doc = "Estimated search scratch (lazy-DFA transition tables and caches) ONE worker thread holds per cached `ah.re.*` pattern. The regex crate keeps it per thread inside the compiled pattern and cannot report its size, so a cache entry weighs its compiled program plus daemon.workers times this. Measured 2026-10-23 on the real-payload replay (system allocator, stack-logged live heap): about 21 MB of search scratch across 130 patterns and 4 workers, about 40 KiB per pattern and thread; lowering script.regex_dfa_size_limit from 512 KiB to 64 KiB changed the plateau by under 1 MB, so most caches stay far under the cap."
+value = 40960
+min = 0
+unit = "bytes"
+
+[script.unload_batch]
+doc = "Checks unloaded per collection while an interpreter is above mem.quickjs.soft_bytes."
+value = 4
+min = 1
+
+[script.gc_every_calls]
+doc = "Calls after which a worker collects its script interpreter's garbage and reports the size to the memory registry (between requests, after the reply went out; also once when the worker goes idle). QuickJS frees most garbage at once but leaves cycles (closures, objects that point at each other) to its own collector, which runs only at 1.5 times the size after its last run: about 2.8 MB of waiting garbage per worker with every check loaded. The registry then unloads cold checks if the interpreter grew past mem.quickjs_soft_bytes."
+value = 1000
+min = 1
+
+[script.idle_free_ms]
+doc = "A worker whose script interpreter has not been called for this long, and that has nothing queued, frees the interpreter (its heap goes back to the allocator; the next scripted call rebuilds it from the plugin's files, a cold call). Bounds the memory the script pool holds when the load is bursty. 0 = never free."
+value = 60000
+unit = "ms"
+
+[script.p95_budget_us]
+doc = "Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way)."
+value = 1000
+unit = "us"
+
+[script.msg_invalid_pattern]
+doc = "Error a script sees when it hands `ah.re.*` a pattern that does not compile."
+value = "invalid pattern {src}"
+
+[script.msg_no_request]
+doc = "Error a host function raises when it is called outside a check call (no request state)."
+value = "no request state"
+
+[script.msg_unknown_key]
+doc = "Error a script sees when it asks `ah.cfg` for a key that is not shipped."
+value = "unknown defaults key {key}"
+
+[script.msg_not_number]
+doc = "Error a script sees when it asks `ah.cfgNum` for a key whose value is not a number."
+value = "{key} is not a number"
+
+[script.msg_bad_verdict]
+doc = "Logged reason (then the call defers) when a script returns a value that is not a verdict."
+value = "unexpected verdict {value}"
+
+[script.engine_only_checks]
+doc = "Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose."
+value = ["afk-mode", "tasklist-hygiene", "switch-notice", "agent-reminders", "api-guard", "ask-guard", "auto-handover", "auto-handover-pause-nag", "broad-kill-guard", "burn-breaker", "claim-evidence-guard", "claim-ledger", "claude-cli-version", "codex-availability", "codex-nudge", "codex-quota-detect", "command", "compact-advice-guard", "compact-declaration-guard", "coordinator-work-guard", "defect-nudge", "devswarm-child-drain", "devswarm-child-gate", "devswarm-child-role", "devswarm-child-turn", "devswarm-comms-guard", "devswarm-parent-gate", "devswarm-parent-inbox", "devswarm-parent-reply-tracker", "devswarm-rt-advisory", "devswarm-version", "dispatch-tier", "edit-guard", "emit-dedupe-reset", "engine-role-guard", "engine-role-note", "fable-availability", "failure-root-cause-nudge", "gh-rt-advisory", "git", "git-audit", "handover-hygiene", "handover-resume", "idle-agent-sweep", "inbox-read-guard", "jev-review-reminder", "jev-weekly-scorecard", "lane-test-guard", "limit-conserve-inject", "merge-gate", "merge-side-pick", "model-routing", "orch-on-spawn", "output-verify-guard", "phase-tracker", "precompact-snapshot", "procwatch-advisory", "progress-prune", "queued-wait-guard", "repair-on-reload", "repo-self-drift", "scan-throttle", "session-end-mcp-reaper", "ship-it-guard", "sibling-sweep", "silent-agent-nudge", "speculation-guard", "speculation-judge", "stale-agent-stop-note", "swarm-guard", "task-guard", "task-lifecycle-log", "task-tracker", "tasklist-guard", "uncommitted-guard", "verify-first", "verify-first-full", "verify-first-orch", "verify-first-orch-codex", "verify-first-subagent", "version-alert", "wide-search-guard", "advisor-guard"]
+
+[script.failure_mode_by_check]
+doc = "Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript."
+value = { git = "closed", command = "closed", api-guard = "closed", edit-guard = "closed", ship-it-guard = "closed", merge-gate = "closed", swarm-guard = "closed", compact-declaration-guard = "closed", devswarm-comms-guard = "closed", inbox-read-guard = "closed", ask-guard = "closed", sibling-sweep = "open", handover-hygiene = "open", agent-reminders = "open", gh-rt-advisory = "open", procwatch-advisory = "open", engine-role-guard = "open", broad-kill-guard = "open", burn-breaker = "open", uncommitted-guard = "open", devswarm-parent-gate = "open", devswarm-child-role = "open", lane-test-guard = "open", queued-wait-guard = "open", wide-search-guard = "open", claim-evidence-guard = "open", advisor-guard = "open" }
+
+[script.failure_mode_default]
+doc = "Failure mode of a check not listed in script.failure_mode_by_check."
+value = "open"
+
+[script.failure_mode_closed]
+doc = "The failure-mode value that blocks on a guard event (any other value allows)."
+value = "closed"
+
+[script.msg_fail_closed]
+doc = "Block reason of an engine-only check on a guard event whose script could not answer. Placeholders: {check}, {why}."
+value = "anti-hall {check}: BLOCKED. Its check script failed ({why}) and this guard has no fallback, so the call is refused rather than allowed unchecked. Fix or remove the script in engine/logic or ~/.anti-hall/logic, or skip the guard."
+
+[script.msg_unanswered]
+doc = "Reason logged when a check gave no answer at all (a deferral of any origin) and its failure policy decides."
+value = "the check gave no answer"
+
+[script.msg_guard_down]
+doc = "The notice the user sees, once per session and check, when a check that failed open let a call through unchecked. Placeholders: {check}, {why}."
+value = "anti-hall: the {check} guard could not run ({why}), so this call went through unchecked. It is logged and counted; fix or remove the script in engine/logic or ~/.anti-hall/logic."
+
+[script.notice_key]
+doc = "The key of the JSON line a hook prints for a message the user sees (the guard-down notice)."
+value = "systemMessage"
+
+[script.notice_max]
+doc = "Most (session, check) pairs remembered for the guard-down notice; the memory is cleared when full, so at worst a notice repeats."
+value = 4096
+min = 16
+max = 1000000
+
+[script.msg_no_script]
+doc = "Reason logged (then the failure policy applies) when a check whose logic is a script has no script file."
+value = "no script file"
+
+[script.unable_prefix]
+doc = "The prefix of the site name under which a script counts a case it could not model exactly and decided natively (native_unable), followed by the check and the site."
+value = "script:"
+
+[script.unable_abandoned]
+doc = "The second argument of `ah.unable(site, kind)` that counts the case as abandoned (the script dropped its decision: it allowed, or said nothing, because it could not decide) instead of a stand-in (it went on with a stand-in value)."
+value = "abandoned"
+
+[script.write_root]
+doc = "The one directory under the home directory that a script may write to through `ah.state.writeAtomic` (a path must start with it; nothing outside it, no link below it)."
+value = ".anti-hall"
+
+[script.write_max_bytes]
+doc = "Largest text one `ah.state.writeAtomic` call may write; a larger text is refused."
+value = 1048576
+min = 1024
+unit = "bytes"
+
+[script.write_path_max]
+doc = "Longest relative path one `ah.state.writeAtomic` call may name."
+value = 600
+min = 16
+
+[script.write_why_home]
+doc = "Refusal reason of a scripted write when the request has no absolute home directory."
+value = "no absolute home directory"
+
+[script.write_why_size]
+doc = "Refusal reason of a scripted write whose text is over script.write_max_bytes."
+value = "text over the size cap"
+
+[script.write_why_path]
+doc = "Refusal reason of a scripted write whose path is absolute, outside the write root, too long, or has an empty, `.` or `..` part."
+value = "path outside the allowed shape"
+
+[script.write_why_link]
+doc = "Refusal reason of a scripted write that would pass through a symbolic link below the write root."
+value = "symbolic link below the write root"
+
+[script.msg_dead_root]
+doc = "Event-log line when a scripted state write is skipped because its project root is not a live git work tree or project root (for example an archived workspace whose folder was removed); no directory is created. Placeholder: {root}."
+value = "state write skipped, no live git work tree at {root}"
+
+[script.msg_write_refused]
+doc = "Error a script sees when its write was refused. Placeholder: {why}."
+value = "write refused: {why}"
+
+[script.msg_env_incomplete]
+doc = "Reason logged (then the failure policy applies) when the request's environment is incomplete, so no check can be evaluated."
+value = "request environment incomplete"
+
+[script.msg_settings_unreadable]
+doc = "Reason logged (then the failure policy applies) when the settings file holds something only JavaScript can parse."
+value = "settings file readable only by JavaScript"
+
+[script.write_sync]
+doc = "1: a scripted write fsyncs the file before the atomic rename (survives a power cut, costs several milliseconds per write); 0: it does not (a reader still never sees a half-written file, and the state a script keeps is advisory and rebuilt at the next run)."
+value = 0
+min = 0
+max = 1
+
+[script.readdir_max]
+doc = "Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole)."
+value = 10000
+min = 16
+
+[script.exec_programs]
+doc = "Program names `ah.exec` may run (bare names, resolved through the request's PATH). Anything else answers null. `launchctl` is the read-only query of the launchd jobs a banner names; `hivecontrol` is the DevSwarm child Stop gate's non-destructive `workspace message-count` probe."
+value = ["git", "launchctl", "hivecontrol"]
+
+[script.exec_timeout_max_ms]
+doc = "Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit."
+value = 5000
+min = 10
+unit = "ms"
+
+[script.exec_timeout_scale]
+doc = "Multiplier on the time every `ah.exec` run and every process listing a script asks for may take (the limit a script asks for, and the longest one, are both multiplied). 1 in production; a test build on a loaded machine raises it so a slow child process is not read as a failure."
+value = 1
+env = "AH_ENGINE_SCRIPT_EXEC_SCALE"
+min = 1
+max = 100
+
+[script.exec_poll_ms]
+doc = "How often the bounded runner checks whether an `ah.exec` child has finished."
+value = 2
+min = 1
+unit = "ms"
+
+[script.exec_max_calls]
+doc = "Most `ah.exec` runs one script call may start; past it the call answers null."
+value = 64
+min = 1
+
+[script.exec_output_max_bytes]
+doc = "Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set."
+value = 4194304
+min = 1024
+unit = "bytes"
+
+[script.grep_max_bytes]
+doc = "Most bytes of lines `ahHost.transcriptGrep` hands back to a script; a search that matches more is answered unsure and the script defers."
+value = 2097152
+min = 65536
+unit = "bytes"
+
+[script.tail_max_bytes]
+doc = "Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for."
+value = 16777216
+min = 65536
+unit = "bytes"
+
+[script.includes]
+doc = "Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable."
+value = { git-audit = ["git"], codex-quota-detect = ["codex-availability"], codex-nudge = ["codex-availability"], coordinator-work-guard = ["command"], "rules/coordinator-work-baseline" = ["command", "coordinator-work-guard"], verify-first-orch-codex = ["verify-first-orch"], devswarm-child-gate = ["devswarm-child-role"], devswarm-parent-reply-tracker = ["devswarm-child-role", "devswarm-child-gate"], devswarm-child-drain = ["devswarm-child-role", "devswarm-child-gate"], devswarm-parent-gate = ["devswarm-child-role", "devswarm-parent-inbox"], devswarm-child-turn = ["devswarm-child-role"], devswarm-parent-inbox = ["devswarm-child-role"], api-guard = ["command", "inc/shell-writes"], edit-guard = ["command"], orch-on-spawn = ["verify-first-orch"], ship-it-guard = ["command", "inc/shell-writes"] }
+
+[script.lock_max_held]
+doc = "Most cross-process locks (`ah.state.lock`) a script may hold at once in one call. A script that nests two takes them in one fixed order and releases the inner one first."
+value = 2
+min = 1
+max = 4
+
+[script.lock_wait_max_ms]
+doc = "Longest wait a script may ask `ah.state.lock` for in place of its group's wait."
+value = 5000
+min = 0
+unit = "ms"
+
+[script.sweep_max_remove]
+doc = "Most files one `ah.state.sweep` call may delete, whatever the script asks for."
+value = 200
+min = 1
+
+[script.msg_unknown_op]
+doc = "Error a script sees when it asks a file operation the host does not have. Placeholder: {op}."
+value = "unknown file operation {op}"
+
+[script.tail_buf_bytes]
+doc = "Size of the buffer `ah.transcript.tailLines` reads a file through."
+value = 65536
+min = 4096
+max = 1048576
+unit = "bytes"
+
+[script.call_memory_by_check]
+doc = "Per-check heap a single script call may allocate (bytes), replacing script.call_memory_bytes for a rules script that engine code calls with call_fn from a command-line process. `rules/jev-report` aggregates every retained generation of the Jev decision log (about 28,000 rows for 7 MB of log) in one call."
+value = { "rules/jev-report" = 1073741824 }
+unit = "bytes"
+
+[script.time_limit_by_check]
+doc = "Per-check limit of one script call (ms; the interpreter thread's CPU time, and the wall-clock backstop is script.wall_limit_factor times it), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; `command` (command-guard) resolves repositories and runs `git` for its edit parity and carve-outs (a child process wait is credited back, but a loaded machine stretches the interpreter's own time as well); `git` (git-guard) tokenizes the whole command and its heredoc bodies (the frozen replay of 2026-10-09 interrupted it at 50 ms on 3 long heredoc commands, each answered the same with the time); api-guard and ship-it-guard parse Bash writes with command-guard's parsers (script.includes) and compact-declaration-guard parses the current turn of a 1.5 MB transcript tail, so they get command-guard's order of time and more; the DevSwarm child Stop gate and drain nudge (devswarm-child-gate, devswarm-child-drain) open the project's mesh store and read the child's inbox, as devswarm-child-turn and devswarm-parent-inbox do; `precompact-snapshot` reads the transcript tail of a PreCompact (a real 1.5 MB tail takes about 190 ms in the interpreter, so 50 ms would defer it to Node every time); `claim-ledger` walks up to 2 MB of transcript evidence; the Stop-time and prompt-time checks that scan the transcript tail or state (tasklist-guard, task-guard, silent-agent-nudge, stale-agent-stop-note, auto-handover, auto-handover-pause-nag, compact-advice-guard, limit-conserve-inject, idle-agent-sweep) get 500 ms because, measured 2026-10-09 on the frozen replay (2113 calls), the 50 ms default interrupted tasklist-guard on 2 and silent-agent-nudge on 6 of 61 Stop calls (and stale-agent-stop-note on a 156 MB transcript), each deferring a decision the script makes identically when given the time; its SessionStart advisory only lists and stats files."
+value = { devswarm-child-turn = 500, devswarm-parent-inbox = 500, devswarm-child-gate = 500, devswarm-child-drain = 500, "handover-hygiene:Cli" = 30000, "handover-hygiene" = 1000, command = 200, edit-guard = 200, git = 500, git-audit = 500, api-guard = 500, ship-it-guard = 500, compact-declaration-guard = 500, precompact-snapshot = 500, claim-ledger = 500, claim-evidence-guard = 500, tasklist-guard = 500, task-guard = 500, silent-agent-nudge = 500, stale-agent-stop-note = 500, auto-handover = 500, auto-handover-pause-nag = 500, compact-advice-guard = 500, limit-conserve-inject = 500, idle-agent-sweep = 500, "rules/jev-report" = 60000 }
+
+[script.p95_budget_by_check]
+doc = "Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). Batch 6 (2026-10-09, release no LTO, machine load average 12 to 17, so roughly twice the quiet figures): speculation-guard p50 236 us, p95 1,064 us (its corpus holds Jev asks and state writes), tasklist-guard p50 881 us, p95 2,775 us (it creates the progress directory, stats the progress and history files and appends to the session indexes); the other batch-6 checks stay under the 1,000 us default (dispatch-tier p95 510, model-routing 607, speculation-judge 338, silent-agent-nudge 967, task-guard 935). The compiled ports were not timed before removal, so these are the scripts' own p95s, not an added figure; merge-side-pick p50 38 then 106 us, p95 7,199 then 6,104 us (both are the per-session state file's locked read-modify-write; measured 2026-10-09 on a machine at load 25-30). Measured 2026-10-09 (lane d88fd, release, thread CPU time, best of three): command p50 77 then 295 us, p95 1,804 then 2,761 us on the 5,827-scenario command-guard lane corpus (the compiled port short-cut commands that cannot write or run anything heavy; the script runs the Node functions, and the corpus is skewed to heavy and write cases, which resolve repositories and spawn `git`); coordinator-work-guard p50 28 then 1,128 us, p95 798 then 3,009 us on its golden corpus, where the compiled port deferred 149 of 192 calls to a Node process (tens of milliseconds each) and the script answers all of them. Batch 7 (lane d88e, 2026-10-09, release no LTO, load average 5 to 8, own p95 over the golden corpus): idle-agent-sweep p95 1.4 ms (it writes the emit-dedupe state file durably, as the compiled port did); session-end-mcp-reaper p50 1.3 s, p95 1.7 s (its 500 ms grace period between the polite and the forced signal, plus the process listing, the age and service-manager probes and the re-listing, each a child process; the compiled port waited for the same); stale-agent-stop-note 207 us, claim-ledger 258 us, auto-handover-pause-nag 409 us and compact-advice-guard 258 us stay under the 1,000 us default. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. Batch 8 (lane d88f, 2026-10-09, release no LTO, load average 13 to 15, own p95 over the golden corpus): task-tracker p50 1.1 ms, p95 8.7 ms (UserPromptSubmit: it reads and parses the transcript tail on every prompt), verify-first p50 0.6 ms, p95 1.26 ms, codex-availability p50 0.37 ms, p95 1.4 ms (it writes the availability record on every session start), codex-nudge p50 0.6 ms, p95 1.2 ms; verify-first-orch p50 0.19 ms, p95 0.63 ms stays under the 1,000 us default."
+value = { git = 30000, sibling-sweep = 5000, fable-availability = 2000, handover-hygiene = 200000, merge-side-pick = 12000, speculation-guard = 2000, tasklist-guard = 5000, limit-conserve-inject = 2000, output-verify-guard = 3000, progress-prune = 30000, precompact-snapshot = 100000, handover-resume = 60000, command = 6000, coordinator-work-guard = 8000, idle-agent-sweep = 3000, session-end-mcp-reaper = 3000000, task-tracker = 12000, verify-first = 2000, codex-availability = 2500, codex-nudge = 2000 }
+
+[script.prewarm_checks]
+doc = "Script entries loaded on each daemon worker before accepting requests; only definitions are loaded, no decision function runs. Normal fingerprint invalidation still reloads edits."
+value = ["speculation-guard", "sibling-sweep"]
+
+[script.prewarm_patterns]
+doc = "Shared regex programs compiled before the daemon workers accept requests (defaults key and JavaScript flags). Moves Stop's first marker, acknowledgment and sibling-scan compilation out of its client wait."
+value = [
+  { key = "speculation_guard.markers", flags = "i" },
+  { key = "speculation_guard.ack_ci", flags = "i" },
+  { key = "speculation_guard.ack_cs", flags = "" },
+  { key = "sibling_sweep.attributed_re", flags = "i" },
+  { key = "sibling_sweep.bash_search_re", flags = "" },
+  { key = "sibling_sweep.fence_re", flags = "" },
+  { key = "sibling_sweep.fix_context_re", flags = "i" },
+  { key = "sibling_sweep.hedge_any_re", flags = "i" },
+  { key = "sibling_sweep.hedge_before_re", flags = "i" },
+  { key = "sibling_sweep.injected_re", flags = "i" },
+  { key = "sibling_sweep.meta_re", flags = "i" },
+  { key = "sibling_sweep.operational_re", flags = "i" },
+  { key = "sibling_sweep.quote_line_re", flags = "m" },
+  { key = "sibling_sweep.search_tool_re", flags = "" },
+  { key = "sibling_sweep.cause_cues", flags = "i" },
+  { key = "sibling_sweep.sweep_statement_re", flags = "i" },
+]

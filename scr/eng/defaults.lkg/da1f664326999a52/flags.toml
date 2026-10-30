@@ -1,0 +1,473 @@
+# ah-engine shipped defaults for the command-line flags (`flag.<name>`). Format: see the header of engine.toml.
+#
+# One entry per `--flag` that appears in a command's `args` (commands.toml) or that the code reads from a text key (for
+# example `status --threads`). The generated reference lists them with the commands that take them. A test fails when a
+# flag is used and has no entry here, so adding a flag means adding its line in the same change. A few flags are shared by
+# many commands; the meaning in a particular command is in that command's own entry.
+
+[flag.active]
+doc = "Comma-separated workspace ids that are currently active in the app (`devswarm reconcile-active`)."
+value = "--active"
+
+[flag.apply]
+doc = "Carry out the previewed change instead of only reporting it (`devswarm reap-orphans`, `doctor --repair-*`)."
+value = "--apply"
+
+[flag.auto]
+doc = "Run in the automatic mode the plugin starts (`devswarm wake-watch`)."
+value = "--auto"
+
+[flag.base]
+doc = "The base ref to compare against (`devswarm ready-check`)."
+value = "--base"
+
+[flag.by]
+doc = "Group the report by `project` or `session` (`jev-report`)."
+value = "--by"
+
+[flag.check]
+doc = "Name of one check to limit the output to (`metrics`), a read-only check without repairs (`doctor`, `update`), or validation only without writing (`config set`)."
+value = "--check"
+
+[flag.clear]
+doc = "Comma-separated gates to clear (`devswarm gate`)."
+value = "--clear"
+
+[flag.confirm-ids]
+doc = "Comma-separated workspace ids the owner confirmed for pruning (`devswarm prune`)."
+value = "--confirm-ids"
+
+[flag.cwd]
+doc = "Directory to treat as the working directory instead of the current one."
+value = "--cwd"
+
+[flag.daily]
+doc = "Add a line per UTC day (`shadow-compare`)."
+value = "--daily"
+
+[flag.days]
+doc = "Look-back window in days, or the snooze length for `jev-setup snooze`."
+value = "--days"
+
+[flag.db]
+doc = "Path of a DevSwarm database to read instead of the live one (`mesh`; makes the verb read-only)."
+value = "--db"
+
+[flag.debug]
+doc = "Turns debug mode (diagnostics.debug_mode) on for one `serve` or `hook` process."
+value = "--debug"
+
+[flag.dir]
+doc = "Directory to scan (`harvest`)."
+value = "--dir"
+
+[flag.dry-run]
+doc = "Show what would change and write nothing."
+value = "--dry-run"
+
+[flag.event]
+doc = "The hook event name to dispatch (`hook --event`)."
+value = "--event"
+
+[flag.fallback]
+doc = "The fallback transport of the Jev classifier (`jev-setup enable`). Older versions of `hook` took a Node script here; it is ignored now."
+value = "--fallback"
+
+[flag.fallback-map]
+doc = "File that maps hook entries to their Node fallback commands (`hook --event`)."
+value = "--fallback-map"
+
+[flag.file]
+doc = "Read the input from this file instead of stdin."
+value = "--file"
+
+[flag.fix]
+doc = "Same as `--repair` (`doctor`)."
+value = "--fix"
+
+[flag.force]
+doc = "Go past the usual skip: `gh poll` polls now, `handovers index` rebuilds every day, `devswarm register-primary` overrides the existing registration."
+value = "--force"
+
+[flag.for]
+doc = "How long a runtime switch stays on (`ctl profile on --for 10m`: a number with an optional ms, s, m or h suffix; a bare number is seconds)."
+value = "--for"
+
+[flag.format]
+doc = "Output format; `md` prints the Markdown reference (`docs`)."
+value = "--format"
+
+[flag.from-line]
+doc = "First transcript line to replay (`coordinator-work-baseline`)."
+value = "--from-line"
+
+[flag.glob]
+doc = "Path glob a workspace is allowed to touch (`devswarm scope add`)."
+value = "--glob"
+
+[flag.global]
+doc = "Install into the home directory instead of the current project (`install-codex`)."
+value = "--global"
+
+[flag.home]
+doc = "Home directory to use instead of the real one (scratch-HOME runs)."
+value = "--home"
+
+[flag.host]
+doc = "The host the output is for: `claude` or `codex`."
+value = "--host"
+
+[flag.id]
+doc = "Workspace id (`devswarm`, `mesh`)."
+value = "--id"
+
+[flag.job]
+doc = "Name of one scheduled job (`schedule`)."
+value = "--job"
+
+[flag.json]
+doc = "Print machine-readable JSON instead of text. Accepted by every command."
+value = "--json"
+
+[flag.kind]
+doc = "Limit the output to one kind (an impact kind, a telemetry kind, or the generated file kind for `gen-hooks`)."
+value = "--kind"
+
+[flag.last]
+doc = "Only the last N entries (`mesh`)."
+value = "--last"
+
+[flag.limit]
+doc = "Maximum number of rows to print."
+value = "--limit"
+
+[flag.list]
+doc = "List instead of acting (`devswarm notice --list`)."
+value = "--list"
+
+[flag.max]
+doc = "Upper bound on how many items one run may act on (`devswarm reap-orphans`)."
+value = "--max"
+
+[flag.memory]
+doc = "Add the per-subsystem memory breakdown to the output (`status`)."
+value = "--memory"
+
+[flag.message]
+doc = "The body of a mesh message (`mesh send`)."
+value = "--message"
+
+[flag.migration]
+doc = "Print the migration report: every hook check, supervisor duty, post-update stage, command and Node switch as native, partial or node (`status`; add `--json` for the machine form)."
+value = "--migration"
+
+[flag.migrations-only]
+doc = "With `--repair` or `--fix`, run only the migration pass and print its report as JSON (`doctor`)."
+value = "--migrations-only"
+
+[flag.note]
+doc = "Free-text note stored with the entry (`devswarm scope add`)."
+value = "--note"
+
+[flag.note-file]
+doc = "File whose contents are sent as the note (`devswarm relay`)."
+value = "--note-file"
+
+[flag.nudge]
+doc = "The nudge word a registered workspace answers to (`devswarm register`)."
+value = "--nudge"
+
+[flag.older-than]
+doc = "Only items older than this many days (`devswarm plan-prune`)."
+value = "--older-than"
+
+[flag.plan]
+doc = "The nonce printed by `plan-prune`, proving the prune was planned first (`devswarm prune`)."
+value = "--plan"
+
+[flag.plugin-root]
+doc = "Plugin directory whose files are read, before anything is loaded."
+value = "--plugin-root"
+
+[flag.post-pull-only]
+doc = "Run only the steps that follow a plugin update pull (`update`)."
+value = "--post-pull-only"
+
+[flag.project]
+doc = "Limit the output to one project (a hash, name or directory, per command), or the project-level settings file (`uninstall-statusline`)."
+value = "--project"
+
+[flag.purge-base]
+doc = "Also remove the saved base statusline (`uninstall-statusline`)."
+value = "--purge-base"
+
+[flag.quiet]
+doc = "Print only problems (`doctor`)."
+value = "--quiet"
+
+[flag.reason]
+doc = "Why the action is taken; recorded with it (`devswarm`)."
+value = "--reason"
+
+[flag.registered]
+doc = "Walk every project the SessionStart check has seen (`handovers index`)."
+value = "--registered"
+
+[flag.repair]
+doc = "Run the repair pass after the diagnostics (`doctor`)."
+value = "--repair"
+
+[flag.request]
+doc = "Request id that makes a repeated owner action idempotent (`devswarm`)."
+value = "--request"
+
+[flag.role]
+doc = "Which key to set; only `fallback` (`jev-setup`)."
+value = "--role"
+
+[flag.rollup]
+doc = "Show the stored rollups of one resolution (minute or hour) (`metrics`)."
+value = "--rollup"
+
+[flag.root]
+doc = "Plugin tree to inspect or install from (`capability-scan`, `briefing`, `install-codex`)."
+value = "--root"
+
+[flag.session]
+doc = "Session id (`devswarm`)."
+value = "--session"
+
+[flag.set]
+doc = "Comma-separated gates to set (`devswarm gate`)."
+value = "--set"
+
+[flag.since]
+doc = "Only entries from this point on: a number of seconds, or a message sequence for `mesh`."
+value = "--since"
+
+[flag.stale-days]
+doc = "A file untouched this many days counts as stale (`harvest`)."
+value = "--stale-days"
+
+[flag.store]
+doc = "Limit to one retention store key (`devswarm retention run`)."
+value = "--store"
+
+[flag.summary]
+doc = "One-line summary reported to the Primary (`devswarm done`)."
+value = "--summary"
+
+[flag.threads]
+doc = "Report the live daemon's per-thread CPU and work counters over a short window (`status`)."
+value = "--threads"
+
+[flag.titles-json]
+doc = "JSON file of workspace titles to sync into the app (`devswarm sync-ui`)."
+value = "--titles-json"
+
+[flag.to]
+doc = "Destination: a directory (`backup`) or a workspace id (`devswarm relay`)."
+value = "--to"
+
+[flag.tool]
+doc = "The tool name of the hook event (`hook --event`)."
+value = "--tool"
+
+[flag.transport]
+doc = "Gateway transport for the Jev classifier: `vercel` or `typesafe` (`jev-setup`)."
+value = "--transport"
+
+[flag.ttl]
+doc = "How long the skip lasts, in minutes (`devswarm skip`)."
+value = "--ttl"
+
+[flag.user]
+doc = "The user-level settings file (`uninstall-statusline`)."
+value = "--user"
+
+[flag.vendor]
+doc = "Gateway vendor: `vercel` or `typesafe` (`jev-setup`)."
+value = "--vendor"
+
+[flag.weekly]
+doc = "Print the weekly summary form (`jev-report`)."
+value = "--weekly"
+
+[flag.window]
+doc = "Time window such as `24h` or `7d`."
+value = "--window"
+
+[flag.worktree]
+doc = "Worktree path of a workspace (`devswarm`)."
+value = "--worktree"
+
+[flag.yes]
+doc = "Confirm the action. Without it the verb only plans or does a dry run (`devswarm`)."
+value = "--yes"
+
+[flag.all]
+doc = "Include every item, also the advanced ones (`settings show`, `settings tunables`)."
+value = "--all"
+
+[flag.confirmed]
+doc = "Confirm a change to a safety-relevant setting, after the one-line warning (`settings set`, `settings reset`)."
+value = "--confirmed"
+
+[flag.section]
+doc = "Show one settings section only (`settings show`)."
+value = "--section"
+
+[flag.mistake]
+doc = "Record a mistake signal the engine cannot see itself: `--mistake <feature> <action> <target> <kind> [detail]` (`telemetry actions`)."
+value = "--mistake"
+
+[flag.repair-ingest-orphans]
+doc = "Add the report section that previews retiring orphaned ingest entries; with `--apply` it does so (`doctor`)."
+value = "--repair-ingest-orphans"
+
+[flag.repair-test-stores]
+doc = "Add the report section that previews moving test stores out of the live state; with `--apply` it does so (`doctor`)."
+value = "--repair-test-stores"
+
+[flag.repair-resurrected]
+doc = "Add the report section that previews retiring resurrected entries (`doctor`)."
+value = "--repair-resurrected"
+
+[flag.bin]
+doc = "Path of the engine binary the installed service unit runs (`units`)."
+value = "--bin"
+
+[flag.channel]
+doc = "Update channel to install from: `stable` or `dev` (`engine-update`)."
+value = "--channel"
+
+[flag.from]
+doc = "Install from this local file, a release .tar.gz or a bare engine binary (`engine-update`)."
+value = "--from"
+
+[flag.no-restart]
+doc = "Install without restarting the daemon; the next hook call starts the new one (`engine-update`)."
+value = "--no-restart"
+
+[flag.rollback]
+doc = "Restore the previous engine binary; run twice to toggle (`engine-update`)."
+value = "--rollback"
+
+[flag.sha256]
+doc = "Expected sha256 of the `--from` file (64 lowercase hex digits); without it the SHA256SUMS next to the file, then the plugin's ah-engine.lock decide (`engine-update`)."
+value = "--sha256"
+
+[flag.allow]
+doc = "Comma-separated globs a change may touch; files outside them are reported (`devswarm ready-check`)."
+value = "--allow"
+
+[flag.fetch]
+doc = "Run `git fetch --quiet` before the checks (`devswarm ready-check`)."
+value = "--fetch"
+
+[flag.scope]
+doc = "Comma-separated globs the plan is scoped to (`mesh plan set`)."
+value = "--scope"
+
+[flag.steps]
+doc = "The plan's numbered steps as text (`mesh plan set`)."
+value = "--steps"
+
+[flag.steps-file]
+doc = "Read the plan's steps from a file instead of `--steps` (`mesh plan set`)."
+value = "--steps-file"
+
+[docs.external_flags]
+doc = "Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry."
+value = ["--allow-empty", "--builtin", "--detach", "--doctor", "--exact", "--help", "--ignored", "--is-ancestor", "--model", "--no-concurrent-recompilation", "--no-concurrent-sparkplug", "--nocapture", "--porcelain", "--reparent-children", "--repo", "--squash", "--system-prompt", "--verify", "--version", "--amend", "--bare", "--config", "--engine", "--socket", "--state"]
+
+
+[flag.key]
+doc = "Limit the history to one setting key (`config history`)."
+value = "--key"
+
+
+[flag.offset]
+doc = "Rows to skip before the page starts (`query`)."
+value = "--offset"
+
+
+[flag.part]
+doc = "Comma-separated parts of the self-description to return (`describe`)."
+value = "--part"
+
+[flag.coverage]
+doc = "Report which features a dashboard screen covers, which it cannot edit and which selectors are stale (`describe`)."
+value = "--coverage"
+
+[flag.schema]
+doc = "Show the row fields of one source instead of its rows (`query`)."
+value = "--schema"
+
+[flag.verb]
+doc = "Limit the history to one verb: set, reset or undo (`config history`)."
+value = "--verb"
+
+[flag.where]
+doc = "Keep the rows whose fields equal the values: `field=value,field=value` (`query`)."
+value = "--where"
+
+[flag.deploy-dir]
+doc = "Install or update into this directory."
+value = "--deploy-dir"
+
+[flag.engine-bin]
+doc = "Use this ah-engine binary for an operator routine."
+value = "--engine-bin"
+
+[flag.expect-sha]
+doc = "Require the installed engine to have this SHA-256."
+value = "--expect-sha"
+
+[flag.from-local]
+doc = "Use the local checkout or branch as the source."
+value = "--from-local"
+
+[flag.hook-bin]
+doc = "Use this ah-hook binary for an operator routine."
+value = "--hook-bin"
+
+[flag.source]
+doc = "Source directory for the operator routine."
+value = "--source"
+
+[flag.tree]
+doc = "Repository tree for the operator routine."
+value = "--tree"
+
+[flag.no-live]
+doc = "Skip the live-machine section of the entry-path audit."
+value = "--no-live"
+
+[flag.no-open]
+doc = "Print the dashboard address without opening a browser."
+value = "--no-open"
+
+[flag.into]
+doc = "Target branch for a mesh merge."
+value = "--into"
+
+[flag.receipt]
+doc = "Delivery receipt identifier for inbox acknowledgement."
+value = "--receipt"
+
+[flag.stdin]
+doc = "Read the mesh operation input from standard input."
+value = "--stdin"
+
+[flag.urgency]
+doc = "Urgency of a mesh heartbeat."
+value = "--urgency"
+
+[flag.name]
+doc = "Name the generated skill document (`docs --format skill`)."
+value = "--name"
+
+[flag.out]
+doc = "Write generated documentation to the named output file."
+value = "--out"

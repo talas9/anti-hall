@@ -1,0 +1,2056 @@
+# ah-engine shipped defaults for the DevSwarm supervisor duties (lane l7, `src/dssup`): everything the old Node liveness supervisor
+# (run by launchd / systemd / cron every 60-120 s) did besides auto-archive, so the engine's
+# scheduler can take them over and the Node job can be switched off as a whole. Format: see the header of engine.toml. Every key
+# can be overridden in the `devswarm_sup` section of settings.json. Nothing here is compiled into the binary.
+#
+# THE SWITCH: `devswarm_sup.mode`. `engine` (the default) makes the engine's scheduler job `devswarm_supervisor` run the duties
+# below; `off` runs none of them (a diagnostic: the tick is counted as `disabled`). In engine mode the engine also takes
+# poke and escalate (their executors default to `auto`, which follows this mode) and refuses to act while the Node supervisor is
+# still running (the double-run guard). The go-live steps are in docs/AH-ENGINE.md, "DevSwarm supervisor cutover".
+
+[devswarm_sup.mode]
+doc = "Whether the engine runs the supervisor duties: engine (the default: the engine's scheduler runs them, poke and escalate follow; while a Node supervisor job is still installed and running the engine stands down, so there is never a second actor) | off (the diagnostic switch: the engine runs none of them; each tick is counted as disabled). Anything else reads as off, so a typo never starts a second actor. The engine never edits any settings file or any launchd / systemd unit."
+value = "engine"
+
+[devswarm_sup.reconcile_mode]
+doc = "Whether the reconcile sweep duty runs while devswarm_sup.mode is `engine`: engine (the default: the engine reconciles each project natively and folds its duplicate mesh rows; the active-workspace probe and start-up sampling of Node's sweep are held) | off (the duty is disabled: counted, nothing run). Anything else reads as off."
+value = "engine"
+
+[devswarm_sup.reconcile_mode_words]
+doc = "The words of devswarm_sup.reconcile_mode, in the order off, engine."
+value = ["off", "engine"]
+
+[devswarm_sup.mode_words]
+doc = "The words of devswarm_sup.mode, in the order off, engine."
+value = ["off", "engine"]
+
+[devswarm_sup.tick_ms]
+doc = "How often the scheduler job `devswarm_supervisor` runs while the mode is `engine` (Node's installer sweeps every 60-120 s). The job does nothing where DevSwarm is absent or the mode is witness."
+value = 60000
+min = 10000
+max = 3600000
+unit = "ms"
+
+[devswarm_sup.tick_budget_ms]
+doc = "Most time one tick spends starting duties; a duty not yet started when it is spent waits for the next tick. Each duty is also bounded by its own timeout_ms."
+value = 900000
+min = 1000
+max = 3600000
+unit = "ms"
+
+# ---- the double-run guard --------------------------------------------------------------------------------------------------
+
+[devswarm_sup.guard_ms]
+doc = "The Node supervisor counts as running when its log (or the rotated copy) was written within this long. While it runs, the engine's supervisor duties AND the engine's poke / escalate stand down, so two actors never run one duty. Node writes one line per sweep and sweeps at least every 120 s."
+value = 360000
+min = 60000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.node_log]
+doc = "The Node supervisor's log, relative to the home directory (the launchd / systemd / cron job writes its sweep line there)."
+value = ".anti-hall/devswarm-supervisor.log"
+
+[devswarm_sup.log_backup_suffix]
+doc = "The suffix of the one rotated generation of a log."
+value = ".1"
+
+[devswarm_sup.reason_no_log]
+doc = "The rotation answer when the log does not exist yet (Node's words, so the two reports read alike)."
+value = "no log file yet"
+
+[devswarm_sup.reason_under]
+doc = "The rotation answer when the log is not over the threshold."
+value = "under threshold"
+
+[devswarm_sup.reason_rotated]
+doc = "The rotation answer after a rotation. {backup} is the rotated file."
+value = "rotated to {backup}"
+
+[devswarm_sup.reason_rotate_failed]
+doc = "The rotation answer when the rename failed. {err}."
+value = "rotation failed: {err}"
+
+[devswarm_sup.engine_log]
+doc = "The engine's own record of its ticks (one JSON line each), relative to the home directory. Kept apart from the Node log so the engine never trips its own guard."
+value = ".anti-hall/logs/devswarm-supervisor-engine.ndjson"
+
+[devswarm_sup.lock_file]
+doc = "The single-flight sweep lock, relative to the DevSwarm state directory: the Node supervisor's own file, taken the same way (a dead holder or one older than lock_stale_ms is taken over), so while a tick runs a Node sweep exits at once."
+value = "locks/sweep.lock"
+
+[devswarm_sup.lock_stale_ms]
+doc = "A sweep lock older than this is taken over (Node: SWEEP_LOCK_STALE_MS)."
+value = 300000
+min = 1000
+max = 86400000
+unit = "ms"
+
+# ---- settings Node reads for these duties (same keys, tiers and defaults) --------------------------------------------------
+
+[devswarm_sup.set_log_rotate_bytes]
+doc = "Size above which the supervisor log is rotated to its .1 copy. Node: devswarm.supervisorLogRotateBytes."
+value = { type = "number", section = "devswarm", key = "supervisorLogRotateBytes", env = "ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES", min = 1, max = 1099511627776, default = 10485760 }
+
+[devswarm_sup.set_reconcile_mode]
+doc = "Reconcile sweep switch: auto / on / off. Node: devswarm.reconcileSweep."
+value = { type = "enum", section = "devswarm", key = "reconcileSweep", env = "ANTIHALL_DEVSWARM_RECONCILE_SWEEP", values = ["auto", "on", "off"], default = "auto" }
+
+[devswarm_sup.set_reconcile_sec]
+doc = "Least time between two reconcile sweeps. Node: devswarm.reconcileSweepSec (floor 300)."
+value = { type = "number", section = "devswarm", key = "reconcileSweepSec", env = "ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC", min = 300, max = 100000000, default = 900 }
+
+[devswarm_sup.sweep_tail_mode]
+doc = "Whether the engine decides the sweep tail (archived registry rows, twin descriptors, the deferred post-update stages and the reconcile-family update stages): engine (the default) | off (those steps are disabled: counted, nothing run)."
+value = { type = "enum", section = "devswarm", key = "sweepTailMode", env = "ANTIHALL_DEVSWARM_SWEEP_TAIL_MODE", values = ["off", "engine"], default = "engine" }
+
+[devswarm_sup.set_housekeeping_mode]
+doc = "Housekeeping sweep switch: auto / on / off. Node: devswarm.housekeepingSweep."
+value = { type = "enum", section = "devswarm", key = "housekeepingSweep", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP", values = ["auto", "on", "off"], default = "auto" }
+
+[devswarm_sup.set_housekeeping_sec]
+doc = "Least time between two housekeeping sweeps. Node: devswarm.housekeepingSweepSec (floor 300)."
+value = { type = "number", section = "devswarm", key = "housekeepingSweepSec", env = "ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC", min = 300, max = 100000000, default = 3600 }
+
+[devswarm_sup.set_sweep_budget_ms]
+doc = "Time budget for one deferred stage of the sweep tail (one stage per tick). Node: devswarm.supervisorSweepBudgetMs."
+value = { type = "number", section = "devswarm", key = "supervisorSweepBudgetMs", env = "ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS", min = 0, max = 86400000, default = 20000 }
+
+[devswarm_sup.set_max_recoveries]
+doc = "Most kill-and-resume recoveries of one workspace. Node: devswarm.maxRecoveries."
+value = { type = "number", section = "devswarm", key = "maxRecoveries", env = "ANTIHALL_DEVSWARM_MAX_RECOVERIES", min = 1, max = 20, default = 3 }
+
+# ---- input gates ---------------------------------------------------------------------------------------------------------------
+# A gated duty is not run while the stat data of its inputs is unchanged since its last run, for at most gate_max_unchanged_ms.
+# The gate only delays a duty by that bound; a tick that runs recomputes from fresh inputs.
+
+[devswarm_sup.gate_duties]
+doc = "The duties the input gate applies to (each needs entries in gate_inputs and gate_max_unchanged_ms). An empty list runs every duty on every tick."
+value = ["verdicts", "app_sync", "retention"]
+
+[devswarm_sup.gate_max_unchanged_ms]
+doc = "Per gated duty, the longest it goes unrun while its inputs are unchanged (0 = never skipped). Past it the duty runs again whatever the stat data says; it bounds what an input the gate cannot see (a transcript being written, a process, the clock) can delay."
+value = { verdicts = 120000, app_sync = 300000, retention = 600000 }
+
+[devswarm_sup.gate_inputs]
+doc = "Per gated duty, what its signature covers: appdb (the app database and its -wal), ds-dir:<dir> / ds-tree:<dir> (a directory under the DevSwarm state directory, tree = one level of subdirectories too), home-dir:<dir> / home-tree:<dir> / home-file:<file> (under the home directory). Outputs of the duties are not listed. A duty is only armed by a quiet run: the liveness sweep with a stale workspace, a forced notice or a parked notice keeps running every tick (nudge windows and retries are not file changes). verdicts leaves the heartbeats out on purpose (every working child rewrites its beat every few seconds, so the gate would never skip); a beat is picked up within gate_max_unchanged_ms."
+value = { verdicts = ["ds-dir:workspaces", "ds-dir:plans", "ds-dir:escalation-pending", "ds-tree:store", "home-dir:.claude/sessions", "home-file:.anti-hall/state/jev-triage-pending.json", "home-file:.anti-hall/settings.json"], app_sync = ["appdb", "ds-dir:workspaces", "home-file:.anti-hall/settings.json"], retention = ["ds-tree:store", "home-file:.anti-hall/settings.json"] }
+
+[devswarm_sup.gate_subdir_depth]
+doc = "The gate_inputs kinds that also list one level of subdirectories."
+value = ["ds-tree", "home-tree"]
+
+[devswarm_sup.gate_env_prefix]
+doc = "Environment variables whose names start with this are part of a gated duty's signature (the supervisor's switches and thresholds are read from them), so a changed switch runs the duty at once. The settings in force (a config reload) and who pokes are always part of it."
+value = "ANTIHALL_"
+
+[devswarm_sup.gate_ignore_suffixes]
+doc = "File-name suffixes the gate ignores in a listing: a SQLite -shm index changes whenever any process opens the database, even a reader, and holds no data."
+value = ["-shm"]
+
+[devswarm_sup.msg_gate_unchanged]
+doc = "The reason recorded for a gated duty that was not run. {age} seconds since its last run, {max} the bound."
+value = "inputs unchanged for {age} s (bound {max} s)"
+
+# ---- the duties ------------------------------------------------------------------------------------------------------------
+# One table per duty, run in this order by the tick. Every duty is native (`kind`): the engine owns the schedule, the cool-down gate,
+# the lock and the record, and writes the files Node wrote (byte for byte). gate `tick` runs on every tick, gate `cooldown` only when
+# its state file's lastRunAt plus the `sec` setting has passed and the `mode` setting is not off.
+
+[devswarm_sup.duties]
+doc = "The duties of one tick, in order (the order of Node's main(): log rotation, the liveness sweep, reconcile, deferred stage, app sync, retention, housekeeping; auto-archive is the engine's own action layer and poke / escalate its action sweeps)."
+value = ["log_rotate", "verdicts", "reconcile", "deferred", "app_sync", "retention", "housekeeping"]
+
+[devswarm_sup."duty.log_rotate"]
+doc = "Rotate the supervisor log (and the engine's own tick log) to one .1 generation when it passes set_log_rotate_bytes. Native. Only the supervisor's own bounded log is touched."
+value = { kind = "native", gate = "tick" }
+
+[devswarm_sup."duty.verdicts"]
+doc = "The liveness sweep: compute and write every workspace's liveness verdict file natively, send the forced parent notice and re-send parked escalation notices when the engine owns poke and escalate. The per-workspace tail work (Jev blocker label, straying signals) and a workspace the engine cannot prove it decides like Node are held (counted native_unable, named in the record)."
+value = { kind = "native", gate = "tick" }
+
+[devswarm_sup."duty.reconcile"]
+doc = "The reconcile sweep: drain stranded per-worktree queues into the shared store (reconcile) and fold duplicate mesh rows, project by project, natively. The active-workspace probe and start-up sampling of Node's sweep have no native port and are held. Node's state file reconcile-sweep-state.json keeps the cool-down."
+value = { kind = "native", gate = "cooldown", state = "reconcile-sweep-state.json", sec = "devswarm_sup.set_reconcile_sec", mode = "devswarm_sup.set_reconcile_mode" }
+
+[devswarm_sup."duty.deferred"]
+doc = "One stage of the deferred post-update sweep per tick (fold-all-stores, heal-orphan-partitions, fold-archived-rows, heal-registry-rows, in rotation), only when its marker says work is pending. The rotation cursor (deferred-sweep-state.json), the marker peek and the stage itself (the engine's recon ports) are native; a stage the engine does not take is held and comes round again."
+value = { kind = "native", gate = "tick" }
+
+[devswarm_sup."duty.app_sync"]
+doc = "Sync the DevSwarm app state (archived markers, titles, message gaps) into app-state.json and the names cache. Native: one read of the app database per tick, no process on a quiet tick; a marker is written from the engine's own plan. Retiring a stale marker (restoring a descriptor) has no native port and is held."
+value = { kind = "native", gate = "tick" }
+
+[devswarm_sup."duty.retention"]
+doc = "Bounded growth of the message stores: archive-first tombstoning of old, fully read message bodies (never a row delete; positions and dedupe depend on every row staying). The engine plans twice and writes only when the plans are identical. The journal fold and the archive-cap eviction remove data for good and are owner-gated (rt_fold_alone, rt_cap_alone, both off by default: held)."
+value = { kind = "native", gate = "tick" }
+
+[devswarm_sup."duty.housekeeping"]
+doc = "Disk hygiene: sweep the reaped-workspace logs and the child-gate files by the doctor's repair rules. Node's housekeeping-sweep-state.json keeps the cool-down. Native: removes only files older than the retention window, one directory level, only the sweep's own suffix."
+value = { kind = "native", gate = "cooldown", state = "housekeeping-sweep-state.json", sec = "devswarm_sup.set_housekeeping_sec", mode = "devswarm_sup.set_housekeeping_mode" }
+
+[devswarm_sup.duties_off]
+doc = "The diagnostic switch of each duty: a duty named here (log_rotate, verdicts, reconcile, deferred, app_sync, retention, housekeeping, or recover for the on-demand recovery) does nothing, and says so: its record is `disabled` (a recover request is `refused`), logged and counted. Empty (the default): every duty runs natively."
+value = []
+
+[devswarm_sup.msg_duty_off]
+doc = "The reason in the record of a duty that is switched off (devswarm_sup.duties_off or its mode setting)."
+value = "switched off (devswarm_sup.duties_off or the duty's mode)"
+
+[devswarm_sup.msg_duty_unknown]
+doc = "The reason in the record of a duty name the engine has no native implementation of."
+value = "no native implementation of this duty"
+
+[devswarm_sup.tick_name]
+doc = "The accounting name of the whole supervisor tick when it is switched off (devswarm_sup.mode off)."
+value = "supervisor_tick"
+
+[devswarm_sup.ds_why_cursor]
+doc = "Why the deferred duty holds its tick: the rotation cursor is a value JavaScript would index differently."
+value = "the rotation cursor cannot be read exactly like JavaScript"
+
+[devswarm_sup.ds_why_stage]
+doc = "Why the deferred duty holds a stage the engine does not take now (an unusable marker or an unknown stage). Placeholder: {stage}."
+value = "stage {stage} not taken: marker unusable or stage unknown; it comes round again"
+
+[devswarm_sup.lv_why_full]
+doc = "Why the verdicts duty holds a workspace the engine cannot prove it decides like Node (a field of an unexpected type, a store it will not read exactly like Node)."
+value = "workspace not decided natively (unexpected data); no verdict written this tick"
+
+[devswarm_sup.rt_held_backoff_ms]
+doc = "A store whose plan moved under the retention comparison (unstable) is not tried again before this long has passed."
+value = 21600000
+min = 1000
+max = 31536000000
+unit = "ms"
+
+[devswarm_sup.set_rt_fold_alone]
+doc = "Owner-gated (OFF by default). Fold a store's legacy journal (compress it, then REMOVE the raw journal file) on the engine's own plan. Off: the fold is held (counted `held`, nothing removed, named in the record). Node's merge check that used to agree to it is gone."
+value = { type = "bool", section = "devswarm_sup", key = "retention.foldAlone", env = "ANTIHALL_DEVSWARM_SUP_RETENTION_FOLD_ALONE", default = false }
+
+[devswarm_sup.set_rt_cap_alone]
+doc = "Owner-gated (OFF by default). Evict archive month files over the archive size cap (archived message bodies are REMOVED for good) on the engine's own list. Off: the eviction is held (counted `held`, nothing removed, named in the record)."
+value = { type = "bool", section = "devswarm_sup", key = "retention.capAlone", env = "ANTIHALL_DEVSWARM_SUP_RETENTION_CAP_ALONE", default = false }
+
+[devswarm_sup.rt_step_fold]
+doc = "The accounting name of the owner-gated journal fold."
+value = "retention_fold"
+
+[devswarm_sup.rt_step_cap]
+doc = "The accounting name of the owner-gated archive-cap eviction."
+value = "retention_cap"
+
+[devswarm_sup.rt_fold_not_sqlite]
+doc = "Why a journal is not folded: the store's chosen backend is not sqlite, or its database is empty (foldLegacyJournal reason)."
+value = "not-sqlite-store"
+
+[devswarm_sup.rt_fold_merge_not_recorded]
+doc = "Why a journal is not folded: no merge marker records that the journal was merged into sqlite (foldLegacyJournal reason)."
+value = "merge-not-recorded"
+
+[devswarm_sup.rt_fold_merge_check_failed]
+doc = "Why a journal is not folded: the dry run of the merge could not be made (foldLegacyJournal reason)."
+value = "merge-check-failed"
+
+[devswarm_sup.rt_fold_merge_pending]
+doc = "Why a journal is not folded: the journal side holds messages or registry rows sqlite lacks, so removing it would lose them (foldLegacyJournal reason)."
+value = "merge-pending"
+
+[devswarm_sup.rt_why_fold_off]
+doc = "Why the journal fold is held: removing the raw journal needs devswarm_sup.rt_fold_alone, which is off."
+value = "held: the journal fold removes raw files and is owner-gated (devswarm_sup.rt_fold_alone is off)"
+
+[devswarm_sup.rt_why_cap_off]
+doc = "Why the archive-cap eviction is held: removing archived bodies needs devswarm_sup.rt_cap_alone, which is off."
+value = "held: the archive-cap eviction removes archived bodies and is owner-gated (devswarm_sup.rt_cap_alone is off)"
+
+[devswarm_sup.msg_recover_native_refused]
+doc = "Printed when a recovery request passed every check and is refused all the same: the engine never kills or resumes a session (owner decision F)."
+value = "recover is refused: the engine does not kill or resume a session, and there is no rollback of a kill; use the on-demand Node recovery (devswarm-recover) for a confirmed wedge"
+
+# ---- the native result log ----------------------------------------------------------------------------------------------------
+# The non-acting Node witness is gone; the native results of the duties that act on user data are logged to witness_file instead.
+
+[devswarm_sup.witness_file]
+doc = "The log of the native duties' results (retention plans and holds, app-sync marks), one JSON line each (`native`: true), relative to the home directory."
+value = ".anti-hall/logs/devswarm-sup-witness.ndjson"
+
+[devswarm_sup.action_log]
+doc = "The action ledger of the supervisor, one JSON line per action it took (kind = action_kind: feature, action, target, inputs, outcome, reason, latency_ms, action_id) and per mistake signal found later (kind = mistake_kind, naming the action_id), relative to the home directory. Each line also goes to telemetry as a `cmd` event (h = the action, e = the outcome), counted in `ah-engine telemetry summary` under detail.cmd."
+value = ".anti-hall/logs/devswarm-sup-actions.ndjson"
+
+[devswarm_sup.action_kind]
+doc = "The kind of an action line of the action ledger."
+value = "action"
+
+[devswarm_sup.mistake_kind]
+doc = "The kind of a mistake line of the action ledger."
+value = "mistake"
+
+[devswarm_sup.action_feature]
+doc = "The feature name of the supervisor's action lines."
+value = "devswarm-supervisor"
+
+[devswarm_sup.action_success]
+doc = "The outcomes that count as success in telemetry; any other counts as an error (a notice that had to be parked, a write that failed)."
+value = ["ok", "ran", "marked", "retired", "pruned"]
+
+[devswarm_sup.act_skip_outcomes]
+doc = "The outcome words that count as a skip (not applicable, nothing done) in an act telemetry event of the supervisor; a word in action_success is an allow, one in act_block_outcomes a block, any other an error."
+value = ["skipped"]
+
+[devswarm_sup.act_block_outcomes]
+doc = "The outcome words that count as a refusal (block) in an act telemetry event of the supervisor (a recover request the engine refused)."
+value = ["refused"]
+
+[devswarm_sup.act_duty]
+doc = "The action word of the act telemetry event of one duty's tick outcome ({duty} = the duty name)."
+value = "duty-{duty}"
+
+[devswarm_sup.act_recover_reasons]
+doc = "The reason word of the act telemetry event for each way a recover request is refused (caller, id, request, duplicate, descriptor, max, switched_off, native_refused)."
+value = { caller = "caller", id = "bad-id", request = "no-request", duplicate = "duplicate", descriptor = "no-descriptor", max = "max-recoveries", switched_off = "switched-off", native_refused = "native-refused" }
+
+[devswarm_sup.env_disable]
+doc = "The environment variable that is the hard kill switch of every DevSwarm job (Node: DISABLE_ANTIHALL_DEVSWARM)."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_sup.env_disable_on]
+doc = "The value of the kill switch that disables."
+value = "1"
+
+[devswarm_sup.env_supervisor]
+doc = "The environment variable that switches the supervisor off (Node: ANTIHALL_DEVSWARM_SUPERVISOR)."
+value = "ANTIHALL_DEVSWARM_SUPERVISOR"
+
+[devswarm_sup.env_supervisor_off]
+doc = "The value of the supervisor switch that disables."
+value = "off"
+
+# ---- housekeeping (native) ---------------------------------------------------------------------------------------------------
+
+[devswarm_sup.hk_sweeps]
+doc = "The age sweeps of the housekeeping duty, in order: name (the key in the result), dir (under the DevSwarm state directory), suffix (only files ending so are touched) and days (the setting holding the retention window in days)."
+value = [
+  { name = "reapedLogs", dir = "reaped", suffix = ".ndjson", days = "devswarm_sup.set_reaped_days" },
+  { name = "childGate", dir = "child-gate", suffix = ".json", days = "devswarm_sup.set_child_gate_days" },
+]
+
+[devswarm_sup.set_reaped_days]
+doc = "Days a reaped-workspace log is kept before the housekeeping sweep removes it. Node: devswarm.reapedRetentionDays. A value that is not a positive number reads as the default."
+value = { type = "number", section = "devswarm", key = "reapedRetentionDays", env = "ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS", default = 30 }
+
+[devswarm_sup.set_child_gate_days]
+doc = "Days a per-session child-gate state file is kept before the housekeeping sweep removes it. Node: devswarm.childGateRetentionDays. A value that is not a positive number reads as the default."
+value = { type = "number", section = "devswarm", key = "childGateRetentionDays", env = "ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS", default = 14 }
+
+[devswarm_sup.hk_day_ms]
+doc = "Milliseconds in the retention sweep's day."
+value = 86400000
+min = 1000
+max = 86400000
+
+[devswarm_sup.hk_max_depth]
+doc = "How many directory levels below the swept directory the age sweep looks (one: a date-partitioned directory). Bounds the walk against a link loop."
+value = 1
+min = 0
+max = 4
+
+[devswarm_sup.hk_state]
+doc = "The housekeeping cool-down state file, relative to the DevSwarm state directory (Node's file: {lastRunAt}). Written before the sweep runs."
+value = "housekeeping-sweep-state.json"
+
+[devswarm_sup.hk_status_fixed]
+doc = "The result status of a removed file (doctor-repair's word)."
+value = "fixed"
+
+[devswarm_sup.hk_status_failed]
+doc = "The result status of a file or directory the sweep could not handle."
+value = "failed"
+
+[devswarm_sup.hk_msg_removed]
+doc = "The result message of a removed file. {file}, {days} (its age in days, rounded)."
+value = "removed {file} (age {days}d)"
+
+[devswarm_sup.hk_msg_remove_failed]
+doc = "The result message of a file that could not be removed. {file} {err}."
+value = "could not remove {file}: {err}"
+
+[devswarm_sup.hk_msg_list_failed]
+doc = "The result message of a directory that could not be listed. {dir} {err}."
+value = "could not list {dir}: {err}"
+
+[devswarm_sup.esc_intent_keys]
+doc = "The fields of an escalation notice (recovery.js notifyParentEscalation intent, parked as escalation-pending/<child>.json), in Node's order: childId, parentId, repoKey, row, delivered, deliveredAt, lastStatus, lastAttemptAt."
+value = ["childId", "parentId", "repoKey", "row", "delivered", "deliveredAt", "lastStatus", "lastAttemptAt"]
+
+[devswarm_sup.esc_row_keys]
+doc = "The fields of the notice's store row, in Node's order: workspaceId (the parent), ts, sender, hash, body."
+value = ["workspaceId", "ts", "sender", "hash", "body"]
+
+[devswarm_sup.esc_status_words]
+doc = "The delivery statuses of a notice (appendIntoPartition), in the order ok, busy (the parent's id lock), gone (the parent is not registered in its store), error (any other failure; also a notice without a project store key)."
+value = ["ok", "busy", "gone", "error"]
+
+[devswarm_sup.esc_sender]
+doc = "The sender of the notice row: a synthetic name no real workspace id can be."
+value = "system"
+
+[devswarm_sup.esc_hash]
+doc = "The notice row's dedupe hash: one row per escalation, whoever sends it how often."
+value = "escalate:{id}:{since}"
+
+[devswarm_sup.esc_since_none]
+doc = "What stands for the stale-since time in the hash when the verdict has none."
+value = "x"
+
+[devswarm_sup.esc_body]
+doc = "The notice text the parent reads. {id} = the child workspace, {idle} = esc_idle or nothing."
+value = "child {id} idle{idle} — pokes exhausted, a human must click/continue the workspace in the DevSwarm app (or reassign/archive it)"
+
+[devswarm_sup.esc_idle]
+doc = "The idle part of the notice text, in whole minutes since the workspace went stale."
+value = " {min}m"
+
+[devswarm_sup.esc_minute_ms]
+doc = "Milliseconds per minute of the idle part."
+value = 60000
+min = 1
+max = 60000
+unit = "ms"
+
+[devswarm_sup.esc_why_no_worktree]
+doc = "Why no notice is sent: the workspace has no worktree to name its parent from."
+value = "no-worktree"
+
+[devswarm_sup.esc_why_unsafe_parent]
+doc = "Why no notice is sent: the parent id is not a safe file name."
+value = "unsafe-parent-id"
+
+[devswarm_sup.esc_why_self]
+doc = "Why no notice is sent: the parent is the workspace itself (never notify self)."
+value = "self"
+
+[devswarm_sup.esc_why_no_descriptor]
+doc = "Why no notice is sent after an escalation: the workspace has no readable descriptor."
+value = "no-descriptor"
+
+[devswarm_sup.esc_skipped]
+doc = "The outcome word of a notice that was not built."
+value = "skipped"
+
+[devswarm_sup.esc_action]
+doc = "The action word of the one-time notice after an engine escalation (action ledger, telemetry `cmd` h)."
+value = "dssup-escalation-notice"
+
+[devswarm_sup.esc_action_forced]
+doc = "The action word of the forced notice for a stale workspace with an urgent mesh unread."
+value = "dssup-forced-notice"
+
+[devswarm_sup.esc_action_drain]
+doc = "The action word of a parked notice delivered by a later sweep."
+value = "dssup-notice-drained"
+
+# ---- the worker process ----------------------------------------------------------------------------------------------------
+
+[devswarm_sup.liveness_dir]
+doc = "The liveness verdict files, relative to the DevSwarm state directory (Node: livenessPathFor)."
+value = "liveness"
+
+[devswarm_sup.verdict_fields]
+doc = "The fields of a liveness verdict Node's recovery keeps across an update, in its order (PRESERVED_VERDICT_FIELDS); a nudge or an escalation rewrites the file as status + these + the new fields."
+value = ["recoveries", "recoveredAt", "nudgeAttempts", "nudgedAt", "staleSince", "lastOutboundTs", "lastNudgeError"]
+
+[devswarm_sup.verdict_zero_fields]
+doc = "The preserved verdict fields whose value before the first write is 0, not null (Node: recoveries and nudgeAttempts)."
+value = ["recoveries", "nudgeAttempts"]
+
+[devswarm_sup.status_nudged]
+doc = "The verdict status after a poke."
+value = "nudged"
+
+[devswarm_sup.status_escalated]
+doc = "The verdict status after an escalation."
+value = "escalated"
+
+[devswarm_sup.recovery_log]
+doc = "Node's recovery log (one JSON line per poke / escalation / recovery step), relative to the DevSwarm state directory."
+value = "recovery.log"
+
+[devswarm_sup.reason_exhausted]
+doc = "The reason Node records when an escalation follows used-up pokes."
+value = "poke-exhausted"
+
+# ---- recover (on demand only) ----------------------------------------------------------------------------------------------
+
+[devswarm_sup.recover_ledger]
+doc = "The record of recover requests already run, under the engine state directory: a request id is never run twice."
+value = "rt-recover.ndjson"
+
+[devswarm_sup.recover_descriptor_keys]
+doc = "The descriptor fields a recovery needs: worktree path and session id."
+value = { worktree = "worktreePath", session = "sessionId" }
+
+[devswarm_sup.msg_recover_caller]
+doc = "Printed when an automated caller asks for a recovery. {caller}."
+value = "recover is for the owner's own session; refused for the {caller} caller"
+
+[devswarm_sup.msg_recover_id]
+doc = "Printed when the workspace id is missing or not a safe name."
+value = "recover needs --id <workspace> (a plain workspace id)"
+
+[devswarm_sup.msg_recover_request]
+doc = "Printed when the request id is missing."
+value = "recover needs --request <id> (the same request is never run twice)"
+
+[devswarm_sup.msg_recover_duplicate]
+doc = "Printed for a request id that already ran. {request}."
+value = "recover request {request} already ran; use a new request id for a new recovery"
+
+[devswarm_sup.msg_recover_descriptor]
+doc = "Printed when the workspace has no readable descriptor with a worktree and a session. {id}."
+value = "no usable descriptor for workspace {id} (needs worktreePath and sessionId)"
+
+[devswarm_sup.msg_recover_max]
+doc = "Printed when the workspace was already recovered the most times allowed. {id} {n} {max}."
+value = "workspace {id} was already recovered {n} time(s) (limit {max}); needs a manual continue in the DevSwarm app"
+
+# ---- recover, native ---------------------------------------------------------------------------------------------------------
+# The kill-and-resume of ONE workspace's session (src/dssup/kill.rs): target-session.js and recovery.js `recover` in Rust. Node's
+# `devswarm_sup.duties_off` naming `recover` switches the recovery off (there is no Node rollback of the kill).
+
+
+[devswarm_sup.recover_duty]
+doc = "The name `recover` goes by in devswarm_sup.duties_off and in the accounting."
+value = "recover"
+
+[devswarm_sup.set_grace_sec]
+doc = "How long after SIGTERM the engine waits before it checks whether the process is still there. Node: devswarm.graceSec."
+value = "{ type = \"number\", section = \"devswarm\", key = \"graceSec\", env = \"ANTIHALL_DEVSWARM_GRACE_SEC\", min = 1, max = 60, default = 5 }"
+
+
+[devswarm_sup.kill_no_target]
+doc = "The abstain reason when there is no target."
+value = "no-target"
+
+[devswarm_sup.kill_status_ambiguous]
+doc = "The liveness verdict status after an abstain."
+value = "ambiguous"
+
+[devswarm_sup.kill_status_recovering]
+doc = "The liveness verdict status while a recovery runs and after a resume."
+value = "recovering"
+
+[devswarm_sup.kill_no_conversation]
+doc = "What the resumed session prints when the conversation no longer exists (a handled failure: escalate)."
+value = "No conversation found"
+
+[devswarm_sup.kill_resume_guardrail]
+doc = "Prepended to every resume prompt: the interrupted session must check with a read-only command whether a side-effecting step already completed before it repeats it."
+value = "You were interrupted mid-task and resumed. Before re-running ANY command with side effects (git push, deploy, file writes), FIRST verify via a read-only check (git status/log, file mtime, log tail) whether it already completed. Do NOT blindly re-run a mutating command just because you don't see its result."
+
+[devswarm_sup.kill_claude_re]
+doc = "Matches a `claude` invocation in a command line (case-insensitive, a whole word)."
+value = "(?i)(^|[\\s/])claude(\\s|$)"
+
+[devswarm_sup.kill_session_re]
+doc = "Captures the session id after --session-id or --resume."
+value = "(?:--session-id|--resume)\\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+
+[devswarm_sup.kill_headless_re]
+doc = "Matches the headless flag (-p or --print) as a token of the command line."
+value = "(^|\\s)(-p|--print)(\\s|=|$)"
+
+[devswarm_sup.kill_ps_line_re]
+doc = "Captures pid, parent pid and command from a line of the process table."
+value = "^\\s*(\\d+)\\s+(\\d+)\\s+(.*)$"
+
+[devswarm_sup.kill_ps_bin]
+doc = "The process-table executable."
+value = "ps"
+
+[devswarm_sup.kill_ps_args]
+doc = "Its arguments (the same on macOS and Linux)."
+value = ["-axo", "pid=,ppid=,command="]
+
+[devswarm_sup.kill_lsof_bin]
+doc = "The executable that reports a process's working directory where /proc is not available (macOS)."
+value = "lsof"
+
+[devswarm_sup.kill_lsof_args]
+doc = "Its arguments; {pid} is the process."
+value = ["-p", "{pid}", "-a", "-d", "cwd", "-Fn"]
+
+[devswarm_sup.kill_lsof_name_prefix]
+doc = "The prefix of the output line that names the directory."
+value = "n"
+
+[devswarm_sup.kill_proc_cwd]
+doc = "The Linux link to a process's working directory; {pid}."
+value = "/proc/{pid}/cwd"
+
+[devswarm_sup.kill_probe_timeout_ms]
+doc = "Bound of one process-table or working-directory probe; a probe that times out yields no data and the gate abstains."
+value = 4000
+min = 500
+max = 60000
+unit = "ms"
+
+[devswarm_sup.kill_ps_cap_bytes]
+doc = "Most bytes of the process table read; a longer one is treated as unreadable (the gate abstains)."
+value = 33554432
+min = 1048576
+max = 1073741824
+
+[devswarm_sup.kill_claude_dir]
+doc = "The Claude state directory under the home directory."
+value = ".claude"
+
+[devswarm_sup.kill_projects_dir]
+doc = "The directory of session transcripts under it."
+value = "projects"
+
+[devswarm_sup.kill_transcript_suffix]
+doc = "The suffix of a session's transcript file."
+value = ".jsonl"
+
+[devswarm_sup.kill_claude_bin]
+doc = "The Claude Code executable the resume starts."
+value = "claude"
+
+[devswarm_sup.kill_claude_dirs]
+doc = "Directories searched for it after PATH (`~/` is the home directory); the daemon's PATH is often minimal."
+value = ["~/.local/bin", "~/.claude/local", "/opt/homebrew/bin", "/usr/local/bin"]
+
+[devswarm_sup.kill_resume_args]
+doc = "The arguments of the resume; {uuid} is the session."
+value = ["-p", "--resume", "{uuid}", "--dangerously-skip-permissions"]
+
+[devswarm_sup.kill_resume_log_prefix]
+doc = "The start of the temporary file the resumed session's first output goes to."
+value = "antihall-resume-"
+
+[devswarm_sup.kill_poll_ms]
+doc = "How often the readiness watch checks whether the resumed session has exited."
+value = 100
+min = 10
+max = 5000
+unit = "ms"
+
+# ---- the supervisor verb ---------------------------------------------------------------------------------------------------
+
+[devswarm_sup.msg_witness]
+doc = "The tick's answer while the mode is off (the diagnostic switch)."
+value = "devswarm_sup.mode is off: the supervisor duties are switched off (counted as disabled)"
+
+[devswarm_sup.msg_inert]
+doc = "The tick's answer where DevSwarm is absent."
+value = "DevSwarm is not installed or the realtime layer is off"
+
+[devswarm_sup.msg_guard]
+doc = "The tick's answer while the Node supervisor is still running. {age} is how long ago its log was written, in seconds."
+value = "the Node supervisor is still running (its log was written {age} s ago); the engine stands down. Switch it off, then this tick runs."
+
+[devswarm_sup.msg_locked]
+doc = "The tick's answer when another sweep holds the sweep lock."
+value = "another sweep holds the sweep lock; this tick is skipped"
+
+[devswarm_sup.msg_budget]
+doc = "The reason a duty was not started because the tick's time was spent."
+value = "tick budget spent"
+
+[devswarm_sup.msg_cooldown]
+doc = "The reason a cool-down duty was not started."
+value = "cooldown"
+
+[devswarm_sup.msg_disabled]
+doc = "The reason a duty was not started because its switch is off."
+value = "disabled"
+
+
+# ---- the liveness sweep, native (src/dssup/liveness.rs) ----------------------------------------------------------------------
+# computeLiveness + writeVerdict of companion/lib/liveness.js for every workspace descriptor. A workspace the engine cannot
+# prove it decides exactly like Node (a stale verdict, a Jev blocker or a step plan to look at, an unexpected field or store
+# shape) is handed to Node's own sweepOnce, restricted to it. Naming `verdicts` in duties_off switches the sweep off.
+
+[devswarm_sup.set_idle_sec]
+doc = "How long a workspace's transcript and worktree must both be quiet before an unread mailbox makes it stale. Node: devswarm.idleSec (floor 60)."
+value = { type = "number", section = "devswarm", key = "idleSec", env = "ANTIHALL_DEVSWARM_IDLE_SEC", min = 60, max = 100000000, default = 900 }
+
+[devswarm_sup.set_nudge_window_sec]
+doc = "How long a poke stays in effect before the sweep decides again. Node: devswarm.nudgeWindowSec (floor 1)."
+value = { type = "number", section = "devswarm", key = "nudgeWindowSec", env = "ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC", min = 1, max = 100000000, default = 180 }
+
+[devswarm_sup.set_dry_run_verdicts]
+doc = "Dry run of the liveness sweep: computes verdicts, reports them, writes nothing. Use it to preview the engine's decisions."
+value = { type = "bool", section = "devswarm_sup", key = "dryRun.verdicts", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_VERDICTS", default = false }
+
+[devswarm_sup.lv_ms_per_sec]
+doc = "Milliseconds in a second (the thresholds are set in seconds, the verdicts hold milliseconds)."
+value = 1000
+min = 1
+max = 1000
+
+[devswarm_sup.lv_heartbeat_fresh_ms]
+doc = "How recent a heartbeat must be to count as proof the workspace is alive (liveness.js DEFAULT_HEARTBEAT_FRESH_MS, 15 minutes)."
+value = 900000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.lv_never_launched_ms]
+doc = "How long a registered workspace may have no transcript at all before it counts as never launched (liveness.js DEFAULT_NEVER_LAUNCHED_MS, 6 hours)."
+value = 21600000
+min = 1000
+max = 604800000
+unit = "ms"
+
+[devswarm_sup.lv_git_timeout_ms]
+doc = "Bound of the git call that reads a worktree's last commit time."
+value = 4000
+min = 100
+max = 600000
+unit = "ms"
+
+[devswarm_sup.lv_git_sig_files]
+doc = "Files of a worktree's git directory that change when its HEAD moves (a checkout rewrites HEAD, a commit appends to its reflog). The last-commit-time answer is remembered while their size and modification time are unchanged."
+value = ["HEAD", "logs/HEAD"]
+
+[devswarm_sup.lv_git_cache_max_ms]
+doc = "The longest a remembered last-commit time is kept without asking git again, whatever the files say (a safety net for a repository that keeps no reflog)."
+value = 600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.lv_git_cache_max_entries]
+doc = "Most worktrees whose last-commit time is remembered; past it the memory is cleared and refilled by the next sweep."
+value = 4096
+min = 16
+max = 1000000
+
+[devswarm_sup.lv_git_bin]
+doc = "The git executable (resolved on PATH)."
+value = "git"
+
+[devswarm_sup.lv_git_args]
+doc = "The arguments of the last-commit-time call; {worktree} is the workspace's worktree."
+value = ["-C", "{worktree}", "log", "-1", "--format=%ct"]
+
+[devswarm_sup.lv_projects_dir]
+doc = "The directory of the Claude session transcripts under ~/.claude."
+value = "projects"
+
+[devswarm_sup.lv_transcript_ext]
+doc = "The extension of a session transcript file."
+value = ".jsonl"
+
+[devswarm_sup.lv_encode_chars]
+doc = "The characters of a worktree path that become the replacement in the transcript directory's name (target-session.js encodeWorktreePath: slash, backslash, colon, dot)."
+value = "/\\:."
+
+[devswarm_sup.lv_encode_to]
+doc = "What each of those characters becomes."
+value = "-"
+
+[devswarm_sup.lv_keys]
+doc = "The fields of a liveness verdict, in the order Node writes them: status, lastOutboundTs, staleSince, nudgeAttempts, nudgedAt, pending, notDraining, oldestUnreadAgeMs."
+value = ["status", "lastOutboundTs", "staleSince", "nudgeAttempts", "nudgedAt", "pending", "notDraining", "oldestUnreadAgeMs"]
+
+[devswarm_sup.lv_status_alive]
+doc = "The verdict status of a workspace that is not stale."
+value = "alive"
+
+[devswarm_sup.lv_status_stale]
+doc = "The verdict status of a workspace whose transcript and worktree are both idle (or that never launched) while inbound mail waits: the poke / escalate candidate the action layer reads."
+value = "stale"
+
+[devswarm_sup.lv_grace_skew_ms]
+doc = "A descriptor written up to this far in the future (clock jitter) still counts as just spawned (Node SKEW_TOLERANCE_MS)."
+value = 5000
+min = 0
+max = 600000
+unit = "ms"
+
+[devswarm_sup.set_post_spawn_grace_sec]
+doc = "Right after a child workspace is spawned it is not force-notified as stale for this long. Node: devswarm.postSpawnGraceSec."
+value = { type = "number", section = "devswarm", key = "postSpawnGraceSec", env = "ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC", min = 0, max = 1800, default = 120 }
+
+[devswarm_sup.lv_summary_workspaces]
+doc = "The member of a project summary (summaries/<repoKey>.json) that maps workspace ids to their entries."
+value = "workspaces"
+
+[devswarm_sup.lv_field_archive_ready]
+doc = "The summary entry field that says a workspace is done and ready to archive (it is then never force-notified)."
+value = "archive_ready"
+
+[devswarm_sup.lv_urgency_fields]
+doc = "The summary entry fields holding the highest unread urgency, direct then broadcast (readMeshUrgency)."
+value = ["urgencyMax", "broadcastUrgencyMax"]
+
+[devswarm_sup.lv_urgent_tiers]
+doc = "The urgency words that force a parent notice for a stale workspace at once (Node URGENT_TIERS)."
+value = ["high", "urgent"]
+
+[devswarm_sup.lv_suppress_reasons]
+doc = "Why a stale workspace is not force-notified, in Node's order: post-spawn grace, archive-ready, a live session, the Primary's own row."
+value = ["post-spawn-grace", "archive-ready", "idle-alive", "primary-row-not-nudgeable"]
+
+[devswarm_sup.lv_not_urgent]
+doc = "The forced-notice outcome of a stale workspace without an urgent unread."
+value = "not-urgent"
+
+[devswarm_sup.lv_field_ts]
+doc = "The field of a heartbeat record that holds its time."
+value = "ts"
+
+[devswarm_sup.lv_field_pid]
+doc = "The field of a session record that holds the process id."
+value = "pid"
+
+[devswarm_sup.lv_log_cleared_action]
+doc = "The recovery-log action when a sticky escalation is cleared because the session is alive."
+value = "cleared"
+
+[devswarm_sup.lv_log_cleared_reason]
+doc = "The recovery-log reason of that action."
+value = "session-alive"
+
+[devswarm_sup.lv_jev_key_sep]
+doc = "The separator in the keys of Jev's pending-labels file between the recipient and the sender (the key ends with this and the child id)."
+value = "\u0001"
+
+[devswarm_sup.lv_escalation_dir]
+doc = "Parked escalation notices, under the DevSwarm state directory (recovery.js escalation-pending)."
+value = "escalation-pending"
+
+[devswarm_sup.lv_field_parent]
+doc = "The field of a parked notice that names the parent."
+value = "parentId"
+
+[devswarm_sup.lv_field_row]
+doc = "The field of a parked notice that holds the message row."
+value = "row"
+
+[devswarm_sup.lv_field_delivered]
+doc = "The field of a parked notice that marks it delivered."
+value = "delivered"
+
+# ---- retention, native (src/dssup/retention) ---------------------------------------------------------------------------------
+# The settings are Node's (devswarm.retention.*), read exactly (no rounding of a fractional value). Everything below the settings is
+# a rule or a name of Node's retention module, kept here so none is compiled into the binary.
+
+[devswarm_sup.set_rt_days]
+doc = "Days of message bodies kept before they are archived and tombstoned; 0 switches retention off. Node: devswarm.retention.days."
+value = { type = "number", section = "devswarm", key = "retention.days", env = "ANTIHALL_DEVSWARM_RETENTION_DAYS", min = 0, default = 30, exact = true }
+
+[devswarm_sup.set_rt_max_store_mb]
+doc = "Store size limit in MB: above it the oldest eligible bodies are tombstoned whatever their age; 0 = no limit. Node: devswarm.retention.maxStoreMB."
+value = { type = "number", section = "devswarm", key = "retention.maxStoreMB", env = "ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB", min = 0, default = 100, exact = true }
+
+[devswarm_sup.set_rt_keep]
+doc = "The newest messages of each partition that are never tombstoned (by age or by size). Node: devswarm.retention.keepPerPartition."
+value = { type = "number", section = "devswarm", key = "retention.keepPerPartition", env = "ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION", min = 0, default = 200, exact = true }
+
+[devswarm_sup.set_rt_archive]
+doc = "Write a body to the gzip archive before tombstoning it (restorable). Off means a tombstoned body is gone. Node: devswarm.retention.archive."
+value = { type = "bool", section = "devswarm", key = "retention.archive", env = "ANTIHALL_DEVSWARM_RETENTION_ARCHIVE", default = true }
+
+[devswarm_sup.set_rt_archive_max_mb]
+doc = "Archive size cap in MB; 0 = never evict an archive month. Node: devswarm.retention.archiveMaxMB."
+value = { type = "number", section = "devswarm", key = "retention.archiveMaxMB", env = "ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB", min = 0, default = 0, exact = true }
+
+[devswarm_sup.set_rt_budget_ms]
+doc = "Time budget of one store's tombstoning batches (environment only, as in Node: ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS)."
+value = { type = "number", section = "devswarm_sup_env", key = "retention_budget_ms", env = "ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS", min = 0, default = 5000, exact = true }
+
+[devswarm_sup.set_dry_run_retention]
+doc = "Dry run of retention: plans and logs what it would tombstone, writes nothing."
+value = { type = "bool", section = "devswarm_sup", key = "dryRun.retention", env = "ANTIHALL_DEVSWARM_SUP_DRYRUN_RETENTION", default = false }
+
+
+[devswarm_sup.rt_action]
+doc = "The action word of a retention pass that tombstoned rows of a store (action ledger, telemetry `cmd` h; the target is the store hash)."
+value = "dssup-retention-tombstone"
+
+[devswarm_sup.rt_action_pruned]
+doc = "The outcome word of a retention pass that tombstoned rows."
+value = "pruned"
+
+[devswarm_sup.rt_day_ms]
+doc = "Milliseconds in the retention window's day."
+value = 86400000
+min = 1000
+max = 86400000
+
+[devswarm_sup.rt_mb]
+doc = "Bytes in a megabyte of the size limits."
+value = 1048576
+min = 1024
+max = 1073741824
+
+[devswarm_sup.rt_batch_rows]
+doc = "Rows archived and tombstoned per transaction."
+value = 500
+min = 1
+max = 100000
+
+[devswarm_sup.rt_recent_runs]
+doc = "Runs of identical broadcasts at the end of the broadcast partition that stay readable (the store's recent-broadcast cap plus the boundary run)."
+value = 51
+min = 1
+max = 10000
+
+[devswarm_sup.rt_vacuum_ratio]
+doc = "Reclaim space (VACUUM) when the freelist, or the bytes tombstoned this run, exceed this share of the file; always when enforcing the size limit."
+value = "0.2"
+
+[devswarm_sup.rt_store_min_interval_ms]
+doc = "A store is revisited by the sweep at most this often."
+value = 21600000
+min = 60000
+max = 31536000000
+unit = "ms"
+
+[devswarm_sup.rt_lock_stale_ms]
+doc = "A retention lock older than this is taken over (Node: LOCK_STALE_MS)."
+value = 600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.rt_size_rounds]
+doc = "Most rounds of size-limit pruning in one visit of a store."
+value = 3
+min = 1
+max = 100
+
+[devswarm_sup.rt_busy_ms]
+doc = "How long a store opened by the retention waits for another writer (Node: PRAGMA busy_timeout)."
+value = 3000
+min = 0
+max = 600000
+unit = "ms"
+
+[devswarm_sup.rt_short_len]
+doc = "Length of the hexadecimal short id in a legacy instance cursor file name."
+value = 6
+min = 1
+max = 64
+
+[devswarm_sup.rt_db_file]
+doc = "A store's sqlite file name."
+value = "devswarm.db"
+
+[devswarm_sup.rt_store_dir]
+doc = "The stores directory under the DevSwarm state directory."
+value = "store"
+
+[devswarm_sup.rt_cursors_dir]
+doc = "The legacy cursor files under the DevSwarm state directory."
+value = "cursors"
+
+[devswarm_sup.rt_state_file]
+doc = "Retention's state file under the DevSwarm state directory (Node's retention-state.json)."
+value = "retention-state.json"
+
+[devswarm_sup.rt_lock_file]
+doc = "Retention's lock file under the DevSwarm state directory."
+value = "locks/retention.lock"
+
+[devswarm_sup.rt_archive_dir]
+doc = "The archive of tombstoned bodies under the DevSwarm state directory."
+value = "archive"
+
+[devswarm_sup.rt_log_file]
+doc = "Retention's event log, relative to the home directory (Node's file; the engine appends the same events)."
+value = ".anti-hall/logs/devswarm-retention.ndjson"
+
+[devswarm_sup.rt_held_file]
+doc = "When each store last had a comparison that held its tombstoning back (a JSON object store -> ms), relative to the home directory."
+value = ".anti-hall/logs/devswarm-retention-held.json"
+
+[devswarm_sup.rt_backend_marker]
+doc = "The file in a store directory that names its backend."
+value = "BACKEND"
+
+[devswarm_sup.rt_backend_journal]
+doc = "The backend word of a journal store (retention skips it)."
+value = "journal"
+
+[devswarm_sup.rt_wal_suffix]
+doc = "The suffix of a sqlite file's write-ahead log."
+value = "-wal"
+
+[devswarm_sup.rt_archive_ext]
+doc = "The extension of an archive month file."
+value = ".ndjson.gz"
+
+[devswarm_sup.rt_journal_dir]
+doc = "A store's legacy journal directory."
+value = "journal"
+
+[devswarm_sup.rt_journal_ext]
+doc = "The extension of a raw journal file."
+value = ".ndjson"
+
+[devswarm_sup.rt_hash_sep]
+doc = "In a partition id, the character that marks a legacy cursor artefact (such an id has no legacy cursor files of its own)."
+value = "#"
+
+[devswarm_sup.rt_seen_marker]
+doc = "In a partition id, the marker of a legacy seen-file."
+value = ".seen-"
+
+[devswarm_sup.rt_base_marker]
+doc = "The infix of a partition's legacy base cursor file (<id>#base.json)."
+value = "#base"
+
+[devswarm_sup.rt_inst_marker]
+doc = "The infix of a partition's legacy instance cursor files (<id>#inst-<short>.json)."
+value = "#inst-"
+
+[devswarm_sup.rt_broadcast_partition]
+doc = "The id of the shared broadcast partition."
+value = "*mesh-broadcast*"
+
+[devswarm_sup.rt_row_cols]
+doc = "The columns of an archived row, in the order Node writes them."
+value = ["id", "workspace_id", "ts", "hash", "body", "sender", "recipient", "mtype", "urgency", "is_heartbeat", "needs_reply", "orig_hash", "instance_nonce", "seq"]
+
+[devswarm_sup.rt_archived_at]
+doc = "The field added to an archived row: when it was archived."
+value = "archivedAt"
+
+[devswarm_sup.rt_gzip_bin]
+doc = "The gzip executable (resolved on PATH). Without one the engine declines and Node's own function archives."
+value = "gzip"
+
+[devswarm_sup.rt_gzip_args]
+doc = "Arguments that make gzip compress stdin to stdout without a name or timestamp."
+value = ["-c", "-n"]
+
+[devswarm_sup.rt_gunzip_args]
+doc = "Arguments that make gzip decompress stdin to stdout."
+value = ["-d", "-c"]
+
+[devswarm_sup.rt_hash_re_legacy]
+doc = "The shape of a legacy store directory name (eight hexadecimal digits)."
+value = "^[0-9a-fA-F]{8}$"
+
+[devswarm_sup.rt_hash_re_repokey]
+doc = "The shape of a repoKey store directory name."
+value = "^[a-z0-9-]{1,40}-[0-9a-f]{6}$"
+
+[devswarm_sup.rt_state_stores]
+doc = "The state key that holds each store's last run."
+value = "stores"
+
+[devswarm_sup.rt_state_holds]
+doc = "The state key that holds the restore holds."
+value = "holds"
+
+[devswarm_sup.rt_state_phase]
+doc = "The state key that holds the phase."
+value = "phase"
+
+[devswarm_sup.rt_state_tombstoned]
+doc = "The store-record key that counts the rows tombstoned in total."
+value = "tombstoned"
+
+[devswarm_sup.rt_state_max_archived]
+doc = "The store-record key that holds the highest archived row id."
+value = "maxArchivedId"
+
+[devswarm_sup.rt_phase_armed]
+doc = "The phase in which sweeps act."
+value = "armed"
+
+[devswarm_sup.rt_phase_dry]
+doc = "The phase of a machine's first run (a dry-run report only)."
+value = "dry-run"
+
+[devswarm_sup.rt_ev_prune_batch]
+doc = "The log event of one committed batch."
+value = "prune-batch"
+
+[devswarm_sup.rt_ev_over_limit]
+doc = "The log event of a store still over its limit after a visit."
+value = "over-limit"
+
+[devswarm_sup.rt_err_gzip]
+doc = "The error of a failed gzip step of the retention archive (spawn, pipe, exit status). Placeholder: {why}."
+value = "gzip failed: {why}"
+
+[devswarm_sup.rt_err_gzip_stdin]
+doc = "The gzip failure detail when the child's input pipe is missing."
+value = "no input pipe"
+
+[devswarm_sup.rt_err_gzip_feeder]
+doc = "The gzip failure detail when the thread feeding gzip panicked."
+value = "input writer failed"
+
+[devswarm_sup.rt_err_gzip_roundtrip]
+doc = "The gzip failure detail when a compressed archive member does not inflate back to the bytes it was made from."
+value = "the compressed member does not match its source"
+
+[devswarm_sup.rt_ev_prune_error]
+doc = "The log event of a store whose sweep failed (Node: prune-error); the store's result carries ok false and the error text."
+value = "prune-error"
+
+[devswarm_sup.rt_ev_over_limit_protected]
+doc = "The log event of a store over its limit with nothing more that may be pruned."
+value = "over-limit-protected"
+
+[devswarm_sup.rt_reason_lock_busy]
+doc = "The answer when another retention run holds the lock."
+value = "lock-busy"
+
+[devswarm_sup.rt_no_table_text]
+doc = "The text of SQLite's error for a table an older store does not have yet (such a store has no reader cursors: no rows, not an error)."
+value = "no such table"
+
+
+[devswarm_sup.rt_msg_unstable]
+doc = "Why nothing was tombstoned: the store changed while the plan was compared."
+value = "the store changed during the comparison"
+
+# ---- the dry-run report phase, the journal fold and the archive cap, native (src/dssup/retention/{dry,fold,cap}.rs) -----------------
+
+[devswarm_sup.rt_dry_report_file]
+doc = "The first-run dry-run report under the DevSwarm state directory (Node's retention-dry-run.json)."
+value = "retention-dry-run.json"
+
+[devswarm_sup.rt_dry_completed_key]
+doc = "The retention state key that records when the first-run dry-run report was completed."
+value = "dryRunCompletedAt"
+
+[devswarm_sup.rt_ev_dry_complete]
+doc = "The retention log event written when the first-run dry-run report covers every store."
+value = "dry-run-complete"
+
+[devswarm_sup.rt_ev_legacy_archived]
+doc = "The retention log event written for each legacy journal file folded into the archive."
+value = "legacy-journal-archived"
+
+[devswarm_sup.rt_ev_archive_evict]
+doc = "The retention log event written for each archive month file evicted by the archive size cap."
+value = "archive-evict"
+
+[devswarm_sup.rt_legacy_dir]
+doc = "The archive subdirectory (per store) that holds folded legacy journals."
+value = "legacy-journal"
+
+[devswarm_sup.rt_gz_ext]
+doc = "The extension of a folded journal's archive file."
+value = ".ndjson.gz"
+
+[devswarm_sup.rt_tmp_suffix]
+doc = "The suffix of the temporary file an archive file is written to before it is renamed into place."
+value = ".tmp"
+
+[devswarm_sup.rt_cap_month_re]
+doc = "The name of an archive month file; its first group is the month that orders eviction (older months go first)."
+value = '^(\d{4}-\d{2})\.ndjson\.gz$'
+
+[devswarm_sup.rt_protected_names]
+doc = "The protection rules a first-run dry-run summary counts, in the order of its `protected` object (Node: tooNew, keepLast, unread, question, ndjson, broadcast, held)."
+value = ["tooNew", "keepLast", "unread", "question", "ndjson", "broadcast", "held"]
+
+
+[devswarm_sup.rt_msg_fold_changed]
+doc = "Why a folded journal file was kept: it changed after it was read."
+value = "changed while it was archived"
+
+
+[devswarm_sup.rt_msg_report_shape]
+doc = "The sweep error when the existing dry-run report is a scalar: Node cannot set `stores` on it and the sweep answers `{ran: false, error}`."
+value = "Cannot create property 'stores' on a dry-run report that is not an object"
+
+
+# ---- the app sync, native (src/dssup/appsync/) ------------------------------------------------------------------------------------
+
+[devswarm_sup.set_app_sync]
+doc = "Sync the DevSwarm desktop app's state (archived flags, titles, message gaps) into anti-hall every tick. Node: devswarm.appSync."
+value = { type = "bool", section = "devswarm", key = "appSync", env = "ANTIHALL_DEVSWARM_APP_SYNC", default = true }
+
+[devswarm_sup.as_missing_table]
+doc = "The text added to a table name when the app database has no such table (the snapshot's `missing` list)."
+value = " (table)"
+
+[devswarm_sup.as_prompt_len]
+doc = "The select-list alias of the initial prompt's length (its text is never read)."
+value = "initialPromptLen"
+
+[devswarm_sup.as_scrollback_id_re]
+doc = "The shape of a terminal id the scrollback log of which may be looked up."
+value = "^[A-Za-z0-9._-]+$"
+
+[devswarm_sup.as_scrollback_dir]
+doc = "The app's terminal scrollback directory beside its database."
+value = "terminal-scrollback"
+
+[devswarm_sup.as_scrollback_ext]
+doc = "The extension of a scrollback log."
+value = ".log"
+
+[devswarm_sup.as_sentry_dir]
+doc = "The app's crash-report directory beside its database."
+value = "sentry"
+
+[devswarm_sup.as_sentry_file]
+doc = "The crash-report session file that names the app version."
+value = "session.json"
+
+[devswarm_sup.as_sentry_key]
+doc = "The key of the session file that holds the app version."
+value = "release"
+
+[devswarm_sup.as_msg_table]
+doc = "The app's message table (read for timestamps and branches only)."
+value = "workspace_messages"
+
+[devswarm_sup.as_c_id]
+doc = "The id column / descriptor key."
+value = "id"
+
+[devswarm_sup.as_c_repository_id]
+doc = "The repository id column."
+value = "repositoryId"
+
+[devswarm_sup.as_c_path]
+doc = "The repository path column."
+value = "path"
+
+[devswarm_sup.as_c_name]
+doc = "The repository name column."
+value = "name"
+
+[devswarm_sup.as_c_number]
+doc = "The pull request number column."
+value = "number"
+
+[devswarm_sup.as_c_state]
+doc = "The pull request state column."
+value = "state"
+
+[devswarm_sup.as_c_is_draft]
+doc = "The pull request draft flag column."
+value = "isDraft"
+
+[devswarm_sup.as_c_check_status]
+doc = "The pull request check status column."
+value = "checkStatus"
+
+[devswarm_sup.as_c_last_synced]
+doc = "The pull request last sync time column."
+value = "lastSyncedAt"
+
+[devswarm_sup.as_c_branch_name]
+doc = "The branch name column."
+value = "branchName"
+
+[devswarm_sup.as_c_builder_id]
+doc = "The terminal's builder id column."
+value = "builderId"
+
+[devswarm_sup.as_c_delivered]
+doc = "The initial prompt delivery time column."
+value = "initialPromptDeliveredAt"
+
+[devswarm_sup.as_c_terminal_id]
+doc = "The terminal id column."
+value = "terminalId"
+
+[devswarm_sup.as_c_terminal_type]
+doc = "The terminal type column."
+value = "terminalType"
+
+[devswarm_sup.as_c_session_config]
+doc = "The AI session configuration column."
+value = "ai_session_config"
+
+[devswarm_sup.as_c_panel_status]
+doc = "The terminal panel status column."
+value = "panelStatus"
+
+[devswarm_sup.as_c_created_at]
+doc = "The creation time column."
+value = "createdAt"
+
+[devswarm_sup.as_c_withheld]
+doc = "The initial prompt withheld time column."
+value = "initialPromptWithheldAt"
+
+[devswarm_sup.as_c_is_hidden]
+doc = "The builder hidden flag column."
+value = "isHidden"
+
+[devswarm_sup.as_c_is_active]
+doc = "The active flag column."
+value = "isActive"
+
+[devswarm_sup.as_c_pull_request_id]
+doc = "The builder's pull request id column."
+value = "pullRequestId"
+
+[devswarm_sup.as_c_worktree_path]
+doc = "The worktree path column / descriptor key."
+value = "worktreePath"
+
+[devswarm_sup.as_c_rank]
+doc = "The builder rank column."
+value = "rank"
+
+[devswarm_sup.as_c_label]
+doc = "The builder label column."
+value = "label"
+
+[devswarm_sup.as_c_builder_type]
+doc = "The builder type column."
+value = "builderType"
+
+[devswarm_sup.as_c_is_pinned]
+doc = "The pinned flag column."
+value = "isPinned"
+
+[devswarm_sup.as_c_last_selected]
+doc = "The last selected time column."
+value = "lastSelectedAt"
+
+[devswarm_sup.as_key_sep]
+doc = "The separator inside the pull request by repository and branch key."
+value = "\u0000"
+
+[devswarm_sup.as_ai_type]
+doc = "The terminal type of an AI terminal."
+value = "ai"
+
+[devswarm_sup.as_primary_type]
+doc = "The builder type of the Primary checkout."
+value = "primary"
+
+[devswarm_sup.as_brief_pending]
+doc = "The brief delivery status of a prompt not yet delivered and not yet late."
+value = "pending"
+
+[devswarm_sup.as_brief_not_delivered]
+doc = "The brief delivery status of a prompt not delivered within the grace."
+value = "not-delivered"
+
+[devswarm_sup.as_brief_withheld]
+doc = "The brief delivery status of a prompt the app withheld."
+value = "withheld"
+
+[devswarm_sup.as_git_entry]
+doc = "A worktree's git entry (a file in a linked worktree)."
+value = ".git"
+
+[devswarm_sup.as_gitdir_re]
+doc = "The line of a linked worktree's `.git` file that names its git directory."
+value = '(?m)^gitdir:\s*(.+)\s*$'
+
+[devswarm_sup.as_commondir_file]
+doc = "The file in a linked worktree's git directory that names the common directory."
+value = "commondir"
+
+[devswarm_sup.as_refs_dir]
+doc = "The directory of branch refs under the common git directory."
+value = "refs/heads"
+
+[devswarm_sup.as_pr_word]
+doc = "The word that starts a finish signal."
+value = "PR"
+
+[devswarm_sup.as_draft_suffix]
+doc = "The finish signal's suffix for a draft pull request."
+value = " (draft)"
+
+[devswarm_sup.as_fail_word]
+doc = "A check status containing this word reads as failed."
+value = "fail"
+
+[devswarm_sup.as_checks_failed]
+doc = "The finish signal's suffix for failed checks."
+value = ", checks failed"
+
+[devswarm_sup.as_sid_re]
+doc = "The shape of a session id whose transcript may be read."
+value = "^[A-Za-z0-9-]+$"
+
+[devswarm_sup.as_projects_dir]
+doc = "Claude Code's transcript projects directory, relative to the home directory."
+value = ".claude/projects"
+
+[devswarm_sup.as_transcript_ext]
+doc = "The extension of a transcript file."
+value = ".jsonl"
+
+[devswarm_sup.as_cwd_re]
+doc = "The first recorded working directory in a transcript prefix (a JSON string)."
+value = '"cwd"\s*:\s*("(?:[^"\\]|\\.)*")'
+
+[devswarm_sup.as_json_ext]
+doc = "The extension of a descriptor, marker and cache file."
+value = ".json"
+
+[devswarm_sup.as_dir_workspaces]
+doc = "The registered workspaces' descriptor directory."
+value = "workspaces"
+
+[devswarm_sup.as_dir_archived]
+doc = "The archived markers directory."
+value = "archived"
+
+[devswarm_sup.as_dir_names]
+doc = "The workspace title cache directory."
+value = "names"
+
+[devswarm_sup.as_builder_re]
+doc = "The shape of a DevSwarm builder id."
+value = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+[devswarm_sup.as_marker_app]
+doc = "The `archivedBy` of a marker written because the app shows the workspace archived."
+value = "devswarm-app"
+
+[devswarm_sup.as_marker_deleted]
+doc = "The `archivedBy` of a marker written because the app deleted the workspace."
+value = "devswarm-app-deleted"
+
+[devswarm_sup.as_msg_archived_dir]
+doc = "Why a marker was not written: the archived directory is a link or a file."
+value = "archived path is not a real directory"
+
+[devswarm_sup.as_tmp_suffix]
+doc = "The suffix of a marker's temporary file."
+value = ".tmp"
+
+[devswarm_sup.as_native_like]
+doc = "The hash pattern of the app messages the ingest stored."
+value = "native:%"
+
+[devswarm_sup.as_proto_key]
+doc = "A branch or session name JavaScript would not store as an ordinary object key."
+value = "__proto__"
+
+[devswarm_sup.as_reason_no_store]
+doc = "The gap report's reason for a repository without a message store."
+value = "no-store"
+
+[devswarm_sup.as_reason_unreadable]
+doc = "The gap report's reason for a message store that cannot be read."
+value = "store-unreadable"
+
+[devswarm_sup.as_reason_no_db]
+doc = "The state file's reason when the app database cannot be read."
+value = "app-db-unavailable"
+
+[devswarm_sup.as_reason_disabled]
+doc = "The answer when the app sync is switched off."
+value = "app-sync-disabled"
+
+[devswarm_sup.as_state_file]
+doc = "The app sync's state file under the DevSwarm state directory."
+value = "app-state.json"
+
+[devswarm_sup.as_scheduled_dir]
+doc = "The app's scheduled-for-deletion directory, relative to the home directory."
+value = ".devswarm/scheduled-for-deletion"
+
+[devswarm_sup.as_archive_cmd]
+doc = "The command shown for a workspace archived here but still open in the app."
+value = "hivecontrol workspace archive "
+
+[devswarm_sup.as_env_dry]
+doc = "The environment variable that makes the app sync compute and write nothing."
+value = "ANTIHALL_INGEST_DRY_RUN"
+
+[devswarm_sup.as_env_dry_on]
+doc = "Its value for dry."
+value = "1"
+
+
+[devswarm_sup.as_focus_ms]
+doc = "How recent the app's last selection must be for a workspace to count as focused."
+value = 120000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_brief_grace_ms]
+doc = "How long an undelivered initial prompt may wait before it reads as not delivered."
+value = 180000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_retire_grace_ms]
+doc = "How old an app-written marker must be before the app showing the workspace open retires it."
+value = 600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_age_1h]
+doc = "The first age bucket of the message gap report."
+value = 3600000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_age_1d]
+doc = "The second age bucket."
+value = 86400000
+min = 1000
+max = 864000000
+unit = "ms"
+
+[devswarm_sup.as_age_7d]
+doc = "The third age bucket."
+value = 604800000
+min = 1000
+max = 8640000000
+unit = "ms"
+
+[devswarm_sup.as_settle_ms]
+doc = "App messages younger than this are not yet expected in the store."
+value = 120000
+min = 0
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_gap_cooldown_ms]
+doc = "Least time between two message gap scans."
+value = 900000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_sup.as_transcript_bytes]
+doc = "How much of a transcript's start is read to find its working directory."
+value = 65536
+min = 1024
+max = 16777216
+unit = "ms"
+
+[devswarm_sup.as_msg_cols]
+doc = "The app message columns the gap report reads."
+value = ["repositoryId", "toBranch", "createdAt"]
+
+[devswarm_sup.as_markers_app]
+doc = "The `archivedBy` values that mark a marker as written from the app's own state (those the app showing open again may retire)."
+value = ["devswarm-app", "devswarm-app-deleted", "devswarm-ui-sync"]
+
+[devswarm_sup.as_action_mark]
+doc = "The action word of an archived marker the app sync wrote (action ledger, telemetry `cmd` h). Without any Node on the machine the engine writes markers on its own plan; with Node present it still writes only when Node's dry run names the same workspaces."
+value = "dssup-app-archived-marker"
+
+[devswarm_sup.as_action_marked]
+doc = "The outcome word of a marker written."
+value = "marked"
+
+[devswarm_sup.as_action_failed]
+doc = "The outcome word of a marker that could not be written."
+value = "failed"
+
+[devswarm_sup.as_dir_retired]
+doc = "The directory a retired stale marker is moved to (never deleted)."
+value = "archived-retired"
+
+[devswarm_sup.as_msg_retired_dir]
+doc = "Why a marker was not retired: the retired directory is a link or a file."
+value = "retired dir is not a real directory"
+
+[devswarm_sup.as_why_lock_busy]
+doc = "Why a stale marker was left: another actor holds the workspace's lock (tried again next sweep)."
+value = "lock-busy"
+
+[devswarm_sup.as_why_restore_failed]
+doc = "Why a stale marker was left: the descriptor or registry row could not be restored first. Placeholder: {error}."
+value = "restore-failed: {error}"
+
+[devswarm_sup.as_why_retired_exists]
+doc = "Why a stale marker was left: the retired file for this id and second already exists (never overwritten)."
+value = "retired-exists"
+
+[devswarm_sup.as_retired_raw]
+doc = "The field that carries the marker's bytes when they are not a JSON object."
+value = "raw"
+
+[devswarm_sup.as_retired_field]
+doc = "The field a retired marker gets, holding the retire record."
+value = "retired"
+
+[devswarm_sup.as_retired_at]
+doc = "The retire record's time field (epoch ms)."
+value = "at"
+
+[devswarm_sup.as_retired_by]
+doc = "The retire record's actor field."
+value = "by"
+
+[devswarm_sup.as_retired_reason]
+doc = "The retire record's reason field."
+value = "reason"
+
+[devswarm_sup.as_retired_builder]
+doc = "The retire record's app builder id field."
+value = "builderId"
+
+[devswarm_sup.as_retired_restored]
+doc = "The retire record's field saying the workspace was restored to active."
+value = "restored"
+
+[devswarm_sup.as_retired_by_value]
+doc = "Who retired the marker (the retire record's actor)."
+value = "devswarm-app-sync"
+
+[devswarm_sup.as_retired_reason_value]
+doc = "Why the marker was retired (the retire record's reason)."
+value = "open in the DevSwarm app (isActive=1, isHidden=0); workspace restored to active"
+
+[devswarm_sup.as_action_retire]
+doc = "The action word of a stale marker retire (action ledger)."
+value = "dssup-app-retire-marker"
+
+[devswarm_sup.as_action_retired]
+doc = "The outcome word of a marker retired."
+value = "retired"
+
+[devswarm_sup.as_action_left]
+doc = "The outcome word of a marker left in place (the reason is in the ledger row)."
+value = "left"
+
+
+# ---- the deferred stage, native (src/dssup/deferred.rs) --------------------------------------------------------------------------
+
+[devswarm_sup.ds_stages]
+doc = "The deferred post-update stages, in rotation order (Node: DEFERRED_SWEEP_STAGES)."
+value = ["fold-all-stores", "heal-orphan-partitions", "fold-archived-rows", "heal-registry-rows"]
+
+[devswarm_sup.ds_stage_keys]
+doc = "For the stages whose marker lives in the update sweep state: the key of the stage's entry there."
+value = { fold-all-stores = "foldAllStores", heal-orphan-partitions = "healOrphanPartitions", heal-registry-rows = "healRegistry" }
+
+[devswarm_sup.ds_state_file]
+doc = "The rotation cursor under the DevSwarm state directory (Node's deferred-sweep-state.json)."
+value = "deferred-sweep-state.json"
+
+[devswarm_sup.ds_cursor_key]
+doc = "The cursor file's key: the index of the stage taken next."
+value = "nextStageIndex"
+
+[devswarm_sup.ds_update_state]
+doc = "The update sweep state, relative to the home directory (migrations.js update-sweep-state.json)."
+value = ".anti-hall/update-sweep-state.json"
+
+[devswarm_sup.ds_pending_version]
+doc = "The key of a stage entry that names the version a deferred pass is pending for."
+value = "pendingVersion"
+
+[devswarm_sup.ds_pending_hashes]
+doc = "The key of a stage entry that lists the stores still to do."
+value = "pendingHashes"
+
+[devswarm_sup.ds_resume_file]
+doc = "The archived-row fold's resume marker under the DevSwarm state directory."
+value = "fold-archived-resume.json"
+
+[devswarm_sup.ds_family_file]
+doc = "The archived-row fold's family resume marker under the DevSwarm state directory."
+value = "fold-archived-family-resume.json"
+
+[devswarm_sup.ds_buckets_key]
+doc = "The key of the resume marker that maps each store bucket to its archived ids still to do."
+value = "buckets"
+
+[devswarm_sup.ds_ids_key]
+doc = "The key of the family resume marker that lists the ids still to do."
+value = "ids"
+
+[devswarm_sup.ds_reason_no_marker]
+doc = "The answer of a tick whose stage has nothing deferred."
+value = "no-marker"
+
+# ---- who runs the sweep tail (reconcile port) ----------------------------------------------------------------------------------
+
+# ---- the per-workspace tail of the verdicts duty (src/dssup/tail.rs) -------------------------------------------------------------
+
+[devswarm_sup.tl_ask_dir]
+doc = "The directory, under the DevSwarm state directory, holding the blocker label's per-workspace ask state."
+value = "blocker-label-ask"
+
+[devswarm_sup.tl_reask_default_sec]
+doc = "The blocker label's re-ask interval when the setting is not a positive number."
+value = 21600
+min = 60
+max = 8640000
+unit = "s"
+
+[devswarm_sup.tl_set_reask_sec]
+doc = "Seconds a blocker label decision is not asked or logged again while its input (workspace, kind, time) is unchanged. Node: devswarm.supervisorBlockerLabelReaskSec."
+value = { section = "devswarm", key = "supervisorBlockerLabelReaskSec", env = "ANTIHALL_DEVSWARM_SUPERVISOR_BLOCKER_LABEL_REASK_SEC", option = "devswarm_supervisor_blocker_label_reask_sec", default = 21600, min = 60 }
+
+[devswarm_sup.tl_integration]
+doc = "The Jev integration id of the blocker label."
+value = "supervisorBlockerLabel"
+
+[devswarm_sup.tl_kind_blocker]
+doc = "The triage kind that reads as a blocker."
+value = "blocker"
+
+[devswarm_sup.tl_kind_question]
+doc = "The triage kind that reads as a question the Primary has not answered."
+value = "question-needs-answer"
+
+[devswarm_sup.tl_label_wedged]
+doc = "The blocker label of a blocker."
+value = "wedged"
+
+[devswarm_sup.tl_label_waiting]
+doc = "The blocker label of an unanswered question."
+value = "waiting-on-parent"
+
+[devswarm_sup.tl_changed]
+doc = "The decision row's direction word for an advisory label."
+value = "changed"
+
+[devswarm_sup.tl_backend_cache]
+doc = "The decision row's backend and cost source of a label re-read from the triage cache."
+value = "cache"
+
+[devswarm_sup.tl_derived_from]
+doc = "The decision row's `derivedFrom` of the blocker label: it re-reads the triage label, it is not an independent Jev decision."
+value = "triage"
+
+[devswarm_sup.tl_project_unknown]
+doc = "The decision row's project when the working directory has no name."
+value = "unknown"
+
+[devswarm_sup.tl_usage_dir]
+doc = "The directory, under the DevSwarm state directory, holding the per-plan token-usage state."
+value = "token-usage"
+
+[devswarm_sup.tl_usage_read_max]
+doc = "Most bytes of a child's transcript read in one pass (the rest is read on the next)."
+value = 8388608
+min = 4096
+max = 1073741824
+unit = "bytes"
+
+[devswarm_sup.tl_usage_seen_keep]
+doc = "How many assistant message ids are remembered, so a message written as several transcript entries counts once."
+value = 32
+min = 1
+max = 10000
+
+[devswarm_sup.tl_usage_marker]
+doc = "The text a transcript line must hold to be parsed as a usage record."
+value = '"usage"'
+
+[devswarm_sup.tl_assistant]
+doc = "The transcript entry type that carries token usage."
+value = "assistant"
+
+[devswarm_sup.tl_step_done]
+doc = "The status of a finished plan step."
+value = "done"
+
+[devswarm_sup.tl_status_nudged]
+doc = "The verdict status of a workspace that has been nudged."
+value = "nudged"
+
+[devswarm_sup.tl_status_escalated]
+doc = "The verdict status of a workspace that has been escalated."
+value = "escalated"
+
+[devswarm_sup.tl_reason_idle]
+doc = "The start of the idle signal's reason (followed by how long)."
+value = "idle "
+
+[devswarm_sup.tl_reason_stall]
+doc = "The start of the stall signal's reason (followed by how long)."
+value = "no step progress "
+
+[devswarm_sup.tl_reason_burn]
+doc = "The burn signal's reason. Placeholders: {used} (tokens, abbreviated) and {step}."
+value = "used {used} tokens since step {step} last moved"
+
+[devswarm_sup.tl_reason_off_scope]
+doc = "The start of the off-scope signal's reason (followed by the first files)."
+value = "off-scope "
+
+[devswarm_sup.tl_reason_more]
+doc = "Added to the off-scope reason when more files are outside than are listed. Placeholder: {n}."
+value = " (+{n} more)"
+
+[devswarm_sup.tl_files_shown]
+doc = "How many off-scope files the signal's reason names."
+value = 5
+min = 1
+max = 100
+
+[devswarm_sup.tl_files_kept]
+doc = "How many off-scope files the signal keeps in the stray state."
+value = 50
+min = 1
+max = 1000
+
+[devswarm_sup.tl_default_base]
+doc = "The base the off-scope check compares a child's commits to when its plan names none."
+value = "origin/HEAD"
+
+[devswarm_sup.tl_diff_unknown]
+doc = "The reason the ready check gives when it could not read the diff (the off-scope check then says nothing)."
+value = "diff-unknown"
+
+[devswarm_sup.tl_stray_dir]
+doc = "The directory, under the DevSwarm state directory, holding the straying state per plan (the parent Stop gate reads it)."
+value = "stray"
+
+[devswarm_sup.tl_warned_keep]
+doc = "How many warned signal episodes the stray state keeps per plan (the oldest are dropped first)."
+value = 100
+min = 1
+max = 100000
+
+[devswarm_sup.tl_ev_tokens]
+doc = "The supervision log event written when a plan step's token period closes."
+value = "tokens"
+
+[devswarm_sup.tl_ev_warn]
+doc = "The supervision log event written when a straying warning is issued."
+value = "warn"
+
+[devswarm_sup.tl_alert_component]
+doc = "The component of the central-log alert for a straying warning."
+value = "devswarm-supervisor"
+
+[devswarm_sup.tl_alert_op]
+doc = "The operation of the straying alert."
+value = "straying"
+
+[devswarm_sup.tl_alert_level]
+doc = "The level of the straying alert."
+value = "warn"
+
+[devswarm_sup.tl_alert_msg]
+doc = "The text of the straying alert."
+value = "DEVSWARM STRAYING"
+
+[devswarm_sup.tl_alert_kind]
+doc = "The stable alert kind of a straying warning (the workspace id rides in the details, never in the kind)."
+value = "devswarm-straying"
+
+[devswarm_sup.tl_set_plan_tracking]
+doc = "Whether step plans are tracked, and with them the straying signals. Node: devswarm.planTracking."
+value = { section = "devswarm", key = "planTracking", env = "ANTIHALL_DEVSWARM_PLAN_TRACKING", option = "devswarm_plan_tracking", default = true }
+
+[devswarm_sup.tl_set_burn_warn]
+doc = "Weighted tokens a child may spend since its last step progress before the burn signal (0 turns it off). Node: devswarm.burnTokensWarn."
+value = { section = "devswarm", key = "burnTokensWarn", env = "ANTIHALL_DEVSWARM_BURN_TOKENS_WARN", option = "devswarm_burn_tokens_warn", default = 2000000, min = 0 }
+
+[devswarm_sup.tl_set_burn_cache_pct]
+doc = "How much a cached-input read counts toward the burn, in percent of a fresh input token. Node: devswarm.burnCacheReadPct."
+value = { section = "devswarm", key = "burnCacheReadPct", env = "ANTIHALL_DEVSWARM_BURN_CACHE_READ_PCT", option = "devswarm_burn_cache_read_pct", default = 10, min = 0, max = 100 }
+
+[devswarm_sup.tl_set_dormant_ms]
+doc = "How long a workspace whose session transcript resolves may stay silent before the stray signals treat it as dormant. Node: devswarm.dormantMs."
+value = { section = "devswarm", key = "dormantMs", env = "ANTIHALL_DEVSWARM_DORMANT_MS", default = 1800000 }
+
+[devswarm_sup.tl_dormant_default_ms]
+doc = "The dormancy window when the setting is not a positive number."
+value = 1800000
+min = 1000
+max = 8640000000
+unit = "ms"
+
+[devswarm_sup.tl_env_idle_ms]
+doc = "The environment variable that sets the wide idle window of a workspace whose transcript does not resolve."
+value = "ANTIHALL_DEVSWARM_IDLE_MS"
+
+[devswarm_sup.tl_idle_default_ms]
+doc = "The wide idle window when the variable above is absent, not a number or not positive."
+value = 21600000
+min = 1000
+max = 8640000000
+unit = "ms"
+
+[devswarm_sup.tl_ms_per_minute]
+doc = "Milliseconds in a minute (the stall window is configured in minutes)."
+value = 60000
+min = 1
+max = 1000000
+
+[devswarm_sup.tl_ready_args]
+doc = "The arguments of the read-only ready check that lists a child's files outside its plan's scope. Placeholders: {base} (the plan's base) and {allow} (the scope globs and extras, comma separated)."
+value = ["ready-check", "HEAD", "--base", "{base}", "--allow", "{allow}"]
+
+[devswarm_sup.tl_digest_len]
+doc = "How many hex digits of the SHA-1 of the off-scope file list name an off-scope episode."
+value = 10
+min = 4
+max = 40
+
+[devswarm_sup.sl_day_start]
+doc = "The time of day appended to a UTC day (YYYY-MM-DD) to read the day's first instant when a supervision roll-up is written."
+value = "T00:00:00Z"
+
+[devswarm_sup.jv_state_dir]
+doc = "The directory under the DevSwarm root that keeps, per plan, when each supervision Jev question was last asked and which answer was counted."
+value = "supervision-jev"
+
+[devswarm_sup.jv_on_brief]
+doc = "The off-scope question `devswarmOnBrief`: is the work outside the scope off the child's brief. `cap` limits the scrubbed state in characters; `state` is its template ({step} {scope} {summaries} {commits} {files}); `note_true` / `note_false` are the verdicts attached to the warning for each answer; `min_pct` is the floor of the confidence threshold in percent (0 = the configured threshold alone)."
+value = { id = "devswarmOnBrief", cap = 1500, min_pct = 0, instructions = "A child workspace was given a step plan and a file scope. Is the work described below OFF its brief (not needed for any of its steps)?", when_true = "off the brief", when_false = "on the brief (needed for its steps)", state = "{step}\nscope: {scope}\nrecent summaries: {summaries}\nrecent commits: {commits}\nfiles outside scope: {files}", note_true = "off-brief", note_false = "on-brief" }
+
+[devswarm_sup.jv_extra]
+doc = "The off-scope question `devswarmExtraSanctioned`: did the user ask for the extra work (as `jv_on_brief`; the state template takes {prompts} and {files})."
+value = { id = "devswarmExtraSanctioned", cap = 1000, min_pct = 90, instructions = "A child workspace changed files outside its assigned scope. Given the user prompts it received, is this extra work UNSANCTIONED (the user did not ask for it)?", when_true = "unsanctioned: the user did not ask for it", when_false = "the user asked for this work", state = "user prompts: {prompts}\nfiles outside scope: {files}", note_true = "not requested by the user", note_false = "the user asked for this" }
+
+[devswarm_sup.jv_step_line]
+doc = "The current step as the on-brief question shows it. {n} {done} {total} {text} {blocked}."
+value = "latest touched step {n} ({done}/{total} done): {text}{blocked}"
+
+[devswarm_sup.jv_blocked]
+doc = "Appended to the step line when the current step is blocked."
+value = " (blocked)"
+
+[devswarm_sup.jv_join_list]
+doc = "The separator of the scope globs and the off-scope files in the question."
+value = ", "
+
+[devswarm_sup.jv_join_item]
+doc = "The separator of the summaries, commit subjects and user prompts in the question."
+value = " | "
+
+[devswarm_sup.jv_ellipsis]
+doc = "The mark that ends a question text cut at its limit."
+value = "…"
+
+[devswarm_sup.jv_files_shown]
+doc = "How many off-scope files go into a question."
+value = 20
+min = 1
+max = 1000
+
+[devswarm_sup.jv_summaries_key]
+doc = "The plan field that holds the child's step summaries, and the field of each that holds its text."
+value = ["summaries", "text"]
+
+[devswarm_sup.jv_scope_key]
+doc = "The plan field that holds the scope globs."
+value = "scope_globs"
+
+[devswarm_sup.jv_git_bin]
+doc = "The executable that lists a child's recent commits."
+value = "git"
+
+[devswarm_sup.jv_git_args]
+doc = "The arguments that list the subjects of a child's last commits, each followed by its files. {wt} is the worktree; the subject starts after a 0x01 mark."
+value = ["-C", "{wt}", "log", "-10", "--format=%x01%s", "--name-only"]
+
+[devswarm_sup.jv_git_mark]
+doc = "The mark in the commit listing that starts each commit."
+value = "\u0001"
+
+[devswarm_sup.jv_git_timeout_ms]
+doc = "The longest the commit listing may take."
+value = 3000
+min = 100
+max = 60000
+
+[devswarm_sup.jv_commits_max]
+doc = "How many commit subjects go into the on-brief question."
+value = 5
+min = 1
+max = 50
+
+[devswarm_sup.jv_prompts_read_max]
+doc = "How many bytes from the end of the child's transcript are read for the user's prompts."
+value = 262144
+min = 1024
+max = 16777216
+
+[devswarm_sup.jv_prompts_keep]
+doc = "How many of the child's last user prompts go into the question."
+value = 3
+min = 1
+max = 20
+
+[devswarm_sup.jv_prompt_cap]
+doc = "The most characters of one user prompt in the question."
+value = 400
+min = 10
+max = 5000
+
+[devswarm_sup.jv_prompt_marker]
+doc = "A transcript line is looked at as a prompt only when it holds this text."
+value = "\"user\""
+
+[devswarm_sup.jv_prompt_skip_re]
+doc = "A user message that starts like this (after trimming) is the harness speaking, not a prompt."
+value = "^<(command|local-command|task-notification|system-reminder)"
+
+[devswarm_sup.jv_trig_keep]
+doc = "How many trigger marks a plan's Jev state keeps per question before the oldest is dropped."
+value = 20
+min = 2
+max = 1000
+
+[devswarm_sup.jv_ev_answer]
+doc = "The supervision log event written once per cached answer the supervisor first reads."
+value = "jev"
+
+[devswarm_sup.jv_ev_trigger]
+doc = "The supervision log event written once per trigger of a question."
+value = "jev-trigger"
+
+[devswarm_sup.jv_outcome_seen]
+doc = "The trigger outcome: the question's precondition held."
+value = "seen"
+
+[devswarm_sup.jv_outcome_skipped]
+doc = "The trigger outcome: the precondition held but nothing was asked."
+value = "skipped"
+
+[devswarm_sup.jv_skip_reason]
+doc = "Why nothing was asked: the question's mode is off, or Jev is disabled."
+value = "mode-off-or-jev-disabled"
+
+[devswarm_sup.jv_default_trigger]
+doc = "The trigger key of an off-scope signal that has neither a key nor a step."
+value = "off-scope"
+
+[metric.dssup_appdb_date_unread]
+doc = "Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full)."
+value = { kind = "counter", unit = "dates", labels = [] }
+
+[devswarm_sup.as_js_null]
+doc = "JavaScript's String(null), the text of a descriptor's null id."
+value = "null"
+
+[devswarm_sup.as_js_object]
+doc = "JavaScript's String({}), the text of an object where an id or path is expected."
+value = "[object Object]"
+
+[devswarm_sup.as_collate_order]
+doc = "The order in which ICU's root collation (Intl.Collator, the default of localeCompare) ranks the ASCII characters that are not letters: space, punctuation and symbols, then digits, then letters (case-folded here; at the same letter lower case sorts before upper)."
+value = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz"
+
+[devswarm_sup.as_err_reduce_undefined]
+doc = "The error of the gap total when the kept gaps carry no repos (TypeError text of JavaScript)."
+value = "Cannot read properties of undefined (reading 'reduce')"
+
+[devswarm_sup.as_err_reduce_null]
+doc = "The error of the gap total when the kept gaps' repos is null."
+value = "Cannot read properties of null (reading 'reduce')"
+
+[devswarm_sup.as_err_reduce_fn]
+doc = "The error of the gap total when the kept gaps' repos is no array."
+value = "gaps.repos.reduce is not a function"
+
+[devswarm_sup.as_err_read_gap_null]
+doc = "The error of the gap total when a kept repos row is null."
+value = "Cannot read properties of null (reading 'gap')"
