@@ -7,7 +7,8 @@
 // once-per-session state; their question-tool calls are denied too. The flag is only rewritten under its lock, re-read inside it
 // (OFF wins), with one lock budget per hook call (afk.lock_wait_ms); owner presence never goes backwards and idle detection never
 // re-enters AFK before the last `back` plus the idle time. While AFK the plan-approval tool is approved (allow + updatedInput) only
-// after a hook-recorded advisor consult newer than the last plan write, attempt and owner prompt (afk.planAutoApprove). Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
+// after a hook-recorded advisor consult that is sequence-newer than the last plan write, attempt and owner prompt, bound to the plan
+// file's hash and the AFK period, with no clock rollback; anything uncertain fails closed (afk.planAutoApprove). Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
 // the `ah-engine back` command and the typed `back` share it.
 'use strict';
 
@@ -264,7 +265,7 @@ function afkPrompt(p, f, now) {
   var notOwner = ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); });
   if (notOwner) return null;
   afkPresent(now);
-  afkPlanStamp(p, 'promptAt', now); // an owner prompt makes every earlier advisor consult stale for plan auto-approve
+  afkPlanPrompt(p, now); // an owner prompt makes every earlier advisor consult unusable for plan auto-approve
   var word = prompt.trim().toLowerCase(), reply = null;
   if (ah.settings.bool('afk.set_prompt_commands')) {
     if (afkWordIn(ah.cfg('afk.words_on'), word)) {
@@ -369,65 +370,100 @@ function afkStop(p, f, now) {
 }
 
 // ---- plan auto-approve (afk.planAutoApprove) ---------------------------------------------------------------------------------
-// One atomic per-session record (afk.plan_state_ns): the main thread's last advisor consult, plan-file write, plan-approval attempt
-// and owner prompt, wall-clock ms. Written by hooks (PostToolUse on the advisor tool, PostToolUse of a plan-file edit,
-// UserPromptSubmit), never inferred from transcript order. Subagents never write it (their consult is not the main thread's review).
+// FAIL CLOSED: anything uncertain leaves the normal approval prompt. One per-session record (afk.plan_state_ns) orders events by a
+// sequence number, never by wall-clock time: every stamp (plan-file write, owner prompt, advisor consult, plan-approval attempt)
+// takes seq+1 inside one atomic update and is verified by reading it back. The record also keeps the newest wall-clock time it saw
+// (wall); a clock earlier than that is a rollback and nothing is approved. A consult binds the plan file's path and SHA-256, the AFK
+// period (flag epoch) and the owner-prompt witness (afk.plan_prompt_ns, a separate per-session counter file, so a failed record write
+// on an owner prompt still changes what the consult saw). Subagents never stamp a consult.
 function afkPlanKey(p) { var sid = afkSid(p); return sid ? ah.sessionState.key(sid) : ''; }
 function afkPlanParse(t) { if (t === null) return {}; try { var v = JSON.parse(t); return v !== null && typeof v === 'object' ? v : {}; } catch (e) { return {}; } }
 function afkPlanNum(s, k) { return typeof s[k] === 'number' ? s[k] : 0; }
-// Only the consult (advisorAt) is gated on the setting and the main thread; plan writes and owner prompts are stamped always (a
-// subagent rewriting the plan, or a prompt while the setting was off, must still make an earlier consult stale).
-function afkPlanStamp(p, field, now) {
+// Atomic read-modify-write of ns/key; `fn(s)` mutates the parsed record and returns the seq it assigned (or 0 to write nothing).
+// true only when the read-back shows that seq (the host does not report a failed write).
+function afkPlanUpdate(ns, key, fn) {
+  var want = 0;
+  try {
+    ah.sessionState.update(ns, key, function (cur) { var s = afkPlanParse(cur); want = fn(s); return want > 0 ? JSON.stringify(s) : null; });
+    return want > 0 && afkPlanNum(afkPlanParse(ah.sessionState.get(ns, key)), 'seq') === want;
+  } catch (e) { return false; }
+}
+function afkPlanBump(s, field, now) {
+  s.seq = afkPlanNum(s, 'seq') + 1;
+  s[field] = s.seq;
+  if (now < afkPlanNum(s, 'wall')) s.backSeq = s.seq; // the clock went backwards: no consult up to here is trusted
+  s.wall = Math.max(now, afkPlanNum(s, 'wall'));
+  return s.seq;
+}
+function afkPlanPromptWitness(key) {
+  try { var t = ah.sessionState.get(ah.cfg('afk.plan_prompt_ns'), key); return t === null ? 0 : afkPlanNum(afkPlanParse(t), 'seq'); } catch (e) { return -1; }
+}
+function afkPlanFailed(field) { afkMetric('afk_plan_stamp_failed', { field: field }); }
+// Owner prompt (always, any setting): the separate witness counter first, then the record. Either failing is counted.
+function afkPlanPrompt(p, now) {
   if (coordinator.isCodexPayload(p)) return;
-  if (field === 'advisorAt' && (!ah.settings.bool('afk.set_plan_autoapprove') || afkIsAgent(p))) return;
   var key = afkPlanKey(p);
   if (!key) return;
-  try {
-    ah.sessionState.update(ah.cfg('afk.plan_state_ns'), key, function (cur) {
-      var s = afkPlanParse(cur);
-      s[field] = Math.max(now, afkPlanNum(s, field)); // never backwards
-      return JSON.stringify(s);
-    });
-  } catch (e) { /* an unrecorded consult only means no auto-approval */ }
+  if (!afkPlanUpdate(ah.cfg('afk.plan_prompt_ns'), key, function (s) { s.seq = afkPlanNum(s, 'seq') + 1; return s.seq; })) afkPlanFailed('witness');
+  if (!afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) { return afkPlanBump(s, 'promptSeq', now); })) afkPlanFailed('promptSeq');
 }
-// PostToolUse: the advisor tool (advisor.tool_names) or an edit of a plan file (advisor.edit_tools + advisor.plan_file_re).
-function afkPlanRecord(p, now) {
-  var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
-  if (ah.cfg('advisor.tool_names').indexOf(tool) >= 0) return afkPlanStamp(p, 'advisorAt', now);
+// PostToolUse: the advisor tool (advisor.tool_names) or an edit of a plan file (advisor.edit_tools + advisor.plan_file_re). Plan writes
+// are stamped for every thread (a subagent rewriting the plan makes the consult stale); a consult only for the main thread.
+function afkPlanRecord(p, f, now) {
+  if (coordinator.isCodexPayload(p)) return;
+  var tool = typeof p.tool_name === 'string' ? p.tool_name : '', key = afkPlanKey(p);
+  if (!key) return;
+  if (ah.cfg('advisor.tool_names').indexOf(tool) >= 0) {
+    if (!ah.settings.bool('afk.set_plan_autoapprove') || afkIsAgent(p)) return;
+    var witness = afkPlanPromptWitness(key);
+    if (!afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) {
+      var path = typeof s.planPath === 'string' ? s.planPath : '', hash = null;
+      try { hash = path !== '' ? ah.fs.sha256File(path) : null; } catch (e) { hash = null; }
+      s.consultHash = hash; s.consultPath = path; s.consultWitness = witness;
+      s.consultEpoch = afkOn(f) && typeof f.epoch === 'string' ? f.epoch : '';
+      return afkPlanBump(s, 'consultSeq', now);
+    })) afkPlanFailed('consultSeq');
+    return;
+  }
   if (ah.cfg('advisor.edit_tools').indexOf(tool) < 0) return;
   var i = jx.isObj(p.tool_input) ? p.tool_input : {}, file = typeof i.file_path === 'string' ? i.file_path : '';
-  if (file !== '' && ah.re.test(ah.cfg('advisor.plan_file_re'), 'r', file)) afkPlanStamp(p, 'planAt', now);
+  if (file === '' || !ah.re.test(ah.cfg('advisor.plan_file_re'), 'r', file)) return;
+  if (!afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) { s.planPath = file; return afkPlanBump(s, 'planSeq', now); })) afkPlanFailed('planSeq');
 }
 function afkPlanDeny(reasonKey) { afkMetric('afk_plan_autoapprove_denied', { reason: ah.cfg(reasonKey) }); return 'allow'; }
-// PreToolUse of the plan-approval tool: allow + updatedInput only when every condition holds; every other path says nothing
-// (the host shows its normal approval prompt). The attempt is stamped in the same atomic update that reads the consult, so one
-// consult approves at most one attempt, and an attempt that cannot be stamped is never approved.
+// PreToolUse of the plan-approval tool: allow + updatedInput only when every check passes; every other path says nothing. The
+// attempt is stamped (and read back) in the same update that judges the consult, so one consult approves at most one attempt.
 function afkPlanPre(p, f, now) {
   if (!ah.settings.bool('afk.set_plan_autoapprove') || ah.settings.skipped(ah.cfg('afk.guard_name'))) return afkPlanDeny('afk.plan_reason_off');
   if (!afkOn(f)) return afkPlanDeny('afk.plan_reason_afk_off');
   if (afkIsAgent(p)) return afkPlanDeny('afk.plan_reason_subagent');
   var key = afkPlanKey(p);
   if (!key || !jx.isObj(p.tool_input)) return afkPlanDeny('afk.plan_reason_no_input');
-  var reason = 'afk.plan_reason_state_error', wrote = false;
-  // the plan file's own mtime too: a write by any path (a shell redirect, another process) after the consult makes it stale
-  var pf = typeof p.tool_input.planFilePath === 'string' ? p.tool_input.planFilePath : '', mt = null;
-  try { mt = pf !== '' && ah.path.isAbsolute(pf) ? ah.fs.mtimeMs(pf) : null; } catch (e) { mt = null; }
-  try {
-    wrote = ah.sessionState.update(ah.cfg('afk.plan_state_ns'), key, function (cur) {
-      var s = afkPlanParse(cur), at = afkPlanNum(s, 'advisorAt');
-      if (at <= 0) reason = 'afk.plan_reason_no_marker';
-      else if (at <= Math.max(afkPlanNum(s, 'planAt'), afkPlanNum(s, 'attemptAt'), afkPlanNum(s, 'promptAt'), typeof mt === 'number' ? mt : 0)) reason = 'afk.plan_reason_stale';
-      else reason = '';
-      s.attemptAt = Math.max(now, afkPlanNum(s, 'attemptAt'));
-      return JSON.stringify(s);
-    }) === true;
-    // read back: the host does not report a failed write, and an unrecorded attempt would leave the consult reusable
-    if (wrote) wrote = afkPlanNum(afkPlanParse(ah.sessionState.get(ah.cfg('afk.plan_state_ns'), key)), 'attemptAt') >= now;
-  } catch (e) { wrote = false; reason = 'afk.plan_reason_state_error'; }
-  if (reason === '' && !wrote) reason = 'afk.plan_reason_state_error';
-  if (reason !== '') return afkPlanDeny(reason);
+  var input = p.tool_input, pf = typeof input.planFilePath === 'string' ? input.planFilePath : '';
+  var witness = afkPlanPromptWitness(key), seen = null;
+  var wrote = afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) {
+    seen = JSON.parse(JSON.stringify(s));
+    return afkPlanBump(s, 'attemptSeq', now);
+  });
+  if (!wrote || seen === null) return afkPlanDeny('afk.plan_reason_state_error');
+  var c = afkPlanNum(seen, 'consultSeq');
+  if (c <= 0) return afkPlanDeny('afk.plan_reason_no_marker');
+  if (now < afkPlanNum(seen, 'wall') || afkPlanNum(seen, 'backSeq') >= c) return afkPlanDeny('afk.plan_reason_clock_backwards');
+  if (witness < 0 || witness !== afkPlanNum(seen, 'consultWitness')) return afkPlanDeny('afk.plan_reason_owner_prompt');
+  if (c <= Math.max(afkPlanNum(seen, 'planSeq'), afkPlanNum(seen, 'attemptSeq'), afkPlanNum(seen, 'promptSeq'))) return afkPlanDeny('afk.plan_reason_stale');
+  var cp = typeof seen.consultPath === 'string' ? seen.consultPath : '', ch = typeof seen.consultHash === 'string' ? seen.consultHash : '';
+  if (cp === '' || ch === '' || pf === '' || !ah.path.isAbsolute(pf) || pf !== cp) return afkPlanDeny('afk.plan_reason_plan_unbound');
+  var hash = null, text = null;
+  try { hash = ah.fs.sha256File(pf); text = ah.fs.readText(pf, ah.cfgNum('afk.read_max_bytes')); } catch (e) { hash = null; }
+  if (hash === null || hash !== ch) return afkPlanDeny('afk.plan_reason_plan_changed');
+  // what is approved is the echoed input: its plan text (when given) must be the consulted file's text (surrounding whitespace aside)
+  if (input.plan !== undefined && (typeof input.plan !== 'string' || text === null || input.plan.trim() !== text.trim())) return afkPlanDeny('afk.plan_reason_plan_mismatch');
+  // last step: re-read the flag now (it may have been switched off since this hook started) and bind the consult's AFK period
+  var f2 = afkFlag();
+  if (!afkOn(f2)) return afkPlanDeny('afk.plan_reason_afk_off');
+  if (typeof f2.epoch !== 'string' || f2.epoch === '' || f2.epoch !== seen.consultEpoch || f2.epoch !== f.epoch) return afkPlanDeny('afk.plan_reason_afk_changed');
   afkMetric('afk_plan_autoapproved', {});
-  return { exact: { code: 0, out: afkR(ah.cfg('afk.plan_allow'), { reason: JSON.stringify(ah.cfg('afk.msg_plan_approved')), input: JSON.stringify(p.tool_input) }), err: '' } };
+  return { exact: { code: 0, out: afkR(ah.cfg('afk.plan_allow'), { reason: JSON.stringify(ah.cfg('afk.msg_plan_approved')), input: JSON.stringify(input) }), err: '' } };
 }
 
 // PreToolUse while AFK: the question tool is denied every time with the ladder; the plan-approval tool goes to afkPlanPre.
@@ -481,7 +517,7 @@ function decide(p) {
   f = afkFlush(afkIdleTrip(f, now));
   if (ev === 'Stop') return afkStop(p, f, now);
   if (ev === 'PreToolUse') return afkPre(p, f, now);
-  if (ev === 'PostToolUse') afkPlanRecord(p, now);
+  if (ev === 'PostToolUse') afkPlanRecord(p, f, now);
   if (ev === 'PostToolUse' && !afkIsAgent(p) && afkOn(f)) return afkInject(p, f, now, ev); // a subagent never gets the rule nor consumes the parent's once-per-session state
   return 'allow';
 }

@@ -23,10 +23,14 @@
 #      afk.cli_lock_wait_ms, never take over a live holder, and exit non-zero writing nothing when the lock stays busy;
 #   9. owner presence (afk.presence_file) never moves backwards, and idle detection counts from the later of the last owner prompt
 #      and the flag's `ended` time (the last `back`), so a stale presence write cannot re-enter AFK right after `back`;
-#  10. plan auto-approve (afk.planAutoApprove, Claude only): while AFK the PreToolUse hook approves the plan-approval tool
-#      (afk.plan_tools) with allow + updatedInput (the input echoed) only when this session's main thread has a hook-recorded advisor
-#      consult (PostToolUse on advisor.tool_names) newer than its last plan-file write, plan-approval attempt and owner prompt; one
-#      consult approves one attempt; every other case is counted (afk_plan_autoapprove_denied{reason}) and gets the normal prompt.
+#  10. plan auto-approve (afk.planAutoApprove, Claude only), FAIL CLOSED: while AFK the PreToolUse hook approves the plan-approval
+#      tool (afk.plan_tools) with allow + updatedInput (the input echoed) only when this session's main thread has a hook-recorded
+#      advisor consult (PostToolUse on advisor.tool_names) that is SEQUENCE-newer (not wall-clock) than its last plan-file write,
+#      plan-approval attempt and owner prompt; the consult is bound to the plan file's path + SHA-256, the AFK period (flag epoch) and
+#      the per-session owner-prompt witness (afk.plan_prompt_ns); a clock earlier than the newest one seen, an unreadable/unwritable
+#      record (read back after every write), a changed plan file or plan text, or a flag that is not on with the same epoch when
+#      re-read at decision time: nothing is approved. One consult approves one attempt. Every denial is counted
+#      (afk_plan_autoapprove_denied{reason}); a stamp that could not be recorded is counted (afk_plan_stamp_failed{field}).
 #      Codex has no plan-approval tool in the anti-hall hook table, so nothing is approved there.
 # Logic: engine/logic/afk-mode.js. Every phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax.
 
@@ -63,7 +67,7 @@ doc = "The afk.noQuestions setting: while AFK, deny the harness question tool (a
 value = { section = "afk", key = "noQuestions", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
 
 [afk.set_plan_autoapprove]
-doc = "The afk.planAutoApprove setting: while AFK only, approve the plan-approval tool (afk.plan_tools) from its PreToolUse hook (allow + updatedInput, the documented contract) when this session's main thread consulted the advisor after its last plan-file write, its last plan-approval attempt and its last owner prompt. Anything else (no or stale consult, AFK off, a subagent, a state error, a hook error) leaves the normal approval prompt. Off = never auto-approved."
+doc = "The afk.planAutoApprove setting: while AFK only, approve the plan-approval tool (afk.plan_tools) from its PreToolUse hook (allow + updatedInput, the documented contract) when this session's main thread consulted the advisor after (by sequence, not wall clock) its last plan-file write, plan-approval attempt and owner prompt, the plan file still has the consulted content, the clock never went backwards and AFK is still on in the same period when re-read. Fail closed: anything else (no or stale consult, AFK off or cycled, a subagent, a state read/write error, a changed plan, a clock rollback, a hook error) leaves the normal approval prompt. Off = never auto-approved."
 value = { section = "afk", key = "planAutoApprove", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
 
 [afk.guard_name]
@@ -362,8 +366,12 @@ doc = "Harness tools that ask the owner to approve a plan: auto-approved while A
 value = ["ExitPlanMode"]
 
 [afk.plan_state_ns]
-doc = "State namespace of the per-session plan auto-approve record (<state dir>/<ns>-<session>.json): the wall-clock ms of the main thread's last advisor consult (advisorAt), plan-file write (planAt), plan-approval attempt (attemptAt) and owner prompt (promptAt)."
+doc = "State namespace of the per-session plan auto-approve record (<state dir>/<ns>-<session>.json): a sequence counter (seq) and the seq of the main thread's last advisor consult (consultSeq), plan-file write (planSeq), plan-approval attempt (attemptSeq) and owner prompt (promptSeq); the newest wall-clock ms seen (wall) and the seq of the last clock rollback (backSeq); the plan file path (planPath) and the consult's bound path, SHA-256, AFK epoch and owner-prompt witness."
 value = "afk-plan"
+
+[afk.plan_prompt_ns]
+doc = "State namespace of the per-session owner-prompt witness (a counter bumped on every owner prompt, in a file separate from afk.plan_state_ns): a consult records it and a changed or unreadable witness at decision time denies, so an owner prompt whose record write failed still voids the consult."
+value = "afk-plan-prompt"
 
 [afk.plan_allow]
 doc = "The stdout line of a PreToolUse that approves the plan-approval tool: allow with {reason} (JSON-quoted) and updatedInput {input} (the tool input echoed unchanged as JSON; allow alone is not enough for this tool)."
@@ -398,8 +406,32 @@ doc = "afk_plan_autoapprove_denied reason: the newest consult is not newer than 
 value = "stale"
 
 [afk.plan_reason_state_error]
-doc = "afk_plan_autoapprove_denied reason: the attempt could not be recorded in the state file (the consult would be reusable), so nothing is approved."
+doc = "afk_plan_autoapprove_denied reason: the attempt could not be recorded and read back in the state file (the consult would be reusable), so nothing is approved."
 value = "state_error"
+
+[afk.plan_reason_clock_backwards]
+doc = "afk_plan_autoapprove_denied reason: the wall clock is earlier than the newest time the record saw, or went backwards at or after the consult."
+value = "clock_backwards"
+
+[afk.plan_reason_owner_prompt]
+doc = "afk_plan_autoapprove_denied reason: the per-session owner-prompt witness (afk.plan_prompt_ns) changed since the consult, or cannot be read."
+value = "owner_prompt"
+
+[afk.plan_reason_plan_unbound]
+doc = "afk_plan_autoapprove_denied reason: the consult is not bound to a plan file (no recorded plan-file write or no hash at consult time), or the attempt names no absolute planFilePath or a different one."
+value = "plan_unbound"
+
+[afk.plan_reason_plan_changed]
+doc = "afk_plan_autoapprove_denied reason: the plan file's SHA-256 now differs from the consulted one (or it cannot be read)."
+value = "plan_changed"
+
+[afk.plan_reason_plan_mismatch]
+doc = "afk_plan_autoapprove_denied reason: the plan text in the tool input (what would be approved) is not the consulted file's text (surrounding whitespace aside)."
+value = "plan_mismatch"
+
+[afk.plan_reason_afk_changed]
+doc = "afk_plan_autoapprove_denied reason: the AFK flag re-read at decision time is in another AFK period (epoch) than the consult or than the start of this hook (switched off and on since)."
+value = "afk_changed"
 
 [afk.msg_ladder_deny]
 doc = "Reason of the AFK question-tool deny (the question ladder)."
@@ -522,8 +554,12 @@ doc = "Plan-approval tool calls auto-approved while AFK (afk.planAutoApprove) af
 value = { kind = "counter", unit = "events", labels = [] }
 
 [metric.afk_plan_autoapprove_denied]
-doc = "Plan-approval tool calls left to the normal approval prompt, by reason (afk.plan_reason_*: off, afk_off, subagent, no_input, no_marker, stale, state_error)."
+doc = "Plan-approval tool calls left to the normal approval prompt, by reason (afk.plan_reason_*: off, afk_off, subagent, no_input, no_marker, stale, state_error, clock_backwards, owner_prompt, plan_unbound, plan_changed, plan_mismatch, afk_changed)."
 value = { kind = "counter", unit = "events", labels = ["reason"] }
+
+[metric.afk_plan_stamp_failed]
+doc = "Plan auto-approve stamps that could not be written and read back, by field (witness, promptSeq, planSeq, consultSeq); a failed consult stamp only means no auto-approval, a failed prompt stamp is caught by the witness."
+value = { kind = "counter", unit = "events", labels = ["field"] }
 
 [metric.afk_question_parked]
 doc = "AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook)."

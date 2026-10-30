@@ -3116,11 +3116,13 @@ mod afk_mode {
         advisor(&h, "s1");
         plan_write(&h, "s1");
         assert!(exit_plan(&h, "s1").is_empty());
-        // an owner prompt after the consult
+        // an owner prompt after the consult (the per-session prompt witness moved)
         advisor(&h, "s1");
         step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
         assert!(exit_plan(&h, "s1").is_empty());
-        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 2);
+        let m = drained();
+        assert_eq!(denied(&m, "stale"), 1);
+        assert_eq!(denied(&m, "owner_prompt"), 1);
         // a subagent's consult or plan exit never counts for approval
         advisor(&h, "s1");
         let o = step(&h, "s1", "PreToolUse", json!({"agent_id": "a1", "tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. do"}}));
@@ -3225,8 +3227,6 @@ mod afk_mode {
     fn plan_uncertainty_never_fails_open() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
         type Case = (&'static str, &'static str, fn(&str) -> Value);
-        let ok = |h: &str| json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}});
-        let _ = ok;
         let cases: Vec<Case> = vec![
             ("state_error", "state", |h| {
                 let rec = format!("{h}/.anti-hall/afk-plan-s1.json");
@@ -3305,7 +3305,8 @@ mod afk_mode {
         assert!(approved(&exit_plan(&h, "s2")));
         let m = drained();
         assert_eq!(m.counter("afk_plan_autoapproved", &[]), 2);
-        assert_eq!(m.counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 2);
+        assert_eq!(denied(&m, "owner_prompt"), 1);
+        assert_eq!(denied(&m, "stale"), 1);
     }
 
     #[test]
