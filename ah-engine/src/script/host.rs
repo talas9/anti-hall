@@ -1224,22 +1224,48 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
 }
 
 /// `{"current": n, "top": [[rule, n], ..], "last": n}`: blocks recorded for `session`, its most frequent rules, and the block
-/// count of the most recent other session in the look-back window (`guard_rules.blocks_window_days`). Empty counts when the
-/// telemetry store cannot be opened.
+/// count of the session that started before it (0 when it had none, or none is known). Sessions are known from their own
+/// start records (`guard_rules.sessions_key`, written here on the first call for a session), not from block rows, so a
+/// session without a block is still the previous one. Empty counts when the telemetry store cannot be opened.
 fn session_blocks(session: &str) -> String {
     let days = defaults::num("guard_rules.blocks_window_days");
     let since = crate::health::now_ms().saturating_sub(days.saturating_mul(defaults::num("web.query_day_ms")));
     let rows = crate::telemetry::cli::open_existing().map(|t| t.blocks(since, defaults::num("guard_rules.blocks_limit") as usize)).unwrap_or_default();
+    let marks = with_settings(|st| crate::checks::guardkit::state::FileState::new(&st.home)).ok().flatten().map(|s| touch_session(&s, session, crate::health::now_ms())).unwrap_or_default();
+    session_counts(&rows, &marks, session)
+}
+
+/// Record `session`'s start (first sight wins) in the bounded session list and answer the list as `(session, start_ms)`.
+fn touch_session(store: &dyn crate::checks::guardkit::state::SessionState, session: &str, now: u64) -> Vec<(String, u64)> {
+    let (ns, key) = (defaults::text("guard_rules.sessions_ns"), defaults::text("guard_rules.sessions_key"));
+    let keep = defaults::num("guard_rules.sessions_keep") as usize;
+    let mut out = Vec::new();
+    store.update(ns, key, &mut |cur| {
+        let mut list: Vec<(String, u64)> = cur.and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+        if !session.is_empty() && !list.iter().any(|(s, _)| s == session) {
+            list.push((session.to_string(), now));
+        }
+        if list.len() > keep {
+            list.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
+            list.truncate(keep);
+        }
+        out = list.clone();
+        serde_json::to_string(&list).ok()
+    });
+    out
+}
+
+/// The counts for `session`: its blocks and top rules, and the blocks of the latest session that started before it.
+fn session_counts(rows: &[crate::storage::BlockRow], marks: &[(String, u64)], session: &str) -> String {
+    let own_start = marks.iter().find(|(s, _)| s == session).map(|(_, t)| *t);
+    let previous = marks.iter().filter(|(s, t)| s != session && own_start.is_none_or(|o| *t <= o)).max_by_key(|(_, t)| *t).map(|(s, _)| s.as_str());
     let mut per_rule: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
-    let (mut current, mut other_session, mut last) = (0u64, String::new(), 0u64);
+    let (mut current, mut last) = (0u64, 0u64);
     for b in rows.iter().filter(|b| !b.session.is_empty()) {
         if b.session == session {
             current += 1;
             *per_rule.entry(b.rule.clone()).or_insert(0) += 1;
-        } else if other_session.is_empty() {
-            other_session = b.session.clone(); // rows are newest first: the first other session is the most recent
-        }
-        if !other_session.is_empty() && b.session == other_session {
+        } else if Some(b.session.as_str()) == previous {
             last += 1;
         }
     }

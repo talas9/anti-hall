@@ -169,8 +169,6 @@ pub struct Rule {
     pub tier: &'static str,
     /// The defaults key of the rule's `what` text.
     pub source: &'static str,
-    /// The short agent line (essential rules).
-    pub line: &'static str,
 }
 
 /// Every row of the rule registry, in file order.
@@ -184,7 +182,6 @@ pub fn rules() -> Vec<Rule> {
                     setting: r.str_field("setting"),
                     tier: r.str_field("tier"),
                     source: r.str_field("source"),
-                    line: r.str_field("line"),
                 })
                 .collect()
         })
@@ -243,13 +240,22 @@ pub fn compose(action: &str, source: &str) -> String {
     t.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The digest text of an essential rule: composed from the enforced message entry itself (`source`), never from a copy.
+pub fn digest_entry(source: &str) -> String {
+    let (what, _, instead) = rule_parts(source);
+    defaults::render("guard_rules.digest_entry", &[("what", &what), ("instead", &instead)]).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The generated digest file: the essential lines, then the separator, then one extra line per other listed rule.
 pub fn digest_file() -> String {
     let mut ess = Vec::new();
     let mut extra = Vec::new();
     for r in rules() {
-        if r.tier == "essential" && !r.line.is_empty() {
-            ess.push(defaults::render("guard_rules.digest_line", &[("line", &r.line)]));
+        if r.tier == "essential" {
+            let line = digest_entry(r.source);
+            if !line.is_empty() {
+                ess.push(defaults::render("guard_rules.digest_line", &[("line", &line)]));
+            }
         } else if r.tier != "off" {
             let (what, _, _) = rule_parts(r.source);
             if !what.is_empty() {
@@ -286,14 +292,14 @@ pub fn rule_problems() -> Vec<String> {
         if !defaults::has(r.source) {
             p.push(defaults::render("guard_rules.problem_source", &[("id", &r.id), ("source", &r.source)]));
         }
-        if r.tier == "essential" && r.line.is_empty() {
+        if r.tier == "essential" && digest_entry(r.source).is_empty() {
             p.push(defaults::render("guard_rules.problem_line", &[("id", &r.id)]));
         }
         sources.insert(r.source);
         if r.tier != "off" && !skill.contains(&format!("`{}`", r.id)) {
             p.push(defaults::render("guard_rules.problem_skill", &[("id", &r.id)]));
         }
-        if r.tier == "essential" && !digest.contains(r.line) {
+        if r.tier == "essential" && !digest.contains(&digest_entry(r.source)) {
             p.push(defaults::render("guard_rules.problem_digest", &[("id", &r.id)]));
         }
     }
@@ -330,7 +336,7 @@ fn rules_skill(host: &str, a: &str) -> Skill {
     let g = area(a);
     let sub = g.str_field("skill");
     let name = skill_name(host, sub);
-    let mut o = frontmatter(&name, &format!("Use when {}.", g.str_field("use_when")));
+    let mut o = frontmatter(&name, &defaults::render("guard_rules.skill_use_when", &[("use_when", &g.str_field("use_when"))]));
     crate::discard::harmless(writeln!(o, "# {}\n\n{}\n", g.str_field("title"), g.str_field("brief"))); // keep: formatting into a String cannot fail
     crate::discard::harmless(writeln!(o, "## {}\n\n{}\n", defaults::text("guard_rules.skill_head"), defaults::text("guard_rules.skill_intro"))); // keep: formatting into a String cannot fail
     o.push_str(&rules_section());
@@ -345,7 +351,7 @@ fn sub_skill(host: &str, a: &str) -> Skill {
     let g = area(a);
     let sub = g.str_field("skill");
     let name = skill_name(host, sub);
-    let mut o = frontmatter(&name, &format!("Use when {}.", g.str_field("use_when")));
+    let mut o = frontmatter(&name, &defaults::render("guard_rules.skill_use_when", &[("use_when", &g.str_field("use_when"))]));
     crate::discard::harmless(writeln!(o, "# {}\n\n{}\n", g.str_field("title"), g.str_field("brief"))); // keep: formatting into a String cannot fail
     let verbs = area_verbs(a);
     if !verbs.is_empty() {
