@@ -574,6 +574,24 @@ pub(super) fn hold_done(st: &mut State, a: &Agent, now: u64) {
     st.nudge_done_hold.insert(a.id.clone(), DoneHold { until: now + lim("health_done_hold_ms"), activity_ms: a.last_output_ms });
 }
 
+/// Moves done holds an older version wrote into the busy-hold field (no activity time) into the done holds (#430), so new output
+/// from the child releases them. A busy hold is never set further ahead than limits.health_recheck_ms, so an entry further ahead
+/// can only be such an old done hold. Its baseline is the earlier of the child's last output and the verdict time the hold implies
+/// (its expiry less limits.health_done_hold_ms), so output written after the verdict, even before the upgrade, releases it; a child
+/// still idle stays held to the same expiry. Run only with agents.nudgeScope on: off, the old field is read exactly as before.
+/// Idempotent: a moved entry is no longer in the old field. Entries for a child no longer followed are left to expire as before.
+fn adopt_legacy_done_holds(st: &mut State, now: u64) {
+    let busy_max = now.saturating_add(lim("health_recheck_ms"));
+    let span = lim("health_done_hold_ms");
+    let old: Vec<(String, u64)> =
+        st.nudge_hold.iter().filter(|(c, t)| **t > busy_max && st.agents.contains_key(*c)).map(|(c, t)| (c.clone(), *t)).collect();
+    for (c, until) in old {
+        let activity_ms = st.agents.get(&c).map_or(0, |a| a.last_output_ms).min(until.saturating_sub(span));
+        st.nudge_done_hold.entry(c.clone()).or_insert(DoneHold { until, activity_ms });
+        st.nudge_hold.remove(&c);
+    }
+}
+
 /// Whether a done verdict still holds this child: the scope rules are on, the hold has not run out and the child has produced no
 /// output since the verdict (a child that resumed work and went bad again is judged afresh).
 fn done_held(env: &Env, st: &State, a: &Agent, now: u64) -> bool {
@@ -1110,6 +1128,9 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
     take_turns(env, st);
     follow(env, st);
     dead_notices(env, st);
+    if env.switch("agent_nudge.scope_setting") {
+        adopt_legacy_done_holds(st, env.now_ms);
+    }
     let mut budget = lim("health_per_tick");
     open_new(env, st, &mut budget);
     watch_parents(st);
