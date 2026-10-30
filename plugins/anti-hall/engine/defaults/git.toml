@@ -904,7 +904,7 @@ unit = "ms"
 
 [git.msg_push_credit]
 doc = "Block: a push would publish commits that carry an AI credit. Placeholder: {shown} (each short hash with the branches that hold it, push_hit_format)."
-value = { what = "this push would publish commits with AI credit: {shown}.", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "reword it (git commit --amend) if unpushed on a branch you own; else stop and tell the owner. Never force push." }
+value = { what = "this push would publish commits with AI credit: {shown}.", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "if it is the unpushed tip of a branch you own, switch to it and reword it (commit --amend); else tell the owner." }
 
 [git.push_hit_format]
 doc = "One credited commit in msg_push_credit. Placeholders: {sha} (short hash), {branches} (the local branches that contain it, from push_argv_branch_contains), {where} (push_hit_where_format for a submodule, else empty)."
@@ -959,8 +959,8 @@ doc = "Regular expressions (JavaScript syntax) for a repository path, as written
 value = ["^~[^/]", "^[^'\"]*[*?\\[]"]
 
 [git.push_dynamic_repo_cmd_re]
-doc = "Regular expression (JavaScript syntax) over the whole command for a git push whose -C, --git-dir or --work-tree value holds an unquoted command substitution: the segment splitter cuts the command there, so the push is matched on the raw text (msg_push_dynamic_repo)."
-value = "\\bgit\\s+(?:[^\\s;&|]+\\s+)*?(?:-C\\s+|--git-dir[=\\s]|--work-tree[=\\s])[^\\s;&|]*(?:\\$\\(|`)[^;&|\\n]*\\bpush\\b"
+doc = "Regular expression (JavaScript syntax) over the whole command for a git push at command position whose -C, --git-dir or --work-tree value holds an unquoted command substitution (a quoted one is read on the token): the segment splitter cuts the command there, so the push is matched on the raw text (msg_push_dynamic_repo)."
+value = "(?:^|[;&|\\n(]\\s*)(?:[A-Za-z_][A-Za-z0-9_]*=[^\\s;&|'\"]*\\s+)*git\\s+(?:[^\\s;&|'\"]+\\s+)*?(?:-C\\s+|--git-dir[=\\s]|--work-tree[=\\s])[^\\s;&|'\"]*(?:\\$\\(|`)[^;&|\\n]*\\bpush\\b"
 
 [git.msg_push_dynamic_repo]
 doc = "Block: a push whose repository (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) is a path the shell expands at run time. Placeholder: {arg}."

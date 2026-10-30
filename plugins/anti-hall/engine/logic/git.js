@@ -1957,8 +1957,8 @@ function committedHandovers(ev, lastCdDir) {
 
 // GH #457 / PR #469: a push is refused while any local commit that no remote has carries an AI credit. What the push itself
 // would publish (refspecs, config, mirror, insteadOf) is never resolved: every unpushed commit counts, so no form of the push
-// routes around the check. One git query per repository and call (S.pushChecks); git unavailable or timed out fails open with
-// an advisory (S.pushUnchecked). Names the hashes and the fix; never rewrites anything.
+// routes around the check. One scan per repository and call (S.pushChecks: commits, annotated tags, submodules); a git query that
+// cannot run, fails or times out lets the push go with an advisory (S.pushUnchecked). Names the hashes and the fix; never rewrites anything.
 function pushCreditVerdict(ev, lastCdDir) {
   try {
     if (!gitSettingOn('git.setting_push_credit')) return null;

@@ -527,9 +527,9 @@ fn an_edited_message_and_a_push_in_the_same_call_are_refused() {
 }
 
 /// A repository path the shell expands at run time cannot be checked before the call: the push is refused and told to use a
-/// literal path; a git query that fails (not a repository) lets the push through with the not-checked advisory, never silently.
+/// literal path.
 #[test]
-fn a_push_to_an_unexpandable_repo_path_is_refused_and_a_failing_query_is_not_silent() {
+fn a_push_to_an_unexpandable_repo_path_is_refused_and_told_to_be_literal() {
     let e = Env::new("dynrepo");
     let (work, _) = pushed_repo(&e);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
@@ -549,6 +549,17 @@ fn a_push_to_an_unexpandable_repo_path_is_refused_and_a_failing_query_is_not_sil
         }
     }
     assert!(missed.is_empty(), "{missed:#?}");
+    // the same text quoted, or not at command position, is no push
+    for cmd in [format!("git commit -q --allow-empty -m 'docs: git -C $(pwd) {P}'"), format!("echo 'git -C `pwd` {P}'")] {
+        assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "{cmd}");
+    }
+}
+
+/// A git query that fails (not a repository) lets the push through with the not-checked advisory, never silently.
+#[test]
+fn a_push_whose_git_query_fails_gets_the_not_checked_advisory() {
+    let e = Env::new("failq");
+    let _ = e.hook("echo warm");
     let plain = e.dir.join("plain");
     std::fs::create_dir_all(&plain).unwrap();
     let (out, err, code) = e.hook_in(&format!("git {P} origin main"), plain.to_str().unwrap());
@@ -612,6 +623,6 @@ fn the_push_block_names_the_branch_and_never_suggests_a_rebase() {
     let (out, err, code) = e.hook_in(&format!("git {P} origin main"), w);
     assert_eq!(code, 2, "stdout={out} stderr={err}");
     assert!(err.contains("feat-credit-x") && err.contains(&sha), "branch and sha named: {err}");
-    assert!(err.contains("amend") && err.contains("owner"), "the plain fix: {err}");
+    assert!(err.contains("switch to it") && err.contains("amend") && err.contains("owner"), "the plain fix: {err}");
     assert!(!err.contains("rebase -i") && !err.contains("rebase the"), "never a rebase: {err}");
 }
