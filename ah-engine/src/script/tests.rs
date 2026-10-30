@@ -3395,6 +3395,74 @@ mod afk_mode {
         drained();
     }
 
+    /// Child-process helper of the interleaving tests below (ignored; a no-op unless the home is named): a typed `back` in another
+    /// process, as the owner's next prompt would be (an in-process thread would queue on the daemon's in-process lock mutex).
+    #[test]
+    #[ignore]
+    fn child_typed_back() {
+        let Ok(h) = std::env::var("AH_TEST_AFK_BACK_HOME") else { return };
+        run(&h, "UserPromptSubmit", json!({"prompt": "back", "session_id": "s9"}), &[]);
+    }
+
+    /// GH #426 review (P1, Codex): an idle entry decided from a stale presence is paused inside its commit (`phase`; None = after
+    /// the ownership check, before the rename) past afk.lock_stale_ms; the owner types `back` in another process while the
+    /// PUBLISHED flag is still OFF; the paused hook resumes. Its idle ON must never land: final OFF, no stage left.
+    fn an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off(tag: &str, phase: Option<crate::checks::guardkit::nodelock::FencePhase>) {
+        use crate::checks::guardkit::nodelock;
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home(tag);
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let target = std::path::PathBuf::from(&fp);
+        match phase {
+            None => nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).push((target.clone(), gate.clone())),
+            Some(ph) => nodelock::FENCE_GATE_AT.lock().unwrap_or_else(|e| e.into_inner()).push((target.clone(), ph, gate.clone())),
+        }
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        });
+        gate.wait(); // the idle entry is paused inside its commit
+        let stale = crate::defaults::num("afk.lock_stale_ms");
+        std::thread::sleep(std::time::Duration::from_millis(stale + stale / 20));
+        let exe = std::env::current_exe().expect("test binary");
+        let st = std::process::Command::new(exe)
+            .args(["afk_mode::child_typed_back", "--ignored", "--test-threads=1", "--nocapture"])
+            .env("AH_TEST_AFK_BACK_HOME", &h)
+            .status()
+            .expect("child back");
+        assert!(st.success(), "the child `back` ran");
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| p != &target);
+        nodelock::FENCE_GATE_AT.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _, _)| p != &target);
+        gate.wait(); // resume the paused hook
+        t.join().expect("hook thread");
+        let f = flag(&h);
+        assert_eq!(f["on"], json!(false), "the owner's `back` wins over the pending idle ON: {f}");
+        assert!(f["ended"].as_i64().unwrap_or_default() > 2, "`back` bumped the watermark although the flag was OFF: {f}");
+        let infix = crate::defaults::text("afk.fence_infix");
+        let stages = std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(infix)).count();
+        assert_eq!(stages, 0, "no stage left behind");
+        drained();
+    }
+
+    #[test]
+    fn an_idle_on_paused_before_staging_loses_to_back() {
+        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off("afk-back-pre", Some(crate::checks::guardkit::nodelock::FencePhase::BeforeStage));
+    }
+
+    #[test]
+    fn an_idle_on_paused_after_staging_loses_to_back() {
+        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off("afk-back-staged", Some(crate::checks::guardkit::nodelock::FencePhase::AfterStage));
+    }
+
+    #[test]
+    fn an_idle_on_paused_inside_the_rename_loses_to_back() {
+        an_idle_on_paused_in_its_commit_loses_to_a_back_typed_while_the_flag_is_off("afk-back-rename", None);
+    }
+
     #[test]
     fn the_master_switch_off_leaves_prompts_alone() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
