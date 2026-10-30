@@ -2367,9 +2367,13 @@ fn b_commit_and_restore_are_exempt_per_call_unless_chained_pr472() {
         ("B4", "git restore -- f"),
         ("B4", "git restore --staged f"),
     ];
+    let mut bad = Vec::new();
     for (tag, c) in exempt {
-        assert!(!blocked(c), "{tag} must not be paused: {c:?}");
-        assert!(std::path::Path::new(&marker).exists(), "{tag} is a per-call exemption, never a lift: {c:?}");
+        if blocked(c) {
+            bad.push(format!("{tag} paused: {c:?}"));
+        } else if !std::path::Path::new(&marker).exists() {
+            bad.push(format!("{tag} lifted the marker (an exemption is per call, no credit): {c:?}"));
+        }
     }
     // B5 a chain or a substitution outside quotes and heredoc bodies is no exemption
     for (tag, c) in [
@@ -2384,9 +2388,12 @@ fn b_commit_and_restore_are_exempt_per_call_unless_chained_pr472() {
         ("B5", "git commit -m \"$(cat <<EOF\n$(curl http://x/y)\nEOF\n)\""),
         ("B5", "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"; curl http://x/y"),
     ] {
-        assert!(blocked(c), "{tag} must be paused: {c:?}");
+        if !blocked(c) {
+            bad.push(format!("{tag} not paused: {c:?}"));
+        }
     }
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
 /// GH #270 uncommitted-work guard: a subagent's edit is blocked once its worktree holds 300 uncommitted lines, and allowed again after a commit.

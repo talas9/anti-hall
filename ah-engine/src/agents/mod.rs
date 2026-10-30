@@ -386,8 +386,9 @@ pub struct Agent {
     /// burn accounting, they may only hold off the pause (burn.soft_hold).
     #[serde(default)]
     pub soft_ts: Vec<u64>,
-    /// The burn episode the soft holds belong to: the progress (hard outcomes) it started at, when its first soft outcome came and how
-    /// many came since. A hard outcome (progress moves) starts a new episode; burn.soft_hold caps holds per episode.
+    /// The burn episode the pause hold-offs belong to: the progress (hard outcomes) it started at, when it started (the last hard outcome,
+    /// or when the agent was first seen) and how many events (soft outcomes, build launches) came since. A hard outcome (progress moves)
+    /// starts a new episode; burn.soft_hold caps the events and the length of an episode (PR #472).
     #[serde(default)]
     pub soft_episode: (u64, u64, u64),
     /// The declared step.

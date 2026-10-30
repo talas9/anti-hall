@@ -1,8 +1,8 @@
 // check = "burn-breaker" (PreToolUse on every tool; engine-only, no Node twin). GH #270: tokens spent versus outcome. The agent tracker
 // (ah-engine, src/agents/signals.rs) keeps the hard burn flag of an agent that spent burn.hard_tokens_no_outcome tokens since its last
 // commit, finished step, passing check or new file, and mirrors it in <state>/agent-tracker/breaker/<agent key>.json. While that marker
-// is fresh this check blocks the SUBAGENT's tool calls except commit (`git commit -m '<plain text>'` or `-F <file>`), push, status and read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (its report); the main
-// session is never blocked (no agent_id in its payload). The marker is removed by the tracker when the agent produces an outcome, and at once by this check when the agent runs an allowed git commit.
+// is fresh this check blocks the SUBAGENT's tool calls except a lone commit or restore (burn.exempt, any message form), push, status and read-only inspection commands (grep, rg, ls, cat, head, tail, wc, git log/diff/show) and SendMessage (its report); the main
+// session is never blocked (no agent_id in its payload). The marker is removed by the tracker when the agent produces an outcome, and at once by this check only for a report write; a commit passes per call and never lifts it (PR #472).
 // Every name, number, pattern and text is in burn.toml. A Bash judge says yes only to a shape it fully parsed; an error while judging is
 // classification doubt and allows the call (GH #458), as a crash of the script itself does (script.failure_mode_by_check). A commit in any
 // form (the heredoc message too) and the restore class (burn.restore_bash_res) are never paused.
@@ -136,6 +136,44 @@ function bbRestore(cmd) {
   return any;
 }
 
+// PR #472 the commit/restore exemption: a lone `git commit` or a restore-class command is never paused. It is per call and gives no credit
+// (the marker stays; only the tracker clears it once it sees a real outcome), and the burn is counted in model tokens, so a wrong exemption
+// costs at most that one tool call. The one thing that disqualifies it is a second command riding along: a top-level `;` `&&` `||` `|`
+// `&` or newline, or a command substitution outside quotes and heredoc bodies. That is judged by the engine's quote- and heredoc-aware
+// shell splitter (ahHost.shellSplit / shellSubstitutions / shellTokenize, the `command` check's scanners), so `$` and `<<` text inside a
+// message is inert. The only substitution allowed is the heredoc message idiom (burn.exempt.subst_re: `$(cat <<'EOF' ... EOF)`, a quoted
+// delimiter, nothing else in it). The words are then rebuilt (burn.exempt: a message or any word outside word_re becomes the placeholder)
+// and judged by burn.commit_re or burn.restore_bash_res minus burn.deny_res / burn.restore_deny_res. Returns 'commit', 'restore' or null.
+function bbOneCommand(text) {
+  var r = ahHost.shellSplit(text), ends = ah.cfg('burn.exempt').end_delims;
+  return r[0].length === 1 && ends.indexOf(r[1][0]) >= 0 ? r[0][0] : null;
+}
+
+function bbExempt(cmd) {
+  var x = ah.cfg('burn.exempt');
+  if (cmd === '' || cmd.length > ah.cfg('burn.max_cmd_chars')) return null;
+  var seg = bbOneCommand(cmd);
+  if (seg === null) return null;
+  var subs = ahHost.shellSubstitutions(cmd);
+  for (var i = 0; i < subs.length; i++) {
+    if (!ah.re.test(x.subst_re, 'r', subs[i]) || bbOneCommand(subs[i]) === null || ahHost.shellSubstitutions(subs[i]).length > 0) return null;
+  }
+  var words = ahHost.shellTokenize(seg), out = [];
+  for (var w = 0; w < words.length; w++) {
+    var msg = w > 0 && x.message_flags.indexOf(words[w - 1]) >= 0;
+    out.push(msg || !ah.re.test(x.word_re, 'r', words[w]) ? x.placeholder : words[w]);
+  }
+  var line = out.join(' ');
+  var deny = ah.cfg('burn.deny_res');
+  for (var d = 0; d < deny.length; d++) if (ah.re.test(deny[d], 'r', line)) return null;
+  if (ah.re.test(ah.cfg('burn.commit_re'), 'r', line)) return 'commit';
+  var rdeny = ah.cfg('burn.restore_deny_res');
+  for (var k = 0; k < rdeny.length; k++) if (ah.re.test(rdeny[k], 'r', line)) return null;
+  var res = ah.cfg('burn.restore_bash_res');
+  for (var j = 0; j < res.length; j++) if (ah.re.test(res[j], 'r', line)) return 'restore';
+  return null;
+}
+
 // One count per pass or pause (metrics burn_breaker_bypass by kind, burn_breaker_paused by reason); a lost count never changes a decision.
 function bbCount(name, label, value) {
   try { ah.metric(name, [label, value]); } catch (e) { /* counting never fails a hook */ }
@@ -166,6 +204,8 @@ function decide(p) {
     // one (not a no) is doubt, and doubt never pauses the call.
     try {
       if (bbSend(cmd) === true) return bbPass('send'); // escalation and mesh sends always get through
+      var ex = bbExempt(cmd); // a lone commit or restore: per call, no lift (PR #472)
+      if (ex !== null) return bbPass(ex);
       if (bbRestore(cmd)) return bbPass('restore'); // putting earlier state back is never paused
       if (bbReportWrite(cmd) === true) {
         ah.state.remove(rel);
@@ -174,8 +214,7 @@ function decide(p) {
       var one = bbHeredoc(cmd);
       var ok = bbAllowedBash(one !== null ? one : cmd);
       if (ok !== null && ok !== undefined) {
-        // a commit is the outcome the block asks for: lift it now; the tracker counts the commit on its next tick and raises it again only if the hard condition still holds
-        if (ok.commits) ah.state.remove(rel);
+        // a commit passes but never lifts the block (PR #472: per call, no credit); the tracker clears the marker once it sees the commit land
         return bbPass(ok.commits ? 'commit' : 'inspect');
       }
     } catch (e) {

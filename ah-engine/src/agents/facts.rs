@@ -415,6 +415,10 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
             class = "probe".into();
         }
         writes = shell_writes(&unquoted(arg));
+        // a build launch is one event of the burn episode: an endless chain of builds with no outcome spends the episode's cap (PR #472)
+        if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == class) {
+            episode_event(a, ts);
+        }
         if input.get(tr("background")).and_then(Value::as_bool) == Some(true) {
             push_ring(&mut a.bg_bash, ts, lim("loop_window"));
         }
@@ -560,24 +564,24 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         push_ring(&mut a.errs, (crate::health::fnv(&head), cap(&text, lim("text_cap")), ts), lim("error_window"));
         return;
     }
-    // GH #458 SOFT outcomes: a file the shell created or appended, a passing check, a completed live probe. They never reset the burn or
-    // waste accounting (command text can claim anything); each successful call of that shape is one soft event, which may only hold off
-    // the pause for a bounded, capped while (burn.soft_hold).
+    // PR #472 HARD outcomes: a file the shell created or appended for the first time and a passing check add progress (and so restart the
+    // burn count), like an edited file or a passing test. SOFT: a completed live probe or a shell write to a file already written; each
+    // is one event of the burn episode, which may only hold off the pause within the episode's cap (burn.soft_hold).
     let om = defaults::raw("agent_tracker.outcome_metric");
-    let soft = if !p.writes.is_empty() {
-        Some(om.str_field("shell_file"))
-    } else if p.class == "check" || p.class == "probe" {
-        Some(p.class.as_str())
-    } else {
-        None
-    };
-    if let Some(kind) = soft {
-        push_ring(&mut a.soft_ts, ts, lim("loop_window"));
-        if a.soft_episode.0 != a.progress || a.soft_episode.1 == 0 {
-            a.soft_episode = (a.progress, ts, 0);
+    let fresh: Vec<String> = p.writes.iter().filter(|w| !a.files.contains(w)).cloned().collect();
+    if !fresh.is_empty() {
+        for w in fresh {
+            push_ring(&mut a.files, w, lim("files_max"));
         }
-        a.soft_episode.2 += 1;
-        count_outcome(kind);
+        a.progress += weight("shell_file");
+        count_outcome(om.str_field("shell_file"));
+    } else if p.class == "check" {
+        a.progress += weight("check");
+        count_outcome(&p.class);
+    } else if p.class == "probe" || !p.writes.is_empty() {
+        push_ring(&mut a.soft_ts, ts, lim("loop_window"));
+        episode_event(a, ts);
+        count_outcome(if p.class == "probe" { p.class.as_str() } else { om.str_field("shell_file") });
     }
     if p.push || p.class == "commit" || p.class == "merge" || p.class == "deploy" {
         a.last_ship_ms = ts;
@@ -607,6 +611,21 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
             a.tests_pass += 1;
             a.progress += weight("test");
         }
+    }
+}
+
+/// One event of the current burn episode (a soft outcome or a build launch, PR #472): a hard outcome since the episode began (progress
+/// moved) starts a new one at `ts`. burn.soft_hold caps the events and the length of an episode.
+pub(crate) fn episode_event(a: &mut Agent, ts: u64) {
+    episode_sync(a, ts);
+    a.soft_episode.2 += 1;
+}
+
+/// Start a new burn episode at `ts` when a hard outcome came since the current one began (or none began yet): the episode clock starts
+/// at the last hard outcome (PR #472), and an agent with none yet starts its first episode when it is first seen.
+pub(crate) fn episode_sync(a: &mut Agent, ts: u64) {
+    if a.soft_episode.0 != a.progress || a.soft_episode.1 == 0 {
+        a.soft_episode = (a.progress, ts, 0);
     }
 }
 
