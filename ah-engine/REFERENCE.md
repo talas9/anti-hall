@@ -4968,6 +4968,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_stray_seen_sep` | `#` |  |  | Joins a straying signal's key and episode number in its shown-set key. |
 | `devswarm_role.pg_stray_step` | `: step ` |  |  | Between a warned workspace's title and its step number on the straying line. |
 | `devswarm_role.pg_stray_tail` | ` — advisory (Jev notes are recommendations; your call); `~/.anti-hall/ah-engi...` |  |  | Ends the straying advisory line. |
+| `devswarm_role.pg_sw_pos_guard` | `6 entries` |  |  | Switch devswarm.unreadPositionGuard (default on): a saved store read position past the partition's message count is unknown (the gate keeps its cached count and does not pass a Stop on it), never 0 unread or an empty list (GH #429). Off restores the old read. |
+| `devswarm_role.pg_sw_provenance` | `6 entries` |  |  | Switch devswarm.noiseProvenance (default on): a `[Primary poke]` row is told apart by provenance, not by its text (GH #429). A store row is a poke mirror only when it carries no `mtype` (the native ingest writes none; every mesh send has one), an inbox-file line only when its resolved sender is a Primary id or none, so a child's message that merely starts with the same words counts as unread mail. Off restores the text-prefix rule. |
 | `devswarm_role.pg_sw_shared_count` | `6 entries` |  |  | Switch devswarm.parentGateSharedCount (default on): the parent gate counts the Primary's own unread mail with the ONE shared count `mesh inbox peek-primary` reports (own-family sends and wake rows left out, re-checked live even with no own reader row), and leaves a partition's own-family sends out of the descriptor count (GH #384). Off restores the old `max(countFor, messageCount - own)` projection, which can block on a stale count peek shows as 0. |
 | `devswarm_role.pg_tail` | `If this is intentional, say so explicitly. Escape hatch: the user may direct ...` |  |  | The closing sentence of the reason. |
 | `devswarm_role.pg_title_fmt` | `{name} ({short})` |  |  | A workspace's display name: {name}, {short} (the id's first characters). |
@@ -7929,7 +7931,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `388 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `390 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14168,6 +14170,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `devswarm_parent_gate_count_mismatch` | counter | counts |  | Parent-gate own-mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384). |
 | `devswarm_parent_gate_fired` | counter | blocks | kind | Stop blocks the DevSwarm parent gate answered, by kind (block, escalation). |
 | `devswarm_parent_gate_suppressed` | counter | passes | reason | Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send). |
+| `mesh_noise_lookalike_kept` | counter | rows | kind | Rows or lines that start with a system prefix (poke, wake) but carry a mail provenance (an mtype, or a non-Primary sender), so they were counted as unread mail, by kind. |
+| `mesh_unread_position_unknown` | counter | counts | site | Unread counts reported unknown because the saved store read position was past the partition's message count, by site (count_for, union_of, shared_unread). |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |

@@ -298,9 +298,9 @@ fn base_past_total(st: &Settings, store: &crate::mesh::MeshReader, id: &str, bas
     Ok(past)
 }
 
-/// A boolean settings switch (default on when unset).
+/// A boolean settings switch (its entry's default when unset).
 fn switch_on(st: &Settings, key: &str) -> bool {
-    crate::dsact::settings::resolve(st, defaults::raw(key)).as_bool().unwrap_or(true)
+    crate::checks::guardkit::settings::get_bool(st, defaults::raw(key))
 }
 
 fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Option<&str>, own: bool, now: f64) -> Result<Value, No> {
@@ -744,7 +744,7 @@ mod shared_count_tests {
         assert!(!bodies.iter().any(|b| b.ends_with("nudge")), "the native poke mirror is noise: {bodies:?}");
         let off = Settings { home: st.home.clone(), env: [("ANTIHALL_DEVSWARM_NOISE_PROVENANCE".to_string(), "false".to_string())].into() };
         let u = union_of(&off, "k1", "primary-x", None, None, false, 100.0).ok().unwrap();
-        assert!(u["storeOnly"].as_array().unwrap().iter().any(|r| r["body"].as_str().unwrap_or("").ends_with("nudge")), "switch off: the host no longer drops by provenance");
+        assert!(u["storeOnly"].as_array().unwrap().iter().any(|r| r["body"].as_str().unwrap_or("").ends_with("nudge")), "switch off: the host no longer drops by provenance: {u}");
         // position 20 > total 2
         w.reader_cursor_txn(&[floor(20)]).unwrap();
         let c = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).ok().unwrap();
