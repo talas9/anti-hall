@@ -384,6 +384,8 @@ pub struct FsProbe {
     cache: Option<Arc<ReadCache>>,
     plans: OnceLock<HashMap<String, PathBuf>>,
     descs: OnceLock<Vec<crate::dswire::facts::Desc>>,
+    /// `devswarm.noiseProvenance` of the request, `None` = no request (the engine's own settings).
+    provenance: Option<bool>,
 }
 
 /// Files the probes read and their bytes, since the process started (the `status --threads` work counters).
@@ -451,10 +453,15 @@ fn count_hit() {
 impl FsProbe {
     /// A probe over `home`'s DevSwarm directory; `now` is the clock the unread union uses.
     pub fn new(home: &Path, now: i64) -> FsProbe {
-        FsProbe { home: home.to_path_buf(), now, cache: None, plans: OnceLock::new(), descs: OnceLock::new() }
+        FsProbe { home: home.to_path_buf(), now, cache: None, plans: OnceLock::new(), descs: OnceLock::new(), provenance: None }
     }
     /// Answer the file reads of this probe from `cache` where the files are unchanged (the reconcile's own probe; an action's
     /// re-check reads the sources again and uses none).
+    /// Classify wake lines with the `devswarm.noiseProvenance` of the request this probe serves ([`union::provenance_of`], GH #429).
+    pub fn with_provenance(mut self, provenance: bool) -> FsProbe {
+        self.provenance = Some(provenance);
+        self
+    }
     pub fn with_cache(mut self, cache: Arc<ReadCache>) -> FsProbe {
         self.cache = Some(cache);
         self
@@ -549,8 +556,8 @@ impl Probe for FsProbe {
         };
         // the floor view (the statusline has no reader of its own), through the one unread helper: the mail the workspace's own
         // identity family sent is not unread
-        // no request drives this probe (reconcile, live view, wake): its settings are the engine's own
-        let provenance = union::provenance_of_process(&self.home);
+        // the request's switch when one drives this probe (the live view); the engine's own settings for its reconcile and wake loops
+        let provenance = self.provenance.unwrap_or_else(|| union::provenance_of_process(&self.home));
         let Some(r) = &reader else {
             let u = union::union_unread(&union::UnionIn {
                 inbox: inbox.as_deref(),
