@@ -486,15 +486,13 @@ fn finish(input: &Value, label_path: Option<PathBuf>, audit_path: Option<PathBuf
 mod issue_466_tests {
     use super::*;
 
-    static NOW: std::sync::LazyLock<u64> = std::sync::LazyLock::new(now_ms);
-
     fn iso(ms: u64) -> String {
         crate::jev::assist::iso_ms(ms)
     }
 
-    fn run(argv: &[&str], assist: &str) -> Value {
+    fn run(argv: &[&str], assist: &str, now: u64) -> Value {
         let input = json!({
-            "argv": argv, "now": *NOW, "cfg": cfg(), "assist": [assist], "triage": [], "judge": [], "supervision": [], "rollups": [],
+            "argv": argv, "now": now, "cfg": cfg(), "assist": [assist], "triage": [], "judge": [], "supervision": [], "rollups": [],
             "labels": [], "jevJson": Value::Null, "budget": {"mode": "unlimited", "usdPerDay": Value::Null, "usdPerWeek": Value::Null,
             "minCreditUsd": Value::Null}, "credit": "{}", "budgetState": "{}",
         });
@@ -510,19 +508,26 @@ mod issue_466_tests {
 
     #[test]
     fn window_narrows_the_whole_report() {
+        let now = now_ms();
         let day = defaults::num("jevrep.thr_day_ms");
-        let assist = [row("a", *NOW - 3 * day, "on", "baseline-only", None), row("a", *NOW - 1000, "on", "baseline-only", None)].join("\n");
-        let all = run(&["--json"], &assist);
+        let assist = [row("a", now - 3 * day, "on", "baseline-only", None), row("a", now - 1000, "on", "baseline-only", None)].join("\n");
+        let all = run(&["--json"], &assist, now);
         assert_eq!(all["window"]["rowsInWindow"], 2, "{}", all["window"]);
-        let w = run(&"--json --window 24h".split(' ').collect::<Vec<_>>(), &assist);
+        let windows = cfg()["thresholds"]["windows"].clone();
+        let win = windows.as_object().unwrap().iter().find(|(_, d)| d.as_u64() == Some(1)).map(|(k, _)| k.clone()).unwrap();
+        let mut argv = vec!["--json"];
+        argv.push("--window");
+        argv.push(&win);
+        let w = run(&argv, &assist, now);
         assert_eq!((w["window"]["rowsTotal"].as_u64(), w["window"]["rowsInWindow"].as_u64()), (Some(2), Some(1)), "{}", w["window"]);
     }
 
     #[test]
     fn switched_off_integrations_say_off_and_errors_are_counted_by_kind() {
-        let off: Vec<String> = (0..60).map(|i| row("offOne", *NOW - 1000 - i, "off", "baseline-only", None)).collect();
-        let err: Vec<String> = (0..3).map(|i| row("errOne", *NOW - 1000 - i, "on", "baseline-only", Some("no-key"))).collect();
-        let r = run(&["--json"], &[off, err].concat().join("\n"));
+        let now = now_ms();
+        let off: Vec<String> = (0..60).map(|i| row("offOne", now - 1000 - i, "off", "baseline-only", None)).collect();
+        let err: Vec<String> = (0..3).map(|i| row("errOne", now - 1000 - i, "on", "baseline-only", Some("no-key"))).collect();
+        let r = run(&["--json"], &[off, err].concat().join("\n"), now);
         let by = |id: &str| r["integrations"].as_array().unwrap().iter().find(|x| x["id"] == id).cloned().unwrap();
         let expect_off = defaults::render("jevrep.t_verdict_off", &[("calls", &60)]);
         assert_eq!(by("offOne")["suggestion"].as_str(), Some(expect_off.as_str()));
