@@ -60,7 +60,7 @@ doc = "Where the on/off switch is read from (guards.speculationGuard, default on
 value = { section = "guards", key = "speculationGuard", env = "", aliases = [], option = "guards_speculation_guard", default = true }
 
 [speculation_guard.inference_setting]
-doc = "The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node."
+doc = "The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence (lib/80-inference.js) and, with the switch on, blocks once per reply a confident causal claim that no tool result supports."
 value = { section = "guards", key = "inferenceCheck", env = "ANTIHALL_INFERENCE_CHECK", aliases = [], option = "", default = false }
 
 [speculation_guard.state_prefix]
