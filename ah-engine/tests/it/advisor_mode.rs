@@ -437,8 +437,11 @@ fn advisor_seen_survives_ten_megabytes_without_a_call() {
         r#"{{"type":"assistant","message":{{"role":"assistant","model":"claude-sonnet-5-5","content":[{{"type":"text","text":"{}"}}]}}}}"#,
         "x".repeat(1000)
     );
-    let block = vec![filler.as_str(); 10 * 1024].join("\n");
-    append(&tp, &block);
+    let block = vec![filler.as_str(); 2 * 1024].join("\n");
+    for _ in 0..5 {
+        append(&tp, &block); // read by a Stop after each 2 MB: under the window, so nothing is jumped
+        assert_eq!(stop("big1", &tp, &[], false), 0);
+    }
     append(&tp, OWNER2);
     append(&tp, SONNET);
     assert!(std::fs::metadata(&tp).unwrap().len() > 10 * 1024 * 1024);
@@ -538,8 +541,8 @@ fn default_switches_give_one_block_per_task_across_both_dispatch_rules() {
 
 #[test]
 fn say_do_fires_in_a_session_that_never_called_the_advisor() {
-    let tp = transcript("sd3", &[OWNER, SONNET, SAY]);
-    assert_eq!(stop("sd3", &tp, &[], false), 2, "the announcement alone shows the tool is there");
+    let tp = transcript("sd3", &[ATTACH, OWNER, SONNET, SAY]);
+    assert_eq!(stop("sd3", &tp, &[], false), 2, "the advisor is in the prompt (attachment), never called, announced and not called");
     assert_eq!(stop("sd3", &tp, &[], false), 0, "one block per turn");
 }
 
@@ -626,7 +629,10 @@ fn g1_settings_fallback_when_the_head_was_never_read() {
 fn g2_review_rule_remembers_the_advisor_past_the_window() {
     let tp = transcript("g2a", &[USER, ADVISOR, WORK]);
     assert_eq!(run("model-routing", &[], &spawn("g2a", &tp, "Review the diff", Some("sonnet"), json!({}))), 2);
-    append(&tp, &filler(10 * 1024));
+    for _ in 0..5 {
+        append(&tp, &filler(2 * 1024)); // 2 MB at a time, each read by a Stop on the same agent state: no gap is jumped
+        assert_eq!(stop("g2a", &tp, &[], false), 0);
+    }
     assert!(std::fs::metadata(&tp).unwrap().len() > 10 * 1024 * 1024);
     assert_eq!(run("model-routing", &[], &spawn("g2a", &tp, "Critique the config", Some("sonnet"), json!({}))), 2, "advisor 10 MB back: still known");
 }
@@ -641,12 +647,13 @@ fn g3_incremental_read_is_bounded_per_call_and_per_line() {
     append(&tp, SONNET);
     let size = std::fs::metadata(&tp).unwrap().len();
     let t0 = std::time::Instant::now();
-    assert_eq!(dispatch("g3a", &tp, "Investigate the crash", &[]).0, 2, "still enforced after the jump");
+    assert_eq!(dispatch("g3a", &tp, "Investigate the crash", &[]), (0, String::new()), "a jump past unread bytes: availability unknown, fail open");
     let first = t0.elapsed();
     let s = tx("g3a");
     assert_eq!(s["pos"].as_u64(), Some(size), "read to the end: {s}");
     assert!(s["read"].as_u64().unwrap() <= 4 * 1024 * 1024, "one call reads at most the window: {s}");
     assert!(s["peak"].as_u64().unwrap() <= 4 * 1024 * 1024, "the 5 MB line was never buffered whole: {s}");
+    append(&tp, ATTACH); // the window shows the advisor again
     append(&tp, OWNER2);
     append(&tp, SONNET);
     let t1 = std::time::Instant::now();
@@ -782,4 +789,43 @@ fn concurrent_rules_on_one_agent_state_give_exactly_one_nudge_and_one_block() {
     assert_eq!(guard.iter().filter(|o| o.0 == 2).count(), 1, "one block, never turned back into a nudge: {outs:?}");
     let s = stats("cc1");
     assert_eq!((s["dispatch"].as_u64(), s["nudge"].as_u64(), s["blocked"].as_u64(), s["block_capped"].as_u64()), (Some(4), Some(1), Some(1), Some(2)), "{s}");
+}
+
+// ---- Codex re-review P2s ----
+
+const QUOTED: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"The README says: \"I will ask the advisor before each fix.\""}]}}"#;
+
+#[test]
+fn p2_an_announcement_alone_is_not_availability() {
+    let tp = transcript("p21", &[OWNER, SONNET, QUOTED]);
+    assert_eq!(dispatch("p21", &tp, "Fix the parser bug", &[]), (0, String::new()), "quoted prose, no attachment: silent");
+    assert_eq!(stop("p21", &tp, &[], false), 0, "say-do silent too");
+}
+
+#[test]
+fn p2_longer_rewrite_keeping_the_head_is_read_afresh() {
+    let head = format!(r#"{{"type":"user","message":{{"role":"user","content":"{}"}}}}"#, "h".repeat(400)); // same first 256 bytes
+    let tp = transcript("p22", &[&head, ATTACH, OWNER, SONNET]);
+    assert!(dispatch("p22", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    let f = filler(5);
+    std::fs::write(&tp, [head.as_str(), ATTACH_OFF, OWNER, SONNET, &f].join("\n") + "\n").unwrap();
+    assert_eq!(dispatch("p22", &tp, "Investigate the crash", &[]), (0, String::new()), "the off attachment before the old offset was read");
+}
+
+#[test]
+fn p2_a_jumped_gap_drops_cached_availability() {
+    let tp = transcript("p23", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("p23", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    append(&tp, ATTACH_OFF);
+    append(&tp, &filler(5 * 1024)); // 5 MB: past the 4 MB window, the off attachment is jumped
+    append(&tp, SONNET);
+    assert_eq!(dispatch("p23", &tp, "Investigate the crash", &[]), (0, String::new()), "unknown after the gap: silent");
+}
+
+#[test]
+fn p2_the_task_block_cap_spans_issue_keys() {
+    let tp = transcript("p24", &[ATTACH, OWNER, SONNET]);
+    let got: Vec<i32> = ["Fix #1 a", "Fix #1 b", "Fix #2 a", "Fix #2 b"].iter().map(|d| dispatch("p24", &tp, d, &[]).0).collect();
+    assert_eq!(got, vec![0, 2, 0, 0], "nudge, the one block, then passes for every key");
+    assert_eq!(stats("p24")["block_capped"], 2);
 }

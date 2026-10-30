@@ -75,6 +75,17 @@ var advisorKit = {
     return false;
   },
   ts: function (e) { var t = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) : NaN; return isFinite(t) ? t : -1; },
+  // Was the file at `tp` rewritten since the fold `tx` read it? Its first bytes changed, or the last line the fold read is no longer
+  // at its offset with the same content (a rewrite that kept the head). One line is read (bounded by advisor.line_max_bytes).
+  rewritten: function (tp, tx, keep) {
+    if (typeof tx.head === 'string' && tx.head !== '' && ah.fs.readHeadHex(tp, tx.head.length / 2) !== tx.head) return true;
+    if (typeof tx.lastOff !== 'number' || typeof tx.lastSig !== 'string') return false;
+    var size = ah.fs.size(tp);
+    if (typeof size !== 'number' || size - tx.lastOff > ah.cfgNum('advisor.window_bytes')) return false; // a jump follows: handled there
+    var r = ah.transcript.rangeEntries(tp, tx.lastOff, ah.cfgNum('advisor.window_bytes'), ah.cfgNum('advisor.line_max_bytes'), keep, 1);
+    if (r === null || !Array.isArray(r.lines) || r.lines.length !== 1) return true;
+    return r.lines[0][0] !== tx.lastOff || ah.sha1(JSON.stringify(r.lines[0][1])) !== tx.lastSig;
+  },
   // A fold of transcript `tp` that has read nothing yet.
   freshTx: function (tp) { return { path: tp, pos: -1, full: false, lastAdvisor: -1, lastUser: -1, userTs: -1, seen: false, avail: null, model: null, sayAt: -1 }; },
   // The transcript read INCREMENTALLY into the per-agent state `st` (st.tx): only the bytes appended since the last call (from
@@ -86,20 +97,20 @@ var advisorKit = {
   fold: function (p, st) {
     var tp = advisorKit.transcript(p);
     if (!tp || !ah.path.isAbsolute(tp)) return null;
-    var tx = jx.isObj(st.tx) && st.tx.path === tp && typeof st.tx.pos === 'number' && typeof st.tx.full === 'boolean' ? st.tx : advisorKit.freshTx(tp);
-    // the same path rewritten (shorter or LONGER): its first bytes differ from the ones the fold started on, so start afresh
-    if (tx.pos >= 0 && typeof tx.head === 'string' && tx.head !== '' && ah.fs.readHeadHex(tp, tx.head.length / 2) !== tx.head) { tx = advisorKit.freshTx(tp); advisorKit.silence('rotated'); }
-    var keep = [['type'], ['isMeta'], ['origin', 'kind'], ['timestamp'], ['message', 'model'], ['message', 'content'], ['message', 'content', '*', 'type'],
+    var keep = [['type'], ['uuid'], ['isMeta'], ['origin', 'kind'], ['timestamp'], ['message', 'model'], ['message', 'content'], ['message', 'content', '*', 'type'],
       ['message', 'content', '*', 'name'], ['message', 'content', '*', 'text']];
     var att = ah.cfg('advisor.attachment');
     keep.push([att.field, 'type'], [att.field, att.available_key], [att.field, att.change_key]);
+    var tx = jx.isObj(st.tx) && st.tx.path === tp && typeof st.tx.pos === 'number' && typeof st.tx.full === 'boolean' ? st.tx : advisorKit.freshTx(tp);
+    // the same path rewritten (shorter or LONGER): its first bytes differ from the ones the fold started on, so start afresh
+    if (tx.pos >= 0 && advisorKit.rewritten(tp, tx, keep)) { tx = advisorKit.freshTx(tp); advisorKit.silence('rotated'); }
     var read = function (from) { return ah.transcript.rangeEntries(tp, from, ah.cfgNum('advisor.window_bytes'), ah.cfgNum('advisor.line_max_bytes'), keep, ah.cfgNum('advisor.max_lines')); };
     var r = read(tx.pos);
     if (r !== null && r.shrunk === true) { tx = advisorKit.freshTx(tp); r = read(-1); }
     if (r === null || !Array.isArray(r.lines)) return null;
     if (tx.pos < 0) tx.full = r.start === 0;
     if (typeof tx.head !== 'string' || tx.head === '') { var hh = ah.fs.readHeadHex(tp, ah.cfgNum('advisor.fingerprint_bytes')); tx.head = typeof hh === 'string' ? hh : ''; }
-    else if (r.jumped === true) tx.full = false;
+    else if (r.jumped === true) { tx.full = false; tx.avail = null; tx.seen = false; advisorKit.silence('gap_skipped'); } // unread bytes may hold an "off" attachment: only the window decides
     var names = ah.cfg('advisor.tool_names'), types = ah.cfg('advisor.block_types'), results = ah.cfg('advisor.result_types');
     var flag = ah.cfg('advisor.flagship_model_re'), known = ah.cfg('advisor.known_model_re'), say = ah.cfg('advisor.say_do_re');
     var calls = [];
@@ -131,13 +142,13 @@ var advisorKit = {
             tx.seen = true;
             if (off > tx.lastAdvisor) tx.lastAdvisor = off;
           } else if (blk.type === 'text' && typeof blk.text === 'string' && ah.re.test(say, 'r', blk.text)) {
-            tx.seen = true; // announcing an advisor call is evidence the tool is in the model's prompt
             if (off > tx.sayAt) tx.sayAt = off;
           }
         }
       }
     }
     tx.pos = typeof r.next === 'number' ? r.next : tx.pos;
+    if (r.lines.length > 0) { var last = r.lines[r.lines.length - 1]; tx.lastOff = last[0]; tx.lastSig = ah.sha1(JSON.stringify(last[1])); }
     tx.read = r.read; tx.peak = r.peak; // the last read's bytes and largest line buffer: the latency test reads them
     st.tx = tx;
     advisorKit.consults(st, { calls: calls }); // counted where read: a call is read once, by whichever rule folds first
