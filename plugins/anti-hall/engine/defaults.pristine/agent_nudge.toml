@@ -202,7 +202,7 @@ doc = "Said when a snooze was asked for less than the shortest allowed. Placehol
 value = "snoozed {child} for {min} min, the shortest allowed (asked for {asked})"
 
 [agent_nudge.health_done]
-doc = "The agentHealth label that holds the nudge for limits.health_done_hold_ms (health_done_hold_ms: how long a verdict that the child's work is finished keeps it un-nudged, with no judge call until it runs out; any new output from the child releases it at once). Read only while scope_setting is on: off, a recorded done hold is ignored."
+doc = "The agentHealth label that holds the nudge for limits.health_done_hold_ms (health_done_hold_ms: how long a verdict that the child's work is finished keeps it un-nudged, with no judge call until it runs out; any new output from the child releases it at once). Read only while scope_setting is on: off, a recorded done hold is ignored. A done hold an older version kept with the busy holds is moved to the done holds (same expiry, released by output after its verdict) while scope_setting is on, and read as before while it is off."
 value = "done"
 
 [agent_nudge.scope_setting]
