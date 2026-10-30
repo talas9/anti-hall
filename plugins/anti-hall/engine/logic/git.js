@@ -69,6 +69,7 @@ function gitBuildTables() {
   t.fileWriteHeredoc = c('re_file_write_heredoc'); t.fileWriteRedirect = c('re_file_write_redirect');
   t.fileWriteTee = c('re_file_write_tee'); t.fileWriteEcho = c('re_file_write_echo');
   t.maxRecursion = c('max_recursion'); t.aliasDepth = c('alias_depth'); t.launcherHops = c('launcher_hops');
+  t.inlineDepth = c('inline_depth'); t.heredocLevels = c('heredoc_levels'); t.varHops = c('var_hops');
   t.cdMaxChars = c('cd_max_chars'); t.cdMaxSegments = c('cd_max_segments'); t.maxChain = c('max_chain');
   t.pathArgMaxChars = c('path_arg_max_chars'); t.shown = c('shown_hits'); t.handoverAddsMax = c('handover_adds_max');
   t.commitHashLen = c('commit_hash_len'); t.commitHashShort = c('commit_hash_short');
@@ -794,7 +795,7 @@ function parallelVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
     }
     if (hit) return hit;
   }
-  if (!certain && d < 3) {
+  if (!certain && d < TB.inlineDepth) {
     for (const t of inputs) {
       const hit = scanCommand(t.text, d + 1, cwd);
       if (hit) return hit;
@@ -837,7 +838,7 @@ function dropRedirects(args) {
 }
 
 function stdinScriptVerdict(cmd, d, cwd) {
-  if (d >= 3) return null;
+  if (d >= TB.inlineDepth) return null;
   const texts = [];
   const re = /'([^']*)'|"((?:[^"\\]|\\[\s\S])*)"/g;
   let m;
@@ -890,7 +891,7 @@ function runnerVerdictIn(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev) 
   if (innerEv.verb === 'xargs') return xargsGitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (innerEv.verb === 'find') return findExecVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (innerEv.verb === 'parallel') return parallelVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
-  if (d < 3 && (innerEv.verb === 'eval' || TB.shellVerbs.has(innerEv.verb.toLowerCase()))) {
+  if (d < TB.inlineDepth && (innerEv.verb === 'eval' || TB.shellVerbs.has(innerEv.verb.toLowerCase()))) {
     if (shellScriptIsInput(cmdTokens, S.repls)) {
       const sv = stdinScriptVerdict(cmd, d, cwd);
       if (sv) return sv;
@@ -1181,7 +1182,7 @@ function hdSkeleton(cmd) {
 }
 
 function hdLevels(text, out, depth, ownId) {
-  if (depth > 6) return false;
+  if (depth > TB.heredocLevels) return false;
   let flat = '', i = 0;
   const inner = [];
   const lift = (start, end) => {
@@ -1424,7 +1425,7 @@ function stdinCandidateTextCached(cmd, heredocBodies) {
 
 // command-valued config/env: git runs some values as commands
 function scanCommandValue(v, d) {
-  if (d >= 3 || !/push/.test(v)) return null;
+  if (d >= TB.inlineDepth || !/push/.test(v)) return null;
   const s = v.trim();
   const cands = [s];
   const kv = /^'?[A-Za-z_][\w.-]*=([\s\S]*?)'?$/.exec(s);
@@ -1608,7 +1609,7 @@ function globCouldHitLauncher(p, cdDir) {
 
 function varTargetHitsLauncher(p, cdDir, hops) {
   const m = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))(.*)$/s.exec(p);
-  if (!m || !S.launcherCmdText || (hops || 0) > 4) return false;
+  if (!m || !S.launcherCmdText || (hops || 0) > TB.varHops) return false;
   const name = m[1] || m[2], suffix = m[3];
   const re = new RegExp('(?:^|[\\s;&|(])(?:(?:export|local|declare|typeset)[ \\t]+(?:-\\w+[ \\t]+)*)?' + name +
     '=("[^"\\n]*"|\'[^\'\\n]*\'|[^\\s;&|)]*)', 'g');
@@ -2188,7 +2189,7 @@ function scanCommand(cmd, depth, baseCwd) {
   const heredocBodies = extractHeredocBodies(cmd);
   let lastCdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
 
-  if (d < 3) {
+  if (d < TB.inlineDepth) {
     for (const lit of callLiteralCommands(scanText)) {
       const hit = scanCommand(lit, d + 1, baseCwd);
       if (hit) return hit;
@@ -2245,7 +2246,7 @@ function scanCommand(cmd, depth, baseCwd) {
     }
 
     if (ev.verb === 'eval') {
-      if (d < 3) {
+      if (d < TB.inlineDepth) {
         const payload = extractEvalPayload(seg);
         if (payload) {
           const nested = scanCommand(payload, d + 1, lastCdDir);
@@ -2256,7 +2257,7 @@ function scanCommand(cmd, depth, baseCwd) {
     }
 
     if (TB.shellVerbs.has(ev.verb.toLowerCase())) {
-      if (d < 3) {
+      if (d < TB.inlineDepth) {
         const payload = extractShellCPayload(seg);
         if (payload) {
           const nested = scanCommand(payload, d + 1, lastCdDir);
@@ -2564,7 +2565,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
   const benv = backstopEnv(cmd);
   const scanned = withoutPlainHeredocBodies(cmd);
   const cwd = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
-  if (d < 3) {
+  if (d < TB.inlineDepth) {
     for (const payload of pipedEchoShellPayloads(cmd)) {
       const hit = gitBackstop(payload, d + 1, extractHeredocBodies(payload), cwd);
       if (hit) return hit;
@@ -2575,7 +2576,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
     const variants = [trimmed];
     if (/^["']/.test(trimmed)) variants.push(trimmed.replace(/^["']+/, ''));
     for (const v of variants) {
-      if (d < 3) {
+      if (d < TB.inlineDepth) {
         const envPayload = extractEnvSPayload(v);
         if (envPayload) {
           const hit = gitBackstop(envPayload, d + 1, extractHeredocBodies(envPayload), cwd);
@@ -2589,7 +2590,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
         ev.env = benv;
         const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
         if (hit) return hit;
-      } else if (d < 3 && (ev.verb === 'eval' || TB.shellVerbs.has(ev.verb.toLowerCase()))) {
+      } else if (d < TB.inlineDepth && (ev.verb === 'eval' || TB.shellVerbs.has(ev.verb.toLowerCase()))) {
         const payload = ev.verb === 'eval' ? extractEvalPayload(v) : extractShellCPayload(v);
         if (payload) {
           const hit = gitBackstop(payload, d + 1, extractHeredocBodies(payload), cwd);

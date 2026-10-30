@@ -18,6 +18,11 @@ fn num(k: &str) -> u64 {
     defaults::raw("agent_tracker.native_wake").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
 }
 
+/// The hivecontrol arguments of one step (`info_args`, `reactivate_args`), from the plugin's agent_tracker.native_wake table.
+fn args(k: &str) -> Vec<&'static str> {
+    defaults::raw("agent_tracker.native_wake").get(k).map(V::strings).unwrap_or_default()
+}
+
 fn stamp_file(env: &Env, id: &str) -> PathBuf {
     let cfg = defaults::raw("agent_tracker.native_wake");
     env.base().join(cfg.str_field("dir")).join(format!("{id}{}", super::pth("json_ext")))
@@ -60,8 +65,8 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     if no_mail && super::sinks::Sink::backlog(&super::sinks::SessionQueue, &tr, &desc.session) == 0 {
         return None;
     }
-    let call = |args: &[&str]| hivecontrol::call_full(args, env, cwd, Duration::from_millis(num("timeout_ms")));
-    let info = call(&["workspace", "info", &desc.id]);
+    let call = |argv: &[&str]| hivecontrol::call_full(argv, env, cwd, Duration::from_millis(num("timeout_ms")));
+    let info = call(&[args("info_args").as_slice(), &[desc.id.as_str()]].concat());
     let branch = serde_json::from_str::<Value>(&info.call.raw).ok().and_then(|v| v["branch"].as_str().map(str::to_string)).filter(|b| !b.is_empty());
     let Some(branch) = branch else {
         return Some(json!({"workspace": desc.id, "woken": false, "step": "info", "error": why(&info)}));
@@ -70,7 +75,7 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
         "msg.native_wake_prompt",
         &[("prefix", &defaults::text("agent_tracker.wake_prefix")), ("id", &desc.id), ("text", &super::cap(preview, num("text_cap")))],
     );
-    let done = call(&["workspace", "reactivate-child", &branch, &prompt]);
+    let done = call(&[args("reactivate_args").as_slice(), &[branch.as_str(), prompt.as_str()]].concat());
     let woken = done.call.ok;
     if woken {
         let stamp = json!({"ts": tr.now_ms}).to_string();
