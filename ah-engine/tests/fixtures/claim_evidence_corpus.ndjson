@@ -145,3 +145,25 @@
 {"text": "Ping me if needed once CI is green.", "expect": "allow", "source": "round5-adversarial"}
 {"text": "When needed the fix is deployed.", "expect": "block", "source": "round5-adversarial"}
 {"text": "I will merge after all PRs are merged.", "expect": "allow", "source": "round5-adversarial"}
+{"text": "If you ask tests pass.", "expect": "block", "source": "gh-427"}
+{"text": "When you ask tests pass.", "expect": "block", "source": "gh-427"}
+{"text": "If true CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "When convenient CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "If desired CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "If curious CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "CI is green; not unverified.", "expect": "block", "source": "gh-427"}
+{"text": "CI is green; never unverified.", "expect": "block", "source": "gh-427"}
+{"text": "CI is green; unverified is false.", "expect": "block", "source": "gh-427"}
+{"text": "CI is green; unchecked boxes remain.", "expect": "block", "source": "gh-427"}
+{"text": "Tests pass, unverified meaning not", "expect": "block", "source": "gh-427"}
+{"text": "Unverified aside CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "According to the doc-string CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "According to the reports CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "According to the report-card CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "According to the issue-tracker CI is green.", "expect": "block", "source": "gh-427"}
+{"text": "According to the PR body, the change is merged.", "expect": "allow", "source": "gh-427"}
+{"text": "According to the docs CI is green.", "expect": "allow", "source": "gh-427"}
+{"text": "The bot reports CI is green.", "expect": "allow", "source": "gh-427"}
+{"text": "Tests pass; unverified.", "expect": "allow", "source": "gh-427"}
+{"text": "If CI is green the change is merged.", "expect": "allow", "source": "gh-427"}
+{"text": "According to plan, tests pass.", "expect": "block", "source": "gh-427"}
