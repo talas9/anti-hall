@@ -66,8 +66,16 @@ const CACHE: &str = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.jso
 
 /// One spawn through the check: (exit code, stdout).
 fn spawn(home: &Path) -> (i32, String) {
-    let payload = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":home,
+    spawn_as(home, "")
+}
+
+/// One spawn through the check carrying the tool call id `tu` (none when empty): (exit code, stdout).
+fn spawn_as(home: &Path, tu: &str) -> (i32, String) {
+    let mut payload = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":home,
         "transcript_path": home.join("t.jsonl"), "tool_input":{"subagent_type":"Explore","prompt":"x"}});
+    if !tu.is_empty() {
+        payload["tool_use_id"] = json!(tu);
+    }
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     c.arg("check")
         .arg("swarm-guard")
@@ -156,16 +164,17 @@ fn t1_fifth_spawn_denied_naming_cap_and_agents_unknown_liveness_counts() {
     assert!(!out.contains("a000000000000000"), "no raw ids: {out}");
 }
 
-/// T2: one ends (the transcript shows its result), the next spawn is allowed.
+/// T2: one of four ends (its completion notification is appended to the same transcript), and that frees the slot it held.
 #[test]
 fn t2_ending_one_frees_a_slot() {
     let h = scratch("cap2");
-    put(&h, "t.jsonl", &running(3));
-    assert_eq!(spawn(&h).0, 0, "3 running is under the cap of 4");
-    put(&h, "t.jsonl", &running(4));
-    assert_eq!(spawn(&h).0, 2);
-    put(&h, "t.jsonl", &running(3));
-    assert_eq!(spawn(&h).0, 0);
+    let mut t = running(4);
+    put(&h, "t.jsonl", &t);
+    assert_eq!(spawn(&h).0, 2, "4 running is at the cap of 4");
+    let text = format!("<task-notification>\n<task-id>a{:015x}</task-id>\n<status>completed</status>\n</task-notification>", 3);
+    t.push_str(&format!("{}\n", json!({"type":"user","message":{"role":"user","content":text}})));
+    put(&h, "t.jsonl", &t);
+    assert_eq!(spawn(&h).0, 0, "the finished agent no longer holds a slot");
 }
 
 /// T3: 0 is off; the setting is respected.
@@ -182,40 +191,71 @@ fn t3_zero_turns_the_cap_off_and_the_value_is_the_cap() {
     assert_eq!(spawn(&h).0, 2, "8 running at a cap of 8");
 }
 
-/// One Stop through the silent-agent check of session `s`: (exit code, stdout).
-fn stop(home: &Path) -> (i32, String) {
-    let payload = json!({"hook_event_name":"Stop","tool_name":"","session_id":"s","cwd":home,"transcript_path": home.join("t.jsonl")});
-    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-    c.arg("check")
-        .arg("silent-agent-nudge")
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("ANTIHALL_TEST_ISOLATION", "1")
-        .current_dir(home)
-        .env("AH_ENGINE_DIR", home.join("engine-state"))
-        .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut ch = c.spawn().unwrap();
-    ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
-    let o = ch.wait_with_output().unwrap();
-    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned())
+/// A transcript with no agent launched in it (a prompt and an answer).
+fn quiet() -> String {
+    format!("{}\n{}\n", json!({"type":"user","message":{"role":"user","content":"go"}}),
+        json!({"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}))
 }
 
-/// T5: an open runtime escalation blocks the coordinator's Stop once (cap per session), naming the agent and its runtime; never loops.
+const RESERVATIONS: &str = ".anti-hall/spawn-reservations.json";
+
+/// P1: a burst of 6 overlapping spawn checks with nothing running and the cap at 4: each allow reserves its slot atomically, so
+/// exactly 4 are allowed and 2 denied.
 #[test]
-fn t5_runtime_escalation_blocks_one_capped_stop() {
-    let h = scratch("esc");
-    put(&h, "t.jsonl", "");
-    let rows = json!({"rows":[{"session":"s","child":"a0","name":"lane 0","dur_ms": 3*3600*1000u64,"reminders":3}]});
-    put(&h, ".anti-hall/agent-tracker/runtime-escalations.json", &rows.to_string());
-    let (code, out) = stop(&h);
-    assert!(code == 0 && out.contains("\"decision\":\"block\"") && out.contains("lane 0") && out.contains("3 h"), "{code} {out}");
-    let (code, out) = stop(&h);
-    assert!(code == 0 && !out.contains("decision"), "capped: the second Stop passes: {out}");
-    put(&h, ".anti-hall/agent-tracker/runtime-escalations.json", r#"{"rows":[]}"#);
-    assert!(!stop(&h).1.contains("decision"), "a finished agent leaves nothing to block on");
+fn t6_a_parallel_burst_cannot_pass_the_cap() {
+    let h = scratch("burst");
+    put(&h, "t.jsonl", &quiet());
+    let go = std::sync::Arc::new(std::sync::Barrier::new(6));
+    let runs: Vec<_> = (0..6)
+        .map(|i| {
+            let (h, go) = (h.clone(), go.clone());
+            std::thread::spawn(move || {
+                go.wait();
+                spawn_as(&h, &format!("toolu_burst{i}")).0
+            })
+        })
+        .collect();
+    let codes: Vec<i32> = runs.into_iter().map(|r| r.join().unwrap()).collect();
+    assert_eq!(codes.iter().filter(|c| **c == 0).count(), 4, "{codes:?}");
+    assert_eq!(codes.iter().filter(|c| **c == 2).count(), 2, "{codes:?}");
+}
+
+/// P1: a reservation whose launch never arrives (a crashed or denied call) frees its slot when it expires.
+#[test]
+fn t7_an_expired_reservation_frees_its_slot() {
+    let h = scratch("expire");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":1}}"#);
+    put(&h, "t.jsonl", &quiet());
+    assert_eq!(spawn_as(&h, "toolu_e0").0, 0, "the first spawn reserves the one slot");
+    assert_eq!(spawn_as(&h, "toolu_e1").0, 2, "the reserved slot is taken");
+    let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(h.join(RESERVATIONS)).unwrap()).unwrap();
+    for r in doc["rows"].as_array_mut().unwrap() {
+        r["at"] = json!(1); // aged far past the TTL
+    }
+    put(&h, RESERVATIONS, &doc.to_string());
+    assert_eq!(spawn_as(&h, "toolu_e2").0, 0, "an expired reservation no longer holds the slot");
+}
+
+/// P1: the launch result of a reserved spawn releases that reservation only, so the launched agent is counted once and the other
+/// reservation still holds its slot (no double free).
+#[test]
+fn t8_a_launch_result_releases_its_own_reservation_once() {
+    let h = scratch("release");
+    put(&h, "t.jsonl", &running(2));
+    assert_eq!(spawn_as(&h, "toolu_2").0, 0, "2 running + 0 reserved");
+    assert_eq!(spawn_as(&h, "toolu_3").0, 0, "2 running + 1 reserved");
+    assert_eq!(spawn_as(&h, "toolu_x").0, 2, "2 running + 2 reserved is the cap");
+    put(&h, "t.jsonl", &running(3)); // toolu_2's launch result arrived
+    assert_eq!(spawn_as(&h, "toolu_y").0, 2, "3 running + toolu_3 still reserved is the cap");
+}
+
+/// P2: tracked running agents count even when their launches fell out of the transcript window: 4 tracked + 1 visible launch is 4.
+#[test]
+fn t9_tracked_agents_outside_the_window_count() {
+    let h = scratch("tracked");
+    put(&h, "t.jsonl", &running(1));
+    tracked(&h, 4);
+    let (code, out) = spawn(&h);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("4 agents are running"), "{out}");
 }

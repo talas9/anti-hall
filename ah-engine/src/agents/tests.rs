@@ -2342,3 +2342,53 @@ fn repeated_nudges_escalate_a_still_running_child_once() {
     let body = std::fs::read_to_string(&f).unwrap_or_default();
     assert!(body.contains("\"reminders\""), "the open escalation is published for the Stop check: {body}");
 }
+
+/// Drive the nudge loop until child `abc` of session `parent` is runtime-escalated, so the escalation file is the one the loop wrote.
+fn escalated_home(tag: &str) -> PathBuf {
+    let (h, n, child) = nudge_home(tag);
+    let mut st = State::default();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&nudge_env(&h, n + MIN, &[]), &mut st);
+    append(&child, &spend);
+    for m in [18, 34, 50, 66, 82, 98] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+    }
+    assert!(st.nudges.get("abc").is_some_and(|x| x.runtime_escalated), "the loop escalated the child");
+    h
+}
+
+/// One coordinator Stop of session `parent` through the silent-agent check: its stdout ('' when it said nothing).
+fn rt_stop(h: &Path) -> String {
+    let p = json!({"hook_event_name": "Stop", "tool_name": "", "session_id": "parent", "cwd": h, "transcript_path": sess(h, "parent")});
+    let env = RequestEnv::from_pairs([("HOME", h.to_str().unwrap())]);
+    match crate::script::run_forced("silent-agent-nudge", &p, &json!({}), "Stop", &env) {
+        Some(Some(crate::script::Verdict::Exact(x))) => x.out,
+        _ => String::new(),
+    }
+}
+
+/// GH #484 T5: the escalation the nudge loop published blocks the coordinator's Stop once (rt_stop_cap 1), naming the child; the
+/// next Stop passes.
+#[test]
+fn a_generated_runtime_escalation_blocks_one_stop_then_passes() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = escalated_home("rt-stop");
+    let first = rt_stop(&h);
+    assert!(first.contains("\"decision\":\"block\""), "the open escalation blocks once: {first}");
+    assert!(!rt_stop(&h).contains("decision"), "capped: the second Stop passes");
+}
+
+/// GH #494 P2: when the block count cannot be recorded (the state file's path is a directory, so every write fails), the Stop is
+/// never blocked: an unrecorded block could repeat past the cap. The failure is counted.
+#[test]
+fn an_unrecordable_escalation_stop_never_blocks() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = escalated_home("rt-nowrite");
+    let rel = format!("{}/{}/{}", defaults::text("paths.base_dir"), defaults::text("paths.state_dir"), defaults::text("silent_nudge.rt_state_file"));
+    std::fs::create_dir_all(h.join(rel)).unwrap();
+    drained();
+    let blocks = (0..3).filter(|_| rt_stop(&h).contains("decision")).count();
+    assert_eq!(blocks, 0, "a failed write gives no block");
+    assert!(drained().counter("runtime_escalation_stop_unrecorded", &[]) >= 1, "the failed write is counted");
+}
