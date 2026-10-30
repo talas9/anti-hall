@@ -74,6 +74,7 @@ function gitBuildTables() {
   t.pushAllOpts = set(c('push_all_opts'));
   t.pushTagsOpts = set(c('push_tags_opts'));
   t.pushMirrorOpts = set(c('push_mirror_opts'));
+  t.pushConfigKeys = c('push_config_keys').map((p) => new RegExp(p, 'i'));
   t.trailerKeys = c('self_credit_trailer_keys');
   t.forwardEnvRe = new RegExp('^(?:GIT_CONFIG_(?:' + c('forward_config_names').concat(c('forward_config_indexed').map((p) => gitEsc(p) + '\\d+')).join('|') + ')|' +
     c('forward_env_names').map(gitEsc).join('|') + ')$');
@@ -1971,8 +1972,9 @@ function pushCreditVerdict(ev, lastCdDir) {
         const spec = t === '--config-env' ? (k + 1 < ev.args.length ? ev.args[++k].text : '') : t.slice(t.indexOf('=') + 1);
         const eq = spec.lastIndexOf('='), name = eq > 0 ? spec.slice(eq + 1) : '';
         const val = name && ev.assigns && Object.prototype.hasOwnProperty.call(ev.assigns, name) ? ev.assigns[name] : null;
-        if (val === null) return gmKey('msg_push_config_env', { spec: spec });
-        cfgArgs.push('-c', spec.slice(0, eq) + '=' + val);
+        if (val !== null) cfgArgs.push('-c', spec.slice(0, eq) + '=' + val);
+        // an unseen variable is refused only for a key that decides what the push publishes (never for e.g. http.extraHeader)
+        else if (eq > 0 && TB.pushConfigKeys.some((re) => re.test(spec.slice(0, eq)))) return gmKey('msg_push_config_env', { spec: spec });
         continue;
       }
       if (t === '--namespace') { k++; continue; }

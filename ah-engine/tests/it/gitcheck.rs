@@ -433,12 +433,16 @@ fn a_push_is_checked_on_command_scoped_push_config() {
         format!("export V=other:other; git --config-env remote.origin.{P}=V {P} origin"),
     ] {
         let (out, err, code) = e.hook_in(&cmd, w);
-        if code != 2 {
+        if code != 2 || !err.contains("AI credit") {
             missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
         }
     }
     assert!(missed.is_empty(), "{missed:#?}");
     assert_eq!(e.hook_in(&format!("git -c {P}.default=current {P} origin"), w), (String::new(), String::new(), 0), "clean HEAD stays allowed");
+    // a --config-env key that does not route the push is left alone although its variable is not visible
+    assert_eq!(e.hook_in(&format!("git --config-env=http.extraheader=TOKEN {P} origin main"), w), (String::new(), String::new(), 0), "extraheader");
+    let (_, err, code) = e.hook_in(&format!("git --config-env=remote.origin.{P}=UNSEEN {P} origin"), w);
+    assert!(code == 2 && err.contains("environment variable"), "unseen routing variable: {err}");
 }
 
 /// Layer (a): a credited commit pushed in the same Bash call is reached by a remote, and is still blocked once, with the
@@ -472,13 +476,12 @@ fn a_mirror_push_is_checked_on_every_ref() {
     git_ok(&work, &["remote", "add", "m", mirror.to_str().unwrap()]);
     let w = work.to_str().unwrap();
     let _ = e.hook("echo warm");
-    for cmd in [format!("git {P} --mirror origin"), format!("git {P} --mirror m")] {
-        let (out, err, code) = e.hook_in(&cmd, w);
-        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
-    }
+    // an explicit --mirror is refused earlier by the force-push check; the credit scan is reached through mirror config
+    let (out, err, code) = e.hook_in(&format!("git -c remote.m.mirror=true {P} m"), w);
+    assert!(code == 2 && err.contains("AI credit"), "-c remote.m.mirror: code={code} stdout={out} stderr={err}");
     git_ok(&work, &["config", "remote.m.mirror", "true"]);
     let (out, err, code) = e.hook_in(&format!("git {P} m"), w);
-    assert_eq!(code, 2, "remote.m.mirror: stdout={out} stderr={err}");
+    assert!(code == 2 && err.contains("AI credit"), "remote.m.mirror: code={code} stdout={out} stderr={err}");
     git_ok(&work, &["update-ref", "-d", "refs/custom/x"]);
     assert_eq!(e.hook_in(&format!("git {P} m"), w), (String::new(), String::new(), 0), "clean mirror allowed");
 }

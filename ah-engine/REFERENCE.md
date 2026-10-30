@@ -1210,6 +1210,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.push_argv_log` | `9 items` |  |  | git arguments listing the commits a push would publish: {dir} is the repository directory, {n} the most commits read (the cap plus one, to see an overflow), {refs} expands to the pushed refs and {exclude} to the remote exclusion. Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
 | `git.push_argv_refs_all` | `-C, {dir}, for-each-ref, --format=%(refname), refs/` |  |  | git arguments listing every ref a mirror push publishes (push_mirror_opts, push_mirror_key), one full ref name per line; when it lists nothing the backstop reads every branch and tag. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
+| `git.push_config_keys` | `^remote\..+\.(push\\|mirror)$, ^push\.default$, ^remote\.pushdefault$, ^branch...` |  |  | Regular expressions (JavaScript syntax, case-insensitive) for the config keys that decide what a push publishes or where it goes. A `--config-env` naming one of them whose variable is not set in the same command is refused (msg_push_config_env); any other key (for example http.extraHeader) is left alone. |
 | `git.push_default_key` | `push.default` |  |  | Config key of the push mode used when no refspec is given or configured. |
 | `git.push_default_ref` | `HEAD` |  |  | The ref a push without refspecs publishes (the current branch). |
 | `git.push_exclude_remote` | `--remotes={remote}` |  |  | The exclusion of the commits the destination already has: its own remote-tracking refs. A destination with none (a URL, or a remote never fetched) excludes nothing, so commits only other remotes have are still read (the push_max_commits cap applies). |
@@ -14116,7 +14117,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |
-| `git.msg_push_config_env` | Block: a push names `--config-env <key>=<VAR>` but VAR is not set in the same command, so the config that decides what the push publishes cannot be read. Placeholder: {spec} (the --config-env value). |
+| `git.msg_push_config_env` | Block: a push names `--config-env <key>=<VAR>` for a key in push_config_keys but VAR is not set in the same command, so the config that decides what the push publishes cannot be read. Placeholder: {spec} (the --config-env value). |
 | `git.msg_push_credit` | Block: a push would publish commits that carry an AI credit. Placeholders: {shown} (short hashes), {first} (the first hash). |
 | `git.msg_push_over_cap` | Block: the commits a push would publish are more than the backstop reads, so a credit past the cap could not be ruled out. Placeholders: {cap}, {range} (the git log arguments of the range). |
 | `git.msg_reused_message` | Block: a reused commit message carries an AI self-credit. Placeholder: {origin}. |

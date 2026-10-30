@@ -919,8 +919,12 @@ value = ["-C", "{dir}", "config", "--get-all", "{key}"]
 doc = "git arguments listing every ref a mirror push publishes (push_mirror_opts, push_mirror_key), one full ref name per line; when it lists nothing the backstop reads every branch and tag."
 value = ["-C", "{dir}", "for-each-ref", "--format=%(refname)", "refs/"]
 
+[git.push_config_keys]
+doc = "Regular expressions (JavaScript syntax, case-insensitive) for the config keys that decide what a push publishes or where it goes. A `--config-env` naming one of them whose variable is not set in the same command is refused (msg_push_config_env); any other key (for example http.extraHeader) is left alone."
+value = ["^remote\\..+\\.(push|mirror)$", "^push\\.default$", "^remote\\.pushdefault$", "^branch\\..+\\.(remote|pushremote)$"]
+
 [git.msg_push_config_env]
-doc = "Block: a push names `--config-env <key>=<VAR>` but VAR is not set in the same command, so the config that decides what the push publishes cannot be read. Placeholder: {spec} (the --config-env value)."
+doc = "Block: a push names `--config-env <key>=<VAR>` for a key in push_config_keys but VAR is not set in the same command, so the config that decides what the push publishes cannot be read. Placeholder: {spec} (the --config-env value)."
 value = { what = "this push reads config from an environment variable the guard cannot see (--config-env {spec}).", why = "Command-scoped config decides which refs a push publishes; a variable set in an earlier call is not visible to the guard, so the credit check could not read the pushed range.", instead = "set the variable in the same command (VAR=value git --config-env ...), or use -c <key>=<value>." }
 
 [git.push_mirror_key]
