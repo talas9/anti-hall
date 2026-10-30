@@ -100,6 +100,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"pruneStopBlock\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PRUNE_STOP_BLOCK\"}",
   "{\"section\":\"guards\",\"key\":\"pruneStopBlockMax\",\"type\":\"number\",\"default\":2,\"min\":1,\"env\":\"ANTIHALL_PRUNE_STOP_BLOCK_MAX\"}",
   "{\"section\":\"guards\",\"key\":\"priorityTagCheck\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PRIORITY_TAG_CHECK\"}",
+  "{\"section\":\"guards\",\"key\":\"taskDeleteGuard\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_TASK_DELETE_GUARD\"}",
   "{\"section\":\"guards\",\"key\":\"priorityTagBlockMax\",\"type\":\"number\",\"default\":2,\"min\":1,\"env\":\"ANTIHALL_PRIORITY_TAG_BLOCK_MAX\"}",
   "{\"section\":\"guards\",\"key\":\"taskGuard\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_task_guard\"}",
   "{\"section\":\"guards\",\"key\":\"taskGuardOwnerBlockedMarker\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER\",\"pluginOption\":\"guards_task_guard_owner_blocked_marker\"}",

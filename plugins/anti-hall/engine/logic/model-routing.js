@@ -215,6 +215,8 @@ function mrAdvisorReview(p, model, omitted, description, subagentType, flagship)
   try {
     if (!ah.settings.bool('advisor.sw_review') || p.stop_hook_active === true) return null;
     var dTokens = mrTokenize(description + ' ' + subagentType);
+    var ov = ah.cfg('advisor.review_override_verbs'), dSet = new Set(dTokens);
+    if (mrSig(dTokens, dSet, 'advisor.review_signals') > 0 && ov.some(function (v) { return dSet.has(v); })) { ah.advisory(ah.cfg('model_routing.fp_kind'), ah.cfg('advisor.fp_review_event')); return null; } // the task's own verb is work, the review is quoted context
     if (!(mrSig(dTokens, new Set(dTokens), 'advisor.review_signals') > 0)) return null; // the description and agent type only: a brief that merely mentions a review is no review
     // A named agent without an explicit model runs on the model its own definition sets, not the session's: unknown, so allowed.
     if (omitted && ah.cfg('advisor.generic_agent_types').indexOf(jx.asciiLower(subagentType)) < 0) return null;
@@ -275,7 +277,9 @@ function decide(p) {
 
   var suppressHaiku = false;
   var floorName = ah.settings.enum('model_routing.deploy_floor_setting');
-  if (floorName !== ah.cfg('model_routing.deploy_floor_off') && mrDeployShaped(corpus.replace(jx.re('model_routing.quoted_text_re', 'g'), '$1 '))) {
+  var bk = ah.cfg('model_routing.deploy_bookkeeping_re'), bookkeeping = bk !== '' && mrT('model_routing.deploy_bookkeeping_re', corpus) && !mrT('model_routing.deploy_action_re', corpus);
+  if (bookkeeping && floorName !== ah.cfg('model_routing.deploy_floor_off') && mrDeployShaped(corpus.replace(jx.re('model_routing.quoted_text_re', 'g'), '$1 '))) ah.advisory(ah.cfg('model_routing.fp_kind'), ah.cfg('model_routing.fp_bookkeeping_event'));
+  if (!bookkeeping && floorName !== ah.cfg('model_routing.deploy_floor_off') && mrDeployShaped(corpus.replace(jx.re('model_routing.quoted_text_re', 'g'), '$1 '))) {
     var floor = mrRank(floorName) !== null ? floorName : ah.cfg('model_routing.deploy_floor_default');
     // an omitted model inherits the session's: at or above the floor it is no cheap model (only an unknown or lower tier is advised)
     var inherited = omitted ? mrInheritedTier(p) : null;
@@ -337,7 +341,12 @@ function decide(p) {
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
   // a brief that writes a file or report or runs a script or shell commands needs a type that can: no Explore hint (it has no Write/Edit)
   var execShaped = ah.settings.bool('model_routing.explore_exec_setting') && mrT('model_routing.exec_report_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' '));
-  if (generic && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped) {
+  var mutPat = ah.cfg('model_routing.mutation_signal_re');
+  var mutates = generic && mutPat !== '' && !mrT('model_routing.readonly_override_re', corpus) && ah.re.test(mutPat, 'i', corpus.replace(jx.re('model_routing.negated_commit_re', 'gi'), ' ').replace(jx.re('model_routing.negated_write_re', 'gi'), ' '));
+  if (generic && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped && mutates) {
+    ah.advisory(ah.cfg('model_routing.fp_kind'), 'suppressed'); // a brief that changes state needs a type that can: no Explore hint
+  } else if (generic && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped) {
+    ah.advisory(ah.cfg('model_routing.fp_kind'), 'fired');
     return mrRouted(mrTip(ah.cfg('model_routing.msg_row6_what'), ah.cfg('model_routing.msg_row6_instead'), ah.cfg('model_routing.msg_row6_why')), p, input, 'research', ah.cfg('model_routing.explore_type'), 'exempt');
   }
   return mrRouted('allow', p, input, 'unknown', omitted ? ah.cfg('model_routing.tier_inherit') : model, 'allow');

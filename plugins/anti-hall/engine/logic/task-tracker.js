@@ -133,6 +133,7 @@ function ttChangeState(home, rel) {
   if (r.unsure || r.invalid || !jx.isObj(r.v)) return out;
   if (typeof r.v.openHash === 'string') out.hash = r.v.openHash;
   if (ttFinite(r.v.quiet) && r.v.quiet >= 0) out.quiet = r.v.quiet;
+  out.quoted = r.v.quoted === true;
   return out;
 }
 
@@ -524,7 +525,7 @@ function decide(p) {
   var fresh = ttFresh(home, tp, sessionRaw, p);
   // change-only: the short reminder speaks when the open-task list changed, or after `untracked_prompts` unchanged prompts (a request may
   // be untracked); otherwise it is withheld. The full directive keeps its own window.
-  var ch = { hash: '', quiet: 0, hold: false, track: false };
+  var ch = { hash: '', quiet: 0, hold: false, track: false, streak: 1, quoted: false };
   if (fresh !== null) {
     ch.hash = ttListHash(fresh.tasks);
     ch.track = true;
@@ -532,6 +533,8 @@ function decide(p) {
       var prev = ttChangeState(home, stateRel);
       var changed = prev.hash !== ch.hash;
       ch.quiet = changed ? 0 : prev.quiet + 1;
+      ch.streak = ch.quiet + 1;
+      if (changed && prev.quoted) ah.advisory(ttT('fp_kind'), 'acted_on'); // the list changed on the prompt after a nudge that quoted a request
       ch.hold = !changed && ch.quiet < ah.settings.num('task_tracker.untracked_prompts');
       if (!ch.hold) ch.quiet = 0;
     }
@@ -582,18 +585,24 @@ function decide(p) {
   var primaryText = text.message('tip', ttT('guard_name'), { what: ttT('primary_what'), instead: ttT('primary_instead') });
   var primaryOpts = function () { return { sessionId: dsid, key: ttT('primary_key'), content: primaryText, transcriptPath: tp, keepaliveTurns: keepalive, normalize: function (x) { return x; } }; };
 
+  // the request the nudge is about: quoted back (cut, one line) with how many requests came since the list last changed
+  var quote = '';
+  if (ttN('quote_max') > 0 && typeof p.prompt === 'string' && p.prompt.trim() !== '' && !ch.hold) {
+    quote = text.render(ttT('quote_text'), { n: String(ch.streak), text: ttOneLine(p.prompt, ttN('quote_max')) });
+    ch.quoted = true;
+  }
   // ---- effects, in Node's order ----
   if (jev !== null) { try { ah.jev.ask(jev); } catch (e) { /* best effort, as Node's try/catch */ } }
   if (chosen.full) {
     try {
       var st = { lastFull: Math.floor(now), lastFullSize: chosen.size };
-      if (ch.track) { st.openHash = ch.hash; st.quiet = 0; }
+      if (ch.track) { st.openHash = ch.hash; st.quiet = 0; st.quoted = ch.quoted; }
       ah.state.writeAtomic(stateRel, JSON.stringify(st));
       gk.pruneStale(ah.cfg('paths.base_dir'), ttT('prune_prefix'));
     } catch (e) { /* Node ignores a failed state write and injects regardless */ }
   } else if (ch.track && ah.settings.bool('task_tracker.change_setting')) {
     try {
-      ah.state.writeAtomic(stateRel, JSON.stringify({ lastFull: Math.floor(chosen.lastFull), lastFullSize: chosen.lastSize, openHash: ch.hash, quiet: ch.quiet }));
+      ah.state.writeAtomic(stateRel, JSON.stringify({ lastFull: Math.floor(chosen.lastFull), lastFullSize: chosen.lastSize, openHash: ch.hash, quiet: ch.quiet, quoted: ch.quoted }));
     } catch (e) { /* a lost write only repeats the reminder */ }
   }
   if (demand !== null) { try { ah.state.writeAtomic(demand.rel, demand.body); } catch (e) { /* lost silently, as Node's */ } }
@@ -615,6 +624,7 @@ function decide(p) {
     var show = should({ sessionId: dsid, key: ttT('dedupe_short_key'), content: short, transcriptPath: tp, keepaliveTurns: keepalive });
     out = show ? [short, c.open].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner')) : c.open;
   }
+  if (quote !== '' && emit) { out = out === '' ? quote : out + ttT('segment_joiner') + quote; ah.advisory(ttT('fp_kind'), 'fired'); }
   var pruneShown = pruneOut !== '' && (ch.hold || emit) ? pruneOut : '';
   if (pruneShown !== '') ah.advisory(ah.cfg('metric.tasklist_hygiene').advisory_kind, ah.cfg('tasklist_hygiene.event_prune'));
   var finalText = [pruneShown, emit ? out : '', primaryBlock].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner'));
