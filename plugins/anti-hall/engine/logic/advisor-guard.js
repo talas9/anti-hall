@@ -51,9 +51,9 @@ function agDispatch(p) {
   advisorKit.consults(st, view.scan);
   var flag = advisorKit.flagship(view.model);
   var verdict = 'allow';
+  if (flag === null) advisorKit.silence('model_unknown');
   if (flag === false && advisorKit.present(p, view.scan, view)) verdict = agThinking(p, st, view, onThink, onSecond);
-  advisorKit.save(p, st);
-  return verdict;
+  return advisorKit.keep(p, st, verdict);
 }
 
 function agThinking(p, st, view, onThink, onSecond) {
@@ -125,8 +125,7 @@ function agStop(p) {
     st.sayDo[turn] = rec;
     advisorKit.trim(st.sayDo);
   }
-  advisorKit.save(p, st);
-  return verdict;
+  return advisorKit.keep(p, st, verdict);
 }
 
 function decide(p) {
@@ -181,8 +180,7 @@ function decide(p) {
     }
     if (v !== null) advisorKit.consults(s, v.scan);
     if (verdict === 'allow') s.edits[file] = (s.edits[file] || 0) + 1;
-    advisorKit.save(p, s);
-    return verdict;
+    return advisorKit.keep(p, s, verdict);
   }
   return 'allow';
 }

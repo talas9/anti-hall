@@ -20,16 +20,31 @@ var advisorKit = {
   },
   // The transcript this hook call belongs to: the main session's, or a subagent's own (payload field, else advisor.agent_transcript_tpl).
   // '' when a subagent's own transcript cannot be found: its rules then stay silent rather than read the main thread's.
+  // Claude Code keeps a subagent's transcript at <dir>/<session>/subagents/agent-<agent_id>.jsonl and writes `agentId` on its first
+  // line. In order: a payload field naming it, transcript_path when it already is that file, else the template from the main path.
+  // A file whose head names another agent is a mismatch: silent, never the main transcript credited to a subagent.
   transcript: function (p) {
     var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
     if (typeof p.agent_id !== 'string' || p.agent_id === '') return tp;
-    var keys = ah.cfg('advisor.agent_transcript_keys');
-    for (var i = 0; i < keys.length; i++) if (typeof p[keys[i]] === 'string' && p[keys[i]] !== '') return p[keys[i]];
+    var own = '', keys = ah.cfg('advisor.agent_transcript_keys');
+    for (var i = 0; i < keys.length && own === ''; i++) if (typeof p[keys[i]] === 'string' && p[keys[i]] !== '') own = p[keys[i]];
     var ext = ah.cfg('advisor.transcript_ext'), cut = tp.lastIndexOf('/');
-    if (!tp || cut < 0 || tp.slice(-ext.length) !== ext) return '';
-    var own = text.render(ah.cfg('advisor.agent_transcript_tpl'), { dir: tp.slice(0, cut), session: tp.slice(cut + 1, tp.length - ext.length), agent: p.agent_id });
-    return ah.fs.isFile(own) ? own : '';
+    if (own === '' && tp !== '' && ah.path.basename(tp) === text.render(ah.cfg('advisor.agent_file_tpl'), { agent: p.agent_id }) + ext) own = tp;
+    if (own === '' && tp !== '' && cut >= 0 && tp.slice(-ext.length) === ext) {
+      own = text.render(ah.cfg('advisor.agent_transcript_tpl'), { dir: tp.slice(0, cut), session: tp.slice(cut + 1, tp.length - ext.length), agent: p.agent_id });
+    }
+    if (own === '' || !ah.fs.isFile(own)) { advisorKit.silence('no_agent_transcript'); return ''; }
+    var head = ah.fs.readText(own, ah.cfgNum('advisor.agent_head_bytes'));
+    var m = typeof head === 'string' ? ah.re.find(ah.cfg('advisor.agent_id_re'), 'r', head) : null;
+    if (Array.isArray(m) && m.length >= 2) {
+      var hit = head.slice(m[0], m[1]), q = hit.lastIndexOf('"', hit.length - 2);
+      if (hit.slice(q + 1, hit.length - 1) !== p.agent_id) { advisorKit.silence('agent_mismatch'); return ''; }
+    }
+    return own;
   },
+  // A rule stayed silent for `why` (a key of advisor.silence_metrics): counted, so "the agent never asks" can be told apart from
+  // "anti-hall could not tell the advisor is there".
+  silence: function (why) { var n = ah.cfg('advisor.silence_metrics')[why]; if (typeof n === 'string') advisorKit.raw('advisor.kind_availability', n); },
   // Is a user entry the owner typing (not harness text, a reminder, a task notification or a peer)?
   owner: function (e) {
     if (e[ah.cfg('advisor.owner_skip_meta')] === true) return false;
@@ -41,70 +56,101 @@ var advisorKit = {
     return false;
   },
   ts: function (e) { var t = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) : NaN; return isFinite(t) ? t : -1; },
-  // {path, size, lastAdvisor, lastUser, any, calls: [{off, ts, userTs}], model, sayAt} from the transcript tail: byte offsets of the
-  // newest advisor call or result and the newest owner message (-1 when none in the window), the newest known main model, the newest
-  // assistant text announcing an advisor call; null when the transcript is unreadable.
-  scan: function (p) {
+  // A fold of transcript `tp` that has read nothing yet.
+  freshTx: function (tp) { return { path: tp, pos: -1, full: false, lastAdvisor: -1, lastUser: -1, userTs: -1, seen: false, avail: null, model: null, sayAt: -1 }; },
+  // The transcript read INCREMENTALLY into the per-agent state `st` (st.tx): only the bytes appended since the last call (from
+  // st.tx.pos, at most advisor.window_bytes per call, a line over advisor.line_max_bytes skipped without being buffered), folded
+  // into the newest owner message, advisor call, main model, advisor announcement and advisor_tool attachment. A first read of a
+  // transcript longer than the window, or a gap past it, reads the last window (`full` false: the head was not read). Another path
+  // or a shorter file (rewritten) starts afresh. Returns {lastAdvisor, lastUser, seen, avail, full, model, sayAt, scan: {calls (new
+  // this call), size, read, peak}} or null when the transcript is unreadable.
+  fold: function (p, st) {
     var tp = advisorKit.transcript(p);
     if (!tp || !ah.path.isAbsolute(tp)) return null;
-    var r = ah.transcript.tailEntries(tp, ah.cfgNum('advisor.window_bytes'), ah.cfgNum('advisor.line_max_bytes'),
-      [['type'], ['isMeta'], ['origin', 'kind'], ['timestamp'], ['message', 'model'], ['message', 'content'], ['message', 'content', '*', 'type'],
-        ['message', 'content', '*', 'name'], ['message', 'content', '*', 'text']], ah.cfgNum('advisor.max_lines'));
-    if (r === null || !r.lines) return null;
+    var tx = jx.isObj(st.tx) && st.tx.path === tp && typeof st.tx.pos === 'number' && typeof st.tx.full === 'boolean' ? st.tx : advisorKit.freshTx(tp);
+    var keep = [['type'], ['isMeta'], ['origin', 'kind'], ['timestamp'], ['message', 'model'], ['message', 'content'], ['message', 'content', '*', 'type'],
+      ['message', 'content', '*', 'name'], ['message', 'content', '*', 'text']];
+    var att = ah.cfg('advisor.attachment');
+    keep.push([att.field, 'type'], [att.field, att.available_key], [att.field, att.change_key]);
+    var read = function (from) { return ah.transcript.rangeEntries(tp, from, ah.cfgNum('advisor.window_bytes'), ah.cfgNum('advisor.line_max_bytes'), keep, ah.cfgNum('advisor.max_lines')); };
+    var r = read(tx.pos);
+    if (r !== null && r.shrunk === true) { tx = advisorKit.freshTx(tp); r = read(-1); }
+    if (r === null || !Array.isArray(r.lines)) return null;
+    if (tx.pos < 0) tx.full = r.start === 0;
+    else if (r.jumped === true) tx.full = false;
     var names = ah.cfg('advisor.tool_names'), types = ah.cfg('advisor.block_types'), results = ah.cfg('advisor.result_types');
     var flag = ah.cfg('advisor.flagship_model_re'), known = ah.cfg('advisor.known_model_re'), say = ah.cfg('advisor.say_do_re');
-    var out = { path: tp, size: ah.fs.size(tp), lastAdvisor: -1, lastUser: -1, any: false, calls: [], model: null, sayAt: -1 };
-    var userTs = -1;
+    var calls = [];
     for (var i = 0; i < r.lines.length; i++) {
       var off = r.lines[i][0], e = r.lines[i][1];
       if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { continue; } }
-      if (!jx.isObj(e) || !jx.isObj(e.message)) continue;
+      if (!jx.isObj(e)) continue;
+      var a = e[att.field];
+      if (e.type === att.entry_type && jx.isObj(a) && a.type === att.type) { // the harness put the advisor tool in (or took it out of) the prompt
+        var ch = a[att.change_key];
+        tx.avail = a[att.available_key] !== false && (typeof ch !== 'string' || att.change_on.indexOf(ch) >= 0);
+        continue;
+      }
+      if (!jx.isObj(e.message)) continue;
       var c = e.message.content;
       if (e.type === 'user') {
-        if (advisorKit.owner(e) && off > out.lastUser) { out.lastUser = off; userTs = advisorKit.ts(e); out.sayAt = -1; }
+        if (advisorKit.owner(e) && off > tx.lastUser) { tx.lastUser = off; tx.userTs = advisorKit.ts(e); tx.sayAt = -1; }
       } else if (e.type === 'assistant') {
         var m = e.message.model;
-        if (typeof m === 'string' && m !== '' && (ah.re.test(known, 'r', m) || ah.re.test(flag, 'r', m))) out.model = m;
+        if (typeof m === 'string' && m !== '' && (ah.re.test(known, 'r', m) || ah.re.test(flag, 'r', m))) tx.model = m;
         if (!Array.isArray(c)) continue;
         for (var b = 0; b < c.length; b++) {
           var blk = c[b];
           if (!jx.isObj(blk)) continue;
           if (types.indexOf(blk.type) >= 0 && names.indexOf(blk.name) >= 0) {
-            out.any = true; out.calls.push({ off: off, ts: advisorKit.ts(e), userTs: userTs });
-            if (off > out.lastAdvisor) out.lastAdvisor = off;
+            tx.seen = true; calls.push({ off: off, ts: advisorKit.ts(e), userTs: tx.userTs });
+            if (off > tx.lastAdvisor) tx.lastAdvisor = off;
           } else if (results.indexOf(blk.type) >= 0) {
-            out.any = true;
-            if (off > out.lastAdvisor) out.lastAdvisor = off;
+            tx.seen = true;
+            if (off > tx.lastAdvisor) tx.lastAdvisor = off;
           } else if (blk.type === 'text' && typeof blk.text === 'string' && ah.re.test(say, 'r', blk.text)) {
-            if (off > out.sayAt) out.sayAt = off;
+            tx.seen = true; // announcing an advisor call is evidence the tool is in the model's prompt
+            if (off > tx.sayAt) tx.sayAt = off;
           }
         }
       }
     }
-    return out;
-  },
-  // The scan folded into the state `st` (st.tx): the newest owner message and advisor call ever seen, "advisor seen" and the main model
-  // survive a tail window that no longer holds them. A different transcript or a shorter file (rewritten) starts the fold afresh.
-  // Returns the folded view {lastAdvisor, lastUser, seen, model, sayAt, scan} or null when the transcript is unreadable.
-  fold: function (p, st) {
-    var s = advisorKit.scan(p);
-    if (s === null) return null;
-    var tx = jx.isObj(st.tx) ? st.tx : null;
-    if (tx === null || tx.path !== s.path || (typeof s.size === 'number' && typeof tx.size === 'number' && s.size < tx.size)) tx = { path: s.path, size: 0, lastAdvisor: -1, lastUser: -1, seen: false, model: null };
-    tx.size = typeof s.size === 'number' ? s.size : tx.size;
-    if (s.lastAdvisor > tx.lastAdvisor) tx.lastAdvisor = s.lastAdvisor;
-    if (s.lastUser > tx.lastUser) tx.lastUser = s.lastUser;
-    if (s.any || s.sayAt >= 0) tx.seen = true; // announcing an advisor call is evidence the tool is in the model's prompt
-    if (s.model !== null) tx.model = s.model;
+    tx.pos = typeof r.next === 'number' ? r.next : tx.pos;
     st.tx = tx;
-    return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, model: tx.model, sayAt: s.sayAt, scan: s };
+    advisorKit.consults(st, { calls: calls }); // counted where read: a call is read once, by whichever rule folds first
+    return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, avail: tx.avail, full: tx.full, model: tx.model, sayAt: tx.sayAt,
+      scan: { calls: calls, size: r.size, read: r.read, peak: r.peak } };
   },
-  // Does the session have an advisor tool? The payload's tool list, else an advisor call in the transcript tail or seen before (fold).
+  // Does the session have an advisor tool? Signals that need no earlier advisor use come first: the payload's tool list, then the
+  // newest advisor_tool attachment of this agent's own transcript (the harness's record of the tool entering the prompt: an explicit
+  // "off" is silent). Then an advisor call, result or announcement seen. Last, when the head of the transcript was never read (so a
+  // missing attachment proves nothing), an advisor model configured in the Claude Code settings (advisor.settings_files). Else
+  // unknown: silent (fail open), counted.
   present: function (p, scan, view) {
     var names = ah.cfg('advisor.tool_names'), listed = advisorKit.payloadTools(p);
     for (var i = 0; i < listed.length; i++) if (names.indexOf(listed[i]) >= 0) return true;
-    if (view && view.seen) return true;
-    return scan !== null && scan !== undefined && scan.any;
+    if (!view) { advisorKit.silence('unknown'); return false; }
+    if (view.avail === false) { advisorKit.silence('off'); return false; }
+    if (view.avail === true || view.seen) return true;
+    if (!view.full && advisorKit.configured(p)) { advisorKit.silence('settings_only'); return true; }
+    advisorKit.silence('unknown');
+    return false;
+  },
+  // Is an advisor model set in one of the Claude Code settings files (advisor.settings_files: {root: home|cwd|abs, path})?
+  configured: function (p) {
+    var files = ah.cfg('advisor.settings_files'), key = ah.cfg('advisor.settings_key'), max = ah.cfgNum('advisor.settings_read_max_bytes');
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (!jx.isObj(f) || typeof f.path !== 'string') continue;
+      var base = f.root === 'home' ? ah.home() : f.root === 'cwd' ? (typeof p.cwd === 'string' ? p.cwd : '') : '';
+      var full = base === '' ? f.path : base + '/' + f.path;
+      if (!ah.path.isAbsolute(full)) continue;
+      var t = ah.fs.readText(full, max), o = null;
+      if (typeof t !== 'string' || t === '') continue;
+      try { o = JSON.parse(t); } catch (x) { continue; }
+      if (jx.isObj(o) && typeof o[key] === 'string' && o[key] !== '') return true;
+    }
+    return false;
   },
   // Is the main model a flagship? null when no known model was seen (the phase-3 rules are then silent).
   flagship: function (model) {
@@ -178,5 +224,13 @@ var advisorKit = {
     var keys = Object.keys(m), max = ah.cfgNum('advisor.tasks_max');
     for (var i = 0; i < keys.length - max; i++) delete m[keys[i]];
   },
-  save: function (p, st) { try { ah.state.writeAtomic(advisorKit.stateRel(p), JSON.stringify(st)); } catch (e) { /* best effort */ } },
+  // Save the state, then return `verdict`; anything but allow falls back to allow when the save failed (the once-per-task cap lives in
+  // that state: unpersisted, the same block would repeat on every call). Counted.
+  keep: function (p, st, verdict) {
+    if (advisorKit.save(p, st) || verdict === 'allow') return verdict;
+    advisorKit.silence('state_unwritable');
+    return 'allow';
+  },
+  // Persist the state; false when it could not be written (a block then falls back to allow: an unpersisted cap is no cap).
+  save: function (p, st) { try { return ah.state.writeAtomic(advisorKit.stateRel(p), JSON.stringify(st)) === true; } catch (e) { return false; } },
 };
