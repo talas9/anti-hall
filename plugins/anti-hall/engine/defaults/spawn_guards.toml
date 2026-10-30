@@ -452,6 +452,26 @@ value = "{n} agents are running (limit {cap}, your guards.maxConcurrentAgents ca
 doc = "What to do instead of spawning past the owner's cap."
 value = "wait for one of them to finish or stop one you no longer need, then spawn. The cap is guards.maxConcurrentAgents (0 turns it off); to lift it now, tell the agent \"skip spawn-ceiling\"."
 
+[spawn_ceiling.reservation_file]
+doc = "The open spawn reservations of the concurrent-agent cap (GH #494), under swarm_guard.state_dir: one row per allowed spawn whose launch is not yet in the transcript, {id (the tool call id), session, at}."
+value = "spawn-reservations.json"
+
+[spawn_ceiling.reservation_lock]
+doc = "The lock that makes the cap's count and its reservation one step, under swarm_guard.state_dir (timings: the swarm_guard lock group)."
+value = "spawn-reservations.lock"
+
+[spawn_ceiling.reservation_lock_wait_ms]
+doc = "How long a spawn check waits for the reservation lock (at most script.lock_wait_max_ms); still busy: the unreserved count decides and nothing is reserved."
+value = 2000
+
+[spawn_ceiling.reservation_ttl_ms]
+doc = "How long a reservation holds its slot when its launch never shows in the transcript (a crashed or denied call)."
+value = 30000
+
+[metric.spawn_reservations]
+doc = "Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, write_failed (allowed unreserved), lock_busy (the unreserved count decided)."
+value = { kind = "counter", unit = "spawns", labels = ["outcome"] }
+
 [metric.spawns_denied_over_cap]
 doc = "Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached."
 value = { kind = "counter", unit = "spawns", labels = [] }

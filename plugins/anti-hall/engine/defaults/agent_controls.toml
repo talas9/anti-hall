@@ -410,6 +410,14 @@ value = 1
 min = 0
 max = 20
 
+[silent_nudge.rt_unrecorded_log]
+doc = "The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494)."
+value = { kind = "silent_nudge", text = "runtime escalation Stop not blocked: the block count could not be saved" }
+
+[metric.runtime_escalation_stop_unrecorded]
+doc = "Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap)."
+value = { kind = "counter", unit = "stops", labels = [] }
+
 [silent_nudge.rt_state_file]
 doc = "Per-session count of the runtime-escalation Stop blocks given, under the engine state directory."
 value = "runtime-escalation-stops.json"

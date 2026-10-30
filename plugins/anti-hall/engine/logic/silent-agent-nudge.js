@@ -203,7 +203,13 @@ function snRuntimeEscalation(p, home, session) {
   if (sraw !== null) { try { var o = JSON.parse(sraw); if (o !== null && typeof o === 'object' && !Array.isArray(o)) given = o; } catch (e) { given = {}; } }
   if (typeof given[session] === 'number' && given[session] >= cap) return null;
   given[session] = (typeof given[session] === 'number' ? given[session] : 0) + 1;
-  try { ah.state.writeAtomic(rel, JSON.stringify(given)); } catch (e) { return null; } // an unrecorded block could repeat: say nothing
+  var ok = false;
+  try { ok = ah.state.writeAtomic(rel, JSON.stringify(given)) === true; } catch (e) { ok = false; }
+  if (!ok) { // an unrecorded block could repeat past the cap (GH #494): say nothing, count it, log it once
+    ah.metric('runtime_escalation_stop_unrecorded', []);
+    ah.log(ah.cfg('silent_nudge.rt_unrecorded_log').kind, ah.cfg('silent_nudge.rt_unrecorded_log').text);
+    return null;
+  }
   var max = ah.cfgNum('silent_nudge.max_named');
   var items = rows.slice(0, max).map(function (r) {
     var mins = Math.floor((typeof r.dur_ms === 'number' ? r.dur_ms : 0) / 60000), h = Math.floor(mins / 60);

@@ -41,8 +41,7 @@ function swgCeiling(full) {
 }
 
 // The running agents of the session {n, names}, or null when they cannot be counted exactly (counted).
-// countUnknown: an agent of unknown liveness counts as running (the owner's concurrency cap), whatever ignore_unknown_liveness says.
-function swgRunning(p, countUnknown) {
+function swgRunning(p) {
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return null;
   var found = ah.transcript.agents(hookProc.open(p, tp));
@@ -52,7 +51,7 @@ function swgRunning(p, countUnknown) {
   var rows = found.rows.filter(function (a) {
     if (ah.cfg('spawn_ceiling.excluded_task_types').indexOf(a.taskType) >= 0) return false;
     var live = ah.transcript.trackedLiveness(a.id, tracked);
-    return live === null ? (countUnknown === true || !ah.cfg('spawn_ceiling.ignore_unknown_liveness')) : live;
+    return live === null ? !ah.cfg('spawn_ceiling.ignore_unknown_liveness') : live;
   });
   var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
   var names = rows.slice(0, max).map(function (a) {
@@ -61,6 +60,35 @@ function swgRunning(p, countUnknown) {
   return { n: rows.length, names: names };
 }
 
+
+// The owner's cap count {n, names, toolUseIds} of the session, never null (a lower bound): the transcript's running agents (one of
+// unknown liveness counts as running) united with the tracker's live children, whose launches may lie outside the transcript window
+// (GH #494). toolUseIds: the launching tool call ids the transcript shows, which release their spawn reservations.
+function swgCapRunning(p) {
+  var tp = p.transcript_path, session = typeof p.session_id === 'string' ? p.session_id : '';
+  var found = typeof tp === 'string' && tp !== '' ? ah.transcript.agents(hookProc.open(p, tp)) : null;
+  if (found !== null && found.unsure) { ah.unable('swarm-guard:cap_agents_unsure'); found = null; }
+  var tracked = ah.transcript.trackedAgents(p), rows = [], seen = {}, uses = {};
+  if (!Array.isArray(tracked)) tracked = [];
+  if (found !== null && Array.isArray(found.rows)) found.rows.forEach(function (a) {
+    if (typeof a.toolUseId === 'string' && a.toolUseId !== '') uses[a.toolUseId] = true;
+    if (ah.cfg('spawn_ceiling.excluded_task_types').indexOf(a.taskType) >= 0) return;
+    if (ah.transcript.trackedLiveness(a.id, tracked) === false) return;
+    seen[a.id] = true;
+    rows.push(a.description);
+  });
+  tracked.forEach(function (t) {
+    if (!t || t.id === session || t.parent !== session || seen[t.id] || seen[t.name]) return;
+    if (ah.transcript.trackedLiveness(t.id, [t]) !== true) return;
+    seen[t.id] = true;
+    rows.push(t.name);
+  });
+  var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
+  var names = rows.slice(0, max).map(function (d) {
+    return String(d || '').replace(ctl, ' ').trim().slice(0, ah.cfgNum('spawn_ceiling.desc_max')) || ah.cfg('spawn_ceiling.unnamed');
+  });
+  return { n: rows.length, names: names, toolUseIds: uses };
+}
 
 // The same fresh breaker marker gates every spawn and every non-report tool call. Read-only.
 function bbMarker(p) {

@@ -2363,7 +2363,7 @@ fn rt_stop(h: &Path) -> String {
     let p = json!({"hook_event_name": "Stop", "tool_name": "", "session_id": "parent", "cwd": h, "transcript_path": sess(h, "parent")});
     let env = RequestEnv::from_pairs([("HOME", h.to_str().unwrap())]);
     match crate::script::run_forced("silent-agent-nudge", &p, &json!({}), "Stop", &env) {
-        Some(Some(crate::script::Verdict::Exact(x))) => x.out,
+        Some(Some(crate::checks::Verdict::Exact(x))) => x.out,
         _ => String::new(),
     }
 }

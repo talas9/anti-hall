@@ -187,6 +187,43 @@ function swgDescribe(p) {
 // check reads (ctxbudget.usage_cache) and the running agents of the session transcript (the tracker's scan). Tokens against outcome is the
 // metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
 
+// The owner's concurrent-agent cap (guards.maxConcurrentAgents): a block reason, or null with the allowed spawn's slot reserved. The
+// count and the reservation are one step under the reservation lock, so overlapping checks of one burst cannot all pass (GH #494). A
+// reservation (keyed by the tool call id) counts with the running agents until its launch shows in the transcript or it is older than
+// spawn_ceiling.reservation_ttl_ms, so a crashed or denied call frees its slot. Lock busy: the unreserved count still applies.
+function swgCapGate(p, home) {
+  var cap = ah.settings.num('spawn_ceiling.max_concurrent_setting');
+  if (!(cap > 0) || typeof p.transcript_path !== 'string' || p.transcript_path === '') return null; // no transcript: nothing to count against, as before
+  var all = swgCapRunning(p), now = Date.now(), ttl = ah.cfgNum('spawn_ceiling.reservation_ttl_ms');
+  var session = typeof p.session_id === 'string' ? p.session_id : '', dir = ah.cfg('swarm_guard.state_dir');
+  var rel = dir + '/' + ah.cfg('spawn_ceiling.reservation_file');
+  var lock = ah.state.lock(dir + '/' + ah.cfg('spawn_ceiling.reservation_lock'), 'swarm_guard', ah.cfgNum('spawn_ceiling.reservation_lock_wait_ms'));
+  if (lock === null) { ah.unable('swarm-guard:cap_lock_busy'); ah.metric('spawn_reservations', ['outcome', 'lock_busy']); }
+  var rows = [], raw = lock === null ? null : ah.fs.readText(ah.path.join(home, rel)), doc = null;
+  if (raw !== null) { try { doc = JSON.parse(raw); } catch (e) { doc = null; } }
+  if (doc && Array.isArray(doc.rows)) rows = doc.rows.filter(function (r) {
+    return r && typeof r.id === 'string' && typeof r.at === 'number' && now - r.at < ttl && !(r.session === session && all.toolUseIds[r.id]);
+  });
+  var mine = rows.filter(function (r) { return r.session === session; }).length, n = all.n + mine;
+  if (n >= cap) {
+    if (lock !== null) ah.state.unlock(lock);
+    ah.advisory('flagged', 'spawn_cap_block');
+    ah.metric('spawns_denied_over_cap', []);
+    return text.message('block', ah.cfg('spawn_ceiling.guard_name'), {
+      what: text.render(ah.cfg('spawn_ceiling.msg_cap_what'), { n: n, cap: cap, names: all.names.join(ah.cfg('spawn_ceiling.join')), more: n > all.names.length ? text.render(ah.cfg('spawn_ceiling.msg_more'), { n: n - all.names.length }) : '' }),
+      why: ah.cfg('spawn_ceiling.msg_why'), instead: ah.cfg('spawn_ceiling.msg_cap_instead'),
+    });
+  }
+  if (lock === null) return null;
+  var id = typeof p.tool_use_id === 'string' && p.tool_use_id !== '' ? p.tool_use_id : now + '-' + Math.random().toString(36).slice(2);
+  rows.push({ id: id, session: session, at: now });
+  var ok = ah.state.writeAtomic(rel, JSON.stringify({ rows: rows }));
+  ah.state.unlock(lock);
+  if (!ok) ah.unable('swarm-guard:cap_reserve_write');
+  ah.metric('spawn_reservations', ['outcome', ok ? 'reserved' : 'write_failed']);
+  return null;
+}
+
 // A block reason, an advisory line to ride an allowed spawn ('' for none).
 function swgBudgetGates(p, home) {
   var full = null, usageOn = ah.settings.bool('spawn_usage.setting') && !ah.settings.skipped(ah.cfg('spawn_usage.guard_name'));
@@ -211,15 +248,8 @@ function swgBudgetGates(p, home) {
     }
   }
   if (ceilOn) {
-    var cap = ah.settings.num('spawn_ceiling.max_concurrent_setting'), all = cap > 0 ? swgRunning(p, true) : null;
-    if (all !== null && all.n >= cap) {
-      ah.advisory('flagged', 'spawn_cap_block');
-      ah.metric('spawns_denied_over_cap', []);
-      return { block: text.message('block', ah.cfg('spawn_ceiling.guard_name'), {
-        what: text.render(ah.cfg('spawn_ceiling.msg_cap_what'), { n: all.n, cap: cap, names: all.names.join(ah.cfg('spawn_ceiling.join')), more: all.n > all.names.length ? text.render(ah.cfg('spawn_ceiling.msg_more'), { n: all.n - all.names.length }) : '' }),
-        why: ah.cfg('spawn_ceiling.msg_why'), instead: ah.cfg('spawn_ceiling.msg_cap_instead'),
-      }), note: '' };
-    }
+    var capBlock = swgCapGate(p, home);
+    if (capBlock !== null) return { block: capBlock, note: '' };
     var run = swgRunning(p), ceil = swgCeiling(full);
     if (run !== null && run.n >= ceil) {
       ah.advisory('flagged', 'spawn_ceiling_block');
