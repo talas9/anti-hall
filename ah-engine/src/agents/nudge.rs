@@ -714,9 +714,12 @@ fn follow(env: &Env, st: &mut State) {
                 agent: n.child.clone(),
                 text: n.last_text.clone(),
             };
-            if SessionQueue.deliver(env, &n.parent, &r).is_ok() {
-                n.fallback_at = now;
-                n.path = [n.path.as_str(), word("path_queue")].join(word("path_join"));
+            match SessionQueue.deliver(env, &n.parent, &r) {
+                Ok(()) => {
+                    n.fallback_at = now;
+                    n.path = [n.path.as_str(), word("path_queue")].join(word("path_join"));
+                }
+                Err(_) => delivery_failed("queue"),
             }
         }
         let snoozed = n.snooze_until > now;
@@ -742,6 +745,8 @@ fn follow(env: &Env, st: &mut State) {
                 &[("n", &n.reminders), ("kind", &n.child_kind), ("name", &n.child_name), ("evidence", &n.ev_text), ("answer", &answer_line(&n))],
             );
             n.last_text.clone_from(&text);
+            // a nudge nothing was delivered for yet (the first delivery failed) is counted as sent when a reminder finally lands
+            let first_landing = n.path.is_empty() && n.escalated_at == 0;
             if live(st, &n.parent) {
                 n.path = send_to(env, &n.parent.clone(), &n, text);
             } else {
@@ -756,6 +761,9 @@ fn follow(env: &Env, st: &mut State) {
                         escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_no_parent"));
                     }
                 }
+            }
+            if first_landing && !n.path.is_empty() {
+                crate::metrics::bump("agent_nudge_sent", &[("trigger", &n.trigger)]);
             }
             emit(env, word("ev_reminded"), &n);
         }

@@ -106,7 +106,7 @@ static PENDING: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new(
 
 #[cfg(test)]
 thread_local! {
-    static THIS_THREAD: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
+    static THIS_THREAD: std::sync::Mutex<BTreeMap<String, u64>> = const { std::sync::Mutex::new(BTreeMap::new()) };
 }
 
 /// Test only: what the calling thread bumped for one series (the process-wide pending table is shared by parallel tests).
