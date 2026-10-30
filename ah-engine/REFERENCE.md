@@ -12558,6 +12558,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.line_sweep_failed` | `sweep {step} failed (the install goes on): {why}` |  |  | A sweep step failed; the install goes on. {step}, {why}. |
 | `routine.line_units` | `units: {text}` |  |  | The service units of an older install were retired by `units heal`. {text}. |
 | `routine.line_validated` | `validated: one daemon (pid {pid}) on the new binary, client round trip and gu...` |  |  | Validation passed. {pid}. |
+| `routine.live_hook_command_key` | `command` |  |  | The key of a hook registration entry that holds its shell command. |
+| `routine.live_hook_files` | `{home}/.codex/hooks.json` |  |  | Hook registrations whose commands name the plugin root the host really runs hooks from (the deploy check validates that root, not an assumed path). Token {home}. |
+| `routine.live_hook_root_rx` | `([^"'\s]+)/hooks/install\.sh` |  |  | Matched against a live hook command; group 1 is the plugin root (the directory above hooks/install.sh). |
 | `routine.manifest_file` | `manifest.json` |  |  | File name of an install's manifest inside its saved-copy directory. |
 | `routine.msg_backup_missing` | `update: the saved copy {path} is missing` |  |  | The saved copy of a file is gone. {path}. |
 | `routine.msg_bad_arg` | `update: unknown argument {arg}\nusage: update --from-local <dir> [--engine-bi...` |  |  | Unknown argument. {arg}. |
