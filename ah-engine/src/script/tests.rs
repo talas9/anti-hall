@@ -3182,6 +3182,7 @@ mod afk_mode {
         let m = drained();
         assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
         assert_eq!(denied(&m, "owner_prompt"), 1);
+        assert_eq!(m.counter("afk_plan_stamp_failed", &[("field", "promptSeq")]), 1, "the failed record write is counted");
     }
 
     /// P1-3: the plan edited after the consult (any writer, any mtime) is never approved: the consult is bound to the content hash.
