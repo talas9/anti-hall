@@ -41,7 +41,8 @@ function swgCeiling(full) {
 }
 
 // The running agents of the session {n, names}, or null when they cannot be counted exactly (counted).
-function swgRunning(p) {
+// countUnknown: an agent of unknown liveness counts as running (the owner's concurrency cap), whatever ignore_unknown_liveness says.
+function swgRunning(p, countUnknown) {
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return null;
   var found = ah.transcript.agents(hookProc.open(p, tp));
@@ -51,7 +52,7 @@ function swgRunning(p) {
   var rows = found.rows.filter(function (a) {
     if (ah.cfg('spawn_ceiling.excluded_task_types').indexOf(a.taskType) >= 0) return false;
     var live = ah.transcript.trackedLiveness(a.id, tracked);
-    return live === null ? !ah.cfg('spawn_ceiling.ignore_unknown_liveness') : live;
+    return live === null ? (countUnknown === true || !ah.cfg('spawn_ceiling.ignore_unknown_liveness')) : live;
   });
   var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
   var names = rows.slice(0, max).map(function (a) {

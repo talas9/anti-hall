@@ -211,6 +211,15 @@ function swgBudgetGates(p, home) {
     }
   }
   if (ceilOn) {
+    var cap = ah.settings.num('spawn_ceiling.max_concurrent_setting'), all = cap > 0 ? swgRunning(p, true) : null;
+    if (all !== null && all.n >= cap) {
+      ah.advisory('flagged', 'spawn_cap_block');
+      ah.metric('spawns_denied_over_cap', []);
+      return { block: text.message('block', ah.cfg('spawn_ceiling.guard_name'), {
+        what: text.render(ah.cfg('spawn_ceiling.msg_cap_what'), { n: all.n, cap: cap, names: all.names.join(ah.cfg('spawn_ceiling.join')), more: all.n > all.names.length ? text.render(ah.cfg('spawn_ceiling.msg_more'), { n: all.n - all.names.length }) : '' }),
+        why: ah.cfg('spawn_ceiling.msg_why'), instead: ah.cfg('spawn_ceiling.msg_cap_instead'),
+      }), note: '' };
+    }
     var run = swgRunning(p), ceil = swgCeiling(full);
     if (run !== null && run.n >= ceil) {
       ah.advisory('flagged', 'spawn_ceiling_block');

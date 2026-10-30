@@ -61,6 +61,7 @@ fn tracked(home: &Path, n: usize) {
     put(home, ".anti-hall/agent-tracker/state.json", &serde_json::to_string(&st).unwrap());
 }
 
+const NO_CAP: &str = r#"{"guards":{"maxConcurrentAgents":0}}"#;
 const CACHE: &str = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json";
 
 /// One spawn through the check: (exit code, stdout).
@@ -90,6 +91,7 @@ fn spawn(home: &Path) -> (i32, String) {
 #[test]
 fn ceiling_blocks_at_twelve_running_and_names_them() {
     let h = scratch("ceil");
+    put(&h, ".anti-hall/settings.json", NO_CAP);
     put(&h, "t.jsonl", &running(12));
     tracked(&h, 12);
     let (code, out) = spawn(&h);
@@ -102,6 +104,7 @@ fn ceiling_blocks_at_twelve_running_and_names_them() {
 #[test]
 fn ceiling_shrinks_near_the_limit() {
     let h = scratch("shrink");
+    put(&h, ".anti-hall/settings.json", NO_CAP);
     put(&h, "t.jsonl", &running(6));
     tracked(&h, 6);
     put(&h, CACHE, &usage(10.0, 86.0)); // step 85 -> ceiling 12 - 6 = 6
@@ -136,6 +139,83 @@ fn switches_and_skip_lift_the_guards() {
     put(&h, ".anti-hall/skip.json", r#"{"spawn-ceiling":99999999999999,"spawn-usage":99999999999999}"#);
     assert_eq!(spawn(&h).0, 0, "skip entries lift both");
     std::fs::remove_file(h.join(".anti-hall/skip.json")).unwrap();
-    put(&h, ".anti-hall/settings.json", r#"{"guards":{"spawnCeiling":false,"usageAwareDispatch":false}}"#);
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"spawnCeiling":false,"usageAwareDispatch":false,"maxConcurrentAgents":0}}"#);
     assert_eq!(spawn(&h).0, 0, "the switches lift both");
+}
+
+// ---- GH #484: the owner's concurrent-agent cap (guards.maxConcurrentAgents, default 4) ----
+
+/// T1: 4 agents running, none of them tracked (unknown liveness counts as running), the 5th spawn is denied naming the cap and the agents.
+#[test]
+fn t1_fifth_spawn_denied_naming_cap_and_agents_unknown_liveness_counts() {
+    let h = scratch("cap1");
+    put(&h, "t.jsonl", &running(4));
+    let (code, out) = spawn(&h);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("limit 4") && out.contains("lane 0") && out.contains("lane 3"), "{out}");
+    assert!(!out.contains("a000000000000000"), "no raw ids: {out}");
+}
+
+/// T2: one ends (the transcript shows its result), the next spawn is allowed.
+#[test]
+fn t2_ending_one_frees_a_slot() {
+    let h = scratch("cap2");
+    put(&h, "t.jsonl", &running(3));
+    assert_eq!(spawn(&h).0, 0, "3 running is under the cap of 4");
+    put(&h, "t.jsonl", &running(4));
+    assert_eq!(spawn(&h).0, 2);
+    put(&h, "t.jsonl", &running(3));
+    assert_eq!(spawn(&h).0, 0);
+}
+
+/// T3: 0 is off; the setting is respected.
+#[test]
+fn t3_zero_turns_the_cap_off_and_the_value_is_the_cap() {
+    let h = scratch("cap3");
+    put(&h, "t.jsonl", &running(8));
+    assert_eq!(spawn(&h).0, 2);
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":0}}"#);
+    assert_eq!(spawn(&h).0, 0, "0 = no cap (the 8 are unproven under the 12-agent ceiling)");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":9}}"#);
+    assert_eq!(spawn(&h).0, 0, "8 running under a cap of 9");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":8}}"#);
+    assert_eq!(spawn(&h).0, 2, "8 running at a cap of 8");
+}
+
+/// One Stop through the silent-agent check of session `s`: (exit code, stdout).
+fn stop(home: &Path) -> (i32, String) {
+    let payload = json!({"hook_event_name":"Stop","tool_name":"","session_id":"s","cwd":home,"transcript_path": home.join("t.jsonl")});
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.arg("check")
+        .arg("silent-agent-nudge")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("ANTIHALL_TEST_ISOLATION", "1")
+        .current_dir(home)
+        .env("AH_ENGINE_DIR", home.join("engine-state"))
+        .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// T5: an open runtime escalation blocks the coordinator's Stop once (cap per session), naming the agent and its runtime; never loops.
+#[test]
+fn t5_runtime_escalation_blocks_one_capped_stop() {
+    let h = scratch("esc");
+    put(&h, "t.jsonl", "");
+    let rows = json!({"rows":[{"session":"s","child":"a0","name":"lane 0","dur_ms": 3*3600*1000u64,"reminders":3}]});
+    put(&h, ".anti-hall/agent-tracker/runtime-escalations.json", &rows.to_string());
+    let (code, out) = stop(&h);
+    assert!(code == 0 && out.contains("\"decision\":\"block\"") && out.contains("lane 0") && out.contains("3 h"), "{code} {out}");
+    let (code, out) = stop(&h);
+    assert!(code == 0 && !out.contains("decision"), "capped: the second Stop passes: {out}");
+    put(&h, ".anti-hall/agent-tracker/runtime-escalations.json", r#"{"rows":[]}"#);
+    assert!(!stop(&h).1.contains("decision"), "a finished agent leaves nothing to block on");
 }

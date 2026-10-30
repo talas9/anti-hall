@@ -213,6 +213,14 @@ value = { section = "agents", key = "nudgeScope", env = "ANTIHALL_AGENT_NUDGE_SC
 doc = "Telemetry words of a nudge held back by the scope rules (class agent_nudge.words.class): the event, and its reason values judge_done (the health judge said the child is done) and answered (the parent answered after the last send, so the wake fallback does not queue it again)."
 value = { event = "suppressed", judge_done = "judge_done", answered = "answered" }
 
+[agent_nudge.runtime_escalation]
+doc = "Escalation of a long-running child whose nudges keep repeating (GH #484). after_reminders: nudges about one child (the first included) after which it counts as escalated if it has not finished or been stopped (0 = off). file: where the open escalations are published for the coordinator's Stop check, under the tracker's directory."
+value = { after_reminders = 3, file = "runtime-escalations.json" }
+
+[metric.runtime_escalations]
+doc = "Children whose repeated runtime nudges reached agent_nudge.runtime_escalation.after_reminders without the child finishing or being stopped; counted once per nudge."
+value = { kind = "counter", unit = "escalations", labels = [] }
+
 [metric.agent_nudge_sent]
 doc = "Nudges opened and delivered (or escalated to the owner when no parent is live), counted only when a delivery succeeded, by trigger (hung, idle, loop, waste)."
 value = { kind = "counter", unit = "nudges", labels = ["trigger"] }

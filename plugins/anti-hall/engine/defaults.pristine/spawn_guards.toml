@@ -440,6 +440,22 @@ value = true
 doc = "Background task types that do not consume an agent spawn slot; their owners can still cover task-guard work."
 value = ["local_bash"]
 
+[spawn_ceiling.max_concurrent_setting]
+doc = "The owner's cap on agents running at once (guards.maxConcurrentAgents, default 4, 0 = no cap): a spawn is denied when this many agents already run. Unlike the usage-scaled ceiling below, an agent of unknown liveness counts as running until the session proves it ended (GH #484)."
+value = { section = "guards", key = "maxConcurrentAgents", kind = "num", env = "ANTIHALL_MAX_CONCURRENT_AGENTS", aliases = [], option = "", manifest_default = "4", default = 4, min = 0 }
+
+[spawn_ceiling.msg_cap_what]
+doc = "What the concurrency-cap block says; {n} running, {cap} the owner's cap, {names} the listed agents, {more} the remainder clause."
+value = "{n} agents are running (limit {cap}, your guards.maxConcurrentAgents cap): {names}{more}."
+
+[spawn_ceiling.msg_cap_instead]
+doc = "What to do instead of spawning past the owner's cap."
+value = "wait for one of them to finish or stop one you no longer need, then spawn. The cap is guards.maxConcurrentAgents (0 turns it off); to lift it now, tell the agent \"skip spawn-ceiling\"."
+
+[metric.spawns_denied_over_cap]
+doc = "Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached."
+value = { kind = "counter", unit = "spawns", labels = [] }
+
 [spawn_ceiling.base]
 doc = "The ceiling at full usage headroom: a spawn is blocked when this many agents already run."
 value = 12
