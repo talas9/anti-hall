@@ -610,7 +610,7 @@ value = 10
 unit = "ms"
 
 [client.slow_fallback_max_ms]
-doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then fails the call open and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
+doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then answers each entry by its failure policy (a safety guard fails closed) and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
 value = 3000
 env = "AH_ENGINE_SLOW_FALLBACK_MAX_MS"
 min = 0
@@ -628,7 +628,7 @@ env = "AH_ENGINE_DOWN_MARKER_TTL_MS"
 unit = "ms"
 
 [client.slow_down_n]
-doc = "Consecutive slow (late) daemon replies within client.slow_window_ms after which the daemon is treated as wedged and marked down. A single call that gets no reply in the window never marks it down: it fails open and the next client asks the daemon again."
+doc = "Consecutive slow (late) daemon replies within client.slow_window_ms after which the daemon is treated as wedged and marked down. A single call that gets no reply in the window never marks it down: each of its entries answers by its own failure policy (a safety guard fails closed, the rest pass under guards.failOpenNonSafety) and the next client asks the daemon again."
 value = 5
 env = "AH_ENGINE_SLOW_DOWN_N"
 min = 1
