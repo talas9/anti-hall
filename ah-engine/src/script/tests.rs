@@ -2368,6 +2368,8 @@ fn b_commit_and_restore_are_exempt_per_call_unless_chained_pr472() {
         ("B2", "git commit -m \"fix ${HOME} handling\""),
         ("B3", "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"\n"),
         ("B3", "git commit -m \"$(cat <<'EOF'\nmsg\nEOF   \n)\"  "),
+        ("B1", "git add -A && git commit -m \"$(cat <<'EOF'\nfix: $PATH << x\nEOF   \n)\" && git push\n"),
+        ("B2", "cd /w && git commit -m 'fix $PATH'"),
         ("B4", "git restore -- f"),
         ("B4", "git restore --staged f"),
     ];

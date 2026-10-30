@@ -149,15 +149,9 @@ function bbOneCommand(text) {
   return r[0].length === 1 && ends.indexOf(r[1][0]) >= 0 ? r[0][0] : null;
 }
 
-function bbExempt(cmd) {
+// One command judged on its rebuilt words: 'commit', 'restore' or null.
+function bbExemptSeg(seg) {
   var x = ah.cfg('burn.exempt');
-  if (cmd === '' || cmd.length > ah.cfg('burn.max_cmd_chars')) return null;
-  var seg = bbOneCommand(cmd);
-  if (seg === null) return null;
-  var subs = ahHost.shellSubstitutions(cmd);
-  for (var i = 0; i < subs.length; i++) {
-    if (!ah.re.test(x.subst_re, 'r', subs[i]) || bbOneCommand(subs[i]) === null || ahHost.shellSubstitutions(subs[i]).length > 0) return null;
-  }
   var words = ahHost.shellTokenize(seg), out = [];
   for (var w = 0; w < words.length; w++) {
     var msg = w > 0 && x.message_flags.indexOf(words[w - 1]) >= 0;
@@ -172,6 +166,26 @@ function bbExempt(cmd) {
   var res = ah.cfg('burn.restore_bash_res');
   for (var j = 0; j < res.length; j++) if (ah.re.test(res[j], 'r', line)) return 'restore';
   return null;
+}
+
+// The whole command: segments joined only by burn.exempt.chain_delims (`&&`, `;`, newline), each a commit/restore or a command the usual
+// rules allow on its own (git add/push/status, cd, read-only inspection), at least one a commit or restore. Returns its kind or null.
+function bbExempt(cmd) {
+  var x = ah.cfg('burn.exempt');
+  if (cmd === '' || cmd.length > ah.cfg('burn.max_cmd_chars')) return null;
+  var subs = ahHost.shellSubstitutions(cmd);
+  for (var i = 0; i < subs.length; i++) {
+    if (!ah.re.test(x.subst_re, 'r', subs[i]) || bbOneCommand(subs[i]) === null || ahHost.shellSubstitutions(subs[i]).length > 0) return null;
+  }
+  var r = ahHost.shellSplit(cmd), segs = r[0], delims = r[1], kind = null;
+  if (segs.length === 0 || x.end_delims.indexOf(delims[segs.length - 1]) < 0) return null;
+  for (var s = 0; s < segs.length; s++) {
+    if (s < segs.length - 1 && x.chain_delims.indexOf(delims[s]) < 0) return null;
+    var k = bbExemptSeg(segs[s]);
+    if (k !== null) kind = kind || k;
+    else if (bbAllowedBash(segs[s].trim()) === null) return null;
+  }
+  return kind;
 }
 
 // One count per pass or pause (metrics burn_breaker_bypass by kind, burn_breaker_paused by reason); a lost count never changes a decision.
