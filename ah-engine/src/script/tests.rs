@@ -3131,10 +3131,6 @@ mod afk_mode {
         assert_eq!(m.counter("afk_output_tokens", &[("mode", "afk")]), 80);
     }
 
-    fn transcript(h: &str, lines: &[Value]) {
-        std::fs::write(format!("{h}/t.jsonl"), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
-    }
-
     #[test]
     fn ask_user_question_is_denied_every_time_while_afk_with_the_ladder() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
@@ -3158,45 +3154,6 @@ mod afk_mode {
         // the setting off: the question passes
         std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"noQuestions": false}}).to_string()).unwrap();
         assert!(out(&run(&h, "PreToolUse", ask, &[])).is_empty());
-        drained();
-    }
-
-    #[test]
-    fn exit_plan_mode_is_auto_approved_with_updated_input_only_after_an_advisor_review_newer_than_the_owner_prompt() {
-        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
-        let h = home("afk-plan");
-        drained();
-        let iso = crate::checks::taskkit::time::iso;
-        let user = json!({"type": "user", "message": {"role": "user", "content": "build it"}});
-        let adv = |ts: String| json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [{"type": "server_tool_use", "name": "advisor", "id": "a"}]}});
-        let plan = json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "1. do X\n2. do Y", "allowedPrompts": []}});
-        let ok = |o: &str| -> bool {
-            let v: Value = serde_json::from_str(o.trim()).unwrap_or(Value::Null);
-            v["hookSpecificOutput"]["permissionDecision"] == json!("allow") && v["hookSpecificOutput"]["updatedInput"] == plan["tool_input"]
-        };
-        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]); // an owner prompt: the watermark
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        transcript(&h, &[user.clone(), adv(iso(crate::checks::taskkit::time::now_ms()))]);
-        let o = out(&run(&h, "PreToolUse", plan.clone(), &[]));
-        assert!(ok(&o), "advisor newer than the owner prompt: approved with the whole input: {o}");
-        // a NEW owner prompt is recorded while the transcript still ends with the previous advisor exchange (writes are async)
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        run(&h, "UserPromptSubmit", json!({"prompt": "change the plan: also do Z"}), &[]);
-        assert!(out(&run(&h, "PreToolUse", plan.clone(), &[])).is_empty(), "the old advisor call predates the new owner prompt");
-        // a subagent's advisor call does not count for the parent
-        run(&h, "PostToolUse", json!({"tool_name": "advisor", "agent_id": "child"}), &[]);
-        assert!(out(&run(&h, "PreToolUse", plan.clone(), &[])).is_empty());
-        // the session's own advisor call, recorded by the hook with its own clock, is newer: approved
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        run(&h, "PostToolUse", json!({"tool_name": "advisor"}), &[]);
-        assert!(ok(&out(&run(&h, "PreToolUse", plan.clone(), &[]))));
-        // a subagent's ExitPlanMode is never approved by the hook
-        assert!(out(&run(&h, "PreToolUse", json!({"tool_name": "ExitPlanMode", "agent_id": "child", "tool_input": {"plan": "p"}}), &[])).is_empty());
-        let m = drained();
-        assert_eq!(m.counter("afk_plan_autoapproved", &[("result", "approved")]), 2);
-        assert_eq!(m.counter("afk_plan_autoapproved", &[("result", "no_advisor")]), 2);
-        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"planAutoApprove": false}}).to_string()).unwrap();
-        assert!(out(&run(&h, "PreToolUse", plan, &[])).is_empty(), "setting off");
         drained();
     }
 
@@ -3238,6 +3195,80 @@ mod afk_mode {
         assert!(held.release());
         t.join().expect("hook thread");
         assert_eq!(flag(&h)["on"], json!(false), "OFF wins over the stale ON");
+        drained();
+    }
+
+    /// GH #426 review (C): a hook that read OFF and a stale presence decides to trip idle AFK; `back` writes OFF with `ended`
+    /// while the hook waits on the lock; under the lock the hook must re-check idle against `ended` and write nothing.
+    #[test]
+    fn idle_re_entry_is_re_checked_under_the_lock_against_the_back_watermark() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-idle-race");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let params = crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp, params).expect("test holds the lock");
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let now = crate::checks::taskkit::time::now_ms();
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": now}).to_string()).unwrap();
+        assert!(held.release());
+        t.join().expect("hook thread");
+        assert_eq!(flag(&h)["on"], json!(false), "the later `back` wins: no idle re-entry");
+        drained();
+    }
+
+    /// GH #426 review (D): a contended hook call has ONE lock budget (afk.lock_wait_ms) for all its flag updates and returns
+    /// within it, writing nothing (the old code waited the full budget once per update).
+    #[test]
+    fn a_contended_hook_call_returns_within_one_lock_budget_writing_nothing() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-budget");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        let body = json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2, "pending_digest": 3}).to_string();
+        std::fs::write(&fp, &body).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": 0}).to_string()).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let params = crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp, params).expect("test holds the lock");
+        let budget = crate::defaults::num("afk.lock_wait_ms") as u128;
+        let t0 = std::time::Instant::now();
+        run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[]);
+        let took = t0.elapsed().as_millis();
+        assert!(held.release());
+        assert!(took < 2 * budget, "one budget per call: {took} ms vs afk.lock_wait_ms {budget} ms");
+        assert_eq!(std::fs::read_to_string(&fp).unwrap(), body, "a contended hook writes nothing");
+        drained();
+    }
+
+    /// GH #426 review (E): typed `back` is the whole trimmed prompt in any case; with the flag lock busy it says so (the flag stays ON).
+    #[test]
+    fn typed_back_ignores_case_and_surrounding_space_and_reports_a_busy_lock() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-back-forms");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        let on = json!({"on": true, "how": "manual", "since": 1, "epoch": "1", "counted": true}).to_string();
+        for typed in ["  BACK \n", "Back", "back"] {
+            std::fs::write(&fp, &on).unwrap();
+            run(&h, "UserPromptSubmit", json!({"prompt": typed}), &[]);
+            assert_eq!(flag(&h)["on"], json!(false), "{typed:?} ends AFK");
+        }
+        std::fs::write(&fp, &on).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let params = crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp, params).expect("test holds the lock");
+        let o = out(&run(&h, "UserPromptSubmit", json!({"prompt": "back"}), &[]));
+        assert!(held.release());
+        assert_eq!(flag(&h)["on"], json!(true));
+        assert!(o.contains("ah-engine back"), "busy: the reply says the flag did not change and names the CLI: {o}");
         drained();
     }
 

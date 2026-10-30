@@ -73,34 +73,50 @@ fn say(p: &Parsed, text: &str, extra: Value) {
 }
 
 /// Run `f` under the flag's cross-process lock (`afk.lock_file`, the lock the hooks take for every flag update), so the flag is
-/// read and written with no hook in between. When the lock cannot be taken in `afk.lock_wait_ms` the command runs anyway: the
-/// owner's command wins, and a hook that cannot take the lock writes nothing.
-fn locked<T>(home: &str, f: impl FnOnce() -> T) -> T {
+/// read and written with no hook in between. The lock is retried for `afk.cli_lock_wait_ms` and a live holder is never taken
+/// over; when it stays busy nothing runs (`None`): the command never writes without the lock, so a hook paused inside it cannot
+/// overwrite this command's write with its stale copy.
+fn locked<T>(home: &str, f: impl FnOnce() -> T) -> Option<T> {
     let path = state_dir(home).join(defaults::text("afk.lock_file"));
+    let params = crate::checks::guardkit::nodelock::Params::from_group("afk").map(|mut p| {
+        p.wait_ms = defaults::num("afk.cli_lock_wait_ms");
+        p
+    });
     let held = std::fs::create_dir_all(state_dir(home))
         .ok()
-        .and(crate::checks::guardkit::nodelock::Params::from_group("afk"))
-        .and_then(|params| crate::checks::guardkit::nodelock::acquire(&path.to_string_lossy(), params));
+        .and(params)
+        .and_then(|params| crate::checks::guardkit::nodelock::acquire_respecting_live(&path.to_string_lossy(), params))?;
     let r = f();
-    if let Some(h) = held
-        && !h.release()
-    {
+    if !held.release() {
         err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &defaults::text("afk.msg_lock_released"))]) + "\n"));
     }
-    r
+    Some(r)
 }
 
-/// The owner ran `afk off` / `back`: they are present now, so idle detection does not start a new AFK right after.
+/// `locked`, or the busy message and exit 1 when the lock stayed busy.
+fn locked_or_busy(home: &str, f: impl FnOnce() -> i32) -> i32 {
+    locked(home, f).unwrap_or_else(|| {
+        err(&(defaults::text("afk.msg_lock_busy").to_string() + "\n"));
+        1
+    })
+}
+
+/// The owner ran `afk off` / `back`: they are present now, so idle detection does not start a new AFK right after. Presence never
+/// moves backwards (a newer time already recorded stays).
 fn mark_present(home: &str) {
     let path = state_dir(home).join(defaults::text("afk.presence_file"));
-    if let Err(e) = crate::atomic::write(&path, json!({"last": now_ms()}).to_string()) {
+    let now = now_ms();
+    if read_json(&path).and_then(|m| m.get("last").and_then(Value::as_i64)).is_some_and(|last| last >= now) {
+        return;
+    }
+    if let Err(e) = crate::atomic::write(&path, json!({"last": now}).to_string()) {
         err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &e)]) + "\n"));
     }
 }
 
 /// Start AFK (manual); `false` when the flag could not be written.
 fn turn_on(p: &Parsed, home: &str) -> i32 {
-    locked(home, || turn_on_locked(p, home))
+    locked_or_busy(home, || turn_on_locked(p, home))
 }
 
 fn turn_on_locked(p: &Parsed, home: &str) -> i32 {
@@ -186,7 +202,7 @@ pub(crate) fn digest(home: &str, epoch: &str) -> (String, u64, u64) {
 
 /// End AFK; with `print_digest`, print the digest of the period that ended (or of the last one). Owner presence is refreshed.
 fn turn_off(p: &Parsed, home: &str, print_digest: bool) -> i32 {
-    locked(home, || turn_off_locked(p, home, print_digest))
+    locked_or_busy(home, || turn_off_locked(p, home, print_digest))
 }
 
 fn turn_off_locked(p: &Parsed, home: &str, print_digest: bool) -> i32 {
@@ -315,6 +331,50 @@ mod tests {
         let p = json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": home, "tool_name": "Bash"});
         crate::script::run_forced("afk-mode", &p, &Value::Null, "PostToolUse", &env);
         assert!(!is_on(read_json(&flag_path(&home)).as_ref()), "an old presence before `off` does not re-enter idle AFK");
+    }
+
+    /// GH #426 review (B): a hook holding the flag lock (here: this test, a live process) makes `afk off` / `back` / `afk on` wait
+    /// at most afk.cli_lock_wait_ms, write NOTHING and exit non-zero: the command never writes without the lock.
+    #[test]
+    fn cli_never_writes_the_flag_without_its_lock_and_exits_non_zero_when_it_stays_busy() {
+        let dir = scratch("busy");
+        let home = dir.to_string_lossy().into_owned();
+        assert_eq!(turn_on(&parsed("afk", &["on"]), &home), 0);
+        let before = std::fs::read_to_string(flag_path(&home)).expect("flag");
+        let lp = state_dir(&home).join(defaults::text("afk.lock_file"));
+        let params = crate::checks::guardkit::nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let held = crate::checks::guardkit::nodelock::acquire(&lp.to_string_lossy(), params).expect("test holds the lock");
+        let t0 = std::time::Instant::now();
+        assert_eq!(turn_off(&parsed("afk", &["off"]), &home, false), 1, "busy lock: exit 1");
+        assert_eq!(turn_off(&parsed("back", &[]), &home, true), 1, "busy lock: exit 1");
+        let waited = t0.elapsed().as_millis() as u64;
+        assert!(waited >= defaults::num("afk.cli_lock_wait_ms"), "it retried within its budget ({waited} ms)");
+        assert_eq!(std::fs::read_to_string(flag_path(&home)).expect("flag"), before, "nothing written without the lock");
+        assert!(held.release());
+        assert_eq!(turn_off(&parsed("back", &[]), &home, true), 0, "lock free: back works");
+        assert!(!is_on(read_json(&flag_path(&home)).as_ref()));
+    }
+
+    /// GH #426 review (C): `back`, then a stale presence write (a hook that read its clock before `back`), then a tool call: idle
+    /// detection must not re-enter AFK (presence is monotonic and idle counts from the flag's `ended` time).
+    #[test]
+    fn a_stale_presence_write_after_back_does_not_re_enter_idle_afk() {
+        let dir = scratch("stale-pres");
+        let home = dir.to_string_lossy().into_owned();
+        assert_eq!(turn_on(&parsed("afk", &["on"]), &home), 0);
+        assert_eq!(turn_off(&parsed("back", &[]), &home, true), 0);
+        let pres = state_dir(&home).join(defaults::text("afk.presence_file"));
+        let after_back = read_json(&pres).and_then(|m| m.get("last").and_then(Value::as_i64)).expect("back records presence");
+        // `back` again with an older presence on disk keeps the newer one; a newer one on disk is never moved back
+        std::fs::write(&pres, json!({"last": after_back + 3_600_000}).to_string()).expect("write");
+        mark_present(&home);
+        assert_eq!(read_json(&pres).and_then(|m| m.get("last").and_then(Value::as_i64)), Some(after_back + 3_600_000), "monotonic");
+        // a stale presence write lands after `back`
+        std::fs::write(&pres, json!({"last": 0}).to_string()).expect("write");
+        let env = crate::reqenv::RequestEnv::from_pairs(vec![("HOME".to_string(), home.clone())]);
+        let p = json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": home, "tool_name": "Bash"});
+        crate::script::run_forced("afk-mode", &p, &Value::Null, "PostToolUse", &env);
+        assert!(!is_on(read_json(&flag_path(&home)).as_ref()), "idle counts from `ended`: no re-entry right after back");
     }
 
     #[test]

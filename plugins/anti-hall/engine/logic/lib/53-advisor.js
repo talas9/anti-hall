@@ -16,17 +16,16 @@ var advisorKit = {
     }
     return out;
   },
-  // {lastAdvisor, lastUser, any, lastAdvisorTs} from the transcript tail: byte offsets of the newest advisor tool call and the newest
-  // real user message (-1 when none in the window), `any` true when the window holds an advisor call, lastAdvisorTs the newest advisor
-  // entry's own `timestamp` in ms (-1 when none); null when the transcript is unreadable.
+  // {lastAdvisor, lastUser, any} from the transcript tail: byte offsets of the newest advisor tool call and the newest real user
+  // message (-1 when none in the window), `any` true when the window holds an advisor call; null when the transcript is unreadable.
   scan: function (p) {
     var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
     if (!tp || !ah.path.isAbsolute(tp)) return null;
     var r = ah.transcript.tailEntries(tp, ah.cfgNum('advisor.window_bytes'), ah.cfgNum('advisor.line_max_bytes'),
-      [['type'], ['timestamp'], ['message', 'content'], ['message', 'content', '*', 'type'], ['message', 'content', '*', 'name']], ah.cfgNum('advisor.max_lines'));
+      [['type'], ['message', 'content'], ['message', 'content', '*', 'type'], ['message', 'content', '*', 'name']], ah.cfgNum('advisor.max_lines'));
     if (r === null || !r.lines) return null;
     var names = ah.cfg('advisor.tool_names'), types = ah.cfg('advisor.block_types');
-    var out = { lastAdvisor: -1, lastUser: -1, any: false, lastAdvisorTs: -1 };
+    var out = { lastAdvisor: -1, lastUser: -1, any: false };
     for (var i = 0; i < r.lines.length; i++) {
       var off = r.lines[i][0], e = r.lines[i][1];
       if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { continue; } }
@@ -39,12 +38,7 @@ var advisorKit = {
       } else if (e.type === 'assistant' && Array.isArray(c)) {
         for (var b = 0; b < c.length; b++) {
           var blk = c[b];
-          if (jx.isObj(blk) && types.indexOf(blk.type) >= 0 && names.indexOf(blk.name) >= 0) {
-            out.any = true;
-            if (off > out.lastAdvisor) out.lastAdvisor = off;
-            var ts = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) : NaN;
-            if (ts === ts && ts > out.lastAdvisorTs) out.lastAdvisorTs = ts;
-          }
+          if (jx.isObj(blk) && types.indexOf(blk.type) >= 0 && names.indexOf(blk.name) >= 0) { out.any = true; if (off > out.lastAdvisor) out.lastAdvisor = off; }
         }
       }
     }

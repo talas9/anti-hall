@@ -535,21 +535,6 @@ mod tests {
     fn r(id: &str, code: i32, out: &str, err: &str) -> HookResult {
         HookResult { id: id.into(), code: Some(code), out: out.into(), err: err.into() }
     }
-
-    /// AFK ExitPlanMode auto-approve (GH #425): allow + updatedInput reaches the host unchanged, alone and merged with another
-    /// hook's context (the docs: ExitPlanMode needs updatedInput paired with allow).
-    #[test]
-    fn allow_with_updated_input_survives_verbatim_and_merge() {
-        let a = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"afk\",\"updatedInput\":{\"plan\":\"p\"}}}\n";
-        let Combined::Answer(o) = combine_for(&[r("afk-mode:pre", 0, a, "")], false) else { panic!("conflict") };
-        assert_eq!(o.out, a);
-        let b = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"note\"}}\n";
-        let Combined::Answer(o) = combine_for(&[r("x", 0, b, ""), r("afk-mode:pre", 0, a, "")], false) else { panic!("conflict") };
-        let v: serde_json::Value = serde_json::from_str(o.out.trim()).unwrap();
-        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
-        assert_eq!(v["hookSpecificOutput"]["updatedInput"], serde_json::json!({"plan": "p"}));
-        assert_eq!(v["hookSpecificOutput"]["additionalContext"], "note");
-    }
     fn ans(c: Combined) -> Outcome {
         match c {
             Combined::Answer(o) => o,

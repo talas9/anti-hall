@@ -20,7 +20,10 @@ digest ("progress"), or wants AFK settings changed.
 | Show the state | - | `ah-engine afk status` |
 | End AFK without a digest | - | `ah-engine afk off` |
 
-A typed `afk` / `back` / `progress` prompt (alone on the line) is answered by the hook and not sent to the model.
+A typed `afk` / `back` / `progress` prompt (the whole prompt, any case, surrounding spaces ignored) is answered by the hook and
+not sent to the model. `ah-engine back` is the always-available escape: it works from any terminal, even when a typed `back`
+is not recognised (quoted, or inside a longer prompt) or the flag is busy (the typed reply then says so and the flag stays ON).
+`ah-engine afk` / `back` exit non-zero, changing nothing, when another hook holds the flag lock past `afk.cli_lock_wait_ms`.
 AFK also starts by itself after `afk.idleMinutes` without an owner prompt on this machine; that idle AFK ends on the owner's
 next prompt. A manual AFK lasts until `back`.
 
@@ -32,8 +35,6 @@ next prompt. A manual AFK lasts until `back`.
 - The digest (NEEDS OWNER bullets first) is the bullets after the session's AFK marker; the percentage is `[x]` bullets / all checklist bullets.
 - No blocking questions: `AskUserQuestion` is denied EVERY time with the ladder below, and a turn that ends on a plain-text
   question is held at Stop with the ladder (at most `afk.question_max_holds` times).
-- Plan approval: `ExitPlanMode` is approved by the hook (allow + `updatedInput`) only when the session's last advisor call is
-  newer than the owner's last prompt (hook-recorded times); otherwise, and for subagents, the normal approval runs.
 - Subagents never get the AFK rule; their question-tool calls are denied too.
 - Question ladder: decide from the plan and context; ask the advisor; only if still unclear AND not implied by the plan AND the
   choice is destructive/irreversible or would wreck the work if made the other way: park that ONE item as
@@ -53,7 +54,6 @@ next prompt. A manual AFK lasts until `back`.
 | `afk.measure` | true | Output tokens per turn, AFK vs present |
 | `afk.conciseCodex` | true | Concise reply rule at Codex session start |
 | `afk.noQuestions` | true | Deny the question tool and hold a turn ending on a question, while AFK |
-| `afk.planAutoApprove` | true | Approve ExitPlanMode after an advisor review, while AFK (Claude) |
 
 Texts, limits and patterns: `engine/defaults/afk.toml`.
 
@@ -61,7 +61,7 @@ Texts, limits and patterns: `engine/defaults/afk.toml`.
 
 `ah-engine metrics` shows `afk_entered{how}`, `afk_turns`, `digest_entries`, `idle_trips`, `afk_overlong_turns{action}`,
 `afk_output_tokens{mode}`, `afk_turns_measured{mode}` (tokens / turns = output tokens per turn, AFK vs present),
-`afk_question_denied{tool}`, `afk_question_parked{action}` (nudged, capped, listed) and `afk_plan_autoapproved{result}`.
+`afk_question_denied{tool}` and `afk_question_parked{action}` (nudged, capped, listed).
 
 ## Concise style
 

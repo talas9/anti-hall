@@ -391,7 +391,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `advisor-guard` | Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing. |
 | `switch-notice` | Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
 | `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line that the session's task entries are not user data, to log the outcome in the named history ledger path and then delete it; when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
-| `afk-mode` | UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse, Stop (Codex): AFK mode. Machine-wide flag (ah-engine afk on\|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file (NEEDS OWNER bullets first), a capped Stop hold of overlong AFK replies, no blocking questions (AskUserQuestion denied with the question ladder, a capped hold of a turn ending on a question), ExitPlanMode approved after an advisor review, output tokens per turn AFK vs present (afk.*). |
+| `afk-mode` | UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse, Stop (Codex): AFK mode. Machine-wide flag (ah-engine afk on\|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file (NEEDS OWNER bullets first), a capped Stop hold of overlong AFK replies, no blocking questions (AskUserQuestion denied with the question ladder, a capped hold of a turn ending on a question), output tokens per turn AFK vs present (afk.*). |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets. |
@@ -3733,6 +3733,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.action_nudge` | `nudge` |  |  | afk_overlong_turns action label: the first overlong reply (nudged on the next turn). |
 | `afk.action_nudged` | `nudged` |  |  | afk_question_parked action label: a turn ending on a plain-text question was held with the ladder. |
 | `afk.bullet_re` | `^\s*[-*] ` |  |  | A digest entry: a bullet line after the marker (regular expression). |
+| `afk.cli_lock_wait_ms` | `3000` |  | ms | How long `ah-engine afk on\|off` and `ah-engine back` retry the flag lock (a live holder is never taken over); still busy: they write nothing, print afk.msg_lock_busy and exit non-zero. Keep it below afk.lock_stale_ms. |
 | `afk.concise_text` | `Reply style: lead with the answer; 1-3 lines unless asked for detail; no reca...` |  |  | The concise reply rule injected at session start on Codex (Claude gets it from the shipped output style `concise`). |
 | `afk.ctx_line` | `{"hookSpecificOutput":{"hookEventName":"{event}","additionalContext":{text}}}\n` |  |  | The stdout line that injects {text} (JSON-quoted) as additional context for {event}. |
 | `afk.digest_max_entries` | `40` |  |  | Most bullets one digest prints per progress file (the newest are kept; the count of left-out bullets is shown). |
@@ -3751,8 +3752,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.lock_release_tries` | `5` |  |  | How many times a release of the flag lock tries to take the takeover marker. |
 | `afk.lock_stale_ms` | `5000` |  | ms | A flag lock older than this is taken over, whatever its holder. |
 | `afk.lock_step_ms` | `5` |  | ms | The pause between two tries for the flag lock. |
-| `afk.lock_wait_ms` | `300` |  | ms | How long a hook or the CLI waits for the flag lock (a hook then writes nothing; the CLI writes anyway: the owner's command wins). |
-| `afk.mark_prefix` | `afk-mark-` |  |  | Prefix of the per-session watermark file (under the per-user state directory; the sanitised session id and the JSON extension follow): {owner, advisor} = the hook clock's time of the session's last real owner prompt (UserPromptSubmit) and of its own last advisor call (PostToolUse of an advisor.tool_names tool, never a subagent's). ExitPlanMode is approved only when the advisor call (this mark, or the transcript entry's own timestamp) is newer than the owner prompt. |
+| `afk.lock_wait_ms` | `300` |  | ms | The lock budget of one hook call: all its tries for the flag lock together wait at most this long, and after a failed try the call takes no other (it then writes nothing). |
 | `afk.marker_prefix` | `<!-- afk:` |  |  | Start of the AFK marker line in a progress file; the digest is every line after the LAST marker. |
 | `afk.marker_text` | `\n<!-- afk:{epoch} -->\n## AFK since {iso} ({how})\n` |  |  | The marker block appended to the session's progress file when AFK starts. Placeholders: {epoch}, {iso}, {how}. |
 | `afk.max_blocks` | `1` |  |  | Most Stop holds of overlong replies per session per AFK period, after the one nudge. A hold makes the model answer again, so it is kept small. |
@@ -3769,6 +3769,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.msg_idle_ended` | `AFK (idle) ended: the owner is back. Type `progress` to see the digest.` |  |  | Context injected on the owner's prompt that ends an idle-entered AFK. |
 | `afk.msg_ladder_deny` | `AFK: the owner is away; questions are not allowed. Instead: (1) decide from t...` |  |  | Reason of the AFK question-tool deny (the question ladder). |
 | `afk.msg_ladder_stop` | `AFK: your turn ended on a question the owner cannot answer. Do not ask: decid...` |  |  | Reason of the Stop hold of an AFK turn that ends on a plain-text question. |
+| `afk.msg_lock_busy` | `afk: the AFK flag is busy (another anti-hall hook holds its lock); nothing ch...` |  |  | Printed (CLI, exit 1) or replied (typed afk / back) when the flag lock stayed busy, so the flag was not changed. |
 | `afk.msg_lock_released` | `lock already released` |  |  | The `why` placeholder of afk.msg_write_failed when the flag lock was already released before the command finished. |
 | `afk.msg_needs_owner_head` | `NEEDS OWNER ({n}):` |  |  | Heading of the NEEDS OWNER list printed first by back / progress. Placeholders: {n}. |
 | `afk.msg_no_sessions` | `AFK digest: no session progress file recorded for this AFK period` |  |  | Printed by `back` / `progress` when no session recorded a progress file for this AFK period. |
@@ -3778,7 +3779,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.msg_on` | `AFK on ({how}). Agents work silently and log milestones to their progress fil...` |  |  | Reply to the owner (typed command or CLI) when AFK starts. Placeholders: {how}. |
 | `afk.msg_pct` | `Progress: {pct}% ({done}/{total} checklist bullets since the AFK marker are [x])` |  |  | The progress line of a digest. Placeholders: {pct}, {done}, {total}. |
 | `afk.msg_pct_na` | `Progress: n/a (no [ ] / [x] checklist bullets since the AFK marker)` |  |  | The progress line when the digest has no checklist bullets. |
-| `afk.msg_plan_approved` | `AFK: plan approved by anti-hall (the owner is away; an advisor call is newer ...` |  |  | permissionDecisionReason of the AFK ExitPlanMode approval. |
 | `afk.msg_status_off` | `AFK off` |  |  | `afk status` while off. |
 | `afk.msg_status_on` | `AFK on ({how}, since {since})` |  |  | `afk status` while on. Placeholders: {how}, {since}. |
 | `afk.msg_usage` | `usage: ah-engine afk on\|off\|status \| ah-engine back` |  |  | Usage line of the `afk` verb. |
@@ -3786,8 +3786,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.needs_owner_re` | `NEEDS OWNER` |  |  | A digest bullet that parks an item for the owner: listed first by back / progress (regular expression). |
 | `afk.non_owner_prompt_res` | `^\s*<task-notification>, ^\s*<system-reminder>, ^\s*<teammate-message` |  |  | Prompts that are not the owner typing (harness notifications, injected reminders): they neither record presence nor end an idle-entered AFK. Regular expressions, case-insensitive. |
 | `afk.open_re` | `^\s*[-*] \[ \] ` |  |  | An open checklist bullet (counts toward the percentage as not done). |
-| `afk.plan_tools` | `ExitPlanMode` |  |  | Harness tools that ask the owner to approve a plan: approved by the hook while AFK after an advisor review (afk.planAutoApprove). The dispatch entry afk-mode:pre must match them. |
-| `afk.pre_allow_input` | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"all...` |  |  | The stdout line of a PreToolUse that approves the tool call: permissionDecision allow WITH updatedInput ({input}, the tool's whole input, JSON), the documented shape for ExitPlanMode (code.claude.com/docs/en/hooks: AskUserQuestion and ExitPlanMode need updatedInput paired with allow; allow alone is not sufficient). {reason} is JSON-quoted. |
 | `afk.pre_deny` | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"den...` |  |  | The stdout line of a PreToolUse that denies the tool call with {reason} (JSON-quoted). |
 | `afk.presence_file` | `afk-presence.json` |  |  | The machine-wide owner-presence file (time of the last owner prompt), under the per-user state directory. |
 | `afk.question_max_holds` | `2` |  |  | Most Stop holds of a turn ending on a plain-text question, per session per AFK period (then it is let through, counted capped). |
@@ -3797,8 +3795,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.reminder_interval_s` | `600` |  |  | Seconds between two AFK reminders in one session (PostToolUse). |
 | `afk.reminder_max` | `6` |  |  | Most reminders per session per AFK period. |
 | `afk.reminder_text` | `AFK: no narration, no status prose, never ask (plan -> advisor -> park as a N...` |  |  | The short reminder injected during long AFK turns. |
-| `afk.result_approved` | `approved` |  |  | afk_plan_autoapproved result label: ExitPlanMode approved by the hook. |
-| `afk.result_no_advisor` | `no_advisor` |  |  | afk_plan_autoapproved result label: no advisor call newer than the owner's last prompt, the normal approval ran. |
 | `afk.rule_text` | `AFK MODE: the owner is away. Until told otherwise: (1) no narration between t...` |  |  | The AFK rule, injected once per session per AFK period. Placeholders: {progress} (the session's progress file). |
 | `afk.session_id_unsafe` | `[^A-Za-z0-9_.-]` |  |  | Characters removed from a session id before it becomes part of a file name (regular expression, JavaScript syntax). |
 | `afk.session_prefix` | `afk-sess-` |  |  | Prefix of the per-session AFK state file under the per-user state directory (the sanitised session id and the JSON extension follow). `ah-engine back` reads these to find each session's progress file. |
@@ -3809,7 +3805,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.set_idle_minutes` | `10 entries` |  |  | The afk.idleMinutes setting: minutes without an owner prompt (any session on this machine) after which AFK starts by itself. |
 | `afk.set_measure` | `8 entries` |  |  | The afk.measure setting: count each main-session turn's output tokens from the transcript usage fields, split AFK vs present (afk_output_tokens{mode}). |
 | `afk.set_no_questions` | `8 entries` |  |  | The afk.noQuestions setting: while AFK, deny the harness question tool (afk.question_tools) every time with the question ladder, and hold (at most afk.question_max_holds times) a turn that ends on a plain-text question. Off = questions pass as usual. |
-| `afk.set_plan_autoapprove` | `8 entries` |  |  | The afk.planAutoApprove setting: while AFK, approve ExitPlanMode from the hook (allow with updatedInput) when an advisor call follows the owner's last message; otherwise the normal plan approval runs. |
 | `afk.set_prompt_commands` | `8 entries` |  |  | The afk.promptCommands setting: a prompt that is exactly one of afk.words_on / afk.words_off / afk.words_progress is answered by the hook (the prompt is not sent to the model). |
 | `afk.stop_block` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a Stop that holds the reply with {reason} (JSON-quoted). |
 | `afk.summary` | `UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, User...` |  |  | One-line description of the afk-mode check in the generated reference. |
@@ -14264,7 +14259,6 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_entered` | counter | events | how | AFK periods started, by how (manual = ah-engine afk on, prompt = typed afk, idle = idle detection). Counted by the first hook that sees the new period. |
 | `afk_output_tokens` | counter | tokens | mode | Output tokens of main-session turns (transcript usage, deduplicated by message id), by mode (afk, present). Divide by afk_turns_measured for the per-turn average. |
 | `afk_overlong_turns` | counter | events | action | Overlong AFK replies, by action (nudge, block, capped). |
-| `afk_plan_autoapproved` | counter | events | result | AFK ExitPlanMode calls, by result: approved (allow with updatedInput after an advisor review) or no_advisor (the normal approval ran). |
 | `afk_question_denied` | counter | events | tool | AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap). |
 | `afk_question_parked` | counter | events | action | AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook). |
 | `afk_turns` | counter | turns |  | Main-session turns that ended (Stop) while AFK. |
