@@ -42,6 +42,9 @@ pub struct Union {
     /// How many of the unread lines and rows are the engine's own wake prompts (see [`is_wake_line`]); they are in the lists above
     /// (an ack walks them) but not in `unread`, and never set the oldest age.
     pub wake_unread: usize,
+    /// The `devswarm.noiseProvenance` value this union was classified with ([`UnionIn::provenance`]); a reader of the lines above
+    /// passes it to [`is_wake_line`] so it classifies them the same way.
+    pub provenance: bool,
 }
 
 /// Whether an NDJSON line is a wake prompt the engine had DevSwarm queue (`agent_tracker.wake_prefix`): DevSwarm stores it as a direct
@@ -51,28 +54,25 @@ pub struct Union {
 /// the Primary's outbound, so its resolved sender is a Primary id (`mesh_write.primary_prefix`) or, when the pull could not resolve one,
 /// none; a line with any other sender is mail.
 ///
-/// With `devswarm.noiseProvenance` off the prefix alone decides (the earlier rule). The readers of this function have no settings handle,
-/// so [`union_unread`] (which every reader goes through first) refreshes [`WAKE_PROVENANCE`] from the switch; the switch is read from
-/// the settings file and the process environment of the engine that runs the read.
-pub fn is_wake_line(line: &str) -> bool {
-    is_wake_line_with(line, WAKE_PROVENANCE.load(std::sync::atomic::Ordering::Relaxed))
-}
-
-/// [`is_wake_line`] with the provenance rule named: `true` = prefix and a Primary/none sender, `false` = the prefix alone.
-fn is_wake_line_with(line: &str, provenance: bool) -> bool {
+/// `provenance` is `devswarm.noiseProvenance` of the request that runs the read ([`provenance_of`]; [`Union::provenance`] carries it
+/// from [`union_unread`] to the readers of its lines): `true` = prefix and a Primary/none sender, `false` = the prefix alone (the earlier
+/// rule). It is never read from a process-wide value: a daemon serves requests whose settings differ from its own environment.
+pub fn is_wake_line(line: &str, provenance: bool) -> bool {
     line_body(line).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
         && (!provenance || line_sender(line).is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix"))))
 }
 
-/// The last value of `devswarm.noiseProvenance` [`union_unread`] read (default on).
-static WAKE_PROVENANCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// `devswarm.noiseProvenance` (`devswarm_role.pg_sw_provenance`) under the settings of the request that runs the read (GH #429): its
+/// settings file and its environment, never the daemon's own.
+pub fn provenance_of(st: &crate::checks::git::util::Settings) -> bool {
+    crate::checks::guardkit::settings::get_bool(st, defaults::raw("devswarm_role.pg_sw_provenance"))
+}
 
-/// Re-read `devswarm.noiseProvenance` (`devswarm_role.pg_sw_provenance`) for [`is_wake_line`].
-fn refresh_wake_provenance() {
-    let env: std::collections::HashMap<String, String> = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
-    let home = env.get(defaults::env_name("home")).cloned().or_else(|| env.get(defaults::env_name("home_alt")).cloned()).unwrap_or_default();
-    let on = crate::checks::guardkit::settings::get_bool(&crate::checks::git::util::Settings { home, env }, defaults::raw("devswarm_role.pg_sw_provenance"));
-    WAKE_PROVENANCE.store(on, std::sync::atomic::Ordering::Relaxed);
+/// [`provenance_of`] for a read no request drives (the engine's own reconcile, live and wake probes): the settings file under `home`
+/// and this process's environment, which are that read's own settings.
+pub fn provenance_of_process(home: &Path) -> bool {
+    let env: HashMap<String, String> = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    provenance_of(&crate::checks::git::util::Settings { home: home.to_string_lossy().into_owned(), env })
 }
 
 /// Whether a store row is a `[Primary poke]` mirror (`devswarm_role.pg_poke_prefix`): the prefix on a row with no `mtype` (the native
@@ -107,6 +107,8 @@ pub struct UnionIn<'a> {
     pub nd_base: f64,
     /// `Date.now()` (or the pinned clock).
     pub now: i64,
+    /// `devswarm.noiseProvenance` of the request ([`provenance_of`]), for [`is_wake_line`].
+    pub provenance: bool,
 }
 
 /// `Number.isFinite(x) && x > 0 ? Math.floor(x) : 0`, as a usize.
@@ -233,7 +235,6 @@ fn line_ts(line: &str) -> Option<f64> {
 
 /// `unionUnread(opts)` for an NDJSON inbox plus a store partition read at the given bases.
 pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
-    refresh_wake_provenance();
     // readUnread / unreadBacklog: the lines are only known when the inbox and its cursor file both read
     let all = match i.inbox {
         Some(p) => non_empty_lines(p)?,
@@ -287,12 +288,12 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
         nd_lines.drain(..nd_skipped);
     }
     let mut oldest: Option<f64> = None;
-    let nd_ts = nd_lines.iter().filter(|l| !is_wake_line(l)).filter_map(|l| line_ts(l));
+    let nd_ts = nd_lines.iter().filter(|l| !is_wake_line(l, i.provenance)).filter_map(|l| line_ts(l));
     for ts in nd_ts.chain(store_only.iter().filter(|r| !is_wake_row(r)).filter_map(|r| r["ts"].as_f64().filter(|t| t.is_finite()))) {
         oldest = Some(oldest.map_or(ts, |o| o.min(ts)));
     }
     let age = oldest.map(|o| i.now as f64 - o).filter(|a| *a >= 0.0);
-    let wake_unread = nd_lines.iter().filter(|l| is_wake_line(l)).count() + store_only.iter().filter(|r| is_wake_row(r)).count();
+    let wake_unread = nd_lines.iter().filter(|l| is_wake_line(l, i.provenance)).count() + store_only.iter().filter(|r| is_wake_row(r)).count();
     Ok(Union {
         unread: nd_lines.len() + store_only.len() - wake_unread,
         nd_unread_lines: nd_lines,
@@ -300,6 +301,7 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
         store_only_unread: store_only,
         oldest_unread_age_ms: age,
         wake_unread,
+        provenance: i.provenance,
     })
 }
 
@@ -382,11 +384,13 @@ pub fn unread_for(
     me: Option<&str>,
     family: &HashSet<String>,
     now: i64,
+    provenance: bool,
 ) -> R<Unread> {
     let (store_base, nd_base) = read_bases(reader, home, id, cursor_file, me)?;
-    unread_at(reader, id, inbox, cursor_file, (store_base, nd_base), family, now)
+    unread_at(reader, id, inbox, cursor_file, (store_base, nd_base), family, now, provenance)
 }
 
+#[allow(clippy::too_many_arguments)]
 /// [`unread_for`] at bases the caller already settled (the summary's floor view, which has its own legacy-floor fallback).
 pub fn unread_at(
     reader: &MeshReader,
@@ -396,10 +400,11 @@ pub fn unread_at(
     (store_base, nd_base): (f64, f64),
     family: &HashSet<String>,
     now: i64,
+    provenance: bool,
 ) -> R<Unread> {
-    let union = union_unread(&UnionIn { inbox, cursor_file, id, store: Some(reader), store_base, nd_base, now })?;
+    let union = union_unread(&UnionIn { inbox, cursor_file, id, store: Some(reader), store_base, nd_base, now, provenance })?;
     // wake rows are already out of `union.unread`; a row counts once, so the family's own wake-free sends are what is taken off here
-    let own_nd = union.nd_unread_lines.iter().filter(|l| !is_wake_line(l) && line_sender(l).is_some_and(|s| family.contains(&s))).count();
+    let own_nd = union.nd_unread_lines.iter().filter(|l| !is_wake_line(l, provenance) && line_sender(l).is_some_and(|s| family.contains(&s))).count();
     let own_store =
         union.store_only_unread.iter().filter(|r| !is_wake_row(r) && r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s))).count();
     let own_excluded = own_nd + own_store;
@@ -511,13 +516,13 @@ mod tests {
             Some(s) => format!(r#"{{"fromBranch":"x/y","sender":"{s}","message":"{w} resolve conflict?"}}"#),
             None => format!(r#"{{"fromBranch":"main","message":"{w} resolve conflict?"}}"#),
         };
-        assert!(is_wake_line(&line(Some("primary-aaaa1111"))), "the Primary's wake prompt");
-        assert!(is_wake_line(&line(None)), "no resolved sender: the engine's own prompt shape");
-        assert!(!is_wake_line(&line(Some("child-b"))), "a child's native message that starts with the prefix is mail");
-        assert!(!is_wake_line(r#"{"sender":"child-b","message":"hello"}"#));
+        assert!(is_wake_line(&line(Some("primary-aaaa1111")), true), "the Primary's wake prompt");
+        assert!(is_wake_line(&line(None), true), "no resolved sender: the engine's own prompt shape");
+        assert!(!is_wake_line(&line(Some("child-b")), true), "a child's native message that starts with the prefix is mail");
+        assert!(!is_wake_line(r#"{"sender":"child-b","message":"hello"}"#, true));
         // devswarm.noiseProvenance off: the prefix alone decides (the earlier rule)
-        assert!(is_wake_line_with(&line(Some("child-b")), false), "off: a child's line with the prefix is a wake prompt");
-        assert!(!is_wake_line_with(r#"{"sender":"child-b","message":"hello"}"#, false), "off: no prefix, no wake");
+        assert!(is_wake_line(&line(Some("child-b")), false), "off: a child's line with the prefix is a wake prompt");
+        assert!(!is_wake_line(r#"{"sender":"child-b","message":"hello"}"#, false), "off: no prefix, no wake");
     }
 
     /// Runs `f` on a thread and returns its answer, failing when it takes longer than the bound (a read that blocks on a FIFO).
@@ -551,7 +556,7 @@ mod tests {
         assert!(within("non_empty_lines", move || non_empty_lines(&i2).is_err()));
         assert!(within("cursor_position", move || cursor_position(&c2).is_err()));
         let got = within("union_unread", move || {
-            union_unread(&UnionIn { inbox: Some(&i), cursor_file: Some(&c), id: "w", store: None, store_base: 0.0, nd_base: 0.0, now: 0 }).is_err()
+            union_unread(&UnionIn { inbox: Some(&i), cursor_file: Some(&c), id: "w", store: None, store_base: 0.0, nd_base: 0.0, now: 0, provenance: true }).is_err()
         });
         assert!(got, "a FIFO inbox defers");
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup of a scratch directory
@@ -604,7 +609,7 @@ mod tests {
     }
 
     fn run(r: &MeshReader, inbox: &str, cur: &str, store_base: f64, nd_base: f64) -> Union {
-        union_unread(&UnionIn { inbox: Some(inbox), cursor_file: Some(cur), id: "w", store: Some(r), store_base, nd_base, now: 1 }).unwrap()
+        union_unread(&UnionIn { inbox: Some(inbox), cursor_file: Some(cur), id: "w", store: Some(r), store_base, nd_base, now: 1, provenance: true }).unwrap()
     }
 
     #[test]
@@ -668,9 +673,9 @@ mod tests {
         let (dir, r) = senders_fixture("lag", &[None, None, None], 1, &[("h:1:1", 3, 10), ("h:2:2", 1, 5)]);
         let home = dir.clone();
         let none = HashSet::new();
-        let a = unread_for(&r, &home, "w", None, None, Some("h:1:1"), &none, 1).unwrap();
+        let a = unread_for(&r, &home, "w", None, None, Some("h:1:1"), &none, 1, true).unwrap();
         assert_eq!((a.store_base, a.unread), (3.0, 0), "A has read everything");
-        let floor_view = unread_for(&r, &home, "w", None, None, None, &none, 1).unwrap();
+        let floor_view = unread_for(&r, &home, "w", None, None, None, &none, 1, true).unwrap();
         assert_eq!((floor_view.store_base, floor_view.unread), (1.0, 2), "no caller reader: the floor view");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
@@ -680,7 +685,7 @@ mod tests {
         // #181: P's own send and a family alias's send are not inbound; another sender and a NULL sender are
         let (dir, r) = senders_fixture("own", &[Some("P"), Some("alias"), Some("other"), None], 0, &[]);
         let family: HashSet<String> = ["P", "alias"].iter().map(|s| s.to_string()).collect();
-        let u = unread_for(&r, &dir, "w", None, None, None, &family, 1).unwrap();
+        let u = unread_for(&r, &dir, "w", None, None, None, &family, 1, true).unwrap();
         assert_eq!((u.unread, u.own_excluded, u.union.unread), (2, 2, 4), "other + NULL count; the union keeps every row");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }

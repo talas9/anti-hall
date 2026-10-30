@@ -190,7 +190,7 @@ fn count_for(st: &Settings, key: Option<&str>, id: &str, inbox: Option<&str>, cu
         None => None,
     };
     let Some(store) = store else {
-        let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: None, store_base: 0.0, nd_base: position.unwrap_or(0.0), now: now as i64 })
+        let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: None, store_base: 0.0, nd_base: position.unwrap_or(0.0), now: now as i64, provenance: crate::meshw::union::provenance_of(st) })
             .map_err(|_| No)?;
         return Ok(json!({"state": "nd", "unread": if known { u.unread } else { 0 }, "known": known}));
     };
@@ -199,7 +199,7 @@ fn count_for(st: &Settings, key: Option<&str>, id: &str, inbox: Option<&str>, cu
     if base_past_total(st, &store, id, sb, "count_for").unwrap_or(false) {
         return unknown("mesh_write.unread_reason_cursors");
     }
-    let Ok(u) = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }) else {
+    let Ok(u) = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64, provenance: crate::meshw::union::provenance_of(st) }) else {
         return unknown("mesh_write.unread_reason_union");
     };
     Ok(json!({"state": "ok", "unread": u.unread, "known": known, "age": u.oldest_unread_age_ms.filter(|a| a.is_finite())}))
@@ -310,7 +310,7 @@ fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     if base_past_total(st, &store, id, sb, "union_of")? {
         return Ok(json!({"state": "unsure"})); // the gate reads `unsure` as unknown (the stricter reading), never as an empty list
     }
-    let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
+    let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64, provenance: crate::meshw::union::provenance_of(st) }).map_err(|_| No)?;
     // a `[Primary poke]` mirror is told apart by provenance (no `mtype`), not by its text; one that carries an `mtype` is a mesh send and counts
     let prov = switch_on(st, "devswarm_role.pg_sw_provenance");
     let poke = |r: &Value| prov && crate::meshw::union::is_poke_row(r);
@@ -346,7 +346,7 @@ fn own_view(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     let shared = shared_unread(st, &store, id, inbox, cursor, &reader, now).ok();
     let Some(value) = own else { return Ok(json!({"reader": true, "state": "ok", "own": null, "shared": shared})) };
     let (sb, nb) = floor_positions(&store, &st.home, id, cursor, Some(&reader))?;
-    let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
+    let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64, provenance: crate::meshw::union::provenance_of(st) }).map_err(|_| No)?;
     let total = store.message_count(id).map_err(|_| No)?;
     Ok(json!({"reader": true, "state": "ok", "own": value, "unread": u.unread, "total": total, "shared": shared}))
 }
@@ -365,7 +365,7 @@ fn shared_unread(
 ) -> Result<usize, No> {
     let rows = ident::rows_of(&store.roster().map_err(|_| No)?);
     let family = crate::meshw::tick::family_of(id, &rows);
-    let c = crate::meshw::union::unread_for(store, Path::new(&st.home), id, inbox, cursor, Some(reader), &family, now as i64).map_err(|_| No)?;
+    let c = crate::meshw::union::unread_for(store, Path::new(&st.home), id, inbox, cursor, Some(reader), &family, now as i64, crate::meshw::union::provenance_of(st)).map_err(|_| No)?;
     // a store base past the partition's message count is impossible: a count read from it is unknown, never a confirmed zero
     if base_past_total(st, store, id, c.store_base, "shared_unread")? {
         return Err(No);

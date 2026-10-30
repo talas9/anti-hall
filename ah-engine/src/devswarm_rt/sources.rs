@@ -549,6 +549,8 @@ impl Probe for FsProbe {
         };
         // the floor view (the statusline has no reader of its own), through the one unread helper: the mail the workspace's own
         // identity family sent is not unread
+        // no request drives this probe (reconcile, live view, wake): its settings are the engine's own
+        let provenance = union::provenance_of_process(&self.home);
         let Some(r) = &reader else {
             let u = union::union_unread(&union::UnionIn {
                 inbox: inbox.as_deref(),
@@ -558,6 +560,7 @@ impl Probe for FsProbe {
                 store_base: 0.0,
                 nd_base: 0.0,
                 now: self.now,
+                provenance,
             })
             .ok()?;
             return Some(u.unread);
@@ -570,7 +573,7 @@ impl Probe for FsProbe {
             .filter_map(|row| Some((row.get("id")?.as_str()?.to_string(), row.get("sessionId").and_then(|x| x.as_str()).map(str::to_string))))
             .collect(); // keep: an unreadable registry means no family: every row counts, as before
         let family = union::family_ids(id, &pairs);
-        let u = union::unread_at(r, id, inbox.as_deref(), cursor.as_deref(), bases, &family, self.now).ok()?;
+        let u = union::unread_at(r, id, inbox.as_deref(), cursor.as_deref(), bases, &family, self.now, provenance).ok()?;
         crate::meshw::tick::note_own_excluded(&u);
         Some(u.unread)
     }

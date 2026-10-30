@@ -398,6 +398,8 @@ pub(crate) struct Counted {
     pub total: usize,
     /// The unread NDJSON lines (what `inbox read` prints).
     pub nd_lines: Vec<String>,
+    /// The `devswarm.noiseProvenance` value the lines were classified with ([`union::Union::provenance`]).
+    pub provenance: bool,
     /// The unread store rows no NDJSON line covers.
     pub store_rows: Vec<serde_json::Value>,
     /// Where an ack-all moves the NDJSON position: the base, the twin-read lines skipped and the unread lines after them.
@@ -503,9 +505,11 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
     let me = crate::meshw::cursors::reader_key(reader_nonce_cached(&inv.home).as_deref());
     // the union at the reader's bases; a store read that fails is the store side unknown (`store-read-error`), counted without it
     let mut counted = None;
+    // devswarm.noiseProvenance of this request (GH #429), not of the process that serves it
+    let provenance = union::provenance_of(&inv.settings());
     if let Some(o) = &opened {
         let family = family_of(id, &o.rows);
-        match union::unread_for(&o.reader, &inv.home, id, inbox_in, cursor_in, me.as_deref(), &family, inv.now) {
+        match union::unread_for(&o.reader, &inv.home, id, inbox_in, cursor_in, me.as_deref(), &family, inv.now, provenance) {
             Ok(c) => {
                 note_own_excluded(&c);
                 counted = Some((c.unread, c.store_base, c.nd_base, c.union));
@@ -531,11 +535,11 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         None => {
             // no store behind the count (`countFor(null, ...)`): the NDJSON side alone, from the cursor file's position
             let nd_base = crate::migrate::readercur::legacy_nd_floor(cursor_in);
-            let u = union::union_unread(&union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: None, store_base: 0.0, nd_base, now: inv.now })?;
+            let u = union::union_unread(&union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: None, store_base: 0.0, nd_base, now: inv.now, provenance })?;
             (u.unread, 0.0, nd_base, u)
         }
     };
-    let input = union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: opened.as_ref().map(|o| &o.reader), store_base, nd_base, now: inv.now };
+    let input = union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: opened.as_ref().map(|o| &o.reader), store_base, nd_base, now: inv.now, provenance };
     let total = if nd_known {
         union::merged_total(&input)?
     } else {
@@ -602,7 +606,7 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         store_key,
         known,
         unread: unread + added_unread,
-        nd_unread: u.nd_unread_lines.iter().filter(|l| !union::is_wake_line(l)).count(),
+        nd_unread: u.nd_unread_lines.iter().filter(|l| !union::is_wake_line(l, u.provenance)).count(),
         store_unread,
         nd_cursor,
         store_cursor: store_base,
@@ -612,6 +616,7 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         truncated,
         limit,
         siblings,
+        provenance: u.provenance,
         nd_lines: u.nd_unread_lines,
         store_rows: u.store_only_unread,
         nd_target: if nd_known { nd_target } else { nd_cursor },
