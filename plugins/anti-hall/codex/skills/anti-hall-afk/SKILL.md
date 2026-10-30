@@ -25,6 +25,9 @@ not sent to the model. `ah-engine back` is the always-available escape: it works
 is not recognised (quoted, or inside a longer prompt). A typed `back` that finds the flag busy says so and the flag stays ON;
 `ah-engine afk` / `back` wait longer for the flag lock (`afk.cli_lock_wait_ms`), and only if it stays busy that long do they
 exit non-zero, changing nothing: run them again.
+Every flag write is fenced (`afk.fence_infix`): a hook stalled past `afk.lock_stale_ms` whose lock was taken over never
+lands its stale write after a newer `back`. Latency caveat: hook calls of one engine daemon queue on an in-process mutex
+before their lock budget starts, so a typed `afk` / `back` behind another hook of the same daemon can take longer.
 AFK also starts by itself after `afk.idleMinutes` without an owner prompt on this machine; that idle AFK ends on the owner's
 next prompt. A manual AFK lasts until `back`.
 

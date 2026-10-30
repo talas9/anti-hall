@@ -17,7 +17,8 @@
 #      list NEEDS OWNER bullets first;
 #   7. subagents (payloads with an agent marker) never get the rule and never touch the parent's once-per-session state; their
 #      question-tool calls ARE denied while AFK (they are part of the autonomous run);
-#   8. the flag file is only rewritten under its lock (afk.lock_file), re-read inside it, so OFF wins over a stale ON; a hook has
+#   8. the flag file is only rewritten under its lock (afk.lock_file), re-read inside it, so OFF wins over a stale ON; every write is
+#      a fenced commit (afk.fence_infix), so a holder whose expired lock was taken over never publishes after the new holder; a hook has
 #      one lock budget per call (afk.lock_wait_ms) and writes nothing without the lock; `ah-engine afk` / `back` wait at most
 #      afk.cli_lock_wait_ms, never take over a live holder, and exit non-zero writing nothing when the lock stays busy;
 #   9. owner presence (afk.presence_file) never moves backwards, and idle detection counts from the later of the last owner prompt
@@ -81,7 +82,7 @@ doc = "The cross-process lock file (under the per-user state directory) every re
 value = "afk.json.lock"
 
 [afk.lock_stale_ms]
-doc = "A flag lock older than this is taken over, whatever its holder."
+doc = "A flag lock older than this is taken over, whatever its holder. The holder it was taken from can no longer publish: every flag write is a fenced commit (afk.fence_infix)."
 value = 5000
 unit = "ms"
 min = 100
@@ -100,6 +101,14 @@ value = 3000
 unit = "ms"
 min = 1
 max = 60000
+
+[afk.fence_infix]
+doc = "The fenced commit of the flag file (GH #426): a holder stages <flag><infix><its lock token>, re-checks that the lock is still its own, then renames; every holder removes all <flag><infix>* stages right after taking the lock, before reading the flag. So a holder whose expired lock was taken over can never publish a stale ON over the new holder's OFF. Must not be empty."
+value = ".stage-"
+
+[afk.msg_lock_lost]
+doc = "The `why` placeholder of afk.msg_write_failed when the flag lock was taken over before the command published (nothing was written)."
+value = "the flag lock was taken over before the write; nothing written"
 
 [afk.lock_step_ms]
 doc = "The pause between two tries for the flag lock."
@@ -442,6 +451,10 @@ value = { kind = "counter", unit = "events", labels = [] }
 [metric.afk_overlong_turns]
 doc = "Overlong AFK replies, by action (nudge, block, capped)."
 value = { kind = "counter", unit = "events", labels = ["action"] }
+
+[metric.afk_lock_lost]
+doc = "Flag writes of a hook that did not publish: the flag lock was taken over before the fenced commit (afk.fence_infix), or the write failed. Nothing of that hook landed."
+value = { kind = "counter", unit = "events", labels = [] }
 
 [metric.afk_question_denied]
 doc = "AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap)."

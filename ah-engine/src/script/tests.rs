@@ -3338,6 +3338,62 @@ mod afk_mode {
         assert_eq!(drained().counter("afk_question_parked", &[("action", "listed")]), 1);
     }
 
+    /// GH #426 review (P1, Codex): a hook paused INSIDE its flag commit (after the ownership check, before the rename) for longer
+    /// than afk.lock_stale_ms; another writer takes the expired lock over and publishes OFF; the paused hook resumes. Its stale ON
+    /// must never land: the new holder swept its stage, so the rename finds nothing. Final state OFF, the loss counted.
+    #[test]
+    fn an_expired_holder_paused_inside_its_commit_never_resurrects_on_after_a_takeover() {
+        use crate::checks::guardkit::nodelock;
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-fence");
+        drained();
+        let fp = format!("{h}/.anti-hall/afk.json");
+        std::fs::write(&fp, json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 2}).to_string()).unwrap();
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let infix = crate::defaults::text("afk.fence_infix");
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).push((std::path::PathBuf::from(&fp), gate.clone()));
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            run(&h2, "UserPromptSubmit", json!({"prompt": "afk", "session_id": "s1"}), &[]);
+        });
+        gate.wait(); // the hook staged ON, passed its ownership check, and is paused before the rename
+        let stale = crate::defaults::num("afk.lock_stale_ms");
+        std::thread::sleep(std::time::Duration::from_millis(stale + stale / 20));
+        let params = nodelock::Params::from_group("afk").expect("afk.lock_* keys");
+        let taker = nodelock::acquire(&lp, params).expect("the expired lock is taken over");
+        nodelock::fence_sweep(std::path::Path::new(&fp), &infix);
+        let off = json!({"on": false, "how": "manual", "since": 1, "epoch": "1", "counted": true, "ended": 3}).to_string();
+        assert!(nodelock::fenced_write(&taker, std::path::Path::new(&fp), &off, &infix, false).expect("io"), "the new holder publishes OFF");
+        assert!(taker.release());
+        nodelock::FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| p != std::path::Path::new(&fp));
+        gate.wait(); // resume the paused hook
+        t.join().expect("hook thread");
+        assert_eq!(flag(&h)["on"], json!(false), "the stale holder never resurrects ON");
+        assert_eq!(flag(&h)["ended"], json!(3), "the new holder's OFF is intact");
+        let stages = std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(infix.as_ref() as &str)).count();
+        assert_eq!(stages, 0, "no stage left behind");
+        assert_eq!(drained().counter("afk_lock_lost", &[]), 1);
+    }
+
+    /// GH #426: the fence does not stop a CRASHED holder's expired lock from being taken over (a dead pid, older than
+    /// afk.lock_stale_ms): the next hook takes it and writes.
+    #[test]
+    fn a_crashed_holders_expired_flag_lock_is_still_taken_over() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-crashed");
+        drained();
+        let mut child = std::process::Command::new("true").spawn().expect("spawn");
+        let dead = child.id();
+        child.wait().expect("wait");
+        let lp = format!("{h}/.anti-hall/{}", crate::defaults::text("afk.lock_file"));
+        let old = crate::checks::taskkit::time::now_ms() as u64 - 2 * crate::defaults::num("afk.lock_stale_ms");
+        std::fs::write(&lp, json!({"pid": dead, "ts": old, "token": "crashed"}).to_string()).unwrap();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk", "session_id": "s1"}), &[]);
+        assert_eq!(flag(&h)["on"], json!(true), "the crashed holder's expired lock was taken over");
+        drained();
+    }
+
     #[test]
     fn the_master_switch_off_leaves_prompts_alone() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());

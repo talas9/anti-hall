@@ -579,3 +579,80 @@ impl Held {
         }
     }
 }
+
+// ---- fenced commit (AFK flag, GH #426): additive, the acquire / steal rules above are unchanged for every other caller ----------
+
+impl Held {
+    /// Whether the lock file still carries this holder's token (missing, torn or another token: not ours).
+    pub fn owns(&self) -> bool {
+        std::fs::read(&self.path)
+            .ok()
+            .and_then(|b| parse_record(&String::from_utf8_lossy(&b)))
+            .is_some_and(|r| r.get("token").and_then(serde_json::Value::as_str) == Some(self.token.as_str()))
+    }
+}
+
+/// Test-only gate inside [`fenced_write`]: between the ownership check and the rename, a writer to a registered target meets the
+/// barrier twice (paused, then resumed), so a test can take the lock over while the writer is provably inside its commit.
+#[cfg(test)]
+pub static FENCE_GATE: std::sync::Mutex<Vec<(std::path::PathBuf, std::sync::Arc<std::sync::Barrier>)>> = std::sync::Mutex::new(Vec::new());
+
+/// The staged copies of `target` (`<target><infix><token>`) live in its directory.
+fn stage_prefix(target: &std::path::Path, infix: &str) -> Option<(std::path::PathBuf, String)> {
+    if infix.is_empty() {
+        return None; // an empty infix would make the target its own stage
+    }
+    let dir = target.parent()?.to_path_buf();
+    let name = target.file_name()?.to_string_lossy().to_string();
+    Some((dir, name + infix))
+}
+
+/// The fenced commit of `text` to `target` by the holder of `held`: stage `<target><infix><token>`, re-check that the lock is
+/// still ours, then rename. `Ok(false)` = ownership was lost (nothing published, or the stage was swept by the new holder, so the
+/// rename found nothing). With [`fence_sweep`] run by EVERY holder right after it takes the lock (before it reads `target`), a
+/// holder whose lock was taken over can never publish over the new holder's write: its check passed only while it still owned
+/// the lock, so its stage existed before the new holder's sweep; it either renamed before that sweep (the new holder then reads
+/// it) or its rename finds no stage. The order stage, check, rename is load-bearing.
+pub fn fenced_write(held: &Held, target: &std::path::Path, text: &str, infix: &str, sync: bool) -> std::io::Result<bool> {
+    let Some((dir, prefix)) = stage_prefix(target, infix) else { return Ok(false) };
+    let stage = dir.join(format!("{prefix}{}", held.token));
+    let staged = std::fs::File::create(&stage).and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| if sync { f.sync_all() } else { Ok(()) }));
+    if let Err(e) = staged {
+        crate::discard::harmless(std::fs::remove_file(&stage)); // keep: cleanup of our own stage; the failed write is the answer
+        return Err(e);
+    }
+    if !held.owns() {
+        crate::discard::harmless(std::fs::remove_file(&stage)); // keep: the lock is not ours; the stage must never land
+        return Ok(false);
+    }
+    #[cfg(test)]
+    {
+        let gate = FENCE_GATE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(p, _)| p == target).map(|(_, b)| b.clone());
+        if let Some(b) = gate {
+            b.wait();
+            b.wait();
+        }
+    }
+    match std::fs::rename(&stage, target) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => {
+            crate::discard::harmless(std::fs::remove_file(&stage)); // keep: cleanup of our own stage; the failed rename is the answer
+            Err(e)
+        }
+    }
+}
+
+/// Remove every staged copy of `target` (`<target><infix>*`): run by each holder right after it takes the lock, before it reads
+/// `target`, so no earlier holder's pending commit can land after this holder's write. Returns how many were removed.
+pub fn fence_sweep(target: &std::path::Path, infix: &str) -> u64 {
+    let Some((dir, prefix)) = stage_prefix(target, infix) else { return 0 };
+    let Ok(rd) = std::fs::read_dir(&dir) else { return 0 };
+    let mut n = 0;
+    for e in rd.flatten() {
+        if e.file_name().to_string_lossy().starts_with(&prefix) && std::fs::remove_file(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}

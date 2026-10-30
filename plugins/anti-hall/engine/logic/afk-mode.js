@@ -77,7 +77,6 @@ function afkWrite(rel, obj) { try { return ah.state.writeAtomic(rel, JSON.string
 function afkMetric(name, labels, by) { try { ah.metric(name, labels || {}, by === undefined ? 1 : by); } catch (e) { /* counting never fails a hook */ } }
 
 function afkFlag() { return afkReadJson(afkRel(ah.cfg('afk.flag_file'))); }
-function afkSetFlag(f) { return afkWrite(afkRel(ah.cfg('afk.flag_file')), f); }
 function afkOn(f) { return f !== null && f.on === true; }
 function afkIsAgent(p) { return coordinator.subagentByPayload(p); }
 
@@ -95,9 +94,16 @@ function afkUpdate(fn) {
   try { h = ah.state.lock(afkRel(ah.cfg('afk.lock_file')), 'afk', Math.max(0, afkLockBudget.until - Date.now())); } catch (e) { h = null; }
   if (h === null) { afkLockBudget.failed = true; return null; }
   try {
+    // fenced commit (GH #426): sweep earlier holders' staged copies BEFORE reading, then publish only while the lock is still
+    // ours, so a holder whose expired lock was taken over can never land a stale ON over the new holder's OFF
+    var rel = afkRel(ah.cfg('afk.flag_file')), infix = ah.cfg('afk.fence_infix');
+    try { ah.state.fenceSweep(rel, infix); } catch (e) { /* nothing to sweep */ }
     var cur = afkFlag(), next = fn(cur);
     if (next === null) return { flag: cur };
-    return afkSetFlag(next) ? { flag: next } : null;
+    var ok = false;
+    try { ok = ah.state.writeFenced(rel, JSON.stringify(next), h, infix); } catch (e) { ok = false; }
+    if (!ok) afkMetric('afk_lock_lost', {});
+    return ok ? { flag: next } : null;
   } finally {
     try { ah.state.unlock(h); } catch (e) { /* the host releases a lock still held when the call ends */ }
   }

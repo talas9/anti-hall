@@ -26,11 +26,18 @@ fn read_json(path: &Path) -> Option<Map<String, Value>> {
     }
 }
 
-fn write_flag(home: &str, flag: &Map<String, Value>) -> bool {
+fn write_flag(home: &str, held: &crate::checks::guardkit::nodelock::Held, flag: &Map<String, Value>) -> bool {
     let path = flag_path(home);
-    let res = std::fs::create_dir_all(state_dir(home)).and_then(|()| crate::atomic::write(&path, Value::Object(flag.clone()).to_string()));
+    let infix = defaults::text("afk.fence_infix");
+    let res = std::fs::create_dir_all(state_dir(home)).and_then(|()| {
+        crate::checks::guardkit::nodelock::fenced_write(held, &path, &Value::Object(flag.clone()).to_string(), &infix, defaults::num("script.write_sync") != 0)
+    });
     match res {
-        Ok(()) => true,
+        Ok(true) => true,
+        Ok(false) => {
+            err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &defaults::text("afk.msg_lock_lost"))]) + "\n"));
+            false
+        }
         Err(e) => {
             err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &e)]) + "\n"));
             false
@@ -76,7 +83,7 @@ fn say(p: &Parsed, text: &str, extra: Value) {
 /// read and written with no hook in between. The lock is retried for `afk.cli_lock_wait_ms` and a live holder is never taken
 /// over; when it stays busy nothing runs (`None`): the command never writes without the lock, so a hook paused inside it cannot
 /// overwrite this command's write with its stale copy.
-fn locked<T>(home: &str, f: impl FnOnce() -> T) -> Option<T> {
+fn locked<T>(home: &str, f: impl FnOnce(&crate::checks::guardkit::nodelock::Held) -> T) -> Option<T> {
     let path = state_dir(home).join(defaults::text("afk.lock_file"));
     let params = crate::checks::guardkit::nodelock::Params::from_group("afk").map(|mut p| {
         p.wait_ms = defaults::num("afk.cli_lock_wait_ms");
@@ -86,7 +93,9 @@ fn locked<T>(home: &str, f: impl FnOnce() -> T) -> Option<T> {
         .ok()
         .and(params)
         .and_then(|params| crate::checks::guardkit::nodelock::acquire_respecting_live(&path.to_string_lossy(), params))?;
-    let r = f();
+    // fenced commit (GH #426): an earlier holder's staged copy never lands after this holder's write
+    crate::checks::guardkit::nodelock::fence_sweep(&flag_path(home), &defaults::text("afk.fence_infix"));
+    let r = f(&held);
     if !held.release() {
         err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &defaults::text("afk.msg_lock_released"))]) + "\n"));
     }
@@ -94,7 +103,7 @@ fn locked<T>(home: &str, f: impl FnOnce() -> T) -> Option<T> {
 }
 
 /// `locked`, or the busy message and exit 1 when the lock stayed busy.
-fn locked_or_busy(home: &str, f: impl FnOnce() -> i32) -> i32 {
+fn locked_or_busy(home: &str, f: impl FnOnce(&crate::checks::guardkit::nodelock::Held) -> i32) -> i32 {
     locked(home, f).unwrap_or_else(|| {
         err(&(defaults::text("afk.msg_lock_busy").to_string() + "\n"));
         1
@@ -116,10 +125,10 @@ fn mark_present(home: &str) {
 
 /// Start AFK (manual); `false` when the flag could not be written.
 fn turn_on(p: &Parsed, home: &str) -> i32 {
-    locked_or_busy(home, || turn_on_locked(p, home))
+    locked_or_busy(home, |held| turn_on_locked(p, home, held))
 }
 
-fn turn_on_locked(p: &Parsed, home: &str) -> i32 {
+fn turn_on_locked(p: &Parsed, home: &str, held: &crate::checks::guardkit::nodelock::Held) -> i32 {
     let cur = read_json(&flag_path(home));
     if let Some(f) = cur.as_ref().filter(|f| is_on(Some(f))) {
         say(p, &defaults::render("afk.msg_already", &[("how", &field(f, "how")), ("since", &since(f))]), json!({"on": true}));
@@ -138,7 +147,7 @@ fn turn_on_locked(p: &Parsed, home: &str) -> i32 {
             f.insert(k.into(), n);
         }
     }
-    if !write_flag(home, &f) {
+    if !write_flag(home, held, &f) {
         return 1;
     }
     say(p, &defaults::render("afk.msg_on", &[("how", &how)]), json!({"on": true}));
@@ -202,10 +211,10 @@ pub(crate) fn digest(home: &str, epoch: &str) -> (String, u64, u64) {
 
 /// End AFK; with `print_digest`, print the digest of the period that ended (or of the last one). Owner presence is refreshed.
 fn turn_off(p: &Parsed, home: &str, print_digest: bool) -> i32 {
-    locked_or_busy(home, || turn_off_locked(p, home, print_digest))
+    locked_or_busy(home, |held| turn_off_locked(p, home, print_digest, held))
 }
 
-fn turn_off_locked(p: &Parsed, home: &str, print_digest: bool) -> i32 {
+fn turn_off_locked(p: &Parsed, home: &str, print_digest: bool, held: &crate::checks::guardkit::nodelock::Held) -> i32 {
     mark_present(home);
     let Some(mut f) = read_json(&flag_path(home)) else {
         say(p, defaults::text("afk.msg_not_on"), json!({"on": false}));
@@ -230,7 +239,7 @@ fn turn_off_locked(p: &Parsed, home: &str, print_digest: bool) -> i32 {
         f.insert("pending_parked".into(), json!(pending_parked + parked));
         text = format!("{text}\n{d}");
     }
-    if (was_on || print_digest) && !write_flag(home, &f) {
+    if (was_on || print_digest) && !write_flag(home, held, &f) {
         return 1;
     }
     say(p, &text, json!({"on": false}));
