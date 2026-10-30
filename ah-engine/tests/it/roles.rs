@@ -440,3 +440,14 @@ fn rules_json_keeps_no_message_text_of_its_own_where_a_defaults_text_exists() {
     let text = serde_json::to_string(&rules).unwrap();
     assert!(!text.contains("Rewriting published history"), "the force-push text is duplicated in rules.json");
 }
+
+#[test]
+fn the_session_summary_has_no_codex_twin_because_codex_has_no_session_end_event() {
+    // the summary speaks at SessionEnd. If Codex ever lists that event, this fails: port the summary then (parity rule).
+    let events = |host: &str| ah_engine::defaults::raw("dispatch.thin_events").get(host).map(|v| v.strings()).unwrap_or_default();
+    assert!(events("claude").contains(&"SessionEnd"), "the Claude summary event moved");
+    assert!(!events("codex").contains(&"SessionEnd"), "Codex now has SessionEnd: add session-summary to its hook table");
+    let claude = std::fs::read_to_string(plugin().join("hooks/hooks.registry.json")).unwrap();
+    let codex = std::fs::read_to_string(plugin().join("codex/hooks/hooks.registry.json")).unwrap();
+    assert!(claude.contains("session-summary") && !codex.contains("session-summary"));
+}

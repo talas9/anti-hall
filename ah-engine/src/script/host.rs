@@ -1273,3 +1273,47 @@ fn session_counts(rows: &[crate::storage::BlockRow], marks: &[(String, u64)], se
     top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     serde_json::json!({"current": current, "top": top, "last": last}).to_string()
 }
+
+#[cfg(test)]
+mod session_blocks_tests {
+    use super::*;
+    use crate::checks::guardkit::state::MemoryState;
+
+    fn row(session: &str, rule: &str) -> crate::storage::BlockRow {
+        crate::storage::BlockRow { session: session.into(), rule: rule.into(), ..Default::default() }
+    }
+
+    fn last(rows: &[crate::storage::BlockRow], marks: &[(String, u64)], me: &str) -> u64 {
+        serde_json::from_str::<serde_json::Value>(&session_counts(rows, marks, me)).unwrap()["last"].as_u64().unwrap()
+    }
+
+    fn marks(v: &[(&str, u64)]) -> Vec<(String, u64)> {
+        v.iter().map(|(s, t)| (s.to_string(), *t)).collect()
+    }
+
+    #[test]
+    fn the_previous_session_is_the_one_that_started_last_even_with_no_block_rows() {
+        // old = 3 blocks, mid = started later and had none, me = now: the banner says 0, not old's 3
+        let rows = [row("old", "a"), row("old", "a"), row("old", "b")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("mid", 20), ("me", 30)]), "me"), 0);
+        // when mid did block, its count is reported
+        let rows = [row("mid", "a"), row("old", "a"), row("old", "a")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("mid", 20), ("me", 30)]), "me"), 1);
+        // no other known session: nothing to report
+        assert_eq!(last(&rows, &marks(&[("me", 30)]), "me"), 0);
+    }
+
+    #[test]
+    fn a_session_started_after_this_one_is_not_its_previous() {
+        let rows = [row("later", "a"), row("old", "a")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("me", 20), ("later", 30)]), "me"), 1, "old is previous, not later");
+    }
+
+    #[test]
+    fn the_first_call_for_a_session_records_its_start_and_a_second_call_keeps_it() {
+        let st = MemoryState::new();
+        assert_eq!(touch_session(&st, "a", 5), marks(&[("a", 5)]));
+        assert_eq!(touch_session(&st, "b", 9), marks(&[("a", 5), ("b", 9)]));
+        assert_eq!(touch_session(&st, "a", 99), marks(&[("a", 5), ("b", 9)]), "first sight wins");
+    }
+}
