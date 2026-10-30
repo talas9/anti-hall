@@ -497,7 +497,10 @@ fn every_essential_rule_has_a_short_digest_field_for_each_host() {
 #[test]
 fn each_host_digest_line_says_what_to_do_has_no_placeholder_and_the_whole_fits_the_budget() {
     use ah_engine::defaults;
-    let verbs = ["never", "ask", "push", "unstage", "remove", "write", "verify", "delegate", "hand", "track", "confirm", "wait", "assign", "report", "use", "label", "stop", "keep", "fix", "spawn", "route", "do "];
+    let verbs = [
+        "never", "ask", "push", "unstage", "remove", "write", "verify", "delegate", "hand", "track", "confirm", "wait", "assign", "report", "use", "label",
+        "stop", "keep", "fix", "spawn", "route", "do ",
+    ];
     let n = skillgen::rules().iter().filter(|r| r.tier == "essential").count();
     for h in DIGEST_HOSTS {
         let lines = digest_essentials(h);

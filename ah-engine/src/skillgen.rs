@@ -260,7 +260,10 @@ pub fn digest_entry(source: &str, host: &str) -> String {
         return String::new();
     }
     let (what, _, instead) = rule_parts(source);
-    defaults::render("guard_rules.digest_entry", &[("digest", &digest), ("what", &what), ("instead", &instead)]).split_whitespace().collect::<Vec<_>>().join(" ")
+    defaults::render("guard_rules.digest_entry", &[("digest", &digest), ("what", &what), ("instead", &instead)])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The hosts a digest is generated for (`guard_rules.digest_hosts`).

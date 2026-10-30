@@ -1864,6 +1864,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `coordinator_work.agent_markers` | `agent_id, agent_type` |  |  | Payload fields the host puts on a subagent's hook payload and never on the main thread's. |
 | `coordinator_work.block_allowed` | `reads, recovery commands (--abort/--quit, stash pop/apply) and loosely matche...` |  |  | What stays allowed past the block threshold. |
+| `coordinator_work.block_digest` | `Main thread: stop repeated edits; hand the remaining steps to a subagent.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `coordinator_work.block_instead` | `hand the remaining work to a helper agent.` |  |  | What to do instead of a blocked work call. {clear_min} is the minutes until the window clears. |
 | `coordinator_work.block_override` | `{skip} (15-min TTL)` |  |  | The override line of the block ({skip} is the skip command). |
 | `coordinator_work.block_setting` | `5 entries` |  |  | The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never. |
@@ -2255,6 +2256,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.msg_handover_instead` | `invoke the handover skill yourself in the session that holds the memory.` |  |  | Handover-delegation advisory advice. |
 | `model_routing.msg_handover_what` | `this spawn looks like it writes a session handover.` |  |  | Handover-delegation advisory headline. |
 | `model_routing.msg_handover_why` | `A subagent never lived this session, so its reconstruction loses decision/tri...` |  |  | Handover-delegation advisory reason. |
+| `model_routing.msg_row1_digest` | `2 entries` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). A table by host: each host names only its own models. |
 | `model_routing.msg_row1_instead` | `respawn with model:'haiku' (or 'sonnet' if it authors code).` |  |  | Row-1 block advice. |
 | `model_routing.msg_row1_jev_instead` | `if it is genuinely mechanical work, prefer model:'haiku'.` |  |  | Row-1 Jev relaxation advisory advice. |
 | `model_routing.msg_row1_jev_what` | `flagship spawn allowed after a non-mechanical verdict.` |  |  | Row-1 Jev relaxation advisory headline. |
@@ -3048,10 +3050,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.banner_text` | `anti-hall {version} active: {rules} rules enforced{last}.` |  |  | The session banner. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause. |
 | `guard_rules.blocks_limit` | `2000` |  |  | How many recorded blocks the banner and summary read at most. |
 | `guard_rules.blocks_window_days` | `14` |  | days | How many days of recorded blocks the banner and summary look back over to find a session. |
-| `guard_rules.digest_entry` | `{instead}` |  |  | How an essential rule's digest text is built from its enforced message entry (the same `source` the block uses): the entry's own instead text, so the digest tells the agent what to do. Placeholders: {what}, {instead}. |
-| `guard_rules.digest_file` | `engine/rule-digest.txt` |  |  | The generated digest, relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above. |
+| `guard_rules.cohort_labels` | `4 entries` |  |  | Label values of the #462 counters: the digest state of a session (on, off) in rule_digest_calls, and the result of the next call of a check after it blocked (compliant: not blocked again; repeat: blocked again) in rule_retry_compliant. |
+| `guard_rules.cohort_track_max` | `4096` |  |  | How many sessions (digest state) and session-check pairs (a block waiting for its retry) the daemon tracks in memory for the cohort counters; past it new ones are not tracked until the daemon restarts. |
+| `guard_rules.digest_check` | `rule-digest` |  |  | The check whose answer marks a session's digest state for the cohort counters: an advisory (the digest was injected) is on, anything else off. |
+| `guard_rules.digest_entry` | `{digest}` |  |  | How an essential rule's digest text is built: from the rule's own `digest` field, which sits beside its enforced message entry (a `digest` key inside an inline what/why/instead table, or the sibling key with `what` replaced by `digest`; a string, or a table by host). One short line naming the rule and what to do; the enforced message is too long for the budget. Placeholders: {digest}, {what}, {instead}. |
+| `guard_rules.digest_file` | `engine/rule-digest.txt` |  |  | The generated digest of the default host (dispatch.default_host), relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above. Another host's digest is `guard_rules.digest_file_<host>`. |
+| `guard_rules.digest_file_codex` | `engine/rule-digest.codex.txt` |  |  | The generated digest of the Codex host (its own model guidance), relative to the plugin root; the session script picks it on a Codex request (standdown.codex_host). |
 | `guard_rules.digest_foot` | `More: skill engine-rules. After a block fix the cause, retry once.` |  |  | Last line of the digest. |
 | `guard_rules.digest_head` | `anti-hall rules (same config the engine enforces):` |  |  | First line of the session-start digest. |
+| `guard_rules.digest_hosts` | `claude, codex` |  |  | The hosts a digest is generated for, each from the host's own digest text (a `digest` table by host, or one string for all). |
 | `guard_rules.digest_line` | `- {line}` |  |  | One essential digest line. Placeholder: {line}, the enforced rule's own text (what, instead) composed by `guard_rules.digest_entry`; no separate copy. |
 | `guard_rules.digest_sep` | `--` |  |  | The line that splits the essential lines from the extra lines (tier skill) in the generated digest file. |
 | `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
@@ -3061,12 +3068,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
-| `guard_rules.msg_no_heredoc` | `3 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
-| `guard_rules.msg_rm_rf_root` | `3 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
+| `guard_rules.msg_no_heredoc` | `4 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
+| `guard_rules.msg_rm_rf_root` | `4 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
 | `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
 | `guard_rules.problem_digest` | `{id}: missing from the generated digest` |  |  | Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}. |
 | `guard_rules.problem_id` | `rule id empty or duplicate: {id}` |  |  | Registry problem: a rule id that is empty or repeated. Placeholder: {id}. |
-| `guard_rules.problem_line` | `{id}: essential rule whose source has no text` |  |  | Registry problem: an essential rule whose source yields no digest text. Placeholder: {id}. |
+| `guard_rules.problem_line` | `{id}: essential rule without a usable digest field for {host}` |  |  | Registry problem: an essential rule with no digest field for a host, or a digest line with a placeholder left in it. Placeholders: {id}, {host}. |
 | `guard_rules.problem_skill` | `{id}: missing from the generated skill` |  |  | Registry problem: a rule is missing from the generated rules skill. Placeholder: {id}. |
 | `guard_rules.problem_source` | `{id}: source {source} does not exist` |  |  | Registry problem: the source key of a rule does not exist. Placeholders: {id}, {source}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
@@ -3082,6 +3089,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.skill_setting` | `, switch `{setting}`` |  |  | Appended to the tier of a rule that has a setting. Placeholder: {setting}. |
 | `guard_rules.skill_use_when` | `Use when {use_when}.` |  |  | The description of a generated sub-skill: the sentence that makes the host load it. Placeholder: {use_when}, the area's `use_when` in `roles.areas`. |
 | `guard_rules.skill_why` | `Why: {why}` |  |  | Label in front of a rule's why. Placeholder: {why}. |
+| `guard_rules.source_line` | `- {id}: {what} {why} {instead}` |  |  | One line of the generated digest file's third section (after the second separator): an essential rule's full enforced text. The session script never reads it; it is there so an edit of the enforced message makes the committed digest stale (`ah-regen --check`) and the digest line is reviewed with it. Placeholders: {id}, {what}, {why}, {instead}. |
 | `guard_rules.summary` | `SessionStart: puts the essential rules the engine enforces (one source with t...` |  |  | One-line description of the rule-digest check in the generated reference. |
 | `guard_rules.summary_banner` | `SessionStart: one user-visible line with the plugin version, the rules enforc...` |  |  | One-line description of the session-banner check in the generated reference. |
 | `guard_rules.summary_none` | `anti-hall this session: no blocks.` |  |  | The summary when the session had no block. |
@@ -3711,6 +3719,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.markers` | `15 items` |  |  | Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried. |
 | `speculation_guard.max_blocks` | `3` |  |  | Most blocks per cap_scope window; retries with changing text share this budget. A new real owner turn resets it in owner_turn scope; same-text dedupe remains independent. |
 | `speculation_guard.modal_markers` | `must be, should be` |  |  | Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own. |
+| `speculation_guard.msg_digest` | `No unverified claims: verify with a tool or label the claim unverified.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `speculation_guard.msg_instead` | `verify the claim or label it unverified.` |  |  | Block advice. |
 | `speculation_guard.msg_what` | `your reply makes an unverified claim ("{marker}").` |  |  | Block headline; {marker} is the hedge found. |
 | `speculation_guard.msg_what_jev` | `your reply asserts a cause or outcome without evidence.` |  |  | Block headline when Jev added the block. |
@@ -4110,6 +4119,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `nested_spawn.guard_name` | `nested-spawn-guard` |  |  | Guard name in the block message and the skip file. |
+| `nested_spawn.msg_digest` | `Workers never spawn agents: do the task yourself and report back.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `nested_spawn.msg_instead` | `report back to the coordinator if more agents are needed.` |  |  | What to do instead of a nested spawn. |
 | `nested_spawn.msg_what` | `this agent is a worker and can't start agents of its own.` |  |  | What the block says. |
 | `nested_spawn.msg_why` | `Nested agents hide their cost from the coordinator (one burned about 2.5M tok...` |  |  | Why nested spawns are blocked. |
@@ -4147,6 +4157,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_usage.bucket_pct` | `fiveHourPercent, weeklyPercent` |  |  | The usage-cache fields holding each bucket percent (the 5-hour and weekly limits; there is no separate Sonnet pool). |
 | `spawn_usage.bucket_resets` | `fiveHourResetsAt, weeklyResetsAt` |  |  | The usage-cache fields holding each bucket reset time, parallel to bucket_pct. |
 | `spawn_usage.guard_name` | `spawn-usage` |  |  | Guard name in the messages and the skip file. |
+| `spawn_usage.msg_block_digest` | `At the usage-limit cap start no agents: finish running work or wait for reset.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `spawn_usage.msg_block_instead` | `wait for the usage limit to reset.` |  |  | What to do instead of the blocked spawn. |
 | `spawn_usage.msg_block_what` | `new agents can't start: the {limit} usage limit is at {pct}% (stop at {cap}%,...` |  |  | What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause. |
 | `spawn_usage.msg_block_why` | `Another spawn could use up the limit and stop all work, including agents alre...` |  |  | Why the hard block applies. |
@@ -4609,6 +4620,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.guard_name` | `task-guard` |  |  | The guard id of task-guard (the skip key and the message prefix). |
 | `task_guard.hash_sep` | ` ` |  |  | The separator between the task ids hashed into the loop state (a NUL character). |
 | `task_guard.idle_allowed` | `a task waiting on the user (hardware, a decision): mark it blocked on 'owner'...` |  |  | The allowed-here line of the idle-neglect block. |
+| `task_guard.idle_digest` | `Never stop with open tasks idle: assign each to an agent or report why.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `task_guard.idle_hash_tags` | `idle, no-agents` |  |  | The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's. |
 | `task_guard.idle_instead` | `assign the pending tasks to agents.` |  |  | The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing). |
 | `task_guard.idle_what` | `{n} open tasks have no agent working on them.` |  |  | The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail. |
@@ -4751,6 +4763,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.details_ext` | `.md` |  |  | File extension of the tasklist-guard details file. |
 | `tasklist_guard.details_head` | `Task list and progress file: what to do` |  |  | First line of the tasklist-guard details file. |
 | `tasklist_guard.details_label` | `details: ` |  |  | Label of the last line of a tasklist-guard block: the file with the long instructions. |
+| `tasklist_guard.digest_no_tasks` | `Track work in the task list: file changes with no tasks block the stop.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `tasklist_guard.evidence_deferred_prefix` | `deferred_tools` |  |  | Prefix of the attachment type that lists deferred tools. |
 | `tasklist_guard.evidence_names` | `TaskCreate, TaskUpdate, TodoWrite, task_reminder` |  |  | Tool names, attachment types and prefixes that can make a transcript line evidence of task tools (the cheap pre-filter). |
 | `tasklist_guard.evidence_reminder` | `task_reminder` |  |  | Attachment type that proves task tools exist. |
@@ -12655,6 +12668,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `api_guard_v1.max_code_chars` | `600000` |  |  | A code chunk longer than this (JavaScript string length) is not checked, as in the Node guard. |
 | `api_guard_v1.max_modules` | `8` |  |  | Most module groups probed per language (one interpreter run each), as the Node guard bounds them. |
+| `api_guard_v1.msg_digest` | `Verify API names against the installed runtime before writing calls to them.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `api_guard_v1.msg_instead` | `verify the API names and correct the references.` |  |  | Block message: what to do instead. |
 | `api_guard_v1.msg_item_prefix` | `  • ` |  |  | Prefix of each fabricated reference listed under the block message. |
 | `api_guard_v1.msg_override` | `only if you target a NEWER version where it exists: write ~/.anti-hall/skip.j...` |  |  | Block message: the override. |
@@ -12844,6 +12858,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `edit_guard.descriptor_dir` | `.anti-hall, devswarm, workspaces` |  |  | Where anti-hall's DevSwarm workspace descriptors live under the home directory, as its parts. |
 | `edit_guard.descriptor_ext` | `.json` |  |  | The extension of a workspace descriptor file. |
 | `edit_guard.handover_parts` | `3 entries` |  |  | The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory. |
+| `edit_guard.msg_digest` | `A role that may not edit files must not edit: hand the change to a worker.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `edit_guard.msg_new_allowed` | `.anti-hall/handovers/**.` |  |  | What stays allowed next to a redirected handover document. |
 | `edit_guard.msg_new_instead` | `write it at the session handover path.` |  |  | What to do instead for a new handover document. |
 | `edit_guard.msg_new_override` | `tell the agent "skip edit-guard" (lasts 15 minutes).` |  |  | The override line of the handover redirect ({skip} is the skip command). |
@@ -14353,6 +14368,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
 | `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
+| `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
+| `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
 | `claim_evidence_suppressor_rejected` | counter | candidates | reason | Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427). |
