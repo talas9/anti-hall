@@ -3170,7 +3170,7 @@ mod afk_mode {
         drained();
         plan_write(&h, "s1");
         advisor(&h, "s1");
-        let rec = format!("{h}/.anti-hall/afk-plan-s1.json");
+        let rec = rec_path(&h, "afk.plan_state_ns");
         let saved = std::fs::read_to_string(&rec).unwrap();
         std::fs::remove_file(&rec).unwrap();
         std::fs::create_dir_all(&rec).unwrap(); // the record cannot be read or replaced during the owner prompt
@@ -3181,7 +3181,8 @@ mod afk_mode {
         assert!(!approved(&o), "{o}");
         let m = drained();
         assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
-        assert_eq!(denied(&m, "owner_prompt"), 1);
+        // the witness moved AND the failed record write poisoned the consult; the poison is checked first
+        assert_eq!(denied(&m, "stamp_poisoned"), 1);
         assert_eq!(m.counter("afk_plan_stamp_failed", &[("field", "promptSeq")]), 1, "the failed record write is counted");
     }
 
@@ -3330,7 +3331,7 @@ mod afk_mode {
         type Case = (&'static str, &'static str, fn(&str) -> Value);
         let cases: Vec<Case> = vec![
             ("state_error", "state", |h| {
-                let rec = format!("{h}/.anti-hall/afk-plan-s1.json");
+                let rec = rec_path(&h, "afk.plan_state_ns");
                 std::fs::remove_file(&rec).unwrap();
                 std::fs::create_dir_all(&rec).unwrap();
                 json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})

@@ -359,6 +359,11 @@ pub fn lstat(path: &str) -> String {
     serde_json::json!({"kind": kind, "size": m.len(), "mtimeMs": m.mtime() as f64 * 1000.0 + (m.mtime_nsec() / 1_000_000) as f64, "mode": m.mode(), "nlink": m.nlink()}).to_string()
 }
 
+/// `textSha256(text)`: lowercase hex SHA-256 of the UTF-8 bytes of `text` (hash exactly the text a script read and compares).
+pub fn text_sha256(t: &str) -> String {
+    ring::digest::digest(&ring::digest::SHA256, t.as_bytes()).as_ref().iter().map(|x| format!("{x:02x}")).collect()
+}
+
 /// `fileSha256(path)`: lowercase hex SHA-256 of a regular file's bytes (at most `script.read_max_bytes`; links are not followed), or `null`
 /// when it is absent, not a regular file, over the cap or unreadable.
 pub fn file_sha256(path: &str) -> Option<String> {
@@ -1163,6 +1168,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("readdir", Function::new(c.clone(), |p: String| readdir(&p))?)?;
     h.set("uid", Function::new(c.clone(), || crate::checks::jsport::home::uid() as f64)?)?;
     h.set("fileSha256", Function::new(c.clone(), |p: String| file_sha256(&p))?)?;
+    h.set("textSha256", Function::new(c.clone(), |t: String| text_sha256(&t))?)?;
     h.set("readHeadHex", Function::new(c.clone(), |p: String, n: f64| read_head_hex(&p, n))?)?;
     h.set("readlink", Function::new(c.clone(), |p: String| std::fs::read_link(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
     h.set(

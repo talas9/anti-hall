@@ -260,12 +260,15 @@ function afkDigestHere(f) {
 
 function afkFmt(ms) { return new Date(Number(ms) || 0).toISOString(); }
 
+// An owner prompt: not matched by afk.non_owner_prompt_res (task notifications and the like).
+function afkOwnerPrompt(p) {
+  var prompt = typeof p.prompt === 'string' ? p.prompt : '';
+  return !ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); });
+}
 function afkPrompt(p, f, now) {
   var prompt = typeof p.prompt === 'string' ? p.prompt : '';
-  var notOwner = ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); });
-  if (notOwner) return null;
+  if (!afkOwnerPrompt(p)) return null;
   afkPresent(now);
-  afkPlanPrompt(p, now); // an owner prompt makes every earlier advisor consult unusable for plan auto-approve
   var word = prompt.trim().toLowerCase(), reply = null;
   if (ah.settings.bool('afk.set_prompt_commands')) {
     if (afkWordIn(ah.cfg('afk.words_on'), word)) {
@@ -381,12 +384,28 @@ function afkPlanParse(t) { if (t === null) return {}; try { var v = JSON.parse(t
 function afkPlanNum(s, k) { return typeof s[k] === 'number' ? s[k] : 0; }
 // Atomic read-modify-write of ns/key; `fn(s)` mutates the parsed record and returns the seq it assigned (or 0 to write nothing).
 // true only when the read-back shows that seq (the host does not report a failed write).
+// Under the per-session cross-process lock (afk.plan_lock_prefix): the host's state mutex is per process only, and a one-shot hook
+// process next to the daemon could otherwise lose an update. No lock = a failed write. A seq that does not grow is a failed write too.
 function afkPlanUpdate(ns, key, fn) {
-  var want = 0;
+  var want = 0, h = null;
+  try { h = ah.state.lock(afkRel(ah.cfg('afk.plan_lock_prefix') + key), 'afk', ah.cfgNum('afk.lock_wait_ms')); } catch (e) { h = null; }
+  if (h === null) return false;
   try {
-    ah.sessionState.update(ns, key, function (cur) { var s = afkPlanParse(cur); want = fn(s); return want > 0 ? JSON.stringify(s) : null; });
-    return want > 0 && afkPlanNum(afkPlanParse(ah.sessionState.get(ns, key)), 'seq') === want;
-  } catch (e) { return false; }
+    var before = 0;
+    ah.sessionState.update(ns, key, function (cur) { var s = afkPlanParse(cur); before = afkPlanNum(s, 'seq'); want = fn(s); return want > before ? JSON.stringify(s) : null; });
+    return want > before && afkPlanNum(afkPlanParse(ah.sessionState.get(ns, key)), 'seq') === want;
+  } catch (e) { return false; } finally { try { ah.state.unlock(h); } catch (e) { /* the host releases a lock still held when the call ends */ } }
+}
+// The poison marker (no .json: never pruned): set when a stamp after a consult could not be recorded; cleared by a recording consult.
+function afkPlanPoisonRel(key) { return afkRel(ah.cfg('afk.plan_poison_prefix') + key); }
+function afkPlanPoison(key) { afkWrite0(afkPlanPoisonRel(key), ah.cfg('afk.plan_poison_set')); }
+function afkWrite0(rel, t) { try { return ah.state.writeAtomic(rel, t) === true; } catch (e) { return false; } }
+// true when the marker is absent or cleared; a set or unreadable marker denies.
+function afkPlanPoisonClean(key) {
+  var rel = afkPlanPoisonRel(key), t = null;
+  try { t = ah.state.readText(rel); } catch (e) { return false; }
+  if (t === null) return !ah.fs.isFile(ah.home() + '/' + rel);
+  return t === ah.cfg('afk.plan_poison_clear');
 }
 function afkPlanBump(s, field, now) {
   s.seq = afkPlanNum(s, 'seq') + 1;
@@ -404,8 +423,11 @@ function afkPlanPrompt(p, now) {
   if (coordinator.isCodexPayload(p)) return;
   var key = afkPlanKey(p);
   if (!key) return;
-  if (!afkPlanUpdate(ah.cfg('afk.plan_prompt_ns'), key, function (s) { s.seq = afkPlanNum(s, 'seq') + 1; return s.seq; })) afkPlanFailed('witness');
-  if (!afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) { return afkPlanBump(s, 'promptSeq', now); })) afkPlanFailed('promptSeq');
+  var w = afkPlanUpdate(ah.cfg('afk.plan_prompt_ns'), key, function (s) { s.seq = afkPlanNum(s, 'seq') + 1; return s.seq; });
+  if (!w) afkPlanFailed('witness');
+  var r = afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) { return afkPlanBump(s, 'promptSeq', now); });
+  if (!r) afkPlanFailed('promptSeq');
+  if (!w || !r) afkPlanPoison(key); // either failing: the consult is poisoned (a third, separate file)
 }
 // PostToolUse: the advisor tool (advisor.tool_names) or an edit of a plan file (advisor.edit_tools + advisor.plan_file_re). Plan writes
 // are stamped for every thread (a subagent rewriting the plan makes the consult stale); a consult only for the main thread.
@@ -416,6 +438,8 @@ function afkPlanRecord(p, f, now) {
   if (ah.cfg('advisor.tool_names').indexOf(tool) >= 0) {
     if (!ah.settings.bool('afk.set_plan_autoapprove') || afkIsAgent(p)) return;
     var witness = afkPlanPromptWitness(key);
+    // clear the poison first (read back); a consult that cannot clear it is not recorded
+    if (!afkWrite0(afkPlanPoisonRel(key), ah.cfg('afk.plan_poison_clear')) || !afkPlanPoisonClean(key)) { afkPlanFailed('consultSeq'); return; }
     if (!afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) {
       var path = typeof s.planPath === 'string' ? s.planPath : '', hash = null;
       try { hash = path !== '' ? ah.fs.sha256File(path) : null; } catch (e) { hash = null; }
@@ -428,7 +452,7 @@ function afkPlanRecord(p, f, now) {
   if (ah.cfg('advisor.edit_tools').indexOf(tool) < 0) return;
   var i = jx.isObj(p.tool_input) ? p.tool_input : {}, file = typeof i.file_path === 'string' ? i.file_path : '';
   if (file === '' || !ah.re.test(ah.cfg('advisor.plan_file_re'), 'r', file)) return;
-  if (!afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) { s.planPath = file; return afkPlanBump(s, 'planSeq', now); })) afkPlanFailed('planSeq');
+  if (!afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) { s.planPath = file; return afkPlanBump(s, 'planSeq', now); })) { afkPlanFailed('planSeq'); afkPlanPoison(key); }
 }
 function afkPlanDeny(reasonKey) { afkMetric('afk_plan_autoapprove_denied', { reason: ah.cfg(reasonKey) }); return 'allow'; }
 // PreToolUse of the plan-approval tool: allow + updatedInput only when every check passes; every other path says nothing. The
@@ -449,12 +473,14 @@ function afkPlanPre(p, f, now) {
   var c = afkPlanNum(seen, 'consultSeq');
   if (c <= 0) return afkPlanDeny('afk.plan_reason_no_marker');
   if (now < afkPlanNum(seen, 'wall') || afkPlanNum(seen, 'backSeq') >= c) return afkPlanDeny('afk.plan_reason_clock_backwards');
+  if (!afkPlanPoisonClean(key)) return afkPlanDeny('afk.plan_reason_stamp_poisoned');
   if (witness < 0 || witness !== afkPlanNum(seen, 'consultWitness')) return afkPlanDeny('afk.plan_reason_owner_prompt');
   if (c <= Math.max(afkPlanNum(seen, 'planSeq'), afkPlanNum(seen, 'attemptSeq'), afkPlanNum(seen, 'promptSeq'))) return afkPlanDeny('afk.plan_reason_stale');
   var cp = typeof seen.consultPath === 'string' ? seen.consultPath : '', ch = typeof seen.consultHash === 'string' ? seen.consultHash : '';
   if (cp === '' || ch === '' || pf === '' || !ah.path.isAbsolute(pf) || pf !== cp) return afkPlanDeny('afk.plan_reason_plan_unbound');
+  // one read: the hash is of the very text compared below (no window between hashing the file and reading it)
   var hash = null, text = null;
-  try { hash = ah.fs.sha256File(pf); text = ah.fs.readText(pf, ah.cfgNum('afk.read_max_bytes')); } catch (e) { hash = null; }
+  try { text = ah.fs.readText(pf, ah.cfgNum('afk.read_max_bytes')); hash = text === null ? null : ah.fs.sha256Text(text); } catch (e) { hash = null; }
   if (hash === null || hash !== ch) return afkPlanDeny('afk.plan_reason_plan_changed');
   // what is approved is the echoed input: its plan text (when given) must be the consulted file's text (surrounding whitespace aside)
   if (input.plan !== undefined && (typeof input.plan !== 'string' || text === null || input.plan.trim() !== text.trim())) return afkPlanDeny('afk.plan_reason_plan_mismatch');
@@ -500,8 +526,12 @@ function afkInject(p, f, now, event) {
 function decide(p) {
   if (p === null || typeof p !== 'object') return 'allow';
   if (ah.env.get(ah.cfg('session.judge_child_env')) === ah.cfg('session.judge_child_on')) return 'allow';
-  if (!ah.settings.bool('afk.set_enabled') || !ah.home()) return 'allow';
+  if (!ah.home()) return 'allow';
   var ev = typeof p.hook_event_name === 'string' ? p.hook_event_name : '', now = ah.clock.now();
+  // owner prompts are stamped for plan auto-approve whatever afk.enabled says (the dispatch row runs without the setting gate), so a
+  // prompt while AFK mode was disabled still voids an earlier consult when it is re-enabled
+  if (ev === 'UserPromptSubmit' && afkOwnerPrompt(p)) afkPlanPrompt(p, now);
+  if (!ah.settings.bool('afk.set_enabled')) return 'allow';
   afkLockReset();
   if (ev === 'SessionStart') {
     if (coordinator.isCodexPayload(p) && ah.settings.bool('afk.set_concise_codex')) return afkCtx(ev, ah.cfg('afk.concise_text'));

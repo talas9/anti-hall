@@ -165,6 +165,8 @@ var ah = {
     readText: function (p, max) { return ahNull(ahHost.readText(p, max === undefined ? 0 : max)); },
     // Lowercase hex SHA-256 of a regular file (links not followed), or null.
     sha256File: function (p) { return ahNull(ahHost.fileSha256(p)); },
+    // Lowercase hex SHA-256 of the UTF-8 bytes of a text (hash exactly the text that was read and is compared).
+    sha256Text: function (t) { return ahHost.textSha256(String(t)); },
     // The first `n` bytes of a regular file as lowercase hex, or null.
     readHeadHex: function (p, n) { return ahNull(ahHost.readHeadHex(p, n)); },
   },
