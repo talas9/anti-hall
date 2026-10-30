@@ -2297,7 +2297,6 @@ fn burn_breaker_never_pauses_a_commit_or_a_restore_gh458() {
         assert!(!std::path::Path::new(&marker).exists(), "a commit lifts the breaker: {commit:?}");
     }
     for restore in [
-        "curl -s -X POST http://192.168.1.50/api/config/restore -d @/w/probe/backup.json",
         "./scripts/restore-device.sh --from /w/probe/backup.json",
         "python3 tools/rollback_config.py --device dev1",
         "git restore src/main.rs",
@@ -2315,6 +2314,9 @@ fn burn_breaker_never_pauses_a_commit_or_a_restore_gh458() {
         "./restore.sh > /etc/x",
         "rg --pre=./evil restore",
         "echo $(touch /x) restore",
+        "restore=1 python3 -c 'while True: pass'",
+        "RESTORE=1 restore=2 cargo test",
+        "python3 -c 'restore()'",
     ] {
         assert!(blocked(bad), "a restore word is no bypass: {bad:?}");
     }

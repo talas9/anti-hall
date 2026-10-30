@@ -390,6 +390,19 @@ fn shell_written_files_live_probes_passing_checks_are_outcomes_and_a_running_bui
     ticks(&h, &mut st, &[n - 2 * MIN]);
     let a = agent(&st, "s1");
     assert_eq!(a.progress, before + weight("probe") + weight("check"), "one distinct probe and one passing check");
+    // text in an argument is no check, probe or file: only the program run counts
+    let before = a.progress;
+    append(
+        &p,
+        &[
+            tool(n - 2 * MIN, "m9", 100, "u9", "Bash", json!({"command": "printf 'git diff --check'"})),
+            result(n - 2 * MIN, "u9", "git diff --check", false),
+            tool(n - 2 * MIN, "m10", 100, "u10", "Bash", json!({"command": "echo \"curl http://x > /w/f.json; eslint .\""})),
+            result(n - 2 * MIN, "u10", "x", false),
+        ],
+    );
+    ticks(&h, &mut st, &[n - MIN]);
+    assert_eq!(agent(&st, "s1").progress, before, "printf/echo of a check, probe or redirect is no outcome");
     // mid-build behind the cargo lock past the hard line: the hard flag stands (the nudge), the pause marker is withheld
     let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
     append(

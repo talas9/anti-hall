@@ -409,12 +409,12 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
             class = "test".into();
         } else if pat("build").is_some_and(|r| r.is_match(arg)) {
             class = "build".into();
-        } else if pat("check").is_some_and(|r| r.is_match(arg)) {
+        } else if pat("check").is_some_and(|r| r.is_match(&unquoted(arg))) {
             class = "check".into();
-        } else if pat("probe").is_some_and(|r| r.is_match(arg)) {
+        } else if pat("probe").is_some_and(|r| r.is_match(&unquoted(arg))) {
             class = "probe".into();
         }
-        writes = shell_writes(arg);
+        writes = shell_writes(&unquoted(arg));
         if input.get(tr("background")).and_then(Value::as_bool) == Some(true) {
             push_ring(&mut a.bg_bash, ts, lim("loop_window"));
         }
@@ -624,6 +624,15 @@ fn shell_writes(cmd: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The command with each quoted string blanked (burn.quoted_re): text in an argument (`printf 'git diff --check'`, `echo "a > b"`) never
+/// names the program run or a file written.
+fn unquoted(cmd: &str) -> String {
+    match Regex::new(defaults::text("burn.quoted_re")).ok() {
+        Some(q) => q.replace_all(cmd, "q").into_owned(),
+        None => cmd.to_string(),
+    }
 }
 
 /// Count one outcome of a kind GH #458 added (shell_file, probe, check) in the registered counter agent_tracker.outcome_metric.

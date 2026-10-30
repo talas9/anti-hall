@@ -183,10 +183,12 @@ doc = "The heredoc commit message (`git commit -m \"$(cat <<'EOF'` newline, body
 value = { open_re = '''-m\s+\x22\$\(cat\s+<<-?\s*\x27[A-Za-z_][A-Za-z0-9_]*\x27\s*$''', close_re = '''^\)\x22''', bad_re = '''[\x00-\x08\x0b-\x1f\x7f]''', placeholder = "-m 'msg'", quote = "'" }
 
 [burn.restore_bash_res]
-doc = "The restore class (GH #458): a command that puts earlier state back (a device or config restore, a rollback, a revert, an undo, a teardown or cleanup, git restore/checkout --/stash pop|apply/reset/revert). It is NEVER paused, whatever else it holds: a paused restore leaves live systems in test configuration. The command must pass the usual screen (burn.max_cmd_chars, burn.charset_re, burn.reject_re, burn.deny_res); each regular expression (Rust syntax) is then tested per segment on the text with quoted strings blanked (a word in a quoted message or after `#` does not count; a pipe, redirect or comment in that segment fails it), and every other segment must be allowed by the usual rules (counted as burn_breaker_bypass kind=restore)."
+doc = "The restore class (GH #458): a command that puts earlier state back (a device or config restore, a rollback, a revert, an undo, a teardown or cleanup, git restore/checkout --/stash pop|apply/reset/revert). It is NEVER paused, whatever else it holds: a paused restore leaves live systems in test configuration. The command must pass the usual screen (burn.max_cmd_chars, burn.charset_re, burn.reject_re, burn.deny_res); each regular expression (Rust syntax) is then tested per segment on the text with quoted strings blanked, anchored at the program (argv[0]: a program or script whose name holds a restore word, an interpreter running such a script, a make target, a git restore shape); an argument, an environment assignment, a quoted message or a word after `#` never qualifies (a word in a quoted message or after `#` does not count; a pipe, redirect or comment in that segment fails it), and every other segment must be allowed by the usual rules (counted as burn_breaker_bypass kind=restore)."
 value = [
-  '''(?i)(?:^|[\s/_.:=-])(?:restore|restoring|rollback|roll-back|revert|undo|teardown|tear-down|cleanup|clean-up)(?:$|[\s/_.:=?&-])''',
-  '''^\s*(?:cd\s+\S+\s*&&\s*)?git(?:\s+-C\s+\S+)*\s+(?:checkout\s+(?:\S+\s+)?--\s|stash\s+(?:pop|apply)\b|reset\b|revert\b)''',
+  '''(?i)^\s*(?:\.{0,2}/)?(?:[\w.-]+/)*[\w.-]*(?:restore|rollback|roll-back|revert|undo|teardown|tear-down|cleanup|clean-up)[\w.-]*(?:\s|$)''',
+  '''(?i)^\s*(?:python3?|node|bash|sh|zsh)\s+(?:\.{0,2}/)?(?:[\w.-]+/)*[\w.-]*(?:restore|rollback|roll-back|revert|undo|teardown|tear-down|cleanup|clean-up)[\w.-]*\.(?:py|js|mjs|sh)(?:\s|$)''',
+  '''(?i)^\s*make\s+(?:-\S+\s+)*[\w.-]*(?:restore|rollback|roll-back|revert|undo|teardown|tear-down|cleanup|clean-up)[\w.-]*(?:\s|$)''',
+  '''^\s*git(?:\s+-C\s+\S+)*\s+(?:restore\b|checkout\s+(?:\S+\s+)?--\s|stash\s+(?:pop|apply)\b|reset\b|revert\b)''',
 ]
 
 [burn.reject_re]
