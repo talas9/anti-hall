@@ -724,7 +724,7 @@ value = { what = "git {sub} is chained with text containing AI credit.", why = "
 
 [git_audit.summary]
 doc = "One-line description of the git-audit check in the generated reference."
-value = "Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) that HEAD reaches and no remote has carries an AI self-credit."
+value = "Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) carries an AI self-credit; one HEAD reaches and no remote has is blocked until reworded, one a remote already has (committed and pushed in one call) is blocked once and reported as published."
 
 [git_audit.window_s]
 doc = "How recent, in seconds, a commit must be for the audit to look at it."
@@ -755,9 +755,35 @@ value = ["-C", "{dir}", "log", "-g", "-n", "{n}", "--date=unix", "--format=%H%x1
 doc = "Lower-case starts of the reflog descriptions of steps that write a commit (a checkout or reset only moves HEAD and is not read)."
 value = ["commit", "merge", "cherry-pick", "rebase", "revert", "pull", "am"]
 
+[git_audit.argv_published]
+doc = "git arguments reading the stored messages of the commits the audit found written in its window that the unpushed log did not list (a remote already has them, or they were amended away). {dir} is the repository directory and {shas} expands to the hashes. Fields and records as in argv_log."
+value = ["-C", "{dir}", "log", "--no-walk=unsorted", "--format=%H%x1f%B%x1e", "{shas}"]
+
+[git_audit.argv_remote_has]
+doc = "git arguments naming one remote-tracking ref that contains a commit ({sha}); empty output means no remote has it (an amended-away commit, never reported)."
+value = ["-C", "{dir}", "for-each-ref", "--count=1", "--contains", "{sha}", "--format=%(refname:short)", "refs/remotes/"]
+
+[git_audit.published_file]
+doc = "State file, under replykit.state_dir, holding the hashes of published credited commits already reported, so each one blocks once: the agent cannot clear it itself."
+value = "git-audit-published.json"
+
+[git_audit.published_memory]
+doc = "How many reported published commit hashes the audit remembers (oldest dropped first)."
+value = 500
+min = 10
+max = 100000
+
+[git_audit.msg_published]
+doc = "Block after a commit git stored with an AI credit that a remote already has (committed and pushed in one call). Placeholders: {hits} (short hashes), {remotes} (the remote-tracking refs that have them)."
+value = { what = "the commit(s) just written carry AI credit ({hits}) and are already on a remote ({remotes}).", why = "Commits in this setup carry no AI credit. The credit is published: an amend or a new commit leaves it in the remote's history, and rewriting published history is the owner's decision, not the agent's.", instead = "stop: do not push to {remotes} again and do not amend or rebase these commits. Report the hashes ({hits}) and the remote refs ({remotes}) to the owner and wait for their decision on the published history. Commit without credit from now on.", override = "turn off guards.gitCommitAudit, only after you checked the message." }
+
 [git_audit.block_reason]
 doc = "The reason label of git_blocked for an audit block."
 value = "audit_credit"
+
+[git_audit.block_reason_published]
+doc = "The reason label of git_blocked for an audit block on a credited commit a remote already has."
+value = "audit_credit_published"
 
 [git_audit.record_sep]
 doc = "The character that ends one commit record of the audit's log output (RS)."
@@ -831,11 +857,15 @@ value = ["--repo"]
 
 [git.push_all_opts]
 doc = "git push options that publish every local branch; the backstop then reads the commits of all branches."
-value = ["--all", "--branches", "--mirror"]
+value = ["--all", "--branches"]
 
 [git.push_tags_opts]
 doc = "git push options that publish every tag; the backstop then reads the commits of all tags."
-value = ["--tags", "--mirror"]
+value = ["--tags"]
+
+[git.push_mirror_opts]
+doc = "git push options that publish every ref under refs/ (a mirror); the backstop then reads the commits of every ref push_argv_refs_all lists."
+value = ["--mirror"]
 
 [git.push_all_rev_arg]
 doc = "The git log argument that stands for every local branch (push_all_opts)."
@@ -884,6 +914,14 @@ value = ["-C", "{dir}", "config", "--get", "{key}"]
 [git.push_argv_config_all]
 doc = "git arguments reading every value of one config key; {key} is the key."
 value = ["-C", "{dir}", "config", "--get-all", "{key}"]
+
+[git.push_argv_refs_all]
+doc = "git arguments listing every ref a mirror push publishes (push_mirror_opts, push_mirror_key), one full ref name per line; when it lists nothing the backstop reads every branch and tag."
+value = ["-C", "{dir}", "for-each-ref", "--format=%(refname)", "refs/"]
+
+[git.msg_push_config_env]
+doc = "Block: a push names `--config-env <key>=<VAR>` but VAR is not set in the same command, so the config that decides what the push publishes cannot be read. Placeholder: {spec} (the --config-env value)."
+value = { what = "this push reads config from an environment variable the guard cannot see (--config-env {spec}).", why = "Command-scoped config decides which refs a push publishes; a variable set in an earlier call is not visible to the guard, so the credit check could not read the pushed range.", instead = "set the variable in the same command (VAR=value git --config-env ...), or use -c <key>=<value>." }
 
 [git.push_mirror_key]
 doc = "Config key that makes a push without refspecs mirror every ref; {remote} is the remote."

@@ -73,6 +73,7 @@ function gitBuildTables() {
   t.pushRepoOpts = set(c('push_repo_opts'));
   t.pushAllOpts = set(c('push_all_opts'));
   t.pushTagsOpts = set(c('push_tags_opts'));
+  t.pushMirrorOpts = set(c('push_mirror_opts'));
   t.trailerKeys = c('self_credit_trailer_keys');
   t.forwardEnvRe = new RegExp('^(?:GIT_CONFIG_(?:' + c('forward_config_names').concat(c('forward_config_indexed').map((p) => gitEsc(p) + '\\d+')).join('|') + ')|' +
     c('forward_env_names').map(gitEsc).join('|') + ')$');
@@ -1959,17 +1960,29 @@ function pushCreditVerdict(ev, lastCdDir) {
     if (!gitSettingOn('git.setting_push_credit')) return null;
     if (gitSubcommand(ev.args).rest.some((t) => TB.pushSkipOpts.has(t.text))) return null;
     let dir = lastCdDir || S.procCwd;
+    const cfgArgs = [];
     for (let k = 0; k < ev.args.length; k++) {
       const t = ev.args[k].text;
       if (t === '-C' && k + 1 < ev.args.length) { dir = posix.resolveIn(S.procCwd, [dir, ev.args[k + 1].text]); k++; continue; }
       if (t === '--git-dir' || t === '--work-tree' || t.startsWith('--git-dir=') || t.startsWith('--work-tree=')) return null;
-      if (t === '-c' || t === '--namespace' || t === '--config-env') { k++; continue; }
+      // command-scoped config decides what the push publishes (Codex P1 of PR #469 at 375cf8fe): every query below runs with it
+      if (t === '-c' && k + 1 < ev.args.length) { cfgArgs.push('-c', ev.args[k + 1].text); k++; continue; }
+      if (t === '--config-env' || t.startsWith('--config-env=')) {
+        const spec = t === '--config-env' ? (k + 1 < ev.args.length ? ev.args[++k].text : '') : t.slice(t.indexOf('=') + 1);
+        const eq = spec.lastIndexOf('='), name = eq > 0 ? spec.slice(eq + 1) : '';
+        const val = name && ev.assigns && Object.prototype.hasOwnProperty.call(ev.assigns, name) ? ev.assigns[name] : null;
+        if (val === null) return gmKey('msg_push_config_env', { spec: spec });
+        cfgArgs.push('-c', spec.slice(0, eq) + '=' + val);
+        continue;
+      }
+      if (t === '--namespace') { k++; continue; }
       if (t.startsWith('-')) continue;
       break;
     }
     const cap = ah.cfg('git.push_max_commits');
     const sub = (a, vars) => Object.keys(vars).reduce((x, k) => x.split('{' + k + '}').join(vars[k]), a);
-    const run = (key, vars) => gitRun(ah.cfg(key).map((a) => sub(a, Object.assign({ dir: dir }, vars))), null, null, ah.cfg('git.push_timeout_ms'));
+    const env = ev.env && Object.keys(ev.env).length ? ev.env : null; // GIT_CONFIG_COUNT/KEY_n/VALUE_n set on the command
+    const run = (key, vars) => gitRun(cfgArgs.concat(ah.cfg(key).map((a) => sub(a, Object.assign({ dir: dir }, vars)))), null, env, ah.cfg('git.push_timeout_ms'));
     // the remote and the pushed refs (the source side of each refspec), read from the command (P1 of PR #469)
     const rest = gitSubcommand(ev.args).rest;
     let remote = null, repoOpt = null, endOpts = false;
@@ -1982,6 +1995,7 @@ function pushCreditVerdict(ev, lastCdDir) {
         const eq = t.indexOf('=');
         if (TB.pushValueOpts.has(t)) { if (TB.pushRepoOpts.has(t) && k + 1 < rest.length) repoOpt = rest[k + 1].text; k++; continue; }
         if (eq > 0 && TB.pushRepoOpts.has(t.slice(0, eq))) { repoOpt = t.slice(eq + 1); continue; }
+        if (TB.pushMirrorOpts.has(t)) refs.push(...mirrorRefs(run));
         if (TB.pushAllOpts.has(t)) refs.push(ah.cfg('git.push_all_rev_arg'));
         if (TB.pushTagsOpts.has(t)) refs.push(ah.cfg('git.push_tags_rev_arg'));
         continue;
@@ -2008,12 +2022,12 @@ function pushCreditVerdict(ev, lastCdDir) {
     // the commits the destination lacks, read from its own remote-tracking refs only: a destination with none (a URL, never
     // fetched) lacks everything, so commits other remotes have are still read, and the cap applies to every destination
     const exclude = sub(ah.cfg('git.push_exclude_remote'), { remote: remote });
-    const argv = [];
+    const argv = cfgArgs.slice();
     for (const a of ah.cfg('git.push_argv_log')) {
       if (a === '{refs}') argv.push(...refs);
       else argv.push(sub(a, { dir: dir, n: String(cap + 1), exclude: exclude }));
     }
-    const out = gitRun(argv, null, null, ah.cfg('git.push_timeout_ms'));
+    const out = gitRun(argv, null, env, ah.cfg('git.push_timeout_ms'));
     if (!out) return null;
     const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
     const hits = [];
@@ -2041,9 +2055,7 @@ function pushCreditVerdict(ev, lastCdDir) {
 // the sources of a push with no refspec, resolved from git config (Codex P1 of PR #469: a bare push follows remote.<name>.push)
 function bareSources(run, sub, remote, globChars) {
   const v = (key) => (run('git.push_argv_config_all', { key: sub(ah.cfg(key), { remote: remote }) }) || '').split('\n').map((x) => x.trim()).filter(Boolean);
-  if (v('git.push_mirror_key').some((x) => ah.cfg('git.push_true_values').indexOf(x.toLowerCase()) >= 0)) {
-    return [ah.cfg('git.push_all_rev_arg'), ah.cfg('git.push_tags_rev_arg')];
-  }
+  if (v('git.push_mirror_key').some((x) => ah.cfg('git.push_true_values').indexOf(x.toLowerCase()) >= 0)) return mirrorRefs(run);
   const out = [];
   for (const spec of v('git.push_refspec_key')) {
     let src = spec.charAt(0) === '+' ? spec.slice(1) : spec;
@@ -2055,6 +2067,12 @@ function bareSources(run, sub, remote, globChars) {
   if (out.length) return out;
   const mode = (v('git.push_default_key')[0] || '').toLowerCase();
   return [ah.cfg('git.push_matching_values').indexOf(mode) >= 0 ? ah.cfg('git.push_all_rev_arg') : ah.cfg('git.push_default_ref')];
+}
+
+// a mirror push publishes every ref under refs/, not only branches and tags (Codex P1 of PR #469 at 375cf8fe)
+function mirrorRefs(run) {
+  const out = (run('git.push_argv_refs_all', {}) || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  return out.length ? out : [ah.cfg('git.push_all_rev_arg'), ah.cfg('git.push_tags_rev_arg')];
 }
 
 function handoverCommitVerdict(ev, lastCdDir) {
@@ -2092,9 +2110,11 @@ function repoArgs(args) {
   return out;
 }
 
-function forwardable(tokens) {
+const ANY_ENV_NAME = /^/;
+
+function forwardable(tokens, nameRe) {
   const out = {};
-  const re = TB.forwardEnvRe;
+  const re = nameRe || TB.forwardEnvRe;
   for (const t of tokens) {
     if (t.quotedOnly) continue;
     const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(t.text);
@@ -2105,13 +2125,13 @@ function forwardable(tokens) {
   return out;
 }
 
-function segmentEnv(tokens) {
+function segmentEnv(tokens, nameRe) {
   try {
     const gi = tokens.findIndex((t) => !t.quotedOnly && t.text === 'git');
-    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {} };
+    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi), nameRe), persist: {} };
     const first = tokens[0] && !tokens[0].quotedOnly ? tokens[0].text : '';
     const allAssign = tokens.every((t) => !t.quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text));
-    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens) };
+    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens, nameRe) };
   } catch (e) { if (gitFatal(e)) throw e; }
   return { inline: {}, persist: {} };
 }
@@ -2448,7 +2468,7 @@ function scanCommand(cmd, depth, baseCwd) {
     if (hit) return hit;
   }
 
-  const persistEnv = {};
+  const persistEnv = {}, persistAll = {};
   for (const seg of segments) {
     const tokens = tokenize(seg);
     if (!tokens.length) continue;
@@ -2465,9 +2485,14 @@ function scanCommand(cmd, depth, baseCwd) {
       }
     }
 
+    const segAll = segmentEnv(tokens, ANY_ENV_NAME);
+    const assigns = Object.assign({}, persistAll, segAll.inline);
+    Object.assign(persistAll, segAll.persist);
+
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
     ev.env = gitEnv;
+    ev.assigns = assigns; // every name set for this command (for --config-env), not only the ones forwarded to git
 
     const aliasDef = shellDefinitionVerdict(tokens, ev, (c) => scanCommand(c, d + 1, lastCdDir), d, S.raw);
     if (aliasDef) return aliasDef;

@@ -480,5 +480,5 @@ fn a_mirror_push_is_checked_on_every_ref() {
     let (out, err, code) = e.hook_in(&format!("git {P} m"), w);
     assert_eq!(code, 2, "remote.m.mirror: stdout={out} stderr={err}");
     git_ok(&work, &["update-ref", "-d", "refs/custom/x"]);
-    assert_eq!(e.hook_in(&format!("git {P} --mirror m"), w), (String::new(), String::new(), 0), "clean mirror allowed");
+    assert_eq!(e.hook_in(&format!("git {P} m"), w), (String::new(), String::new(), 0), "clean mirror allowed");
 }
