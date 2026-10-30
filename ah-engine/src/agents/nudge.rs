@@ -133,6 +133,17 @@ pub struct Nudge {
     pub fallback_at: u64,
 }
 
+/// An agentHealth `done` verdict on a child (#430): no nudge about it before `until`, and only while the child shows no activity newer
+/// than `activity_ms` (its last output when the verdict was given). Read only while agents.nudgeScope is on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DoneHold {
+    /// No nudge about the child before this time.
+    pub until: u64,
+    /// The child's last output when the verdict was given: newer output releases the hold.
+    pub activity_ms: u64,
+}
+
 /// A snooze kept per child and trigger, outside the nudge it was given to: it holds a re-raised condition until it runs out and its
 /// count carries over to the next nudge about the same condition.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -405,6 +416,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             || a.dead
             || st.nudges.contains_key(&a.id)
             || st.nudge_hold.get(&a.id).is_some_and(|t| *t > now)
+            || done_held(env, st, a, now)
             || super::signals::owner_active(env, a, now)
         {
             continue;
@@ -557,8 +569,15 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
 }
 
 /// Record an agentHealth `done` verdict: the child is held un-nudged for limits.health_done_hold_ms.
+/// Kept apart from the busy holds so agents.nudgeScope off ignores it entirely and new activity from the child releases it.
 pub(super) fn hold_done(st: &mut State, a: &Agent, now: u64) {
-    st.nudge_hold.insert(a.id.clone(), now + lim("health_done_hold_ms"));
+    st.nudge_done_hold.insert(a.id.clone(), DoneHold { until: now + lim("health_done_hold_ms"), activity_ms: a.last_output_ms });
+}
+
+/// Whether a done verdict still holds this child: the scope rules are on, the hold has not run out and the child has produced no
+/// output since the verdict (a child that resumed work and went bad again is judged afresh).
+fn done_held(env: &Env, st: &State, a: &Agent, now: u64) -> bool {
+    env.switch("agent_nudge.scope_setting") && st.nudge_done_hold.get(&a.id).is_some_and(|h| h.until > now && a.last_output_ms <= h.activity_ms)
 }
 
 /// An answer at or after the last send proves the parent saw the nudge: the wake fallback never queues it again (a snooze moves the
@@ -1096,6 +1115,8 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
     watch_parents(st);
     let now = env.now_ms;
     st.nudge_hold.retain(|_, t| *t > now);
+    let agents = &st.agents;
+    st.nudge_done_hold.retain(|c, h| h.until > now && agents.get(c).is_some_and(|a| a.last_output_ms <= h.activity_ms));
     let forget = lim("snooze_forget_ms");
     let agents = &st.agents;
     st.nudge_snooze.retain(|k, s| now < s.until.saturating_add(forget) && k.split_once('|').is_some_and(|(c, _)| agents.contains_key(c)));
