@@ -70,8 +70,10 @@ Texts, limits and patterns: `engine/defaults/afk.toml`.
 ## Plan auto-approve
 
 Claude only (`afk.planAutoApprove`, default on, effective only while AFK): a plan exit (`ExitPlanMode`) is approved by the hook
-when the main thread called the advisor after its last plan write and the last owner prompt; otherwise the normal approval prompt
-appears. Counters: `afk_plan_autoapproved`, `afk_plan_autoapprove_denied{reason}`.
+when the main thread called the advisor after its last plan write and the last owner prompt (ordered by sequence, not clock), the
+plan file still has the consulted content, and AFK is still on in the same period when re-checked. It fails closed: a clock
+rollback, a state read/write error, a changed plan or an AFK switch leaves the normal approval prompt. Counters:
+`afk_plan_autoapproved`, `afk_plan_autoapprove_denied{reason}`, `afk_plan_stamp_failed{field}`.
 
 ## Concise style
 
