@@ -20,18 +20,19 @@ var advisorKit = {
   },
   // The transcript this hook call belongs to: the main session's, or a subagent's own (payload field, else advisor.agent_transcript_tpl).
   // '' when a subagent's own transcript cannot be found: its rules then stay silent rather than read the main thread's.
-  // Claude Code keeps a subagent's transcript at <dir>/<session>/subagents/agent-<agent_id>.jsonl and writes `agentId` on its first
-  // line. In order: a payload field naming it, transcript_path when it already is that file, else the template from the main path.
-  // A file whose head names another agent is a mismatch: silent, never the main transcript credited to a subagent.
+  // A hook inside a subagent carries `agent_id` and the MAIN session's transcript_path (SubagentStop alone adds agent_transcript_path).
+  // Claude Code keeps the subagent's own transcript at <dir>/<session>/subagents/[<subdir>/]agent-<agent_id>.jsonl (workflow agents
+  // one level down, advisor.agent_subdirs) and writes `agentId` on its first line. In order: a payload field naming it, the template,
+  // then the subdirectories. A missing file or a head naming another agent is silent: the main transcript is never a subagent's.
   transcript: function (p) {
     var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
     if (typeof p.agent_id !== 'string' || p.agent_id === '') return tp;
     var own = '', keys = ah.cfg('advisor.agent_transcript_keys');
     for (var i = 0; i < keys.length && own === ''; i++) if (typeof p[keys[i]] === 'string' && p[keys[i]] !== '') own = p[keys[i]];
     var ext = ah.cfg('advisor.transcript_ext'), cut = tp.lastIndexOf('/');
-    if (own === '' && tp !== '' && ah.path.basename(tp) === text.render(ah.cfg('advisor.agent_file_tpl'), { agent: p.agent_id }) + ext) own = tp;
     if (own === '' && tp !== '' && cut >= 0 && tp.slice(-ext.length) === ext) {
       own = text.render(ah.cfg('advisor.agent_transcript_tpl'), { dir: tp.slice(0, cut), session: tp.slice(cut + 1, tp.length - ext.length), agent: p.agent_id });
+      if (!ah.fs.isFile(own)) own = advisorKit.inSubdirs(own, text.render(ah.cfg('advisor.agent_file_tpl'), { agent: p.agent_id }) + ext);
     }
     if (own === '' || !ah.fs.isFile(own)) { advisorKit.silence('no_agent_transcript'); return ''; }
     var head = ah.fs.readText(own, ah.cfgNum('advisor.agent_head_bytes'));
@@ -41,6 +42,24 @@ var advisorKit = {
       if (hit.slice(q + 1, hit.length - 1) !== p.agent_id) { advisorKit.silence('agent_mismatch'); return ''; }
     }
     return own;
+  },
+  // The agent's file one level below the subagents directory of `own` (advisor.agent_subdirs/<any>/<file>), else ''.
+  inSubdirs: function (own, file) {
+    var base = own.slice(0, own.lastIndexOf('/')), subs = ah.cfg('advisor.agent_subdirs');
+    for (var i = 0; i < subs.length; i++) {
+      var d = base + '/' + subs[i], kids = ah.fs.readdir(d);
+      if (!Array.isArray(kids)) continue;
+      for (var k = 0; k < kids.length; k++) if (ah.fs.isFile(d + '/' + kids[k] + '/' + file)) return d + '/' + kids[k] + '/' + file;
+    }
+    return '';
+  },
+  // Run `fn` holding this agent's state lock (advisor.lock_*), so the rules that share the state file (advisor-guard and the review
+  // rule in model-routing) never interleave a read-modify-write. `busy` is returned when the lock cannot be taken (fail open).
+  locked: function (p, fn, busy) {
+    var h = null;
+    try { h = ah.state.lock(advisorKit.stateRel(p) + ah.cfg('advisor.lock_suffix'), 'advisor'); } catch (e) { h = null; }
+    if (h === null) { advisorKit.silence('lock_busy'); return busy; }
+    try { return fn(); } finally { ah.state.unlock(h); }
   },
   // A rule stayed silent for `why` (a key of advisor.silence_metrics): counted, so "the agent never asks" can be told apart from
   // "anti-hall could not tell the advisor is there".
@@ -68,6 +87,8 @@ var advisorKit = {
     var tp = advisorKit.transcript(p);
     if (!tp || !ah.path.isAbsolute(tp)) return null;
     var tx = jx.isObj(st.tx) && st.tx.path === tp && typeof st.tx.pos === 'number' && typeof st.tx.full === 'boolean' ? st.tx : advisorKit.freshTx(tp);
+    // the same path rewritten (shorter or LONGER): its first bytes differ from the ones the fold started on, so start afresh
+    if (tx.pos >= 0 && typeof tx.head === 'string' && tx.head !== '' && ah.fs.readHeadHex(tp, tx.head.length / 2) !== tx.head) { tx = advisorKit.freshTx(tp); advisorKit.silence('rotated'); }
     var keep = [['type'], ['isMeta'], ['origin', 'kind'], ['timestamp'], ['message', 'model'], ['message', 'content'], ['message', 'content', '*', 'type'],
       ['message', 'content', '*', 'name'], ['message', 'content', '*', 'text']];
     var att = ah.cfg('advisor.attachment');
@@ -77,6 +98,7 @@ var advisorKit = {
     if (r !== null && r.shrunk === true) { tx = advisorKit.freshTx(tp); r = read(-1); }
     if (r === null || !Array.isArray(r.lines)) return null;
     if (tx.pos < 0) tx.full = r.start === 0;
+    if (typeof tx.head !== 'string' || tx.head === '') { var hh = ah.fs.readHeadHex(tp, ah.cfgNum('advisor.fingerprint_bytes')); tx.head = typeof hh === 'string' ? hh : ''; }
     else if (r.jumped === true) tx.full = false;
     var names = ah.cfg('advisor.tool_names'), types = ah.cfg('advisor.block_types'), results = ah.cfg('advisor.result_types');
     var flag = ah.cfg('advisor.flagship_model_re'), known = ah.cfg('advisor.known_model_re'), say = ah.cfg('advisor.say_do_re');

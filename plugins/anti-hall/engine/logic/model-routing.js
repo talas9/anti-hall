@@ -221,9 +221,12 @@ function mrAdvisorReview(p, model, omitted, description, subagentType, flagship)
     var tier = omitted ? mrInheritedTier(p) : model;
     if (omitted) { if (tier === null || ah.cfg('model_routing.flagship_models').indexOf(tier) >= 0) return null; }
     else if (flagship) return null;
-    var st = advisorKit.load(p), view = advisorKit.fold(p, st); // the per-agent fold the advisor-guard rules use: survives any window
-    var ok = advisorKit.present(p, view === null ? null : view.scan, view);
-    advisorKit.save(p, st);
+    var ok = advisorKit.locked(p, function () { // the per-agent fold the advisor-guard rules use, under the same state lock
+      var st = advisorKit.load(p), view = advisorKit.fold(p, st);
+      var has = advisorKit.present(p, view === null ? null : view.scan, view);
+      advisorKit.save(p, st);
+      return has;
+    }, false);
     if (!ok) return null;
     var key = typeof p.session_id === 'string' ? p.session_id : '';
     if (!advisorKit.gate('advisor.kind_review', p, key + '|' + (typeof p.agent_id === 'string' ? p.agent_id : '') + '|' + description)) return null;

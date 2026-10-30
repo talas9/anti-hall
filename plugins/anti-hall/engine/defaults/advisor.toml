@@ -328,7 +328,7 @@ min = 1024
 unit = "bytes"
 
 [advisor.agent_file_tpl]
-doc = "File name (without advisor.transcript_ext) of a subagent's own transcript. Placeholder: {agent}. A payload transcript_path with this name is used as is."
+doc = "File name (without advisor.transcript_ext) of a subagent's own transcript. Placeholder: {agent}."
 value = "agent-{agent}"
 
 [advisor.agent_head_bytes]
@@ -346,5 +346,59 @@ doc = "Advisory kind (counters) of why the advisor rules stayed silent or how av
 value = "advisor_availability"
 
 [advisor.silence_metrics]
-doc = "Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved)."
-value = { unknown = "silent_unknown", off = "silent_off", settings_only = "source_settings", model_unknown = "silent_model_unknown", no_agent_transcript = "silent_no_agent_transcript", agent_mismatch = "silent_agent_mismatch", state_unwritable = "allow_state_unwritable" }
+doc = "Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh)."
+value = { unknown = "silent_unknown", off = "silent_off", settings_only = "source_settings", model_unknown = "silent_model_unknown", no_agent_transcript = "silent_no_agent_transcript", agent_mismatch = "silent_agent_mismatch", state_unwritable = "allow_state_unwritable", lock_busy = "allow_lock_busy", rotated = "transcript_rewritten" }
+
+[advisor.agent_subdirs]
+doc = "Subdirectories of a session's subagents directory that hold one more directory level of agent transcripts (Claude Code puts workflow agents in subagents/workflows/<run>/agent-<id>.jsonl)."
+value = ["workflows"]
+
+[advisor.fingerprint_bytes]
+doc = "Bytes at the head of a transcript remembered with the read offset: when they change, the file was rewritten in place (shorter or longer) and the fold starts afresh."
+value = 256
+min = 16
+unit = "bytes"
+
+[advisor.lock_suffix]
+doc = "Suffix of the per-agent state lock that the advisor-guard rules and the review rule hold while they read, decide and save the shared state."
+value = ".lock"
+
+[advisor.lock_stale_ms]
+doc = "An advisor state lock older than this is taken over, whatever its holder."
+value = 5000
+unit = "ms"
+
+[advisor.lock_wait_ms]
+doc = "How long a rule waits for the advisor state lock before it allows unjudged (fail open, counted allow_lock_busy)."
+value = 2000
+unit = "ms"
+
+[advisor.lock_step_ms]
+doc = "The pause between attempts to take the advisor state lock."
+value = 5
+unit = "ms"
+
+[advisor.lock_reclaim_stale_ms]
+doc = "A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over."
+value = 5000
+unit = "ms"
+
+[advisor.lock_release_tries]
+doc = "How many times releasing the lock tries to take the takeover marker before it removes its own lock unguarded."
+value = 5
+min = 1
+max = 100
+
+[advisor.lock_release_step_ms]
+doc = "The pause between those release attempts."
+value = 10
+unit = "ms"
+min = 1
+max = 1000
+
+[advisor.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution)."
+value = 5
+unit = "s"
+min = 0
+max = 3600

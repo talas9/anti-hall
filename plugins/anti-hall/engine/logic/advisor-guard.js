@@ -130,6 +130,10 @@ function agStop(p) {
 
 function decide(p) {
   if (!jx.isObj(p) || ah.settings.skipped(ah.cfg('advisor.guard_name')) || advisorKit.stopping(p)) return 'allow';
+  return advisorKit.locked(p, function () { return agDecide(p); }, 'allow');
+}
+
+function agDecide(p) {
   var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
   var event = typeof p.hook_event_name === 'string' ? p.hook_event_name : '';
   if (event === 'Stop') return agStop(p);
