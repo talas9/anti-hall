@@ -101,6 +101,10 @@ function swSentences(t) {
 
 // The sentence with every inline code span blanked out to spaces (one per UTF-16 unit, so offsets index the original).
 function swMask(sentence) {
+  // double-backtick spans first (blanked to spaces, one per UTF-16 unit), then the single-tick spans
+  var dbl = swSpec('sibling_sweep.code_span_double_re', '');
+  var ms = ah.re.findAll(dbl.src, dbl.flags, sentence);
+  for (var q = 0; q < ms.length; q++) sentence = sentence.slice(0, ms[q][0]) + ' '.repeat(ms[q][1] - ms[q][0]) + sentence.slice(ms[q][1]);
   var tick = swChars(swCfg('sibling_sweep.code_span'))[0];
   if (tick === undefined) return sentence;
   // the parts between ticks alternate outside / inside a span; inside parts and the ticks themselves become spaces
@@ -129,19 +133,22 @@ function swFindCauseIn(prepared) {
   var operational = swSpec('sibling_sweep.operational_re', 'i'), attributed = swSpec('sibling_sweep.attributed_re', 'i');
   // the cause cues first, then the self-correction cues (the agent reports fixing its own typo or mistake): same guards, same hash
   var selfCues = swSpecs('sibling_sweep.self_correction_cues'), family = swCfg('sibling_sweep.self_correction_family');
-  var groups = [[cues, ''], [selfCues, family]];
+  var groups = [[cues, ''], [selfCues, family]], quoteSpec = swSpec('sibling_sweep.inline_quote_re', '');
   var ss = swSentences(prepared);
   for (var i = 0; i < ss.length; i++) {
     var sentence = ss[i][0], term = ss[i][1], masked = swMask(sentence);
     if ((term !== null && question.indexOf(term) >= 0) || swTest(meta, masked) || swTest(hedgeAny, masked)) continue;
     // an environment fact (lock file, load, disk) or a cause quoted from an agent's report is not the assistant's own code-bug finding
     if (swTest(operational, masked) || swTest(attributed, masked)) continue;
+    // the self-correction cues also ignore inline quotations (someone else's words)
+    var selfMasked = masked, qs = ah.re.findAll(quoteSpec.src, quoteSpec.flags, sentence);
+    for (var r = 0; r < qs.length; r++) selfMasked = selfMasked.slice(0, qs[r][0]) + ' '.repeat(qs[r][1] - qs[r][0]) + selfMasked.slice(qs[r][1]);
     for (var g = 0; g < groups.length; g++) {
-      var list = groups[g][0];
+      var list = groups[g][0], subject = groups[g][1] === '' ? masked : selfMasked;
       for (var k = 0; k < list.length; k++) {
-        var m = ah.re.find(list[k].src, list[k].flags, masked);
+        var m = ah.re.find(list[k].src, list[k].flags, subject);
         if (m === null || m === undefined) continue;
-        if (swTest(hedgeBefore, swTail(masked.slice(0, m[0]), windowChars))) continue;
+        if (swTest(hedgeBefore, swTail(subject.slice(0, m[0]), windowChars))) continue;
         var norm = swCollapse(sentence.trim()).toLowerCase();
         return { hash: ah.sha1(swHead(norm, swNum('sibling_sweep.hash_chars'))), pattern: swNamePattern(sentence, m[0]), family: groups[g][1] };
       }

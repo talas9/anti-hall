@@ -195,11 +195,11 @@ doc = "The label of the self-correction cue family (the agent reports fixing its
 value = "self_correction"
 
 [sibling_sweep.self_correction_cues]
-doc = "Regex sources, any of which is the agent reporting a correction of its own typo or mistake ('fixed a typo I made', 'found a mistake in my earlier edit', 'my mistake', 'should have been'). Matched like cause_cues (same hedge, negation, operational and attributed filters, same once-per-cause key, search evidence and per-scope cap) after fenced code, quoted lines and code spans are removed."
+doc = "Regex sources, any of which is the agent reporting a correction of its own typo or mistake ('fixed a typo I made', 'found a mistake in my earlier edit', 'my mistake', 'should have been'). Each cue needs a first-person word (I, me, my) so another person's correction is no statement; text inside inline_quote_re spans is ignored. Matched like cause_cues (same hedge, negation, operational and attributed filters, same once-per-cause key, search evidence and per-scope cap) after fenced code, quoted lines and code spans are removed."
 value = [
   '\b(?:fix(?:ed|ing)?|correct(?:ed|ing)?|repair(?:ed|ing)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e))\s+(?:a|an|the|my|one)\s+(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)\b[^.\n]{0,40}\b(?:i|my)\s+(?:made|introduced|wrote|added|left|earlier|previous|prior|own|last|edit|change|commit|patch|fix|code)\b',
   '\bmy\s+(?:own\s+)?(?:mistake|bad|fault|typo|slip(?:-?up)?|oversight)\b',
-  '\bshould\s+have\s+(?:been|said|read|used)\b',
+  '\b(?:i|me|my)\b[^.\n]{0,80}\bshould\s+have\s+(?:been|said|read|used)\b',
 ]
 
 [sibling_sweep.hedge_any_re]
@@ -223,8 +223,16 @@ doc = "Regex source of mentions of the root-cause machinery itself (the skill, t
 value = '\broot[- ]cause[- ](?:claim|attribution|statement|skill|nudge|guard|hook|protocol|discipline|playbook|analysis|investigation|check|rule|section|step|field|label|column|template|tracer|nudges)\b|anti-hall:root-cause|/root-cause|root-cause\.md|root_cause|\brca\b'
 
 [sibling_sweep.fence_re]
-doc = "Regex source of a fenced code block, which is removed before matching (code and logs are not statements)."
-value = '```[\s\S]*?```'
+doc = "Regex source of a fenced code block (backtick or tilde fence), which is removed before matching (code and logs are not statements)."
+value = '```[\s\S]*?```|~~~[\s\S]*?~~~'
+
+[sibling_sweep.code_span_double_re]
+doc = "Regex source of a double-backtick inline code span, which is blanked (with the single-backtick spans) before the cues are matched, so a phrase quoted inside one is no statement."
+value = '``.*?``'
+
+[sibling_sweep.inline_quote_re]
+doc = "Regex source of an inline quotation (straight or curly double quotes) that is blanked before the self_correction_cues are matched: someone else's words quoted in the reply are not the agent's own correction."
+value = '"[^"\n]{0,400}"|\u201c[^\u201d\n]{0,400}\u201d'
 
 [sibling_sweep.quote_line_re]
 doc = "Regex source of a quoted line (a Markdown quote), removed before matching."

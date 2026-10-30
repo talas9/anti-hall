@@ -1322,7 +1322,7 @@ mod sibling {
         "I fixed a typo I made in the config key.",
         "Found a mistake in my earlier edit and corrected it.",
         "My mistake: the flag name was wrong, fixed now.",
-        "The path should have been `src/lib.rs`, corrected.",
+        "I used the wrong path, which should have been `src/lib.rs`, corrected.",
     ];
 
     #[test]
@@ -1354,6 +1354,64 @@ mod sibling {
             let p2 = write(&d2, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
             assert_eq!(go(&d2, &stop(&d2, &p2, &text)), Verdict::Allow, "not a statement: {text}");
         }
+    }
+
+    fn bumped(name: &str, labels: &[(&str, &str)]) -> u64 {
+        crate::metrics::bumped_on_this_thread(name, labels)
+    }
+
+    #[test]
+    fn the_self_correction_counters_hold_the_right_values() {
+        let d = h("self-cnt");
+        let msg = SELF[0];
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        let (f0, s0, t0) = (
+            bumped("sibling_sweep_self_correction_fired", &[]),
+            bumped("sibling_sweep_self_correction_suppressed", &[("reason", "duplicate")]),
+            bumped("sibling_sweep_self_correction_followed_through", &[]),
+        );
+        assert!(is_adv(&go(&d, &stop(&d, &p, msg))));
+        assert_eq!(bumped("sibling_sweep_self_correction_fired", &[]), f0 + 1, "fired");
+        assert_eq!(go(&d, &stop(&d, &p, msg)), Verdict::Allow);
+        assert_eq!(bumped("sibling_sweep_self_correction_suppressed", &[("reason", "duplicate")]), s0 + 1, "suppressed");
+        let d3 = h("self-cnt-ft");
+        let p3 = write(&d3, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        assert!(is_adv(&go(&d3, &stop(&d3, &p3, msg))));
+        append(&p3, &[tool("Read", json!({})), result(), say("Looked.")]);
+        go(&d3, &continuation(&d3, &p3, "Looked."));
+        assert_eq!(bumped("sibling_sweep_self_correction_followed_through", &[]), t0, "an ignored reminder is not followed through");
+        let d4 = h("self-cnt-ft2");
+        let p4 = write(&d4, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        assert!(is_adv(&go(&d4, &stop(&d4, &p4, msg))));
+        append(&p4, &[tool("Grep", json!({"pattern": "x"})), result(), say("Searched: no other occurrences.")]);
+        go(&d4, &continuation(&d4, &p4, "Searched: no other occurrences."));
+        assert_eq!(bumped("sibling_sweep_self_correction_followed_through", &[]), t0 + 1, "followed through");
+        // the cause family never touches the self-correction counters
+        let d2 = h("self-cnt-cause");
+        fire(&d2, "t");
+        assert_eq!(bumped("sibling_sweep_self_correction_fired", &[]), f0 + 3, "only the self-correction reminders are counted");
+    }
+
+    #[test]
+    fn other_peoples_corrections_quoted_text_double_backtick_spans_and_tilde_fences_are_no_statement() {
+        let silent = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            assert_eq!(go(&d, &stop(&d, &p, text)), Verdict::Allow, "{tag}: {text}");
+        };
+        let loud = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            assert!(is_adv(&go(&d, &stop(&d, &p, text))), "{tag}: {text}");
+        };
+        silent("o1", "Alice fixed her mistake: the option should have been false.");
+        silent("o2", "The user wrote \"my mistake: config should have been lower-case\" in the ticket.");
+        loud("o2c", "The user wrote my mistake: config should have been lower-case in the ticket.");
+        loud("o3", "I got it wrong: the option should have been false.");
+        silent("o4", "The string ``the root cause was a stale cache`` is in the fix.");
+        loud("o4c", "The root cause was a stale cache, and the string is in the fix.");
+        silent("o5", "~~~\nThe root cause was a stale cache.\n~~~\nDone.");
+        loud("o5c", "The root cause was a stale cache. Fixed.");
     }
 
     #[test]
