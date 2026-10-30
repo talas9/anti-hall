@@ -2511,3 +2511,56 @@ fn unowned_heartbeat_drop_is_counted() {
     ticks(&h, &mut st, &[n, n + MIN]);
     assert!(drained().counter("agent_wake_dropped", &[("reason", "foreign_agent")]) >= 1, "the dropped row is counted with its reason");
 }
+
+/// PR #472 review P1: a BACKGROUND check's launch acknowledgment is no outcome: the check has not run yet. The launch is at most SOFT (an
+/// event of the burn episode); HARD credit comes only when its completion notice says it ended with success. An agent that keeps
+/// launching background checks never resets the burn.
+#[test]
+fn p1_a_background_check_is_hard_only_once_its_successful_completion_is_seen_pr472() {
+    let (h, p, marker, mut st, n) = burned("p1-472");
+    for k in 0..4u64 {
+        let t = n + (21 + k) * MIN;
+        let id = format!("c{k}");
+        append(
+            &p,
+            &[
+                tool(t, &format!("mc{k}"), 10, &id, "Bash", json!({"command": "npx tsc --noEmit", "run_in_background": true})),
+                result(t, &id, &format!("Command running in background with ID: bgc{k}"), false),
+            ],
+        );
+        ticks(&h, &mut st, &[t + MIN / 2]);
+        assert_eq!(agent(&st, "s1").progress, 0, "a background check launch is no hard outcome (launch {k})");
+        assert!(marker.exists(), "and lifts no pause (launch {k})");
+    }
+    // a failed completion adds nothing
+    append(&p, &[user_text(n + 26 * MIN, "<task-notification>\n<task-id>bgc0</task-id>\n<status>failed</status>\n</task-notification>")]);
+    ticks(&h, &mut st, &[n + 26 * MIN + MIN / 2]);
+    assert_eq!(agent(&st, "s1").progress, 0, "a failed background check is no outcome");
+    // a successful completion is the HARD outcome
+    append(&p, &[user_text(n + 27 * MIN, "<task-notification>\n<task-id>bgc1</task-id>\n<status>completed</status>\n</task-notification>")]);
+    ticks(&h, &mut st, &[n + 28 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > 0, "a background check that completed with success adds progress");
+    assert_eq!(a.reports, 0, "a background check's end is no subagent result");
+    assert!(crate::agents::signals::tokens_since_outcome(a, n + 28 * MIN) < 1_000_000, "the burn count restarts");
+    assert!(!marker.exists(), "the pause is lifted");
+}
+
+/// PR #472 review P2: shell writes to distinct quoted paths are distinct files: each first write is a HARD outcome (A1).
+#[test]
+fn p2_writes_to_distinct_quoted_paths_are_distinct_hard_outcomes_pr472() {
+    let (h, p, _marker, mut st, n) = burned("p2-472");
+    append(&p, &[tool(n + 21 * MIN, "m2", 10, "w1", "Bash", json!({"command": "printf 'x\\n' > \"out/first.txt\""})), result(n + 21 * MIN, "w1", "", false)]);
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    let first = agent(&st, "s1").progress;
+    assert!(first > 0, "the first quoted write is an outcome");
+    append(&p, &[tool(n + 23 * MIN, "m3", 10, "w2", "Bash", json!({"command": "printf 'y\\n' > 'out/second.txt'"})), result(n + 23 * MIN, "w2", "", false)]);
+    ticks(&h, &mut st, &[n + 24 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > first, "a write to a second distinct quoted path is a new hard outcome");
+    assert!(a.files.iter().any(|f| f == "out/first.txt") && a.files.iter().any(|f| f == "out/second.txt"), "the real paths are kept: {:?}", a.files);
+    // quoted text that is no redirect target still names no file
+    append(&p, &[tool(n + 25 * MIN, "m4", 10, "w3", "Bash", json!({"command": "echo \"a > b.txt\""})), result(n + 25 * MIN, "w3", "", false)]);
+    ticks(&h, &mut st, &[n + 26 * MIN]);
+    assert!(!agent(&st, "s1").files.iter().any(|f| f.contains("b.txt")), "a `>` inside quotes is no write");
+}

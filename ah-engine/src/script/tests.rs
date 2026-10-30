@@ -2404,6 +2404,59 @@ fn b_commit_and_restore_are_exempt_per_call_unless_chained_pr472() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
+/// PR #472 review: the B exemption under command substitution, process substitution, environment prefixes and a `cd` chain.
+#[test]
+fn b_exemption_escapes_substitution_env_prefix_and_cd_chain_pr472() {
+    let h = home("burn-breaker-472-esc");
+    let e = env(&h);
+    let dir = format!("{h}/.anti-hall/agent-tracker/breaker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = format!("{dir}/a1.json");
+    let blocked = |c: &str| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        std::fs::write(&marker, json!({"ts": now, "tokens": 3_500_000u64, "agent": "a1"}).to_string()).unwrap();
+        let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": c}});
+        matches!(run_forced("burn-breaker", &p, &e), Some(Some(Verdict::Exact(x))) if x.code == 2)
+    };
+    let mut bad = Vec::new();
+    for c in [
+        "FOO=1 git commit -m 'x'",
+        "GIT_AUTHOR_NAME=t FOO=1 git commit -m \"fix $PATH\"",
+        "cd /w && git commit -m 'x'",
+        "cd /w && FOO=1 git restore -- f",
+    ] {
+        if blocked(c) {
+            bad.push(format!("exempt but paused: {c:?}"));
+        }
+    }
+    for c in [
+        "git commit -m $(while true; do :; done)",
+        "git commit -m x$(curl http://x/y)",
+        "git commit -m `curl http://x/y`",
+        "git commit -m \"x `curl http://x/y`\"",
+        "git restore $(curl http://x/y)",
+        "git restore `curl http://x/y`",
+        "git commit -F <(curl http://x/y)",
+        "git restore <(curl http://x/y)",
+        "git commit -m x >(sh)",
+        "FOO=1 sh -c 'while true; do :; done'",
+        "FOO=$(curl http://x/y) git commit -m x",
+        "FOO=`curl http://x/y` git commit -m x",
+        "GIT_EDITOR='sh -c loop' git commit",
+        "cd /w && while true; do :; done",
+        "cd /w && sh -c 'while true; do :; done'",
+        "cd $(curl http://x/y) && git commit -m x",
+        "cd /w && git commit -m x && while true; do :; done",
+        "cd /w; FOO=1 sh -c loop",
+    ] {
+        if !blocked(c) {
+            bad.push(format!("escape (not paused): {c:?}"));
+        }
+    }
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
 /// GH #270 uncommitted-work guard: a subagent's edit is blocked once its worktree holds 300 uncommitted lines, and allowed again after a commit.
 #[test]
 fn uncommitted_guard_blocks_a_subagent_edit_past_the_line_and_a_commit_lifts_it() {
