@@ -305,3 +305,24 @@ value = "- {id}: {what}"
 [guard_rules.area]
 doc = "The key of the feature area (roles.groups) whose skill lists the rules."
 value = "rules"
+
+[guard_rules.blocks_limit]
+doc = "How many recorded blocks the banner and summary read at most."
+value = 2000
+min = 1
+
+[guard_rules.manifest_files]
+doc = "The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it)."
+value = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]
+
+[guard_rules.summary]
+doc = "One-line description of the rule-digest check in the generated reference."
+value = "SessionStart: puts the essential rules the engine enforces (one source with the engine-rules skill) into the session context; context.ruleDigest turns it off."
+
+[guard_rules.summary_banner]
+doc = "One-line description of the session-banner check in the generated reference."
+value = "SessionStart: one user-visible line with the plugin version, the rules enforced and last session's blocks; ui.banner turns it off."
+
+[guard_rules.summary_session]
+doc = "One-line description of the session-summary check in the generated reference."
+value = "SessionEnd: one user-visible line with this session's blocks and the rules that fired most; ui.sessionSummary = off turns it off."

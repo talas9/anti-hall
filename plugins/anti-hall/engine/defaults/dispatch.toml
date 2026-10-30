@@ -203,7 +203,7 @@ max = 1000
 
 [dispatch.context_priority]
 doc = "Per hook entry id (a variant suffix after ':' or '#' takes its base name's row), the priority of its additionalContext in the combined output of an event that cannot block: protocol and role text and the reminders an agent must act on are pinned (>= dispatch.context_pin_priority), housekeeping notices are lowest. Blocks and decisions are not contexts and are never spilled."
-value = { "verify-first" = 95, "verify-first-full" = 95, "verify-first-orch" = 90, "verify-first-orch-codex" = 90, "verify-first-subagent" = 95, "devswarm-child-role" = 90, "engine-role-note" = 85, "handover-resume" = 90, "auto-handover" = 90, "task-tracker" = 85, "devswarm-parent-inbox" = 85, "devswarm-child-turn" = 85, "devswarm-rt-advisory" = 80, "agent-reminders" = 80, "limit-conserve-inject" = 70, "version-alert" = 60, "switch-notice" = 60, "defect-nudge" = 40, "handover-hygiene" = 30, "procwatch-advisory" = 30, "gh-rt-advisory" = 30, "repo-self-drift" = 30, "fable-availability" = 25, "codex-availability" = 25, "devswarm-version" = 25, "claude-cli-version" = 25, "jev-review-reminder" = 20, "jev-weekly-scorecard" = 10 }
+value = { "rule-digest" = 93, "verify-first" = 95, "verify-first-full" = 95, "verify-first-orch" = 90, "verify-first-orch-codex" = 90, "verify-first-subagent" = 95, "devswarm-child-role" = 90, "engine-role-note" = 85, "handover-resume" = 90, "auto-handover" = 90, "task-tracker" = 85, "devswarm-parent-inbox" = 85, "devswarm-child-turn" = 85, "devswarm-rt-advisory" = 80, "agent-reminders" = 80, "limit-conserve-inject" = 70, "version-alert" = 60, "switch-notice" = 60, "defect-nudge" = 40, "handover-hygiene" = 30, "procwatch-advisory" = 30, "gh-rt-advisory" = 30, "repo-self-drift" = 30, "fable-availability" = 25, "codex-availability" = 25, "devswarm-version" = 25, "claude-cli-version" = 25, "jev-review-reminder" = 20, "jev-weekly-scorecard" = 10 }
 
 [dispatch.spill_label]
 doc = "Telemetry label (kind spill, status delivery.spills_by_event) of an over-cap spill whose file holds only context below dispatch.context_pin_priority."
@@ -520,6 +520,8 @@ value = [
 doc = "The claude SessionStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-full", matcher = "", timeout = 10, check = "verify-first-full" },
+  { id = "rule-digest", matcher = "", timeout = 10, check = "rule-digest" },
+  { id = "session-banner", matcher = "", timeout = 10, check = "session-banner" },
   { id = "verify-first-orch:host=claude", matcher = "", timeout = 10, check = "verify-first-orch" },
   { id = "devswarm-child-role", matcher = "", timeout = 10, check = "devswarm-child-role" },
   { id = "version-alert", matcher = "", timeout = 10, check = "version-alert" },
@@ -631,6 +633,7 @@ value = [
 doc = "The claude SessionEnd hook entries, in dispatch order."
 value = [
   { id = "session-end-mcp-reaper", matcher = "", timeout = 5, check = "session-end-mcp-reaper" },
+  { id = "session-summary", matcher = "", timeout = 5, check = "session-summary" },
 ]
 
 # ---- codex ----
@@ -639,6 +642,8 @@ value = [
 doc = "The codex SessionStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-full", matcher = "", timeout = 10, check = "verify-first-full" },
+  { id = "rule-digest", matcher = "", timeout = 10, check = "rule-digest" },
+  { id = "session-banner", matcher = "", timeout = 10, check = "session-banner" },
   { id = "verify-first-orch", matcher = "", timeout = 10, check = "verify-first-orch-codex" },
   { id = "devswarm-child-role", matcher = "", timeout = 10, check = "devswarm-child-role" },
   { id = "version-alert", matcher = "", timeout = 10, check = "version-alert" },

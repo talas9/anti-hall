@@ -1155,6 +1155,8 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("advisory", Function::new(c.clone(), |kind: String, metric: String| crate::obs::counters::advisory(&kind, &metric))?)?;
     // add `by` to the registered counter `name` with the labels of the JSON object `labels` (an unregistered name is ignored)
     h.set("metric", Function::new(c.clone(), |name: String, labels: String, by: f64| metric_add(&name, &labels, by))?)?;
+    // the recorded guard blocks of one session and of the latest other session, as JSON (`ui.banner`, `ui.sessionSummary`)
+    h.set("sessionBlocks", Function::new(c.clone(), |session: String| session_blocks(&session))?)?;
     h.set("log", Function::new(c.clone(), |kind: String, text: String| crate::discard::note("script_log", &format!("{kind}: {text}")))?)?;
     h.set("deadlineLeftMs", Function::new(c.clone(), deadline_left_ms)?)?;
     h.set("realpathEx", Function::new(c.clone(), |p: String| realpath_ex(&p))?)?;
@@ -1219,4 +1221,30 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     super::host_transcript::install(c, &h)?;
     c.globals().set("ahHost", h)?;
     Ok(())
+}
+
+
+/// `{"current": n, "top": [[rule, n], ..], "last": n}`: blocks recorded for `session`, its most frequent rules, and the block
+/// count of the most recent other session in the look-back window (`guard_rules.blocks_window_days`). Empty counts when the
+/// telemetry store cannot be opened.
+fn session_blocks(session: &str) -> String {
+    let days = defaults::num("guard_rules.blocks_window_days");
+    let since = crate::health::now_ms().saturating_sub(days.saturating_mul(defaults::num("web.query_day_ms")));
+    let rows = crate::telemetry::cli::open_existing().map(|t| t.blocks(since, defaults::num("guard_rules.blocks_limit") as usize)).unwrap_or_default();
+    let mut per_rule: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let (mut current, mut other_session, mut last) = (0u64, String::new(), 0u64);
+    for b in rows.iter().filter(|b| !b.session.is_empty()) {
+        if b.session == session {
+            current += 1;
+            *per_rule.entry(b.rule.clone()).or_insert(0) += 1;
+        } else if other_session.is_empty() {
+            other_session = b.session.clone(); // rows are newest first: the first other session is the most recent
+        }
+        if !other_session.is_empty() && b.session == other_session {
+            last += 1;
+        }
+    }
+    let mut top: Vec<(String, u64)> = per_rule.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    serde_json::json!({"current": current, "top": top, "last": last}).to_string()
 }

@@ -59,6 +59,8 @@ var ah = {
     } catch (e) { /* telemetry only */ }
   },
   // One advisory event of `kind` (flagged, asked, confirmed, injected, suppressed, jev_error) under `metric`; a lost count never changes a decision.
+  // {current, top: [[rule, n]..], last}: recorded guard blocks of the session, its most frequent rules, and the latest other session's count.
+  sessionBlocks: function (sid) { try { return JSON.parse(ahHost.sessionBlocks(sid)); } catch (e) { return { current: 0, top: [], last: 0 }; } },
   advisory: function (kind, metric) { try { ahHost.advisory(kind, metric); } catch (e) { /* telemetry only */ } },
   // The hook's own environment (the request's, never the daemon's); null when a variable is unset.
   env: {
