@@ -252,6 +252,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("claim_evidence.reach_") && k != "claim_evidence.reach_label" // each suppress row names its reach by key (claim_evidence.suppress reach)
             || k.starts_with("devswarm_sup.duty.") // the supervisor duties, read by name from the ordered list devswarm_sup.duties
             || k.starts_with("devswarm_sup.set_") // Node settings entries, named by the duty that uses them (the duty's `sec` / `mode` fields)
+            || ah_engine::skillgen::rules().iter().any(|r| r.source.split_once('.').is_some_and(|(s, n)| *k == format!("{s}.{}", n.replacen("what", "digest", 1)))) // the digest field beside a rule's split message entry (skillgen::digest_field)
     };
     let read = |k: &String| {
         let (section, name) = k.split_once('.').unwrap_or(("", k));

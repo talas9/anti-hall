@@ -3567,8 +3567,9 @@ fn run_as(name: &str, event: &str, sid: &str, host: &str, pairs: &[(&str, &str)]
 
 /// The digest field of an essential rule's message entry for `host` (#462): a string, or a table by host.
 fn digest_of(source: &str, host: &str) -> String {
-    let v = defaults::raw(source).get("digest").unwrap_or_else(|| panic!("{source} has no digest field"));
-    v.as_str().or_else(|| v.get(host).and_then(|x| x.as_str())).unwrap_or_else(|| panic!("{source} digest has no {host} text")).to_string()
+    let d = crate::skillgen::digest_field(source, host);
+    assert!(!d.is_empty(), "{source} has no digest field for {host}");
+    d
 }
 
 #[test]

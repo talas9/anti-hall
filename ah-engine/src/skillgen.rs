@@ -283,12 +283,15 @@ pub fn digest_file() -> String {
 }
 
 /// The generated digest file of `host`: the essential lines (the injected part), the separator, one extra line per other listed
-/// rule (tier skill), the separator, then each essential rule's full enforced text, which the session never reads but which makes
-/// the committed digest stale when an enforced message changes, so its digest line is reviewed with it.
+/// rule (tier skill) except those `guard_rules.digest_host_skip` names for the host, the separator, then (default host only) each
+/// essential rule's full enforced text, which the session never reads but which makes the committed digest stale when an enforced
+/// message changes, so its digest line is reviewed with it.
 pub fn digest_file_for(host: &str) -> String {
     let mut ess = Vec::new();
     let mut extra = Vec::new();
     let mut src = Vec::new();
+    let default_host = host == defaults::text("dispatch.default_host");
+    let skip = defaults::raw("guard_rules.digest_host_skip").get(host).map(|v| v.strings()).unwrap_or_default();
     for r in rules() {
         if r.tier == "essential" {
             let line = digest_entry(r.source, host);
@@ -297,8 +300,10 @@ pub fn digest_file_for(host: &str) -> String {
             }
             let (what, why, instead) = rule_parts(r.source);
             let full = defaults::render("guard_rules.source_line", &[("id", &r.id), ("what", &what), ("why", &why), ("instead", &instead)]);
-            src.push(full.split_whitespace().collect::<Vec<_>>().join(" "));
-        } else if r.tier != "off" {
+            if default_host {
+                src.push(full.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+        } else if r.tier != "off" && !skip.iter().any(|p| r.id.starts_with(p)) {
             let (what, _, _) = rule_parts(r.source);
             if !what.is_empty() {
                 extra.push(defaults::render("guard_rules.extra_line", &[("id", &r.id), ("what", &what)]));

@@ -313,6 +313,10 @@ value = "engine/rule-digest.codex.txt"
 doc = "The hosts a digest is generated for, each from the host's own digest text (a `digest` table by host, or one string for all)."
 value = ["claude", "codex"]
 
+[guard_rules.digest_host_skip]
+doc = "Rule id prefixes left out of a host's extra digest lines (tier skill) because the host does not run them: the model-routing guard stands down on Codex (logic/lib/81-standdown.js), and its texts name Claude models."
+value = { codex = ["model_routing."] }
+
 [guard_rules.source_line]
 doc = "One line of the generated digest file's third section (after the second separator): an essential rule's full enforced text. The session script never reads it; it is there so an edit of the enforced message makes the committed digest stale (`ah-regen --check`) and the digest line is reviewed with it. Placeholders: {id}, {what}, {why}, {instead}."
 value = "- {id}: {what} {why} {instead}"
