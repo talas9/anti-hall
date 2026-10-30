@@ -865,7 +865,7 @@ value = "anti-hall: this push was not checked for AI credit lines (git could not
 
 [git.push_same_call_subs]
 doc = "Subcommands whose message the same-call check reads: with a push in the same Bash call, one whose message layer 1 cannot read is refused (msg_push_same_call)."
-value = ["commit", "commit-tree", "tag", "merge"]
+value = ["commit", "commit-tree", "tag", "merge", "revert", "rebase"]
 
 [git.push_same_call_always]
 doc = "Subcommands that write a commit message layer 1 never reads (a patch, a copied commit); with a push in the same Bash call they are refused."
@@ -873,11 +873,23 @@ value = ["am", "cherry-pick"]
 
 [git.push_same_call_need_message]
 doc = "Subcommands of push_same_call_subs that open an editor or reuse a message without a literal -m (or -F - fed by a quoted heredoc): with none, the message counts as unread."
-value = ["commit"]
+value = ["commit", "merge", "revert"]
 
 [git.push_same_call_opts]
 doc = "Regular expressions (JavaScript syntax) for options that take the message from somewhere layer 1 does not read (a reused or edited commit, a template, an editor: -e or --edit); any one makes the message unread. A short-flag cluster ending in m (-em) is matched on its flags before the m."
-value = ["^-[A-Za-z]*[Ccte]", "^--(?:reuse-message|reedit-message|template|edit)(?:=|$)"]
+value = ["^-[A-Za-z]*[Ccte]", "^--(?:reuse-message|reedit-message|template|edit|continue)(?:=|$)"]
+
+[git.push_same_call_no_commit_opts]
+doc = "Regular expressions (JavaScript syntax) for options with which a subcommand of push_same_call_subs writes no commit of its own (an aborted, skipped or fast-forward-only merge, rebase or revert): the same-call check lets it through."
+value = ["^--(?:abort|quit|skip|ff-only|squash|no-commit)$"]
+
+[git.push_same_call_no_edit_subs]
+doc = "Subcommands of push_same_call_need_message whose message git writes itself when push_same_call_no_edit_opt is given (a revert's own subject line): that option counts as a read message."
+value = ["revert"]
+
+[git.push_same_call_no_edit_opt]
+doc = "The option that makes git write the message of a push_same_call_no_edit_subs subcommand itself, with no editor and no prepared message."
+value = "--no-edit"
 
 [git.push_same_call_quoted_heredoc]
 doc = "Regular expression (JavaScript syntax) for a quoted heredoc on the commit's own command: -F - fed by one is read by layer 1 (its body never expands)."
@@ -890,6 +902,24 @@ value = "<<<"
 [git.msg_push_same_call]
 doc = "Block: one Bash call creates a commit whose message layer 1 cannot read and pushes. Placeholder: {sub} (the subcommand)."
 value = { what = "this call creates a commit whose message the guard cannot read (git {sub}) and pushes in the same call.", why = "A credit line in that message would be published before any check could see it, and a published commit cannot be reworded without a force push.", instead = "split it: commit in one call, push in a separate call (the push is checked on what git stored)." }
+
+[git.script_run_verbs]
+doc = "Commands whose first argument is a script file run in the current shell (source, .); the file is scanned like a script run by path (msg_script_credit)."
+value = ["source", "."]
+
+[git.script_scan_max_bytes]
+doc = "Largest script (in bytes) a Bash call runs by literal path (bash x.sh, sh x.sh, ./x.sh, source x) that is read and scanned for AI credit lines and a same-call commit and push; a larger, missing or non-literal one is let through with script_unchecked_advisory."
+value = 262144
+min = 1024
+max = 16777216
+
+[git.msg_script_credit]
+doc = "Block: a Bash call runs a script whose text carries an AI credit line. Placeholders: {file} (the script path), {line} (the first line with the credit)."
+value = { what = "this call runs {file}, whose line {line} carries an AI credit line.", why = "The script would commit or publish that line before any check could see the stored message.", instead = "remove the credit line from {file} and run it again; credit lines never go into commits, pushes or PR text." }
+
+[git.script_unchecked_advisory]
+doc = "Advisory when a script a Bash call runs by path could not be read (missing, over script_scan_max_bytes, or not a literal path): it is let through unchecked. Placeholder: {file}."
+value = "anti-hall: the script {file} was not checked for AI credit lines (missing, too large or not a literal path); check it yourself before it commits or pushes."
 
 [git.push_max_commits]
 doc = "Most unpushed local commits (on any ref, pushed or not by this push) the pre-push credit check reads; more is refused (msg_push_over_cap), never allowed unread."

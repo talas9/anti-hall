@@ -73,6 +73,10 @@ function gitBuildTables() {
   t.sameCallAlways = set(c('push_same_call_always'));
   t.sameCallNeedMsg = set(c('push_same_call_need_message'));
   t.sameCallOpts = c('push_same_call_opts').map((p) => new RegExp(p));
+  t.sameCallNoCommitOpts = c('push_same_call_no_commit_opts').map((p) => new RegExp(p));
+  t.sameCallNoEditSubs = set(c('push_same_call_no_edit_subs'));
+  t.sameCallNoEditOpt = c('push_same_call_no_edit_opt');
+  t.scriptRunVerbs = set(c('script_run_verbs'));
   t.sameCallHeredoc = new RegExp(c('push_same_call_quoted_heredoc'));
   t.sameCallHereString = new RegExp(c('push_same_call_here_string'));
   t.trailerKeys = c('self_credit_trailer_keys');
@@ -106,7 +110,7 @@ function gitFreshState(raw, cwd, session) {
     launcherFsBudget: ah.cfg('git.budget_launcher_fs'), launcherCmdText: '',
     handoverQueryBudget: ah.cfg('git.budget_handover_queries'), handoverSkipped: 0, handoverEvalBudget: ah.cfg('git.budget_handover_evals'),
     handoverQueryCache: new Map(), handoverAdds: [], handoverOn: null,
-    keyOf: new Map(), pushChecks: new Map(), pushUnchecked: false, creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
+    keyOf: new Map(), pushChecks: new Map(), pushUnchecked: false, scriptUnchecked: null, creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
     quotedLiteralsCache: null, stdinCandidateCache: null, hdOn: null, aliasOn: null, reuseOn: null,
     gitCache: new Map(), aliasCache: new Map(), shellDefsCache: new Map(), depthGuard: 0,
   };
@@ -385,7 +389,7 @@ function effectiveVerb(tokens) {
   if (idx >= tokens.length) return null;
   const verbTok = tokens[idx];
   if (verbTok.quotedOnly) return null; // a fully-quoted token is data, not a verb
-  return { verb: shellScan.basename(verbTok.text), args: tokens.slice(idx + 1) };
+  return { verb: shellScan.basename(verbTok.text), args: tokens.slice(idx + 1), verbTok: verbTok };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2189,6 +2193,8 @@ function unreadCommitMessage(ev, sub, rest, dir, seg) {
   for (let i = 0; i < rest.length; i++) {
     const w = rest[i].text;
     if (w === '--' ) break;
+    if (TB.sameCallNoCommitOpts.some((re) => re.test(w))) return null;
+    if (w === TB.sameCallNoEditOpt && TB.sameCallNoEditSubs.has(sub)) { msg = true; continue; }
     const mc = /^-([A-Za-z]*)m/.exec(w);
     if (mc && mc[1] && TB.sameCallOpts.some((re) => re.test('-' + mc[1]))) return sub;
     if (w === '--message' || /^-[A-Za-z]*m$/.test(w)) { msg = true; i++; continue; }
@@ -2231,6 +2237,46 @@ function pushPrepass(cmd, cwd) {
   }
   if (unread.length) return gmKey('msg_push_same_call', { sub: unread[0] });
   return null;
+}
+
+// PR #469: a script a call runs by literal path (bash x.sh, ./x.sh, source x) is read and scanned like a commit message: a
+// credit line on any line is refused (naming the file and line), and so is a commit whose message layer 1 cannot read together
+// with a push in it, as in one call. A missing, oversized or non-literal path is let through with an advisory.
+function scriptFileVerdict(tok, cdDir, byPath) {
+  if (!tok) return null;
+  const raw = tok.raw !== undefined ? tok.raw : tok.text;
+  if (/[$`*?[]/.test(raw) || !tok.text) { S.scriptUnchecked = tok.text || raw; return null; }
+  const path = normalizeGuardPath(tok.text, cdDir || S.procCwd);
+  const size = ah.fs.size(path);
+  // the host reads at most script.read_max_bytes: a larger cap would scan a cut-off script
+  const cap = Math.min(ah.cfgNum('git.script_scan_max_bytes'), ah.cfgNum('script.read_max_bytes'));
+  const body = size === null || size > cap ? null : ah.fs.readText(path, cap);
+  if (body === null) {
+    // a program run by path that is no script (a binary over the cap) is not reported
+    const head = size !== null && byPath ? ah.fs.readText(path, 2) : '#!';
+    if (head === '#!') S.scriptUnchecked = tok.text;
+    return null;
+  }
+  if (hasSelfCredit(body)) {
+    const lines = body.split('\n');
+    let line = lines.findIndex((l) => hasSelfCredit(l));
+    return gmKey('msg_script_credit', { file: tok.text, line: line < 0 ? 1 : line + 1 });
+  }
+  if (!gitSettingOn('git.setting_push_credit')) return null;
+  let pushes = 0;
+  const unread = [];
+  try {
+    forEachGitCommand(body, cdDir || S.procCwd, 0, (ev, sub, rest, dir, seg) => {
+      if (sub === null) return;
+      if (sub === 'push') { pushes++; return; }
+      const u = unreadCommitMessage(ev, sub, rest, dir, seg);
+      if (u) unread.push(u);
+    });
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    return null;
+  }
+  return pushes && unread.length ? gmKey('msg_push_same_call', { sub: unread[0] }) : null;
 }
 
 function handoverCommitVerdict(ev, lastCdDir) {
@@ -2703,8 +2749,17 @@ function scanCommand(cmd, depth, baseCwd) {
         } else if (shellScriptIsInput(tokens, [])) {
           const sv = stdinScriptVerdict(cmd, d, lastCdDir);
           if (sv) return sv;
+        } else {
+          const fv = scriptFileVerdict(ev.args.find((t) => !t.text.startsWith('-')), lastCdDir, false);
+          if (fv) return fv;
         }
       }
+      continue;
+    }
+
+    if (TB.scriptRunVerbs.has(ev.verb)) {
+      const fv = scriptFileVerdict(ev.args.find((t) => !t.text.startsWith('-')), lastCdDir, false);
+      if (fv) return fv;
       continue;
     }
 
@@ -2730,7 +2785,13 @@ function scanCommand(cmd, depth, baseCwd) {
       continue;
     }
 
-    if (ev.verb !== 'git') continue;
+    if (ev.verb !== 'git') {
+      if (ev.verbTok && ev.verbTok.text.indexOf('/') !== -1) {
+        const fv = scriptFileVerdict(ev.verbTok, lastCdDir, true);
+        if (fv) return fv;
+      }
+      continue;
+    }
 
     const gv = gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
     if (gv) return gv;
@@ -3102,6 +3163,7 @@ function decideScan(p, opts, event) {
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
   const notes = [];
   if (S.pushUnchecked) notes.push(ah.cfg('git.push_unchecked_advisory'));
+  if (S.scriptUnchecked !== null) notes.push(text.render(ah.cfg('git.script_unchecked_advisory'), { file: S.scriptUnchecked }));
   if (S.pushAckNote) notes.push(S.pushAckNote);
   if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
   if (notes.length) {
