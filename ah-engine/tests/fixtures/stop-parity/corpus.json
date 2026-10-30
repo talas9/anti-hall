@@ -342,6 +342,13 @@
    "progress": "none",
    "node": {
     "task-guard": "allow"
+   },
+   "kept": {
+    "task-guard": {
+     "engine": "advise",
+     "contains": "owner liveness is unknown",
+     "reason": "the owner names a background agent the transcript shows launched (Node's running-owner evidence: a valid agentId and no completion), and Node counts that as attended and allows; the engine takes liveness from the agent tracker only (#317: count only live agents), finds no tracker record in the isolated HOME, so it advises (task_guard.unresolved_owner_advisory) instead of allowing silently; non-blocking either way, and a launch the tracker shows live is allowed like Node"
+    }
    }
   },
   {
@@ -1803,7 +1810,7 @@
    "kept": {
     "task-guard": {
      "engine": "allow",
-     "reason": "TBD"
+     "reason": "no prune advisory was shown this session, so the engine does not block (logic/task-guard.js tgEnforce needs one); Node's difference is a stderr line at exit 0, which a Stop hook never shows the model (comment at logic/task-guard.js:375), so neither side puts it in front of the model; tg-many-completed-prune-advised covers the shown case"
     }
    }
   },
@@ -2544,8 +2551,8 @@
    "kept": {
     "task-guard": {
      "engine": "block",
-     "contains": "TBD",
-     "reason": "TBD"
+     "contains": "still listed: log them in the history ledger",
+     "reason": "after the prune advisory was shown and ignored, the engine makes a capped Stop block (task_guard.prune_block_setting, prune_block_max_setting) where Node only repeats the stderr line the model never sees: stronger than Node"
     }
    },
    "advisories_shown": [
@@ -3941,7 +3948,7 @@
    "kept": {
     "tasklist-guard": {
      "engine": "allow",
-     "reason": "tasklist_guard.integration_skip_setting (#420, closed; dogfood ISSUES 2026-10-29 x2): merge, cherry-pick, checkout and switch only integrate worker commits; added 2026-10-29, after the Oct 22-24 shadow window, so it explains none of that window"
+     "reason": "tasklist_guard.integration_skip_setting (#420): a session whose only file-changing actions are merge, cherry-pick, checkout and switch integrates worker commits and needs no task list; added 2026-10-29, after the Oct 22-24 shadow window"
     }
    }
   },
