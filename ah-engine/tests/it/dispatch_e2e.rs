@@ -1341,14 +1341,62 @@ fn the_git_inline_depth_comes_from_the_plugin_config() {
     let (code, out, err) = e.run_with(&args, true, &p, true, &env);
     assert_eq!(code, 2, "shipped git.inline_depth follows the inline shell: out={out} err={err}");
     assert!(err.contains("force push"), "{err}");
+    // the setting is read from the plugin file: raising it there is honoured (a four-shell-deep push is followed only then)
+    let deep = bash(INLINE_PUSH_DEEP, &e.dir);
+    let (code, _, err) = e.run_with(&args, true, &deep, true, &env);
+    assert_eq!(code, 0, "shipped depth does not follow four shells down: {err}");
     for dir in ["engine/defaults", "engine/defaults.pristine"] {
         let f = plugin.join(dir).join("git.toml");
         let text = std::fs::read_to_string(&f).unwrap();
         let at = text.find("[git.inline_depth]").unwrap();
         let v = at + text[at..].find("value = 3").unwrap();
-        std::fs::write(&f, format!("{}value = 0{}", &text[..v], &text[v + "value = 3".len()..])).unwrap();
+        std::fs::write(&f, format!("{}value = 5{}", &text[..v], &text[v + "value = 3".len()..])).unwrap();
     }
-    let (code, out, err) = e.run_with(&args, true, &p, true, &env);
-    assert_eq!(code, 0, "git.inline_depth = 0: the edited setting loads and the inline shell is not followed: out={out} err={err}");
-    assert!(!err.contains("force push"), "git.inline_depth = 0: the inline shell is not followed: code={code} out={out} err={err}");
+    let (code, out, err) = e.run_with(&args, true, &deep, true, &env);
+    assert_eq!(code, 2, "git.inline_depth = 5 in the plugin follows it: out={out} err={err}");
+}
+
+const INLINE_PUSH: &str = "bash -c 'git push --force origin main'";
+const INLINE_PUSH_DEEP: &str = r#"bash -c "bash -c \"bash -c 'bash -c \\\"git push --force origin main\\\"'\"""#;
+const LAUNCHER_WRITE: &str = r#"A="$HOME/.anti-hall/bin/ah-hook"; B="$A"; printf x > "$B""#;
+const LAUNCHER_WRITE_LONG: &str = r#"A="$HOME/.anti-hall/bin/ah-hook"; B="$A"; C="$B"; D="$C"; E="$D"; F="$E"; printf x > "$F""#;
+
+/// One Bash command through the merge-gate context with `config` as the state directory's config.toml: (exit code, stderr).
+fn git_cfg_run(name: &str, config: &str, cmd: &str) -> (i32, String) {
+    let e = Env::new(name);
+    let plugin = e.dir.join("plugin");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    copy_tree(&src.join("engine"), &plugin.join("engine"));
+    if !config.is_empty() {
+        std::fs::create_dir_all(e.state()).unwrap();
+        std::fs::write(e.state().join("config.toml"), config).unwrap();
+    }
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let root = plugin.to_string_lossy().to_string();
+    let env = [("AH_ENGINE_PLUGIN_ROOT", root.as_str()), ("AH_ENGINE_NOSPAWN", "1")];
+    let (code, _out, err) = e.run_with(&args, true, &bash(cmd, &e.dir), true, &env);
+    (code, err)
+}
+
+/// A security scan's depth is bounded below by the plugin's own `min` (the pre-config literal): a user value under it never
+/// loosens the scan, whichever way the lower value is rejected or clamped, and the inputs below stay blocked.
+#[test]
+fn a_git_scan_depth_below_its_minimum_never_loosens_the_scan() {
+    for (key, cmd) in [("inline_depth", INLINE_PUSH), ("var_hops", LAUNCHER_WRITE), ("heredoc_levels", INLINE_PUSH)] {
+        let (code, err) = git_cfg_run(&format!("git-min-base-{key}"), "", cmd);
+        assert_eq!(code, 2, "{key}: shipped value blocks: {err}");
+        let (code, err) = git_cfg_run(&format!("git-min-zero-{key}"), &format!("[git]\n{key} = 0\n"), cmd);
+        assert_eq!(code, 2, "{key} = 0 must still block: {err}");
+    }
+}
+
+#[test]
+fn a_larger_valid_git_scan_depth_is_accepted_and_follows_deeper() {
+    let (code, _) = git_cfg_run("git-long-default", "", LAUNCHER_WRITE_LONG);
+    assert_eq!(code, 0, "the shipped hop cap does not follow a five-hop chain");
+    let (code, err) = git_cfg_run("git-long-8", "[git]\nvar_hops = 8\n", LAUNCHER_WRITE_LONG);
+    assert_eq!(code, 2, "var_hops = 8 follows it: {err}");
+    let (code, err) = git_cfg_run("git-deep-5", "[git]\ninline_depth = 5\n", INLINE_PUSH_DEEP);
+    assert_eq!(code, 2, "inline_depth = 5 in the user config follows a four-shell push: {err}");
 }
