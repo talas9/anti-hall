@@ -171,8 +171,8 @@ doc = "Transcript content-block types that are an advisor result (the server too
 value = ["advisor_tool_result"]
 
 [advisor.flagship_model_re]
-doc = "Regular expression (Rust syntax, case-insensitive) of a main-session model id that is a flagship: the thinking, say-do and second-attempt rules are silent for it."
-value = '(?i)opus|fable|^gpt-5(?:\.\d+)*(?:-codex)?(?:-max)?$'
+doc = "Regular expression (Rust syntax, case-insensitive) of a main-session model id that is a flagship (Opus, Fable, a full Codex GPT model; a mini or nano variant is not): the thinking, say-do and second-attempt rules are silent for it."
+value = '(?i)opus|fable|^gpt-[0-9][0-9.]*(?:-codex)?(?:-max)?$'
 
 [advisor.known_model_re]
 doc = "Regular expression (Rust syntax) of a model id the rules recognise. The newest assistant entry whose model matches it (or the flagship pattern) is the main model; an unknown model (`<synthetic>`, empty) is skipped, and with no known model the rules stay silent."
