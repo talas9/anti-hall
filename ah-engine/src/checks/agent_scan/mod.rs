@@ -430,20 +430,68 @@ impl Tail {
         Some(Tail { r: std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, f.take(n)), drop_first: size > n })
     }
 
-    /// The next line without its newline; `Ok(false)` at the end; `Err` when the read fails (`readTail` then returns null).
-    fn read_line(&mut self, buf: &mut Vec<u8>) -> Result<bool, std::io::Error> {
-        buf.clear();
-        match self.r.read_until(b'\n', buf) {
-            Ok(0) => Ok(false),
-            Ok(_) => {
-                if buf.last() == Some(&b'\n') {
-                    buf.pop();
-                }
-                Ok(true)
+    /// The next line without its newline, read with [`read_line_bounded`] at `agent_scan.max_line_bytes`; `Err` when the read
+    /// fails (`readTail` then returns null).
+    fn read_line(&mut self, buf: &mut Vec<u8>) -> Result<Option<LineRead>, std::io::Error> {
+        read_line_bounded(&mut self.r, buf, defaults::num("agent_scan.max_line_bytes"))
+    }
+}
+
+/// One line read by [`read_line_bounded`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineRead {
+    /// Bytes the line took in the file, its newline included: what a reader's offset moves by, whether or not the line was kept.
+    pub len: u64,
+    /// The line ended with a newline (the last line of a file may not).
+    pub newline: bool,
+    /// The line was longer than the bound: `buf` is empty and the rest of the line was read past without being held.
+    pub oversize: bool,
+}
+
+/// The next line of `r` into `buf` (cleared first, newline not kept), holding at most `max` bytes: `None` at the end. A line
+/// longer than `max` is read through the reader's own buffer and dropped, so a single huge `tool_result` line never grows `buf`
+/// (or anything else) past `max`; `LineRead::oversize` says so. `max` 0 holds any line whole (the unbounded read).
+pub fn read_line_bounded<R: BufRead>(r: &mut R, buf: &mut Vec<u8>, max: u64) -> Result<Option<LineRead>, std::io::Error> {
+    buf.clear();
+    let (mut len, mut oversize, mut newline) = (0u64, false, false);
+    loop {
+        let chunk = match r.fill_buf() {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        let (body, used) = match chunk.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                newline = true;
+                (&chunk[..i], i + 1)
             }
-            Err(e) => Err(e),
+            None => (chunk, chunk.len()),
+        };
+        if !oversize {
+            if max > 0 && (buf.len() as u64).saturating_add(body.len() as u64) > max {
+                oversize = true;
+                buf.clear();
+                buf.shrink_to(0);
+            } else {
+                if max > 0 {
+                    // grow by doubling but never past the bound: the default doubling would take up to twice `max`
+                    let need = buf.len() + body.len();
+                    let want = need.max(buf.capacity().saturating_mul(2)).min(max as usize);
+                    buf.reserve_exact(want - buf.len());
+                }
+                buf.extend_from_slice(body);
+            }
+        }
+        len += used as u64;
+        r.consume(used);
+        if newline {
+            break;
         }
     }
+    Ok((len > 0).then_some(LineRead { len, newline, oversize }))
 }
 
 /// `fs.statSync(p).mtimeMs`: Node computes `sec * 1000 + nsec / 1e6` in doubles, and so does this (the rounding is part
@@ -639,6 +687,9 @@ struct Walk {
     /// Offset of the first line that touched anything an answer is made of (launches, terminal notices, stops, teammate and resume
     /// events); `u64::MAX` while none has.
     rel_min: u64,
+    /// Offset of the last line read past as oversize (`agent_scan.max_line_bytes`); `None` while none has. Such a line is not parsed,
+    /// so the walk cannot say what it carried: a scan whose window holds one is unknown ([`Unsupported`]), never an ordinary answer.
+    oversize_at: Option<u64>,
 }
 
 impl Walk {
@@ -663,6 +714,7 @@ impl Walk {
             resume_ts: HashMap::new(),
             cur_off: 0,
             rel_min: u64::MAX,
+            oversize_at: None,
         }
     }
 
@@ -1265,24 +1317,41 @@ fn scan_window(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
     let mut buf: Vec<u8> = Vec::new();
     let mut seq: u64 = 0;
     let mut first = t.drop_first;
+    let mut oversize = false;
     loop {
         // a script call cut at its request's deadline stops here; the host turns the cut into the call's failure
         if seq.is_multiple_of(defaults::num("agent_scan.cut_check_lines").max(1)) && crate::deadline::cut_due() {
             return Ok(None);
         }
-        match t.read_line(&mut buf) {
-            Ok(true) => {}
-            Ok(false) => break,
+        let line = match t.read_line(&mut buf) {
+            Ok(Some(l)) => l,
+            Ok(None) => break,
             // `readTail` reads the whole window first and returns null when any read fails.
             Err(_) => return Ok(None),
-        }
+        };
         if first {
             first = false;
             continue;
         }
+        if line.oversize {
+            crate::load::note_count("transcript_line_skipped_oversize", "reader", "scan_window");
+            oversize = true;
+            continue;
+        }
         feed(&mut w, &mut seq, &buf)?;
     }
+    if oversize {
+        return degraded("scan_window");
+    }
     finish(w, path, opts).map(Some)
+}
+
+/// A line the scan skipped as oversize may have carried a launch, a completion or a stop: what the walk shows is then incomplete, and an
+/// incomplete scan must never read as a complete one (a completion that vanished would leave its agent "running"). The scan is unknown, so
+/// the Node-side callers take their `unsure` path (the silent-agent nudge judges no transcript agents and does not block the Stop).
+fn degraded(reader: &'static str) -> Res<Option<Scan>> {
+    crate::load::note_count("agent_scan_degraded", "reader", reader);
+    Err(Unsupported)
 }
 
 /// Where the window `[size - tail, size)` begins: its first line, after the one [`Tail`] drops. `None` when the window holds no
@@ -1295,8 +1364,9 @@ fn window_start(f: &std::fs::File, size: u64, tail: u64) -> Option<u64> {
     let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, f);
     rd.seek(SeekFrom::Start(s)).ok()?;
     let mut first: Vec<u8> = Vec::new();
-    let n = rd.read_until(b'\n', &mut first).ok()?;
-    (first.last() == Some(&b'\n')).then_some(s + n as u64)
+    // only where the line ends is wanted: an oversize line is read past, not held
+    let l = read_line_bounded(&mut rd, &mut first, defaults::num("agent_scan.max_line_bytes")).ok()??;
+    l.newline.then_some(s + l.len)
 }
 
 /// The scan of the window `[size - tail, size)`, resuming from the walk kept by the last scan of this file when it is still valid.
@@ -1346,28 +1416,35 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
     let mut rd = rd.take(want);
     let mut buf: Vec<u8> = Vec::new();
     let mut partial: Option<Vec<u8>> = None;
+    let mut partial_oversize = false;
     loop {
         if k.seq.is_multiple_of(defaults::num("agent_scan.cut_check_lines").max(1)) && crate::deadline::cut_due() {
             return Ok(None);
         }
-        buf.clear();
-        let n = match rd.read_until(b'\n', &mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
+        let line = match read_line_bounded(&mut rd, &mut buf, defaults::num("agent_scan.max_line_bytes")) {
+            Ok(None) => break,
+            Ok(Some(l)) => l,
             Err(_) => return Ok(None),
         };
         k.walk.cur_off = k.off;
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-            if let Err(e) = feed(&mut k.walk, &mut k.seq, &buf) {
+        if line.newline {
+            if line.oversize {
+                crate::load::note_count("transcript_line_skipped_oversize", "reader", "scan_kept");
+                k.walk.oversize_at = Some(k.off);
+            } else if let Err(e) = feed(&mut k.walk, &mut k.seq, &buf) {
                 // what an older line raises is not an error of this window
                 crate::load::note_count("agent_scan_kept_miss", "reason", "error");
                 return if banded { scan_window(path, tail, opts) } else { Err(e) };
             }
-            k.off += n as u64;
+            k.off += line.len;
         } else {
-            // the last line has no newline yet: it counts in this answer, but is walked for good once it is complete
-            partial = Some(std::mem::take(&mut buf));
+            // the last line has no newline yet: it counts in this answer (unless it is already oversize), but is walked for good once it is complete
+            if line.oversize {
+                crate::load::note_count("transcript_line_skipped_oversize", "reader", "scan_kept");
+                partial_oversize = true;
+            } else {
+                partial = Some(std::mem::take(&mut buf));
+            }
             break;
         }
     }
@@ -1388,9 +1465,11 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
     if k.base < start {
         w.others.retain(|o| o.off >= start);
     }
-    let scan = finish(w, path, opts).map(Some);
-    // keep the walk for the next call, unless it grew past the cap
-    if scan.is_ok() && walk_bytes(&k.walk) <= defaults::num("agent_scan.cache_max_bytes") {
+    // an oversize line still inside the window (a kept walk may hold one the window has slid past) makes the answer unknown
+    let degraded_now = partial_oversize || w.oversize_at.is_some_and(|o| o >= start);
+    let scan = if degraded_now { degraded("scan_kept") } else { finish(w, path, opts).map(Some) };
+    // keep the walk for the next call, unless it grew past the cap (an unknown answer keeps it too: the walk is sound, only the answer is not)
+    if (scan.is_ok() || degraded_now) && walk_bytes(&k.walk) <= defaults::num("agent_scan.cache_max_bytes") {
         let now = now_ms() as u64;
         let fpn = fp.min(k.off - k.base);
         if let (Some(head), Some(back)) = (digest_at(&f, k.base, fpn), digest_at(&f, k.off - fpn, fpn)) {
