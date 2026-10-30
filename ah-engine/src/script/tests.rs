@@ -3119,6 +3119,17 @@ mod afk_mode {
         let o = step(&h, "s1", "PreToolUse", json!({"agent_id": "a1", "tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. do"}}));
         assert!(!approved(&o), "{o}");
         assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "subagent")]), 1);
+        // a subagent rewriting the plan after the consult makes it stale
+        advisor(&h, "s1");
+        step(&h, "s1", "PostToolUse", json!({"agent_id": "a1", "tool_name": "Edit", "tool_input": {"file_path": format!("{h}/.claude/plans/p.md")}}));
+        assert!(exit_plan(&h, "s1").is_empty());
+        // the plan file's mtime newer than the consult (written by any path, e.g. a shell redirect) makes it stale
+        advisor(&h, "s1");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::create_dir_all(format!("{h}/.claude/plans")).unwrap();
+        std::fs::write(format!("{h}/.claude/plans/p.md"), "## P\n1. do").unwrap();
+        assert!(exit_plan(&h, "s1").is_empty());
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 2);
     }
 
     #[test]

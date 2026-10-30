@@ -375,8 +375,11 @@ function afkStop(p, f, now) {
 function afkPlanKey(p) { var sid = afkSid(p); return sid ? ah.sessionState.key(sid) : ''; }
 function afkPlanParse(t) { if (t === null) return {}; try { var v = JSON.parse(t); return v !== null && typeof v === 'object' ? v : {}; } catch (e) { return {}; } }
 function afkPlanNum(s, k) { return typeof s[k] === 'number' ? s[k] : 0; }
+// Only the consult (advisorAt) is gated on the setting and the main thread; plan writes and owner prompts are stamped always (a
+// subagent rewriting the plan, or a prompt while the setting was off, must still make an earlier consult stale).
 function afkPlanStamp(p, field, now) {
-  if (!ah.settings.bool('afk.set_plan_autoapprove') || afkIsAgent(p) || coordinator.isCodexPayload(p)) return;
+  if (coordinator.isCodexPayload(p)) return;
+  if (field === 'advisorAt' && (!ah.settings.bool('afk.set_plan_autoapprove') || afkIsAgent(p))) return;
   var key = afkPlanKey(p);
   if (!key) return;
   try {
@@ -406,11 +409,14 @@ function afkPlanPre(p, f, now) {
   var key = afkPlanKey(p);
   if (!key || !jx.isObj(p.tool_input)) return afkPlanDeny('afk.plan_reason_no_input');
   var reason = 'afk.plan_reason_state_error', wrote = false;
+  // the plan file's own mtime too: a write by any path (a shell redirect, another process) after the consult makes it stale
+  var pf = typeof p.tool_input.planFilePath === 'string' ? p.tool_input.planFilePath : '', mt = null;
+  try { mt = pf !== '' && ah.path.isAbsolute(pf) ? ah.fs.mtimeMs(pf) : null; } catch (e) { mt = null; }
   try {
     wrote = ah.sessionState.update(ah.cfg('afk.plan_state_ns'), key, function (cur) {
       var s = afkPlanParse(cur), at = afkPlanNum(s, 'advisorAt');
       if (at <= 0) reason = 'afk.plan_reason_no_marker';
-      else if (at <= Math.max(afkPlanNum(s, 'planAt'), afkPlanNum(s, 'attemptAt'), afkPlanNum(s, 'promptAt'))) reason = 'afk.plan_reason_stale';
+      else if (at <= Math.max(afkPlanNum(s, 'planAt'), afkPlanNum(s, 'attemptAt'), afkPlanNum(s, 'promptAt'), typeof mt === 'number' ? mt : 0)) reason = 'afk.plan_reason_stale';
       else reason = '';
       s.attemptAt = Math.max(now, afkPlanNum(s, 'attemptAt'));
       return JSON.stringify(s);
