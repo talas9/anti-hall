@@ -389,7 +389,8 @@ fn thinking_silent_for_flagship_unknown_model_routine_work_or_switch_off() {
     let tp = transcript("th2", &[ADVISOR, OWNER, OPUS]);
     assert_eq!(dispatch("th2", &tp, "Fix the parser bug", &[]), (0, String::new()), "flagship main");
     assert_eq!(dispatch("th2", &tp, "Fix the parser bug", &[]), (0, String::new()), "flagship main, again");
-    let tp = transcript("th3", &[ADVISOR, OWNER, SYNTH]);
+    let adv_synth = ADVISOR.replace("claude-sonnet-5-5", "<synthetic>");
+    let tp = transcript("th3", &[&adv_synth, OWNER, SYNTH]);
     assert_eq!(dispatch("th3", &tp, "Fix the parser bug", &[]), (0, String::new()), "no known model: silent");
     let tp = transcript("th4", &[ADVISOR, OWNER, SONNET]);
     assert_eq!(dispatch("th4", &tp, "Write the release notes", &[]), (0, String::new()), "routine work");
@@ -465,7 +466,8 @@ fn say_do_blocks_one_stop_per_turn() {
     append(&tp, OWNER);
     append(&tp, SAY);
     assert_eq!(stop("sd1", &tp, &[("ANTIHALL_ADVISOR_SAY_DO", "0")], false), 0, "switch off");
-    let tp2 = transcript("sd2", &[ADVISOR, OWNER, OPUS, SAY]);
+    let say_opus = SAY.replace("claude-sonnet-5-5", "claude-opus-5-5");
+    let tp2 = transcript("sd2", &[ADVISOR, OWNER, OPUS, &say_opus]);
     assert_eq!(stop("sd2", &tp2, &[], false), 0, "flagship main");
     let s = stats("sd1");
     assert_eq!((s["say_do_miss"].as_u64(), s["say_do_blocked"].as_u64()), (Some(2), Some(1)), "{s}");
