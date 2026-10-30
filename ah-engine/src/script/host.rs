@@ -725,8 +725,8 @@ pub fn tail_lines(path: &str, window: f64, line_max: f64) -> Option<String> {
 /// array; a value at the end of a path is kept whole when it is not an object or an array (an object or array there keeps only
 /// what longer paths name, else it is empty). JSON `{"lines":[[offset, value], ...], "dropped": n, "droppedUnread": m}` (`n`
 /// older lines of the window left out, `m` of them over `lineMax` or not UTF-8), `value`:
-/// `null` (over `lineMax` or not UTF-8, as `tailLines`), `0` (a blank line, or JSON that is not an object), the cut-down object,
-/// or the line's own TEXT when the engine's parser refused it, so the script parses that line itself and reads exactly what
+/// `null` (over `lineMax` or not UTF-8, as `tailLines`), `0` (a blank line), the cut-down object, or the line's own TEXT when it
+/// is JSON that is not an object (array, null, boolean, ...) or the engine's parser refused it, so the script parses that line itself and reads exactly what
 /// JavaScript reads (a lone surrogate escape, nesting deeper than the parser allows). `null` when the file cannot be read or
 /// `keep` is not a list of paths.
 pub fn tail_entries(path: &str, window: f64, line_max: f64, keep: &str, max_lines: f64) -> Option<String> {
@@ -752,7 +752,9 @@ pub fn tail_entries(path: &str, window: f64, line_max: f64, keep: &str, max_line
             Some(t) if t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r')) => serde_json::json!(0),
             Some(t) => match serde_json::from_str::<serde_json::Value>(&t) {
                 Ok(serde_json::Value::Object(m)) => trie.project_object(&m),
-                Ok(_) => serde_json::json!(0),
+                // a record that is not an object (array, null, boolean, number, string) is never mistaken for a blank line: its
+                // text goes back, so the script sees what it is
+                Ok(_) => serde_json::Value::String(t),
                 Err(_) => serde_json::Value::String(t),
             },
         };

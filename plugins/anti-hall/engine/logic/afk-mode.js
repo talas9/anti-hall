@@ -377,8 +377,9 @@ function afkStop(p, f, now) {
 // anti-hall write can then never fail open. A bounded tail read (afk.plan_window_bytes / plan_line_max_bytes / plan_max_lines)
 // must hold the newest advisor consult of the main thread (a call block of advisor.block_types named in advisor.tool_names AND its
 // result block, afk.plan_consult_result_types, whose content type is in afk.plan_consult_ok_types), before it the plan-file Write
-// (advisor.edit_tools + advisor.plan_file_re) with the full text the consult saw, and after it no owner input, no other
-// plan-approval attempt, no plan-file edit and no unreadable or unknown entry. The plan file and the approved text must still be
+// (advisor.edit_tools + advisor.plan_file_re) with the full text the consult saw (no unreadable or unknown entry between them), and
+// from the consult's CALL on (the consult pending included) no owner input, no other plan-approval attempt, no plan-file edit and
+// no unreadable or unknown entry (a non-object record included). The whole plan file is hashed (over afk.read_max_bytes denies). The plan file and the approved text must still be
 // that text, and AFK must still be on in the same period when re-read. Every deny is counted by reason.
 function afkPlanDeny(reasonKey) { afkMetric('afk_plan_autoapprove_denied', { reason: ah.cfg(reasonKey) }); return 'allow'; }
 function afkPlanIn(key, v) { return typeof v === 'string' && ah.cfg(key).indexOf(v) >= 0; }
@@ -387,17 +388,24 @@ function afkPlanEdit(b) {
   return b.type === 'tool_use' && afkPlanIn('advisor.edit_tools', b.name) && jx.isObj(b.input) && typeof b.input.file_path === 'string' &&
     ah.re.test(ah.cfg('advisor.plan_file_re'), 'r', b.input.file_path);
 }
-// What one entry after the consult means: null (nothing for the decision) or the deny reason key. `curId`: this attempt's tool_use.
+// A main-thread block after the consult's CALL that makes the advice stale: another plan-approval attempt or a plan-file edit.
+function afkPlanStale(b, curId) { return (b.type === 'tool_use' && afkPlanIn('afk.plan_tools', b.name) && b.id !== curId) || afkPlanEdit(b); }
+// The binding a list of main-thread blocks gives (its newest plan-file edit): null (none), {write} or the unbound reason key.
+function afkPlanBind(bs) {
+  var eb = bs.filter(afkPlanEdit);
+  if (eb.length === 0) return null;
+  var last = eb[eb.length - 1];
+  if (last.name !== 'Write' || typeof last.input.content !== 'string') return 'afk.plan_reason_plan_unbound';
+  return { write: { path: last.input.file_path, text: last.input.content } };
+}
+// What one entry after the consult's call means: null (nothing for the decision) or the deny reason key. `curId`: this attempt's tool_use.
 function afkPlanAfter(e, curId) {
   if (e === null) return 'afk.plan_reason_ambiguous';
   if (e.isSidechain === true) return null; // a subagent: never owner input; a plan rewrite by it is caught by the file hash
   var t = e.type;
   if (t === 'assistant') {
     var bs = afkPlanBlocks(e);
-    for (var i = 0; i < bs.length; i++) {
-      if (bs[i].type === 'tool_use' && afkPlanIn('afk.plan_tools', bs[i].name) && bs[i].id !== curId) return 'afk.plan_reason_stale';
-      if (afkPlanEdit(bs[i])) return 'afk.plan_reason_stale';
-    }
+    for (var i = 0; i < bs.length; i++) if (afkPlanStale(bs[i], curId)) return 'afk.plan_reason_stale';
     return null;
   }
   if (t === 'user') {
@@ -424,33 +432,39 @@ function afkPlanScan(tp, curId) {
   var r = null;
   try { r = ah.transcript.tailEntries(tp, ah.cfgNum('afk.plan_window_bytes'), ah.cfgNum('afk.plan_line_max_bytes'), keep, ah.cfgNum('afk.plan_max_lines')); } catch (x) { r = null; }
   if (r === null || !jx.isObj(r) || !Array.isArray(r.lines)) return 'afk.plan_reason_transcript_unreadable';
-  var ents = [], calls = {}, consult = -1;
+  // `call`: the newest completed consult's CALL ({at: entry index, blk: block index}); the advice reflects only what precedes it
+  var ents = [], calls = Object.create(null), call = null;
   for (var i = 0; i < r.lines.length; i++) {
     var e = r.lines[i][1];
     if (e === 0) continue; // a blank line
     if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { e = null; } }
-    ents.push(jx.isObj(e) ? e : null); // null: over the line cap, not UTF-8 or not JSON
+    ents.push(jx.isObj(e) ? e : null); // null: over the line cap, not UTF-8, not JSON or not an object (array, null, boolean...)
     if (!jx.isObj(e) || e.isSidechain === true || e.type !== 'assistant') continue;
     var bs = afkPlanBlocks(e);
     for (var b = 0; b < bs.length; b++) {
       var k = bs[b];
-      if (afkPlanIn('advisor.block_types', k.type) && afkPlanIn('advisor.tool_names', k.name) && typeof k.id === 'string' && k.id !== '') calls[k.id] = true;
-      else if (afkPlanIn('afk.plan_consult_result_types', k.type) && typeof k.tool_use_id === 'string' && calls[k.tool_use_id] === true &&
-        k.is_error !== true && jx.isObj(k.content) && afkPlanIn('afk.plan_consult_ok_types', k.content.type)) consult = ents.length - 1;
+      if (afkPlanIn('advisor.block_types', k.type) && afkPlanIn('advisor.tool_names', k.name) && typeof k.id === 'string' && k.id !== '') calls[k.id] = { at: ents.length - 1, blk: b };
+      else if (afkPlanIn('afk.plan_consult_result_types', k.type) && typeof k.tool_use_id === 'string' && calls[k.tool_use_id] !== undefined &&
+        k.is_error !== true && jx.isObj(k.content) && afkPlanIn('afk.plan_consult_ok_types', k.content.type)) call = calls[k.tool_use_id];
     }
   }
-  if (consult < 0) return 'afk.plan_reason_no_consult';
-  for (var a = consult + 1; a < ents.length; a++) { var why = afkPlanAfter(ents[a], curId); if (why !== null) return why; }
-  // the newest plan-file edit before the consult must be a readable main-thread Write with its full text
-  for (var w = consult - 1; w >= 0; w--) {
+  if (call === null) return 'afk.plan_reason_no_consult';
+  // from the CALL on (the consult pending included): no owner input, no plan-approval attempt, no plan-file edit, nothing unknown
+  var cbs = afkPlanBlocks(ents[call.at]);
+  for (var c = call.blk + 1; c < cbs.length; c++) if (afkPlanStale(cbs[c], curId)) return 'afk.plan_reason_stale';
+  for (var a = call.at + 1; a < ents.length; a++) { var why = afkPlanAfter(ents[a], curId); if (why !== null) return why; }
+  // the newest plan-file edit before the call must be a readable main-thread Write with its full text; an unreadable or unknown
+  // entry on the way back denies (it may hide the edit)
+  var bind = afkPlanBind(cbs.slice(0, call.blk));
+  if (bind !== null) return bind;
+  for (var w = call.at - 1; w >= 0; w--) {
     var en = ents[w];
-    if (en === null) return 'afk.plan_reason_ambiguous';
-    if (en.isSidechain === true || en.type !== 'assistant') continue;
-    var eb = afkPlanBlocks(en).filter(afkPlanEdit);
-    if (eb.length === 0) continue;
-    var last = eb[eb.length - 1];
-    if (last.name !== 'Write' || typeof last.input.content !== 'string') return 'afk.plan_reason_plan_unbound';
-    return { write: { path: last.input.file_path, text: last.input.content } };
+    if (en === null || en.isSidechain === true || en.type !== 'assistant') {
+      if (afkPlanAfter(en, curId) === 'afk.plan_reason_ambiguous') return 'afk.plan_reason_ambiguous';
+      continue;
+    }
+    bind = afkPlanBind(afkPlanBlocks(en));
+    if (bind !== null) return bind;
   }
   return 'afk.plan_reason_plan_unbound';
 }
@@ -467,9 +481,10 @@ function afkPlanPre(p, f) {
   if (typeof s === 'string') return afkPlanDeny(s);
   var pf = typeof input.planFilePath === 'string' ? input.planFilePath : '';
   if (pf === '' || !ah.path.isAbsolute(pf) || pf !== s.write.path) return afkPlanDeny('afk.plan_reason_plan_unbound');
-  var text = null;
-  try { text = ah.fs.readText(pf, ah.cfgNum('afk.read_max_bytes')); } catch (e) { text = null; }
-  if (text === null || ah.fs.sha256Text(text) !== ah.fs.sha256Text(s.write.text)) return afkPlanDeny('afk.plan_reason_plan_changed');
+  // the WHOLE file is hashed (never a capped prefix): a plan over afk.read_max_bytes, or one that grew while hashed, never verifies
+  var fh = null;
+  try { var sz = ah.fs.size(pf); fh = sz === null || sz > ah.cfgNum('afk.read_max_bytes') ? null : ah.fs.sha256File(pf); } catch (e) { fh = null; }
+  if (fh === null || fh !== ah.fs.sha256Text(s.write.text)) return afkPlanDeny('afk.plan_reason_plan_changed');
   // what is approved is the echoed input: its plan text (when given) must be the consulted text (surrounding whitespace aside)
   if (input.plan !== undefined && (typeof input.plan !== 'string' || input.plan.trim() !== s.write.text.trim())) return afkPlanDeny('afk.plan_reason_plan_mismatch');
   // last step: re-read the flag now (it may have been switched off, or off and on, since this hook started)

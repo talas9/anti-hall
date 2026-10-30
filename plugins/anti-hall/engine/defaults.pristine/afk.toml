@@ -66,7 +66,7 @@ doc = "The afk.noQuestions setting: while AFK, deny the harness question tool (a
 value = { section = "afk", key = "noQuestions", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
 
 [afk.set_plan_autoapprove]
-doc = "The afk.planAutoApprove setting: while AFK only, approve the plan-approval tool (afk.plan_tools) from its PreToolUse hook (allow + updatedInput, the documented contract) when the session transcript (host-written) shows the main thread's newest advisor consult with no owner input, plan-approval attempt or plan-file edit after it, the plan file and the approved text still equal the plan-file Write the consult saw, and AFK is still on in the same period when re-read. Fail closed: anything else (no consult in the window, an unreadable transcript, owner input after the consult, a changed or unbound plan, an unknown or unreadable transcript entry, AFK off or cycled, a subagent, a hook error) leaves the normal approval prompt. Off = never auto-approved."
+doc = "The afk.planAutoApprove setting: while AFK only, approve the plan-approval tool (afk.plan_tools) from its PreToolUse hook (allow + updatedInput, the documented contract) when the session transcript (host-written) shows the main thread's newest advisor consult with no owner input, plan-approval attempt, plan-file edit or unknown entry from its call on (while it was pending included), the whole plan file and the approved text still equal the plan-file Write the consult saw, and AFK is still on in the same period when re-read. Fail closed: anything else (no consult in the window, an unreadable transcript, owner input after the consult, a changed or unbound plan, an unknown or unreadable transcript entry, AFK off or cycled, a subagent, a hook error) leaves the normal approval prompt. Off = never auto-approved."
 value = { section = "afk", key = "planAutoApprove", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
 
 [afk.guard_name]
@@ -233,7 +233,7 @@ min = 1
 max = 200
 
 [afk.read_max_bytes]
-doc = "Most bytes of one progress file read for a digest (the tail is read)."
+doc = "Most bytes of one progress file read for a digest (the tail is read), and the largest plan file plan auto-approve verifies (the whole file is hashed; a larger plan denies, plan_changed)."
 value = 262144
 min = 4096
 max = 4194304
