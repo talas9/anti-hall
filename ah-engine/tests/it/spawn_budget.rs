@@ -193,8 +193,11 @@ fn t3_zero_turns_the_cap_off_and_the_value_is_the_cap() {
 
 /// A transcript with no agent launched in it (a prompt and an answer).
 fn quiet() -> String {
-    format!("{}\n{}\n", json!({"type":"user","message":{"role":"user","content":"go"}}),
-        json!({"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}))
+    format!(
+        "{}\n{}\n",
+        json!({"type":"user","message":{"role":"user","content":"go"}}),
+        json!({"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}})
+    )
 }
 
 const RESERVATIONS: &str = ".anti-hall/spawn-reservations.json";
