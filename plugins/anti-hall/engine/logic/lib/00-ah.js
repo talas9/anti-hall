@@ -170,12 +170,6 @@ var ah = {
     // The first `n` bytes of a regular file as lowercase hex, or null.
     readHeadHex: function (p, n) { return ahNull(ahHost.readHeadHex(p, n)); },
   },
-  // Process-local named marks (kept for the life of the engine process; lost on restart): a fail-closed signal that needs no disk.
-  mem: {
-    set: function (n) { return ahHost.memFlagSet(String(n)); },
-    has: function (n) { return ahHost.memFlagHas(String(n)) === true; },
-    clear: function (n) { return ahHost.memFlagClear(String(n)); },
-  },
   // The numeric user id of the engine's process (the hook runs as the same user).
   uid: function () { return ahHost.uid(); },
   path: {
