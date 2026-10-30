@@ -105,6 +105,7 @@ script/mod.rs | SEEN | at most script.notice_max (session, check) pairs; cleared
 budget.rs | DROPPED | answer_drop.dropped_keys_max entries | per-daemon dropped-answer counters
 budget.rs | DROPPED_LOGGED | diagnostics.abandoned_log_keys_max entries; clears at cap | dropped-answer log cadence
 budget.rs | LAST_DROP | one reason, consumed after the check | per-worker check scratch
+budget.rs | SHED_BY_SESSION | at most diagnostics.shed_sessions_max sessions (the lexically first is evicted before a new one is added); each holds one counter per check of the dispatch table | per-session shed report (#464), status budget.shed_by_session
 daemon.rs | Shared.hook_version | one string, replaced by the latest bounded request environment | last client version
 daemon.rs | Shared.hook_engine_min | one string, replaced by the latest bounded request environment | last client's minimum engine version
 daemon.rs | Shared.plugin_version | one cached manifest version string | replaced on manifest refresh
