@@ -3090,7 +3090,11 @@ mod afk_mode {
         std::fs::create_dir_all(format!("{h}/.claude/plans")).unwrap();
         std::fs::write(pfile(h), text).unwrap();
         let id = next_id("toolu_w");
-        tlines(h, sid, &[asst(json!([{"type": "tool_use", "id": id, "name": "Write", "input": {"file_path": pfile(h), "content": text}}])), tool_result(&id, false, "ok")]);
+        tlines(
+            h,
+            sid,
+            &[asst(json!([{"type": "tool_use", "id": id, "name": "Write", "input": {"file_path": pfile(h), "content": text}}])), tool_result(&id, false, "ok")],
+        );
         pstep(h, sid, "PostToolUse", json!({"tool_name": "Write", "tool_input": {"file_path": pfile(h), "content": text}}))
     }
     fn plan_write(h: &str, sid: &str) -> String {
@@ -3291,7 +3295,13 @@ mod afk_mode {
         let h2 = home("afk-plan-edit");
         afk_on(&h2);
         plan_write(&h2, "s1");
-        tlines(&h2, "s1", &[asst(json!([{"type": "tool_use", "id": next_id("toolu_e"), "name": "Edit", "input": {"file_path": pfile(&h2), "old_string": "do", "new_string": "do"}}]))]);
+        tlines(
+            &h2,
+            "s1",
+            &[asst(
+                json!([{"type": "tool_use", "id": next_id("toolu_e"), "name": "Edit", "input": {"file_path": pfile(&h2), "old_string": "do", "new_string": "do"}}]),
+            )],
+        );
         advisor(&h2, "s1");
         assert!(exit_with(&h2, "s1", json!({"plan": PLAN, "planFilePath": pfile(&h2)})).is_empty());
         // the approved text differs from the consulted text; a relative or another plan path
