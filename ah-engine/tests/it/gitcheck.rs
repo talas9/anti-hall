@@ -47,8 +47,7 @@ impl Env {
 
     fn hook_ev(&self, event: &str, command: &str, cwd: &str) -> (String, String, i32) {
         let payload =
-            serde_json::json!({"hook_event_name": event, "tool_name": "Bash", "cwd": cwd, "session_id": "s", "tool_input": {"command": command}})
-                .to_string();
+            serde_json::json!({"hook_event_name": event, "tool_name": "Bash", "cwd": cwd, "session_id": "s", "tool_input": {"command": command}}).to_string();
         let mut last = (String::new(), String::new(), 0);
         for _ in 0..2 {
             let mut ch = self.cmd().arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -320,11 +319,12 @@ fn a_credit_git_stored_is_blocked_after_the_call_whatever_shell_form_wrote_it() 
     for (name, cmd) in cases {
         bash_in(&e, &work, &cmd);
         let (out, err, code) = e.hook_ev("PostToolUse", &cmd, w);
-        assert!(out.contains("\"decision\":\"block\"") && out.contains("AI credit"), "{name}: code={code} stdout={out} stderr={err}");
+        assert!(code == 2 && err.contains("AI credit"), "{name}: code={code} stdout={out} stderr={err}");
+        let details = std::fs::read_to_string(e.dir.join("home/.anti-hall/block-details/git-guard-session.md")).unwrap_or_default();
+        assert!(err.contains("amend") || details.contains("amend"), "{name}: the fix is named: {err} / {details}");
         // the agent fixes it: an amend without the credit clears the block on the next call
         bash_in(&e, &work, "git commit -q --amend --allow-empty -m clean");
-        let (out, _, _) = e.hook_ev("PostToolUse", "git log -1", w);
-        assert!(!out.contains("block"), "{name}: still blocked after the amend: {out}");
+        assert_eq!(e.hook_ev("PostToolUse", "git log -1", w), (String::new(), String::new(), 0), "{name}: still blocked after the amend");
     }
     // an ordinary commit, and a command outside any repository, stay silent
     bash_in(&e, &work, "git commit -q --allow-empty -m 'feat: ordinary'");
