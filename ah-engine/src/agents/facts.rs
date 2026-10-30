@@ -679,7 +679,7 @@ fn shell_writes(cmd: &str) -> Vec<String> {
             .enumerate()
             .map(|(i, s)| if i % 2 == 1 { s.parse::<usize>().ok().and_then(|n| quoted.get(n)).map_or(s, String::as_str) } else { s })
             .collect();
-        if !path.is_empty() && !skip.as_ref().is_some_and(|s| s.is_match(&path)) && !out.iter().any(|o| *o == path) {
+        if !path.is_empty() && !skip.as_ref().is_some_and(|s| s.is_match(&path)) && !out.contains(&path) {
             out.push(path);
         }
     }
