@@ -104,6 +104,11 @@ pub(crate) fn bind_thread(site: &'static AtomicI64) {
     TL_SITE.with(|c| c.set(Some(site)));
 }
 
+/// Whether this thread's allocations are charged to a site.
+pub(crate) fn thread_bound() -> bool {
+    TL_SITE.with(Cell::get).is_some()
+}
+
 fn charge(by: i64) {
     if let Some(s) = TL_SITE.with(Cell::get) {
         s.fetch_add(by, Relaxed);

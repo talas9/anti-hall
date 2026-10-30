@@ -87,11 +87,16 @@ static SITES: std::sync::Mutex<Vec<(&'static str, &'static std::sync::atomic::At
 
 /// Charge the calling thread's later allocations and frees to `name` (a service loop or the request workers).
 pub fn attribute_thread(name: &'static str) {
+    attribute_thread_within(name, crate::defaults::num("mem.thread_sites_max") as usize);
+}
+
+/// [`attribute_thread`] with the counter cap `max` given (the tests pass their own, so they need not fill the shared table).
+pub(crate) fn attribute_thread_within(name: &'static str, max: usize) {
     let slot = {
         let mut v = SITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match v.iter().find(|(n, _)| *n == name) {
             Some((_, s)) => *s,
-            None if v.len() < crate::defaults::num("mem.thread_sites_max") as usize => {
+            None if v.len() < max => {
                 // one counter per distinct name for the life of the process (a restarted loop reuses it); counted as a leak
                 let s: &'static std::sync::atomic::AtomicI64 = Box::leak(Box::new(std::sync::atomic::AtomicI64::new(0)));
                 note_leak(std::mem::size_of::<std::sync::atomic::AtomicI64>());

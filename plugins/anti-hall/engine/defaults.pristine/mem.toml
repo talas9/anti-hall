@@ -616,10 +616,15 @@ value = "heap"
 # holders, so the heap no holder names is split by subsystem and what is left is the residual.
 
 [mem.thread_sites_max]
-doc = "Distinct thread names whose allocations are attributed (one counter each, kept for the life of the process). A thread whose name would be past this count is not attributed and its bytes stay in the residual."
+doc = "Distinct thread names whose allocations are attributed (one counter each, kept for the life of the process). A thread whose name would be past this count is not attributed and its bytes stay in the residual. Each allocation records its site in a 2-byte tag, hence the maximum."
 value = 64
 min = 0
+max = 65535
 
 [mem.requests_site]
 doc = "Gauge name under which the request worker threads' heap is attributed."
 value = "requests"
+
+[mem.leak_gauge_label]
+doc = "Name the leak sentinel gives a per-subsystem gauge in its verdict (flagged list and top grower), so a gauge never collides with a holder of the same name. Placeholder: name."
+value = "thread {name}"

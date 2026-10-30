@@ -303,3 +303,45 @@ fn gauges_are_read_as_gauges_beside_the_holders() {
     let r = super::leak::readings(&snap);
     assert_eq!(r.iter().map(|h| (h.name.as_str(), h.gauge)).collect::<Vec<_>>(), vec![("regex", false), ("requests", true)]);
 }
+
+#[test]
+fn a_thread_whose_binding_is_rejected_at_the_cap_is_left_unattributed() {
+    std::thread::spawn(|| {
+        super::attribute_thread_within("issue-476-cap-first", usize::MAX);
+        assert!(crate::memstat::thread_bound());
+        super::attribute_thread_within("issue-476-cap-rejected", 0);
+        assert!(!crate::memstat::thread_bound(), "a rejected binding must not keep charging the previous site");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn a_gauge_named_like_a_holder_is_trended_on_its_own_bytes() {
+    // holder "regex" flat under its soft limit; the gauge of the same name grows steadily: the gauge (not the holder) is flagged
+    let p = leak::Params::from_defaults();
+    let step = (p.holder_window_s / 10).max(1);
+    let n = (p.holder_windows.max(2) as u64 + 1) * 10;
+    let samples: Vec<leak::Sample> = (0..n)
+        .map(|i| {
+            let t_s = i * step;
+            let gauge = 1_000_000 + t_s * 1_000_000;
+            leak::Sample {
+                t_s,
+                footprint: gauge,
+                heap: gauge,
+                holders: vec![
+                    leak::HolderReading { name: "regex".into(), bytes: 50, gauge: false, soft: 100 },
+                    leak::HolderReading { name: "regex".into(), bytes: gauge, gauge: true, soft: 0 },
+                ],
+            }
+        })
+        .collect();
+    let ring: Vec<&leak::Sample> = samples.iter().collect();
+    let v = leak::evaluate(&ring, (n - 1) * step, &p);
+    let gauge_name = leak::gauge_label("regex");
+    assert!(v.holders.iter().any(|h| h.0 == gauge_name), "the growing gauge is flagged under its own name: {:?}", v.holders);
+    assert!(!v.holders.iter().any(|h| h.0 == "regex"), "the flat holder is not flagged: {:?}", v.holders);
+    let e = leak::sample_json(&samples[1]);
+    assert_eq!((e["holders"]["regex"].as_u64(), e["gauges"]["regex"].as_u64()), (Some(50), Some(1_000_000 + step * 1_000_000)), "{e}");
+}

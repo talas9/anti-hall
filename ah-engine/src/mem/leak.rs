@@ -376,17 +376,21 @@ fn notice_for(v: &Verdict, ring: &VecDeque<Sample>) -> Notice {
     Notice { text, top }
 }
 
+/// The name the verdict gives a reading: a gauge is labelled (`mem.leak_gauge_label`) so it never collides with a holder.
+pub fn gauge_label(name: &str) -> String {
+    defaults::render("mem.leak_gauge_label", &[("name", &name)])
+}
+
+/// One ring sample as JSON for the evidence file.
+pub fn sample_json(s: &Sample) -> Value {
+    let h: BTreeMap<&str, u64> = s.holders.iter().map(|h| (h.name.as_str(), h.bytes)).collect();
+    json!({"t": s.t_s, "footprint": s.footprint, "heap": s.heap, "holders": h})
+}
+
 /// The ring and the last verdict as JSON, for the evidence file.
 pub fn evidence() -> Value {
     let st = lock();
-    let ring: Vec<Value> = st
-        .ring
-        .iter()
-        .map(|s| {
-            let h: BTreeMap<&str, u64> = s.holders.iter().map(|h| (h.name.as_str(), h.bytes)).collect();
-            json!({"t": s.t_s, "footprint": s.footprint, "heap": s.heap, "holders": h})
-        })
-        .collect();
+    let ring: Vec<Value> = st.ring.iter().map(sample_json).collect();
     json!({"ring": ring, "verdict": st.last.as_ref().map(Verdict::to_json)})
 }
 
