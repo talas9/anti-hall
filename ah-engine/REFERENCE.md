@@ -3739,6 +3739,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.digest_max_entries` | `40` |  |  | Most bullets one digest prints per progress file (the newest are kept; the count of left-out bullets is shown). |
 | `afk.digest_max_files` | `20` |  |  | Most session progress files `ah-engine back` reads for one AFK period. |
 | `afk.done_re` | `^\s*[-*] \[[xX]\] ` |  |  | A finished checklist bullet (counts toward the percentage as done). |
+| `afk.fence_infix` | `.stage-` |  |  | The fenced commit of the flag file (GH #426): a holder stages <flag><infix><its lock token>, re-checks that the lock is still its own, then renames; every holder removes all <flag><infix>* stages right after taking the lock, before reading the flag. So a holder whose expired lock was taken over can never publish a stale ON over the new holder's OFF. Must not be empty. |
 | `afk.flag_file` | `afk.json` |  |  | The machine-wide AFK flag file, under the per-user state directory (replykit.state_dir). JSON {on, how, since, epoch, counted, pending_digest}. |
 | `afk.guard_name` | `afk-mode` |  |  | The guard id this check answers to in skip.json and in its messages. |
 | `afk.how_idle` | `idle` |  |  | The `how` value of an AFK entered by idle detection (it ends on the owner's next prompt). |
@@ -3750,7 +3751,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.lock_reclaim_stale_ms` | `5000` |  | ms | A takeover marker of the flag lock older than this is taken over. |
 | `afk.lock_release_step_ms` | `10` |  | ms | The pause between those tries. |
 | `afk.lock_release_tries` | `5` |  |  | How many times a release of the flag lock tries to take the takeover marker. |
-| `afk.lock_stale_ms` | `5000` |  | ms | A flag lock older than this is taken over, whatever its holder. |
+| `afk.lock_stale_ms` | `5000` |  | ms | A flag lock older than this is taken over, whatever its holder. The holder it was taken from can no longer publish: every flag write is a fenced commit (afk.fence_infix). |
 | `afk.lock_step_ms` | `5` |  | ms | The pause between two tries for the flag lock. |
 | `afk.lock_wait_ms` | `300` |  | ms | The lock budget of one hook call: all its tries for the flag lock together wait at most this long, and after a failed try the call takes no other (it then writes nothing). |
 | `afk.marker_prefix` | `<!-- afk:` |  |  | Start of the AFK marker line in a progress file; the digest is every line after the LAST marker. |
@@ -3770,6 +3771,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.msg_ladder_deny` | `AFK: the owner is away; questions are not allowed. Instead: (1) decide from t...` |  |  | Reason of the AFK question-tool deny (the question ladder). |
 | `afk.msg_ladder_stop` | `AFK: your turn ended on a question the owner cannot answer. Do not ask: decid...` |  |  | Reason of the Stop hold of an AFK turn that ends on a plain-text question. |
 | `afk.msg_lock_busy` | `afk: the AFK flag is busy (another anti-hall hook holds its lock); nothing ch...` |  |  | Printed (CLI, exit 1) or replied (typed afk / back) when the flag lock stayed busy, so the flag was not changed. |
+| `afk.msg_lock_lost` | `the flag lock was taken over before the write; nothing written` |  |  | The `why` placeholder of afk.msg_write_failed when the flag lock was taken over before the command published (nothing was written). |
 | `afk.msg_lock_released` | `lock already released` |  |  | The `why` placeholder of afk.msg_write_failed when the flag lock was already released before the command finished. |
 | `afk.msg_needs_owner_head` | `NEEDS OWNER ({n}):` |  |  | Heading of the NEEDS OWNER list printed first by back / progress. Placeholders: {n}. |
 | `afk.msg_no_sessions` | `AFK digest: no session progress file recorded for this AFK period` |  |  | Printed by `back` / `progress` when no session recorded a progress file for this AFK period. |
@@ -14257,6 +14259,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
 | `afk_entered` | counter | events | how | AFK periods started, by how (manual = ah-engine afk on, prompt = typed afk, idle = idle detection). Counted by the first hook that sees the new period. |
+| `afk_lock_lost` | counter | events |  | Flag writes of a hook that did not publish: the flag lock was taken over before the fenced commit (afk.fence_infix), or the write failed. Nothing of that hook landed. |
 | `afk_output_tokens` | counter | tokens | mode | Output tokens of main-session turns (transcript usage, deduplicated by message id), by mode (afk, present). Divide by afk_turns_measured for the per-turn average. |
 | `afk_overlong_turns` | counter | events | action | Overlong AFK replies, by action (nudge, block, capped). |
 | `afk_question_denied` | counter | events | tool | AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap). |
