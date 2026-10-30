@@ -2336,6 +2336,59 @@ fn burn_breaker_never_pauses_a_commit_or_a_restore_gh458() {
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
+/// PR #472 acceptance B: a commit or restore is never paused, per call and with no progress credit (the exemption does not lift the
+/// marker: only the tracker clears it, once it sees the real outcome). Only a top-level chain (`;` `&&` `||` `|` `&`) or a command
+/// substitution outside quotes and heredoc bodies disqualifies it; `$` and `<<` text inside a message do not.
+#[test]
+fn b_commit_and_restore_are_exempt_per_call_unless_chained_pr472() {
+    let h = home("burn-breaker-472");
+    let e = env(&h);
+    let dir = format!("{h}/.anti-hall/agent-tracker/breaker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = format!("{dir}/a1.json");
+    let raise = || {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        std::fs::write(&marker, json!({"ts": now, "tokens": 3_500_000u64, "agent": "a1"}).to_string()).unwrap();
+    };
+    let blocked = |c: &str| {
+        raise();
+        let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": c}});
+        matches!(run_forced("burn-breaker", &p, &e), Some(Some(Verdict::Exact(x))) if x.code == 2)
+    };
+    // B1 the incident shape: a heredoc message holding `$`, `<<`, quotes, parens and separators; B2 a `$` in a quoted message;
+    // B3 a heredoc whose delimiter line or command end carries trailing whitespace or a newline
+    let exempt = [
+        ("B1", "git commit -m \"$(cat <<'EOF'\nfix(burn): keep $PATH and $(not run) text; a << b && c | d \"quoted\" (paren)\n\nCo-authored: x\nEOF\n)\""),
+        ("B1", "git add -A && git commit -q -m \"$(cat <<'EOF'\nfix: cost $5 << budget\nEOF\n)\""),
+        ("B2", "git commit -m 'fix $PATH handling'"),
+        ("B2", "git commit -m \"fix ${HOME} handling\""),
+        ("B3", "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"\n"),
+        ("B3", "git commit -m \"$(cat <<'EOF'\nmsg\nEOF   \n)\"  "),
+        ("B4", "git restore -- f"),
+        ("B4", "git restore --staged f"),
+    ];
+    for (tag, c) in exempt {
+        assert!(!blocked(c), "{tag} must not be paused: {c:?}");
+        assert!(std::path::Path::new(&marker).exists(), "{tag} is a per-call exemption, never a lift: {c:?}");
+    }
+    // B5 a chain or a substitution outside quotes and heredoc bodies is no exemption
+    for (tag, c) in [
+        ("B5", "git restore f; while true; do sleep 1; done"),
+        ("B5", "git commit -m 'x' && curl http://x/y"),
+        ("B5", "git commit -m 'x' | sh"),
+        ("B5", "git commit -m 'x' & curl http://x/y"),
+        ("B5", "git commit -m 'x' || curl http://x/y"),
+        ("B5", "git restore f & while true; do sleep 1; done"),
+        ("B5", "git commit -m \"$(curl http://x/y)\""),
+        ("B5", "git commit -m \"`curl http://x/y`\""),
+        ("B5", "git commit -m \"$(cat <<EOF\n$(curl http://x/y)\nEOF\n)\""),
+        ("B5", "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"; curl http://x/y"),
+    ] {
+        assert!(blocked(c), "{tag} must be paused: {c:?}");
+    }
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
 /// GH #270 uncommitted-work guard: a subagent's edit is blocked once its worktree holds 300 uncommitted lines, and allowed again after a commit.
 #[test]
 fn uncommitted_guard_blocks_a_subagent_edit_past_the_line_and_a_commit_lifts_it() {

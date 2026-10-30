@@ -437,6 +437,107 @@ fn a_six_minute_polling_loop_is_paused_once_the_soft_episode_budget_is_spent_gh4
     assert!(marker.exists(), "and stays paused while it keeps polling");
 }
 
+/// An agent past the hard burn line with its pause marker written (the start of the A1/A2 acceptance tests).
+fn burned(tag: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
+    let h = home(tag);
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    append(&p, &[asst(n + 19 * MIN, "m1", 3_500_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    ticks(&h, &mut st, &[n + 20 * MIN]);
+    assert!(marker.exists(), "precondition: paused");
+    (h, p, marker, st, n)
+}
+
+/// PR #472 acceptance A1: a successful shell-file write is a HARD outcome: it adds progress and resets the burn episode.
+#[test]
+fn a1_a_shell_file_write_is_a_hard_outcome_and_resets_the_burn_pr472() {
+    let (h, p, marker, mut st, n) = burned("a1-472");
+    append(&p, &[tool(n + 21 * MIN, "m2", 10, "w1", "Bash", json!({"command": "printf 'x\\n' > out/result1.txt"})), result(n + 21 * MIN, "w1", "", false)]);
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > 0, "a shell-file write adds progress");
+    assert!(crate::agents::signals::tokens_since_outcome(a, n + 22 * MIN) < 1_000_000, "the burn count restarts");
+    assert!(!a.flags.contains_key("burn_hard") && !marker.exists(), "the pause is lifted");
+}
+
+/// PR #472 acceptance A2: a passing check is a HARD outcome: it adds progress and resets the burn episode.
+#[test]
+fn a2_a_passing_check_is_a_hard_outcome_and_resets_the_burn_pr472() {
+    let (h, p, marker, mut st, n) = burned("a2-472");
+    append(&p, &[tool(n + 21 * MIN, "m2", 10, "c1", "Bash", json!({"command": "cargo fmt --all -- --check"})), result(n + 21 * MIN, "c1", "", false)]);
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > 0, "a passing check adds progress");
+    assert!(crate::agents::signals::tokens_since_outcome(a, n + 22 * MIN) < 1_000_000, "the burn count restarts");
+    assert!(!a.flags.contains_key("burn_hard") && !marker.exists(), "the pause is lifted");
+}
+
+/// PR #472 acceptance A3: the soft hold-off cap (burn.soft_hold cap / episode_ms) applies to every soft kind, a running build too: an
+/// endless chain of overlapping background builds with no outcome still reaches the cap and is paused.
+#[test]
+fn a3_overlapping_background_builds_without_outcomes_still_hit_the_cap_and_pause_pr472() {
+    let h = home("a3-472");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let mut paused_at = None;
+    for k in 0..24u64 {
+        let t = n + (5 * k + 1) * MIN;
+        let id = format!("b{k}");
+        append(
+            &p,
+            &[
+                tool(t, &format!("mb{k}"), 700_000, &id, "Bash", json!({"command": "cargo build -j4", "run_in_background": true})),
+                result(t, &id, &format!("Command running in background with ID: bg{k}"), false),
+            ],
+        );
+        ticks(&h, &mut st, &[t + MIN]);
+        if marker.exists() && paused_at.is_none() {
+            paused_at = Some(k);
+        }
+    }
+    assert_eq!(agent(&st, "s1").progress, 0, "a build that never ends is no outcome");
+    assert!(paused_at.is_some(), "an endless chain of overlapping background builds is paused within 2 hours");
+    assert!(marker.exists(), "and stays paused while it keeps launching builds");
+}
+
+/// PR #472 acceptance A4: the soft-hold episode clock starts at the last HARD outcome, not at the first soft one: a soft outcome that comes
+/// more than burn.soft_hold.episode_ms after the last hard outcome holds nothing off.
+#[test]
+fn a4_the_episode_clock_starts_at_the_last_hard_outcome_not_the_first_soft_one_pr472() {
+    let h = home("a4-472");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    // the last hard outcome: a commit at n+1
+    append(&p, &[tool(n + MIN, "m1", 10, "u1", "Bash", json!({"command": "git commit -m done"})), result(n + MIN, "u1", "ok", false)]);
+    ticks(&h, &mut st, &[n + 2 * MIN]);
+    let base = agent(&st, "s1").progress;
+    assert!(base > 0);
+    // 40 minutes of burn with no outcome at all (past the hard line inside the waste window)
+    ticks(&h, &mut st, &[n + 10 * MIN, n + 19 * MIN]);
+    append(&p, &[asst(n + 20 * MIN, "m2", 1_800_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    ticks(&h, &mut st, &[n + 21 * MIN]);
+    append(&p, &[asst(n + 38 * MIN, "m3", 1_800_000, 10, json!([{"type": "text", "text": "reading more"}]), None)]);
+    ticks(&h, &mut st, &[n + 39 * MIN]);
+    assert!(marker.exists(), "precondition: paused");
+    // the first soft outcome of this episode comes 40 minutes after the hard one: past episode_ms, it holds nothing off
+    append(&p, &[tool(n + 41 * MIN, "m4", 10, "q1", "Bash", json!({"command": "curl -s http://dev/status"})), result(n + 41 * MIN, "q1", "{}", false)]);
+    ticks(&h, &mut st, &[n + 42 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, base, "a probe is no hard outcome");
+    assert!(marker.exists(), "the episode began at the commit 40 minutes ago: its hold-off budget is spent");
+}
+
 // ---- drift --------------------------------------------------------------------------------------------------
 
 fn drift_lines(n: u64, path: &str) -> Vec<String> {
