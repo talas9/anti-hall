@@ -225,6 +225,35 @@ fn roots_of_installed(home: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The plugin roots the LIVE hook commands run from: every `command` string in the hook registrations of
+/// `routine.live_hook_files` (the Codex `hooks.json` has the plugin directory filled in) is matched against
+/// `routine.live_hook_root_rx`, whose first group is the root. Nothing is assumed about where the plugin is installed.
+fn roots_of_live_hooks(home: &str) -> Vec<PathBuf> {
+    let Ok(re) = regex::Regex::new(t("routine.live_hook_root_rx")) else { return Vec::new() };
+    let mut roots = Vec::new();
+    for f in defaults::list("routine.live_hook_files") {
+        let Some(v) = std::fs::read_to_string(fill_home(f, home)).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { continue };
+        let mut stack = vec![&v];
+        while let Some(n) = stack.pop() {
+            match n {
+                Value::Object(o) => {
+                    for (k, c) in o {
+                        match c.as_str() {
+                            Some(cmd) if k == t("routine.live_hook_command_key") => {
+                                roots.extend(re.captures(&cmd.replace('\\', "/")).and_then(|c| c.get(1)).map(|m| PathBuf::from(m.as_str())));
+                            }
+                            _ => stack.push(c),
+                        }
+                    }
+                }
+                Value::Array(a) => stack.extend(a),
+                _ => {}
+            }
+        }
+    }
+    roots
+}
+
 /// The plugin roots the install routine keeps in step (the engine's own, the registered installs, `routine.default_roots`).
 pub fn plugin_roots() -> Vec<PathBuf> {
     resolve_target().roots
@@ -240,6 +269,7 @@ fn resolve_target() -> Target {
         .map(|s| s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect())
         .unwrap_or_default();
     if roots.is_empty() {
+        roots.extend(roots_of_live_hooks(&home));
         roots.extend(defaults::root());
         roots.extend(roots_of_installed(&home));
         roots.extend(

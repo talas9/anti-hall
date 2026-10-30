@@ -50,7 +50,16 @@ fn lab(tag: &str) -> Lab {
 
 /// `update --from-local <empty dir> --engine-bin <this build> <extra> --json` against the lab; (exit code, stdout).
 fn deploy(l: &Lab, extra: &[&str]) -> (i32, String) {
-    let out = Command::new(BIN)
+    deploy_roots(l, extra, true)
+}
+
+/// As [`deploy`]; with `env_roots` false the AH_DEPLOY_ROOTS override is not set, so the roots come from the live registrations.
+fn deploy_roots(l: &Lab, extra: &[&str], env_roots: bool) -> (i32, String) {
+    let mut cmd = Command::new(BIN);
+    if !env_roots {
+        cmd.env_remove("AH_DEPLOY_ROOTS");
+    }
+    let out = cmd
         .arg("update")
         .args(["--from-local"])
         .arg(l.top.join("from"))
@@ -59,7 +68,7 @@ fn deploy(l: &Lab, extra: &[&str]) -> (i32, String) {
         .env("HOME", l.top.join("home"))
         .env("AH_ENGINE_DIR", &l.state)
         .env("AH_ENGINE_PLUGIN_ROOT", plugin_src())
-        .env("AH_DEPLOY_ROOTS", &l.root)
+        .envs(env_roots.then_some(("AH_DEPLOY_ROOTS", &l.root)))
         .env("AH_ENGINE_NOSPAWN", "1")
         .output()
         .unwrap();
@@ -136,5 +145,23 @@ fn defaults_only_the_edited_copy_lacks_are_healed_from_the_pristine_copy_not_rej
     std::fs::write(&p, format!("{}{}", &text[..start], &text[end..])).unwrap();
     let (code, out) = deploy(&l, &["--check"]);
     assert_eq!(code, 0, "{out}");
+    assert_previous_install_intact(&l);
+}
+
+/// #201: the root the deploy check validates is the one the LIVE hook command runs from, not an assumed path. Here the only
+/// pointer to the stale root is the plugin directory inside the registered Codex hook command (no AH_DEPLOY_ROOTS, no registry).
+#[test]
+fn a_stale_root_named_only_by_the_live_hook_command_is_rejected() {
+    let l = lab("livehook");
+    drop_key_everywhere(&l, "routine.toml", "routine.call_timeout_s");
+    // the marker the root test needs lives in the copied defaults tree
+    let codex = l.top.join("home/.codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    let cmd = format!("exec sh \"{}/hooks/install.sh\" Stop --host codex", l.root.display());
+    let reg = serde_json::json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]}});
+    std::fs::write(codex.join("hooks.json"), reg.to_string()).unwrap();
+    let (code, out) = deploy_roots(&l, &["--yes"], false);
+    assert_ne!(code, 0, "the live hook's root was not checked: {out}");
+    assert!(out.contains(&l.root.display().to_string()) && out.contains("\"problems\""), "{out}");
     assert_previous_install_intact(&l);
 }

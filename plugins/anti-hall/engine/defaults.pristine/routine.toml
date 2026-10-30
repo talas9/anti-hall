@@ -649,3 +649,15 @@ value = "service units"
 [routine.sweep_step_migrate]
 doc = "Name of the state-migration step in a failure line."
 value = "state migrations"
+
+[routine.live_hook_files]
+doc = "Hook registrations whose commands name the plugin root the host really runs hooks from (the deploy check validates that root, not an assumed path). Token {home}."
+value = ["{home}/.codex/hooks.json"]
+
+[routine.live_hook_command_key]
+doc = "The key of a hook registration entry that holds its shell command."
+value = "command"
+
+[routine.live_hook_root_rx]
+doc = "Matched against a live hook command; group 1 is the plugin root (the directory above hooks/install.sh)."
+value = "([^\"'\\s]+)/hooks/install\\.sh"
