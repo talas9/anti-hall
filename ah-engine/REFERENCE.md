@@ -1153,9 +1153,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.hd_var_deny` | `20 items` |  |  | Variable names (case-insensitive) a standalone assignment beside a data heredoc must not set: ones the shell or the allowed tools read implicitly. |
 | `git.hd_var_deny_prefix` | `13 items` |  |  | Variable-name prefixes (case-insensitive) a standalone assignment beside a data heredoc must not set: loader, git/gh config, ssh, locale and language-runtime hooks. |
 | `git.heredoc_git_msg_subs` | `commit, tag, notes, merge` |  |  | git subcommands that take a message from a heredoc. |
-| `git.heredoc_levels` | `6` |  |  | Deepest nesting of heredoc bodies the git check reads for a git command fed through a heredoc; a deeper body is not scanned. |
+| `git.heredoc_levels` | `6` |  |  | Deepest nesting of heredoc bodies the git check reads for a git command fed through a heredoc; a deeper body is not scanned. The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed. |
 | `git.heredoc_safe_verbs` | `28 items` |  |  | Commands a data heredoc may be fed to without being treated as a shell script. |
-| `git.inline_depth` | `3` |  |  | Nesting depth of inline shells (`bash -c`), eval and command substitutions the git check follows into (the git-guard.js `d < 3`; the command check has its own command.max_depth). |
+| `git.inline_depth` | `3` |  |  | Nesting depth of inline shells (`bash -c`), eval and command substitutions the git check follows into (the git-guard.js `d < 3`; the command check has its own command.max_depth). The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed. |
 | `git.jev_backstop_ms` | `500` |  | ms | Extra time Node's synchronous worker is allowed beyond the budget; counted in the total-time guard (Node: the +500 in the guard). |
 | `git.jev_budget_ms` | `1500` |  | ms | Time budget of one self-credit consult (Node: CONSULT_BUDGET_MS). |
 | `git.jev_consult_cap` | `8` |  |  | Most distinct texts one command may consult Jev about (Node: JEV_CONSULT_CAP). |
@@ -1197,7 +1197,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.setting_reused_message` | `6 entries` |  |  | Switch for the reused-commit-message check. |
 | `git.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument is itself a script to scan. |
 | `git.skip_command` | `~/.anti-hall/ah-engine/bin/ah-engine mesh skip {key}` |  |  | Command that records a skip for a guard ({key} is the guard id): the native thin client. |
-| `git.var_hops` | `4` |  |  | Most variable indirections (`$A` naming `$B` ...) followed when deciding whether a path variable names the hook launcher. |
+| `git.var_hops` | `4` |  |  | Most variable indirections (`$A` naming `$B` ...) followed when deciding whether a path variable names the hook launcher. The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed. |
 | `git.word_alias` | `alias` |  |  | The word for a shell alias in notes. |
 | `git.word_function` | `function` |  |  | The word for a shell function in notes. |
 | `git.wrapper_value_opts` | `3 entries` |  |  | Options of the sudo, timeout and nice wrappers that take a value, so the word after them is not the wrapped command (git-guard.js SUDO_VAL and the timeout and nice branches). |
