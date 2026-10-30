@@ -20,7 +20,7 @@ function tgOwnerBlocked(t) {
   if (ah.cfg('dispatch_tier.owner_values').indexOf(tk.blockedOnText(t)) >= 0) return true;
   var value = [t.owner || '', t.content || '', t.description || ''].join(' ').toLowerCase();
   if (ah.cfg('task_guard.owner_decision_markers').some(function (m) { return value.indexOf(m.toLowerCase()) >= 0; })) return true;
-  return tgRe('dispatch_tier.owner_subject_re', 'i').test(t.content) || tgRe('task_guard.owner_subject_re', 'i').test(t.content || '');
+  return tgRe('dispatch_tier.owner_subject_re', 'i').test(t.content);
 }
 
 function tgPriorityRank(p) {
@@ -45,7 +45,7 @@ function tgActionable(open, tasks) {
   return open.filter(function (t) {
     if (tk.statusLc(t) !== pending || t.blockUnknown) return false;
     if (t.owner && !tgCoordinator(t.owner)) return false;
-    if (tgOwnerBlocked(t)) { ah.advisory(ah.cfg('task_guard.fp_kind'), 'suppressed'); return false; }
+    if (tgOwnerBlocked(t)) return false;
     if (t.blockedBy.some(function (id) { return notDone[id] === true || known[id] !== true; })) return false;
     return tgPriorityRank(t.priority) <= floor;
   });
@@ -320,7 +320,6 @@ function tgMetrics(guard) {
 function tgBlockReason(p, idle, demand, nudge, home) {
   var upd = ah.cfg(tgCodex(p) ? 'task_guard.update_codex' : 'task_guard.update_claude'), guard = ah.cfg('task_guard.guard_name');
   if (idle) {
-    ah.advisory(ah.cfg('task_guard.fp_kind'), 'fired');
     var max = ah.cfgNum('task_guard.dispatch_list_max'), labels = [];
     for (var i = 0; i < Math.min(max, demand.dispatch.length); i++) labels.push(tgLabel(demand.dispatch[i]));
     var n = demand.dispatch.length;

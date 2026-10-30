@@ -34,16 +34,9 @@ var wd = {
   // `isUnderTmpRoot(p)`.
   underTmp: function (p, cx) {
     if (!p) return false;
-    var abs;
-    if (p.charAt(0) === '/') abs = ah.path.resolveAbs(p);
-    else {
-      if (!cx.cwd || cx.cwd.charAt(0) !== '/') { ah.unable('workdetect:relative_no_cwd'); return false; }
-      abs = ah.path.resolve(cx.cwd, p);
-    }
-    if (wd.isUnder(abs, cx.tmp)) return true;
-    var roots = ah.cfg('workdetect.temp_roots');
-    for (var i = 0; i < roots.length; i++) if (wd.isUnder(abs, roots[i])) { ah.advisory(ah.cfg('tasklist_guard.fp_kind'), 'excluded_temp'); return true; }
-    return false;
+    if (p.charAt(0) === '/') return wd.isUnder(ah.path.resolveAbs(p), cx.tmp);
+    if (!cx.cwd || cx.cwd.charAt(0) !== '/') { ah.unable('workdetect:relative_no_cwd'); return false; }
+    return wd.isUnder(ah.path.resolve(cx.cwd, p), cx.tmp);
   },
   // The paths a session's ONE user request names (cx.requested: [{raw, abs}]), or [] when the session has more than one request,
   // none, or the window does not hold the whole transcript. A path that is, or holds, the session directory is not an output.
@@ -107,7 +100,7 @@ var wd = {
   // A session whose working directory is the scratchpad writes relative paths there (hooks/lib/work-detect.js hasExcludedPathHint).
   cwdScratch: function (cx) { return !!cx && !!cx.cwd && wd.re('workdetect.scratchpad_path').test(cx.cwd + '/'); },
   pathHint: function (cmd, root, cx) {
-    return wd.cwdScratch(cx) || !!cmd && ((cx.requested || []).some(function (r) { return cmd.indexOf(r.raw) >= 0 || cmd.indexOf(r.abs) >= 0; }) || wd.re('workdetect.scratchpad_path').test(cmd) || wd.re('workdetect.state_dir').test(cmd) || (!!root && cmd.indexOf(root) >= 0) || ah.cfg('workdetect.temp_roots').some(function (r) { return cmd.indexOf(r + '/') >= 0; }));
+    return wd.cwdScratch(cx) || !!cmd && ((cx.requested || []).some(function (r) { return cmd.indexOf(r.raw) >= 0 || cmd.indexOf(r.abs) >= 0; }) || wd.re('workdetect.scratchpad_path').test(cmd) || wd.re('workdetect.state_dir').test(cmd) || (!!root && cmd.indexOf(root) >= 0));
   },
   allPathsExcluded: function (n, cx) {
     var toks = n.split(/\s+/).filter(Boolean);

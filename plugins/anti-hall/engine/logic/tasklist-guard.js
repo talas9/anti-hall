@@ -453,7 +453,6 @@ function tlFire(f) {
   }
   var scan = f.scan;
   if (scan.sawTaskActivity && !stale && f.progressFresh) return 'allow';
-  if (scan.sawTaskActivity && !stale) ah.advisory(tlT('fp_kind'), 'fired'); // the progress block
   var form = tlNagForm(f);
   if (form === tlT('form_skip')) return 'allow';
   var reduced = form === tlT('form_reduced');
@@ -684,7 +683,7 @@ function decide(p, opts) {
     return 'allow';
   }
   // two or more tasks in progress on a Claude session are stalled only when no agent is running, which the block path finds out
-  if (!needsAgents && scan.sawTaskActivity && progressFresh) { ah.advisory(tlT('fp_kind'), 'suppressed_fresh_mtime'); ah.advisory(tlT('fp_kind'), 'acted_on'); return 'allow'; }
+  if (!needsAgents && scan.sawTaskActivity && progressFresh) return 'allow';
   var pluginRoot = opts !== null && typeof opts === 'object' && typeof opts.plugin_root === 'string' ? opts.plugin_root : ah.env.get(ah.cfg('env.plugin_root')) || '';
   var f = {
     p: p, home: home, pluginRoot: pluginRoot, transcript: transcript, rawSid: rawSid, sid: sid, date: date, root: root, now: now,

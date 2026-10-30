@@ -2182,27 +2182,3 @@ value = { "api-guard" = "msg_what: this code references API(s) that do not exist
 [guardkit.details_actions]
 doc = "Compact guard message text."
 value = ["send the message through the DevSwarm mesh.", "read the inbox through the mesh CLI.", "read through the mesh inbox CLI.", "send through the DevSwarm mesh.", "ask the user to update and re-trust the edit allowlist.", "write it at the session handover path.", "run the handover maintenance command."]
-
-[model_routing.mutation_signal_re]
-doc = "Regex source (case-insensitive) of the words that show a brief changes state (commit, push, edit, write, deploy, build, cargo, tests, settings changes, restore, flash, install). Any hit keeps the row-6 'read-only-shaped spawn uses general-purpose' nudge back, because Explore cannot do those. Negated forms (do not commit) are stripped first. An empty pattern turns the check off."
-value = '\b(?:commit(?:s|ted|ting)?|push(?:es|ed|ing)?|edit(?:s|ed|ing)?|writ(?:e|es|ing|ten)|deploy\w*|build(?:s|ing)?|cargo|npm\s+(?:run|test|install|ci)|pytest|(?:run|running|runs)\s+(?:the\s+|all\s+|its\s+)?(?:unit\s+|e2e\s+|integration\s+)?(?:tests?|suite)|test\s+suite|(?:change|changes|changing|set|sets|setting|toggle|toggles|toggling|update|updates|updating|modify|modifies|reset|resets|turn|turns)\s+(?:the\s+|a\s+|its\s+|device\s+|live\s+)*(?:device\s+)?settings?|settings?\s+(?:change|toggle)|restor(?:e|es|ed|ing)|flash(?:es|ed|ing)?|install(?:s|ed|ing)?|live\s+probes?|probe\s+(?:live|the\s+device))\b'
-
-[model_routing.deploy_bookkeeping_re]
-doc = "Regex source (case-insensitive) of a brief whose own task is bookkeeping: appending a line to a ledger/history or a section to a progress/handover/notes file. Such a brief only mentions deploy/prod/secret words as subject matter, so the deploy/migration/secret model floor does not apply unless the brief also orders a deploy action (model_routing.deploy_action_re). Empty turns it off."
-value = '\b(?:append(?:s|ed|ing)?|add(?:s|ed|ing)?|record(?:s|ed|ing)?|log(?:s|ged|ging)?)\b[^.\n]{0,80}\b(?:ledger|history|progress[- ]?file|progress|handover|journal|changelog|notes?)\b'
-
-[model_routing.deploy_action_re]
-doc = "Regex source (case-insensitive) of an order to perform a deploy, migration or rollback; it keeps the deploy floor even for a bookkeeping brief."
-value = '\b(?:run|execute|perform|start|trigger|do|apply|ship)\s+(?:the\s+|a\s+|this\s+)?(?:\w+\s+)?(?:deploy\w*|migrat\w*|rollback|rotation|release)\b'
-
-[model_routing.fp_bookkeeping_event]
-doc = "Counter event (kind model_routing.fp_kind): the deploy floor was skipped for a bookkeeping brief."
-value = "suppressed_bookkeeping"
-
-[advisor.review_override_verbs]
-doc = "Verbs in a spawn description that show the task itself is doing work (fix, implement, commit, append ...), not reviewing: such a spawn is not review-shaped even when the description quotes a review (\"fix the findings the Codex review found\"). Empty turns it off."
-value = ["fix", "fixes", "fixing", "implement", "implements", "implementing", "address", "resolve", "patch", "commit", "apply", "build", "write", "refactor", "append", "update"]
-
-[advisor.fp_review_event]
-doc = "Counter event (kind model_routing.fp_kind): the advisor review rule was skipped because the description's own verb is an implementation verb."
-value = "suppressed_review_verb"
