@@ -545,6 +545,9 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         && !failed
         && let Some(id) = pat("bg_started").and_then(|r| r.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())))
     {
+        if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == p.class) {
+            push_ring(&mut a.bg_builds, id.clone(), lim("loop_window"));
+        }
         a.bg_ids.insert(id, ts);
         while a.bg_ids.len() > lim("loop_window") as usize {
             let Some(k) = a.bg_ids.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };

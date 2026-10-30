@@ -402,6 +402,8 @@ fn shell_written_files_live_probes_passing_checks_are_outcomes_and_a_running_bui
     ticks(&h, &mut st, &[n + 12 * MIN]);
     assert!(agent(&st, "s1").flags.contains_key("burn_hard"), "{:?}", agent(&st, "s1").flags.keys().collect::<Vec<_>>());
     assert!(!marker.exists(), "a running build withholds the pause");
+    let note = queue(&h, "s1").iter().map(|r| r.to_string()).collect::<Vec<_>>().join(" ");
+    assert!(!note.contains("are paused"), "the hard reminder does not claim a pause it withheld: {note}");
     // the build ends: no doubt left, the pause marker is written (the tokens were spent before the build)
     append(
         &p,

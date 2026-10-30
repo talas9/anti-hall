@@ -205,7 +205,7 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
     // GH #458 classification doubt: a call of a doubt class still in flight (a build waiting on or holding the build lock) withholds the
     // pause; the hard flag and its nudge stay. Counted per withheld tick by reason.
     let doubt = defaults::raw("burn.doubt");
-    let body = match (body, building(a)) {
+    let body = match (body, building(a, env.now_ms)) {
         (Some(_), true) => {
             crate::metrics::bump(doubt.str_field("metric"), &[(doubt.str_field("label"), doubt.str_field("building"))]);
             None
@@ -227,9 +227,13 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
 }
 
 /// Whether a call of a doubt class (burn.doubt.classes: a build) is still in flight: the agent waits on work, not burning tokens.
-pub(crate) fn building(a: &Agent) -> bool {
-    let classes = defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default();
-    a.pending.values().any(|p| classes.iter().any(|c| *c == p.class))
+/// A background build counts while its task has no end notice; both bounded by burn.doubt.max_ms.
+pub(crate) fn building(a: &Agent, now: u64) -> bool {
+    let doubt = defaults::raw("burn.doubt");
+    let classes = doubt.get("classes").map(V::strings).unwrap_or_default();
+    let from = now.saturating_sub(doubt.get("max_ms").and_then(V::as_integer).unwrap_or(0).max(0) as u64);
+    a.pending.values().any(|p| p.ts >= from && classes.iter().any(|c| *c == p.class))
+        || a.bg_builds.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| *t >= from))
 }
 
 /// Remove markers older than `burn.marker_ttl_ms` (an agent that left the state without clearing its flag).
@@ -446,7 +450,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
             &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
         ),
         "burn_hard" => defaults::render(
-            "burn.msg_hard",
+            if building(a, a.samples.last().map_or(f.since, |x| x.t)) { "burn.msg_hard_withheld" } else { "burn.msg_hard" },
             &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
         ),
         "agent_waste" => super::waste::text(&who, a, f.evidence, &f.text),

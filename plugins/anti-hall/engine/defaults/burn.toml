@@ -26,8 +26,8 @@ doc = "Hard line: tokens spent since the last outcome, within the waste window, 
 value = 3000000
 
 [burn.doubt]
-doc = "Classification doubt (GH #458): while a tool call of one of these classes (agent_tracker.patterns: a build waiting on or holding the build lock) is still in flight the agent waits on work, so the tracker withholds the pause marker; the hard flag and its nudge stay. metric/label/building: the counter, its label and the reason value it is counted under. In the breaker check an error while judging a call allows it (counted as burn_breaker_bypass kind=doubt)."
-value = { classes = ["build"], metric = "burn_pause_withheld", label = "reason", building = "building" }
+doc = "Classification doubt (GH #458): while a tool call of one of these classes (agent_tracker.patterns: a build waiting on or holding the build lock) is still in flight the agent waits on work, so the tracker withholds the pause marker; the hard flag and its nudge stay. max_ms: a call (or a background build task with no end notice yet) older than this no longer counts, so an interrupted call cannot withhold the pause for ever. metric/label/building: the counter, its label and the reason value it is counted under. In the breaker check an error while judging a call allows it (counted as burn_breaker_bypass kind=doubt)."
+value = { classes = ["build"], metric = "burn_pause_withheld", label = "reason", building = "building", max_ms = 2700000 }
 
 [metric.burn_pause_withheld]
 doc = "Ticks the agent tracker held the hard burn flag but withheld the pause marker, by reason (building: a build call still in flight). The nudge still goes out (GH #458)."
@@ -141,6 +141,10 @@ value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {
 doc = "Hard advisory, delivered to the agent and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}."
 value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window} with no commit, finished step, passing check or new file. Its tool calls are paused except commit, push, status, restore/rollback/cleanup and its report: commit what works, report, stop."
 
+[burn.msg_hard_withheld]
+doc = "Hard advisory while the pause is withheld because a build is still in flight (burn.doubt): delivered to the agent and to the coordinator's wake feed instead of burn.msg_hard. Placeholders: {agent}, {kind}, {tokens}, {window}."
+value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window} with no commit, finished step, passing check or new file. A build is still in flight, so its tool calls are not paused; commit what works once it finishes."
+
 [burn.msg_what]
 doc = "Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome."
 value = "this tool call is paused after work with no recorded outcome."
@@ -179,7 +183,7 @@ doc = "The heredoc commit message (`git commit -m \"$(cat <<'EOF'` newline, body
 value = { open_re = '''-m\s+\x22\$\(cat\s+<<-?\s*\x27[A-Za-z_][A-Za-z0-9_]*\x27\s*$''', close_re = '''^\)\x22''', bad_re = '''[\x00-\x08\x0b-\x1f\x7f]''', placeholder = "-m 'msg'", quote = "'" }
 
 [burn.restore_bash_res]
-doc = "The restore class (GH #458): a command that puts earlier state back (a device or config restore, a rollback, a revert, an undo, a teardown or cleanup, git restore/checkout --/stash pop|apply/reset/revert). It is NEVER paused, whatever else it holds: a paused restore leaves live systems in test configuration. Each regular expression (Rust syntax) is tested on the RAW command; one match passes it (counted as burn_breaker_bypass kind=restore)."
+doc = "The restore class (GH #458): a command that puts earlier state back (a device or config restore, a rollback, a revert, an undo, a teardown or cleanup, git restore/checkout --/stash pop|apply/reset/revert). It is NEVER paused, whatever else it holds: a paused restore leaves live systems in test configuration. The command must pass the usual screen (burn.max_cmd_chars, burn.charset_re, burn.reject_re, burn.deny_res); each regular expression (Rust syntax) is then tested per segment on the text with quoted strings blanked (a word in a quoted message or after `#` does not count; a pipe, redirect or comment in that segment fails it), and every other segment must be allowed by the usual rules (counted as burn_breaker_bypass kind=restore)."
 value = [
   '''(?i)(?:^|[\s/_.:=-])(?:restore|restoring|rollback|roll-back|revert|undo|teardown|tear-down|cleanup|clean-up)(?:$|[\s/_.:=?&-])''',
   '''^\s*(?:cd\s+\S+\s*&&\s*)?git(?:\s+-C\s+\S+)*\s+(?:checkout\s+(?:\S+\s+)?--\s|stash\s+(?:pop|apply)\b|reset\b|revert\b)''',

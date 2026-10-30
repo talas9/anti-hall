@@ -411,6 +411,9 @@ pub struct Agent {
     /// Background shell tasks it started and has not seen end: task id, when it started.
     #[serde(default)]
     pub bg_ids: BTreeMap<String, u64>,
+    /// Background tasks among `bg_ids` whose command is of a doubt class (burn.doubt.classes: a build), GH #458.
+    #[serde(default)]
+    pub bg_builds: Vec<String>,
     /// Background shell tasks that ended and are not yet reported: task id, when it ended.
     #[serde(default)]
     pub exited: Vec<(String, u64)>,

@@ -112,11 +112,26 @@ function bbHeredoc(cmd) {
   return lines[0].slice(0, open[0]) + h.placeholder + lines[n - 1].slice(close[1]);
 }
 
-// The restore class (burn.restore_bash_res, GH #458): putting earlier state back is never paused.
-function bbRestore(cmd) {
+// The restore class (burn.restore_bash_res, GH #458): putting earlier state back is never paused. The command must pass the same screen as
+// every other (burn.max_cmd_chars, charset_re, reject_re, deny_res); then each segment is judged on its quoted-blanked text: a segment that
+// names the restore class (its verb, script or unquoted URL; a word inside a quoted message or after `#` does not count) with no pipe,
+// redirect or comment (burn.forbidden_bash_re), or a segment the usual rules allow. At least one segment must be a restore.
+function bbRestoreSeg(seg) {
+  if (ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', seg.plain)) return false;
   var res = ah.cfg('burn.restore_bash_res');
-  for (var i = 0; i < res.length; i++) if (ah.re.test(res[i], 'r', cmd)) return true;
+  for (var i = 0; i < res.length; i++) if (ah.re.test(res[i], 'r', seg.plain)) return true;
   return false;
+}
+
+function bbRestore(cmd) {
+  if (!bbScreen(cmd)) return false;
+  var segs = bbSegments(cmd), any = false;
+  if (segs === null) return false;
+  for (var i = 0; i < segs.length; i++) {
+    if (bbRestoreSeg(segs[i])) any = true;
+    else if (!bbSegmentAllowed(segs[i])) return false;
+  }
+  return any;
 }
 
 // One count per pass or pause (metrics burn_breaker_bypass by kind, burn_breaker_paused by reason); a lost count never changes a decision.
