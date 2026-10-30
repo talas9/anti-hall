@@ -46,8 +46,20 @@ pub struct Union {
 
 /// Whether an NDJSON line is a wake prompt the engine had DevSwarm queue (`agent_tracker.wake_prefix`): DevSwarm stores it as a direct
 /// mail row, but it only points at mail, so it is never counted, shown or aged as mail.
+///
+/// The prefix alone is not provenance (GH #429): a native message from a child or sibling can start with the same words. A wake prompt is
+/// the Primary's outbound, so its resolved sender is a Primary id (`mesh_write.primary_prefix`) or, when the pull could not resolve one,
+/// none; a line with any other sender is mail.
 pub fn is_wake_line(line: &str) -> bool {
     line_body(line).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
+        && line_sender(line).is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix")))
+}
+
+/// Whether a store row is a `[Primary poke]` mirror (`devswarm_role.pg_poke_prefix`): the prefix on a row with no `mtype` (the native
+/// ingest writes none; every `mesh send` row carries one), so a child's mesh send that starts with the same text is mail (GH #429).
+pub fn is_poke_row(row: &Value) -> bool {
+    row.get("mtype").is_none_or(Value::is_null)
+        && row.get("body").and_then(Value::as_str).is_some_and(|b| b.trim_start().starts_with(defaults::text("devswarm_role.pg_poke_prefix")))
 }
 
 /// [`is_wake_line`] for a store row. The prefix alone is not provenance: a workspace can `mesh send` a message that starts with the

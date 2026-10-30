@@ -157,6 +157,7 @@ function pgOwnLive(v, own) {
 }
 
 // The shared-count switch (devswarm.parentGateSharedCount; off restores the old `max(countFor, messageCount - own)` projection).
+function pgNoiseProvOn() { return ah.settings.bool('devswarm_role.pg_sw_provenance') === true; }
 function pgSharedOn() { return ah.settings.bool('devswarm_role.pg_sw_shared_count') === true; }
 
 // Counters: the registered metrics and the advisory counters of `status`. A lost count never changes a decision.
@@ -414,7 +415,16 @@ function pgBacklog(inbox, cursor) {
   return { rows: rows };
 }
 
-function pgNoise(v) { return typeof v === 'string' && v.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) === 0; }
+// An inbox-file line is a poke mirror by provenance (devswarm.noiseProvenance, GH #429): the prefix AND a sender that is a Primary id or
+// none; a child's native message that starts with the same words is mail (counted in mesh_noise_lookalike_kept). Off: the text prefix alone.
+function pgNoise(v, row) {
+  if (typeof v !== 'string' || v.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) !== 0) return false;
+  if (ah.settings.bool('devswarm_role.pg_sw_provenance') !== true) return true;
+  var snd = row ? row[ah.cfg('mesh_write.ndjson_sender_field')] : null;
+  if (typeof snd !== 'string' || snd === '' || snd.indexOf(ah.cfg('mesh_write.primary_prefix')) === 0) return true;
+  ah.metric('mesh_noise_lookalike_kept', ['kind', 'poke']);
+  return false;
+}
 function pgBroadcast(row) { return ah.cfg('devswarm_role.pg_broadcast_fields').some(function (k) { return row[k] === ah.cfg('devswarm_role.pg_broadcast'); }); }
 
 // `unreadRowTs(row)`: {at} | {none} | {odd} (a string time only V8 could read).
@@ -594,7 +604,7 @@ function pgGate(p, root, l) {
     } else {
       bl.rows.forEach(function (row) {
         if (row === null) { e.realUnread += 1; e.ageUnknown = true; return; }
-        if (pgNoise(row.message) || (done && pgBroadcast(row))) return;
+        if (pgNoise(row.message, row) || (done && pgBroadcast(row))) return;
         var ts = pgRowTs(row);
         if (ts.at !== undefined) ndOldest = ndOldest === null ? ts.at : Math.min(ndOldest, ts.at);
         else if (ts.none) e.ageUnknown = true;
@@ -616,7 +626,8 @@ function pgGate(p, root, l) {
         var famHas = function (s) { return typeof s === 'string' && fam.indexOf(s) >= 0; };
         ndSenders.forEach(function (s) { if (famHas(s)) { e.realUnread -= 1; pgCountSuppressed('own_send'); } });
         u.storeOnly.forEach(function (row) {
-          if (typeof row.body === 'string' && row.body.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) === 0) return;
+          // switch on: the host already left out the poke mirrors by provenance (mtype), so only the off path drops by text
+          if (!pgNoiseProvOn() && typeof row.body === 'string' && row.body.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) === 0) return;
           if (done && pgBroadcast(row)) return;
           if (famHas(row.sender)) { pgCountSuppressed('own_send'); return; }
           real += 1;

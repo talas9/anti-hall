@@ -196,6 +196,9 @@ fn count_for(st: &Settings, key: Option<&str>, id: &str, inbox: Option<&str>, cu
     };
     let reader = own_reader(st)?;
     let Ok((sb, nb)) = floor_positions(&store, &st.home, id, cursor, reader.as_deref()) else { return unknown("mesh_write.unread_reason_cursors") };
+    if base_past_total(st, &store, id, sb, "count_for").unwrap_or(false) {
+        return unknown("mesh_write.unread_reason_cursors");
+    }
     let Ok(u) = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }) else {
         return unknown("mesh_write.unread_reason_union");
     };
@@ -281,16 +284,45 @@ fn message_count(st: &Settings, key: &str, id: &str) -> Result<Value, No> {
     })
 }
 
+/// GH #429: whether a store read base is past the partition's message count (an impossible position: the count read from it is
+/// unknown, never a confirmed zero). Counted in `mesh_unread_position_unknown`; `devswarm.unreadPositionGuard` off restores the old read.
+fn base_past_total(st: &Settings, store: &crate::mesh::MeshReader, id: &str, base: f64, site: &str) -> Result<bool, No> {
+    if !switch_on(st, "devswarm_role.pg_sw_pos_guard") {
+        return Ok(false);
+    }
+    let total = store.message_count(id).map_err(|_| No)?;
+    let past = base.is_finite() && base > total as f64;
+    if past {
+        crate::metrics::bump("mesh_unread_position_unknown", &[("site", site)]);
+    }
+    Ok(past)
+}
+
+/// A boolean settings switch (default on when unset).
+fn switch_on(st: &Settings, key: &str) -> bool {
+    crate::dsact::settings::resolve(st, defaults::raw(key)).as_bool().unwrap_or(true)
+}
+
 fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Option<&str>, own: bool, now: f64) -> Result<Value, No> {
     let Some(store) = open_store(st, key)? else { return Ok(json!({"state": "none"})) };
     let reader = if own { own_reader(st)? } else { None };
     let (sb, nb) = floor_positions(&store, &st.home, id, cursor, reader.as_deref())?;
+    if base_past_total(st, &store, id, sb, "union_of")? {
+        return Ok(json!({"state": "unsure"})); // the gate reads `unsure` as unknown (the stricter reading), never as an empty list
+    }
     let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
+    // a `[Primary poke]` mirror is told apart by provenance (no `mtype`), not by its text; one that carries an `mtype` is a mesh send and counts
+    let prov = switch_on(st, "devswarm_role.pg_sw_provenance");
+    let poke = |r: &Value| prov && crate::meshw::union::is_poke_row(r);
+    let lookalikes = u.store_only_unread.iter().filter(|r| prov && !poke(r) && r["body"].as_str().is_some_and(|b| b.trim_start().starts_with(defaults::text("devswarm_role.pg_poke_prefix")))).count();
+    for _ in 0..lookalikes {
+        crate::metrics::bump("mesh_noise_lookalike_kept", &[("kind", "poke")]);
+    }
     let age = u.oldest_unread_age_ms.filter(|a| a.is_finite());
     // the partition's identity family (`recipientFamilyIds`): the gate leaves its own sends out of the count, as peek does
     let family: Vec<String> = crate::meshw::tick::family_of(id, &ident::rows_of(&store.roster().map_err(|_| No)?)).into_iter().collect();
     Ok(
-        json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r)).collect::<Vec<_>>(), "age": age, "family": family}),
+        json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r) && !poke(r)).collect::<Vec<_>>(), "age": age, "family": family}),
     )
 }
 
@@ -335,8 +367,7 @@ fn shared_unread(
     let family = crate::meshw::tick::family_of(id, &rows);
     let c = crate::meshw::union::unread_for(store, Path::new(&st.home), id, inbox, cursor, Some(reader), &family, now as i64).map_err(|_| No)?;
     // a store base past the partition's message count is impossible: a count read from it is unknown, never a confirmed zero
-    let total = store.message_count(id).map_err(|_| No)?;
-    if c.store_base.is_finite() && c.store_base > total as f64 {
+    if base_past_total(st, store, id, c.store_base, "shared_unread")? {
         return Err(No);
     }
     crate::meshw::tick::note_own_excluded(&c);
@@ -699,14 +730,26 @@ mod shared_count_tests {
         let floor = |v: i64| CursorPut { partition: "primary-x".into(), ns: ns.clone(), reader: defaults::text("mesh_write.floor_reader").to_string(), value: v, retired_line: None, updated_at: 1 };
         // control: a position inside the count reads normally (2 rows, position 0 -> 2 unread)
         w.reader_cursor_txn(&[floor(0)]).unwrap();
-        let ok = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).unwrap();
+        let ok = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).ok().unwrap();
         assert_eq!((ok["state"].as_str(), ok["unread"].as_u64(), ok.get("unknown")), (Some("ok"), Some(2), None), "{ok}");
-        assert_eq!(union_of(&st, "k1", "primary-x", None, None, false, 100.0).unwrap()["state"], "ok");
+        assert_eq!(union_of(&st, "k1", "primary-x", None, None, false, 100.0).ok().unwrap()["state"], "ok");
+        // GH #429: a native-ingested `[Primary poke]` mirror (no mtype) is noise; a mesh send that starts with the same text is mail
+        let poke = defaults::text("devswarm_role.pg_poke_prefix");
+        w.append_message_from("primary-x", 20, Some("poke-native"), &format!("{poke} nudge"), Some("primary-x")).unwrap();
+        let m = crate::meshw::store::mesh_message_row(Some("child-a"), Some("primary-x"), false, &format!("{poke} resolve conflict?"), 21, "normal", "poke-child", true, None);
+        assert!(w.append_mesh_row(&m).unwrap().inserted);
+        let u = union_of(&st, "k1", "primary-x", None, None, false, 100.0).ok().unwrap();
+        let bodies: Vec<String> = u["storeOnly"].as_array().unwrap().iter().map(|r| r["body"].as_str().unwrap_or("").to_string()).collect();
+        assert!(bodies.iter().any(|b| b.ends_with("resolve conflict?")), "a child's mesh send with the poke prefix is mail: {bodies:?}");
+        assert!(!bodies.iter().any(|b| b.ends_with("nudge")), "the native poke mirror is noise: {bodies:?}");
+        let off = Settings { home: st.home.clone(), env: [("ANTIHALL_DEVSWARM_NOISE_PROVENANCE".to_string(), "false".to_string())].into() };
+        let u = union_of(&off, "k1", "primary-x", None, None, false, 100.0).ok().unwrap();
+        assert!(u["storeOnly"].as_array().unwrap().iter().any(|r| r["body"].as_str().unwrap_or("").ends_with("nudge")), "switch off: the host no longer drops by provenance");
         // position 20 > total 2
         w.reader_cursor_txn(&[floor(20)]).unwrap();
-        let c = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).unwrap();
+        let c = count_for(&st, Some("k1"), "primary-x", None, None, 100.0).ok().unwrap();
         assert_eq!(c["unknown"], json!(true), "count_for: a position past the total is unknown, not 0 unread: {c}");
-        let u = union_of(&st, "k1", "primary-x", None, None, false, 100.0).unwrap();
+        let u = union_of(&st, "k1", "primary-x", None, None, false, 100.0).ok().unwrap();
         assert_eq!(u["state"], "unsure", "union_of: a position past the total is unknown, not an empty list: {u}");
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
     }
