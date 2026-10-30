@@ -316,16 +316,34 @@ fn a_credit_git_stored_is_blocked_after_the_call_whatever_shell_form_wrote_it() 
         ("-F $MSGFILE", "MSGFILE=m.txt; git commit -q --allow-empty -F \"$MSGFILE\"".to_string()),
         ("ANSI-C escapes", "git commit -q --allow-empty -m $'credited\\n\\n\\x43o-Authored-By: Claude \\103pus <noreply@anthropic.com>'".to_string()),
     ];
+    let mut missed = Vec::new();
     for (name, cmd) in cases {
         bash_in(&e, &work, &cmd);
         let (out, err, code) = e.hook_ev("PostToolUse", &cmd, w);
-        assert!(code == 2 && err.contains("AI credit"), "{name}: code={code} stdout={out} stderr={err}");
         let details = std::fs::read_to_string(e.dir.join("home/.anti-hall/block-details/git-guard-session.md")).unwrap_or_default();
-        assert!(err.contains("amend") || details.contains("amend"), "{name}: the fix is named: {err} / {details}");
+        if !(code == 2 && err.contains("AI credit") && (err.contains("amend") || details.contains("amend"))) {
+            missed.push(format!("{name}: code={code} stdout={out} stderr={err}"));
+        }
         // the agent fixes it: an amend without the credit clears the block on the next call
         bash_in(&e, &work, "git commit -q --amend --allow-empty -m clean");
-        assert_eq!(e.hook_ev("PostToolUse", "git log -1", w), (String::new(), String::new(), 0), "{name}: still blocked after the amend");
+        if e.hook_ev("PostToolUse", "git log -1", w) != (String::new(), String::new(), 0) {
+            missed.push(format!("{name}: still blocked after the amend"));
+        }
     }
+    assert!(missed.is_empty(), "{missed:#?}");
+    // the off switch (guards.gitCommitAudit) lets a credited commit through this layer
+    bash_in(&e, &work, &format!("git commit -q --allow-empty -m 'credited' -m '{CO}'"));
+    std::fs::create_dir_all(e.dir.join("home/.anti-hall")).unwrap();
+    std::fs::write(e.dir.join("home/.anti-hall/settings.json"), r#"{"guards":{"gitCommitAudit":false}}"#).unwrap();
+    let t = Instant::now();
+    let mut off = e.hook_ev("PostToolUse", "git log -1", w);
+    while off.2 == 2 && t.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(200));
+        off = e.hook_ev("PostToolUse", "git log -1", w);
+    }
+    assert_eq!(off, (String::new(), String::new(), 0), "off switch");
+    std::fs::remove_file(e.dir.join("home/.anti-hall/settings.json")).unwrap();
+    bash_in(&e, &work, "git commit -q --amend --allow-empty -m clean");
     // an ordinary commit, and a command outside any repository, stay silent
     bash_in(&e, &work, "git commit -q --allow-empty -m 'feat: ordinary'");
     assert_eq!(e.hook_ev("PostToolUse", "git commit -q --allow-empty -m 'feat: ordinary'", w), (String::new(), String::new(), 0));
@@ -367,16 +385,29 @@ fn an_untracked_destination_reads_commits_other_remotes_have_and_is_capped() {
     let (out, err, code) = e.hook_in("git push newremote feature", w);
     assert_eq!(code, 2, "commit on origin, not on newremote: stdout={out} stderr={err}");
     assert!(err.contains("reword"), "{err}");
-    // over the cap on an untracked destination: refused, never allowed unread
-    git_ok(&work, &["checkout", "-q", "-b", "big", "main"]);
-    for i in 0..51 {
-        git_ok(&work, &["commit", "-q", "--allow-empty", "-m", &format!("clean {i}")]);
-    }
-    let (out, err, code) = e.hook_in("git push newremote big", w);
-    assert_eq!(code, 2, "stdout={out} stderr={err}");
-    assert!(err.contains("more than 50 commits"), "{err}");
     // an ordinary push to the tracked remote stays allowed
     git_ok(&work, &["checkout", "-q", "main"]);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "feat: ordinary"]);
     assert_eq!(e.hook_in("git push origin main", w), (String::new(), String::new(), 0));
+}
+
+/// Layer (b): the cap applies to a destination with no tracking refs too (Codex P1 of PR #469 at 503630f1).
+#[test]
+fn an_untracked_destination_over_the_cap_is_refused() {
+    let e = Env::new("untrackedcap");
+    let (work, _) = pushed_repo(&e);
+    let other = e.dir.join("other.git");
+    std::fs::create_dir_all(&other).unwrap();
+    git_ok(&other, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&work, &["remote", "add", "newremote", other.to_str().unwrap()]);
+    git_ok(&work, &["checkout", "-q", "-b", "big"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    for i in 0..51 {
+        git_ok(&work, &["commit", "-q", "--allow-empty", "-m", &format!("clean {i}")]);
+    }
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in("git push newremote big", w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("more than 50 commits"), "{err}");
 }

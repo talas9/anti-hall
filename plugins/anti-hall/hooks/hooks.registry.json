@@ -415,17 +415,6 @@
         ]
       },
       {
-        "matcher": "Agent|Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PreToolUse",
-            "timeout": 10,
-            "id": "advisor-guard:dispatch"
-          }
-        ]
-      },
-      {
         "matcher": "AskUserQuestion",
         "hooks": [
           {
@@ -649,12 +638,6 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" Stop",
             "timeout": 10,
             "id": "sibling-sweep"
-          },
-          {
-            "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" Stop",
-            "timeout": 10,
-            "id": "advisor-guard:stop"
           },
           {
             "type": "command",

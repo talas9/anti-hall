@@ -82,8 +82,6 @@ What the automatic guards check and how to read a block.
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
 - `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once
 - `guards.advisorReview` = true: Blocks a review agent on a non-flagship model once
-- `guards.advisorSayDo` = true: Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows
-- `guards.advisorThinking` = true: Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call...
 - `guards.broadKill` = true: Switch for the broad-kill guard
 - `guards.uncommittedWork` = true: Off lets a subagent leave work uncommitted (default on)
 - `statusline.devswarm.enabled` = true: Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle)

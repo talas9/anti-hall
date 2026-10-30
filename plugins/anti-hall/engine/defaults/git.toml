@@ -451,6 +451,10 @@ value = { section = "safety", key = "gitGuard", env = "ANTIHALL_GIT_GUARD", opti
 doc = "Switch for the unresolved-shell-expansion check on inline commit messages (GH #457): off lets a message built from $VAR, $(...) or backticks through (the credit check cannot read it)."
 value = { section = "guards", key = "gitCommitExpansionCheck", env = "ANTIHALL_GIT_COMMIT_EXPANSION_CHECK", option = "", type = "boolean", default = true }
 
+[git.setting_commit_audit]
+doc = "Switch for the authoritative post-call commit check (PR #469): off lets a commit with an AI credit stand until the push check."
+value = { section = "guards", key = "gitCommitAudit", env = "ANTIHALL_GIT_COMMIT_AUDIT", option = "", type = "boolean", default = true }
+
 [git.setting_push_credit]
 doc = "Switch for the pre-push credit backstop (GH #457): off lets a push through although an unpushed commit carries an AI credit."
 value = { section = "guards", key = "gitPushCreditCheck", env = "ANTIHALL_GIT_PUSH_CREDIT_CHECK", option = "", type = "boolean", default = true }
@@ -750,10 +754,6 @@ value = ["-C", "{dir}", "log", "-g", "-n", "{n}", "--date=unix", "--format=%H%x1
 [git_audit.reflog_creating]
 doc = "Lower-case starts of the reflog descriptions of steps that write a commit (a checkout or reset only moves HEAD and is not read)."
 value = ["commit", "merge", "cherry-pick", "rebase", "revert", "pull", "am"]
-
-[git_audit.setting]
-doc = "Switch for the authoritative post-call commit check (PR #469): off lets a commit with an AI credit stand until the push check."
-value = { section = "guards", key = "gitCommitAudit", env = "ANTIHALL_GIT_COMMIT_AUDIT", option = "", type = "boolean", default = true }
 
 [git_audit.block_reason]
 doc = "The reason label of git_blocked for an audit block."

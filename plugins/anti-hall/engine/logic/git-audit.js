@@ -96,7 +96,7 @@ function decide(p, opts, event) {
   const ti = p.tool_input;
   if (!ti || typeof ti !== 'object' || typeof ti.command !== 'string') return null;
   TB = gitTables();
-  if (!gitSettingOn('git.setting_git_guard') || !gitSettingOn('git_audit.setting') || ah.settings.skipped(ah.cfg('git.guard_name')) || ti.command === '') return 'allow';
+  if (!gitSettingOn('git.setting_git_guard') || !gitSettingOn('git.setting_commit_audit') || ah.settings.skipped(ah.cfg('git.guard_name')) || ti.command === '') return 'allow';
   // Node falls back to its own process directory without a cwd (or resolves a relative one against it): lib/78-hook-proc.js
   // a relative payload cwd resolves against the stand-in for the hook process's directory (counted)
   if (typeof p.cwd === 'string' && p.cwd !== '' && p.cwd.charAt(0) !== '/') ah.unable('git-audit:relative_cwd'); // resolved against the stand-in directory (hookProc.cwd)
