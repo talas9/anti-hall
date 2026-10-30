@@ -907,8 +907,8 @@ doc = "Block: a push would publish commits that carry an AI credit. Placeholder:
 value = { what = "this push would publish commits with AI credit: {shown}.", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "unpushed tip of your branch: switch to it, reword it (commit --amend); already public or other: tell the owner." }
 
 [git.push_ack_max_shas]
-doc = "Most credited commits one session may acknowledge (PR #469 round 6). A commit only a pruned remote-tracking ref protected looks unpushed and cannot be told public offline, so after msg_push_credit blocked a push once, the identical push retried unchanged (same command text and directory) downgrades the commits it named to push_ack_advisory for the rest of the session. A new credited commit still blocks first. Past this many the oldest acknowledgement is dropped; 0 turns the acknowledgement off. A stamp that cannot be written lets the blocked commits through with the advisory at once (fails toward advisory)."
-value = 20
+doc = "OFF by default (0): a credited commit never reaches a push, and an identical retry of a blocked push is blocked again. When set above 0 (PR #469 round 6), after msg_push_credit blocked a push once, the identical push retried unchanged (same command text and directory) downgrades the commits it named to push_ack_advisory for the rest of the session; a new credited commit still blocks first, and past this many the oldest acknowledgement is dropped. Trade-off: a commit that is already public but whose remote-tracking ref was pruned looks unpushed offline and blocks every push until it is acknowledged, so the owner may enable this knowingly; it also lets ANY credited commit through on an identical retry, which agents do after a block. A stamp that cannot be written lets the blocked commits through with the advisory at once (fails toward advisory)."
+value = 0
 
 [git.push_ack_state_prefix]
 doc = "File name prefix of the per-session push acknowledgement stamp (push_ack_max_shas), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it."
@@ -988,6 +988,10 @@ value = { kind = "counter", unit = "commands", labels = ["reason"] }
 
 [metric.git_push_blocked]
 doc = "Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
+[metric.git_push_ack_downgraded]
+doc = "Pushes the credit backstop let through as an advisory because the identical push had been blocked once and git.push_ack_max_shas acknowledges it (off by default)."
 value = { kind = "counter", unit = "pushes", labels = [] }
 
 [metric.git_audit_blocked]

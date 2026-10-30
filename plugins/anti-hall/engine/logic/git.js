@@ -2012,7 +2012,7 @@ function hitList(hits) {
 // PR #469 round 6: a public commit whose remote-tracking ref was pruned looks unpushed, and offline nothing tells it from a new
 // one. A push blocked on credited commits records them (with the command text and directory) in a per-session stamp; the
 // identical push retried unchanged acknowledges them, and an acknowledged commit gets git.push_ack_advisory instead of a block
-// for the rest of the session. A commit not yet blocked once still blocks. Bounded by git.push_ack_max_shas (0: off); no session
+// for the rest of the session. A commit not yet blocked once still blocks. Bounded by git.push_ack_max_shas (0: off, the default); no session
 // id: never acknowledged; a stamp that cannot be written lets the commits through with the advisory. Returns the hits to block.
 function pushAck(key, hits) {
   const max = ah.cfg('git.push_ack_max_shas');
@@ -2040,6 +2040,7 @@ function pushAck(key, hits) {
   try { ok = ah.state.writeAtomic(rel, JSON.stringify({ acked: acked.slice(-max), last: left.length ? { push: push, ids: left.map(idOf) } : null })) === true; } catch (e) { ok = false; }
   if (ok) { try { ah.state.prune(ah.cfg('git.push_ack_state_prefix'), name); } catch (e) { /* retention only */ } }
   else { passed.push(...left); left = []; } // fails toward the advisory
+  if (passed.length) { try { ah.metric('git_push_ack_downgraded', []); } catch (e) { /* counting never fails a hook */ } }
   if (passed.length) S.pushAckNote = text.render(ah.cfg('git.push_ack_advisory'), { shown: hitList(passed) });
   S.pushAck.set(key, left);
   return left;
