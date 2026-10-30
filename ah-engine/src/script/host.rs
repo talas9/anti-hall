@@ -955,7 +955,19 @@ fn passwd_home() -> Option<String> {
 pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     let h = Object::new(c.clone())?;
     h.set("cfg", Function::new(c.clone(), |key: String| -> rquickjs::Result<String> { Ok(entry(&key)?.value.to_json().to_string()) })?)?;
-    h.set("cfgGen", Function::new(c.clone(), || defaults::generation() as f64)?)?;
+    // `cfgGen(hits, misses)`: the generation; the optional counts are the previous check call's `ah.cfg` / `ah.settings` memo hits and
+    // misses, folded into `cfg_cache{result}` here so counting them costs no host call of its own
+    h.set(
+        "cfgGen",
+        Function::new(c.clone(), |hits: rquickjs::function::Opt<f64>, misses: rquickjs::function::Opt<f64>| {
+            for (n, key) in [(hits.0, "recent_tel.cfg_hit"), (misses.0, "recent_tel.cfg_miss")] {
+                if let Some(n) = n.filter(|n| *n >= 1.0 && crate::metrics::recent_on()) {
+                    crate::metrics::bump_by("cfg_cache", &[("result", defaults::text(key))], n as u64);
+                }
+            }
+            defaults::generation() as f64
+        })?,
+    )?;
     h.set("now", Function::new(c.clone(), now_ms)?)?;
     h.set("commit", Function::new(c.clone(), lift_deadline)?)?;
     h.set(

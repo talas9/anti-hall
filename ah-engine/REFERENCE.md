@@ -862,6 +862,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `launcher.nodeback_tool_events` | `PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest` |  |  | The events on which the Node fallback reads the tool name from the payload and selects the list rows by their matcher. |
 | `launcher.nodeback_tool_field` | `tool_name` |  |  | The payload field that names the tool of a tool event; the Node fallback matches the list's matchers against it. |
 | `launcher.nodeback_unrunnable_markers` | `MODULE_NOT_FOUND, Cannot find module` |  |  | Texts that must all appear on a Node hook's stderr (exit 1) for the hook to count as unrunnable (its script or a module is missing) instead of a non-blocking failure of the hook itself. |
+| `launcher.notice_counters` | `1` |  |  | Count the once-per-session notice in the launcher stats (launcher_counter names notice_shown, notice_suppressed, notice_evicted). 1 on, 0 off. |
 | `launcher.notice_sessions_max` | `64` |  | sessions | Most session ids a once-per-session notice marker (engine-unreachable, cold-start, stale-engine) remembers. Sessions interleaving within this many others are told once each; past it the oldest session is forgotten and may hear the notice again. |
 | `launcher.out_cap_bytes` | `4194304` |  | bytes | Most engine standard output the launcher keeps. A hook answer is small; more than this is treated as a failed engine and the hook is let through. |
 | `launcher.payload_prefix_bytes` | `1048576` |  | bytes | How much of the payload the launcher keeps in memory: the part it inspects (session id, stop flag) and replays to the fallback runner. The rest is streamed through and never held. |
@@ -932,6 +933,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `proc.git_resolve` | `true` |  |  | Start the real git binary instead of the macOS developer-tools shim. When the request's PATH finds git at one of proc.git_shims, scripts' git runs start the first existing proc.git_candidates entry instead (the shim looks the real git up and execs it on every spawn, about twice the cost). Off keeps the program found through PATH. |
 | `proc.git_shims` | `/usr/bin/git` |  |  | Full paths of git launchers that only forward to a real git (the macOS developer-tools shim). Only a git the request's PATH finds at one of these is replaced. |
 | `proc.read_grace_ms` | `500` |  | ms | After a helper process (git, ps, vm_stat, a scheduled job) exits, the least time its output may take to reach end of file (it may also use what is left of the command's own timeout, as Node's spawnSync does); a process it left behind that still holds a pipe is then killed with its group and the output counts as unread, never as a whole answer. |
+
+### engine.toml / recent_tel
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `recent_tel.cfg_hit` | `hit` |  |  | The `result` label of cfg_cache for a read answered from the per-call memo. |
+| `recent_tel.cfg_miss` | `miss` |  |  | The `result` label of cfg_cache for a read that went to the host. |
+| `recent_tel.enabled` | `1` |  |  | Record the telemetry of the recent fixes: cfg_cache (ah.cfg / ah.settings memo hits and misses), tail_newest_reads (capped against fallback full tail reads), requests_served and sigint_drains. 1 on, 0 off (the counters stop; what was recorded stays). |
+| `recent_tel.tail_capped` | `capped` |  |  | The `mode` label of tail_newest_reads for a read that asked for at most `max` lines. |
+| `recent_tel.tail_full` | `fallback_full` |  |  | The `mode` label of tail_newest_reads for a read with no cap (the fallback after a capped read found nothing). |
 
 ### engine.toml / request_env
 
@@ -14171,6 +14182,10 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 
 | Name | Kind | Unit | Labels | What it counts |
 |---|---|---|---|---|
+| `cfg_cache` | counter | reads | result | ah.cfg / ah.settings reads of check scripts, by whether the per-call memo answered (hit) or the host did (miss). Counted per check call and folded into the next call's single cfgGen host call. |
+| `requests_served` | counter | requests |  | Requests the daemon ran checks for (not skipped because the client had already hung up: see client_gone_skipped). |
+| `sigint_drains` | counter | drains |  | Graceful drains started by SIGINT (the same drain as SIGTERM). |
+| `tail_newest_reads` | counter | reads | mode | Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap). |
 | `command_heavy_segment_named` | counter | blocks | kind | Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own. |
 | `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
 | `agent_scan_kept` | counter | lookups | result | Kept-walk lookups of the agent scan (silent-agent-nudge and the agent gates): hit (the walk resumed from where the last scan stopped) or miss. |

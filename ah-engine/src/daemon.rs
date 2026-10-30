@@ -620,6 +620,7 @@ impl Shared {
             "rejected_peers": self.stats.rejected.load(SeqCst),
             "probes": self.stats.probes.load(SeqCst),
             "gone_skipped": self.stats.gone_skipped.load(SeqCst),
+            "served": self.stats.requests.load(SeqCst).saturating_sub(self.stats.gone_skipped.load(SeqCst)),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
             "breaker": b.map_or("closed".to_string(), |d| defaults::render("msg.state_open", &[("secs", &(d.as_secs() + 1))])),
@@ -1530,6 +1531,9 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         sh.stats.gone_skipped.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("client_gone_skipped", &[]));
         return After::Continue;
+    }
+    if crate::metrics::recent_on() {
+        sh.telemetry.with_metrics(|m| m.inc("requests_served", &[]));
     }
     // the client stops waiting `client.deadline_ms` after it sent the request, which is about when it was accepted
     crate::deadline::begin(started.checked_sub(wait).unwrap_or(started));
@@ -2518,6 +2522,9 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             begin_drain(sh, defaults::text("msg.exit_reason_sigterm"), false);
         }
         if INT.swap(false, SeqCst) {
+            if crate::metrics::recent_on() {
+                sh.telemetry.with_metrics(|m| m.inc("sigint_drains", &[]));
+            }
             begin_drain(sh, defaults::text("msg.exit_reason_sigint"), false);
         }
         let draining = sh.draining.load(SeqCst);

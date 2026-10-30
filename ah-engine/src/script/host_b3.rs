@@ -101,6 +101,9 @@ pub(super) fn tail_lines_matching(path: &str, window: u64, crlf: bool, needles: 
 /// cap): a script that only wants the newest line of some kind no longer pulls every matching line of the window into the interpreter.
 /// `None` where `readTail` answers `null`.
 pub(super) fn tail_lines_newest(path: &str, window: u64, crlf: bool, needles: &[String], max: usize) -> Option<Vec<String>> {
+    if crate::metrics::recent_on() {
+        crate::metrics::bump("tail_newest_reads", &[("mode", crate::defaults::text(if max > 0 { "recent_tel.tail_capped" } else { "recent_tel.tail_full" }))]);
+    }
     let text = read_tail(path, window)?;
     let mut out = Vec::new();
     let mut first = true; // the last piece of the split has no newline after it, so no `\r` goes with a separator
