@@ -583,8 +583,7 @@ pub(super) fn hold_done(st: &mut State, a: &Agent, now: u64) {
 fn adopt_legacy_done_holds(st: &mut State, now: u64) {
     let busy_max = now.saturating_add(lim("health_recheck_ms"));
     let span = lim("health_done_hold_ms");
-    let old: Vec<(String, u64)> =
-        st.nudge_hold.iter().filter(|(c, t)| **t > busy_max && st.agents.contains_key(*c)).map(|(c, t)| (c.clone(), *t)).collect();
+    let old: Vec<(String, u64)> = st.nudge_hold.iter().filter(|(c, t)| **t > busy_max && st.agents.contains_key(*c)).map(|(c, t)| (c.clone(), *t)).collect();
     for (c, until) in old {
         let activity_ms = st.agents.get(&c).map_or(0, |a| a.last_output_ms).min(until.saturating_sub(span));
         st.nudge_done_hold.entry(c.clone()).or_insert(DoneHold { until, activity_ms });
