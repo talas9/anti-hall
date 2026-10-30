@@ -133,7 +133,7 @@ fn main_skill(host: &str) -> Skill {
 
 /// Areas that have at least one verb, guard or switch (an empty area gets no skill).
 fn sub_areas() -> Vec<&'static str> {
-    areas().into_iter().filter(|a| !area_verbs(a).is_empty() || !area_checks(a).is_empty() || !area_settings(a).is_empty()).collect()
+    areas().into_iter().filter(|a| *a == defaults::text("guard_rules.area") || !area_verbs(a).is_empty() || !area_checks(a).is_empty() || !area_settings(a).is_empty()).collect()
 }
 
 fn area_verbs(a: &str) -> Vec<(cli::CommandInfo, roles::Row)> {
@@ -155,7 +155,171 @@ fn area_settings(a: &str) -> Vec<&'static defaults::Entry> {
         .collect()
 }
 
+/// One row of the rule registry (`guard_rules.rules`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rule {
+    /// Stable rule id.
+    pub id: &'static str,
+    /// The switch that turns the rule off, or empty.
+    pub setting: &'static str,
+    /// `essential`, `skill` or `off`.
+    pub tier: &'static str,
+    /// The defaults key of the rule's `what` text.
+    pub source: &'static str,
+    /// The short agent line (essential rules).
+    pub line: &'static str,
+}
+
+/// Every row of the rule registry, in file order.
+pub fn rules() -> Vec<Rule> {
+    defaults::raw("guard_rules.rules")
+        .as_array()
+        .map(|a| a.iter().map(|r| Rule { id: r.str_field("id"), setting: r.str_field("setting"), tier: r.str_field("tier"), source: r.str_field("source"), line: r.str_field("line") }).collect())
+        .unwrap_or_default()
+}
+
+/// A text with its `{name}` placeholders replaced by the configured filler.
+fn plain(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find('{') {
+        out.push_str(&rest[..i]);
+        match rest[i..].find('}') {
+            Some(j) => {
+                out.push_str(defaults::text("guard_rules.placeholder"));
+                rest = &rest[i + j + 1..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The `(what, why, instead)` texts of a rule: an inline table, or a `what` key with `why` and `instead` siblings (the word
+/// `what` in the key replaced). A part that does not exist is empty.
+pub fn rule_parts(source: &str) -> (String, String, String) {
+    if !defaults::has(source) {
+        return (String::new(), String::new(), String::new());
+    }
+    let v = defaults::raw(source);
+    if let Some(w) = v.get("what") {
+        let f = |k: &str| v.get(k).and_then(V::as_str).map(plain).unwrap_or_default();
+        return (w.as_str().map(plain).unwrap_or_default(), f("why"), f("instead"));
+    }
+    let sib = |word: &str| {
+        let (sec, key) = source.split_once('.').unwrap_or(("", source));
+        let k = format!("{sec}.{}", key.replacen("what", word, 1));
+        if defaults::has(&k) { defaults::raw(&k).as_str().map(plain).unwrap_or_default() } else { String::new() }
+    };
+    (v.as_str().map(plain).unwrap_or_default(), sib("why"), sib("instead"))
+}
+
+/// The text the engine shows for a rule, composed from its defaults entries (what, why, instead).
+pub fn compose(source: &str) -> String {
+    let (what, why, instead) = rule_parts(source);
+    defaults::render("guard_rules.msg_compose", &[("what", &what), ("why", &why), ("instead", &instead)]).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The generated digest file: the essential lines, then the separator, then one extra line per other listed rule.
+pub fn digest_file() -> String {
+    let mut ess = Vec::new();
+    let mut extra = Vec::new();
+    for r in rules() {
+        if r.tier == "essential" && !r.line.is_empty() {
+            ess.push(defaults::render("guard_rules.digest_line", &[("line", &r.line)]));
+        } else if r.tier != "off" {
+            let (what, _, _) = rule_parts(r.source);
+            if !what.is_empty() {
+                extra.push(defaults::render("guard_rules.extra_line", &[("id", &r.id), ("what", &what)]));
+            }
+        }
+    }
+    format!("{}\n{}\n{}\n", ess.join("\n"), defaults::text("guard_rules.digest_sep"), extra.join("\n"))
+}
+
+/// The digest as the session shows it at the default tier: head, the essential lines, foot.
+pub fn digest_text() -> String {
+    let f = digest_file();
+    let ess = f.split(&format!("\n{}\n", defaults::text("guard_rules.digest_sep"))).next().unwrap_or("");
+    format!("{}\n{}\n{}", defaults::text("guard_rules.digest_head"), ess, defaults::text("guard_rules.digest_foot"))
+}
+
+/// Problems in the rule registry: a rule without a valid tier, a source that does not exist, a duplicate id, an essential rule
+/// without a line, a non-off rule that is missing from the generated output, a block text neither registered nor exempt.
+pub fn rule_problems() -> Vec<String> {
+    let mut p = Vec::new();
+    let tiers = defaults::list("guard_rules.tiers");
+    let mut ids = std::collections::BTreeSet::new();
+    let mut sources = std::collections::BTreeSet::new();
+    let digest = digest_file();
+    let skill = rules_section();
+    for r in rules() {
+        if r.id.is_empty() || !ids.insert(r.id) {
+            p.push(format!("rule id empty or duplicate: {:?}", r.id));
+        }
+        if !tiers.contains(&r.tier) {
+            p.push(format!("{}: tier {:?} is not one of {tiers:?}", r.id, r.tier));
+        }
+        if !defaults::has(r.source) {
+            p.push(format!("{}: source {} does not exist", r.id, r.source));
+        }
+        if r.tier == "essential" && r.line.is_empty() {
+            p.push(format!("{}: essential rule without a line", r.id));
+        }
+        sources.insert(r.source);
+        if r.tier != "off" && !skill.contains(&format!("`{}`", r.id)) {
+            p.push(format!("{}: missing from the generated skill", r.id));
+        }
+        if r.tier == "essential" && !digest.contains(r.line) {
+            p.push(format!("{}: missing from the generated digest", r.id));
+        }
+    }
+    let exempt: std::collections::BTreeSet<&str> = defaults::list("guard_rules.exempt").into_iter().collect();
+    for e in defaults::all().iter() {
+        let (sec, key) = e.key.split_once('.').unwrap_or(("", e.key));
+        let inline = e.value.get("what").is_some();
+        let split = e.value.as_str().is_some() && key.split('_').any(|w| w == "what");
+        if (inline || split) && !sources.contains(e.key) && !exempt.contains(e.key) && sec != "guard_rules" {
+            p.push(format!("{}: a block text with no rule row (add it to guard_rules.rules with a tier, or to guard_rules.exempt)", e.key));
+        }
+    }
+    p
+}
+
+/// The rules section of the rules skill: every non-off rule with its full what, why and instead.
+pub fn rules_section() -> String {
+    let mut o = String::new();
+    for r in rules().into_iter().filter(|r| r.tier != "off") {
+        let (what, why, instead) = rule_parts(r.source);
+        let setting = if r.setting.is_empty() { String::new() } else { defaults::render("guard_rules.skill_setting", &[("setting", &r.setting)]) };
+        let why = if why.is_empty() { String::new() } else { defaults::render("guard_rules.skill_why", &[("why", &why)]) };
+        let instead = if instead.is_empty() { String::new() } else { defaults::render("guard_rules.skill_instead", &[("instead", &instead)]) };
+        let line = defaults::render("guard_rules.skill_rule", &[("id", &r.id), ("tier", &format!("{}{}", r.tier, setting)), ("setting", &""), ("what", &what), ("why", &why), ("instead", &instead)]);
+        crate::discard::harmless(writeln!(o, "{}", line.split_whitespace().collect::<Vec<_>>().join(" "))); // keep: formatting into a String cannot fail
+    }
+    o
+}
+
+fn rules_skill(host: &str, a: &str) -> Skill {
+    let g = area(a);
+    let sub = g.str_field("skill");
+    let name = skill_name(host, sub);
+    let mut o = frontmatter(&name, &format!("Use when {}.", g.str_field("use_when")));
+    crate::discard::harmless(writeln!(o, "# {}\n\n{}\n", g.str_field("title"), g.str_field("brief"))); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "## {}\n\n{}\n", defaults::text("guard_rules.skill_head"), defaults::text("guard_rules.skill_intro"))); // keep: formatting into a String cannot fail
+    o.push_str(&rules_section());
+    crate::discard::harmless(writeln!(o, "\n_{}_", label("generated"))); // keep: formatting into a String cannot fail
+    Skill { name, path: skill_path(host, sub), text: o, main: false }
+}
+
 fn sub_skill(host: &str, a: &str) -> Skill {
+    if a == defaults::text("guard_rules.area") {
+        return rules_skill(host, a);
+    }
     let g = area(a);
     let sub = g.str_field("skill");
     let name = skill_name(host, sub);
@@ -215,7 +379,7 @@ pub fn find(host: &str, which: &str) -> Option<Skill> {
 
 /// The size limit of a skill in bytes.
 pub fn budget(s: &Skill) -> usize {
-    defaults::raw("roles.skill_budget").get(if s.main { "main" } else { "sub" }).and_then(V::as_integer).unwrap_or(0) as usize
+    defaults::raw("roles.skill_budget").get(if s.main { "main" } else if s.name.ends_with(area(defaults::text("guard_rules.area")).str_field("skill")) { defaults::text("guard_rules.area") } else { "sub" }).and_then(V::as_integer).unwrap_or(0) as usize
 }
 
 /// The names of the engine skills a role's note points at: the main skill only.

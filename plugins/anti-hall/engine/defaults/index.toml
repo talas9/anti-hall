@@ -29,6 +29,7 @@ files = [
     "dispatch.toml",
     "hooks.toml",
     "verify_first.toml",
+    "guard_rules.toml",
     "prompt_emit.toml",
     "ctxbudget.toml",
     "inject_gate.toml",

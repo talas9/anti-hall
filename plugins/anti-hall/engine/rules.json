@@ -8,7 +8,7 @@
       "field": "command",
       "pattern": "\\bgit\\s+(?:-\\S+\\s+)*push\\b[^|;&\\n]*(?:\\s--force(?:-with-lease)?\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s\\+\\S|\\s--(?:delete|mirror)\\b|\\s-d\\b|\\s:\\S)",
       "action": "deny",
-      "message": "anti-hall git-guard: BLOCKED. Force push detected. Rewriting published history is a deliberate human action - do it manually with explicit owner confirmation, never from an automated push."
+      "message_ref": "git.msg_force_push"
     },
     {
       "id": "git-no-ai-self-credit",
@@ -17,7 +17,7 @@
       "field": "command",
       "pattern": "(?is)\\bgit\\b[^\\n]*\\bcommit\\b.*(?:co-authored-by\\s*[:=]\\s*(?:claude|codex|gpt|openai|anthropic|copilot)|generated with\\s*\\[?\\s*(?:claude|codex|chatgpt))",
       "action": "deny",
-      "message": "anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\"). Remove it - commits carry no AI co-author credit. Re-run the commit without that trailer."
+      "message_ref": "git.msg_commit_credit"
     },
     {
       "id": "rm-rf-root-or-home",

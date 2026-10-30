@@ -39,6 +39,7 @@ fn targets() -> Vec<Target> {
             v.push(Target { rel: format!("plugins/anti-hall/{}", s.path), text: s.text });
         }
     }
+    v.push(Target { rel: format!("plugins/anti-hall/{}", defaults::text("guard_rules.digest_file")), text: skillgen::digest_file() });
     v
 }
 
