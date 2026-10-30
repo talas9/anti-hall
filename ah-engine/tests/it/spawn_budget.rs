@@ -303,7 +303,7 @@ fn t10_a_launch_between_snapshot_and_lock_cannot_pass_the_cap() {
         let h = h.clone();
         std::thread::spawn(move || spawn_as(&h, "toolu_A"))
     };
-    std::thread::sleep(std::time::Duration::from_millis(1200)); // A is waiting on the lock (reservation_lock_wait_ms 2000)
+    std::thread::sleep(std::time::Duration::from_millis(1200)); // A is waiting on the lock (spawn_reservation.lock_wait_ms 2000)
     put(&h, "t.jsonl", &running(1)); // X (toolu_0) launched
     reserved(&h, &["toolu_B"]); // B saw X running, dropped its reservation and reserved its own slot
     std::fs::remove_file(h.join(RES_LOCK)).unwrap(); // B releases the lock

@@ -4057,6 +4057,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_comms.supervisor_setting` | `7 entries` |  |  | The setting devswarm.supervisorMode (auto, on or off): whether DevSwarm counts as active for this session. |
 | `devswarm_comms.tool` | `SendMessage` |  |  | The only tool this guard decides on. |
 
+### spawn_guards.toml / guards
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `guards.cap_excluded_agent_types` | `codex:codex-rescue` |  |  | Agent types outside the owner's concurrent-agent cap (guards.maxConcurrentAgents): neither counted as running nor reserved nor capped (the Codex reviewers, on their own quota). |
+
 ### spawn_guards.toml / nested_spawn
 
 | Key | Default | Env override | Unit | What it is |
@@ -4072,7 +4078,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `spawn_ceiling.answered_line_max_bytes` | `8388608` |  |  | Transcript lines longer than this are not read for those tool results (a long foreground answer then holds its slot until the TTL). |
+| `spawn_ceiling.answered_window_bytes` | `2097152` |  |  | The transcript tail searched for the tool results that end this session's open reservations (an async launch or a foreground answer). |
+| `spawn_ceiling.background_field` | `run_in_background` |  |  | The spawn input field that says the call runs in the background; only a background call reserves a cap slot (a foreground call returns before the next one). |
 | `spawn_ceiling.base` | `12` |  |  | The ceiling at full usage headroom: a spawn is blocked when this many agents already run. |
+| `spawn_ceiling.cap_excluded_tracked_kinds` | `shell` |  |  | Agent-tracker child kinds that are not agents of the concurrent-agent cap (background shell jobs, agent_tracker.guard_job_kind). |
 | `spawn_ceiling.control_re` | `[\x00-\x1f\x7f]+` |  |  | JavaScript regex source (global): control characters cut from an agent description before it is shown. |
 | `spawn_ceiling.desc_max` | `60` |  |  | How many characters of an agent description the message keeps. |
 | `spawn_ceiling.excluded_task_types` | `local_bash` |  |  | Background task types that do not consume an agent spawn slot; their owners can still cover task-guard work. |
@@ -4090,12 +4100,26 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_ceiling.msg_why` | `More agents rarely add results, and each one costs tokens whether or not it f...` |  |  | Why the ceiling block applies. |
 | `spawn_ceiling.reservation_file` | `spawn-reservations.json` |  |  | The open spawn reservations of the concurrent-agent cap (GH #494), under swarm_guard.state_dir: one row per allowed spawn whose launch is not yet in the transcript, {id (the tool call id), session, at}. |
 | `spawn_ceiling.reservation_lock` | `spawn-reservations.lock` |  |  | The lock that makes the cap's count and its reservation one step, under swarm_guard.state_dir (timings: the swarm_guard lock group). |
-| `spawn_ceiling.reservation_lock_wait_ms` | `2000` |  |  | How long a spawn check waits for the reservation lock (at most script.lock_wait_max_ms); still busy: the unreserved count decides and nothing is reserved. |
+| `spawn_ceiling.reservation_lock_group` | `spawn_reservation` |  |  | The lock timings group of the reservation lock (<group>.lock_*): its wait, its stale timeout and whether a dead holder is taken over at once. |
 | `spawn_ceiling.reservation_ttl_ms` | `30000` |  |  | How long a reservation holds its slot when its launch never shows in the transcript (a crashed or denied call). |
+| `spawn_ceiling.reserve_unflagged` | `true` |  |  | Whether a call without spawn_ceiling.background_field reserves a slot (the host may background it); its reservation ends with its tool result. |
 | `spawn_ceiling.setting` | `6 entries` |  |  | On by default; off makes the fan-out ceiling a no-op. |
 | `spawn_ceiling.step_pct` | `70, 85, 92` |  |  | Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce. |
 | `spawn_ceiling.step_reduce` | `3, 6, 9` |  |  | How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies). |
 | `spawn_ceiling.unnamed` | `(unnamed)` |  |  | The name of a running agent with no description. |
+
+### spawn_guards.toml / spawn_reservation
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `spawn_reservation.lock_boot_slop_s` | `5` |  |  | Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution). |
+| `spawn_reservation.lock_reclaim_stale_ms` | `5000` |  |  | A reservation-lock takeover marker older than this belongs to a reclaimer that died and may be taken over. |
+| `spawn_reservation.lock_release_step_ms` | `10` |  |  | The pause between those tries. |
+| `spawn_reservation.lock_release_tries` | `5` |  |  | How many times releasing the reservation lock tries to take the takeover marker before it removes its own lock unguarded. |
+| `spawn_reservation.lock_stale_ms` | `5000` |  |  | A reservation lock older than this is taken over whatever its holder (a hung check), so a check cut or killed while holding it never wedges the next spawn (GH #494). |
+| `spawn_reservation.lock_steal_dead` | `true` |  |  | Take over a reservation lock whose holder process is dead at once, whatever its age (a check that crashed holding it). |
+| `spawn_reservation.lock_step_ms` | `5` |  |  | The pause between attempts to take the reservation lock. |
+| `spawn_reservation.lock_wait_ms` | `2000` |  |  | How long a spawn check waits for the reservation lock (at most script.lock_wait_max_ms); still busy: the same count, read unlocked, decides and nothing is reserved. |
 
 ### spawn_guards.toml / spawn_usage
 
@@ -14386,7 +14410,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
 | `idle_trips` | counter | events |  | AFK periods started by idle detection. |
 | `runtime_escalation_stop_unrecorded` | counter | stops |  | Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap). |
-| `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, write_failed (allowed unreserved), lock_busy (the unreserved count decided). |
+| `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided). |
 | `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
