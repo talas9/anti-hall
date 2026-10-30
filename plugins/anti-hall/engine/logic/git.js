@@ -1992,10 +1992,8 @@ function pushCreditVerdict(ev, lastCdDir) {
     if (!S.pushChecks.has(key)) S.pushChecks.set(key, unpushedCredit(dir, repo, ev.env));
     const r = S.pushChecks.get(key);
     if (r.tags.length) return gmKey('msg_push_tag_credit', { tags: r.tags.slice(0, TB.shown).join(', ') + (r.tags.length > TB.shown ? ah.cfg('git.more_marker') : '') });
-    if (r.hits.length) {
-      const shown = r.hits.slice(0, TB.shown).map(hitText).join(', ') + (r.hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
-      return gmKey('msg_push_credit', { shown: shown });
-    }
+    const left = r.hits.length ? pushAck(key, r.hits) : r.hits;
+    if (left.length) return gmKey('msg_push_credit', { shown: hitList(left) });
     // more unpushed commits than the cap: a credit past it cannot be ruled out, so the push is refused, never allowed unread
     if (r.over) return gmKey('msg_push_over_cap', { cap: ah.cfg('git.push_max_commits') });
     if (r.unchecked) S.pushUnchecked = true;
@@ -2005,6 +2003,46 @@ function pushCreditVerdict(ev, lastCdDir) {
     S.pushUnchecked = true;
     return null; // fail open, with the advisory
   }
+}
+
+function hitList(hits) {
+  return hits.slice(0, TB.shown).map(hitText).join(', ') + (hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
+}
+
+// PR #469 round 6: a public commit whose remote-tracking ref was pruned looks unpushed, and offline nothing tells it from a new
+// one. A push blocked on credited commits records them (with the command text and directory) in a per-session stamp; the
+// identical push retried unchanged acknowledges them, and an acknowledged commit gets git.push_ack_advisory instead of a block
+// for the rest of the session. A commit not yet blocked once still blocks. Bounded by git.push_ack_max_shas (0: off); no session
+// id: never acknowledged; a stamp that cannot be written lets the commits through with the advisory. Returns the hits to block.
+function pushAck(key, hits) {
+  const max = ah.cfg('git.push_ack_max_shas');
+  if (!max || !S.session) return hits;
+  if (!S.pushAck) S.pushAck = new Map();
+  if (S.pushAck.has(key)) return S.pushAck.get(key);
+  const name = ah.cfg('git.push_ack_state_prefix') + S.session.replace(/[^A-Za-z0-9_.-]/g, '_') + ah.cfg('replykit.json_ext');
+  const rel = ah.cfg('replykit.state_dir') + '/' + name;
+  let st = null;
+  try { st = JSON.parse(ah.state.readText(rel) || 'null'); } catch (e) { st = null; }
+  if (!st || typeof st !== 'object' || !Array.isArray(st.acked)) st = { acked: [], last: null };
+  const push = ah.sha1(S.raw + '\n' + key);
+  const lastIds = st.last && st.last.push === push && Array.isArray(st.last.ids) ? st.last.ids : [];
+  const acked = st.acked.filter((x) => typeof x === 'string');
+  const idOf = (h) => (h.sub || '') + ':' + h.sha;
+  let left = [];
+  const passed = [];
+  for (const h of hits) {
+    const id = idOf(h);
+    if (acked.includes(id)) passed.push(h);
+    else if (lastIds.includes(id)) { acked.push(id); passed.push(h); }
+    else left.push(h);
+  }
+  let ok = false;
+  try { ok = ah.state.writeAtomic(rel, JSON.stringify({ acked: acked.slice(-max), last: left.length ? { push: push, ids: left.map(idOf) } : null })) === true; } catch (e) { ok = false; }
+  if (ok) { try { ah.state.prune(ah.cfg('git.push_ack_state_prefix'), name); } catch (e) { /* retention only */ } }
+  else { passed.push(...left); left = []; } // fails toward the advisory
+  if (passed.length) S.pushAckNote = text.render(ah.cfg('git.push_ack_advisory'), { shown: hitList(passed) });
+  S.pushAck.set(key, left);
+  return left;
 }
 
 // `~` and `~/x` are the agent's own home; anything else is used as written
@@ -2046,6 +2084,7 @@ function fillPushArgv(tpl, dir, repo, n) {
 function unpushedCredit(dir, repo, env) {
   const cap = ah.cfg('git.push_max_commits');
   const out = { unchecked: false, hits: [], tags: [], over: false };
+  const unpushed = new Set(); // full hashes of the repository's own unpushed commits: the tags in scope point at one
   const execEnv = env && Object.keys(env).length ? env : undefined;
   const run = (argv, e) => {
     const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: e, timeoutMs: ah.cfg('git.push_timeout_ms') });
@@ -2063,18 +2102,20 @@ function unpushedCredit(dir, repo, env) {
       const sha = (f[0] || '').trim();
       if (!sha) continue;
       count++;
+      if (sub === null) unpushed.add(sha);
       if (count <= cap && f[1] && hasSelfCredit(f[1])) out.hits.push({ sha: sha.slice(0, TB.commitHashShort), dir: d, repo: rp, env: e, sub: sub });
     }
   };
   scan(dir, repo, execEnv, null);
   out.over = out.over || count > cap;
   if (out.unchecked || out.over) return out;
-  // annotated tags: the newest {n}; an older tag past them was most likely fetched, and lightweight tags are commits (scanned above)
-  const tagTxt = run(fillPushArgv(ah.cfg('git.push_argv_tags'), dir, repo, cap + 1), execEnv);
+  // annotated tags: the newest {n}, and only those on an unpushed commit (one on a commit a remote has is public, a fetched tag
+  // included); lightweight tags are commits (scanned above)
+  const tagTxt = unpushed.size ? run(fillPushArgv(ah.cfg('git.push_argv_tags'), dir, repo, cap + 1), execEnv) : null;
   if (tagTxt !== null) {
     for (const rec of tagTxt.split(rs)) {
       const f = rec.replace(/^\n/, '').split(us);
-      if ((f[0] || '').trim() === ah.cfg('git.push_tag_object_type') && f[2] && hasSelfCredit(f[2])) out.tags.push(f[1]);
+      if ((f[0] || '').trim() === ah.cfg('git.push_tag_object_type') && unpushed.has((f[2] || '').trim()) && f[3] && hasSelfCredit(f[3])) out.tags.push(f[1]);
     }
   }
   // submodules: each checked-out one is scanned the same way, inside the same commit cap
@@ -3060,6 +3101,7 @@ function decideScan(p, opts, event) {
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
   const notes = [];
   if (S.pushUnchecked) notes.push(ah.cfg('git.push_unchecked_advisory'));
+  if (S.pushAckNote) notes.push(S.pushAckNote);
   if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
   if (notes.length) {
     return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.join('\n') } }) };

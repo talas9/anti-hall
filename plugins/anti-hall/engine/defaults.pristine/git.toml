@@ -904,7 +904,19 @@ unit = "ms"
 
 [git.msg_push_credit]
 doc = "Block: a push would publish commits that carry an AI credit. Placeholder: {shown} (each short hash with the branches that hold it, push_hit_format)."
-value = { what = "this push would publish commits with AI credit: {shown}.", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "if it is the unpushed tip of a branch you own, switch to it and reword it (commit --amend); else tell the owner." }
+value = { what = "this push would publish commits with AI credit: {shown}.", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "unpushed tip of your branch: switch to it, reword it (commit --amend); already public or other: tell the owner." }
+
+[git.push_ack_max_shas]
+doc = "Most credited commits one session may acknowledge (PR #469 round 6). A commit only a pruned remote-tracking ref protected looks unpushed and cannot be told public offline, so after msg_push_credit blocked a push once, the identical push retried unchanged (same command text and directory) downgrades the commits it named to push_ack_advisory for the rest of the session. A new credited commit still blocks first. Past this many the oldest acknowledgement is dropped; 0 turns the acknowledgement off. A stamp that cannot be written lets the blocked commits through with the advisory at once (fails toward advisory)."
+value = 20
+
+[git.push_ack_state_prefix]
+doc = "File name prefix of the per-session push acknowledgement stamp (push_ack_max_shas), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it."
+value = "git-push-ack-"
+
+[git.push_ack_advisory]
+doc = "Advisory when a push is let through because its credited commits were acknowledged in this session (push_ack_max_shas). Placeholder: {shown} (as in msg_push_credit)."
+value = "anti-hall: this push was let through although it may publish commits with AI credit: {shown}. They were blocked once and the same push was retried unchanged, so they are taken as already public; if they are not, stop and tell the owner."
 
 [git.push_hit_format]
 doc = "One credited commit in msg_push_credit. Placeholders: {sha} (short hash), {branches} (the local branches that contain it, from push_argv_branch_contains), {where} (push_hit_where_format for a submodule, else empty)."
@@ -935,8 +947,8 @@ doc = "git arguments printing the absolute path of each checked-out submodule, n
 value = ["-C", "{dir}", "{repo}", "submodule", "foreach", "--quiet", "--recursive", "pwd"]
 
 [git.push_argv_tags]
-doc = "git arguments listing the newest local tags ({n} of them, the commit cap plus one) as object type, name and message; an annotated tag (push_tag_object_type) whose message carries an AI credit refuses the push. Fields end with US and records with RS."
-value = ["-C", "{dir}", "{repo}", "for-each-ref", "--count={n}", "--sort=-creatordate", "--format=%(objecttype)%1f%(refname:short)%1f%(contents)%1e", "refs/tags"]
+doc = "git arguments listing the newest local tags ({n} of them, the commit cap plus one) as object type, name, tagged object and message. An annotated tag (push_tag_object_type) is in scope only when the commit it tags is itself unpushed (in the push_argv_log result): a tag on a commit a remote already has is taken as public, so a fetched credited tag never blocks, and a tag made locally on an already-pushed commit (or a tag of a tag) is not scanned. One in scope whose message carries an AI credit refuses the push. Fields end with US and records with RS."
+value = ["-C", "{dir}", "{repo}", "for-each-ref", "--count={n}", "--sort=-creatordate", "--format=%(objecttype)%1f%(refname:short)%1f%(*objectname)%1f%(contents)%1e", "refs/tags"]
 
 [git.push_tag_object_type]
 doc = "The object type for-each-ref prints for an annotated tag (a lightweight tag prints its commit's type and is covered by the commit scan)."
