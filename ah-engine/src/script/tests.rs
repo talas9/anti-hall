@@ -3223,6 +3223,106 @@ mod afk_mode {
         assert_eq!(denied(&m, "afk_changed"), 1);
     }
 
+    // ---- GH #442 review P2s ----
+
+    fn rec_path(h: &str, ns_key: &str) -> String {
+        format!("{h}/.anti-hall/{}-s1.json", crate::defaults::text(ns_key))
+    }
+
+    /// P2-1: owner prompts while afk.enabled is off still void an earlier consult (the gate is re-enabled before the attempt).
+    #[test]
+    fn plan_owner_prompt_while_afk_disabled_still_voids_the_consult() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-disabled");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"enabled": false}}).to_string()).unwrap();
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "actually, do step 2 first"}));
+        std::fs::remove_file(format!("{h}/.anti-hall/settings.json")).unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "owner_prompt"), 1);
+    }
+
+    /// P2-2: both owner-prompt stamps (witness and record) failing must poison the consult.
+    #[test]
+    fn plan_both_prompt_stamps_failing_poison_the_consult() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-bothfail");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let (rec, wit) = (rec_path(&h, "afk.plan_state_ns"), rec_path(&h, "afk.plan_prompt_ns"));
+        let saved = std::fs::read_to_string(&rec).unwrap();
+        let saved_w = std::fs::read_to_string(&wit).ok();
+        let _ = std::fs::remove_file(&rec);
+        let _ = std::fs::remove_file(&wit);
+        std::fs::create_dir_all(&rec).unwrap();
+        std::fs::create_dir_all(&wit).unwrap();
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
+        std::fs::remove_dir(&rec).unwrap();
+        std::fs::remove_dir(&wit).unwrap();
+        std::fs::write(&rec, saved).unwrap();
+        if let Some(w) = saved_w {
+            std::fs::write(&wit, w).unwrap();
+        }
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "stamp_poisoned"), 1);
+    }
+
+    /// P2-3: the approval hashes the very text it compares (one read), so the text hash must equal the file hash of the same bytes.
+    #[test]
+    fn plan_text_hash_matches_the_file_hash_of_the_same_bytes() {
+        let h = home("afk-plan-texthash");
+        let pf = format!("{h}/p.md");
+        std::fs::write(&pf, PLAN).unwrap();
+        assert_eq!(super::super::host::text_sha256(PLAN), super::super::host::file_sha256(&pf).unwrap());
+    }
+
+    /// P2-4: the record's read-modify-write takes a cross-process lock; while another process holds it nothing is approved.
+    #[test]
+    fn plan_record_lock_held_elsewhere_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-lock");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let lock = format!("{h}/.anti-hall/{}s1", crate::defaults::text("afk.plan_lock_prefix"));
+        let held = crate::checks::guardkit::nodelock::acquire(&lock, crate::checks::guardkit::nodelock::Params::from_group("afk").unwrap()).unwrap();
+        let o = exit_plan(&h, "s1");
+        held.release();
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "state_error"), 1);
+    }
+
+    /// P2-5: the record namespace's prune never matches the witness files (no prefix collision).
+    #[test]
+    fn plan_record_prune_never_removes_witness_files() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-prune");
+        afk_on(&h);
+        let (rec_ns, wit_ns) = (crate::defaults::text("afk.plan_state_ns"), crate::defaults::text("afk.plan_prompt_ns"));
+        assert!(!wit_ns.starts_with(&format!("{rec_ns}-")) && !rec_ns.starts_with(&format!("{wit_ns}-")), "{rec_ns} / {wit_ns}");
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        let old = format!("{h}/.anti-hall/{wit_ns}-s9.json");
+        std::fs::write(&old, r#"{"seq":3}"#).unwrap();
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
+        plan_write(&h, "s1"); // a record write runs the record namespace's prune
+        assert!(std::path::Path::new(&old).exists(), "the witness of another session was pruned by the record namespace");
+        drained();
+    }
+
     /// Fail-open never: every uncertain state leaves the normal prompt (no stdout) and approves nothing.
     #[test]
     fn plan_uncertainty_never_fails_open() {
