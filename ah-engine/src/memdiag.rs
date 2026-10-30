@@ -507,7 +507,8 @@ pub fn ledger(snap: &Value) -> Value {
         "system_malloc_other_zones": mb(other_sys), "of_which_sqlite_in_use": mb(sqlite),
         "unaccounted": mb(footprint - jemalloc - other_sys),
         "heap": {"unit": "bytes", "allocated": allocated, "allocated_usable": snap.pointer("/allocator/jemalloc/allocated").and_then(Value::as_u64),
-            "holders": holders, "other": other, "attributed_pct": pct},
+            "holders": holders, "other": other, "attributed_pct": pct,
+            "by_thread": snap.pointer("/memory/budgets/gauges").cloned().unwrap_or_else(|| json!([]))},
         "invariant": {"other_nonneg": nonneg, "skew_bytes": skew, "overcount_by": overcount},
     })
 }

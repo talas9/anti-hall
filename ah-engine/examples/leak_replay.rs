@@ -26,6 +26,7 @@ fn main() {
                         name: h["name"].as_str().unwrap().into(),
                         bytes: h["bytes"].as_u64().unwrap(),
                         soft: h["soft"].as_u64().unwrap_or(0),
+                        gauge: false,
                     })
                     .collect();
                 ring.push(Sample {
@@ -42,8 +43,12 @@ fn main() {
                 if d.get("t").is_none() {
                     continue; // sample-0 has the other (snapshot) shape
                 }
-                let holders =
-                    d["holders"].as_object().unwrap().iter().map(|(k, v)| HolderReading { name: k.clone(), bytes: v.as_u64().unwrap(), soft: 0 }).collect();
+                let holders = d["holders"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, v)| HolderReading { name: k.clone(), bytes: v.as_u64().unwrap(), soft: 0, gauge: false })
+                    .collect();
                 ring.push(Sample {
                     t_s: d["t"].as_u64().unwrap(),
                     footprint: d["footprint_kb"].as_u64().unwrap() * 1024,
@@ -63,8 +68,8 @@ fn main() {
                     footprint: (mb * 1_048_576.0) as u64,
                     heap: ((mb - 20.0) * 1_048_576.0) as u64,
                     holders: vec![
-                        HolderReading { name: "grower".into(), bytes: ((mb - 60.0) * 1_048_576.0) as u64, soft: 0 },
-                        HolderReading { name: "flat".into(), bytes: 5_000_000, soft: 0 },
+                        HolderReading { name: "grower".into(), bytes: ((mb - 60.0) * 1_048_576.0) as u64, soft: 0, gauge: false },
+                        HolderReading { name: "flat".into(), bytes: 5_000_000, soft: 0, gauge: false },
                     ],
                 });
             }

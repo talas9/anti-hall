@@ -193,6 +193,11 @@ impl Registry {
         Registry(Arc::new(Inner { lookup, sink, epoch: Instant::now(), entries: Mutex::new(Vec::new()), g: Global::default() }))
     }
 
+    /// Whether two handles name the same registry.
+    pub(crate) fn same(&self, other: &Registry) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     fn ms(&self) -> u64 {
         self.0.epoch.elapsed().as_millis() as u64
     }
@@ -378,10 +383,17 @@ impl Registry {
                     "recycles": e.n.recycles.load(SeqCst)}))
             })
             .collect();
+        // the per-subsystem gauges (no limits, and NOT holders: a thread's net overlaps the holders it fills, so they are listed
+        // beside the holders to show which subsystem's heap moves, never subtracted from the heap; see `mem::attribute_thread`)
+        let gauges: Vec<Value> = if super::is_global(self) {
+            super::thread_sites().into_iter().map(|(name, net)| json!({"name": name, "bytes": net.max(0), "net_bytes": net})).collect()
+        } else {
+            Vec::new()
+        };
         json!({"global": {"process_bytes": g.process.load(SeqCst), "registered_bytes": registered, "soft_bytes": self.get("mem.global_soft_bytes"),
             "hard_bytes": self.get("mem.global_hard_bytes"), "soft_active": g.soft_active.load(SeqCst), "hard_active": g.hard_active.load(SeqCst),
             "soft_trips": g.n.soft.load(SeqCst), "hard_trips": g.n.hard.load(SeqCst), "restarts_requested": g.restarts.load(SeqCst)},
-            "holders": holders})
+            "holders": holders, "gauges": gauges})
     }
 }
 

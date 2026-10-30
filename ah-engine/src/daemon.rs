@@ -1694,6 +1694,7 @@ fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send 
 }
 
 fn worker(sh: Arc<Shared>, idx: usize) {
+    crate::mem::attribute_thread(defaults::text("mem.requests_site"));
     crate::script::prewarm_patterns();
     crate::script::prewarm();
     crate::deadline::set_beat(sh.busy_since[idx].clone(), sh.started);

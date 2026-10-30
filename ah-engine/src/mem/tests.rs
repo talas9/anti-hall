@@ -286,3 +286,20 @@ fn an_instance_holder_under_its_per_instance_soft_limit_is_not_flagged_by_the_le
     let v = leak::evaluate(&ring, samples.len() as u64 * 60, &params).to_json();
     assert!(v["holders"].as_array().is_none_or(Vec::is_empty), "summed bytes 360 vs per-instance soft 100 is not an excursion: {v}");
 }
+
+#[test]
+fn a_thread_name_gets_one_attribution_counter_however_many_threads_bind_it() {
+    let bind = || std::thread::spawn(|| super::attribute_thread("issue-471-test-site")).join().unwrap();
+    bind();
+    bind();
+    let n = super::thread_sites().iter().filter(|(name, _)| *name == "issue-471-test-site").count();
+    assert_eq!(n, 1, "a restarted or repeated thread reuses its name's counter");
+}
+
+#[test]
+fn gauges_are_read_as_gauges_beside_the_holders() {
+    let snap = serde_json::json!({"holders": [{"name": "regex", "bytes": 10, "soft_bytes": 20, "instances": 1}],
+        "gauges": [{"name": "requests", "bytes": 7, "net_bytes": 7}]});
+    let r = super::leak::readings(&snap);
+    assert_eq!(r.iter().map(|h| (h.name.as_str(), h.gauge)).collect::<Vec<_>>(), vec![("regex", false), ("requests", true)]);
+}

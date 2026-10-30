@@ -32,6 +32,8 @@ pub struct HolderReading {
     pub name: String,
     /// Bytes it holds.
     pub bytes: u64,
+    /// A per-subsystem gauge (`budgets.gauges`), not a holder: trended like one, but never subtracted from the heap.
+    pub gauge: bool,
     /// Its soft limit (0 = none).
     pub soft: u64,
 }
@@ -187,7 +189,7 @@ fn holder_bytes(s: &Sample, name: &str) -> f64 {
 }
 
 fn other_bytes(s: &Sample) -> f64 {
-    s.heap as f64 - s.holders.iter().map(|h| h.bytes as f64).sum::<f64>()
+    s.heap as f64 - s.holders.iter().filter(|h| !h.gauge).map(|h| h.bytes as f64).sum::<f64>()
 }
 
 /// Holders at their soft limit for the last `holder_over_samples` samples, or growing in each of the last `holder_windows` windows.
@@ -419,16 +421,22 @@ pub fn status() -> Value {
 /// The holders of a registry snapshot as sentinel readings. An instance holder reports the SUM of its instances against a
 /// limit that applies to each one, so its soft limit is scaled by the live instance count (else it always reads as over).
 pub(crate) fn readings(snapshot: &Value) -> Vec<HolderReading> {
-    snapshot["holders"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|h| HolderReading {
-                    name: h["name"].as_str().unwrap_or_default().to_string(),
-                    bytes: h["bytes"].as_u64().unwrap_or(0),
-                    soft: h["soft_bytes"].as_u64().unwrap_or(0).saturating_mul(h["instances"].as_u64().unwrap_or(1).max(1)),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    let read = |key: &str, gauge: bool| -> Vec<HolderReading> {
+        snapshot[key]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|h| HolderReading {
+                        name: h["name"].as_str().unwrap_or_default().to_string(),
+                        bytes: h["bytes"].as_u64().unwrap_or(0),
+                        gauge,
+                        soft: h["soft_bytes"].as_u64().unwrap_or(0).saturating_mul(h["instances"].as_u64().unwrap_or(1).max(1)),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut v = read("holders", false);
+    v.extend(read("gauges", true));
+    v
 }

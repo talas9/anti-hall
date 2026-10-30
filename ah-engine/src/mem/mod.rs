@@ -47,6 +47,11 @@ fn log_event(e: &Event) {
     crate::health::log_event("memory", code, &render(template, &[("holder", &e.holder), ("usage", &e.usage), ("limit", &e.limit)]));
 }
 
+/// Whether `r` is the process-wide registry (only that one shows the per-subsystem gauges).
+pub(crate) fn is_global(r: &Registry) -> bool {
+    GLOBAL.get().is_some_and(|g| g.same(r))
+}
+
 /// Record `bytes` that were leaked on purpose (a `'static` value built from the config, kept for the life of the process).
 /// The `defaults_leak` holder reads the total, so repeated config reloads are visible and bounded.
 pub fn note_leak(bytes: usize) {
@@ -72,6 +77,36 @@ pub fn register_defaults_leak() -> Budget {
     let owner = ANCHOR.get_or_init(|| std::sync::Arc::new(Leak)).clone();
     let weak: std::sync::Weak<Leak> = std::sync::Arc::downgrade(&owner);
     global().register(Spec::new("defaults_leak", "mem.defaults_leak_soft_bytes", "mem.defaults_leak_hard_bytes", "mem.defaults_leak_low_water_pct"), weak)
+}
+
+/// Per-subsystem heap attribution (issue #471): each long-lived thread named here charges its allocations minus its frees to
+/// one counter, so the part of the heap no registered holder names (`other` in `status --memory`) is split by the subsystem
+/// whose thread holds it. Threads with the same name share a counter; past `mem.thread_sites_max` names a thread is not bound
+/// and its bytes stay in the residual.
+static SITES: std::sync::Mutex<Vec<(&'static str, &'static std::sync::atomic::AtomicI64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Charge the calling thread's later allocations and frees to `name` (a service loop or the request workers).
+pub fn attribute_thread(name: &'static str) {
+    let slot = {
+        let mut v = SITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match v.iter().find(|(n, _)| *n == name) {
+            Some((_, s)) => *s,
+            None if v.len() < crate::defaults::num("mem.thread_sites_max") as usize => {
+                // one counter per distinct name for the life of the process (a restarted loop reuses it); counted as a leak
+                let s: &'static std::sync::atomic::AtomicI64 = Box::leak(Box::new(std::sync::atomic::AtomicI64::new(0)));
+                note_leak(std::mem::size_of::<std::sync::atomic::AtomicI64>());
+                v.push((name, s));
+                s
+            }
+            None => return,
+        }
+    };
+    crate::memstat::bind_thread(slot);
+}
+
+/// The net bytes (allocated minus freed) charged to each attributed thread name so far.
+pub fn thread_sites() -> Vec<(&'static str, i64)> {
+    SITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().map(|(n, s)| (*n, s.load(Relaxed))).collect()
 }
 
 /// The exit reason recorded when [`Registry::tick`] asks for a restart.

@@ -376,6 +376,14 @@ holders of the memory registry; `other` is what no holder names, `attributed_pct
 the holders listed in `overcount_by`, when the holders sum past the heap by more than `mem.ledger_skew_bytes`. The `sys_reserved_*` fields of
 `mem.ndjson` rows are the zones' reserved address space (formerly `sys_allocated_*`); `sys_in_use_*` is the usage figure.
 
+Heap by subsystem (issue #471, keys `mem.thread_sites_max`, `mem.requests_site`). Every supervised service loop and the request workers
+charge the bytes their thread allocates minus the bytes it frees to a counter named after the thread (`requests` for the workers).
+`memory.budgets.gauges` lists them (`bytes`, and the signed `net_bytes`) and the ledger repeats them as `heap.by_thread`. They are gauges,
+not holders: no limits, and a thread's figure overlaps the holders it fills (the workers fill the regex cache and QuickJS), so they are
+never subtracted from `other`. They answer which subsystem's heap moves when `other` grows: the leak sentinel trends each gauge like a
+holder, so a leak report names the growing subsystem (a gauge that climbs while the holders on that thread stay flat is the one
+holding the unattributed heap). Short-lived helper threads are not bound and stay in the residual.
+
 Memory budgets (issues #21 and #158, defaults file `mem.toml`). Every long-lived in-memory holder (the shared regex cache, each worker's
 QuickJS interpreter, the transcript-tail cache, the config values leaked on purpose) registers with one registry in `src/mem` and gets a
 soft and a hard limit from `mem.<holder>_soft_bytes` / `_hard_bytes` (and `_low_water_pct`); `mem.global_*` bounds the process. At the soft
