@@ -2226,10 +2226,7 @@ fn failed_wake_fallback_queue_write_is_counted() {
     for m in [19, 23, 30, 45, 60, 78] {
         tick_at(&mut st, n + m * MIN);
     }
-    assert!(
-        crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1,
-        "a failed wake-fallback queue write is counted"
-    );
+    assert!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1, "a failed wake-fallback queue write is counted");
 }
 
 /// The first delivery fails (nothing sent), the queue recovers, a later reminder lands: that success is counted as sent once.
