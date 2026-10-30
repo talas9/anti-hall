@@ -3854,6 +3854,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_scan.json_unsupported` | `recursion limit, out of range` |  |  | Fragments of a JSON parser error that mean the text is JSON to JavaScript but not to serde (nesting past the parser's limit, a number past f64 range); such a line defers to the Node hook. |
 | `agent_scan.launch_text` | `Async agent launched successfully` |  |  | Text a launch tool_result begins with. |
 | `agent_scan.launch_tools` | `Agent, Task` |  |  | Tools whose tool_result can be a launch of an agent. |
+| `agent_scan.max_line_bytes` | `4194304` |  | bytes | Longest transcript line, in bytes, the agent scan holds and parses. A longer line (in practice one huge tool_result, measured 2026-10-30 at 60 MB) is read past in the reader's own buffer without being held, is not parsed, is counted in transcript_line_skipped_oversize{reader} and takes no part in the answer: nothing the scan looks for (a launch, a terminal notice, a stop, a teammate event) is carried by a line of that size. Before the bound the scan buffered the whole line and parsed it, and several scans overlapping on one such transcript made the daemon pass its RSS cap and restart (#436: one 60 MB line = 120.6 MB of line buffer plus two 62.9 MB parse copies). 4 MiB is above the longest line in 1.38 million lines of 5,613 local transcripts (2.95 MB; none over 1 MiB carried an agent launch or notice) and 15 times below the 60 MB line. 0 turns the bound off: every line is held and parsed whole, as before. |
 | `agent_scan.not_a_report_keys` | `12 items` |  |  | Keys the host stamps on records that come from a person, a queue, a tool result or a compaction, and never on a real teammate report (NOT_A_REPORT_KEYS). |
 | `agent_scan.notification_tag` | `<task-notification>` |  |  | The opening tag of a completion notice. |
 | `agent_scan.object_string` | `[object Object]` |  |  | What String() gives for an object. |
@@ -14280,6 +14281,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tier_hits` | gauge | reads |  | Key-value reads answered from memory since the daemon started. |
 | `tier_items` | gauge | items |  | Active key-value items held in memory (D22). |
 | `tier_misses` | gauge | reads |  | Key-value reads that went to SQLite since the daemon started. |
+| `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan answers as if the line were not there. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
 | `jev_asked_sync` | counter | calls | id | Stop/SubagentStop asks the gate let wait for Jev (the rule layer had flagged a likely unverified claim), by integration. |

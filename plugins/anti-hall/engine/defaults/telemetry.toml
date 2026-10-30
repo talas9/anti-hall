@@ -363,6 +363,10 @@ value = { kind = "counter", unit = "lookups", labels = ["result"] }
 doc = "Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised)."
 value = { kind = "counter", unit = "lookups", labels = ["reason"] }
 
+[metric.transcript_line_skipped_oversize]
+doc = "Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan answers as if the line were not there."
+value = { kind = "counter", unit = "lines", labels = ["reader"] }
+
 [metric.dispatch_overhead_us]
 doc = "Wall time of a dispatched hook request that no built-in check accounts for (request wall minus the sum of the checks), by hook event: parsing, plan, locks, waits and queueing inside the daemon."
 value = { kind = "histogram", unit = "us", labels = ["event"] }
