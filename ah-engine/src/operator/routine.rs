@@ -206,6 +206,8 @@ struct Target {
     engine: PathBuf,
     hook: PathBuf,
     roots: Vec<PathBuf>,
+    /// Live-hook plugin roots the check could not validate (unresolvable, missing, or without the plugin tree): reported, never dropped.
+    unresolved: Vec<String>,
 }
 
 fn fill_home(s: &str, home: &str) -> String {
@@ -225,12 +227,41 @@ fn roots_of_installed(home: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The plugin roots the LIVE hook commands run from: every `command` string in the hook registrations of
-/// `routine.live_hook_files` (the Codex `hooks.json` has the plugin directory filled in) is matched against
-/// `routine.live_hook_root_rx`, whose first group is the root. Nothing is assumed about where the plugin is installed.
-fn roots_of_live_hooks(home: &str) -> Vec<PathBuf> {
-    let Ok(re) = regex::Regex::new(t("routine.live_hook_root_rx")) else { return Vec::new() };
-    let mut roots = Vec::new();
+/// The plugin directory a hook command runs from: the command is split into shell words (quotes and escapes decoded), `$HOME` /
+/// `${HOME}` / `~` expanded (`routine.live_hook_home_vars`, `routine.live_hook_tilde`), and the word that matches
+/// `routine.live_hook_root_rx` gives the root (group 1). A word that holds a whole nested command (`sh -c '...'`) is searched too.
+/// A candidate that cannot become an absolute path (an unknown variable, a relative path, broken quoting) goes to `unresolved`.
+fn live_candidates(cmd: &str, home: &str, re: &regex::Regex, depth: u8, roots: &mut Vec<PathBuf>, unresolved: &mut Vec<String>) {
+    let Some(words) = shlex::split(cmd) else {
+        if cmd.contains(t("routine.live_hook_marker")) {
+            unresolved.push(cmd.to_string());
+        }
+        return;
+    };
+    let tilde = t("routine.live_hook_tilde");
+    for w in words {
+        let mut w = defaults::list("routine.live_hook_home_vars").iter().fold(w, |acc, v| acc.replace(v, home));
+        if w == tilde || w.starts_with(&format!("{tilde}/")) {
+            w = format!("{home}{}", &w[tilde.len()..]);
+        }
+        if let Some(root) = re.captures(&w).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()) {
+            if root.starts_with('/') && !root.contains(['$', '`']) {
+                roots.push(PathBuf::from(root));
+            } else {
+                unresolved.push(root);
+            }
+        } else if depth > 0 && w.contains(char::is_whitespace) {
+            live_candidates(&w, home, re, depth - 1, roots, unresolved);
+        }
+    }
+}
+
+/// The plugin roots the LIVE hook commands run from, and the candidates that could not be resolved to a path: every `command`
+/// string in the hook registrations of `routine.live_hook_files` (the Codex `hooks.json`, global and project-local). Nothing is
+/// assumed about where the plugin is installed.
+fn roots_of_live_hooks(home: &str) -> (Vec<PathBuf>, Vec<String>) {
+    let Ok(re) = regex::Regex::new(t("routine.live_hook_root_rx")) else { return (Vec::new(), Vec::new()) };
+    let (mut roots, mut unresolved) = (Vec::new(), Vec::new());
     for f in defaults::list("routine.live_hook_files") {
         let Some(v) = std::fs::read_to_string(fill_home(f, home)).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { continue };
         let mut stack = vec![&v];
@@ -240,7 +271,7 @@ fn roots_of_live_hooks(home: &str) -> Vec<PathBuf> {
                     for (k, c) in o {
                         match c.as_str() {
                             Some(cmd) if k == t("routine.live_hook_command_key") => {
-                                roots.extend(re.captures(&cmd.replace('\\', "/")).and_then(|c| c.get(1)).map(|m| PathBuf::from(m.as_str())));
+                                live_candidates(cmd, home, &re, defaults::num("routine.live_hook_depth") as u8, &mut roots, &mut unresolved);
                             }
                             _ => stack.push(c),
                         }
@@ -251,7 +282,20 @@ fn roots_of_live_hooks(home: &str) -> Vec<PathBuf> {
             }
         }
     }
-    roots
+    (roots, unresolved)
+}
+
+/// The live-hook plugin roots (resolved or not, as text) that are NOT `deployed`: what `doctor` reports when a host runs hooks
+/// from another plugin directory than the one deployed here.
+pub fn live_root_mismatches(home: &str, deployed: &Path) -> Vec<String> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let want = canon(deployed);
+    let (roots, unresolved) = roots_of_live_hooks(home);
+    let mut out: Vec<String> = roots.iter().filter(|r| canon(r) != want).map(|r| r.display().to_string()).collect();
+    out.extend(unresolved);
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The plugin roots the install routine keeps in step (the engine's own, the registered installs, `routine.default_roots`).
@@ -268,8 +312,17 @@ fn resolve_target() -> Target {
         .filter(|s| !s.is_empty())
         .map(|s| s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect())
         .unwrap_or_default();
+    let mut unresolved = Vec::new();
     if roots.is_empty() {
-        roots.extend(roots_of_live_hooks(&home));
+        let (live, bad) = roots_of_live_hooks(&home);
+        unresolved = bad;
+        for r in live {
+            if r.join(t("routine.tree_marker")).is_file() {
+                roots.push(r);
+            } else {
+                unresolved.push(r.display().to_string());
+            }
+        }
         roots.extend(defaults::root());
         roots.extend(roots_of_installed(&home));
         roots.extend(
@@ -283,7 +336,7 @@ fn resolve_target() -> Target {
         seen.push(key);
         fresh && r.join(t("routine.tree_marker")).is_file()
     });
-    Target { engine: bin_dir.join(t("rollback.bin_name")), hook: bin_dir.join(t("rollback.client")), state, bin_dir, roots }
+    Target { engine: bin_dir.join(t("rollback.bin_name")), hook: bin_dir.join(t("rollback.client")), state, bin_dir, roots, unresolved }
 }
 
 fn sha_of(p: &Path) -> Option<String> {
@@ -677,6 +730,9 @@ fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) 
                 ],
             ));
         }
+    }
+    for u in &tg.unresolved {
+        pre.problems.push(defaults::render("routine.problem_live_root", &[("root", u)]));
     }
     if tg.roots.is_empty() && src.tree.is_none() {
         log.say(t("routine.line_no_roots").to_string());

@@ -2512,3 +2512,7 @@ value = ["config", "--file", ".gitmodules", "--get-regexp", '^submodule\..*\.pat
 [doctor_msg.stray_submodule_history]
 doc = "Existing history inside a submodule; diagnostic only, never moved or removed."
 value = "stray submodule history: {path} (left unchanged; history belongs at the superproject root)"
+
+[doctor_msg.witness_live_root]
+doc = "A host hook registration runs from a plugin root other than the deployed one. Placeholders: {live}, {deployed}."
+value = "a live hook runs hooks from {live}, not the deployed plugin {deployed} - Fix: re-register the hooks (codex-install) from the deployed plugin"
