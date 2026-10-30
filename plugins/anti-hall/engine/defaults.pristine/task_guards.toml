@@ -366,7 +366,7 @@ value = "name"
 
 [task_guard.owner_decision_markers]
 doc = "Case-insensitive phrases in a task owner, subject or description that mean an explicit owner decision is pending. Honored while guards.taskGuardOwnerBlockedMarker is enabled."
-value = ["owner-go", "waiting owner", "needs your OK"]
+value = ["owner-go", "waiting owner", "waiting on owner", "needs your OK", "needs owner", "owner-gated", "owner gated", "blocked on owner", "blocked on the owner", "owner decision", "off limits", "off-limits"]
 
 [task_guard.advise_unresolved_owners]
 doc = "Advise instead of blocking Stop when a non-coordinator task owner cannot be resolved to known live or finished tracker work. False restores blocking for unresolved owners."
@@ -568,7 +568,7 @@ value = "assign the pending tasks to agents."
 
 [task_guard.idle_allowed]
 doc = "The allowed-here line of the idle-neglect block."
-value = "a task waiting on the user (hardware, a decision): mark it blocked on 'owner', or start its subject with \"OWNER:\"."
+value = "a task waiting on the user (hardware, a decision) is not idle: set its blockedOn to 'owner', start its subject with \"OWNER:\" (after any T-<n> [P] prefix), or write \"needs owner\" / \"owner-gated\" / \"blocked on owner\" in its subject or description."
 
 [task_guard.generic_what]
 doc = "The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail."
@@ -977,7 +977,7 @@ value = "{n} files changed but progress is missing or stale."
 
 [tasklist_guard.why_progress]
 doc = "Block reason when the progress file is missing or stale."
-value = "The progress file must record what was done."
+value = "The progress file must record what was done. Write it with the Edit or Write tool, never a Bash heredoc (git-guard scans a heredoc body as shell and blocks it, so the file would stay stale); a file modified after your last counted change passes."
 
 [tasklist_guard.what_reduced]
 doc = "Block headline of the reduced nag (a session without task tools); {n} is the work count."
@@ -1274,7 +1274,7 @@ value = ["p2", "low", "deferred"]
 
 [tasklist_guard.instead_progress]
 doc = "Compact guard message text."
-value = "update the progress file, then stop again."
+value = "update the progress file with the Edit or Write tool (not a Bash heredoc), then stop again."
 
 [tasklist_guard.resume_instead]
 doc = "Compact guard message text."
@@ -1452,3 +1452,97 @@ value = { kind = "counter", unit = "stops", labels = ["kind"] }
 [metric.tasklist_progress_carried]
 doc = "Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight)."
 value = { kind = "counter", unit = "stops", labels = ["kind"] }
+
+# ---- false-positive fixes (#459 #460 #461 #467 #468): counters and tunables ----
+
+[workdetect.temp_roots]
+doc = "System temp roots (beside the request's own temp directory) under which a write or a command that only touches them is scratch, not project work. macOS keeps /tmp as a link to /private/tmp while os.tmpdir() is under /var/folders, so the plain roots must be listed. An empty list restores the old behaviour."
+value = ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev/shm"]
+
+[tasklist_guard.fp_kind]
+doc = "Advisory-counter kind of the tasklist-guard false-positive fix (#459): events excluded_temp (a temp/scratch path was not counted as a changed file), suppressed_fresh_mtime (a Stop passed because the progress file was modified after the last counted change, however it was written), fired (the progress block was made), acted_on (the progress block fired and the next Stop of the session passed on a fresh file)."
+value = "fp_tasklist_guard"
+
+[metric.fp_tasklist_guard]
+doc = "tasklist-guard false-positive fix #459, by event: excluded_temp, suppressed_fresh_mtime, fired, acted_on; recorded through the advisory counters (`ah.advisory(fp_tasklist_guard, event)`)."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "fp_tasklist_guard" }
+
+[model_routing.fp_kind]
+doc = "Advisory-counter kind of the row-6 false-positive fix (#460): events fired (the Explore nudge was shown) and suppressed (a mutation signal in the brief kept the nudge back)."
+value = "fp_model_routing"
+
+[metric.fp_model_routing]
+doc = "model-routing row-6 fix #460, by event: fired, suppressed (mutation signal in the brief); recorded through the advisory counters. acted_on is not measurable at spawn time and is not recorded."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "fp_model_routing" }
+
+[task_guard.fp_kind]
+doc = "Advisory-counter kind of the idle-tasks false-positive fix (#461): events fired (the idle-neglect block was made) and suppressed (a pending task was left out because it waits on the owner)."
+value = "fp_idle_tasks"
+
+[metric.fp_idle_tasks]
+doc = "idle-tasks Stop check fix #461, by event: fired, suppressed (owner-blocked task not counted as idle); recorded through the advisory counters."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "fp_idle_tasks" }
+
+[task_guard.owner_subject_re]
+doc = "JavaScript regex source (case-insensitive) of a task subject that waits on the owner for the idle-neglect check: an optional T-<n> id and bracketed tags first, then OWNER at the start (OWNER: ..., OWNER DECISION ...). Honored while guards.taskGuardOwnerBlockedMarker is enabled."
+value = '^\s*(?:T-\d+\s+)?(?:\[[^\]]*\]\s*)*owner\b'
+
+[tasklist_hygiene.fp_kind]
+doc = "Advisory-counter kind of the task-subject hygiene fix (#467): events fired.<tool>, suppressed.<tool> (dedupe or cap held a breach back) and missed.<tool> (a breach the call shape could not judge)."
+value = "fp_subject_hygiene"
+
+[metric.fp_subject_hygiene]
+doc = "task-subject hygiene fix #467, by event (fired.TaskCreate, fired.TaskUpdate, suppressed.<tool>, shape.<tool> for the T-<n> [P] title shape); recorded through the advisory counters."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "fp_subject_hygiene" }
+
+[tasklist_hygiene.title_shape_re]
+doc = "JavaScript regex source a task subject should match: `T-<n> [P0-P3] title`. A subject that does not match gets the shape advisory while guards.priorityTagCheck is on."
+value = '^\s*T-\d+\s+\[P[0-3]\]\s+\S'
+
+[tasklist_hygiene.msg_shape]
+doc = "The title-shape breach."
+value = "task subject is not `T-<n> [P0-P3] title`."
+
+[tasklist_hygiene.event_shape]
+doc = "Counter event prefix: a shape advisory (the tool name is appended)."
+value = "shape"
+
+[tasklist_hygiene.event_fired]
+doc = "Counter event prefix: a subject advisory reached the model (the tool name is appended)."
+value = "fired"
+
+[tasklist_hygiene.event_suppressed]
+doc = "Counter event prefix: a subject advisory was held back by the advisory layer (the tool name is appended)."
+value = "suppressed"
+
+[tasklist_hygiene.delete_guard_setting]
+doc = "Deny TaskUpdate status=deleted on a task that is not completed (guards.taskDeleteGuard, default on). Off lets any task be deleted."
+value = { section = "guards", key = "taskDeleteGuard", env = "ANTIHALL_TASK_DELETE_GUARD", aliases = [], default = true }
+
+[tasklist_hygiene.msg_delete]
+doc = "Deny reason for deleting an open task; {id} is the task id, {status} its status, {subject} its subject."
+value = "task {id} ({subject}) is {status}, not completed: a task may be deleted only when it is completed and its outcome is in the history ledger."
+
+[tasklist_hygiene.instead_delete]
+doc = "What to do instead when a delete is denied."
+value = "finish it and mark it completed first, then record the outcome in the history ledger and delete it; leave an open task open."
+
+[tasklist_hygiene.delete_subject_max]
+doc = "Characters of the task subject quoted in the delete denial."
+value = 60
+
+[tasklist_hygiene.delete_fp_kind]
+doc = "Advisory-counter kind of the delete guard (#468): events fired (a delete of an open task was denied) and acted_on (a completed task was deleted, which is what the rule asks)."
+value = "fp_task_delete"
+
+[metric.fp_task_delete]
+doc = "task delete guard #468, by event: fired (denied), acted_on (completed task deleted); recorded through the advisory counters."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "fp_task_delete" }
+
+[task_tracker.fp_kind]
+doc = "Advisory-counter kind of the tracker request quote (#468): events fired (a nudge quoted the request) and acted_on (the task list changed on the prompt after a quote)."
+value = "fp_task_tracker_quote"
+
+[metric.fp_task_tracker_quote]
+doc = "task-tracker request quote #468, by event: fired, acted_on; recorded through the advisory counters."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "fp_task_tracker_quote" }

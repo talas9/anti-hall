@@ -453,3 +453,12 @@ value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TA
 [task_tracker.untracked_prompts]
 doc = "Prompts before the short reminder repeats. Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts)."
 value = { section = "context", key = "taskTrackerUntrackedPrompts", env = "ANTIHALL_TASK_TRACKER_UNTRACKED_PROMPTS", aliases = [], option = "", default = 8, min = 1 }
+
+[task_tracker.quote_max]
+doc = "Characters of the user's request the tracking nudge quotes back (one line, cut with an ellipsis). 0 turns the quote off."
+value = 160
+min = 0
+
+[task_tracker.quote_text]
+doc = "The quoted-request clause of the tracking nudge; {n} is how many requests came since the task list last changed, {text} the request."
+value = "request {n} since the task list last changed, not yet a task: \"{text}\""
