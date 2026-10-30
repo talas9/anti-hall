@@ -408,6 +408,35 @@ fn soft_outcomes_never_reset_burn_hold_off_the_pause_up_to_the_cap_and_a_build_i
     assert!(marker.exists(), "a polling loop is paused once it passes the soft cap");
 }
 
+/// GH #458 review: the soft hold-off is bounded per burn episode, not per sliding window. A polling loop every 6 minutes for 2 hours (each
+/// poll a soft outcome, each spending tokens) is paused once the episode's budget (burn.soft_hold cap / episode_ms) is spent.
+#[test]
+fn a_six_minute_polling_loop_is_paused_once_the_soft_episode_budget_is_spent_gh458() {
+    let h = home("poll458");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let mut paused_at = None;
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        let id = format!("p{k}");
+        append(
+            &p,
+            &[tool(t, &format!("mp{k}"), 700_000, &id, "Bash", json!({"command": format!("curl -s http://dev/status?t={k}")})), result(t, &id, "{}", false)],
+        );
+        ticks(&h, &mut st, &[t + MIN]);
+        if marker.exists() && paused_at.is_none() {
+            paused_at = Some(k);
+        }
+    }
+    assert_eq!(agent(&st, "s1").progress, 0, "polling is no hard outcome");
+    assert!(paused_at.is_some(), "a 6-minute polling loop is paused within 2 hours");
+    assert!(marker.exists(), "and stays paused while it keeps polling");
+}
+
 // ---- drift --------------------------------------------------------------------------------------------------
 
 fn drift_lines(n: u64, path: &str) -> Vec<String> {

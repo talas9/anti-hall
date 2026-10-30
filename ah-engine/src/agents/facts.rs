@@ -573,6 +573,10 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     };
     if let Some(kind) = soft {
         push_ring(&mut a.soft_ts, ts, lim("loop_window"));
+        if a.soft_episode.0 != a.progress || a.soft_episode.1 == 0 {
+            a.soft_episode = (a.progress, ts, 0);
+        }
+        a.soft_episode.2 += 1;
         count_outcome(kind);
     }
     if p.push || p.class == "commit" || p.class == "merge" || p.class == "deploy" {

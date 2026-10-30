@@ -2300,6 +2300,9 @@ fn burn_breaker_never_pauses_a_commit_or_a_restore_gh458() {
         "./scripts/restore-device.sh --from /w/probe/backup.json",
         "python3 tools/rollback_config.py --device dev1",
         "git restore src/main.rs",
+        "git restore -- src/lib.rs",
+        "git restore --staged -- src/lib.rs",
+        "git restore --staged --worktree src/lib.rs",
         "git checkout -- src/main.rs",
         "make teardown",
     ] {

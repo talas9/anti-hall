@@ -386,6 +386,10 @@ pub struct Agent {
     /// burn accounting, they may only hold off the pause (burn.soft_hold).
     #[serde(default)]
     pub soft_ts: Vec<u64>,
+    /// The burn episode the soft holds belong to: the progress (hard outcomes) it started at, when its first soft outcome came and how
+    /// many came since. A hard outcome (progress moves) starts a new episode; burn.soft_hold caps holds per episode.
+    #[serde(default)]
+    pub soft_episode: (u64, u64, u64),
     /// The declared step.
     pub step: String,
     /// The task whose subject is the declared step (empty when the step came from elsewhere).

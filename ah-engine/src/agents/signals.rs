@@ -227,8 +227,8 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
 }
 
 /// Whether a call of a doubt class (burn.doubt.classes: a build) is still in flight: the agent waits on work, not burning tokens.
-/// Why the pause is held off now, if it is: `building` (burn.doubt) or `soft` (burn.soft_hold: a soft outcome within hold_ms, and no more
-/// than cap of them inside the waste window, so a polling loop is still paused once it passes the cap).
+/// Why the pause is held off now, if it is: `building` (burn.doubt) or `soft` (burn.soft_hold: a soft outcome within hold_ms, inside a burn
+/// episode that has not spent its cap of soft outcomes or its episode_ms of hold-off, so a polling loop of any pace is paused).
 pub(crate) fn hold_reason(a: &Agent, now: u64) -> Option<&'static str> {
     let doubt = defaults::raw("burn.doubt");
     if building(a, now) {
@@ -236,10 +236,12 @@ pub(crate) fn hold_reason(a: &Agent, now: u64) -> Option<&'static str> {
     }
     let sh = defaults::raw("burn.soft_hold");
     let n = |k: &str| sh.get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
-    let window = now.saturating_sub(lim("waste_window_ms"));
-    let recent = a.soft_ts.iter().filter(|t| **t >= window).count() as u64;
+    // per burn episode (since the last hard outcome): at most cap soft outcomes and at most episode_ms of hold-off; once spent the pause
+    // fires whatever soft outcomes follow, until a hard outcome starts a new episode
+    let (base, first, count) = a.soft_episode;
+    let live = base == a.progress && first > 0 && now.saturating_sub(first) <= n("episode_ms") && count <= n("cap");
     let last = a.soft_ts.iter().max().copied().unwrap_or(0);
-    (last > 0 && last >= now.saturating_sub(n("hold_ms")) && recent <= n("cap")).then(|| doubt.str_field("soft"))
+    (live && last >= now.saturating_sub(n("hold_ms"))).then(|| doubt.str_field("soft"))
 }
 
 /// A background build counts while its task has no end notice; both bounded by burn.doubt.max_ms.
