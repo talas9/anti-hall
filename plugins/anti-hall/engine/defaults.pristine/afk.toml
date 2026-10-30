@@ -377,17 +377,9 @@ value = "afkplan-wit"
 doc = "Per-session cross-process lock file name prefix (under the per-user state directory, + the session key) every read-modify-write of the plan record and the owner-prompt witness takes (lock timings: the afk group). The in-process state mutex does not cover a one-shot hook process next to the daemon; a stamp or attempt that cannot take this lock is treated as a failed write (fail closed). The namespaces afk.plan_state_ns / afk.plan_prompt_ns / this prefix / afk.plan_poison_prefix must not be prefixes of one another plus '-', or one namespace's stale-file prune would remove the other's files."
 value = "afkplan-lock-"
 
-[afk.plan_poison_prefix]
-doc = "Per-session poison marker file name prefix (under the per-user state directory, + the session key; no .json extension, so no namespace prune touches it): written when an owner-prompt or plan-write stamp could not be recorded and read back, and cleared (afk.plan_poison_clear) by the next consult that records. A marker present with any other text denies (stamp_poisoned)."
-value = "afkplan-poison-"
-
-[afk.plan_poison_set]
-doc = "Text of a set poison marker."
-value = "1"
-
-[afk.plan_poison_clear]
-doc = "Text of a cleared poison marker (written by a consult before it is recorded)."
-value = "0"
+[afk.plan_poison_ns]
+doc = "State namespace of the per-session poison marker (<state dir>/<ns>-<session>.json, pruned like the other namespaces): a consult writes {clear: its seq} under the lock only after its own record was read back; a stamp that could not be recorded writes {poisoned: true} (and sets an in-process mark). Approval needs a regular file naming the consult being used; absent, not a regular file, unreadable or set = stamp_poisoned. Must not collide with the other plan namespaces (see afk.plan_lock_prefix)."
+value = "afkplan-poison"
 
 [afk.plan_allow]
 doc = "The stdout line of a PreToolUse that approves the plan-approval tool: allow with {reason} (JSON-quoted) and updatedInput {input} (the tool input echoed unchanged as JSON; allow alone is not enough for this tool)."

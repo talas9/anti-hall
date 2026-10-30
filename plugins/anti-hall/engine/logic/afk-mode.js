@@ -386,26 +386,58 @@ function afkPlanNum(s, k) { return typeof s[k] === 'number' ? s[k] : 0; }
 // true only when the read-back shows that seq (the host does not report a failed write).
 // Under the per-session cross-process lock (afk.plan_lock_prefix): the host's state mutex is per process only, and a one-shot hook
 // process next to the daemon could otherwise lose an update. No lock = a failed write. A seq that does not grow is a failed write too.
-function afkPlanUpdate(ns, key, fn) {
-  var want = 0, h = null;
-  try { h = ah.state.lock(afkRel(ah.cfg('afk.plan_lock_prefix') + key), 'afk', ah.cfgNum('afk.lock_wait_ms')); } catch (e) { h = null; }
-  if (h === null) return false;
+function afkPlanLock(key) {
+  try { return ah.state.lock(afkRel(ah.cfg('afk.plan_lock_prefix') + key), 'afk', ah.cfgNum('afk.lock_wait_ms')); } catch (e) { return null; }
+}
+function afkPlanUnlock(h) { try { ah.state.unlock(h); } catch (e) { /* the host releases a lock still held when the call ends */ } }
+// The read-modify-write itself (the caller holds the lock); true only when the read-back shows the seq `fn` assigned.
+function afkPlanWrite(ns, key, fn) {
+  var want = 0, before = 0;
   try {
-    var before = 0;
     ah.sessionState.update(ns, key, function (cur) { var s = afkPlanParse(cur); before = afkPlanNum(s, 'seq'); want = fn(s); return want > before ? JSON.stringify(s) : null; });
     return want > before && afkPlanNum(afkPlanParse(ah.sessionState.get(ns, key)), 'seq') === want;
-  } catch (e) { return false; } finally { try { ah.state.unlock(h); } catch (e) { /* the host releases a lock still held when the call ends */ } }
+  } catch (e) { return false; }
 }
-// The poison marker (no .json: never pruned): set when a stamp after a consult could not be recorded; cleared by a recording consult.
-function afkPlanPoisonRel(key) { return afkRel(ah.cfg('afk.plan_poison_prefix') + key); }
-function afkPlanPoison(key) { afkWrite0(afkPlanPoisonRel(key), ah.cfg('afk.plan_poison_set')); }
-function afkWrite0(rel, t) { try { return ah.state.writeAtomic(rel, t) === true; } catch (e) { return false; } }
-// true when the marker is absent or cleared; a set or unreadable marker denies.
-function afkPlanPoisonClean(key) {
-  var rel = afkPlanPoisonRel(key), t = null;
-  try { t = ah.state.readText(rel); } catch (e) { return false; }
-  if (t === null) return !ah.fs.isFile(ah.home() + '/' + rel);
-  return t === ah.cfg('afk.plan_poison_clear');
+function afkPlanUpdate(ns, key, fn) {
+  var h = afkPlanLock(key);
+  if (h === null) return false;
+  try { return afkPlanWrite(ns, key, fn); } finally { afkPlanUnlock(h); }
+}
+// The poison marker (afk.plan_poison_ns, pruned like the other namespaces): clean only when it is a regular file that a recorded
+// consult wrote, under the lock and after its own record was read back, naming that consult's seq ({clear: consultSeq}). Absent,
+// not a regular file, unreadable, set ({poisoned}) or naming another consult: poisoned. A stamp that could not be recorded also sets
+// an in-process mark (ah.mem), so even when every disk write fails the daemon that saw it approves nothing until a new consult.
+function afkPlanMemName(key) { return ah.cfg('afk.plan_state_ns') + ':' + ah.home() + ':' + key; }
+function afkPlanPoison(key) {
+  try { ah.mem.set(afkPlanMemName(key)); } catch (e) { /* the disk marker below still applies */ }
+  // no cross-process lock: the poison must land even while the lock is contended (a later consult then re-clears it legitimately)
+  var ok = false;
+  try {
+    ah.sessionState.update(ah.cfg('afk.plan_poison_ns'), key, function () { return JSON.stringify({ poisoned: true }); });
+    ok = afkPlanParse(ah.sessionState.get(ah.cfg('afk.plan_poison_ns'), key)).poisoned === true;
+  } catch (e) { ok = false; }
+  if (!ok) afkPlanFailed('poison');
+}
+function afkPlanPoisonPath(key) { return ah.home() + '/' + afkRel(ah.cfg('afk.plan_poison_ns') + '-' + key + ah.cfg('guardkit.state_ext')); }
+function afkPlanPoisonClean(key, consultSeq) {
+  try {
+    if (ah.mem.has(afkPlanMemName(key))) return false;
+    var st = ah.fs.lstat(afkPlanPoisonPath(key));
+    if (st === null || st.kind !== 'file') return false;
+    var t = ah.sessionState.get(ah.cfg('afk.plan_poison_ns'), key);
+    if (t === null) return false;
+    var v = afkPlanParse(t);
+    return v.poisoned !== true && typeof v.clear === 'number' && v.clear > 0 && v.clear === consultSeq;
+  } catch (e) { return false; }
+}
+// A live consult record for this session: absent = none (owner prompts then skip the lock entirely); present but unreadable = live.
+function afkPlanLive(key) {
+  var path = ah.home() + '/' + afkRel(ah.cfg('afk.plan_state_ns') + '-' + key + ah.cfg('guardkit.state_ext'));
+  try {
+    if (ah.fs.lstat(path) === null) return false;
+    var t = ah.sessionState.get(ah.cfg('afk.plan_state_ns'), key);
+    return t === null || afkPlanNum(afkPlanParse(t), 'consultSeq') > 0 || afkPlanParse(t).consultSeq !== undefined;
+  } catch (e) { return true; }
 }
 function afkPlanBump(s, field, now) {
   s.seq = afkPlanNum(s, 'seq') + 1;
@@ -422,7 +454,7 @@ function afkPlanFailed(field) { afkMetric('afk_plan_stamp_failed', { field: fiel
 function afkPlanPrompt(p, now) {
   if (coordinator.isCodexPayload(p)) return;
   var key = afkPlanKey(p);
-  if (!key) return;
+  if (!key || !afkPlanLive(key)) return; // no consult to void: no stamp, no lock wait
   var w = afkPlanUpdate(ah.cfg('afk.plan_prompt_ns'), key, function (s) { s.seq = afkPlanNum(s, 'seq') + 1; return s.seq; });
   if (!w) afkPlanFailed('witness');
   var r = afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) { return afkPlanBump(s, 'promptSeq', now); });
@@ -437,16 +469,28 @@ function afkPlanRecord(p, f, now) {
   if (!key) return;
   if (ah.cfg('advisor.tool_names').indexOf(tool) >= 0) {
     if (!ah.settings.bool('afk.set_plan_autoapprove') || afkIsAgent(p)) return;
-    var witness = afkPlanPromptWitness(key);
-    // clear the poison first (read back); a consult that cannot clear it is not recorded
-    if (!afkWrite0(afkPlanPoisonRel(key), ah.cfg('afk.plan_poison_clear')) || !afkPlanPoisonClean(key)) { afkPlanFailed('consultSeq'); return; }
-    if (!afkPlanUpdate(ah.cfg('afk.plan_state_ns'), key, function (s) {
-      var path = typeof s.planPath === 'string' ? s.planPath : '', hash = null;
-      try { hash = path !== '' ? ah.fs.sha256File(path) : null; } catch (e) { hash = null; }
-      s.consultHash = hash; s.consultPath = path; s.consultWitness = witness;
-      s.consultEpoch = afkOn(f) && typeof f.epoch === 'string' ? f.epoch : '';
-      return afkPlanBump(s, 'consultSeq', now);
-    })) afkPlanFailed('consultSeq');
+    var witness = afkPlanPromptWitness(key), h = afkPlanLock(key), seq = 0;
+    if (h === null) { afkPlanFailed('consultSeq'); return; }
+    try {
+      // record first (read back), then clear the poison for exactly this consult, both under the lock; a consult that cannot do
+      // both leaves the poison as it was (an earlier consult can never be revived by a later, unrecorded one)
+      var recorded = afkPlanWrite(ah.cfg('afk.plan_state_ns'), key, function (s) {
+        var path = typeof s.planPath === 'string' ? s.planPath : '', hash = null;
+        try { hash = path !== '' ? ah.fs.sha256File(path) : null; } catch (e) { hash = null; }
+        s.consultHash = hash; s.consultPath = path; s.consultWitness = witness;
+        s.consultEpoch = afkOn(f) && typeof f.epoch === 'string' ? f.epoch : '';
+        seq = afkPlanBump(s, 'consultSeq', now);
+        return seq;
+      });
+      if (!recorded) { afkPlanFailed('consultSeq'); return; }
+      var cleared = false;
+      try {
+        ah.sessionState.update(ah.cfg('afk.plan_poison_ns'), key, function () { return JSON.stringify({ clear: seq }); });
+        cleared = afkPlanParse(ah.sessionState.get(ah.cfg('afk.plan_poison_ns'), key)).clear === seq;
+      } catch (e) { cleared = false; }
+      if (!cleared) { afkPlanFailed('poison'); return; }
+      try { ah.mem.clear(afkPlanMemName(key)); } catch (e) { /* a mark that stays only denies */ }
+    } finally { afkPlanUnlock(h); }
     return;
   }
   if (ah.cfg('advisor.edit_tools').indexOf(tool) < 0) return;
@@ -473,7 +517,7 @@ function afkPlanPre(p, f, now) {
   var c = afkPlanNum(seen, 'consultSeq');
   if (c <= 0) return afkPlanDeny('afk.plan_reason_no_marker');
   if (now < afkPlanNum(seen, 'wall') || afkPlanNum(seen, 'backSeq') >= c) return afkPlanDeny('afk.plan_reason_clock_backwards');
-  if (!afkPlanPoisonClean(key)) return afkPlanDeny('afk.plan_reason_stamp_poisoned');
+  if (!afkPlanPoisonClean(key, c)) return afkPlanDeny('afk.plan_reason_stamp_poisoned');
   if (witness < 0 || witness !== afkPlanNum(seen, 'consultWitness')) return afkPlanDeny('afk.plan_reason_owner_prompt');
   if (c <= Math.max(afkPlanNum(seen, 'planSeq'), afkPlanNum(seen, 'attemptSeq'), afkPlanNum(seen, 'promptSeq'))) return afkPlanDeny('afk.plan_reason_stale');
   var cp = typeof seen.consultPath === 'string' ? seen.consultPath : '', ch = typeof seen.consultHash === 'string' ? seen.consultHash : '';
