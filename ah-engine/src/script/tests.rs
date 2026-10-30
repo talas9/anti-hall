@@ -1343,17 +1343,21 @@ mod sibling {
     fn a_search_already_run_or_quoted_or_code_text_keeps_the_self_correction_silent() {
         let msg = SELF[0];
         let d = h("self-neg-search");
-        let p = write(&d, "t.jsonl", &[user("fix"), tool("Grep", json!({"pattern": "cfg"})), result(), tool("Edit", json!({})), result(), say(msg)]);
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg), tool("Grep", json!({"pattern": "cfg"})), result()]);
         assert_eq!(go(&d, &stop(&d, &p, msg)), Verdict::Allow, "a search ran in the turn");
         let d2 = h("self-neg-quote");
-        for text in ["> I fixed a typo I made in the config key.".to_string(), format!("```\n{msg}\n```"), "Please explain what a typo I made would look like.".to_string()] {
+        for text in [
+            "> I fixed a typo I made in the config key.".to_string(),
+            format!("```\n{msg}\n```"),
+            "Please explain what a typo I made would look like.".to_string(),
+        ] {
             let p2 = write(&d2, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
             assert_eq!(go(&d2, &stop(&d2, &p2, &text)), Verdict::Allow, "not a statement: {text}");
         }
     }
 
     #[test]
-    fn the_self_correction_family_follows_through_and_the_cue_list_can_turn_it_off() {
+    fn the_self_correction_family_follows_through_and_the_cue_list_is_a_settings_edit() {
         let d = h("self-ft");
         let msg = SELF[1];
         let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
@@ -1362,9 +1366,9 @@ mod sibling {
         go(&d, &continuation(&d, &p, "Searched: no other occurrences."));
         assert_eq!(results(&d, "followthrough", "outcome"), ["followed"]);
         let d2 = h("self-off");
-        configure(&d2, json!({"self_correction_cues": []}));
+        configure(&d2, json!({"self_correction_cues": ["\\bzorp slip\\b"]}));
         let p2 = write(&d2, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
-        assert_eq!(go(&d2, &stop(&d2, &p2, msg)), Verdict::Allow, "an empty cue list turns the family off");
+        assert_eq!(go(&d2, &stop(&d2, &p2, msg)), Verdict::Allow, "an edited cue list replaces the shipped phrases");
     }
 }
 
