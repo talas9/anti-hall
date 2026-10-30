@@ -668,7 +668,8 @@ fn without_devswarm_nothing_devswarm_happens() {
 // ---- heartbeat ----------------------------------------------------------------------------------------------
 
 #[test]
-fn a_stale_running_heartbeat_reminds_the_newest_main_session_and_a_finished_one_is_ignored() {
+fn a_stale_running_heartbeat_of_no_followed_session_reaches_nobody_and_a_finished_one_is_ignored() {
+    // GH #430: a heartbeat row goes only to the session that wrote it; an unowned job's row used to go to the newest main session
     let h = home("hb");
     let n = now0();
     write(&sess(&h, "main1"), &[prompt(n - 3 * MIN, "/w"), asst(n - MIN, "m1", 5, 5, json!([{"type": "text", "text": "ok"}]), Some("end_turn"))]);
@@ -680,7 +681,7 @@ fn a_stale_running_heartbeat_reminds_the_newest_main_session_and_a_finished_one_
     ticks(&h, &mut st, &[n, n + MIN]);
     assert!(st.agents.contains_key("heartbeatjob1") && !st.agents.contains_key("heartbeatjob2"));
     let q = queue(&h, "main1");
-    assert!(q.iter().any(|r| r["text"].as_str().unwrap().contains("compiling")), "{q:?}");
+    assert!(!q.iter().any(|r| r["text"].as_str().unwrap().contains("compiling")), "{q:?}");
 }
 
 // ---- cooldowns, caps, outcomes ------------------------------------------------------------------------------
@@ -1891,7 +1892,13 @@ fn n430_a_heartbeat_reminder_goes_to_the_session_that_wrote_it_not_the_newest_on
     for (id, at) in [("sess-a", n - 20 * MIN), ("sess-b", n - MIN)] {
         st.agents.insert(id.into(), Agent { id: id.into(), kind: kind_name("main").into(), parent: id.into(), last_output_ms: at, ..Agent::default() });
     }
-    let hb = Agent { id: format!("{}{}", kind_name("heartbeat"), "x"), kind: kind_name("heartbeat").into(), name: sinks::key_of("sess-a"), hb_step: "build".into(), ..Agent::default() };
+    let hb = Agent {
+        id: format!("{}{}", kind_name("heartbeat"), "x"),
+        kind: kind_name("heartbeat").into(),
+        name: sinks::key_of("sess-a"),
+        hb_step: "build".into(),
+        ..Agent::default()
+    };
     let to = signals::targets(&e, &st, &hb, "heartbeat_stale");
     println!("MEASURE n430 heartbeat: targets={to:?}");
     assert!(!to.is_empty(), "the writer's own session is told");
@@ -1925,7 +1932,8 @@ fn n430_a_stale_heartbeat_with_no_step_or_no_owner_reaches_nobody() {
     let n = now0();
     let e = nudge_env(&h, n, &[]);
     let mut st = State::default();
-    st.agents.insert("sess-b".into(), Agent { id: "sess-b".into(), kind: kind_name("main").into(), parent: "sess-b".into(), last_output_ms: n, ..Agent::default() });
+    st.agents
+        .insert("sess-b".into(), Agent { id: "sess-b".into(), kind: kind_name("main").into(), parent: "sess-b".into(), last_output_ms: n, ..Agent::default() });
     let foreign = Agent { kind: kind_name("heartbeat").into(), name: "not-followed".into(), hb_step: "build".into(), ..Agent::default() };
     assert_eq!(signals::heartbeat_owner(&st, &foreign.name), None);
     assert!(signals::targets(&e, &st, &foreign, "heartbeat_stale").is_empty(), "a foreign heartbeat goes to no session");

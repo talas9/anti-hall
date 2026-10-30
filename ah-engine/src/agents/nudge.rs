@@ -267,7 +267,16 @@ fn emit(env: &Env, event: &str, n: &Nudge) {
 }
 
 fn answer_line(n: &Nudge) -> String {
-    defaults::render("msg.agent_nudge_answer", &[("cmd", &defaults::text("agent_nudge.cmd")), ("child", &n.child), ("ref", &n.ref_id), ("max", &lim("snooze_max_min")), ("other", &lim("snooze_default_min"))])
+    defaults::render(
+        "msg.agent_nudge_answer",
+        &[
+            ("cmd", &defaults::text("agent_nudge.cmd")),
+            ("child", &n.child),
+            ("ref", &n.ref_id),
+            ("max", &lim("snooze_max_min")),
+            ("other", &lim("snooze_default_min")),
+        ],
+    )
 }
 
 /// Put `text` in front of session `to`: its reminder queue (its hook delivers it at its next turn) and, while a wake-watch covers
