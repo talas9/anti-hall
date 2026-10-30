@@ -869,7 +869,10 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
 /// and the check answers by its failure policy ([`cut`]); `finish`: the call is never cut at the request deadline and runs to its own
 /// script limits, for a cheap check that carries a rule and is late only because its request waited in the queue (#463).
 pub fn deadline_policy(name: &str) -> &'static str {
-    defaults::raw("diagnostics.deadline_policy_by_check").get(name).and_then(defaults::V::as_str).unwrap_or_else(|| defaults::text("diagnostics.deadline_policy_default"))
+    defaults::raw("diagnostics.deadline_policy_by_check")
+        .get(name)
+        .and_then(defaults::V::as_str)
+        .unwrap_or_else(|| defaults::text("diagnostics.deadline_policy_default"))
 }
 
 /// Whether a call of check `name` on `event` is cut at its request's client deadline (`script.cut_at_request_deadline`). A cut call

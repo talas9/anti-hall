@@ -400,17 +400,20 @@ mod tests {
     /// policy: a loaded machine costs single entries, never the whole event's reply). A check that fails closed on a guard event keeps
     /// only its own limit, so it still decides.
     #[test]
-    fn past_the_clients_deadline_every_open_entry_gives_no_answer_without_running() {
+    fn past_the_clients_deadline_every_open_entry_answers_by_its_policy_without_running() {
         let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
         crate::deadline::begin(std::time::Instant::now());
         crate::deadline::client_deadline(0);
         let got = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
         crate::deadline::end();
         assert!(!got.is_empty());
-        assert!(got.iter().any(|(_, a)| matches!(a, Answer::Defer)), "{:?}", got.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        // #463: a cut check answers by its own failure policy (an open one allows), never a deferral to a Node hook
         for (id, a) in &got {
+            assert!(!matches!(a, Answer::Defer), "{id}: a cut never defers");
             let closed = crate::script::failure_mode(&entry_check(id)) == crate::defaults::text("script.failure_mode_closed");
-            assert_eq!(matches!(a, Answer::Defer), !closed, "{id}: only an open check is cut at the deadline");
+            if !closed {
+                assert!(matches!(a, Answer::Decided(r, _) if r.code != Some(2)), "{id}: an open check cut at the deadline allows");
+            }
         }
         let again = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
         assert!(again.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))), "in time it decides");
