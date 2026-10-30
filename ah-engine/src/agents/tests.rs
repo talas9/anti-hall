@@ -1971,12 +1971,12 @@ fn n430_a_done_hold_is_released_when_the_child_shows_new_activity() {
     let (h, n, child, mut st) = n430_done_held("n430-done-resume");
     tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
     assert!(!st.nudges.contains_key("abc"), "held while idle");
+    // the child resumes: another 700k tokens with no outcome, then nothing
     let b = n + 20 * MIN;
-    let (commit, spend) = spend_cycle(&child, 1, b);
-    append(&child, &commit);
-    tick(&nudge_env(&h, b + MIN, &[]), &mut st);
-    append(&child, &spend);
-    tick(&nudge_env(&h, b + 18 * MIN, &[]), &mut st);
+    append(&child, &[asst(b, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    for m in [1, 18, 40] {
+        tick(&nudge_env(&h, b + m * MIN, &[]), &mut st);
+    }
     println!("MEASURE n430 done-resume: nudge_open={}", st.nudges.contains_key("abc"));
     assert!(st.nudges.contains_key("abc"), "a child that worked again after the done verdict and then went bad was not nudged");
 }
