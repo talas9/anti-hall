@@ -39,7 +39,7 @@ rquickjs = { version = "0.14.0", default-features = false }
 # permille of a core at 250 ms (4.5 at 800 ms) on a realistic watch set against 0.009 for events (DECISIONS.md, "Realtime watch
 # backend"). Directories on 9p, drvfs, NFS, SMB and FUSE are still polled.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-notify = { version = "=8.2.0", default-features = false }
+notify = { version = "=8.2.1", default-features = false }
 
 # Allocator that returns freed pages (the system allocators keep them, so RSS stayed at the largest transient). Only on the targets
 # the crate supports (see src/main.rs).
