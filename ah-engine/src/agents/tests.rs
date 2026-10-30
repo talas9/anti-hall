@@ -668,7 +668,8 @@ fn without_devswarm_nothing_devswarm_happens() {
 // ---- heartbeat ----------------------------------------------------------------------------------------------
 
 #[test]
-fn a_stale_running_heartbeat_reminds_the_newest_main_session_and_a_finished_one_is_ignored() {
+fn a_stale_running_heartbeat_of_no_followed_session_reaches_nobody_and_a_finished_one_is_ignored() {
+    // GH #430: a heartbeat row goes only to the session that wrote it; an unowned job's row used to go to the newest main session
     let h = home("hb");
     let n = now0();
     write(&sess(&h, "main1"), &[prompt(n - 3 * MIN, "/w"), asst(n - MIN, "m1", 5, 5, json!([{"type": "text", "text": "ok"}]), Some("end_turn"))]);
@@ -680,7 +681,7 @@ fn a_stale_running_heartbeat_reminds_the_newest_main_session_and_a_finished_one_
     ticks(&h, &mut st, &[n, n + MIN]);
     assert!(st.agents.contains_key("heartbeatjob1") && !st.agents.contains_key("heartbeatjob2"));
     let q = queue(&h, "main1");
-    assert!(q.iter().any(|r| r["text"].as_str().unwrap().contains("compiling")), "{q:?}");
+    assert!(!q.iter().any(|r| r["text"].as_str().unwrap().contains("compiling")), "{q:?}");
 }
 
 // ---- cooldowns, caps, outcomes ------------------------------------------------------------------------------
@@ -1844,4 +1845,234 @@ fn drift_is_not_raised_while_the_work_matches_the_task_description_and_is_remind
     ticks(&h2, &mut st2, &[n + 2 * MIN, n + 3 * MIN, n + 4 * MIN]);
     assert!(agent(&st2, "s1").flags.contains_key("drift"), "raised again");
     assert_eq!(queue(&h2, "s1").len(), 1, "but the same step is not reminded twice");
+}
+
+// ---- GH #430: answered nudges, judge-done holds, wake rows scoped to the owning session ---------------------------------------
+
+/// A snooze answer moves the nudge's send clock; the wake fallback read that as "sent, never delivered" and queued the reminder the
+/// parent had already seen (`<id>-<n>-q`) a few minutes after the snooze. After the answer, nothing reaches the parent for an hour.
+#[test]
+fn n430_a_snoozed_nudge_is_not_requeued_by_the_wake_fallback() {
+    let (h, n, child) = nudge_home("n430-snooze");
+    let mut st = State::default();
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+        e
+    };
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick_at(&mut st, n + MIN);
+    append(&child, &spend);
+    let e = tick_at(&mut st, n + 18 * MIN);
+    let sig = defaults::raw("agent_nudge.words").str_field("signal");
+    let id = st.nudges.get("abc").expect("a nudge is open about the child").id.clone();
+    // the parent's wake-watch delivered the nudge line
+    let seen = json!({"signal": sig, "agent": "abc", "key": "parent", "id": format!("{id}-1")});
+    assert!(nudge::delivered(&mut st, &seen, n + 18 * MIN + 1000));
+    answer_snooze(&e, "abc", 180);
+    for m in [19, 23, 30, 45, 60, 78] {
+        tick_at(&mut st, n + m * MIN);
+    }
+    let rows: Vec<Value> = queue(&h, "parent").into_iter().chain(wake_rows(&h, "parent")).filter(|r| r["signal"] == sig).collect();
+    let requeued = rows.iter().filter(|r| r["id"].as_str().is_some_and(|i| i.ends_with("-q"))).count();
+    println!("MEASURE n430 snooze: delivery_rows={} requeued_after_answer={requeued}", rows.len());
+    assert_eq!(requeued, 0, "the snooze answer re-queued an already delivered reminder: {rows:?}");
+    assert_eq!(rows.len(), 1, "one delivery (the first wake line), nothing within the 180 min snooze: {rows:?}");
+}
+
+/// Two sessions on one machine: session B was active last, session A wrote the heartbeat. A's stale heartbeat goes to A, never B.
+#[test]
+fn n430_a_heartbeat_reminder_goes_to_the_session_that_wrote_it_not_the_newest_one() {
+    let h = home("n430-hb");
+    let n = now0();
+    let e = nudge_env(&h, n, &[]);
+    let mut st = State::default();
+    for (id, at) in [("sess-a", n - 20 * MIN), ("sess-b", n - MIN)] {
+        st.agents.insert(id.into(), Agent { id: id.into(), kind: kind_name("main").into(), parent: id.into(), last_output_ms: at, ..Agent::default() });
+    }
+    let hb = Agent {
+        id: format!("{}{}", kind_name("heartbeat"), "x"),
+        kind: kind_name("heartbeat").into(),
+        name: sinks::key_of("sess-a"),
+        hb_step: "build".into(),
+        ..Agent::default()
+    };
+    let to = signals::targets(&e, &st, &hb, "heartbeat_stale");
+    println!("MEASURE n430 heartbeat: targets={to:?}");
+    assert!(!to.is_empty(), "the writer's own session is told");
+    for t in &to {
+        assert!(matches!(t, signals::Target::Wake(k) | signals::Target::Session(k) if k == "sess-a"), "session B got A's heartbeat row: {to:?}");
+    }
+}
+
+/// Two sessions on one machine: session A started the cargo that holds the shared lock, session B was active last. Only A hears of it;
+/// a holder no followed session started reaches nobody (never "stop it by pid" to a session that did not start it).
+#[test]
+fn n430_a_lock_holder_event_goes_only_to_the_session_that_started_it() {
+    let mut st = State::default();
+    for (id, pid, at) in [("sess-a", 100u32, 1u64), ("sess-b", 200, 2)] {
+        st.agents.insert(id.into(), Agent { id: id.into(), kind: kind_name("main").into(), pid, last_output_ms: at, ..Agent::default() });
+    }
+    // holder 300 (cargo) <- 250 (the lock wrapper) <- 100 (session A's process)
+    let ppid = |p: u32| match p {
+        300 => 250,
+        250 => 100,
+        _ => 1,
+    };
+    assert_eq!(lockwatch::lock_owner(&st, 300, &ppid).as_deref(), Some("sess-a"));
+    assert_eq!(lockwatch::lock_owner(&st, 400, &ppid), None, "a holder no followed session started reaches nobody");
+}
+
+/// A stale heartbeat that names no step, or whose writer the tracker does not follow, is dropped, not sent to the newest session.
+#[test]
+fn n430_a_stale_heartbeat_with_no_step_or_no_owner_reaches_nobody() {
+    let h = home("n430-hb-drop");
+    let n = now0();
+    let e = nudge_env(&h, n, &[]);
+    let mut st = State::default();
+    st.agents
+        .insert("sess-b".into(), Agent { id: "sess-b".into(), kind: kind_name("main").into(), parent: "sess-b".into(), last_output_ms: n, ..Agent::default() });
+    let foreign = Agent { kind: kind_name("heartbeat").into(), name: "not-followed".into(), hb_step: "build".into(), ..Agent::default() };
+    assert_eq!(signals::heartbeat_owner(&st, &foreign.name), None);
+    assert!(signals::targets(&e, &st, &foreign, "heartbeat_stale").is_empty(), "a foreign heartbeat goes to no session");
+}
+
+// ---- GH #430 P1: a judge-done hold is released by new activity and bypassed with agents.nudgeScope off ---------------------------
+
+/// A child discovered and spending (waste trigger raised once a tick sees it), with a judge-done hold recorded at `n + 3 min`.
+fn n430_done_held(tag: &str) -> (PathBuf, u64, PathBuf, State) {
+    let (h, n, child) = nudge_home(tag);
+    let mut st = State::default();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick(&nudge_env(&h, n + MIN, &[]), &mut st);
+    append(&child, &spend);
+    tick(&nudge_env(&h, n + 3 * MIN, &[]), &mut st);
+    let a = st.agents.get("abc").expect("the child is followed").clone();
+    nudge::hold_done(&mut st, &a, n + 3 * MIN);
+    (h, n, child, st)
+}
+
+/// A done child that stays idle stays held: no nudge for the whole hold.
+#[test]
+fn n430_a_done_child_that_stays_idle_stays_held() {
+    let (h, n, _child, mut st) = n430_done_held("n430-done-idle");
+    for m in [18, 40, 90, 200] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+        assert!(!st.nudges.contains_key("abc"), "an idle done child was nudged at +{m} min");
+    }
+}
+
+/// Sequence: health said done (hold recorded) -> the child resumes work -> it hangs again. The hold no longer covers it.
+#[test]
+fn n430_a_done_hold_is_released_when_the_child_shows_new_activity() {
+    let (h, n, child, mut st) = n430_done_held("n430-done-resume");
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    assert!(!st.nudges.contains_key("abc"), "held while idle");
+    // the child resumes: another 700k tokens with no outcome, then nothing
+    let b = n + 20 * MIN;
+    append(&child, &[asst(b, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    for m in [1, 18, 40] {
+        tick(&nudge_env(&h, b + m * MIN, &[]), &mut st);
+    }
+    println!("MEASURE n430 done-resume: nudge_open={}", st.nudges.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "a child that worked again after the done verdict and then went bad was not nudged");
+}
+
+/// With agents.nudgeScope off the done hold is bypassed completely: the child is nudged exactly as without the scope rules.
+#[test]
+fn n430_nudge_scope_off_bypasses_a_recorded_done_hold() {
+    let (h, n, _child, mut st) = n430_done_held("n430-done-off");
+    let off = [("ANTIHALL_AGENT_NUDGE_SCOPE", "false")];
+    tick(&nudge_env(&h, n + 18 * MIN, &off), &mut st);
+    println!("MEASURE n430 done-off: nudge_open={}", st.nudges.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "agents.nudgeScope=false still honoured the done hold");
+}
+
+// ---- GH #430 Codex P1: done holds written by an older version (old field, no activity time) ---------------------------------------
+
+/// A child judged done at `n + 3 min` by a version that stored done holds in the old busy-hold field, saved to the state file the
+/// way that version wrote it (no new-format done hold), and read back as an upgraded engine does at start-up.
+fn n430_legacy_done_held(tag: &str) -> (PathBuf, u64, PathBuf, State) {
+    let (h, n, child, st) = n430_done_held(tag);
+    let mut v = serde_json::to_value(&st).unwrap();
+    let o = v.as_object_mut().unwrap();
+    o.remove("nudge_done_hold");
+    let until = n + 3 * MIN + nudge_lim("health_done_hold_ms");
+    o.insert("nudge_hold".into(), json!({ "abc": until }));
+    let e = nudge_env(&h, n + 3 * MIN, &[]);
+    let p = e.dir().join(pth("state"));
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, serde_json::to_string(&v).unwrap()).unwrap();
+    let st = load_state(&e);
+    assert_eq!(st.nudge_hold.get("abc"), Some(&until), "the seeded old-shape state file was not read back");
+    assert!(st.nudge_done_hold.is_empty(), "the seeded old-shape state file already had a new-format hold");
+    (h, n, child, st)
+}
+
+fn nudge_lim(k: &str) -> u64 {
+    crate::defaults::raw("agent_nudge.limits").get(k).and_then(crate::defaults::V::as_integer).and_then(|i| u64::try_from(i).ok()).unwrap()
+}
+
+/// (a) old version records a done hold -> upgrade -> the child resumes, then hangs: the legacy hold no longer covers it.
+#[test]
+fn n430_legacy_done_hold_is_released_when_the_child_resumes_after_the_upgrade() {
+    let (h, n, child, mut st) = n430_legacy_done_held("n430-legacy-resume");
+    tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
+    assert!(!st.nudges.contains_key("abc"), "held while idle");
+    let b = n + 20 * MIN;
+    append(&child, &[asst(b, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    for m in [1, 18, 40] {
+        tick(&nudge_env(&h, b + m * MIN, &[]), &mut st);
+    }
+    println!("MEASURE n430 legacy-resume: nudge_open={} legacy_left={}", st.nudges.contains_key("abc"), st.nudge_hold.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "a legacy done hold still suppressed a child that worked again and went bad");
+}
+
+/// (a) the child resumed while the old version still ran (output newer than the hold's verdict time, before the first upgraded tick).
+#[test]
+fn n430_legacy_done_hold_is_released_by_output_written_before_the_upgrade() {
+    let (h, n, child, mut st) = n430_legacy_done_held("n430-legacy-pre");
+    let b = n + 10 * MIN;
+    append(&child, &[asst(b, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    for m in [1, 18, 40] {
+        tick(&nudge_env(&h, b + m * MIN, &[]), &mut st);
+    }
+    println!("MEASURE n430 legacy-pre: nudge_open={}", st.nudges.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "a legacy done hold ignored output the child wrote after the verdict");
+}
+
+/// (b) agents.nudgeScope=false: the legacy field is honoured exactly as before (held to its expiry even after new output).
+#[test]
+fn n430_legacy_done_hold_is_honoured_as_before_with_nudge_scope_off() {
+    let (h, n, child, mut st) = n430_legacy_done_held("n430-legacy-off");
+    let until = *st.nudge_hold.get("abc").unwrap();
+    let off = [("ANTIHALL_AGENT_NUDGE_SCOPE", "false")];
+    let b = n + 20 * MIN;
+    append(&child, &[asst(b, "w-resume", 700_000, 10, json!([{"type": "text", "text": "reading again"}]), None)]);
+    for m in [1, 18, 40, 90] {
+        tick(&nudge_env(&h, b + m * MIN, &off), &mut st);
+        assert!(!st.nudges.contains_key("abc"), "nudgeScope off: the legacy hold was not honoured at +{m} min");
+    }
+    assert_eq!(st.nudge_hold.get("abc"), Some(&until), "nudgeScope off: the legacy hold was changed");
+    assert!(st.nudge_done_hold.is_empty(), "nudgeScope off: the legacy hold was migrated");
+}
+
+/// (c) a legacy hold on a done child that stays idle keeps it held until the hold's own expiry.
+#[test]
+fn n430_legacy_done_hold_keeps_an_idle_done_child_held() {
+    let (h, n, _child, mut st) = n430_legacy_done_held("n430-legacy-idle");
+    let until = *st.nudge_hold.get("abc").unwrap();
+    for m in [18, 40, 90, 200] {
+        tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
+        assert!(!st.nudges.contains_key("abc"), "an idle legacy-held done child was nudged at +{m} min");
+    }
+    let held_until = st.nudge_done_hold.get("abc").map(|d| d.until).or_else(|| st.nudge_hold.get("abc").copied());
+    println!("MEASURE n430 legacy-idle: held_until={held_until:?} until={until}");
+    assert_eq!(held_until, Some(until), "the legacy hold's expiry was not kept");
+    tick(&nudge_env(&h, until + MIN, &[]), &mut st);
+    println!("MEASURE n430 legacy-idle expiry: nudge_open={}", st.nudges.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "the idle child was still held after the legacy hold's expiry");
 }
