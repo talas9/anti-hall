@@ -63,6 +63,12 @@ function gitBuildTables() {
   t.generated = new RegExp('^[ \\t]*[^A-Za-z0-9 \\t]{0,2}[ \\t]*' + gitEsc(c('self_credit_generated_prefix')) + '\\[?(' +
     c('credit_generated_alts').map(gitEsc).join('|') + ')\\b', 'im');
   t.ghBody = new RegExp(c('gh_body_markers').map(gitEsc).join('|'), 'i');
+  // GH #457: a session trailer key (any value) and a session link on a line of its own or behind a trailer key
+  t.sessionKey = new RegExp('^[ \\t]*(?:' + c('credit_session_keys').map(gitEsc).join('|') + ')[ \\t]*[:=]', 'im');
+  t.sessionUrl = new RegExp('^[ \\t]*(?:[A-Za-z][A-Za-z -]*[ \\t]*[:=][ \\t]*)?(?:https?://)?(?:' + c('credit_url_markers').map(gitEsc).join('|') + ')', 'im');
+  t.expansionPatterns = c('commit_expansion_patterns').map((p) => new RegExp('^(?:' + p + ')'));
+  t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
+  t.pushSkipOpts = set(c('push_skip_opts'));
   t.trailerKeys = c('self_credit_trailer_keys');
   t.forwardEnvRe = new RegExp('^(?:GIT_CONFIG_(?:' + c('forward_config_names').concat(c('forward_config_indexed').map((p) => gitEsc(p) + '\\d+')).join('|') + ')|' +
     c('forward_env_names').map(gitEsc).join('|') + ')$');
@@ -94,7 +100,7 @@ function gitFreshState(raw, cwd, session) {
     launcherFsBudget: ah.cfg('git.budget_launcher_fs'), launcherCmdText: '',
     handoverQueryBudget: ah.cfg('git.budget_handover_queries'), handoverSkipped: 0, handoverEvalBudget: ah.cfg('git.budget_handover_evals'),
     handoverQueryCache: new Map(), handoverAdds: [], handoverOn: null,
-    creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
+    keyOf: new Map(), creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
     quotedLiteralsCache: null, stdinCandidateCache: null, hdOn: null, aliasOn: null, reuseOn: null,
     gitCache: new Map(), aliasCache: new Map(), shellDefsCache: new Map(), depthGuard: 0,
   };
@@ -110,7 +116,9 @@ function gm(o) {
 // a configured message table ({what, why, instead, override}) rendered with {name} arguments
 function gmKey(key, args) {
   const m = ah.cfg('git.' + key), r = (s) => (s === undefined ? '' : text.render(s, args || {}));
-  return gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
+  const out = gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
+  if (S) S.keyOf.set(out, key);
+  return out;
 }
 function skipCmd(k) {
   return text.render(ah.cfg('git.skip_command'), { key: k });
@@ -486,7 +494,7 @@ function hasCmdSubstArg(rest) {
 // ---------------------------------------------------------------------------------------------------------------------
 // self-credit
 
-function creditRegexes(t) { return TB.coauthor.test(t) || TB.generated.test(t); }
+function creditRegexes(t) { return TB.coauthor.test(t) || TB.generated.test(t) || TB.sessionKey.test(t) || TB.sessionUrl.test(t); }
 
 function normEscapes(s) { return s.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t'); }
 
@@ -556,6 +564,49 @@ function inlineCommitMessages(rest) {
     }
   }
   return msgs;
+}
+
+// the argument tokens that carry an inline commit message (or trailer), with their source text
+function inlineCommitMessageToks(rest) {
+  const toks = [];
+  for (let i = 0; i < rest.length; i++) {
+    const w = rest[i].text;
+    if (w === '--message' || w === '--trailer' || /^-[A-Za-z]*m$/.test(w)) {
+      if (i + 1 < rest.length) { toks.push(rest[i + 1]); i++; }
+    } else if (w.startsWith('--message=') || w.startsWith('--trailer=')) {
+      toks.push({ raw: rest[i].raw.slice(rest[i].raw.indexOf('=') + 1) });
+    } else if (/^-[A-Za-z]*m./.test(w)) {
+      toks.push({ raw: rest[i].raw.replace(/^-[A-Za-z]*?m/, '') });
+    }
+  }
+  return toks;
+}
+
+// GH #457: the first shell expansion still live in the source text of an argument ('...' is literal, "..." and bare text expand,
+// a backslash protects the next character), or null. An expansion the guard already reads (config) ends the scan of the argument.
+function unresolvedExpansion(raw0) {
+  // the segment splitter swapped a substitution opener inside double quotes for the sentinel: put an opener back
+  const raw = raw0.split(' ' + CMDSUBST_SENTINEL + ' ').join('$(').split(CMDSUBST_SENTINEL).join('$(');
+  let mode = 0; // 0 bare, 1 single-quoted, 2 double-quoted
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw.charAt(i);
+    if (mode === 1) { if (ch === "'") mode = 0; continue; }
+    if (ch === '\\') { i++; continue; }
+    if (ch === "'" && mode === 0) { mode = 1; continue; }
+    if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
+    const tail = raw.slice(i);
+    if (!TB.expansionPatterns.some((re) => re.test(tail))) continue;
+    if (TB.expansionAllow.some((re) => re.test(tail))) return null;
+    // the splitter cut the argument where the substitution's own lines start: the opener is read from the whole command
+    if (/^\$\([ \t]*$/.test(tail)) {
+      for (let at = S.raw.indexOf('$('); at >= 0; at = S.raw.indexOf('$(', at + 1)) {
+        const t2 = S.raw.slice(at);
+        if (TB.expansionAllow.some((re) => re.test(t2))) return null;
+      }
+    }
+    return tail.split(/\s/)[0].slice(0, ah.cfg('git.expansion_shown_chars'));
+  }
+  return null;
 }
 
 function fileCommitMessages(rest) {
@@ -649,7 +700,7 @@ function ghSelfCreditMessage(args) {
   if (hasSelfCredit(S.raw)) vals.push(S.raw);
   for (const v of vals) {
     for (const t of [v, normEscapes(v)]) {
-      if (TB.coauthor.test(t) || TB.generated.test(t) || TB.ghBody.test(t)) {
+      if (creditRegexes(t) || TB.ghBody.test(t)) {
         const elsewhere = v === S.raw ? creditElsewhereLabel('gh') : null;
         if (elsewhere) return gmKey('msg_gh_credit_elsewhere', { elsewhere: elsewhere });
         return gmKey('msg_gh_credit');
@@ -1418,7 +1469,7 @@ function stdinCandidateTextCached(cmd, heredocBodies) {
   if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
   candidates.push(...extractQuotedLiteralsCached(cmd));
   const text = candidates.length ? candidates.join('\n') : null;
-  const credit = text !== null && (TB.coauthor.test(text) || TB.generated.test(text));
+  const credit = text !== null && creditRegexes(text);
   S.stdinCandidateCache = { cmd: cmd, heredocBodies: heredocBodies, text: text, hasSelfCredit: credit };
   return S.stdinCandidateCache;
 }
@@ -1807,6 +1858,41 @@ function committedHandovers(ev, lastCdDir) {
     if (ah.fs.realpath(posix.join(gitDir, m)) !== null) return null; // existsSync follows links
   }
   return hits;
+}
+
+// GH #457: a push whose unpushed commits carry an AI credit. Names the hashes and the fix; never rewrites anything.
+function pushCreditVerdict(ev, lastCdDir) {
+  try {
+    if (!gitSettingOn('git.setting_push_credit')) return null;
+    if (gitSubcommand(ev.args).rest.some((t) => TB.pushSkipOpts.has(t.text))) return null;
+    let dir = lastCdDir || S.procCwd;
+    for (let k = 0; k < ev.args.length; k++) {
+      const t = ev.args[k].text;
+      if (t === '-C' && k + 1 < ev.args.length) { dir = posix.resolveIn(S.procCwd, [dir, ev.args[k + 1].text]); k++; continue; }
+      if (t === '--git-dir' || t === '--work-tree' || t.startsWith('--git-dir=') || t.startsWith('--work-tree=')) return null;
+      if (t === '-c' || t === '--namespace' || t === '--config-env') { k++; continue; }
+      if (t.startsWith('-')) continue;
+      break;
+    }
+    const n = String(ah.cfg('git.push_max_commits'));
+    const run = (key) => gitRun(ah.cfg(key).map((a) => a.split('{dir}').join(dir).split('{n}').join(n)), null, null, ah.cfg('git.push_timeout_ms'));
+    let out = run('git.push_argv_upstream');
+    if (out === null) out = run('git.push_argv_fallback');
+    if (!out) return null;
+    const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
+    const hits = [];
+    for (const rec of out.split(rs)) {
+      const f = rec.replace(/^\n/, '').split(us);
+      const sha = (f[0] || '').trim();
+      if (sha && f[1] && hasSelfCredit(f[1])) hits.push(sha.slice(0, TB.commitHashShort));
+    }
+    if (!hits.length) return null;
+    const shown = hits.slice(0, TB.shown).join(', ') + (hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
+    return gmKey('msg_push_credit', { shown: shown, first: hits[hits.length - 1] });
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    return null; // fail open
+  }
 }
 
 function handoverCommitVerdict(ev, lastCdDir) {
@@ -2377,6 +2463,8 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
       const note = /<<-?[ \t]*['"\\]?[A-Za-z_]/.test(S.raw) ? ah.cfg('git.push_cmdsubst_heredoc_note') : '';
       return gm({ what: m.what, why: m.why, instead: m.instead + note });
     }
+    const pv = pushCreditVerdict(ev, lastCdDir);
+    if (pv) return pv;
   }
 
   if (TB.backstopCommitSubs.has(sub)) {
@@ -2384,6 +2472,12 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
     const msgs = inlineCommitMessages(rest);
     for (const m of msgs) {
       if (creditRegexes(m) || creditRegexes(normEscapes(m))) return gmKey('msg_commit_credit');
+    }
+    if (gitSettingOn('git.setting_commit_expansion')) {
+      for (const tk of inlineCommitMessageToks(rest)) {
+        const x = unresolvedExpansion(tk.raw);
+        if (x) return gmKey('msg_commit_expansion', { shown: x });
+      }
     }
     for (const m of msgs) if (m && useJev && consultJev(m)) return gmKey('msg_commit_jev');
 
@@ -2617,6 +2711,16 @@ function looksLikeFileWriteShape(cmd) {
   return new RegExp(TB.fileWriteEcho).test(cmd) && redirects;
 }
 
+// GH #457: every block is counted by reason (its message key); a blocked push also by its own counter
+function countBlock(hit) {
+  try {
+    const key = S.keyOf.get(hit);
+    const reason = key ? key.replace(ah.cfg('git.block_key_prefix'), '') : ah.cfg('git.block_reason_other');
+    ah.metric('git_blocked', ['reason', reason]);
+    if (key === 'msg_push_credit') ah.metric('git_push_blocked', []);
+  } catch (e) { /* counting never fails a hook */ }
+}
+
 function decide(p, opts, event) {
   try { return decideScan(p, opts, event); } finally { TOK_MEMO.clear(); SEG_MEMO.clear(); }
 }
@@ -2642,6 +2746,7 @@ function decideScan(p, opts, event) {
   S.pluginRoot = (opts && typeof opts.plugin_root === 'string' && opts.plugin_root) || ah.env.get(ah.cfg('env.plugin_root')) || '';
   shellScan.reset();
   const hit = scanCommand(cmd, 0, cwdIn);
+  if (hit) countBlock(hit);
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
   if (S.handoverSkipped > 0) {
     const t = text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped });

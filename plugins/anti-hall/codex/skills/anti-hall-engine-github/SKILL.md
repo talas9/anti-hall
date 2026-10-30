@@ -25,8 +25,10 @@ Git, merge and release guards.
 ## Switches
 
 - `guards.gitAliasResolve` = true: Switch for git alias and shell definition resolution
+- `guards.gitCommitExpansionCheck` = true: Switch for the unresolved-shell-expansion check on inline commit messages (GH #457): off lets a...
 - `safety.gitGuard` = true: Master switch of the check: settings.json section and key, environment variable and...
 - `guards.gitGuardHeredocData` = true: Switch for data-heredoc masking
+- `guards.gitPushCreditCheck` = true: Switch for the pre-push credit backstop (GH #457): off lets a push through although an unpushed...
 - `guards.gitReusedMessageCheck` = true: Switch for the reused-commit-message check
 - `guards.mergeGate` = false: Where the opt-in switch is read from (guards.mergeGate, default off)
 - `guards.mergeSidePickAdvisory` = true: Where the on/off switch is read from (guards.mergeSidePickAdvisory, default on)

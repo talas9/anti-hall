@@ -205,7 +205,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     }
     let indirect = |k: &str| {
         k.starts_with("routine.flag_") // routine::flag constructs these CLI names from its argument
-            || ["metric.tasklist_integration_skipped", "metric.tasklist_progress_carried", "metric.command_heavy_segment_named", "metric.devswarm_parent_gate_fired", "metric.devswarm_parent_gate_suppressed", "metric.devswarm_parent_gate_count_mismatch", "metric.devswarm_orphans_warning_suppressed", "devswarm_role.pg_repeat_step"].contains(&k) // counted by the scripts through ah.advisory(kind, name) / ah.metric(name); pg_repeat_step is named by the repeat.allowed_keys table; the name is a literal in the script
+            || ["metric.tasklist_integration_skipped", "metric.tasklist_progress_carried", "metric.command_heavy_segment_named", "metric.devswarm_parent_gate_fired", "metric.devswarm_parent_gate_suppressed", "metric.devswarm_parent_gate_count_mismatch", "metric.devswarm_orphans_warning_suppressed", "metric.git_blocked", "metric.git_push_blocked", "metric.git_audit_warned", "devswarm_role.pg_repeat_step"].contains(&k) // counted by the scripts through ah.advisory(kind, name) / ah.metric(name); pg_repeat_step is named by the repeat.allowed_keys table; the name is a literal in the script
             || k.starts_with("webapi.source_") // web::query enumerates this registry with defaults::with_prefix
             || k.starts_with("jevrep.t_") // the texts and thresholds of the report, handed whole to the plugin script rules/jev-report (`jev_report::cfg`)
             || k.starts_with("jevrep.thr_")

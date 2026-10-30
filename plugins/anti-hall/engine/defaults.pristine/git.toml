@@ -205,7 +205,15 @@ value = ["claude code", "claude", "chatgpt", "codex", "copilot"]
 
 [git.gh_body_markers]
 doc = "Markers in a gh pr, issue or release body or title that credit an AI tool."
-value = ["claude.com/claude-code", "chatgpt.com/codex", "<noreply@anthropic.com>"]
+value = ["claude.com/claude-code", "chatgpt.com/codex", "<noreply@anthropic.com>", "claude.ai/code/session"]
+
+[git.credit_session_keys]
+doc = "Trailer keys (lowercase) whose line credits an AI tool whatever its value is, e.g. a session trailer a coding assistant appends (GH #457). Checked in commit messages, reused messages, gh bodies and the audit."
+value = ["claude-session"]
+
+[git.credit_url_markers]
+doc = "URL fragments of an AI tool's session link (GH #457). In a commit message a line that is only the link, or a trailer key and the link, counts as a credit; in a gh body the link anywhere does (see gh_body_markers)."
+value = ["claude.ai/code/session"]
 
 [git.gh_subs]
 doc = "gh subcommands whose bodies are checked."
@@ -438,6 +446,14 @@ value = "git-guard"
 [git.setting_git_guard]
 doc = "Master switch of the check: settings.json section and key, environment variable and plugin-option name."
 value = { section = "safety", key = "gitGuard", env = "ANTIHALL_GIT_GUARD", option = "safety_git_guard", type = "boolean", default = true }
+
+[git.setting_commit_expansion]
+doc = "Switch for the unresolved-shell-expansion check on inline commit messages (GH #457): off lets a message built from $VAR, $(...) or backticks through (the credit check cannot read it)."
+value = { section = "guards", key = "gitCommitExpansionCheck", env = "ANTIHALL_GIT_COMMIT_EXPANSION_CHECK", option = "", type = "boolean", default = true }
+
+[git.setting_push_credit]
+doc = "Switch for the pre-push credit backstop (GH #457): off lets a push through although an unpushed commit carries an AI credit."
+value = { section = "guards", key = "gitPushCreditCheck", env = "ANTIHALL_GIT_PUSH_CREDIT_CHECK", option = "", type = "boolean", default = true }
 
 [git.setting_heredoc_data]
 doc = "Switch for data-heredoc masking."
@@ -774,3 +790,71 @@ doc = "Largest log output, in bytes, the audit accepts from one repository (Node
 value = 1048576
 min = 1024
 max = 268435456
+
+# ---- GH #457: unresolved expansion in a commit message, and the pre-push credit backstop -----------------------
+
+[git.commit_expansion_patterns]
+doc = "Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it."
+value = ["\\$[A-Za-z_{]", "\\$\\(", "`"]
+
+[git.commit_expansion_allow]
+doc = "Regular expressions tested against the text that starts at an expansion; a match means the expansion is a form the guard already reads (a heredoc substitution, or the `$(:)` stand-in the guard puts where it already scanned a heredoc body), so it is not refused."
+value = ["^\\$\\([ \\t]*cat[ \\t]*<<", "^\\$\\([ \\t]*:[ \\t]*\\)"]
+
+[git.msg_commit_expansion]
+doc = "Block: an inline commit message holds an unresolved shell expansion. Placeholder: {shown} (the first expansion found)."
+value = { what = "the commit message holds a shell expansion ({shown}).", why = "The guard reads the command text, so a credit line behind a variable or substitution cannot be checked.", instead = "write the message literally in the -m argument (or a heredoc) and commit again." }
+
+[git.push_skip_opts]
+doc = "git push options after which nothing is published, so the pre-push credit backstop is skipped."
+value = ["--dry-run", "-n", "--delete", "-d"]
+
+[git.push_argv_upstream]
+doc = "git arguments listing the commits a push would publish when the branch has an upstream; {dir} is the repository directory and {n} the most commits read. Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep)."
+value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "@{u}..HEAD"]
+
+[git.push_argv_fallback]
+doc = "The same listing for a branch with no upstream: the commits of HEAD that no remote-tracking branch has."
+value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "HEAD", "--not", "--remotes"]
+
+[git.push_max_commits]
+doc = "Most unpushed commits the pre-push credit backstop reads."
+value = 50
+min = 1
+max = 1000
+
+[git.push_timeout_ms]
+doc = "Timeout of each git query the pre-push credit backstop runs."
+value = 4000
+unit = "ms"
+
+[git.msg_push_credit]
+doc = "Block: a push would publish commits that carry an AI credit. Placeholders: {shown} (short hashes), {first} (the first hash)."
+value = { what = "this push would publish commits with AI credit ({shown}).", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "reword them (git rebase -i {first}^, drop the credit lines) and push again." }
+
+[git.block_key_prefix]
+doc = "The prefix of a message key that is removed to make the reason label of the git_blocked counter."
+value = "msg_"
+
+[metric.git_blocked]
+doc = "Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push)."
+value = { kind = "counter", unit = "commands", labels = ["reason"] }
+
+[metric.git_push_blocked]
+doc = "Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
+[metric.git_audit_warned]
+doc = "Times the post-commit audit warned that a recent commit carries an AI credit (GH #457)."
+value = { kind = "counter", unit = "warnings", labels = [] }
+
+[git.expansion_shown_chars]
+doc = "How many characters of the expansion the refusal shows."
+value = 12
+min = 1
+max = 80
+unit = "chars"
+
+[git.block_reason_other]
+doc = "The reason label of the git_blocked counter for a block that has no message key."
+value = "other"

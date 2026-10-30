@@ -27,6 +27,8 @@ impl Env {
     fn cmd(&self) -> Command {
         let mut c = Command::new(BIN);
         c.env("HOME", self.dir.join("home"))
+            // an external CARGO_TARGET_DIR cannot find the checkout by walking up from the executable
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .env("AH_ENGINE_DIR", self.dir.join("eng"))
             .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
             .env("AH_ENGINE_VERSION", "0.1.0")
@@ -36,8 +38,12 @@ impl Env {
 
     /// (stdout, stderr, exit code) of one `engine hook` call; retried once so a cold start cannot hide the answer.
     fn hook(&self, command: &str) -> (String, String, i32) {
+        self.hook_in(command, "/tmp")
+    }
+
+    fn hook_in(&self, command: &str, cwd: &str) -> (String, String, i32) {
         let payload =
-            serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/tmp", "session_id": "s", "tool_input": {"command": command}})
+            serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": cwd, "session_id": "s", "tool_input": {"command": command}})
                 .to_string();
         let mut last = (String::new(), String::new(), 0);
         for _ in 0..2 {
@@ -101,4 +107,89 @@ fn the_override_hint_names_the_configured_plugin_root() {
     // The inline guard is brief; the remedy is the current deliberate contract.
     assert!(err.contains("Do instead: get the owner’s approval for this exact deletion."), "{err}");
     assert_eq!(err.lines().count(), 2);
+}
+
+// ---- GH #457: credit trailers that used to reach a commit ----
+
+const TRAILER_KEY: &str = "Claude-Session";
+const SESSION_URL: &str = "https://claude.ai/code/session_x";
+
+#[test]
+fn a_commit_message_built_from_a_shell_variable_is_refused_and_told_to_be_literal() {
+    let e = Env::new("var");
+    let _ = e.hook("echo warm");
+    for cmd in [
+        "git commit -q -m \"subj\\n\\n$T\"".to_string(),
+        "git commit -q -m \"subj $(printf x)\"".to_string(),
+        "git commit -q -m \"subj `printf x`\"".to_string(),
+        "git commit -q --message=\"subj ${T}\"".to_string(),
+    ] {
+        let (out, err, code) = e.hook(&cmd);
+        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
+        assert!(err.contains("literal"), "{cmd}: {err}");
+    }
+    // literal text, a single-quoted dollar and the standard heredoc substitution stay allowed
+    for cmd in [
+        "git commit -q -m 'cost $5 $T'".to_string(),
+        "git commit -q -m \"costs \\$5\"".to_string(),
+        "git commit -q -m \"$(cat <<'EOF'\nfix: a thing\n\nbody\nEOF\n)\"".to_string(),
+    ] {
+        assert_eq!(e.hook(&cmd), (String::new(), String::new(), 0), "{cmd}");
+    }
+}
+
+#[test]
+fn a_claude_session_trailer_or_session_url_in_a_commit_message_is_blocked() {
+    let e = Env::new("sess");
+    let _ = e.hook("echo warm");
+    for msg in [format!("subj\\n\\n{TRAILER_KEY}: {SESSION_URL}"), format!("subj\\n\\n{SESSION_URL}")] {
+        let cmd = format!("git commit -q -m \"{msg}\"");
+        let (out, err, code) = e.hook(&cmd);
+        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
+    }
+    let (_, err, code) = e.hook(&format!("gh pr create --title t --body \"x {SESSION_URL}\""));
+    assert_eq!(code, 2, "{err}");
+    // talking about the key in a sentence is not a trailer
+    assert_eq!(e.hook("git commit -q -m \"docs: explain the session key\""), (String::new(), String::new(), 0));
+}
+
+fn git_ok(dir: &std::path::Path, args: &[&str]) -> String {
+    let o = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+#[test]
+fn a_push_with_an_unpushed_credited_commit_is_blocked_with_the_sha_and_the_fix() {
+    let e = Env::new("push");
+    let origin = e.dir.join("origin.git");
+    let work = e.dir.join("work");
+    std::fs::create_dir_all(&origin).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    git_ok(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&work, &["init", "-q", "-b", "main"]);
+    git_ok(&work, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "base"]);
+    git_ok(&work, &["push", "-q", "-u", "origin", "main"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    // nothing unpushed: allowed
+    assert_eq!(e.hook_in("git push", w), (String::new(), String::new(), 0));
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "clean\n\nbody"]);
+    assert_eq!(e.hook_in("git push", w), (String::new(), String::new(), 0));
+    git_ok(
+        &work,
+        &["commit", "-q", "--allow-empty", "-m", &format!("credited\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n{TRAILER_KEY}: {SESSION_URL}")],
+    );
+    let sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
+    let (out, err, code) = e.hook_in("git push", w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains(&sha), "the block names the sha {sha}: {err}");
+    assert!(err.contains("reword"), "the block names the fix: {err}");
+    assert_eq!(git_ok(&work, &["log", "--format=%s", "-1"]), "credited", "history is never rewritten");
 }

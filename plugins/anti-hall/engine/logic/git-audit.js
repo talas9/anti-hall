@@ -84,6 +84,7 @@ function decide(p, opts, event) {
   shellScan.reset();
   const hits = auditRecentCommits(ti.command, cwd);
   if (!hits.length) return 'allow';
+  try { ah.metric('git_audit_warned', []); } catch (e) { /* counting never fails a hook */ }
   const t = text.render(ah.cfg('git_audit.msg'), { window_min: Math.floor(ah.cfg('git_audit.window_s') / 60), hits: hits.join(', ') });
   return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: ah.cfg('git_audit.event'), additionalContext: t } }) };
 }
