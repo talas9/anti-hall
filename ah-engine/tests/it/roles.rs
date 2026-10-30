@@ -430,10 +430,12 @@ fn the_digest_fits_its_budget_and_the_committed_digest_is_the_generated_one() {
 fn rules_json_keeps_no_message_text_of_its_own_where_a_defaults_text_exists() {
     let rules: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plugin().join("engine/rules.json")).unwrap()).unwrap();
     for r in rules["rules"].as_array().unwrap() {
-        if let Some(k) = r.get("message_ref").and_then(|v| v.as_str()) {
-            assert!(r.get("message").is_none(), "{} keeps its own message beside message_ref", r["id"]);
-            assert!(!skillgen::compose(k).is_empty(), "{} message_ref {k} has no text", r["id"]);
-        }
+        // every rule takes its text from the defaults (one source with the skill and the digest), never its own copy
+        let k = r.get("message_ref").and_then(|v| v.as_str()).unwrap_or_else(|| panic!("{} has no message_ref", r["id"]));
+        assert!(r.get("message").is_none(), "{} keeps its own message beside message_ref", r["id"]);
+        let action = r["action"].as_str().unwrap_or_default();
+        assert!(!skillgen::compose(action, k).is_empty(), "{} message_ref {k} has no text for action {action}", r["id"]);
+        assert!(skillgen::rules().iter().any(|row| row.source == k), "{} message_ref {k} has no guard_rules.rules row", r["id"]);
     }
     let text = serde_json::to_string(&rules).unwrap();
     assert!(!text.contains("Rewriting published history"), "the force-push text is duplicated in rules.json");

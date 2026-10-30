@@ -10,7 +10,10 @@ function decide(p, opts, event) {
   var on = ah.settings.bool('guard_rules.sw_digest');
   ah.metric('rule_digest', ['state', on ? 'on' : 'off']);
   var sid = typeof p.session_id === 'string' ? p.session_id : '';
-  if (sid !== '') ah.state.appendFile(ah.cfg('guard_rules.digest_state_file'), sid + ' ' + (on ? 'on' : 'off') + ' ' + ah.clock.now() + '\n');
+  // the on/off record is telemetry only: a refused or failed write never costs the session its digest
+  if (sid !== '') {
+    try { ah.state.appendFile(ah.cfg('guard_rules.digest_state_file'), sid + ' ' + (on ? 'on' : 'off') + ' ' + ah.clock.now() + '\n'); } catch (e) { ah.unable('rule-digest:state_write'); }
+  }
   if (!on) return 'allow';
   var root = sess.pluginRoot(opts);
   if (root === null) return 'allow';

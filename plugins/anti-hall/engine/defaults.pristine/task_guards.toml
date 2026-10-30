@@ -1013,7 +1013,7 @@ value = "add the work as tasks, then stop again."
 
 [tasklist_guard.instead_files]
 doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
-value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
+value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. Delegate the entry to a cheap teammate (Haiku or Sonnet) with the facts, the exact path and the format; handovers stay self-written. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
 
 [tasklist_guard.append_claude]
 doc = "How to append to the history file (Claude wording)."
@@ -1304,7 +1304,7 @@ value = ["completed"]
 
 [tasklist_hygiene.msg_done]
 doc = "What the done line says; {id} is the task id."
-value = "task {id} done: log Cause/Fix/Verified in the history ledger."
+value = "task {id} done: delegate its Cause/Fix/Verified ledger entry to a cheap teammate (facts, exact path, format, no heredoc)."
 
 [tasklist_hygiene.instead_done]
 doc = "What to do, in the done line."

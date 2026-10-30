@@ -3053,16 +3053,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.digest_head` | `anti-hall rules (same config the engine enforces):` |  |  | First line of the session-start digest. |
 | `guard_rules.digest_line` | `- {line}` |  |  | One digest line. Placeholder: {line}. |
 | `guard_rules.digest_sep` | `--` |  |  | The line that splits the essential lines from the extra lines (tier skill) in the generated digest file. |
-| `guard_rules.digest_state_file` | `rule-digest-sessions.log` |  |  | State file (under the anti-hall state directory) where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
+| `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
 | `guard_rules.enum_digest_tier` | `7 entries` |  |  | Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget. |
 | `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
 | `guard_rules.exempt` | `42 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording. |
 | `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, rules without a line of their own). Placeholders: {id}, {what}. |
 | `guard_rules.guard_name` | `rule-digest` |  |  | The name the digest carries in the context. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
-| `guard_rules.msg_compose` | `anti-hall: BLOCKED. {what} {why} {instead}` |  |  | How a rules.json rule composes its message from the defaults text. Placeholders: {what}, {why}, {instead}. |
+| `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
+| `guard_rules.msg_no_heredoc` | `3 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
+| `guard_rules.msg_rm_rf_root` | `3 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
 | `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
-| `guard_rules.rules` | `132 items` |  |  | Every rule the engine enforces, one row each: id, setting (the switch that turns the rule off, or empty), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). line is the short agent line of an essential rule. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `134 items` |  |  | Every rule the engine enforces, one row each: id, setting (the switch that turns the rule off, or empty), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). line is the short agent line of an essential rule. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.skill_head` | `Rules the engine enforces` |  |  | Heading of the rules section in the engine-guards skill. |
 | `guard_rules.skill_instead` | `Instead: {instead}` |  |  | Label in front of a rule's instead. Placeholder: {instead}. |
 | `guard_rules.skill_intro` | `Generated from the same config the engine reads. Tier: essential rules are al...` |  |  | Lead-in of the rules section in the engine-guards skill. |
@@ -4847,7 +4849,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_hygiene.instead_budget` | `keep subjects as `T-<n> [P] title`, details in the history ledger; delete fin...` |  |  | What to do, in the advisory line. |
 | `tasklist_hygiene.instead_done` | `TaskUpdate status=deleted (own task entries are not user data).` |  |  | What to do, in the done line. |
 | `tasklist_hygiene.join` | ` ` |  |  | Separator between the parts of one line. |
-| `tasklist_hygiene.msg_done` | `task {id} done: log Cause/Fix/Verified in the history ledger.` |  |  | What the done line says; {id} is the task id. |
+| `tasklist_hygiene.msg_done` | `task {id} done: delegate its Cause/Fix/Verified ledger entry to a cheap teamm...` |  |  | What the done line says; {id} is the task id. |
 | `tasklist_hygiene.msg_open` | `{n} open tasks (budget {max}).` |  |  | The open-count breach; {n} is the open-task count and {max} handover.taskListBudget. |
 | `tasklist_hygiene.msg_subject` | `task subject is {n} chars (max {max}).` |  |  | The subject breach; {n} is the subject length and {max} handover.taskSubjectMax. |
 | `tasklist_hygiene.summary` | `Claude only (Codex has no task tools). After a task is marked completed, tell...` |  |  | One-line description of the tasklist-hygiene check in the generated reference. |

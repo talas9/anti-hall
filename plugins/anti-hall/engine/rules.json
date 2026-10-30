@@ -26,7 +26,7 @@
       "field": "command",
       "pattern": "\\brm\\s+(?:-[a-zA-Z]*\\s+)*-[a-zA-Z]*(?:rf|fr)[a-zA-Z]*\\s+(?:--\\s+)?(?:/|~|\\$HOME)/?(?:\\s|$)",
       "action": "warn",
-      "message": "`rm -rf` on / or the home directory. Confirm with the owner before deleting data."
+      "message_ref": "guard_rules.msg_rm_rf_root"
     }
   ]
 }

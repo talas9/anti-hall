@@ -231,10 +231,16 @@ pub fn rule_parts(source: &str) -> (String, String, String) {
     (v.as_str().map(plain).unwrap_or_default(), sib("why"), sib("instead"))
 }
 
-/// The text the engine shows for a rule, composed from its defaults entries (what, why, instead).
-pub fn compose(source: &str) -> String {
+/// The text the engine shows for a rule whose action is `action` (deny, warn, context), composed from its defaults entries (what,
+/// why, instead) with that action's template (`guard_rules.msg_compose`). An action without a template composes nothing.
+pub fn compose(action: &str, source: &str) -> String {
+    let Some(tpl) = defaults::raw("guard_rules.msg_compose").get(action).and_then(V::as_str) else { return String::new() };
     let (what, why, instead) = rule_parts(source);
-    defaults::render("guard_rules.msg_compose", &[("what", &what), ("why", &why), ("instead", &instead)]).split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut t = tpl.to_string();
+    for (k, v) in [("what", &what), ("why", &why), ("instead", &instead)] {
+        t = t.replace(&format!("{{{k}}}"), v);
+    }
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The generated digest file: the essential lines, then the separator, then one extra line per other listed rule.

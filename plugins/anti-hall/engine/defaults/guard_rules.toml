@@ -124,6 +124,8 @@ value = [
   { id = "task_guard.idle", setting = "", tier = "essential", source = "task_guard.idle_what", line = "No in-progress task without a live agent." },
   { id = "task_guard.generic", setting = "", tier = "skill", source = "task_guard.generic_what", line = "" },
   { id = "tasklist_guard.reset", setting = "", tier = "skill", source = "tasklist_guard.what_reset", line = "" },
+  { id = "rules_json.rm_rf_root", setting = "", tier = "essential", source = "guard_rules.msg_rm_rf_root", line = "Never delete data (rm -rf, branches, rows, cloud objects) without the owner's explicit confirmation." },
+  { id = "write.no_heredoc", setting = "", tier = "essential", source = "guard_rules.msg_no_heredoc", line = "Write files with the Write/Edit tools, never a Bash heredoc (the git guard scans its body as shell)." },
   { id = "tasklist_guard.no_tasks", setting = "", tier = "essential", source = "tasklist_guard.what_no_tasks", line = "Tasks: \"T-<n> [P0-3] title\" (60 chars, 12 active max); done -> ledger entry -> delete own completed task." },
   { id = "tasklist_guard.stalled", setting = "", tier = "skill", source = "tasklist_guard.what_stalled", line = "" },
   { id = "tasklist_guard.progress", setting = "", tier = "skill", source = "tasklist_guard.what_progress", line = "" },
@@ -275,16 +277,24 @@ min = 1
 unit = "days"
 
 [guard_rules.digest_state_file]
-doc = "State file (under the anti-hall state directory) where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off."
-value = "rule-digest-sessions.log"
+doc = "State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off."
+value = ".anti-hall/logs/rule-digest-sessions.log"
 
 [guard_rules.digest_file]
 doc = "The generated digest, relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above."
 value = "engine/rule-digest.txt"
 
 [guard_rules.msg_compose]
-doc = "How a rules.json rule composes its message from the defaults text. Placeholders: {what}, {why}, {instead}."
-value = "anti-hall: BLOCKED. {what} {why} {instead}"
+doc = "How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}."
+value = { deny = "anti-hall: BLOCKED. {what} {why} {instead}", warn = "anti-hall: WARNING. {what} {why} {instead}", context = "anti-hall: {what} {why} {instead}" }
+
+[guard_rules.msg_rm_rf_root]
+doc = "Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref."
+value = { what = "`rm -rf` on / or the home directory.", why = "Deleting data cannot be undone and needs the owner's explicit confirmation.", instead = "confirm with the owner before deleting data, and delete only the exact paths you created." }
+
+[guard_rules.msg_no_heredoc]
+doc = "Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread."
+value = { what = "a file written through a Bash heredoc.", why = "The git and command guards scan the heredoc body as shell, so file content gets blocked or misread.", instead = "write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same." }
 
 [guard_rules.guard_name]
 doc = "The name the digest carries in the context."

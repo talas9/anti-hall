@@ -162,7 +162,7 @@ impl RuleSet {
                 re,
                 action,
                 message: match r.message_ref.as_deref() {
-                    Some(k) if !k.is_empty() => crate::skillgen::compose(k),
+                    Some(k) if !k.is_empty() => crate::skillgen::compose(&r.action, k),
                     _ => r.message,
                 },
                 paths: r.paths,

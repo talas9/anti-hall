@@ -134,6 +134,8 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `task_guard.idle` (essential): ... open tasks have no agent working on them. Why: Work that could run in parallel is sitting idle. Instead: assign the pending tasks to agents.
 - `task_guard.generic` (skill): open tasks remain unfinished. Why: Open tasks should not be left behind when the session stops. Instead: finish the pending tasks before stopping.
 - `tasklist_guard.reset` (skill): the task list was lost during session restore. Why: The old tasks are gone, not finished. Instead: restore the open tasks, then stop again.
+- `rules_json.rm_rf_root` (essential): `rm -rf` on / or the home directory. Why: Deleting data cannot be undone and needs the owner's explicit confirmation. Instead: confirm with the owner before deleting data, and delete only the exact paths you created.
+- `write.no_heredoc` (essential): a file written through a Bash heredoc. Why: The git and command guards scan the heredoc body as shell, so file content gets blocked or misread. Instead: write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.
 - `tasklist_guard.no_tasks` (essential): ... files changed but no tasks tracked. Why: Work this size needs a task list and a progress file.
 - `tasklist_guard.stalled` (skill): ... tasks are marked in progress with no active agent. Why: They are stalled, not running in parallel. Instead: assign an agent to each stalled task.
 - `tasklist_guard.progress` (skill): ... files changed but progress is missing or stale. Why: The progress file must record what was done. Instead: update the progress file, then stop again.

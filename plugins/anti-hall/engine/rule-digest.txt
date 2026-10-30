@@ -9,6 +9,8 @@
 - Near a usage limit, start no new agents.
 - Workers start no agents of their own.
 - No in-progress task without a live agent.
+- Never delete data (rm -rf, branches, rows, cloud objects) without the owner's explicit confirmation.
+- Write files with the Write/Edit tools, never a Bash heredoc (the git guard scans its body as shell).
 - Tasks: "T-<n> [P0-3] title" (60 chars, 12 active max); done -> ledger entry -> delete own completed task.
 --
 - advisor.review: A review-shaped agent on ... is not allowed while the advisor is available.

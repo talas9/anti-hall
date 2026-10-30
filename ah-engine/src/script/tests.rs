@@ -3562,7 +3562,8 @@ fn run_event(name: &str, event: &str, pairs: &[(&str, &str)], h: &str) -> Option
 #[test]
 fn the_rule_digest_is_injected_within_its_budget_and_its_switch_turns_it_off() {
     let h = home("digest");
-    let Some(Some(Verdict::Advisory(a))) = run_event("rule-digest", "SessionStart", &[], &h) else { panic!("digest on must answer with context") };
+    let got = run_event("rule-digest", "SessionStart", &[], &h);
+    let Some(Some(Verdict::Advisory(a))) = got else { panic!("digest on must answer with context, got {got:?}") };
     assert!(a.contains(defaults::text("guard_rules.digest_head")) && a.contains("force-push"), "{a}");
     let ctx = serde_json::from_str::<Value>(&a).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().len();
     assert!(ctx as u64 <= defaults::num("roles.digest_budget"), "digest {ctx} bytes is over roles.digest_budget");
