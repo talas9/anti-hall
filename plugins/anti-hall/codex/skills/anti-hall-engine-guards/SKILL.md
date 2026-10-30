@@ -72,7 +72,7 @@ What the automatic guards check and how to read a block.
 - `guards.priorityTagCheck` = true: Stop check for non-P0-P3 priority tags
 - `guards.pruneStopBlockMax` = 2: Max prune Stop blocks per completed-task count
 - `guards.pruneStopBlock` = true: Capped Stop block after an ignored prune advisory
-- `guards.pruneCompletedTasksAfter` = 10: Completed or cancelled tasks kept before the task tracker suggests pruning
+- `guards.pruneCompletedTasksAfter` = 3: Completed or cancelled tasks kept before the task tracker suggests pruning
 - `guards.laneTestGuard` = true: Default on; off lets a subagent run suite-scale test commands
 - `guards.allowTestSuites` = false: Lets a subagent run test suites
 - `guards.testPolicy` = "targeted": Test policy for subagents
