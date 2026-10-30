@@ -489,7 +489,8 @@ fn a_push_fails_open_with_an_advisory_when_git_is_unavailable() {
     let w = work.to_str().unwrap();
     let _ = e.hook("echo warm");
     let payload = serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": w, "session_id": "s", "tool_input": {"command": format!("git {P} origin main")}}).to_string();
-    let mut ch = e.cmd().env("PATH", e.dir.join("no-git-here")).arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut ch =
+        e.cmd().env("PATH", e.dir.join("no-git-here")).arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();
     let out = String::from_utf8_lossy(&o.stdout).to_string();
