@@ -1595,7 +1595,7 @@ fn tail_entries_projects_parsed_lines_and_hands_back_what_its_parser_refused() {
     assert_eq!(v[0], &json!({"type": "user", "isMeta": true, "message": {"content": "hi"}}), "unnamed parts are dropped");
     assert_eq!(v[1], &Value::Null, "a line over lineMax is unread, as tailLines");
     assert_eq!(v[2], &json!(0), "a blank line");
-    assert_eq!(v[3], &json!(0), "JSON that is not an object");
+    assert_eq!(v[3], &json!("[1,2]"), "JSON that is not an object: its text, never mistaken for a blank line");
     assert_eq!(v[4], &json!(r#"{"type":"user","message":{"content":"\ud800"}}"#), "a lone surrogate: the text, for JSON.parse");
     assert_eq!(v[5], &json!("not json"));
     assert_eq!(v[6], &json!({}));
