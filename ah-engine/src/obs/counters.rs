@@ -242,7 +242,9 @@ static MEM: Mutex<Option<Folded>> = Mutex::new(None);
 
 fn note(kind: &str, name: &str, outcome: &str, v: Val) {
     let key = (kind.to_string(), clean(name), outcome.to_string());
-    if crate::telemetry::emit::in_daemon() {
+    // A durable kind (diagnostics.durable_counter_kinds: the advisory counters) goes to the journal even inside the daemon, so a
+    // daemon restart does not lose it (GH #404: the advisor adherence counts were gone after every restart).
+    if crate::telemetry::emit::in_daemon() && !defaults::list("diagnostics.durable_counter_kinds").contains(&kind) {
         let (soft, hard, other) = limits();
         MEM.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Folded::default).add(key, v, soft, hard, other);
         return;
@@ -349,6 +351,7 @@ pub fn report(f: &Folded) -> Value {
             e.insert(o.name().to_string(), json!(cur + if o.name() == outcome { v.n } else { 0 }));
         }
     }
+    ratios(&mut adv);
     let mut hb = Map::new();
     for h in Handback::all() {
         hb.insert(h.name().to_string(), json!(totals.get(h.name()).copied().unwrap_or(0)));
@@ -360,6 +363,21 @@ pub fn report(f: &Folded) -> Value {
         "advisory": adv,
         "counters": {"dropped": f.dropped, "soft_hits": f.soft_hits, "malformed": f.malformed},
     })
+}
+
+/// The derived ratios of the advisory report (diagnostics.advisory_ratios: name -> {kind, num, den}), each written into its kind's
+/// map as `num / den` rounded to three places; a ratio whose denominator is 0 or absent is left out.
+fn ratios(adv: &mut BTreeMap<&str, Map<String, Value>>) {
+    let Some(table) = defaults::raw("diagnostics.advisory_ratios").as_table() else { return };
+    for (name, spec) in table {
+        let field = |k: &str| spec.str_field(k);
+        let Some(e) = adv.get_mut(field("kind")) else { continue };
+        let num = e.get(field("num")).and_then(Value::as_u64).unwrap_or(0);
+        let den = e.get(field("den")).and_then(Value::as_u64).unwrap_or(0);
+        if den > 0 {
+            e.insert((*name).to_string(), json!(((num as f64 / den as f64) * 1000.0).round() / 1000.0));
+        }
+    }
 }
 
 /// Everything counted so far: the journal's totals plus this process's own table (the daemon's).

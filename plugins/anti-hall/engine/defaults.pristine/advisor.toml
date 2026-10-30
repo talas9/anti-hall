@@ -205,7 +205,7 @@ value = '(?i)(?:#\d{1,7}\b|\b(?:issue|gh)[ -]?\d{1,7}\b|\b(?:fix|bug|hotfix|feat
 
 [advisor.say_do_re]
 doc = "Regular expression (Rust syntax) of assistant text that announces an advisor call."
-value = '(?i)\b(?:i(?:''|’)?ll|i will|let me|i(?:''|’)?m going to|going to|will now|next,? i)\s+(?:\w+\s+){0,3}?(?:ask|consult|call|check with|run (?:it|this|that) by|get)\s+(?:the\s+)?advisor'
+value = '(?i)\b(?:i\W?ll|i will|let me|i\W?m going to|going to|will now|next,? i)\s+(?:\w+\s+){0,3}?(?:ask|consult|call|check with|run (?:it|this|that) by|get)\s+(?:the\s+)?advisor'
 
 [advisor.owner_skip_meta]
 doc = "A user entry with this field true is harness text (a reminder, a hook's feedback), not the owner."
@@ -286,8 +286,12 @@ value = "A second fix dispatch for {key} from a non-flagship main, with no advis
 
 [advisor.msg_second_instead]
 doc = "What to do instead for the second-attempt rule."
-value = "One fix attempt, then the advisor: call the advisor tool on why the first attempt missed, then dispatch. Blocked once per issue."
+value = "Call the advisor on why the first attempt missed, then dispatch. Blocked once per issue."
 
 [advisor.msg_why_flagship]
 doc = "The reason line of the phase-3 rules."
 value = "A non-flagship main gets one attempt at thinking work; design, investigation and retries go through the advisor."
+
+[advisor.dispatch_tools]
+doc = "Tool names that dispatch an agent: the thinking and second-attempt rules judge their brief (description, prompt)."
+value = ["Agent", "Task"]
