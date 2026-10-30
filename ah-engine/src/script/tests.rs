@@ -280,14 +280,14 @@ fn a_script_that_tries_to_escape_the_state_directory_fails_and_defers() {
 
 // ---- the script-failure policy (D88 condition b) ----
 
-/// Load: a call still running when its request's client stops waiting is cut there and defers to its own Node hook. It is not a
-/// script failure (no error is counted, and an engine-only advisory defers instead of taking its failure verdict, allow).
+/// Load: a call still running when its request's client stops waiting is cut there and answers by its check's failure policy
+/// (#463: there is no Node hook to defer to). It is not a script error; the cut is counted per check and outcome.
 #[test]
-fn a_call_past_its_request_deadline_is_cut_and_defers_without_counting_an_error() {
+fn a_call_past_its_request_deadline_is_cut_and_answers_by_its_policy_without_counting_an_error() {
     let h = home("cut");
-    put_override(&h, "sibling-sweep", "function decide(p){ for(;;){} }");
+    put_override(&h, "switch-notice", "function decide(p){ for(;;){} }");
     let e = env(&h);
-    let go = || super::run_forced("sibling-sweep", &json!({}), &Value::Null, "Stop", &e);
+    let go = || super::run_forced("switch-notice", &json!({}), &Value::Null, "UserPromptSubmit", &e);
     crate::deadline::begin(Instant::now());
     crate::deadline::client_deadline(0); // the client no longer waits
     crate::telemetry::emit::take_queued();
@@ -296,12 +296,32 @@ fn a_call_past_its_request_deadline_is_cut_and_defers_without_counting_an_error(
     let took = t.elapsed();
     let evs = crate::telemetry::emit::take_queued();
     crate::deadline::end();
-    assert_eq!(v, Some(Some(Verdict::Defer)), "cut at the client's deadline: its Node hook answers");
+    let v = v.flatten().expect("an answer");
+    assert_ne!(v, Verdict::Defer, "a cut never defers: no Node hook runs");
+    assert_eq!(without_notice(v.clone()), Verdict::Allow, "switch-notice is `open`: a cut allows (and tells the user once)");
     assert!(evs.is_empty(), "a cut is not a script error: {evs:?}");
     assert!(took < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.wall_limit_factor")), "{took:?}");
+    // the cut is counted per check under the outcome it answered with
+    assert_eq!(super::cut_outcome(&v), defaults::text("script.deadline_cut_outcome_allow"));
+    assert_eq!(super::cut_outcome(&Verdict::Block("x".into())), defaults::text("script.deadline_cut_outcome_block"));
+    assert_eq!(super::cut_outcome(&Verdict::Advisory("{}".into())), defaults::text("script.deadline_cut_outcome_notice"));
     // outside a request the same call runs to its own limit and takes the failure policy (this advisory allows)
-    assert_eq!(go(), Some(Some(Verdict::Allow)));
+    assert_eq!(go().flatten().map(without_notice), Some(Verdict::Allow));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// #463: per-check deadline policy and grace come from the plugin TOML: a `finish` check is never cut at the request deadline, the
+/// Stop guards cut in the audit have a grace, and a closed guard is still never cut on a guard event.
+#[test]
+fn deadline_policy_and_grace_are_per_check() {
+    assert!(!super::cut_at_deadline("sibling-sweep", "SubagentStop"), "sibling-sweep is `finish`");
+    assert!(!super::cut_at_deadline("sibling-sweep", "Stop"));
+    assert!(super::cut_at_deadline("switch-notice", "UserPromptSubmit"));
+    assert!(!super::cut_at_deadline("git", "PreToolUse"), "a closed guard keeps only its own limit");
+    for check in ["silent-agent-nudge", "compact-advice-guard", "auto-handover"] {
+        assert!(super::deadline_grace_ms(check) > 0, "{check} has a deadline grace");
+    }
+    assert_eq!(super::deadline_grace_ms("no-such-check"), 0);
 }
 
 /// The verdict body of `v` when it is the guard-down notice (an advisory), else the verdict itself.

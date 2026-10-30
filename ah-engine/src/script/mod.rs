@@ -897,13 +897,17 @@ pub fn cut(name: &str, event: &str) -> Verdict {
     crate::failopen::note(defaults::text("fail_open.reason_deadline"), name, event);
     crate::discard::note("script_deadline", &defaults::render("script.msg_deadline_cut", &[("check", &name), ("event", &event)]));
     let v = unanswered(name, event);
-    let outcome = match &v {
+    crate::obs::counters::advisory(defaults::text("script.deadline_cut_counter"), &format!("{name}.{}", cut_outcome(&v)));
+    v
+}
+
+/// The outcome word a deadline cut that answered `v` is counted under (`script.deadline_cut_outcome_*`).
+pub fn cut_outcome(v: &Verdict) -> &'static str {
+    match v {
         Verdict::Block(_) => defaults::text("script.deadline_cut_outcome_block"),
         Verdict::Advisory(_) => defaults::text("script.deadline_cut_outcome_notice"),
         _ => defaults::text("script.deadline_cut_outcome_allow"),
-    };
-    crate::obs::counters::advisory(defaults::text("script.deadline_cut_counter"), &format!("{name}.{outcome}"));
-    v
+    }
 }
 
 /// Direct `ah-hook <Event>` calls need not carry a plugin-root argument. Resolve the script's root from the

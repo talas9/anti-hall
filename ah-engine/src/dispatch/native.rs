@@ -296,9 +296,57 @@ mod tests {
         }
         assert!(seen >= 6, "the enforcement rows were found in the dispatch table ({seen})");
         // the simulation is real: a pure-advice check of the same events IS shed under load, and nothing is shed without load
-        assert!(sheds("procwatch-advisory", false, true));
-        assert!(!sheds("procwatch-advisory", false, false));
-        assert!(!sheds("procwatch-advisory", true, true));
+        assert!(sheds("codex-availability", false, true));
+        assert!(!sheds("codex-availability", false, false));
+        assert!(!sheds("codex-availability", true, true));
+    }
+
+    /// #464: under CPU pressure only the optional tier is shed; the rule reminders the agent needs (shed ~189 prompts in two days
+    /// while costing 1 us to 8 ms each) keep answering.
+    #[test]
+    fn shedding_under_cpu_pressure_keeps_the_rule_reminders() {
+        for check in ["switch-notice", "idle-agent-sweep", "limit-conserve-inject", "gh-rt-advisory", "procwatch-advisory", "engine-role-note", "failure-root-cause-nudge"] {
+            assert!(!sheds(check, false, true), "{check} is a rule reminder: never shed");
+        }
+        for check in ["claude-cli-version", "devswarm-version", "jev-weekly-scorecard"] {
+            assert!(sheds(check, false, true), "{check} is optional: shed under load");
+        }
+        // every optional row names a real check of the dispatch table, so a typo cannot hide a reminder from the tiers
+        let tiers = crate::defaults::raw("diagnostics.shed_tier_by_check");
+        let mut all: Vec<&str> = Vec::new();
+        for key in ["dispatch.hooks_claude_SessionStart", "dispatch.hooks_claude_UserPromptSubmit", "dispatch.hooks_codex_SessionStart"] {
+            if crate::defaults::has(key) {
+                all.extend(crate::defaults::raw(key).as_array().into_iter().flatten().filter_map(|r| r.get("check").and_then(|v| v.as_str())));
+            }
+        }
+        for (check, _) in tiers.as_table().into_iter().flatten() {
+            assert!(all.contains(&&**check), "{check}: no such check on SessionStart/UserPromptSubmit");
+        }
+    }
+
+    /// #463: a check that has not started when its request is past the hard deadline answers by its own failure policy, never a
+    /// deferral to a Node hook that no longer runs.
+    #[test]
+    fn a_check_past_the_hard_deadline_answers_by_its_policy_not_a_deferral() {
+        let p = json!({"session_id": "s-463", "cwd": "/", "hook_event_name": "UserPromptSubmit", "prompt": "hi"});
+        let meta = Meta {
+            host: "claude".into(),
+            event: "UserPromptSubmit".into(),
+            tool: None,
+            root: None,
+            env: crate::reqenv::RequestEnv::from_pairs(Vec::<(String, String)>::new()),
+            only: Some(vec!["switch-notice".into()]),
+            plan: Vec::new(),
+            cfg: String::new(),
+            payload_sha1: None,
+            deadline_ms: None,
+        };
+        crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        crate::deadline::client_deadline(0);
+        let got = evaluate(&meta, &p, &|_| false, &|_, _, _| {});
+        crate::deadline::end();
+        let a = got.iter().find(|(id, _)| id == "switch-notice").map(|(_, a)| a.clone());
+        assert!(matches!(a, Some(Answer::Decided(..))), "past the deadline the check still answers by its policy: {a:?}");
     }
 
     #[test]
