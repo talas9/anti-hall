@@ -30,7 +30,7 @@ fn write_flag(home: &str, held: &crate::checks::guardkit::nodelock::Held, flag: 
     let path = flag_path(home);
     let infix = defaults::text("afk.fence_infix");
     let res = std::fs::create_dir_all(state_dir(home)).and_then(|()| {
-        crate::checks::guardkit::nodelock::fenced_write(held, &path, &Value::Object(flag.clone()).to_string(), &infix, defaults::num("script.write_sync") != 0)
+        crate::checks::guardkit::nodelock::fenced_write(held, &path, &Value::Object(flag.clone()).to_string(), infix, defaults::num("script.write_sync") != 0)
     });
     match res {
         Ok(true) => true,
@@ -94,7 +94,7 @@ fn locked<T>(home: &str, f: impl FnOnce(&crate::checks::guardkit::nodelock::Held
         .and(params)
         .and_then(|params| crate::checks::guardkit::nodelock::acquire_respecting_live(&path.to_string_lossy(), params))?;
     // fenced commit (GH #426): an earlier holder's staged copy never lands after this holder's write
-    crate::checks::guardkit::nodelock::fence_sweep(&flag_path(home), &defaults::text("afk.fence_infix"));
+    crate::checks::guardkit::nodelock::fence_sweep(&flag_path(home), defaults::text("afk.fence_infix"));
     let r = f(&held);
     if !held.release() {
         err(&(defaults::render("afk.msg_write_failed", &[("path", &path.display()), ("why", &defaults::text("afk.msg_lock_released"))]) + "\n"));
