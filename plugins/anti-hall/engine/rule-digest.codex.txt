@@ -119,6 +119,5 @@
 - task_tracker.short: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
 - task_tracker.primary: workspace-sized work needs a child workspace.
 - uncommitted.msg: this edit is paused: ... lines are uncommitted (limit ...).
-- fable_availability.msg: Fable is available this session (per ~/.claude.json).
 --
 

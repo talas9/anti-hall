@@ -3058,7 +3058,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.digest_file_codex` | `engine/rule-digest.codex.txt` |  |  | The generated digest of the Codex host (its own model guidance), relative to the plugin root; the session script picks it on a Codex request (standdown.codex_host). |
 | `guard_rules.digest_foot` | `More: skill engine-rules. After a block fix the cause, retry once.` |  |  | Last line of the digest. |
 | `guard_rules.digest_head` | `anti-hall rules (same config the engine enforces):` |  |  | First line of the session-start digest. |
-| `guard_rules.digest_host_skip` | `1 entries` |  |  | Rule id prefixes left out of a host's extra digest lines (tier skill) because the host does not run them: the model-routing guard stands down on Codex (logic/lib/81-standdown.js), and its texts name Claude models. |
+| `guard_rules.digest_host_skip` | `1 entries` |  |  | Rule id prefixes left out of a host's extra digest lines (tier skill) because the host does not run them: the model-routing guard stands down on Codex (logic/lib/81-standdown.js), and fable-availability reads the Claude config; their texts name Claude models. |
 | `guard_rules.digest_hosts` | `claude, codex` |  |  | The hosts a digest is generated for, each from the host's own digest text (a `digest` table by host, or one string for all). |
 | `guard_rules.digest_line` | `- {line}` |  |  | One essential digest line. Placeholder: {line}, the enforced rule's own text (what, instead) composed by `guard_rules.digest_entry`; no separate copy. |
 | `guard_rules.digest_sep` | `--` |  |  | The line that splits the essential lines from the extra lines (tier skill) in the generated digest file. |
