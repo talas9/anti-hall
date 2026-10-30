@@ -1324,3 +1324,30 @@ fn consecutive_slow_calls_mark_a_wedged_daemon_down_and_a_normal_reply_resets_th
     slow_call(&e, &map, &n);
     assert_eq!(d.seen(), before);
 }
+
+/// The git check's inline-shell nesting cap is the plugin's `git.inline_depth`, not a number in the script: the same force push
+/// one `bash -c` deep is blocked under the shipped value and is no longer followed into once the setting is lowered to 0.
+#[test]
+fn the_git_inline_depth_comes_from_the_plugin_config() {
+    let e = Env::new("git-inline-depth");
+    let plugin = e.dir.join("plugin");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    copy_tree(&src.join("engine"), &plugin.join("engine"));
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let root = plugin.to_string_lossy().to_string();
+    let env = [("AH_ENGINE_PLUGIN_ROOT", root.as_str()), ("AH_ENGINE_NOSPAWN", "1")];
+    let p = bash("bash -c 'git push --force origin main'", &e.dir);
+    let (code, out, err) = e.run_with(&args, true, &p, true, &env);
+    assert_eq!(code, 2, "shipped git.inline_depth follows the inline shell: out={out} err={err}");
+    assert!(err.contains("force push"), "{err}");
+    for dir in ["engine/defaults", "engine/defaults.pristine"] {
+        let f = plugin.join(dir).join("git.toml");
+        let text = std::fs::read_to_string(&f).unwrap();
+        let at = text.find("[git.inline_depth]").unwrap();
+        let v = at + text[at..].find("value = 3").unwrap();
+        std::fs::write(&f, format!("{}value = 0{}", &text[..v], &text[v + "value = 3".len()..])).unwrap();
+    }
+    let (code, out, err) = e.run_with(&args, true, &p, true, &env);
+    assert!(!err.contains("force push"), "git.inline_depth = 0: the inline shell is not followed: code={code} out={out} err={err}");
+}

@@ -93,3 +93,15 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     }
     Some(out)
 }
+
+#[cfg(test)]
+mod argv_tests {
+    /// The hivecontrol arguments are the plugin's agent_tracker.native_wake fields, not words compiled into the engine.
+    #[test]
+    fn the_hivecontrol_arguments_come_from_the_plugin_table() {
+        let t = crate::defaults::raw("agent_tracker.native_wake");
+        assert_eq!(super::args("info_args"), t.get("info_args").unwrap().strings());
+        assert_eq!(super::args("reactivate_args"), t.get("reactivate_args").unwrap().strings());
+        assert!(!super::args("info_args").is_empty() && !super::args("reactivate_args").is_empty());
+    }
+}
