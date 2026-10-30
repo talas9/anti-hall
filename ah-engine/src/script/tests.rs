@@ -2259,12 +2259,10 @@ fn burn_breaker_blocks_every_reviewed_bypass_and_lifts_only_on_a_real_commit() {
         let _ = run_forced("burn-breaker", &p, &e);
         assert!(std::path::Path::new(&marker).exists(), "{keep} passes but must not lift the breaker");
     }
-    for lift in ["echo hi > /w/scratchpad/r.md"] {
-        raise();
-        let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": lift}});
-        let _ = run_forced("burn-breaker", &p, &e);
-        assert!(!std::path::Path::new(&marker).exists(), "{lift} must lift the breaker");
-    }
+    raise();
+    let p = json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": "echo hi > /w/scratchpad/r.md"}});
+    let _ = run_forced("burn-breaker", &p, &e);
+    assert!(!std::path::Path::new(&marker).exists(), "a report write must lift the breaker");
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
