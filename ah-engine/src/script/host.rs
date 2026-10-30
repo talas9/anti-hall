@@ -152,8 +152,22 @@ pub(super) fn regex_totals() -> (u64, u64, u64, u64) {
     super::recache::compiled_totals()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: how many regex calls (`reTest`/`reFind`/`reFindAll`) the scripts made on this thread, to measure a prefilter.
+    static RE_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Test-only: the regex calls scripts have made on this thread so far.
+#[cfg(test)]
+pub(super) fn re_calls() -> u64 {
+    RE_CALLS.with(std::cell::Cell::get)
+}
+
 /// Run `f` on the compiled pattern for `flags` (shared cache, see [`super::recache`]).
 pub(super) fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
+    #[cfg(test)]
+    RE_CALLS.with(|c| c.set(c.get() + 1));
     let re = super::recache::get(src, flags)?;
     Ok(f(&re))
 }

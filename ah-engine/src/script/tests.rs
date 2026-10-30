@@ -1455,6 +1455,64 @@ mod sibling {
         assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
     }
 
+    /// Codex review of PR #455 (P2s): a cheap prefilter, a wrong-path cue, single-quoted spans and reported speech.
+    #[test]
+    fn neutral_text_costs_one_regex_pass_and_a_cue_still_fires_after_the_prefilter() {
+        let mut costly: Vec<(&str, u64)> = Vec::new();
+        let neutral = "The quick brown fox jumps over the lazy dog while the build runs quietly in the evening. ";
+        for (tag, bytes) in [("n64k", 65536usize), ("n1m", 1048576usize)] {
+            let d = h(tag);
+            configure(&d, json!({"text_max_bytes": 1048576}));
+            let text = neutral.repeat(bytes / neutral.len());
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
+            let (before, t0) = (super::host::re_calls(), std::time::Instant::now());
+            let v = go(&d, &stop(&d, &p, &text));
+            let (calls, ms) = (super::host::re_calls() - before, t0.elapsed().as_millis());
+            eprintln!("MEASURE {tag}: {calls} regex calls, {ms} ms");
+            assert_eq!(v, Verdict::Allow);
+            costly.push((tag, calls));
+        }
+        assert!(costly.iter().all(|(_, n)| *n <= 40), "neutral text must cost a bounded number of regex calls: {costly:?}");
+        // the prefilter never hides a cue: one cause sentence at the end of a long neutral text still reminds
+        let d = h("n-cue");
+        let text = format!("{}Root cause: `read_window` holds the file twice, so memory doubles. Fixed by streaming.", neutral.repeat(200));
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
+        assert!(is_adv(&go(&d, &stop(&d, &p, &text))));
+    }
+
+    #[test]
+    fn review_p2_wrong_path_single_quotes_and_reported_speech() {
+        let verdict = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            go(&d, &stop(&d, &p, text))
+        };
+        let mut wrong = Vec::new();
+        for (tag, text) in [
+            ("r1", "I fixed the wrong path I used earlier."),
+            ("r1b", "Fixed the incorrect flag I had typed in the config."),
+            ("q3", "The ticket said it's broken and I fixed a typo I made in the loader."),
+            ("q4", "Don't worry, it's done: I've fixed a typo in the loader."),
+        ] {
+            if !is_adv(&verdict(tag, text)) {
+                wrong.push(format!("reminder expected: {text}"));
+            }
+        }
+        for (tag, text) in [
+            ("q1", "The user wrote 'I fixed a typo' in the ticket."),
+            ("q2", "The user wrote 'my mistake. Config should have been lower-case' in the ticket."),
+            ("q5", "The user wrote \u{2018}I fixed a typo\u{2019} in the ticket."),
+            ("s1", "Alice said: I fixed a typo in the loader."),
+            ("s2", "Bob told me that I made a mistake in my earlier edit, which should have been smaller."),
+            ("s3", "The reviewer wrote, I fixed a typo in the loader."),
+        ] {
+            if verdict(tag, text) != Verdict::Allow {
+                wrong.push(format!("silent expected: {text}"));
+            }
+        }
+        assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
+    }
+
     #[test]
     fn the_self_correction_family_follows_through_and_the_cue_list_is_a_settings_edit() {
         let d = h("self-ft");
