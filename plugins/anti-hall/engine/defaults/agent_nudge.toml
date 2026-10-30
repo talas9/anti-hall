@@ -212,3 +212,27 @@ value = { section = "agents", key = "nudgeScope", env = "ANTIHALL_AGENT_NUDGE_SC
 [agent_nudge.suppress]
 doc = "Telemetry words of a nudge held back by the scope rules (class agent_nudge.words.class): the event, and its reason values judge_done (the health judge said the child is done) and answered (the parent answered after the last send, so the wake fallback does not queue it again)."
 value = { event = "suppressed", judge_done = "judge_done", answered = "answered" }
+
+[metric.agent_nudge_sent]
+doc = "Nudges opened and delivered (or escalated when no parent is live), by trigger (hung, idle, loop, waste)."
+value = { kind = "counter", unit = "nudges", labels = ["trigger"] }
+
+[metric.agent_nudge_suppressed]
+doc = "Nudges held back by the scope rules (agents.nudgeScope), by reason: judge_done (the agentHealth judge said the child's work is finished, so the done hold starts; the hold then keeps suppressing without a judge call or another count until it runs out or the child writes) and answered (the parent answered after the last send, so the wake fallback does not queue it again)."
+value = { kind = "counter", unit = "nudges", labels = ["reason"] }
+
+[metric.agent_nudge_done_hold_released]
+doc = "Done holds released early because the held child produced new output after the verdict (a hold that simply ran out is not counted)."
+value = { kind = "counter", unit = "holds", labels = [] }
+
+[metric.agent_nudge_legacy_hold_adopted]
+doc = "Done holds an older version kept in the busy-hold field, moved to the done holds so new output releases them (agents.nudgeScope on)."
+value = { kind = "counter", unit = "holds", labels = [] }
+
+[metric.agent_nudge_to_owner]
+doc = "Notices sent to the owner's channel (escalations, acted-on notices, dead-child notices with no live parent), by where: session (the newest live armed main session of the child's project) or file (the owner notices file, when no such session exists)."
+value = { kind = "counter", unit = "notices", labels = ["where"] }
+
+[metric.agent_wake_dropped]
+doc = "Wake rows dropped because no followed session owns them (agents.nudgeScope on), by reason: foreign_agent (a heartbeat whose writer is no followed session), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started)."
+value = { kind = "counter", unit = "rows", labels = ["reason"] }

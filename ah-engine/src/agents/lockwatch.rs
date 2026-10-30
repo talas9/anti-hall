@@ -186,6 +186,7 @@ fn check(env: &Env, st: &mut State, table: &[procs::Proc], lock: &str) {
             Outcome::Skip,
             crate::telemetry::event::Fields::new().num("pid", top as u64).tok("reason", ws.str_field("foreign_pid")),
         );
+        crate::metrics::bump("agent_wake_dropped", &[("reason", ws.str_field("foreign_pid"))]);
     }
     let delivered = target.as_ref().map(|k| {
         let r = Reminder {
