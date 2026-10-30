@@ -2072,4 +2072,7 @@ fn n430_legacy_done_hold_keeps_an_idle_done_child_held() {
     let held_until = st.nudge_done_hold.get("abc").map(|d| d.until).or_else(|| st.nudge_hold.get("abc").copied());
     println!("MEASURE n430 legacy-idle: held_until={held_until:?} until={until}");
     assert_eq!(held_until, Some(until), "the legacy hold's expiry was not kept");
+    tick(&nudge_env(&h, until + MIN, &[]), &mut st);
+    println!("MEASURE n430 legacy-idle expiry: nudge_open={}", st.nudges.contains_key("abc"));
+    assert!(st.nudges.contains_key("abc"), "the idle child was still held after the legacy hold's expiry");
 }
