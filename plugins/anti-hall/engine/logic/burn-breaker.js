@@ -160,7 +160,14 @@ function bbExemptSeg(seg) {
   var line = out.join(' ');
   var deny = ah.cfg('burn.deny_res');
   for (var d = 0; d < deny.length; d++) if (ah.re.test(deny[d], 'r', line)) return null;
-  if (ah.re.test(ah.cfg('burn.commit_re'), 'r', line)) return 'commit';
+  // a commit may carry leading environment assignments (`FOO=1 git commit ...`, burn.exempt.assign_re), never one that names a command
+  // or changes what git runs (burn.exempt.assign_deny_re: an editor, pager, ssh command, config, exec path, loader or shell variable)
+  var a = 0;
+  while (a < out.length && ah.re.test(x.assign_re, 'r', out[a])) {
+    if (ah.re.test(x.assign_deny_re, 'r', out[a])) return null;
+    a++;
+  }
+  if (ah.re.test(ah.cfg('burn.commit_re'), 'r', out.slice(a).join(' '))) return 'commit';
   var rdeny = ah.cfg('burn.restore_deny_res');
   for (var k = 0; k < rdeny.length; k++) if (ah.re.test(rdeny[k], 'r', line)) return null;
   var res = ah.cfg('burn.restore_bash_res');

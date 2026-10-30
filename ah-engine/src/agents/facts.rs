@@ -336,6 +336,12 @@ fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
         if a.bg_ids.contains_key(id) && terminal.iter().any(|w| w.eq_ignore_ascii_case(st)) {
             a.bg_ids.remove(id);
             a.exited.push((id.to_string(), ts));
+            // PR #472: a background check or shell write earns its HARD outcome only now, when it ended with success
+            if let Some((check, writes)) = a.bg_outcomes.remove(id)
+                && defaults::raw("agent_tracker.bg_success_statuses").strings().iter().any(|w| w.eq_ignore_ascii_case(st))
+            {
+                hard_outcome(a, check, &writes);
+            }
         }
     }
     let keep = lim("loop_window") as usize;
@@ -414,7 +420,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
         } else if pat("probe").is_some_and(|r| r.is_match(&unquoted(arg))) {
             class = "probe".into();
         }
-        writes = shell_writes(&unquoted(arg));
+        writes = shell_writes(arg);
         // a build launch is one event of the burn episode: an endless chain of builds with no outcome spends the episode's cap (PR #472)
         if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == class) {
             episode_event(a, ts);
@@ -552,11 +558,16 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == p.class) {
             push_ring(&mut a.bg_builds, id.clone(), lim("loop_window"));
         }
+        if p.class == "check" || !p.writes.is_empty() {
+            a.bg_outcomes.insert(id.clone(), (p.class == "check", p.writes.clone()));
+        }
         a.bg_ids.insert(id, ts);
         while a.bg_ids.len() > lim("loop_window") as usize {
             let Some(k) = a.bg_ids.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };
             a.bg_ids.remove(&k);
         }
+        let live = &a.bg_ids;
+        a.bg_outcomes.retain(|k, _| live.contains_key(k));
     }
     if failed {
         a.errors += 1;
@@ -567,21 +578,14 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     // PR #472 HARD outcomes: a file the shell created or appended for the first time and a passing check add progress (and so restart the
     // burn count), like an edited file or a passing test. SOFT: a completed live probe or a shell write to a file already written; each
     // is one event of the burn episode, which may only hold off the pause within the episode's cap (burn.soft_hold).
+    // A BACKGROUND launch's result is only its acknowledgment: the check has not run, so the launch is at most SOFT and the HARD outcome
+    // waits for its completion notice (task_ends).
     let om = defaults::raw("agent_tracker.outcome_metric");
-    let fresh: Vec<String> = p.writes.iter().filter(|w| !a.files.contains(w)).cloned().collect();
-    if !fresh.is_empty() {
-        for w in fresh {
-            push_ring(&mut a.files, w, lim("files_max"));
-        }
-        a.progress += weight("shell_file");
-        count_outcome(om.str_field("shell_file"));
-    } else if p.class == "check" {
-        a.progress += weight("check");
-        count_outcome(&p.class);
-    } else if p.class == "probe" || !p.writes.is_empty() {
+    let hard = !p.bg && hard_outcome(a, p.class == "check", &p.writes);
+    if !hard && (p.class == "probe" || p.class == "check" || !p.writes.is_empty()) {
         push_ring(&mut a.soft_ts, ts, lim("loop_window"));
         episode_event(a, ts);
-        count_outcome(if p.class == "probe" { p.class.as_str() } else { om.str_field("shell_file") });
+        count_outcome(if p.class == "probe" || p.class == "check" { p.class.as_str() } else { om.str_field("shell_file") });
     }
     if p.push || p.class == "commit" || p.class == "merge" || p.class == "deploy" {
         a.last_ship_ms = ts;
@@ -629,20 +633,59 @@ pub(crate) fn episode_sync(a: &mut Agent, ts: u64) {
     }
 }
 
+/// A HARD outcome of a shell command that ended with success (PR #472): a file it created or appended for the first time (the
+/// shell_file weight), else a passing check (the check weight). False when it earned neither.
+fn hard_outcome(a: &mut Agent, check: bool, writes: &[String]) -> bool {
+    let fresh: Vec<String> = writes.iter().filter(|w| !a.files.contains(w)).cloned().collect();
+    if !fresh.is_empty() {
+        for w in fresh {
+            push_ring(&mut a.files, w, lim("files_max"));
+        }
+        a.progress += weight("shell_file");
+        count_outcome(defaults::raw("agent_tracker.outcome_metric").str_field("shell_file"));
+    } else if check {
+        a.progress += weight("check");
+        count_outcome("check");
+    } else {
+        return false;
+    }
+    true
+}
+
 /// The files a shell command creates or appends: every capture of patterns.shell_write (the first group that matched), minus the
-/// paths patterns.shell_write_skip names (a device such as /dev/null).
+/// paths patterns.shell_write_skip names (a device such as /dev/null). Quoted strings (burn.quoted_re) are masked while matching, so
+/// a `>` inside quotes is no redirect, and put back in a captured path (PR #472: `> "out/a.txt"` and `> "out/b.txt"` are two files).
 fn shell_writes(cmd: &str) -> Vec<String> {
     let (Some(re), skip) = (pat("shell_write"), pat("shell_write_skip")) else { return Vec::new() };
+    let mut quoted: Vec<String> = Vec::new();
+    let masked = match Regex::new(defaults::text("burn.quoted_re")).ok() {
+        Some(q) => q
+            .replace_all(cmd, |c: &regex::Captures| {
+                let m = c.get(0).map_or("", |m| m.as_str());
+                quoted.push(m.get(1..m.len().saturating_sub(1)).unwrap_or("").to_string());
+                format!("{MASK}{}{MASK}", quoted.len() - 1)
+            })
+            .into_owned(),
+        None => cmd.to_string(),
+    };
     let mut out: Vec<String> = Vec::new();
-    for c in re.captures_iter(cmd) {
+    for c in re.captures_iter(&masked) {
         let Some(m) = c.iter().skip(1).flatten().next() else { continue };
-        let path = m.as_str();
-        if !skip.as_ref().is_some_and(|s| s.is_match(path)) && !out.iter().any(|o| o == path) {
-            out.push(path.to_string());
+        let path: String = m
+            .as_str()
+            .split(MASK)
+            .enumerate()
+            .map(|(i, s)| if i % 2 == 1 { s.parse::<usize>().ok().and_then(|n| quoted.get(n)).map_or(s, String::as_str) } else { s })
+            .collect();
+        if !path.is_empty() && !skip.as_ref().is_some_and(|s| s.is_match(&path)) && !out.iter().any(|o| *o == path) {
+            out.push(path);
         }
     }
     out
 }
+
+/// The sentinel around the index of a masked quoted string in shell_writes: a control character no command text holds.
+const MASK: char = '\u{1}';
 
 /// The command with each quoted string blanked (burn.quoted_re): text in an argument (`printf 'git diff --check'`, `echo "a > b"`) never
 /// names the program run or a file written.

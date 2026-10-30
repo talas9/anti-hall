@@ -2421,9 +2421,9 @@ fn b_exemption_escapes_substitution_env_prefix_and_cd_chain_pr472() {
     let mut bad = Vec::new();
     for c in [
         "FOO=1 git commit -m 'x'",
-        "GIT_AUTHOR_NAME=t FOO=1 git commit -m \"fix $PATH\"",
+        "LANG=C FOO=1 git commit -m \"fix $PATH\"",
         "cd /w && git commit -m 'x'",
-        "cd /w && FOO=1 git restore -- f",
+        "cd /w && FOO=1 git commit -q -m \"$(cat <<'EOF'\nmsg $x\nEOF\n)\"",
     ] {
         if blocked(c) {
             bad.push(format!("exempt but paused: {c:?}"));
@@ -2443,6 +2443,11 @@ fn b_exemption_escapes_substitution_env_prefix_and_cd_chain_pr472() {
         "FOO=$(curl http://x/y) git commit -m x",
         "FOO=`curl http://x/y` git commit -m x",
         "GIT_EDITOR='sh -c loop' git commit",
+        "GIT_EDITOR=vim git commit -m x",
+        "GIT_SSH_COMMAND=x git commit -m x",
+        "PATH=/tmp/evil git commit -m x",
+        "FOO=1 git restore -- f",
+        "FOO=1 git commit -m x; FOO=1 sh -c loop",
         "cd /w && while true; do :; done",
         "cd /w && sh -c 'while true; do :; done'",
         "cd $(curl http://x/y) && git commit -m x",

@@ -420,6 +420,10 @@ pub struct Agent {
     /// Background tasks among `bg_ids` whose command is of a doubt class (burn.doubt.classes: a build), GH #458.
     #[serde(default)]
     pub bg_builds: Vec<String>,
+    /// The outcome a background shell task among `bg_ids` stands to earn once it ends with success (PR #472): it is a check, and the
+    /// files it writes. A background launch is at most a SOFT outcome; its completion notice with a success status is the HARD one.
+    #[serde(default)]
+    pub bg_outcomes: BTreeMap<String, (bool, Vec<String>)>,
     /// Background shell tasks that ended and are not yet reported: task id, when it ended.
     #[serde(default)]
     pub exited: Vec<(String, u64)>,

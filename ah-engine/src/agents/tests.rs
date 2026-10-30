@@ -2517,32 +2517,45 @@ fn unowned_heartbeat_drop_is_counted() {
 /// launching background checks never resets the burn.
 #[test]
 fn p1_a_background_check_is_hard_only_once_its_successful_completion_is_seen_pr472() {
-    let (h, p, marker, mut st, n) = burned("p1-472");
-    for k in 0..4u64 {
-        let t = n + (21 + k) * MIN;
+    let h = home("p1-472");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    // an agent that keeps launching background checks (each launch acknowledged, none seen to end) is paused once the soft cap is spent
+    let mut paused_at = None;
+    let mut t = n;
+    for k in 0..24u64 {
+        t = n + (5 * k + 1) * MIN;
         let id = format!("c{k}");
         append(
             &p,
             &[
-                tool(t, &format!("mc{k}"), 10, &id, "Bash", json!({"command": "npx tsc --noEmit", "run_in_background": true})),
+                tool(t, &format!("mc{k}"), 700_000, &id, "Bash", json!({"command": "npx tsc --noEmit", "run_in_background": true})),
                 result(t, &id, &format!("Command running in background with ID: bgc{k}"), false),
             ],
         );
-        ticks(&h, &mut st, &[t + MIN / 2]);
+        ticks(&h, &mut st, &[t + MIN]);
         assert_eq!(agent(&st, "s1").progress, 0, "a background check launch is no hard outcome (launch {k})");
-        assert!(marker.exists(), "and lifts no pause (launch {k})");
+        if marker.exists() && paused_at.is_none() {
+            paused_at = Some(k);
+        }
     }
+    assert!(paused_at.is_some() && marker.exists(), "endless background check launches are paused");
     // a failed completion adds nothing
-    append(&p, &[user_text(n + 26 * MIN, "<task-notification>\n<task-id>bgc0</task-id>\n<status>failed</status>\n</task-notification>")]);
-    ticks(&h, &mut st, &[n + 26 * MIN + MIN / 2]);
+    append(&p, &[user_text(t + 2 * MIN, "<task-notification>\n<task-id>bgc22</task-id>\n<status>failed</status>\n</task-notification>")]);
+    ticks(&h, &mut st, &[t + 3 * MIN]);
     assert_eq!(agent(&st, "s1").progress, 0, "a failed background check is no outcome");
+    assert!(marker.exists(), "and lifts no pause");
     // a successful completion is the HARD outcome
-    append(&p, &[user_text(n + 27 * MIN, "<task-notification>\n<task-id>bgc1</task-id>\n<status>completed</status>\n</task-notification>")]);
-    ticks(&h, &mut st, &[n + 28 * MIN]);
+    append(&p, &[user_text(t + 4 * MIN, "<task-notification>\n<task-id>bgc23</task-id>\n<status>completed</status>\n</task-notification>")]);
+    ticks(&h, &mut st, &[t + 5 * MIN]);
     let a = agent(&st, "s1");
     assert!(a.progress > 0, "a background check that completed with success adds progress");
     assert_eq!(a.reports, 0, "a background check's end is no subagent result");
-    assert!(crate::agents::signals::tokens_since_outcome(a, n + 28 * MIN) < 1_000_000, "the burn count restarts");
+    assert!(crate::agents::signals::tokens_since_outcome(a, t + 5 * MIN) < 1_000_000, "the burn count restarts");
     assert!(!marker.exists(), "the pause is lifted");
 }
 
