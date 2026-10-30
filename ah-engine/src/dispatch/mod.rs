@@ -524,10 +524,22 @@ fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
         &defaults::render("dispatch.msg_unanswered_why", &[("event", &event)]),
     );
     let check = e.check.as_deref().unwrap_or(&e.id);
-    match native::answer_of(&e.id, Some(crate::script::unanswered(check, event))) {
+    let mut v = crate::script::unanswered(check, event);
+    // the dispatcher is one process per call, so the script's in-memory once-per-session set forgets the notice by the next call:
+    // a persistent per-session stamp of the check keeps it to one per session across calls (#473: a timed-out check repeated it)
+    let session = crate::script::session();
+    if matches!(v, crate::checks::Verdict::Advisory(_)) && !session.is_empty() && !health::first_in_session(&session, &notice_tag(check)) {
+        v = crate::checks::Verdict::Allow;
+    }
+    match native::answer_of(&e.id, Some(v)) {
         native::Answer::Decided(r, _) => r,
         native::Answer::Defer => combine::HookResult::quiet(&e.id), // unreachable: `unanswered` is never a deferral
     }
+}
+
+/// The once-per-session stamp tag of check `check`'s could-not-run notice (`dispatch.fail_open_notice_tag` and the check).
+fn notice_tag(check: &str) -> String {
+    format!("{}|{check}", defaults::text("dispatch.fail_open_notice_tag"))
 }
 
 /// Whether a call the daemon gave no answers for passes at once (exit 0, the unreachable notice) instead of answering every entry by
@@ -576,7 +588,8 @@ fn fail_open_result(e: &table::Entry, event: &str, payload: &Value) -> combine::
     health::log_event("dispatch_fail_open", event, &defaults::render("dispatch.msg_fail_open_log", &[("check", &check), ("event", &event)]));
     let mut r = resolve_unanswered(e, event);
     let session = payload.get("session_id").and_then(Value::as_str).unwrap_or_default();
-    if r.out.is_empty() && !session.is_empty() && health::first_in_session(session, defaults::text("dispatch.fail_open_notice_tag")) {
+    // the same stamp as resolve_unanswered's own notice, so a call never tells the session twice
+    if r.out.is_empty() && !session.is_empty() && health::first_in_session(session, &notice_tag(check)) {
         let why = defaults::text("script.msg_unanswered");
         let msg = defaults::render("script.msg_guard_down", &[("check", &check), ("why", &why)]);
         r.out = format!("{}\n", serde_json::json!({ defaults::text("script.notice_key"): msg }));
@@ -778,8 +791,10 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 // payload's (Codex P2: unset, a timed-out open check allowed silently and a skipped safety guard still blocked)
                 crate::script::set_session(parsed.as_ref().and_then(|p| p.get("session_id")).and_then(serde_json::Value::as_str).unwrap_or_default());
                 let (non_ok, timed_out) = (crate::client::take_non_ok_reply(), crate::client::take_timed_out());
+                // the call that trips the slow recovery still answers by policy: only the calls after the trip pass
+                let tripped_now = crate::client::take_tripped();
                 let unavailable = crate::client::take_unavailable() || crate::client::fail_open_unavailable();
-                if degraded_pass(non_ok, timed_out || unavailable, crate::client::slow_degraded) {
+                if degraded_pass(non_ok, timed_out || unavailable, || !tripped_now && crate::client::slow_degraded()) {
                     return Outcome { out: String::new(), code: 0, err: crate::client::slow_degraded_notice(raw, &args.event) };
                 }
                 if passes_unasked(non_ok, timed_out, || unavailable) {

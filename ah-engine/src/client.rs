@@ -26,6 +26,8 @@ thread_local! {
     static LAST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
     /// The last exchange got no reply within its whole wait window (`Exch::Slow`): the daemon may be judging it still.
     static LAST_TIMED_OUT: Cell<bool> = const { Cell::new(false) };
+    /// The last exchange's timeout tripped the slow-reply recovery ([`slow_streak_tripped`]): that call still answers by policy.
+    static LAST_TRIPPED: Cell<bool> = const { Cell::new(false) };
     /// Set by the dispatcher for a guard event (dispatch.guard_events): such a call waits for a starting daemon.
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
 }
@@ -39,6 +41,11 @@ pub(crate) fn set_guard_call(on: bool) {
 /// Whether the last call timed out waiting for its reply (and clear the mark).
 pub(crate) fn take_timed_out() -> bool {
     LAST_TIMED_OUT.replace(false)
+}
+
+/// Whether the last call's timeout tripped the slow-reply recovery (and clear the mark).
+pub(crate) fn take_tripped() -> bool {
+    LAST_TRIPPED.replace(false)
 }
 
 pub(crate) fn take_non_ok_reply() -> bool {
@@ -724,6 +731,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
     LAST_NON_OK_REPLY.set(false);
     LAST_UNAVAILABLE.set(false);
     LAST_TIMED_OUT.set(false);
+    LAST_TRIPPED.set(false);
     if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked() {
         note_unavailable();
         health::log_event("client_skip", "daemon", defaults::text("msg.client_skip"));
@@ -768,7 +776,10 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             note_unavailable();
             LAST_TIMED_OUT.set(true); // the dispatcher answers each entry by its policy: a safety guard fails closed (Codex P1)
             health::log_event("client_slow", "daemon", &why);
+            let was_degraded = slow_degraded();
             if slow_streak_tripped() {
+                // a fresh trip still answers by policy; a streak that trips again while already degraded passes like the calls before it
+                LAST_TRIPPED.set(!was_degraded);
                 mark_daemon_down(&why); // wedged: later clients skip it
             }
             None
