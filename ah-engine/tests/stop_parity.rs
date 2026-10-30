@@ -1,6 +1,8 @@
 //! Stop-guard parity replay (#465): a frozen corpus of Stop scenarios with the decision the original Node task-guard and
 //! tasklist-guard gave each one, replayed through the engine. Needs no Node. A difference must be listed under the scenario's `kept`
-//! (hook -> reason, the engine's behaviour is deliberate); an unlisted difference, or a `kept` entry that now agrees, fails the test.
+//! (hook -> {engine, contains, reason}: the engine's exact class and a substring of its text, the behaviour being deliberate); an
+//! unlisted difference, a kept difference whose engine class or text drifted, or a `kept` entry that now agrees, fails the test.
+//! Time is pinned: one instant is read at the start, the script clock is set to it, and every progress-file mtime is set from it.
 //! The gap (engine decisions that differ from the recorded Node ones, over all compared pairs) is written as JSON to the file named
 //! by AH_STOP_PARITY_REPORT when that is set, and always printed.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
@@ -19,6 +21,7 @@ fn setup(tag: &str) -> PathBuf {
     let d = std::fs::canonicalize(&d).unwrap();
     // SAFETY: the replay is serialized by SERIAL, so no other thread reads the environment while it changes.
     unsafe {
+        std::env::remove_var("AH_ENGINE_CONFIG"); // an ambient config overlay would change the defaults the replay reads
         std::env::set_var("AH_ENGINE_DIR", d.join("state"));
         std::env::set_var("AH_ENGINE_PLUGIN_ROOT", concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall"));
     }
@@ -48,12 +51,12 @@ fn text_of(v: &Option<Option<Verdict>>) -> String {
     }
 }
 
-fn replay(sc: &Value, hook: &str, base: &Path, n: usize) -> (String, String) {
+fn replay(sc: &Value, clock: &Value, hook: &str, base: &Path, n: usize, now: u64) -> (String, String) {
     let h = base.join(format!("s{n}-{hook}"));
     let proj = h.join("proj");
     std::fs::create_dir_all(proj.join(".git/refs/heads")).unwrap();
     std::fs::write(proj.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-    let today = chrono_free_today();
+    let today = civil_date(now);
     match sc["progress"].as_str().unwrap_or("none") {
         "none" => {}
         kind => {
@@ -61,11 +64,19 @@ fn replay(sc: &Value, hook: &str, base: &Path, n: usize) -> (String, String) {
             std::fs::create_dir_all(&dir).unwrap();
             let f = dir.join("sess1.md");
             std::fs::write(&f, "progress\n").unwrap();
-            if kind == "stale" {
-                let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000); // 2026-09-21
-                std::fs::File::options().write(true).open(&f).unwrap().set_modified(old).unwrap();
-            }
+            let age = if kind == "stale" { clock["stale_age_s"].as_u64().unwrap() } else { 0 };
+            let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(now - age);
+            std::fs::File::options().write(true).open(&f).unwrap().set_modified(at).unwrap();
         }
+    }
+    // {"advisories_shown": ["advisory.kind_..."]}: the advisory kinds (named by their config key) the session has already been shown
+    if let Some(keys) = sc["advisories_shown"].as_array() {
+        let kinds: serde_json::Map<String, Value> =
+            keys.iter().map(|k| (ah_engine::defaults::text(k.as_str().unwrap()).to_string(), json!({"n": 1}))).collect();
+        let name = format!("{}-sess1{}", ah_engine::defaults::text("advisory.state_prefix"), ah_engine::defaults::text("advisory.state_ext"));
+        let dir = h.join(ah_engine::defaults::text("paths.base_dir"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(name), json!({"kinds": kinds}).to_string()).unwrap();
     }
     let mut body = String::new();
     for l in sc["lines"].as_array().unwrap() {
@@ -86,15 +97,16 @@ fn replay(sc: &Value, hook: &str, base: &Path, n: usize) -> (String, String) {
     if let Some(m) = sc["permission_mode"].as_str() {
         payload["permission_mode"] = json!(m);
     }
+    ah_engine::script::host::set_clock(Some((now * 1000) as f64));
     let v = ah_engine::script::run_forced(hook, &payload, &json!({}), "Stop", &env);
+    ah_engine::script::host::set_clock(None);
     let t = text_of(&v);
     (classify(v), t.chars().take(300).collect())
 }
 
-/// Today's UTC date as YYYY-MM-DD from the system clock (civil-from-days), so the test needs no date crate.
-fn chrono_free_today() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    let z = secs / 86_400 + 719_468;
+/// The UTC date of `secs` as YYYY-MM-DD (civil-from-days), so the test needs no date crate.
+fn civil_date(secs: u64) -> String {
+    let z = secs as i64 / 86_400 + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
@@ -112,21 +124,31 @@ fn engine_stop_decisions_match_the_recorded_node_ones() {
     let corpus: Value =
         serde_json::from_str(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stop-parity/corpus.json")).unwrap()).unwrap();
     let base = setup("replay");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(); // the one clock read
     let (mut pairs, mut gap, mut problems) = (0u32, 0u32, Vec::<String>::new());
     let mut rows = Vec::new();
     for (n, sc) in corpus["scenarios"].as_array().unwrap().iter().enumerate() {
         for hook in sc["hooks"].as_array().unwrap() {
             let hook = hook.as_str().unwrap();
             let node = sc["node"][hook].as_str().unwrap();
-            let (engine, text) = replay(sc, hook, &base, n);
+            let (engine, text) = replay(sc, &corpus["clock"], hook, &base, n, now);
             let id = sc["id"].as_str().unwrap();
             pairs += 1;
-            let kept = sc["kept"][hook].as_str();
+            let kept = sc["kept"].get(hook);
             rows.push(json!({"scenario": id, "class": sc["class"], "hook": hook, "node": node, "engine": engine, "engine_text": text, "kept": kept}));
             if engine != node {
                 gap += 1;
-                if kept.is_none() {
-                    problems.push(format!("{id} / {hook}: node {node}, engine {engine} (not listed under kept)"));
+                match kept {
+                    None => problems.push(format!("{id} / {hook}: node {node}, engine {engine} (not listed under kept)")),
+                    Some(k) => {
+                        // an allow carries no text, so it pins an empty text; every other class pins a non-empty substring
+                        let (want, sub) = (k["engine"].as_str().unwrap(), k["contains"].as_str().unwrap_or(""));
+                        assert!(!k["reason"].as_str().unwrap().is_empty() && (want == "allow") == sub.is_empty(), "{id} / {hook}: bad kept entry");
+                        let text_ok = if want == "allow" { text.is_empty() } else { text.contains(sub) };
+                        if engine != want || !text_ok {
+                            problems.push(format!("{id} / {hook}: kept as engine {want} containing {sub:?}, got {engine}: {text}"));
+                        }
+                    }
                 }
             } else if kept.is_some() {
                 problems.push(format!("{id} / {hook}: listed under kept but the engine now agrees ({node})"));
