@@ -3045,8 +3045,15 @@ mod afk_mode {
         out(&run(h, ev, x, &[]))
     }
 
+    const PLAN: &str = "## P\n1. do";
+    /// The plan file is really written (the consult binds to its content hash), then the PostToolUse of that write.
     fn plan_write(h: &str, sid: &str) -> String {
-        step(h, sid, "PostToolUse", json!({"tool_name": "Write", "tool_input": {"file_path": format!("{h}/.claude/plans/p.md"), "content": "x"}}))
+        std::fs::create_dir_all(format!("{h}/.claude/plans")).unwrap();
+        std::fs::write(format!("{h}/.claude/plans/p.md"), PLAN).unwrap();
+        step(h, sid, "PostToolUse", json!({"tool_name": "Write", "tool_input": {"file_path": format!("{h}/.claude/plans/p.md"), "content": PLAN}}))
+    }
+    fn denied(m: &crate::metrics::Metrics, reason: &str) -> u64 {
+        m.counter("afk_plan_autoapprove_denied", &[("reason", reason)]) as u64
     }
     fn advisor(h: &str, sid: &str) -> String {
         step(h, sid, "PostToolUse", json!({"tool_name": "advisor", "tool_input": {}}))
@@ -3123,13 +3130,144 @@ mod afk_mode {
         advisor(&h, "s1");
         step(&h, "s1", "PostToolUse", json!({"agent_id": "a1", "tool_name": "Edit", "tool_input": {"file_path": format!("{h}/.claude/plans/p.md")}}));
         assert!(exit_plan(&h, "s1").is_empty());
-        // the plan file's mtime newer than the consult (written by any path, e.g. a shell redirect) makes it stale
+        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 1);
+    }
+
+    // ---- GH #442 review P1s: every uncertainty fails closed ----
+
+    /// P1-1: a clock that goes backwards must not reopen a consult (wall-clock stamps were clamped with max, so an owner prompt
+    /// after a rollback stamped an older time than the consult and the consult stayed "fresh").
+    #[test]
+    fn plan_clock_rollback_never_reopens_a_consult() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-rollback");
+        afk_on(&h);
+        drained();
+        let base = crate::checks::replykit::io::now_ms() + 100_000.0;
+        super::super::host::set_clock(Some(base));
+        plan_write(&h, "s1");
+        super::super::host::set_clock(Some(base + 10.0));
         advisor(&h, "s1");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        std::fs::create_dir_all(format!("{h}/.claude/plans")).unwrap();
-        std::fs::write(format!("{h}/.claude/plans/p.md"), "## P\n1. do").unwrap();
-        assert!(exit_plan(&h, "s1").is_empty());
-        assert_eq!(drained().counter("afk_plan_autoapprove_denied", &[("reason", "stale")]), 2);
+        super::super::host::set_clock(Some(base - 50_000.0));
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "stop, change step 1"}));
+        super::super::host::set_clock(Some(base - 49_000.0));
+        let o = exit_plan(&h, "s1");
+        super::super::host::set_clock(None);
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "clock_backwards"), 1);
+    }
+
+    /// P1-2: an owner prompt whose stamp could not be written must still make the consult unusable (it failed open).
+    #[test]
+    fn plan_owner_prompt_write_failure_fails_closed() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-promptfail");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let rec = format!("{h}/.anti-hall/afk-plan-s1.json");
+        let saved = std::fs::read_to_string(&rec).unwrap();
+        std::fs::remove_file(&rec).unwrap();
+        std::fs::create_dir_all(&rec).unwrap(); // the record cannot be read or replaced during the owner prompt
+        step(&h, "s1", "UserPromptSubmit", json!({"prompt": "change step 2"}));
+        std::fs::remove_dir(&rec).unwrap();
+        std::fs::write(&rec, saved).unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "owner_prompt"), 1);
+    }
+
+    /// P1-3: the plan edited after the consult (any writer, any mtime) is never approved: the consult is bound to the content hash.
+    #[test]
+    fn plan_edited_after_the_consult_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-toctou");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        let pf = format!("{h}/.claude/plans/p.md");
+        std::fs::write(&pf, "## P\n1. something else").unwrap();
+        std::fs::File::options().write(true).open(&pf).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)).unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "plan_changed"), 1);
+    }
+
+    /// P1-4: AFK switched off (and on again) after the consult: the flag is re-read at decision time and the consult is bound to
+    /// the AFK period (epoch) it was made in.
+    #[test]
+    fn plan_afk_cycled_after_the_consult_is_not_approved() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-plan-epoch");
+        afk_on(&h);
+        drained();
+        plan_write(&h, "s1");
+        advisor(&h, "s1");
+        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "manual", "since": 2, "epoch": "2", "counted": true}).to_string())
+            .unwrap();
+        let o = exit_plan(&h, "s1");
+        assert!(!approved(&o), "{o}");
+        let m = drained();
+        assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0);
+        assert_eq!(denied(&m, "afk_changed"), 1);
+    }
+
+    /// Fail-open never: every uncertain state leaves the normal prompt (no stdout) and approves nothing.
+    #[test]
+    fn plan_uncertainty_never_fails_open() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        type Case = (&'static str, &'static str, fn(&str) -> Value);
+        let ok = |h: &str| json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}});
+        let _ = ok;
+        let cases: Vec<Case> = vec![
+            ("state_error", "state", |h| {
+                let rec = format!("{h}/.anti-hall/afk-plan-s1.json");
+                std::fs::remove_file(&rec).unwrap();
+                std::fs::create_dir_all(&rec).unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+            ("plan_unbound", "relative", |_| json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": "p.md"}})),
+            ("plan_unbound", "other-path", |h| {
+                std::fs::write(format!("{h}/.claude/plans/q.md"), PLAN).unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/q.md")}})
+            }),
+            ("plan_changed", "gone", |h| {
+                std::fs::remove_file(format!("{h}/.claude/plans/p.md")).unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+            ("plan_mismatch", "input-differs", |h| {
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "## P\n1. other", "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+            ("afk_off", "afk-off", |h| {
+                std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": false, "epoch": "1", "ended": 3}).to_string()).unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+            ("afk_off", "afk-unreadable", |h| {
+                std::fs::write(format!("{h}/.anti-hall/afk.json"), "{not json").unwrap();
+                json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN, "planFilePath": format!("{h}/.claude/plans/p.md")}})
+            }),
+        ];
+        for (reason, tag, setup) in cases {
+            let h = home(&format!("afk-plan-never-{tag}"));
+            afk_on(&h);
+            drained();
+            plan_write(&h, "s1");
+            advisor(&h, "s1");
+            let payload = setup(&h);
+            let o = step(&h, "s1", "PreToolUse", payload);
+            assert!(o.is_empty(), "{tag}: {o}");
+            let m = drained();
+            assert_eq!(m.counter("afk_plan_autoapproved", &[]), 0, "{tag}");
+            assert_eq!(denied(&m, reason), 1, "{tag}");
+        }
     }
 
     #[test]
