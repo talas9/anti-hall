@@ -252,7 +252,7 @@ fn a_push_over_the_commit_cap_is_refused_naming_the_cap() {
     let _ = e.hook("echo warm");
     let (out, err, code) = e.hook_in("git push origin main", w);
     assert_eq!(code, 2, "stdout={out} stderr={err}");
-    assert!(err.contains("more than 50 commits"), "{err}");
+    assert!(err.contains("more than 50 local commits"), "{err}");
 }
 
 /// Runs `script` with bash in `dir` (scratch HOME, fixed identity), the way the agent's Bash tool would.
@@ -341,7 +341,7 @@ fn an_untracked_destination_over_the_cap_is_refused() {
     let _ = e.hook("echo warm");
     let (out, err, code) = e.hook_in("git push newremote big", w);
     assert_eq!(code, 2, "stdout={out} stderr={err}");
-    assert!(err.contains("more than 50 commits"), "{err}");
+    assert!(err.contains("more than 50 local commits"), "{err}");
 }
 
 /// Layer (a): a credited commit pushed in the same Bash call is reached by a remote, and is still blocked once, with the
@@ -464,17 +464,20 @@ fn a_credited_commit_from_an_earlier_call_blocks_the_push_until_it_is_reworded()
 #[test]
 fn a_fast_forward_of_public_credited_history_does_not_trigger_the_audit() {
     let e = Env::new("ffaudit");
-    let (work, _) = pushed_repo(&e);
-    git_ok(&work, &["checkout", "-q", "-b", "old"]);
-    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
-    git_ok(&work, &["push", "-q", "origin", "old"]);
-    git_ok(&work, &["checkout", "-q", "main"]);
+    let (work, origin) = pushed_repo(&e);
+    // the credited history was written in another clone: this one's reflog only records the fast-forward to it
+    let elsewhere = e.dir.join("elsewhere");
+    git_ok(&e.dir, &["clone", "-q", origin.to_str().unwrap(), elsewhere.to_str().unwrap()]);
+    git_ok(&elsewhere, &["checkout", "-q", "-b", "old"]);
+    git_ok(&elsewhere, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&elsewhere, &["push", "-q", "origin", "old"]);
+    git_ok(&work, &["fetch", "-q", "origin"]);
     let w = work.to_str().unwrap();
     let _ = e.hook("echo warm");
-    bash_in(&e, &work, "git merge -q old");
-    assert_eq!(e.hook_ev("PostToolUse", "git merge -q old", w), (String::new(), String::new(), 0), "ff merge");
-    bash_in(&e, &work, "git checkout -q -b re HEAD~1 && git rebase -q old");
-    assert_eq!(e.hook_ev("PostToolUse", "git rebase -q old", w), (String::new(), String::new(), 0), "no-op rebase");
+    bash_in(&e, &work, "git merge -q origin/old");
+    assert_eq!(e.hook_ev("PostToolUse", "git merge -q origin/old", w), (String::new(), String::new(), 0), "ff merge");
+    bash_in(&e, &work, "git checkout -q -b re HEAD~1 && git rebase -q origin/old");
+    assert_eq!(e.hook_ev("PostToolUse", "git rebase -q origin/old", w), (String::new(), String::new(), 0), "no-op rebase");
 }
 
 /// git itself unavailable: the push is let through with an advisory that says it was not checked.
