@@ -69,12 +69,12 @@ function gitBuildTables() {
   t.expansionPatterns = c('commit_expansion_patterns').map((p) => new RegExp('^(?:' + p + ')'));
   t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
   t.pushSkipOpts = set(c('push_skip_opts'));
-  t.pushValueOpts = set(c('push_value_opts'));
-  t.pushRepoOpts = set(c('push_repo_opts'));
-  t.pushAllOpts = set(c('push_all_opts'));
-  t.pushTagsOpts = set(c('push_tags_opts'));
-  t.pushMirrorOpts = set(c('push_mirror_opts'));
-  t.pushConfigKeys = c('push_config_keys').map((p) => new RegExp(p, 'i'));
+  t.sameCallSubs = set(c('push_same_call_subs'));
+  t.sameCallAlways = set(c('push_same_call_always'));
+  t.sameCallNeedMsg = set(c('push_same_call_need_message'));
+  t.sameCallOpts = c('push_same_call_opts').map((p) => new RegExp(p));
+  t.sameCallHeredoc = new RegExp(c('push_same_call_quoted_heredoc'));
+  t.sameCallHereString = new RegExp(c('push_same_call_here_string'));
   t.trailerKeys = c('self_credit_trailer_keys');
   t.forwardEnvRe = new RegExp('^(?:GIT_CONFIG_(?:' + c('forward_config_names').concat(c('forward_config_indexed').map((p) => gitEsc(p) + '\\d+')).join('|') + ')|' +
     c('forward_env_names').map(gitEsc).join('|') + ')$');
@@ -106,7 +106,7 @@ function gitFreshState(raw, cwd, session) {
     launcherFsBudget: ah.cfg('git.budget_launcher_fs'), launcherCmdText: '',
     handoverQueryBudget: ah.cfg('git.budget_handover_queries'), handoverSkipped: 0, handoverEvalBudget: ah.cfg('git.budget_handover_evals'),
     handoverQueryCache: new Map(), handoverAdds: [], handoverOn: null,
-    keyOf: new Map(), creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
+    keyOf: new Map(), pushChecks: new Map(), pushUnchecked: false, creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
     quotedLiteralsCache: null, stdinCandidateCache: null, hdOn: null, aliasOn: null, reuseOn: null,
     gitCache: new Map(), aliasCache: new Map(), shellDefsCache: new Map(), depthGuard: 0,
   };
@@ -1955,98 +1955,35 @@ function committedHandovers(ev, lastCdDir) {
   return hits;
 }
 
-// GH #457: a push whose unpushed commits carry an AI credit. Names the hashes and the fix; never rewrites anything.
+// GH #457 / PR #469: a push is refused while any local commit that no remote has carries an AI credit. What the push itself
+// would publish (refspecs, config, mirror, insteadOf) is never resolved: every unpushed commit counts, so no form of the push
+// routes around the check. One git query per repository and call (S.pushChecks); git unavailable or timed out fails open with
+// an advisory (S.pushUnchecked). Names the hashes and the fix; never rewrites anything.
 function pushCreditVerdict(ev, lastCdDir) {
   try {
     if (!gitSettingOn('git.setting_push_credit')) return null;
     if (gitSubcommand(ev.args).rest.some((t) => TB.pushSkipOpts.has(t.text))) return null;
     let dir = lastCdDir || S.procCwd;
-    const cfgArgs = [];
+    const repo = [];
     for (let k = 0; k < ev.args.length; k++) {
       const t = ev.args[k].text;
       if (t === '-C' && k + 1 < ev.args.length) { dir = posix.resolveIn(S.procCwd, [dir, ev.args[k + 1].text]); k++; continue; }
-      if (t === '--git-dir' || t === '--work-tree' || t.startsWith('--git-dir=') || t.startsWith('--work-tree=')) return null;
-      // command-scoped config decides what the push publishes (Codex P1 of PR #469 at 375cf8fe): every query below runs with it
-      if (t === '-c' && k + 1 < ev.args.length) { cfgArgs.push('-c', ev.args[k + 1].text); k++; continue; }
-      if (t === '--config-env' || t.startsWith('--config-env=')) {
-        const spec = t === '--config-env' ? (k + 1 < ev.args.length ? ev.args[++k].text : '') : t.slice(t.indexOf('=') + 1);
-        const eq = spec.lastIndexOf('='), name = eq > 0 ? spec.slice(eq + 1) : '';
-        const val = name && ev.assigns && Object.prototype.hasOwnProperty.call(ev.assigns, name) ? ev.assigns[name] : null;
-        if (val !== null) cfgArgs.push('-c', spec.slice(0, eq) + '=' + val);
-        // an unseen variable is refused only for a key that decides what the push publishes (never for e.g. http.extraHeader)
-        else if (eq > 0 && TB.pushConfigKeys.some((re) => re.test(spec.slice(0, eq)))) return gmKey('msg_push_config_env', { spec: spec });
-        continue;
-      }
-      if (t === '--namespace') { k++; continue; }
+      if ((t === '--git-dir' || t === '--work-tree') && k + 1 < ev.args.length) { repo.push(t + '=' + ev.args[k + 1].text); k++; continue; }
+      if (t.startsWith('--git-dir=') || t.startsWith('--work-tree=')) { repo.push(t); continue; }
+      if (t === '-c' || t === '--namespace' || t === '--config-env') { k++; continue; }
       if (t.startsWith('-')) continue;
       break;
     }
-    const cap = ah.cfg('git.push_max_commits');
-    const sub = (a, vars) => Object.keys(vars).reduce((x, k) => x.split('{' + k + '}').join(vars[k]), a);
-    const env = ev.env && Object.keys(ev.env).length ? ev.env : null; // GIT_CONFIG_COUNT/KEY_n/VALUE_n set on the command
-    const run = (key, vars) => gitRun(cfgArgs.concat(ah.cfg(key).map((a) => sub(a, Object.assign({ dir: dir }, vars)))), null, env, ah.cfg('git.push_timeout_ms'));
-    // the remote and the pushed refs (the source side of each refspec), read from the command (P1 of PR #469)
-    const rest = gitSubcommand(ev.args).rest;
-    let remote = null, repoOpt = null, endOpts = false;
-    const refs = [];
-    const globChars = ah.cfg('git.push_glob_chars');
-    for (let k = 0; k < rest.length; k++) {
-      const t = rest[k].text;
-      if (!endOpts && t === '--') { endOpts = true; continue; }
-      if (!endOpts && t.startsWith('-')) {
-        const eq = t.indexOf('=');
-        if (TB.pushValueOpts.has(t)) { if (TB.pushRepoOpts.has(t) && k + 1 < rest.length) repoOpt = rest[k + 1].text; k++; continue; }
-        if (eq > 0 && TB.pushRepoOpts.has(t.slice(0, eq))) { repoOpt = t.slice(eq + 1); continue; }
-        if (TB.pushMirrorOpts.has(t)) refs.push(...mirrorRefs(run));
-        if (TB.pushAllOpts.has(t)) refs.push(ah.cfg('git.push_all_rev_arg'));
-        if (TB.pushTagsOpts.has(t)) refs.push(ah.cfg('git.push_tags_rev_arg'));
-        continue;
-      }
-      if (remote === null) { remote = t; continue; }
-      if (t === ah.cfg('git.push_tag_keyword') && k + 1 < rest.length) { refs.push(ah.cfg('git.push_tag_prefix') + rest[k + 1].text); k++; continue; }
-      let src = t.charAt(0) === '+' ? t.slice(1) : t;
-      if (src.indexOf(':') >= 0) src = src.slice(0, src.indexOf(':'));
-      if (!src || src.charAt(0) === '-') continue; // `:dst` deletes (the force/delete check owns it); never pass an option as a ref
-      refs.push(src.split('').some((ch) => globChars.indexOf(ch) >= 0) ? sub(ah.cfg('git.push_glob_rev_arg'), { ref: src }) : src);
+    const key = [dir].concat(repo).join('\n');
+    if (!S.pushChecks.has(key)) S.pushChecks.set(key, unpushedCredit(dir, repo, ev.env));
+    const r = S.pushChecks.get(key);
+    if (r.unchecked) { S.pushUnchecked = true; return null; }
+    if (r.hits.length) {
+      const shown = r.hits.slice(0, TB.shown).join(', ') + (r.hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
+      return gmKey('msg_push_credit', { shown: shown, first: r.hits[r.hits.length - 1] });
     }
-    if (remote === null) remote = repoOpt;
-    if (remote === null) {
-      const branch = (run('git.push_argv_branch', {}) || '').trim();
-      for (const key of ah.cfg('git.push_remote_keys')) {
-        if (key.indexOf('{branch}') >= 0 && !branch) continue;
-        const v = (run('git.push_argv_config', { key: sub(key, { branch: branch }) }) || '').trim();
-        if (v) { remote = v; break; }
-      }
-      if (remote === null) remote = ah.cfg('git.push_remote_fallback');
-    }
-    // a push naming no refspec publishes what git's own config says: remote.<name>.mirror, remote.<name>.push, push.default
-    if (!refs.length) refs.push(...bareSources(run, sub, remote, globChars));
-    // the commits the destination lacks, read from its own remote-tracking refs only: a destination with none (a URL, never
-    // fetched) lacks everything, so commits other remotes have are still read, and the cap applies to every destination
-    const exclude = sub(ah.cfg('git.push_exclude_remote'), { remote: remote });
-    const argv = cfgArgs.slice();
-    for (const a of ah.cfg('git.push_argv_log')) {
-      if (a === '{refs}') argv.push(...refs);
-      else argv.push(sub(a, { dir: dir, n: String(cap + 1), exclude: exclude }));
-    }
-    const out = gitRun(argv, null, env, ah.cfg('git.push_timeout_ms'));
-    if (!out) return null;
-    const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
-    const hits = [];
-    let count = 0;
-    for (const rec of out.split(rs)) {
-      const f = rec.replace(/^\n/, '').split(us);
-      const sha = (f[0] || '').trim();
-      if (!sha) continue;
-      count++;
-      if (count <= cap && f[1] && hasSelfCredit(f[1])) hits.push(sha.slice(0, TB.commitHashShort));
-    }
-    if (hits.length) {
-      const shown = hits.slice(0, TB.shown).join(', ') + (hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
-      return gmKey('msg_push_credit', { shown: shown, first: hits[hits.length - 1] });
-    }
-    // more commits than the cap, to any destination: a credit past it cannot be ruled out, so the push is refused, never allowed unread (PR #469)
-    if (count > cap) return gmKey('msg_push_over_cap', { cap: cap, range: refs.concat(['--not', exclude]).join(' ') });
+    // more unpushed commits than the cap: a credit past it cannot be ruled out, so the push is refused, never allowed unread
+    if (r.over) return gmKey('msg_push_over_cap', { cap: ah.cfg('git.push_max_commits') });
     return null;
   } catch (e) {
     if (gitFatal(e)) throw e;
@@ -2054,27 +1991,111 @@ function pushCreditVerdict(ev, lastCdDir) {
   }
 }
 
-// the sources of a push with no refspec, resolved from git config (Codex P1 of PR #469: a bare push follows remote.<name>.push)
-function bareSources(run, sub, remote, globChars) {
-  const v = (key) => (run('git.push_argv_config_all', { key: sub(ah.cfg(key), { remote: remote }) }) || '').split('\n').map((x) => x.trim()).filter(Boolean);
-  if (v('git.push_mirror_key').some((x) => ah.cfg('git.push_true_values').indexOf(x.toLowerCase()) >= 0)) return mirrorRefs(run);
-  const out = [];
-  for (const spec of v('git.push_refspec_key')) {
-    let src = spec.charAt(0) === '+' ? spec.slice(1) : spec;
-    if (src.indexOf(':') >= 0) src = src.slice(0, src.indexOf(':'));
-    if (src === '' && spec.indexOf(':') >= 0) { out.push(ah.cfg('git.push_all_rev_arg')); continue; } // `:` pushes matching branches
-    if (!src || src.charAt(0) === '^') continue;
-    out.push(src.split('').some((ch) => globChars.indexOf(ch) >= 0) ? sub(ah.cfg('git.push_glob_rev_arg'), { ref: src }) : src);
+// The unpushed commits of one repository (git.push_argv_log): { hits } (short hashes with a credit), { over } (past the cap or
+// output cut short), { unchecked } (git could not run or timed out). A failing query (not a repository) has nothing to publish.
+function unpushedCredit(dir, repo, env) {
+  const cap = ah.cfg('git.push_max_commits');
+  const argv = [];
+  for (const a of ah.cfg('git.push_argv_log')) {
+    if (a === '{repo}') argv.push(...repo);
+    else argv.push(a.split('{dir}').join(dir).split('{n}').join(String(cap + 1)));
   }
-  if (out.length) return out;
-  const mode = (v('git.push_default_key')[0] || '').toLowerCase();
-  return [ah.cfg('git.push_matching_values').indexOf(mode) >= 0 ? ah.cfg('git.push_all_rev_arg') : ah.cfg('git.push_default_ref')];
+  const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: env && Object.keys(env).length ? env : undefined, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  const out = { unchecked: r === null, hits: [], over: false };
+  if (r === null || r.status !== 0) return out;
+  const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
+  let count = 0;
+  for (const rec of String(r.stdout || '').split(rs)) {
+    const f = rec.replace(/^\n/, '').split(us);
+    const sha = (f[0] || '').trim();
+    if (!sha) continue;
+    count++;
+    if (count <= cap && f[1] && hasSelfCredit(f[1])) out.hits.push(sha.slice(0, TB.commitHashShort));
+  }
+  out.over = count > cap || r.truncated === true;
+  return out;
 }
 
-// a mirror push publishes every ref under refs/, not only branches and tags (Codex P1 of PR #469 at 375cf8fe)
-function mirrorRefs(run) {
-  const out = (run('git.push_argv_refs_all', {}) || '').split('\n').map((x) => x.trim()).filter(Boolean);
-  return out.length ? out : [ah.cfg('git.push_all_rev_arg'), ah.cfg('git.push_tags_rev_arg')];
+// Every git command of a Bash call with the directory it runs in: `cd` is followed, eval and `sh -c` payloads are read (up to
+// git_audit.max_depth). visit(ev, sub, rest, dir, seg) for each; ev.env is the git environment the command sets.
+function forEachGitCommand(cmd, base, depth, visit) {
+  let cdDir = base;
+  const persist = {};
+  for (const seg of splitSegments(cmd)) {
+    const tokens = tokenize(seg);
+    if (!tokens.length) continue;
+    const se = segmentEnv(tokens);
+    const env = Object.assign({}, persist, se.inline);
+    Object.assign(persist, se.persist);
+    const ev = effectiveVerb(tokens);
+    if (!ev) continue;
+    ev.env = env;
+    if (ev.verb === ah.cfg('git_audit.cd_verb')) {
+      const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
+      if (dirTok) cdDir = posix.resolveIn(S.procCwd, [cdDir, dirTok.text]);
+      continue;
+    }
+    const isEval = ev.verb === ah.cfg('git_audit.eval_verb');
+    if (depth < ah.cfg('git_audit.max_depth') && (isEval || TB.shellVerbs.has(ev.verb.toLowerCase()))) {
+      const payload = isEval ? extractEvalPayload(seg) : extractShellCPayload(seg);
+      if (payload) forEachGitCommand(payload, cdDir, depth + 1, visit);
+      continue;
+    }
+    if (ev.verb !== ah.cfg('git_audit.git_verb')) continue;
+    const { sub, rest } = gitSubcommand(ev.args);
+    visit(ev, sub, rest, cdDir, seg);
+  }
+}
+
+// PR #469: the subcommand of a commit this call creates whose message layer 1 cannot read (a file, stdin that no quoted heredoc
+// feeds, a reused or edited message, an expansion, a commit with no literal message, an alias), or null. Allowlist: only a
+// literal -m/--message, or -F - fed by a quoted heredoc, counts as read.
+function unreadCommitMessage(ev, sub, rest, dir, seg) {
+  if (TB.sameCallAlways.has(sub)) return sub;
+  if (!TB.sameCallSubs.has(sub)) {
+    const ex = expandAlias(ev.args, sub, rest, dir, undefined);
+    if (ex === null) return null;
+    return ex.verb === '!' || ex.verb.startsWith('-') || TB.sameCallSubs.has(ex.verb) || TB.sameCallAlways.has(ex.verb) ? sub : null;
+  }
+  let msg = false;
+  for (let i = 0; i < rest.length; i++) {
+    const w = rest[i].text;
+    if (w === '--' ) break;
+    if (w === '--message' || /^-[A-Za-z]*m$/.test(w)) { msg = true; i++; continue; }
+    if (w.startsWith('--message=') || /^-[A-Za-z]*m./.test(w)) { msg = true; continue; }
+    if (TB.sameCallOpts.some((re) => re.test(w))) return sub;
+  }
+  for (const spec of fileCommitMessages(rest)) {
+    if ((spec === '-' || spec === '/dev/stdin') && TB.sameCallHeredoc.test(seg) && !TB.sameCallHereString.test(seg)) { msg = true; continue; }
+    return sub;
+  }
+  for (const tk of inlineCommitMessageToks(rest)) if (unresolvedExpansion(tk.raw)) return sub;
+  return TB.sameCallNeedMsg.has(sub) && !msg ? sub : null;
+}
+
+// PR #469: before the scan spends the call's git-query budget, every push of the call is checked (cached for the scan), and a
+// commit whose message layer 1 cannot read is refused together with a push in the same call: it would be published first, and a
+// published commit cannot be reworded without a force push.
+function pushPrepass(cmd, cwd) {
+  const pushes = [], unread = [];
+  try {
+    forEachGitCommand(cmd, cwd, 0, (ev, sub, rest, dir, seg) => {
+      if (sub === null) return;
+      if (sub === 'push') { pushes.push({ ev: ev, dir: dir }); return; }
+      const u = unreadCommitMessage(ev, sub, rest, dir, seg);
+      if (u) unread.push(u);
+    });
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    return null;
+  }
+  if (!pushes.length || !gitSettingOn('git.setting_push_credit')) return null;
+  for (const p of pushes) {
+    const v = pushCreditVerdict(p.ev, p.dir);
+    if (v) return v;
+  }
+  if (unread.length) return gmKey('msg_push_same_call', { sub: unread[0] });
+  return null;
 }
 
 function handoverCommitVerdict(ev, lastCdDir) {
@@ -2112,11 +2133,9 @@ function repoArgs(args) {
   return out;
 }
 
-const ANY_ENV_NAME = /^/;
-
-function forwardable(tokens, nameRe) {
+function forwardable(tokens) {
   const out = {};
-  const re = nameRe || TB.forwardEnvRe;
+  const re = TB.forwardEnvRe;
   for (const t of tokens) {
     if (t.quotedOnly) continue;
     const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(t.text);
@@ -2127,13 +2146,13 @@ function forwardable(tokens, nameRe) {
   return out;
 }
 
-function segmentEnv(tokens, nameRe) {
+function segmentEnv(tokens) {
   try {
     const gi = tokens.findIndex((t) => !t.quotedOnly && t.text === 'git');
-    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi), nameRe), persist: {} };
+    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {} };
     const first = tokens[0] && !tokens[0].quotedOnly ? tokens[0].text : '';
     const allAssign = tokens.every((t) => !t.quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text));
-    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens, nameRe) };
+    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens) };
   } catch (e) { if (gitFatal(e)) throw e; }
   return { inline: {}, persist: {} };
 }
@@ -2470,7 +2489,7 @@ function scanCommand(cmd, depth, baseCwd) {
     if (hit) return hit;
   }
 
-  const persistEnv = {}, persistAll = {};
+  const persistEnv = {};
   for (const seg of segments) {
     const tokens = tokenize(seg);
     if (!tokens.length) continue;
@@ -2487,14 +2506,9 @@ function scanCommand(cmd, depth, baseCwd) {
       }
     }
 
-    const segAll = segmentEnv(tokens, ANY_ENV_NAME);
-    const assigns = Object.assign({}, persistAll, segAll.inline);
-    Object.assign(persistAll, segAll.persist);
-
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
     ev.env = gitEnv;
-    ev.assigns = assigns; // every name set for this command (for --config-env), not only the ones forwarded to git
 
     const aliasDef = shellDefinitionVerdict(tokens, ev, (c) => scanCommand(c, d + 1, lastCdDir), d, S.raw);
     if (aliasDef) return aliasDef;
@@ -2934,10 +2948,11 @@ function decideScan(p, opts, event) {
   S.abs = (q) => (q.charAt(0) === '/' ? q : posix.resolveIn(cwdIn, [q]));
   S.pluginRoot = (opts && typeof opts.plugin_root === 'string' && opts.plugin_root) || ah.env.get(ah.cfg('env.plugin_root')) || '';
   shellScan.reset();
-  const hit = scanCommand(cmd, 0, cwdIn);
+  const hit = pushPrepass(cmd, cwdIn) || scanCommand(cmd, 0, cwdIn);
   if (hit) countBlock(hit);
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
   const notes = [];
+  if (S.pushUnchecked) notes.push(ah.cfg('git.push_unchecked_advisory'));
   if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
   if (notes.length) {
     return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.join('\n') } }) };

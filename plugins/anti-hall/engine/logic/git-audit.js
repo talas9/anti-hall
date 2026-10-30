@@ -1,37 +1,19 @@
 // check = "git-audit" (PostToolUse on Bash): the authoritative commit layer of the git guard. The PreToolUse scan only reads
 // the command text, which a shell form can hide a credit from; this pass reads what git stored. After any Bash call it reads
-// HEAD's reflog for commits written in the last git_audit.window_s seconds (commit, amend, merge, cherry-pick, rebase) and
+// HEAD's reflog for commits written in the last git_audit.window_s seconds (commit, amend, a real merge, cherry-pick, rebase; never a fast-forward) and
 // blocks with "reword before pushing" when one HEAD still reaches and no remote has carries a self-credit, and once (state file
 // git_audit.published_file) when one a remote already has does: committed and pushed in one call. It never writes to git.
 // Off switch: guards.gitCommitAudit. Built on git.js (script.includes): the credit patterns and git runner are the guard's.
 'use strict';
 
 function auditCommitRepoDirs(cmd, base, depth, out) {
-  let cdDir = base;
-  for (const seg of splitSegments(cmd)) {
-    const tokens = tokenize(seg);
-    if (!tokens.length) continue;
-    const ev = effectiveVerb(tokens);
-    if (!ev) continue;
-    if (ev.verb === ah.cfg('git_audit.cd_verb')) {
-      const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
-      if (dirTok) cdDir = posix.resolveIn(S.procCwd, [cdDir, dirTok.text]);
-      continue;
-    }
-    const isEval = ev.verb === ah.cfg('git_audit.eval_verb');
-    if (depth < ah.cfg('git_audit.max_depth') && (isEval || TB.shellVerbs.has(ev.verb.toLowerCase()))) {
-      const payload = isEval ? extractEvalPayload(seg) : extractShellCPayload(seg);
-      if (payload) auditCommitRepoDirs(payload, cdDir, depth + 1, out);
-      continue;
-    }
-    if (ev.verb !== ah.cfg('git_audit.git_verb')) continue;
-    const { sub, rest } = gitSubcommand(ev.args);
+  forEachGitCommand(cmd, base, depth, (ev, sub, rest, cdDir) => {
     let creates = TB.commitCreating.has(sub);
     if (!creates) {
       const ex = expandAlias(ev.args, sub, rest, cdDir, undefined);
       creates = ex !== null && (ex.verb === '!' || ex.verb.startsWith('-') || TB.commitCreating.has(ex.verb));
     }
-    if (!creates) continue;
+    if (!creates) return;
     let dir = cdDir;
     const withValue = ah.cfg('git_audit.opts_with_value'), dirOpt = ah.cfg('git_audit.dir_opt');
     for (let k = 0; k < ev.args.length; k++) {
@@ -42,7 +24,7 @@ function auditCommitRepoDirs(cmd, base, depth, out) {
       break;
     }
     if (out.indexOf(dir) < 0) out.push(dir);
-  }
+  });
   return out;
 }
 
@@ -58,13 +40,15 @@ function auditCreatedShas(dir, nowS) {
   const out = gitRun(argv, null, null, ah.cfg('git_audit.timeout_ms'));
   if (!out || out.length > ah.cfg('git_audit.max_buffer')) return [];
   const verbs = ah.cfg('git_audit.reflog_creating'), window = ah.cfg('git_audit.window_s');
+  const skip = ah.cfg('git_audit.reflog_skip').map((x) => new RegExp(x));
   const shas = [];
   for (const rec of out.split(rs)) {
     const f = rec.replace(/^\n/, '').split(us);
     const sha = (f[0] || '').trim(), at = /\{(\d+)\}/.exec(f[1] || ''), what = (f[2] || '').toLowerCase();
     if (!sha || !at) continue;
     if (Number(at[1]) < nowS - window) break; // the reflog is newest first
-    if (verbs.some((v) => what.startsWith(v)) && shas.indexOf(sha) < 0) shas.push(sha);
+    // a fast-forward, or the start or end of a rebase, points HEAD at a commit that already existed: nothing was written (PR #469 P2)
+    if (verbs.some((v) => what.startsWith(v)) && !skip.some((re) => re.test(what)) && shas.indexOf(sha) < 0) shas.push(sha);
   }
   return shas;
 }
