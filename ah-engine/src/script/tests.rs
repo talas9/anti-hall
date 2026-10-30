@@ -2424,6 +2424,8 @@ fn b_exemption_escapes_substitution_env_prefix_and_cd_chain_pr472() {
         "LANG=C FOO=1 git commit -m \"fix $PATH\"",
         "cd /w && git commit -m 'x'",
         "cd /w && FOO=1 git commit -q -m \"$(cat <<'EOF'\nmsg $x\nEOF\n)\"",
+        "FOO='hello world' git commit -m x",
+        "FOO=\"a b\" LANG=C git commit -m 'x'",
     ] {
         if blocked(c) {
             bad.push(format!("exempt but paused: {c:?}"));
@@ -2446,6 +2448,10 @@ fn b_exemption_escapes_substitution_env_prefix_and_cd_chain_pr472() {
         "GIT_EDITOR=vim git commit -m x",
         "GIT_SSH_COMMAND=x git commit -m x",
         "PATH=/tmp/evil git commit -m x",
+        "EDITOR='vim -x' git commit -m x",
+        "PAGER=\"less -R\" git commit -m x",
+        "FOO='a b' GIT_DIR=/x git commit -m x",
+        "LD_PRELOAD='/x/a b.so' git commit -m x",
         "FOO=1 git restore -- f",
         "FOO=1 git commit -m x; FOO=1 sh -c loop",
         "cd /w && while true; do :; done",

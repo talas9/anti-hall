@@ -438,11 +438,19 @@ fn a_six_minute_polling_loop_is_paused_once_the_soft_episode_budget_is_spent_gh4
 
 /// An agent past the hard burn line with its pause marker written (the start of the A1/A2 acceptance tests).
 fn burned(tag: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
+    burned_in(tag, "/w")
+}
+
+/// `burned`, the session working in `cwd` (an empty `cwd`: a directory `w` in the scratch home, created with its `out` folder).
+fn burned_in(tag: &str, cwd: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
     let h = home(tag);
+    let w = h.join("w");
+    std::fs::create_dir_all(w.join("out")).unwrap();
+    let cwd = if cwd.is_empty() { w.to_string_lossy().into_owned() } else { cwd.to_string() };
     let n = now0();
     let p = sess(&h, "s1");
     let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
-    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    write(&p, &[prompt(n - 2 * MIN, &cwd), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
     let mut st = State::default();
     ticks(&h, &mut st, &[n]);
     append(&p, &[asst(n + 19 * MIN, "m1", 3_500_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
@@ -454,13 +462,89 @@ fn burned(tag: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
 /// PR #472 acceptance A1: a successful shell-file write is a HARD outcome: it adds progress and resets the burn episode.
 #[test]
 fn a1_a_shell_file_write_is_a_hard_outcome_and_resets_the_burn_pr472() {
-    let (h, p, marker, mut st, n) = burned("a1-472");
+    let (h, p, marker, mut st, n) = burned_in("a1-472", "");
+    // the write happened: the file exists and was modified at or after the call began
+    touch(&h.join("w/out/result1.txt"), n + 21 * MIN + 1000);
     append(&p, &[tool(n + 21 * MIN, "m2", 10, "w1", "Bash", json!({"command": "printf 'x\\n' > out/result1.txt"})), result(n + 21 * MIN, "w1", "", false)]);
     ticks(&h, &mut st, &[n + 22 * MIN]);
     let a = agent(&st, "s1");
     assert!(a.progress > 0, "a shell-file write adds progress");
     assert!(crate::agents::signals::tokens_since_outcome(a, n + 22 * MIN) < 1_000_000, "the burn count restarts");
     assert!(!a.flags.contains_key("burn_hard") && !marker.exists(), "the pause is lifted");
+}
+
+/// Create `p` with its modification time at `ms` (milliseconds since the epoch).
+fn touch(p: &Path, ms: u64) {
+    let f = std::fs::File::create(p).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms)).unwrap();
+}
+
+/// PR #472 round 3: a redirect inside a comment or a heredoc body is no write (the engine shell splitter drops both), so it earns no
+/// HARD credit even when the command ends with success.
+#[test]
+fn w1_a_redirect_in_a_comment_or_heredoc_body_is_no_write_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("w1-472", "");
+    for (k, c) in ["printf ok # example > out/comment-file", "cat <<'EOF'\n> out/heredoc-file\nEOF", "echo 'a > out/quoted-file'"].iter().enumerate() {
+        let t = n + (21 + k as u64) * MIN;
+        let id = format!("w{k}");
+        append(&p, &[tool(t, &format!("mw{k}"), 10, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
+        ticks(&h, &mut st, &[t + 30_000]);
+        assert_eq!(agent(&st, "s1").progress, 0, "no HARD credit for {c:?}");
+    }
+}
+
+/// PR #472 round 3: a shell write earns HARD credit only when its target exists after the call and was modified at or after the call
+/// began; a missing target, a stale one or a device is at most SOFT.
+#[test]
+fn w2_a_write_is_hard_only_when_the_target_exists_and_is_fresh_pr472() {
+    let (h, p, marker, mut st, n) = burned_in("w2-472", "");
+    touch(&h.join("w/out/stale.txt"), n - 60 * MIN);
+    for (k, c) in ["printf x > out/missing.txt", "printf x >> out/stale.txt", "printf x > /dev/stderr", "printf x > ../../../../../../dev/null"].iter().enumerate() {
+        let t = n + (21 + k as u64) * MIN;
+        let id = format!("s{k}");
+        append(&p, &[tool(t, &format!("ms{k}"), 10, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
+        ticks(&h, &mut st, &[t + 30_000]);
+        assert_eq!(agent(&st, "s1").progress, 0, "no HARD credit for {c:?}");
+    }
+    let t = n + 30 * MIN;
+    touch(&h.join("w/out/real.txt"), t + 1000);
+    append(&p, &[tool(t, "mr", 10, "r1", "Bash", json!({"command": "printf x > out/real.txt"})), result(t, "r1", "", false)]);
+    ticks(&h, &mut st, &[t + 30_000]);
+    assert!(agent(&st, "s1").progress > 0, "a real fresh write is HARD");
+    assert!(!marker.exists(), "and lifts the pause");
+}
+
+/// PR #472 round 3: an agent that names a new file each call but never writes one is not held off forever: it is paused.
+#[test]
+fn w3_a_new_apparent_path_each_call_still_pauses_pr472() {
+    let h = home("w3-472");
+    let w = h.join("w");
+    std::fs::create_dir_all(&w).unwrap();
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, &w.to_string_lossy()), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    for k in 0..24u64 {
+        let t = n + (5 * k + 1) * MIN;
+        let id = format!("f{k}");
+        let c = format!("printf ok # > out/f{k}.txt");
+        append(&p, &[tool(t, &format!("mf{k}"), 700_000, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
+        ticks(&h, &mut st, &[t + MIN]);
+    }
+    assert_eq!(agent(&st, "s1").progress, 0, "no write ever happened");
+    assert!(marker.exists(), "a changed apparent path each call does not hold off the pause");
+}
+
+/// PR #472 round 3: a check backgrounded with a top-level `&` has not run when its launching shell exits 0: at most SOFT.
+#[test]
+fn bg1_a_check_backgrounded_with_an_ampersand_is_at_most_soft_pr472() {
+    let (h, p, marker, mut st, n) = burned_in("bg1-472", "");
+    append(&p, &[tool(n + 21 * MIN, "m2", 10, "c1", "Bash", json!({"command": "npx tsc --noEmit >/dev/null 2>&1 &"})), result(n + 21 * MIN, "c1", "", false)]);
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0, "a `&` check is no HARD outcome");
+    assert!(marker.exists(), "the pause stays");
 }
 
 /// PR #472 acceptance A2: a passing check is a HARD outcome: it adds progress and resets the burn episode.
