@@ -56,7 +56,7 @@ function ceStart(sent, a) {
   for (;;) {
     var m = ah.re.find(br, 'i', before.slice(off));
     if (!m || m[1] <= m[0]) break;
-    if (strict && ah.re.find(ah.cfg('claim_evidence.clause_join_re'), 'i', before.slice(0, off + m[0])) !== null) {
+    if (strict && ah.re.find(ah.cfg('claim_evidence.clause_join_re'), 'i', before.slice(0, off + m[0]))) {
       off = off + m[1];
       continue;
     }
@@ -122,7 +122,7 @@ function ceLabelled(sent, hit) {
     var all = ah.re.findAll(list[i], 'i', sent);
     for (var j = 0; j < all.length; j++) {
       // GH #427: a label word that is itself negated ('not unverified') or used as a noun/aside ('unchecked boxes', 'unverified aside') is no label
-      if (strict && (ah.re.find(ah.cfg('claim_evidence.ack_before_not_re'), 'i', sent.slice(0, all[j][0])) !== null || ah.re.find(ah.cfg('claim_evidence.ack_after_not_re'), 'i', sent.slice(all[j][1])) !== null)) {
+      if (strict && (ah.re.find(ah.cfg('claim_evidence.ack_before_not_re'), 'i', sent.slice(0, all[j][0])) || ah.re.find(ah.cfg('claim_evidence.ack_after_not_re'), 'i', sent.slice(all[j][1])))) {
         ceRejected('label_not_a_label');
         continue;
       }

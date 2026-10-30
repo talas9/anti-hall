@@ -2855,6 +2855,36 @@ mod claim_evidence_guard {
         assert_eq!(count("claim_evidence_fired", &[("rule", "claim")]), 0, "off: nothing is counted");
     }
 
+    /// GH #427: the strict suppressor checks hold a bare claim, count each refused suppressor, and `guards.claimEvidenceStrict` off restores the old reading.
+    #[test]
+    fn the_strict_switch_holds_the_leaks_counts_the_refusals_and_off_restores_the_old_reading() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |reason: &str| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("claim_evidence_suppressor_rejected", &[("reason", reason)])
+        };
+        let lines = |r: &str| [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", r, &[])];
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        for (i, (r, reason)) in [
+            ("If true CI is green.", "filler_opener"),
+            ("According to the doc-string CI is green.", "source_compound"),
+            ("According to the reports CI is green.", "source_noun"),
+            ("CI is green; not unverified.", "label_not_a_label"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (v, _) = stop_unlocked(&format!("ce-strict{i}"), &lines(r), r, &[], json!({}));
+            assert!(blocked(&v).is_some(), "must hold: {r}");
+            assert!(count(reason) >= 1, "{r}: refusal counted as {reason}");
+            crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+            let (v, _) = stop_unlocked(&format!("ce-strict-off{i}"), &lines(r), r, &[("ANTIHALL_CLAIM_EVIDENCE_STRICT", "0")], json!({}));
+            assert!(blocked(&v).is_none(), "switch off restores the old reading: {r}");
+            assert_eq!(count(reason), 0, "off: nothing is refused or counted");
+        }
+    }
+
     #[test]
     fn a_claim_backed_by_an_api_call_or_another_runner_of_this_turn_passes_and_a_bare_one_is_held() {
         let mk = |cmd: &str, reply: &str| {
