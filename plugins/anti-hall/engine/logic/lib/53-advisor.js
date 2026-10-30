@@ -116,6 +116,7 @@ var advisorKit = {
       }
     }
     tx.pos = typeof r.next === 'number' ? r.next : tx.pos;
+    tx.read = r.read; tx.peak = r.peak; // the last read's bytes and largest line buffer: the latency test reads them
     st.tx = tx;
     advisorKit.consults(st, { calls: calls }); // counted where read: a call is read once, by whichever rule folds first
     return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, avail: tx.avail, full: tx.full, model: tx.model, sayAt: tx.sayAt,

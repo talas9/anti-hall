@@ -55,8 +55,8 @@ min = 1024
 unit = "bytes"
 
 [advisor.max_lines]
-doc = "Most transcript lines read from the tail."
-value = 4000
+doc = "Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time)."
+value = 100000
 min = 10
 
 [advisor.review_signals]
@@ -299,3 +299,52 @@ value = ["Agent", "Task"]
 [advisor.transcript_ext]
 doc = "File extension of a transcript; the main transcript's name without it is the {session} of advisor.agent_transcript_tpl."
 value = ".jsonl"
+
+# Availability without prior use (GH #404 G1) and the subagent's own transcript (G4). The transcript is read incrementally per
+# agent (advisor.window_bytes per call from the saved offset; lines over advisor.line_max_bytes skipped unbuffered).
+
+[advisor.attachment]
+doc = "The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use."
+value = { field = "attachment", entry_type = "attachment", type = "advisor_tool", available_key = "available", change_key = "toolChange", change_on = ["add"] }
+
+[advisor.settings_files]
+doc = "Claude Code settings files that may set an advisor model (root: home = the user's home, cwd = the session's working directory, abs = the path as given). Read only when the head of the transcript was never read (so a missing advisor_tool attachment proves nothing); a set advisor.settings_key then counts as the advisor being available."
+value = [
+  { root = "home", path = ".claude/settings.json" },
+  { root = "cwd", path = ".claude/settings.json" },
+  { root = "cwd", path = ".claude/settings.local.json" },
+  { root = "abs", path = "/Library/Application Support/ClaudeCode/managed-settings.json" },
+  { root = "abs", path = "/etc/claude-code/managed-settings.json" },
+]
+
+[advisor.settings_key]
+doc = "Top-level key of a Claude Code settings file that names the advisor model; a non-empty string means an advisor is configured."
+value = "advisorModel"
+
+[advisor.settings_read_max_bytes]
+doc = "Most bytes of one settings file read (a longer file is not parsed and counts as not configured)."
+value = 1048576
+min = 1024
+unit = "bytes"
+
+[advisor.agent_file_tpl]
+doc = "File name (without advisor.transcript_ext) of a subagent's own transcript. Placeholder: {agent}. A payload transcript_path with this name is used as is."
+value = "agent-{agent}"
+
+[advisor.agent_head_bytes]
+doc = "Bytes read from the head of a subagent's transcript to check the agent id its first line records."
+value = 8192
+min = 256
+unit = "bytes"
+
+[advisor.agent_id_re]
+doc = "Regular expression (Rust syntax) of the agent id field in the head of a subagent's transcript; a match naming another agent than the payload's agent_id means a mismatch (the rules stay silent)."
+value = '"agentId"\s*:\s*"[^"]*"'
+
+[advisor.kind_availability]
+doc = "Advisory kind (counters) of why the advisor rules stayed silent or how availability was established: the names of advisor.silence_metrics."
+value = "advisor_availability"
+
+[advisor.silence_metrics]
+doc = "Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved)."
+value = { unknown = "silent_unknown", off = "silent_off", settings_only = "source_settings", model_unknown = "silent_model_unknown", no_agent_transcript = "silent_no_agent_transcript", agent_mismatch = "silent_agent_mismatch", state_unwritable = "allow_state_unwritable" }
