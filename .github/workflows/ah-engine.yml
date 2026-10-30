@@ -30,7 +30,7 @@ permissions:
 # nightly and the release gate must finish.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # the nightly-profile tier: the nightly schedule, a manual dispatch or a version tag
