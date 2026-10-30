@@ -535,8 +535,7 @@ fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
 /// reply goes by the entries' policies; so does a reply that timed out (Codex P1: the daemon was reached, so the policies apply, and a
 /// safety guard must not pass because its answer came late); only an unreachable daemon passes.
 fn passes_unasked(non_ok: bool, timed_out: bool, unavailable: impl FnOnce() -> bool) -> bool {
-    let _ = timed_out;
-    !non_ok && unavailable()
+    !non_ok && !timed_out && unavailable()
 }
 
 /// `guards.failOpenNonSafety` (default on), read from the request's environment and the loaded settings.

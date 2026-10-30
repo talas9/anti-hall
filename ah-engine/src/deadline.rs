@@ -44,8 +44,9 @@ thread_local! {
     static EVENT: RefCell<Option<String>> = const { RefCell::new(None) };
     /// The state writes the current request staged, in order.
     static STAGED: RefCell<Vec<Staged>> = const { RefCell::new(Vec::new()) };
-    /// Whether the script call in progress on this thread may be cut at the request's deadline (armed, not lifted by `commit()`).
-    static CUT_ARMED: std::sync::atomic::AtomicBool = const { std::sync::atomic::AtomicBool::new(false) };
+    /// The grace (ms past the request's hard deadline) after which the script call in progress on this thread may be cut; `None`
+    /// when it is not armed (or was lifted by `commit()`).
+    static CUT_GRACE: Cell<Option<u64>> = const { Cell::new(None) };
     /// The daemon worker's progress beat (its watchdog slot and the daemon's start), set once per worker thread.
     static BEAT: RefCell<Option<(Arc<AtomicU64>, Instant)>> = const { RefCell::new(None) };
     /// The connection of the request being served when its client keeps it open until it has the verdict (an ack-mode client).
@@ -129,19 +130,21 @@ pub fn beat() {
 /// Arm the cut of the script call in progress at the request's client deadline plus `grace` ms (the check's
 /// `diagnostics.deadline_grace_ms`), or disarm it (`None`).
 pub fn set_cut_grace(grace: Option<u64>) {
-    set_cut_armed(grace.is_some());
+    CUT_GRACE.with(|c| c.set(grace));
 }
 
 /// Arm (or disarm) the cut of the script call in progress at the request's client deadline.
 pub fn set_cut_armed(on: bool) {
-    CUT_ARMED.with(|c| c.store(on, Ordering::Relaxed));
+    set_cut_grace(on.then_some(0));
 }
 
 /// True when the script call in progress may be cut and its request's client has stopped waiting: a native scan the call is
 /// running (a transcript window of many megabytes, which the interpreter cannot interrupt) stops early, and the call fails as
 /// a cut (its check gets no answer and takes its failure policy).
+/// A call armed with a grace ([`set_cut_grace`], the check's `diagnostics.deadline_grace_ms`) is cut only once the request is that far
+/// past its hard deadline, the same moment the interpreter's own request limit trips.
 pub fn cut_due() -> bool {
-    CUT_ARMED.with(|c| c.load(Ordering::Relaxed)) && !in_time()
+    CUT_GRACE.with(Cell::get).is_some_and(|grace| !in_time() && (grace == 0 || past_hard_ms() > grace))
 }
 
 /// When the client of the request this thread serves stops waiting (after the reply slack); `None` outside a request.

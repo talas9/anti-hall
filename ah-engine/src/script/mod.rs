@@ -215,7 +215,7 @@ impl Pool {
         });
         self.deadline.req.store(req, Ordering::Relaxed);
         self.deadline.trip.store(0, Ordering::Relaxed);
-        crate::deadline::set_cut_armed(req != 0);
+        crate::deadline::set_cut_grace(cut.filter(|_| req != 0)); // the native scans the call runs keep the same grace
     }
 
     /// Whether the call in progress has run past its request's client deadline.

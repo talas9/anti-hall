@@ -683,6 +683,7 @@ pub(crate) fn release_wait_marker() {
 fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_on_ok: bool) -> Option<String> {
     LAST_NON_OK_REPLY.set(false);
     LAST_UNAVAILABLE.set(false);
+    LAST_TIMED_OUT.set(false);
     if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked() {
         note_unavailable();
         health::log_event("client_skip", "daemon", defaults::text("msg.client_skip"));
@@ -725,6 +726,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             // hooks too would count the call twice, so this call fails open (the unavailable path), never to Node
             wait_marker(false);
             note_unavailable();
+            LAST_TIMED_OUT.set(true); // the dispatcher answers each entry by its policy: a safety guard fails closed (Codex P1)
             health::log_event("client_slow", "daemon", &why);
             if slow_streak_tripped() {
                 mark_daemon_down(&why); // wedged: later clients skip it
@@ -818,6 +820,14 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
                 Exch::Reply(_, _) => {
                     wait_marker(false);
                     LAST_NON_OK_REPLY.set(true);
+                    None
+                }
+                Exch::Slow(why) => {
+                    // the started daemon was reached but its reply came too late: as in `attempt_with`, each entry by its policy
+                    wait_marker(false);
+                    note_unavailable();
+                    LAST_TIMED_OUT.set(true);
+                    health::log_event("client_slow", "daemon", &why);
                     None
                 }
                 _ => {

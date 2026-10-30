@@ -173,6 +173,8 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             && crate::deadline::past_hard_ms() > crate::script::deadline_grace_ms(check)
         {
             // #463: the check answers by its own failure policy here; there is no Node hook to defer to
+            // the check never started, so the session of its guard-down notice is named here (not a previous request's)
+            crate::script::set_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default());
             let v = crate::script::cut(check, &meta.event);
             crate::budget::note_dropped(guard_event, check, &meta.event, "hard_deadline");
             answer_of(&e.id, Some(v))
