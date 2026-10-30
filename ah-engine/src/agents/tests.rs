@@ -2197,8 +2197,9 @@ fn failed_delivery_is_not_counted_as_sent() {
     tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
     let got = drained();
     assert!(st.nudges.contains_key("abc"), "the nudge opened");
-    assert_eq!(got.counter("agent_nudge_sent", &[("trigger", "waste")]), 0, "a failed delivery is not a sent nudge");
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_sent", &[("trigger", "waste")]), 0, "a failed delivery is not a sent nudge");
     assert!(got.counter("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1, "the failed queue write is counted");
+    assert!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]) >= 1);
 }
 
 /// The same scene with a writable queue: delivered, counted once as sent, no failure.
@@ -2214,8 +2215,9 @@ fn successful_delivery_is_counted_as_sent() {
     append(&child, &spend);
     tick(&nudge_env(&h, n + 18 * MIN, &[]), &mut st);
     let got = drained();
-    assert_eq!(got.counter("agent_nudge_sent", &[("trigger", "waste")]), 1);
-    assert_eq!(got.counter("agent_nudge_delivery_failed", &[("where", "queue")]), 0);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_sent", &[("trigger", "waste")]), 1);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "queue")]), 0);
+    let _ = got;
 }
 
 /// An unwritable owner notices file: the escalation is not counted as sent to the owner, the failure is.
@@ -2231,7 +2233,7 @@ fn failed_owner_file_is_not_counted_as_to_owner() {
     drained();
     let mut st = State::default();
     let e0 = nudge_env(&h, n + MIN, &[]);
-    std::fs::create_dir_all(e0.dir().join(defaults::raw("agent_nudge.paths").str_field("notices"))).unwrap();
+    std::fs::create_dir_all(e0.dir().join(defaults::raw("agent_tracker.paths").str_field("notices"))).unwrap();
     let (commit, spend) = spend_cycle(&child, 0, n);
     append(&child, &commit);
     tick(&e0, &mut st);
@@ -2240,9 +2242,10 @@ fn failed_owner_file_is_not_counted_as_to_owner() {
         tick(&nudge_env(&h, n + m * MIN, &[]), &mut st);
     }
     let got = drained();
-    assert_eq!(got.counter("agent_nudge_to_owner", &[("where", "file")]), 0);
-    assert_eq!(got.counter("agent_nudge_sent", &[("trigger", "waste")]), 0);
-    assert!(got.counter("agent_nudge_delivery_failed", &[("where", "owner_file")]) >= 1);
+    let _ = got;
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_to_owner", &[("where", "file")]), 0);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_nudge_sent", &[("trigger", "waste")]), 0);
+    assert!(crate::metrics::bumped_on_this_thread("agent_nudge_delivery_failed", &[("where", "owner_file")]) >= 1);
 }
 
 /// A stale heartbeat of no followed session is dropped and counted by reason.
