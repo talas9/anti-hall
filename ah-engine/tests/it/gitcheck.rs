@@ -497,3 +497,121 @@ fn a_push_fails_open_with_an_advisory_when_git_is_unavailable() {
     assert_eq!(o.status.code(), Some(0), "stdout={out} stderr={}", String::from_utf8_lossy(&o.stderr));
     assert!(out.contains("not checked"), "advisory: {out}");
 }
+
+// ---- PR #469 follow-up: -e, unexpandable repo paths, failing git, submodules, annotated tags, the block names the branch ----
+
+/// `-e` (alone or in a short-flag cluster) opens an editor on the -m text: the stored message is unread, so a push in the
+/// same call is refused.
+#[test]
+fn an_edited_message_and_a_push_in_the_same_call_are_refused() {
+    let e = Env::new("edit");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("git commit -q --allow-empty -m clean -e && git {P}"),
+        format!("git commit -q --allow-empty -ae -m clean && git {P}"),
+        format!("git commit -q --allow-empty -em clean && git {P}"),
+        format!("git commit -q --allow-empty --edit -m clean && git {P}"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("separate") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    for cmd in [format!("git commit -q --allow-empty -m clean --no-edit && git {P}"), format!("git commit -q --allow-empty -am 'feat: edits' && git {P}")] {
+        assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "{cmd}");
+    }
+}
+
+/// A repository path the shell expands at run time cannot be checked before the call: the push is refused and told to use a
+/// literal path; a git query that fails (not a repository) lets the push through with the not-checked advisory, never silently.
+#[test]
+fn a_push_to_an_unexpandable_repo_path_is_refused_and_a_failing_query_is_not_silent() {
+    let e = Env::new("dynrepo");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("repo={w}; git -C \"$repo\" {P}"),
+        format!("git -C `pwd` {P}"),
+        format!("git --git-dir=$D/.git {P}"),
+        format!("git --work-tree ~other/x {P}"),
+        format!("GIT_DIR=$D/.git git {P}"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("literal") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    let plain = e.dir.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let (out, err, code) = e.hook_in(&format!("git {P} origin main"), plain.to_str().unwrap());
+    assert_eq!(code, 0, "stdout={out} stderr={err}");
+    assert!(out.contains("not checked"), "a failing git query is an advisory, not a clean pass: {out}");
+}
+
+/// A credited commit no remote has inside a submodule is published by a recursing push: the parent's push is refused.
+#[test]
+fn a_credited_unpushed_commit_in_a_submodule_refuses_the_push() {
+    let e = Env::new("submod");
+    let (work, _) = pushed_repo(&e);
+    let sub_origin = e.dir.join("sub.git");
+    let seed = e.dir.join("seed");
+    std::fs::create_dir_all(&sub_origin).unwrap();
+    std::fs::create_dir_all(&seed).unwrap();
+    git_ok(&sub_origin, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&seed, &["init", "-q", "-b", "main"]);
+    git_ok(&seed, &["commit", "-q", "--allow-empty", "-m", "sub base"]);
+    git_ok(&seed, &["push", "-q", sub_origin.to_str().unwrap(), "main"]);
+    git_ok(&work, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub_origin.to_str().unwrap(), "sub"]);
+    git_ok(&work, &["commit", "-q", "-m", "add sub"]);
+    git_ok(&work, &["push", "-q", "origin", "main"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    assert_eq!(e.hook_in(&format!("git {P} origin main"), w), (String::new(), String::new(), 0), "clean submodule");
+    git_ok(&work.join("sub"), &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let sha = git_ok(&work.join("sub"), &["rev-parse", "--short", "HEAD"]);
+    let (out, err, code) = e.hook_in(&format!("git {P} --recurse-submodules=on-demand origin main"), w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("AI credit") && err.contains(&sha), "{err}");
+}
+
+/// A local annotated tag whose message carries a credit is published by a tag push: the push is refused, naming the tag.
+#[test]
+fn a_credited_annotated_tag_message_refuses_the_push() {
+    let e = Env::new("tagmsg");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["tag", "-a", "rel-credit-1", "-m", CREDITED]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git {P} origin rel-credit-1"), w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("rel-credit-1"), "the block names the tag: {err}");
+    git_ok(&work, &["tag", "-d", "rel-credit-1"]);
+    git_ok(&work, &["tag", "-a", "rel-clean-1", "-m", "release 1"]);
+    assert_eq!(e.hook_in(&format!("git {P} origin rel-clean-1"), w), (String::new(), String::new(), 0), "clean tag");
+}
+
+/// An old credited commit on another branch: the block names that branch and the sha, and never suggests a rebase or a force push.
+#[test]
+fn the_push_block_names_the_branch_and_never_suggests_a_rebase() {
+    let e = Env::new("branchname");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["checkout", "-q", "-b", "feat-credit-x"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git {P} origin main"), w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("feat-credit-x") && err.contains(&sha), "branch and sha named: {err}");
+    assert!(err.contains("amend") && err.contains("owner"), "the plain fix: {err}");
+    assert!(!err.contains("rebase -i") && !err.contains("rebase the"), "never a rebase: {err}");
+}
