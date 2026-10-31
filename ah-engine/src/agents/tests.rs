@@ -2392,3 +2392,23 @@ fn an_unrecordable_escalation_stop_never_blocks() {
     assert_eq!(blocks, 0, "a failed write gives no block");
     assert!(drained().counter("runtime_escalation_stop_unrecorded", &[]) >= 1, "the failed write is counted");
 }
+
+/// GH #494: a child's launch type is the meta's explicit type when it names one; the Codex-rescue type is inferred only when none is named.
+#[test]
+fn launch_type_prefers_explicit_metadata_over_the_codex_rescue_inference() {
+    let h = home("launchtype");
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (meta, rescue, want) in [
+        (json!({"agentType": "general-purpose", "toolUseId": "toolu_1"}), true, "general-purpose"),
+        (json!({"toolUseId": "toolu_2"}), true, "codex:codex-rescue"),
+        (json!({"agentType": "codex:codex-rescue"}), false, "codex:codex-rescue"),
+    ] {
+        let path = dir.join(format!("agent-lt{want}{rescue}.jsonl").replace(':', "_"));
+        std::fs::write(&path, "").unwrap();
+        std::fs::write(facts::meta_path(&path.to_string_lossy()), meta.to_string()).unwrap();
+        let a =
+            Agent { id: "lt".into(), kind: kind_name("subagent").into(), path: path.to_string_lossy().to_string(), codex_rescue: rescue, ..Agent::default() };
+        assert_eq!(launch_of(&a).1, want, "{meta}");
+    }
+}

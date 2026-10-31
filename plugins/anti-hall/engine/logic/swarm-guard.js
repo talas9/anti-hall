@@ -211,6 +211,24 @@ function swgCapGate(p, home) {
   if (doc && Array.isArray(doc.rows)) rows = doc.rows.filter(function (r) {
     return r && typeof r.id === 'string' && typeof r.at === 'number' && now - r.at < ttl && !(r.session === session && all.toolUseIds[r.id]);
   });
+  // A counted tracker child with no launch id in its meta is still the launch of one reservation: the oldest open reservation of this
+  // session with its agent type (an unknown type on either side matches) is released, one to one. The children already matched are
+  // kept in the file (doc.matched), so a child releases one reservation once, not one on every later check.
+  var matched = {}, nowMatched = {};
+  if (doc && doc.matched && typeof doc.matched === 'object') Object.keys(doc.matched).forEach(function (k) { if (doc.matched[k] === true) matched[k] = true; });
+  all.children.forEach(function (c) {
+    if (c.toolUseId !== '') return;
+    nowMatched[c.id] = true;
+    if (matched[c.id]) return;
+    var best = -1;
+    rows.forEach(function (r, i) {
+      if (r.session !== session) return;
+      var rt = typeof r.type === 'string' ? r.type : '';
+      if (rt !== '' && c.agentType !== '' && rt !== c.agentType) return;
+      if (best < 0 || r.at < rows[best].at) best = i;
+    });
+    if (best >= 0) rows.splice(best, 1);
+  });
   var open = {};
   rows.forEach(function (r) { if (r.session === session) open[r.id] = true; });
   var answered = swgAnsweredIds(p.transcript_path, open);
@@ -228,9 +246,9 @@ function swgCapGate(p, home) {
   if (lock === null) return null;
   if (bg) {
     var id = typeof p.tool_use_id === 'string' && p.tool_use_id !== '' ? p.tool_use_id : now + '-' + Math.random().toString(36).slice(2);
-    rows.push({ id: id, session: session, at: now });
+    rows.push({ id: id, session: session, at: now, type: swgAgentType(inp) });
   }
-  var ok = ah.state.writeAtomic(rel, JSON.stringify({ rows: rows }));
+  var ok = ah.state.writeAtomic(rel, JSON.stringify({ rows: rows, matched: nowMatched }));
   ah.state.unlock(lock);
   if (!ok) ah.unable('swarm-guard:cap_reserve_write');
   ah.metric('spawn_reservations', ['outcome', !ok ? 'write_failed' : bg ? 'reserved' : 'foreground']);

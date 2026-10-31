@@ -156,16 +156,16 @@ fn switches_and_skip_lift_the_guards() {
     assert_eq!(spawn(&h).0, 0, "the switches lift both");
 }
 
-// ---- GH #484: the owner's concurrent-agent cap (guards.maxConcurrentAgents, default 4) ----
+// ---- GH #484: the owner's concurrent-agent cap (guards.maxConcurrentAgents, default 6) ----
 
-/// T1: 4 agents running, none of them tracked (unknown liveness counts as running), the 5th spawn is denied naming the cap and the agents.
+/// T1: 6 agents running, none of them tracked (unknown liveness counts as running), the 7th spawn is denied naming the cap and the agents.
 #[test]
-fn t1_fifth_spawn_denied_naming_cap_and_agents_unknown_liveness_counts() {
+fn t1_seventh_spawn_denied_naming_cap_and_agents_unknown_liveness_counts() {
     let h = scratch("cap1");
-    put(&h, "t.jsonl", &running(4));
+    put(&h, "t.jsonl", &running(6));
     let (code, out) = spawn(&h);
     assert_eq!(code, 2, "{out}");
-    assert!(out.contains("limit 4") && out.contains("lane 0") && out.contains("lane 3"), "{out}");
+    assert!(out.contains("limit 6") && out.contains("lane 0"), "{out}");
     assert!(!out.contains("a000000000000000"), "no raw ids: {out}");
 }
 
@@ -173,10 +173,10 @@ fn t1_fifth_spawn_denied_naming_cap_and_agents_unknown_liveness_counts() {
 #[test]
 fn t2_ending_one_frees_a_slot() {
     let h = scratch("cap2");
-    let mut t = running(4);
+    let mut t = running(6);
     put(&h, "t.jsonl", &t);
-    assert_eq!(spawn(&h).0, 2, "4 running is at the cap of 4");
-    let text = format!("<task-notification>\n<task-id>a{:015x}</task-id>\n<status>completed</status>\n</task-notification>", 3);
+    assert_eq!(spawn(&h).0, 2, "6 running is at the cap of 6");
+    let text = format!("<task-notification>\n<task-id>a{:015x}</task-id>\n<status>completed</status>\n</task-notification>", 5);
     t.push_str(&format!("{}\n", json!({"type":"user","message":{"role":"user","content":text}})));
     put(&h, "t.jsonl", &t);
     assert_eq!(spawn(&h).0, 0, "the finished agent no longer holds a slot");
@@ -213,6 +213,7 @@ const RESERVATIONS: &str = ".anti-hall/spawn-reservations.json";
 fn t6_a_parallel_burst_cannot_pass_the_cap() {
     let h = scratch("burst");
     put(&h, "t.jsonl", &quiet());
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":4}}"#);
     let go = std::sync::Arc::new(std::sync::Barrier::new(6));
     let runs: Vec<_> = (0..6)
         .map(|i| {
@@ -249,6 +250,7 @@ fn t7_an_expired_reservation_frees_its_slot() {
 #[test]
 fn t8_a_launch_result_releases_its_own_reservation_once() {
     let h = scratch("release");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":4}}"#);
     put(&h, "t.jsonl", &running(2));
     assert_eq!(spawn_as(&h, "toolu_2").0, 0, "2 running + 0 reserved");
     assert_eq!(spawn_as(&h, "toolu_3").0, 0, "2 running + 1 reserved");
@@ -261,6 +263,7 @@ fn t8_a_launch_result_releases_its_own_reservation_once() {
 #[test]
 fn t9_tracked_agents_outside_the_window_count() {
     let h = scratch("tracked");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":4}}"#);
     put(&h, "t.jsonl", &running(1));
     tracked(&h, 4);
     let (code, out) = spawn(&h);
@@ -414,6 +417,7 @@ fn launches(types: &[&str]) -> String {
 #[test]
 fn t15_codex_reviewers_are_outside_the_cap() {
     let h = scratch("codex");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":4}}"#);
     put(&h, "t.jsonl", &launches(&["executor", "executor", "executor", "executor", "codex:codex-rescue", "codex:codex-rescue"]));
     let (code, out) = spawn_input(&h, "toolu_b5", json!({"subagent_type":"executor","prompt":"x","run_in_background":true}));
     assert_eq!(code, 2, "4 builders fill the cap: {out}");
@@ -476,4 +480,32 @@ fn t17_a_tracker_only_codex_rescue_is_outside_the_cap() {
     assert_eq!(code, 0, "3 executors + a Codex rescue at cap 4: {out}");
     let (code, out) = spawn_input(&h, "toolu_e5", json!({"subagent_type":"executor","prompt":"x","run_in_background":true}));
     assert_eq!(code, 2, "3 executors + the 4th reserved fill the cap: {out}");
+}
+
+/// GH #494: a general-purpose child that merely runs Codex (its meta names general-purpose even though the tracker marked it a rescue)
+/// is an agent of the cap: 3 executors + it fill a cap of 4.
+#[test]
+fn t18_a_tracker_only_general_purpose_child_running_codex_counts() {
+    let h = scratch("gp-codex");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":4}}"#);
+    put(&h, "t.jsonl", &launches(&["executor", "executor", "executor"]));
+    tracked(&h, 3);
+    tracked_child(&h, "a00000000000000g", Some(json!({"agentType":"general-purpose"})), true);
+    let (code, out) = spawn_input(&h, "toolu_e4", json!({"subagent_type":"executor","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 2, "3 executors + the general-purpose child fill the cap: {out}");
+}
+
+/// GH #494: a child whose meta carries no (or another) launch id still releases its own reservation, matched by agent type: at cap 2
+/// a child of reserved launch A is one agent, so launch B fits instead of waiting out the TTL.
+#[test]
+fn t19_a_child_without_a_launch_id_releases_its_reservation_by_type() {
+    let h = scratch("noid");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":2}}"#);
+    put(&h, "t.jsonl", &quiet());
+    assert_eq!(spawn_input(&h, "toolu_A", json!({"subagent_type":"Explore","prompt":"x","run_in_background":true})).0, 0, "A fits");
+    tracked_child(&h, "a00000000000000a", Some(json!({"agentType":"Explore"})), false);
+    let (code, out) = spawn_input(&h, "toolu_B", json!({"subagent_type":"Explore","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 0, "A counted once (1 of 2): {out}");
+    let (code, out) = spawn_input(&h, "toolu_C", json!({"subagent_type":"Explore","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 2, "A running + B reserved fill the cap: {out}");
 }

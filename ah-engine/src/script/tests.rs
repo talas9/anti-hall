@@ -851,11 +851,11 @@ mod swarm {
             std::fs::write(format!("{h}/t.jsonl"), out).unwrap();
         };
         let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "Explore", "prompt": "x"}, "session_id": "s", "transcript_path": format!("{h}/t.jsonl"), "cwd": h});
-        running(3);
+        running(5);
         crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
-        assert_eq!(call(&h, &p, T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "3 running is under the cap of 4");
+        assert_eq!(call(&h, &p, T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "5 running is under the cap of 6");
         assert_eq!(count(), 0, "an allowed spawn is not a denial");
-        running(4);
+        running(6);
         let v = call(&h, &p, T0 + 1, Some(8.0 * GB), 16.0 * GB);
         assert!(matches!(&v, Some(Some(Verdict::Exact(x))) if x.code == 2), "{v:?}");
         assert_eq!(count(), 1, "the denial is counted once");

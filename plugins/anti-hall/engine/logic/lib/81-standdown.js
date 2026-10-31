@@ -78,12 +78,12 @@ function swgCapExcluded(atype) {
 // unknown liveness counts as running) united with the tracker's live agent children, whose launches may lie outside the transcript
 // window (GH #494). Agent types of guards.cap_excluded_agent_types and tracker children of spawn_ceiling.cap_excluded_tracked_kinds
 // (background shell jobs) are not agents of the cap; a tracker child's agent type is the tracker's (its meta, or a known Codex
-// rescue). toolUseIds: the launching tool call ids the transcript or a tracker child's meta shows.
+// rescue). children: the counted tracker children {id, toolUseId, agentType}. toolUseIds: the launching tool call ids the transcript or a tracker child's meta shows.
 function swgCapRunning(p) {
   var tp = p.transcript_path, session = typeof p.session_id === 'string' ? p.session_id : '';
   var found = typeof tp === 'string' && tp !== '' ? ah.transcript.agents(hookProc.open(p, tp)) : null;
   if (found !== null && found.unsure) { ah.unable('swarm-guard:cap_agents_unsure'); found = null; }
-  var tracked = ah.transcript.trackedAgents(p), rows = [], seen = {}, uses = {};
+  var tracked = ah.transcript.trackedAgents(p), rows = [], seen = {}, uses = {}, children = [];
   if (!Array.isArray(tracked)) tracked = [];
   var kinds = ah.cfg('spawn_ceiling.cap_excluded_tracked_kinds');
   if (found !== null && Array.isArray(found.rows)) found.rows.forEach(function (a) {
@@ -102,12 +102,13 @@ function swgCapRunning(p) {
     if (ah.transcript.trackedLiveness(t.id, [t]) !== true) return;
     seen[t.id] = true;
     rows.push(t.name);
+    children.push({ id: t.id, toolUseId: typeof t.toolUseId === 'string' ? t.toolUseId : '', agentType: typeof t.agentType === 'string' ? t.agentType : '' });
   });
   var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
   var names = rows.slice(0, max).map(function (d) {
     return String(d || '').replace(ctl, ' ').trim().slice(0, ah.cfgNum('spawn_ceiling.desc_max')) || ah.cfg('spawn_ceiling.unnamed');
   });
-  return { n: rows.length, names: names, toolUseIds: uses };
+  return { n: rows.length, names: names, toolUseIds: uses, children: children };
 }
 
 // The tool call ids among `ids` (an object used as a set) that have a tool result in the transcript tail: an answered call, a

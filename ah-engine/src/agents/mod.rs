@@ -543,11 +543,9 @@ fn launch_of(a: &Agent) -> (String, String) {
     let field = |k: &str| meta.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
     let nw = defaults::raw("agent_tracker.no_work");
     let tool_use_id = field(defaults::raw("agent_tracker.meta").str_field("tool_use_id"));
-    let agent_type = if a.codex_rescue {
-        nw.str_field("rescue_type").to_string()
-    } else {
-        nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().map(|k| field(k)).find(|t| !t.is_empty()).unwrap_or_default()
-    };
+    let named = nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().map(|k| field(k)).find(|t| !t.is_empty()).unwrap_or_default();
+    // an explicit type in the meta wins (a general-purpose child that merely runs Codex stays general-purpose); the rescue type is inferred only when none is named
+    let agent_type = if named.is_empty() && a.codex_rescue { nw.str_field("rescue_type").to_string() } else { named };
     (tool_use_id, agent_type)
 }
 
