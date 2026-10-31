@@ -407,6 +407,53 @@ fn the_agent_controls_are_answered_by_the_dispatcher() {
     assert!(reply["reason"].as_str().unwrap().contains(&what) && !err.contains("NODE-RAN"), "{out:?} {err:?}");
 }
 
+/// #443 review P1: a Stop must not block on an incomplete agent scan. A small successful Agent launch (90 minutes silent), then a
+/// completion notice for that agent padded past `agent_scan.max_line_bytes`: the scan skips the notice, so it is unknown and the
+/// nudge judges no transcript agent. The same launch with a normal-size completion is complete (nothing running), and the launch
+/// alone is a genuinely silent agent that still blocks (the existing test above). Any oversize line, noise included, does the same.
+#[test]
+fn a_stop_does_not_block_on_an_agent_scan_that_skipped_an_oversize_line() {
+    let e = Env::new("oversize-stop");
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "Stop").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> = ids.iter().map(|id| (id.clone(), "true".into())).collect();
+    let map = e.dir.join("stop-map.json");
+    std::fs::write(&map, serde_json::json!({ "Stop": m }).to_string()).unwrap();
+    let stop_args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let ts = ah_engine::checks::agent_scan::iso_utc((now - 5_400_000) as f64);
+    let launch = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "tu_1", "type": "tool_result", "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a1b2c3d4e5f601 (x)\noutput_file: /nonexistent/out.txt\n"}]}]}, "timestamp": ts});
+    let big = 5 * 1024 * 1024;
+    let note = |pad: usize| {
+        let text = format!(
+            "<task-notification>\n<task-id>a1b2c3d4e5f601</task-id>\n<status>completed</status>\n<summary>{}</summary>\n</task-notification>",
+            "p".repeat(pad)
+        );
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": text}, "timestamp": ts}).to_string()
+    };
+    let noise =
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "n".repeat(big)}]}, "timestamp": ts})
+            .to_string();
+    let run = |name: &str, body: String| {
+        let t = e.dir.join(name);
+        std::fs::write(&t, body).unwrap();
+        let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "transcript_path": t}).to_string();
+        e.run(&stop_args, true, &p, true)
+    };
+    // Codex's input: the completion is padded past the bound, so it is skipped; the scan is unknown, the Stop is not blocked
+    let got = run("padded.jsonl", format!("{launch}\n{}\n", note(big)));
+    assert_eq!((got.0, got.1.as_str()), (0, ""), "padded completion: {got:?}");
+    // the same completion at a normal size: complete scan, the agent is done, nothing to block
+    let got = run("small.jsonl", format!("{launch}\n{}\n", note(10)));
+    assert_eq!((got.0, got.1.as_str()), (0, ""), "small completion: {got:?}");
+    // an unrelated oversize line also makes the scan unknown (the safe side): a silent launch is not judged
+    let got = run("noise.jsonl", format!("{launch}\n{noise}\n"));
+    assert_eq!((got.0, got.1.as_str()), (0, ""), "unrelated oversize line: {got:?}");
+    // a complete scan with a genuinely silent agent still blocks
+    let got = run("silent.jsonl", format!("{launch}\n"));
+    e.stop();
+    assert!(got.1.contains("\"decision\":\"block\""), "complete scan, silent agent: {got:?}");
+}
+
 #[test]
 fn an_event_no_entry_matches_says_nothing_and_starts_no_daemon() {
     let e = Env::new("nomatch");
