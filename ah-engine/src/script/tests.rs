@@ -3485,7 +3485,11 @@ mod afk_mode {
         drained();
         let now = crate::checks::taskkit::time::now_ms();
         let since = now - 3 * 60_000;
-        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "idle", "since": since, "epoch": since.to_string(), "counted": true}).to_string()).unwrap();
+        std::fs::write(
+            format!("{h}/.anti-hall/afk.json"),
+            json!({"on": true, "how": "idle", "since": since, "epoch": since.to_string(), "counted": true}).to_string(),
+        )
+        .unwrap();
         std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": since + 1000}).to_string()).unwrap();
         let ask = json!({"tool_name": "AskUserQuestion", "tool_input": {}});
         let long = "x\n".repeat(30);

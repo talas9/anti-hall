@@ -3948,6 +3948,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.rule_text` | `AFK MODE: the owner is away. Until told otherwise: (1) no narration between t...` |  |  | The AFK rule, injected once per session per AFK period. Placeholders: {progress} (the session's progress file). |
 | `afk.session_id_unsafe` | `[^A-Za-z0-9_.-]` |  |  | Characters removed from a session id before it becomes part of a file name (regular expression, JavaScript syntax). |
 | `afk.session_prefix` | `afk-sess-` |  |  | Prefix of the per-session AFK state file under the per-user state directory (the sanitised session id and the JSON extension follow). `ah-engine back` reads these to find each session's progress file. |
+| `afk.set_answer_presence` | `8 entries` |  |  | The afk.answerPresence setting: an answered question-tool call (PostToolUse of afk.question_tools) counts as owner presence, so idle detection does not start AFK while the owner is answering, and an idle AFK whose recorded presence is newer than its start ends instead of injecting (afk_stale_injection_suppressed). |
 | `afk.set_concise_codex` | `8 entries` |  |  | The afk.conciseCodex setting: on Codex (no output styles), inject the concise reply rule (afk.concise_text) once at session start. On Claude the shipped output style `concise` (force-for-plugin) carries the same rule. |
 | `afk.set_enabled` | `8 entries` |  |  | The afk.enabled setting (master switch): off turns the whole AFK feature off (no idle detection, no prompt commands, no rule, no enforcement, no measurement); the `ah-engine afk` verbs still edit the flag. |
 | `afk.set_enforce` | `8 entries` |  |  | The afk.enforce setting: while AFK, nudge once and then hold (at most afk.max_blocks times) a Stop whose final reply is over afk.max_reply_chars or afk.max_reply_lines. |
@@ -14578,6 +14579,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_overlong_turns` | counter | events | action | Overlong AFK replies, by action (nudge, block, capped). |
 | `afk_question_denied` | counter | events | tool | AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap). |
 | `afk_question_parked` | counter | events | action | AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook). |
+| `afk_stale_injection_suppressed` | counter | events | event | Hook calls that found an idle AFK flag still ON although the owner presence was newer than its start (GH #509): the flag was ended and nothing AFK was injected or enforced, by event. |
 | `afk_turns` | counter | turns |  | Main-session turns that ended (Stop) while AFK. |
 | `afk_turns_measured` | counter | turns | mode | Main-session turns whose output tokens were measured, by mode (afk, present). |
 | `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
