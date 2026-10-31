@@ -5,14 +5,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-fn scratch(tag: &str) -> PathBuf {
+pub(crate) fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("ah-spawnbudget-{tag}-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
     d
 }
 
-fn put(home: &Path, rel: &str, body: &str) {
+pub(crate) fn put(home: &Path, rel: &str, body: &str) {
     let p = home.join(rel);
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(p, body).unwrap();
@@ -61,11 +61,11 @@ fn tracked(home: &Path, n: usize) {
     put(home, ".anti-hall/agent-tracker/state.json", &serde_json::to_string(&st).unwrap());
 }
 
-const NO_CAP: &str = r#"{"guards":{"maxConcurrentAgents":0}}"#;
+pub(crate) const NO_CAP: &str = r#"{"guards":{"maxConcurrentAgents":0}}"#;
 const CACHE: &str = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json";
 
 /// One spawn through the check: (exit code, stdout).
-fn spawn(home: &Path) -> (i32, String) {
+pub(crate) fn spawn(home: &Path) -> (i32, String) {
     spawn_as(home, "")
 }
 
@@ -75,7 +75,7 @@ fn spawn_as(home: &Path, tu: &str) -> (i32, String) {
 }
 
 /// One spawn through the check with the tool input `input` and the tool call id `tu` (none when empty): (exit code, stdout).
-fn spawn_input(home: &Path, tu: &str, input: serde_json::Value) -> (i32, String) {
+pub(crate) fn spawn_input(home: &Path, tu: &str, input: serde_json::Value) -> (i32, String) {
     let mut payload = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":home,
         "transcript_path": home.join("t.jsonl"), "tool_input": input});
     if !tu.is_empty() {

@@ -25,6 +25,8 @@ function ahSet(kind, key, read) {
   m.set(k, v);
   return v;
 }
+// Tracker-row indexes (ah.transcript.trackedIndex) by rows array; weak, so an array nobody holds takes its index with it.
+var ahTrackedIdx = new WeakMap();
 var ah = {
   // Replaced before EVERY check call: authoritative dispatcher options, including --host. Never daemon-global state.
   request: {},
@@ -264,12 +266,30 @@ var ah = {
     agents: function (p) { return JSON.parse(ahHost.agents(p)); },
     // The same completion/liveness rules as the agent tracker, refreshed read-only.
     trackedAgents: function (p) { return JSON.parse(ahHost.trackedAgents(p.session_id || '', p.transcript_path || '', p.cwd || '')); },
+    // The tracker rows indexed once: by id and by name, with the two state lists read once. Cached per rows array (the
+    // arrays are read-only to every caller), so a loop over many agents costs one pass over the rows, not one per agent.
+    trackedIndex: function (rows) {
+      var hit = ahTrackedIdx.get(rows);
+      if (hit !== undefined && hit.n === rows.length) return hit;
+      var byId = new Map(), byName = new Map();
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        if (!byId.has(r.id)) byId.set(r.id, []);
+        byId.get(r.id).push(r);
+        if (!byName.has(r.name)) byName.set(r.name, []);
+        byName.get(r.name).push(r);
+      }
+      hit = { n: rows.length, byId: byId, byName: byName, live: ah.cfg('agent_tracker.guard_live_states'), inactive: ah.cfg('agent_tracker.guard_inactive_states') };
+      ahTrackedIdx.set(rows, hit);
+      return hit;
+    },
+    // true (a live tracker row), false (all its rows inactive) or null (no row, or unknown) for the agent `id` (an id, else a name).
     trackedLiveness: function (id, rows) {
-      var matches = rows.filter(function (r) { return r.id === id; });
-      if (!matches.length) matches = rows.filter(function (r) { return r.name === id; });
-      if (!matches.length) return null;
-      if (matches.some(function (r) { return r.known && ah.cfg('agent_tracker.guard_live_states').indexOf(r.state) >= 0; })) return true;
-      return matches.every(function (r) { return ah.cfg('agent_tracker.guard_inactive_states').indexOf(r.state) >= 0; }) ? false : null;
+      var ix = ah.transcript.trackedIndex(rows), matches = ix.byId.get(id);
+      if (matches === undefined) matches = ix.byName.get(id);
+      if (matches === undefined) return null;
+      if (matches.some(function (r) { return r.known && ix.live.indexOf(r.state) >= 0; })) return true;
+      return matches.every(function (r) { return ix.inactive.indexOf(r.state) >= 0; }) ? false : null;
     },
     // Like `agents`, but only the default window (the Node `runningAgents`): no widening, and an empty window is an empty list.
     agentsWindow: function (p) { return JSON.parse(ahHost.agentsWindow(p)); },

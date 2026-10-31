@@ -40,18 +40,37 @@ function swgCeiling(full) {
   return Math.max(ah.cfgNum('spawn_ceiling.floor'), ceil);
 }
 
+// The transcript's agent scan and the tracker's rows, each read ONCE per check call and shared by every swarm-guard count (the owner's
+// cap and the ceiling both count, and a long transcript made each host call the bulk of the script's time: GH #537). Keyed on the call's
+// request and payload objects, so the next call reads afresh. `agents`: null when there is no transcript path, else the host's answer.
+var swgSnap = { req: null, p: null, tp: null, agents: null, tracked: null };
+function swgSnapshot(p, tp) {
+  if (swgSnap.req !== ah.request || swgSnap.p !== p || swgSnap.tp !== tp) swgSnap = { req: ah.request, p: p, tp: tp, agents: undefined, tracked: undefined };
+  return swgSnap;
+}
+function swgSnapAgents(p, tp) {
+  var sn = swgSnapshot(p, tp);
+  if (sn.agents === undefined) sn.agents = typeof tp === 'string' && tp !== '' ? ah.transcript.agents(hookProc.open(p, tp)) : null;
+  return sn.agents;
+}
+function swgSnapTracked(p) {
+  var sn = swgSnapshot(p, p.transcript_path);
+  if (sn.tracked === undefined) sn.tracked = ah.transcript.trackedAgents(p);
+  return sn.tracked;
+}
+
 // The running agents of the session {n, names}, or null when they cannot be counted exactly (counted).
 function swgRunning(p) {
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return null;
-  var found = ah.transcript.agents(hookProc.open(p, tp));
+  var found = swgSnapAgents(p, tp);
   if (found === null) return null;
   if (found.unsure) { ah.unable('swarm-guard:ceiling_agents_unsure'); return null; }
-  var tracked = ah.transcript.trackedAgents(p);
+  var tracked = swgSnapTracked(p), excluded = ah.cfg('spawn_ceiling.excluded_task_types'), unknownLive = !ah.cfg('spawn_ceiling.ignore_unknown_liveness');
   var rows = found.rows.filter(function (a) {
-    if (ah.cfg('spawn_ceiling.excluded_task_types').indexOf(a.taskType) >= 0) return false;
+    if (excluded.indexOf(a.taskType) >= 0) return false;
     var live = ah.transcript.trackedLiveness(a.id, tracked);
-    return live === null ? !ah.cfg('spawn_ceiling.ignore_unknown_liveness') : live;
+    return live === null ? unknownLive : live;
   });
   var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
   var names = rows.slice(0, max).map(function (a) {
@@ -81,14 +100,14 @@ function swgCapExcluded(atype) {
 // rescue). children: the counted tracker children {id, toolUseId, agentType}. toolUseIds: the launching tool call ids the transcript or a tracker child's meta shows.
 function swgCapRunning(p) {
   var tp = p.transcript_path, session = typeof p.session_id === 'string' ? p.session_id : '';
-  var found = typeof tp === 'string' && tp !== '' ? ah.transcript.agents(hookProc.open(p, tp)) : null;
+  var found = swgSnapAgents(p, tp);
   if (found !== null && found.unsure) { ah.unable('swarm-guard:cap_agents_unsure'); found = null; }
-  var tracked = ah.transcript.trackedAgents(p), rows = [], seen = {}, uses = {}, children = [];
+  var tracked = swgSnapTracked(p), rows = [], seen = {}, uses = {}, children = [];
   if (!Array.isArray(tracked)) tracked = [];
-  var kinds = ah.cfg('spawn_ceiling.cap_excluded_tracked_kinds');
+  var kinds = ah.cfg('spawn_ceiling.cap_excluded_tracked_kinds'), excluded = ah.cfg('spawn_ceiling.excluded_task_types');
   if (found !== null && Array.isArray(found.rows)) found.rows.forEach(function (a) {
     if (typeof a.toolUseId === 'string' && a.toolUseId !== '') uses[a.toolUseId] = true;
-    if (ah.cfg('spawn_ceiling.excluded_task_types').indexOf(a.taskType) >= 0) return;
+    if (excluded.indexOf(a.taskType) >= 0) return;
     if (swgCapExcluded(swgAgentType(a.spawnInput))) { seen[a.id] = true; return; } // nor counted again through the tracker
     if (ah.transcript.trackedLiveness(a.id, tracked) === false) return;
     seen[a.id] = true;
