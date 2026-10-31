@@ -71,5 +71,6 @@ Settings switches, the generated reference and the Jev classifier.
 - `jev.enabled` = false: The setting jev.enabled (off by default; a legacy jev.json value is honoured)
 - `context.roleGuard` = true: Switch context.roleGuard (default on): off lets every role run every engine verb (the PreToolUse...
 - `context.roleNote` = true: Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note
+- `context.roleNoteShort` = true: Switch context.roleNoteShort (default on): a role listed in roles.describe_short gets the...
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._
