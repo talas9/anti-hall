@@ -1484,7 +1484,7 @@ fn scan_kept(path: &str, tail: u64, f: &std::fs::File, m: &std::fs::Metadata, op
     if (scan.is_ok() || degraded_now) && walk_bytes(&k.walk) <= defaults::num("agent_scan.cache_max_bytes") {
         let now = now_ms() as u64;
         let fpn = fp.min(k.off - k.base);
-        if let (Some(head), Some(back)) = (digest_at(&f, k.base, fpn), digest_at(&f, k.off - fpn, fpn)) {
+        if let (Some(head), Some(back)) = (digest_at(f, k.base, fpn), digest_at(f, k.off - fpn, fpn)) {
             k.head = head;
             k.back = back;
             let ttl = defaults::num("agent_scan.cache_idle_ms");
@@ -1791,20 +1791,6 @@ impl Probe {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod test_seam {
-    use std::cell::RefCell;
-    thread_local! { static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) }; }
-    pub(crate) fn set(f: Box<dyn FnOnce()>) {
-        HOOK.with(|h| *h.borrow_mut() = Some(f));
-    }
-    pub(super) fn fire() {
-        if let Some(f) = HOOK.with(|h| h.borrow_mut().take()) {
-            f();
-        }
-    }
-}
-
 /// `agentCountProof(path)`: [`running_agents_or_null`] with what it saw, so a caller can say why a count is unknown.
 pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
     // One handle, opened before any scan: every scan below reads it, and the length that decides completeness is that handle's
@@ -1854,4 +1840,19 @@ pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
 /// or one longer than the widened window with no agent found in it).
 pub fn running_agents_or_null(path: &str, opts: &Opts) -> Res<Option<Vec<Row>>> {
     Ok(agent_count_proof(path, opts)?.rows)
+}
+
+/// A test hook fired between a proof's first scan and its completeness check, so a test can swap or truncate the file there.
+#[cfg(test)]
+pub(crate) mod test_seam {
+    use std::cell::RefCell;
+    thread_local! { static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) }; }
+    pub(crate) fn set(f: Box<dyn FnOnce()>) {
+        HOOK.with(|h| *h.borrow_mut() = Some(f));
+    }
+    pub(super) fn fire() {
+        if let Some(f) = HOOK.with(|h| h.borrow_mut().take()) {
+            f();
+        }
+    }
 }
