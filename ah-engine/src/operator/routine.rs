@@ -233,9 +233,10 @@ fn expand_home(w: &str, home: &str) -> String {
     let vars = defaults::list("routine.live_hook_home_vars");
     let (mut out, mut i) = (String::new(), 0);
     while i < w.len() {
-        let rest = &w[i..];
-        let hit =
-            vars.iter().find(|v| rest.starts_with(**v) && (v.ends_with('}') || !rest[v.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')));
+        let rest = w.get(i..).unwrap_or_default();
+        let hit = vars
+            .iter()
+            .find(|v| rest.strip_prefix(**v).is_some_and(|after| v.ends_with('}') || !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')));
         match hit {
             Some(v) => {
                 out.push_str(home);
@@ -298,8 +299,8 @@ fn live_candidates(cmd: &str, home: &str, re: &regex::Regex, depth: u8, roots: &
     let tilde = t("routine.live_hook_tilde");
     for w in words {
         let mut w = expand_home(&w, home);
-        if w == tilde || w.starts_with(&format!("{tilde}/")) {
-            w = format!("{home}{}", &w[tilde.len()..]);
+        if let Some(tail) = w.strip_prefix(tilde).filter(|t| t.is_empty() || t.starts_with('/')) {
+            w = format!("{home}{tail}");
         }
         if let Some(root) = re.captures(&w).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()) {
             if root.starts_with('/') && !root.contains(['$', '`']) {
@@ -1357,7 +1358,7 @@ pub fn engine_facts() -> Value {
 }
 
 #[cfg(test)]
-mod live_hook_tests {
+mod tests {
     use super::*;
 
     fn run(cmd: &str) -> (Vec<PathBuf>, Vec<String>) {
