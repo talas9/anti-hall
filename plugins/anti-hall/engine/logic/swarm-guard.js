@@ -187,6 +187,74 @@ function swgDescribe(p) {
 // check reads (ctxbudget.usage_cache) and the running agents of the session transcript (the tracker's scan). Tokens against outcome is the
 // metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
 
+// The owner's concurrent-agent cap (guards.maxConcurrentAgents): a block reason, or null with the allowed spawn's slot reserved. The
+// whole decision (the running agents, the reservations, the count, the new reservation) is taken under the reservation lock, never a
+// snapshot read before it, so overlapping checks cannot pass the cap however launches interleave (GH #494). A reservation (keyed by the
+// tool call id) counts until a tool result of its call shows in the transcript (an async launch or a foreground answer, running or
+// finished) or it is older than spawn_ceiling.reservation_ttl_ms. Only a background call reserves (spawn_ceiling.background_field);
+// an agent type of guards.cap_excluded_agent_types is outside the cap. Lock busy: the same count, read unlocked, decides and nothing
+// is reserved; a lock left by a dead or hung check is taken over (the spawn_reservation lock group).
+function swgCapGate(p, home) {
+  var cap = ah.settings.num('spawn_ceiling.max_concurrent_setting');
+  if (!(cap > 0) || typeof p.transcript_path !== 'string' || p.transcript_path === '') return null; // no transcript: nothing to count against, as before
+  var inp = swgIsObj(p.tool_input) ? p.tool_input : {};
+  if (swgCapExcluded(swgAgentType(inp))) { ah.metric('spawn_reservations', ['outcome', 'excluded_type']); return null; }
+  var bgv = inp[ah.cfg('spawn_ceiling.background_field')];
+  var bg = typeof bgv === 'boolean' ? bgv : ah.cfg('spawn_ceiling.reserve_unflagged');
+  var session = typeof p.session_id === 'string' ? p.session_id : '', dir = ah.cfg('swarm_guard.state_dir');
+  var rel = dir + '/' + ah.cfg('spawn_ceiling.reservation_file');
+  var lock = ah.state.lock(dir + '/' + ah.cfg('spawn_ceiling.reservation_lock'), ah.cfg('spawn_ceiling.reservation_lock_group'));
+  if (lock === null) { ah.unable('swarm-guard:cap_lock_busy'); ah.metric('spawn_reservations', ['outcome', 'lock_busy']); }
+  var all = swgCapRunning(p), now = Date.now(), ttl = ah.cfgNum('spawn_ceiling.reservation_ttl_ms');
+  var rows = [], raw = ah.fs.readText(ah.path.join(home, rel)), doc = null;
+  if (raw !== null) { try { doc = JSON.parse(raw); } catch (e) { doc = null; } }
+  if (doc && Array.isArray(doc.rows)) rows = doc.rows.filter(function (r) {
+    return r && typeof r.id === 'string' && typeof r.at === 'number' && now - r.at < ttl && !(r.session === session && all.toolUseIds[r.id]);
+  });
+  // A counted tracker child with no launch id in its meta is still the launch of one reservation: the oldest open reservation of this
+  // session with its agent type (an unknown type on either side matches) is released, one to one. The children already matched are
+  // kept in the file (doc.matched), so a child releases one reservation once, not one on every later check.
+  var matched = {}, nowMatched = {};
+  if (doc && doc.matched && typeof doc.matched === 'object') Object.keys(doc.matched).forEach(function (k) { if (doc.matched[k] === true) matched[k] = true; });
+  all.children.forEach(function (c) {
+    if (c.toolUseId !== '') return;
+    nowMatched[c.id] = true;
+    if (matched[c.id]) return;
+    var best = -1;
+    rows.forEach(function (r, i) {
+      if (r.session !== session) return;
+      var rt = typeof r.type === 'string' ? r.type : '';
+      if (rt !== '' && c.agentType !== '' && rt !== c.agentType) return;
+      if (best < 0 || r.at < rows[best].at) best = i;
+    });
+    if (best >= 0) rows.splice(best, 1);
+  });
+  var open = {};
+  rows.forEach(function (r) { if (r.session === session) open[r.id] = true; });
+  var answered = swgAnsweredIds(p.transcript_path, open);
+  rows = rows.filter(function (r) { return !(r.session === session && answered[r.id]); });
+  var mine = rows.filter(function (r) { return r.session === session; }).length, n = all.n + mine;
+  if (n >= cap) {
+    if (lock !== null) ah.state.unlock(lock);
+    ah.advisory('flagged', 'spawn_cap_block');
+    ah.metric('spawns_denied_over_cap', []);
+    return text.message('block', ah.cfg('spawn_ceiling.guard_name'), {
+      what: text.render(ah.cfg('spawn_ceiling.msg_cap_what'), { n: n, cap: cap, names: all.names.join(ah.cfg('spawn_ceiling.join')), more: n > all.names.length ? text.render(ah.cfg('spawn_ceiling.msg_more'), { n: n - all.names.length }) : '' }),
+      why: ah.cfg('spawn_ceiling.msg_why'), instead: ah.cfg('spawn_ceiling.msg_cap_instead'),
+    });
+  }
+  if (lock === null) return null;
+  if (bg) {
+    var id = typeof p.tool_use_id === 'string' && p.tool_use_id !== '' ? p.tool_use_id : now + '-' + Math.random().toString(36).slice(2);
+    rows.push({ id: id, session: session, at: now, type: swgAgentType(inp) });
+  }
+  var ok = ah.state.writeAtomic(rel, JSON.stringify({ rows: rows, matched: nowMatched }));
+  ah.state.unlock(lock);
+  if (!ok) ah.unable('swarm-guard:cap_reserve_write');
+  ah.metric('spawn_reservations', ['outcome', !ok ? 'write_failed' : bg ? 'reserved' : 'foreground']);
+  return null;
+}
+
 // A block reason, an advisory line to ride an allowed spawn ('' for none).
 function swgBudgetGates(p, home) {
   var full = null, usageOn = ah.settings.bool('spawn_usage.setting') && !ah.settings.skipped(ah.cfg('spawn_usage.guard_name'));
@@ -211,6 +279,8 @@ function swgBudgetGates(p, home) {
     }
   }
   if (ceilOn) {
+    var capBlock = swgCapGate(p, home);
+    if (capBlock !== null) return { block: capBlock, note: '' };
     var run = swgRunning(p), ceil = swgCeiling(full);
     if (run !== null && run.n >= ceil) {
       ah.advisory('flagged', 'spawn_ceiling_block');
