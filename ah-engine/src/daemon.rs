@@ -2101,6 +2101,10 @@ impl Footing {
 fn footing_watch(sh: Arc<Shared>, footing: Footing) {
     while !sh.draining.load(SeqCst) {
         std::thread::sleep(defaults::millis("daemon.orphan_check_ms"));
+        // a drain that began during the sleep unlinked the socket itself: that is not a lost footing, and the drain is already running
+        if sh.draining.load(SeqCst) {
+            return;
+        }
         if let Some(why) = footing.lost() {
             health::log_event("exit", "orphaned", why);
             begin_drain(&sh, why, false);
