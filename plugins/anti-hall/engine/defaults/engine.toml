@@ -1134,6 +1134,10 @@ value = "none"
 doc = "Suffix of the temporary file every atomic state write goes through before the rename (a `.json` target keeps a `.json` ending after it)."
 value = ".tmp"
 
+[atomic.create_attempts]
+doc = "How many temporary names an atomic write tries: the temporary file is created exclusively (never an existing file truncated, never a symlink followed), so a name already taken (a stray of an earlier process with the same pid) is skipped for the next one. A write made without loadable defaults tries once."
+value = 4
+
 # ---- deliberate discards --------------------------------------------------------------------------------
 
 [discard.log_interval_ms]

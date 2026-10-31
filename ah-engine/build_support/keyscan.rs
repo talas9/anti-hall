@@ -71,6 +71,8 @@ pub const HELPERS: &[(&str, &str, &str, Kind)] = &[
     ("checks/git/", "num", "git.", Kind::Int),
     ("checks/git/", "block", "git.", Kind::Any),
     ("checks/git/", "switch", "git.", Kind::Any),
+    ("hygiene.rs", "t", "disk_hygiene.", Kind::Str),
+    ("hygiene.rs", "git", "disk_hygiene.", Kind::List),
 ];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

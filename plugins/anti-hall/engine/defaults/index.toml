@@ -65,6 +65,7 @@ files = [
     "limits.toml",
     "script.toml",
     "mcp_reaper.toml",
+    "disk_hygiene.toml",
     "devswarm_rt.toml",
     "host_proc.toml",
     "task_tracker.toml",

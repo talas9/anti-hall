@@ -275,7 +275,8 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     };
     let read = |k: &String| {
         let (section, name) = k.split_once('.').unwrap_or(("", k));
-        literals.contains(k) || (["git", "env", "files", "store", "metric", "impact", "cmd", "tasklist_guard"].contains(&section) && literals.contains(name))
+        literals.contains(k)
+            || (["git", "env", "files", "store", "metric", "impact", "cmd", "tasklist_guard", "disk_hygiene"].contains(&section) && literals.contains(name))
     };
     let unread: Vec<&String> = shipped.iter().filter(|k| !read(k) && !indirect(k) && !compatibility.contains(k.as_str())).collect();
     assert!(unread.is_empty(), "shipped settings nothing reads (delete them or use them): {unread:?}");
