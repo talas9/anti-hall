@@ -33,6 +33,14 @@ fn check(doc: &mut Doc, s: &JevSettings, transport: Arc<dyn Transport>) {
         doc.warnl(defaults::render("doctor_msg.jev_no_key", &[("transport", &transport_name)]));
         return;
     }
+    let chain: Vec<crate::jev::settings::Vendor> = std::iter::once(s.transport).chain(s.fallback).collect();
+    let models: Vec<String> = chain.iter().map(|v| format!("{}={}", v.as_str(), JevClient::model_for(s, *v))).collect();
+    doc.ok(defaults::render("doctor_msg.jev_model", &[("models", &models.join(", "))]));
+    if chain.contains(&crate::jev::settings::Vendor::Typesafe)
+        && JevClient::model_for(s, crate::jev::settings::Vendor::Typesafe) == defaults::text("jev.model_typesafe")
+    {
+        doc.warnl(defaults::render("doctor_msg.jev_model_alias", &[("model", &defaults::text("jev.model_typesafe"))]));
+    }
     let fail_ms = defaults::num("doctor.jev_fail_ms");
     let question = Question::noul(defaults::text("doctor.jev_question"), defaults::text("doctor.jev_yes"), defaults::text("doctor.jev_no"));
     let r = JevClient::new(transport, Arc::new(SystemClock)).decide(s, &question, defaults::text("doctor.jev_state"), Some(fail_ms));
@@ -77,7 +85,7 @@ mod tests {
     #[test]
     fn a_fast_answer_is_ok() {
         let (doc, f) = run(&ON, vec![ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]);
-        assert_eq!((doc.pass, doc.warn, doc.fail), (1, 0, 0));
+        assert_eq!((doc.pass, doc.warn, doc.fail), (2, 0, 0)); // the model line and the answer
         assert_eq!(f.seen.lock().unwrap().len(), 1, "one minimal test call");
         let t = f.timeouts.lock().unwrap()[0];
         assert_eq!(t, std::time::Duration::from_millis(defaults::num("doctor.jev_fail_ms")), "the fail threshold is the call's budget");
@@ -87,7 +95,7 @@ mod tests {
     fn an_error_answer_fails_and_a_missing_key_warns() {
         for script in [vec![ok(500, "x")], vec![ok(429, "x")], vec![ok(200, "junk")], vec![]] {
             let (doc, _) = run(&ON, script);
-            assert_eq!((doc.pass, doc.warn, doc.fail), (0, 0, 1));
+            assert_eq!((doc.pass, doc.warn, doc.fail), (1, 0, 1)); // the model line, then the failure
         }
         let (doc, f) = run(&[("ANTIHALL_JEV", "1")], vec![]);
         assert_eq!((doc.pass, doc.warn, doc.fail), (0, 1, 0));

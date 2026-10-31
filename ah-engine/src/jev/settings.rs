@@ -339,6 +339,10 @@ pub struct JevSettings {
     pub price_in: f64,
     /// USD per million output tokens when no price entry applies.
     pub price_out: f64,
+    /// `jev.modelPin`: the versioned model id for the direct TypeSafe vendor when the owner set one (`jev-latest` follows the moving alias); `None` when unset, which selects the shipped `jev.model_pin`.
+    pub model_pin: Option<String>,
+    /// `jev.stateMaxTokens`: the per-question input cap in estimated tokens.
+    pub state_max_tokens: u64,
     /// The cascade's global kill switch (`jev.cascade`, `ANTIHALL_JEV_CASCADE`): false turns it off for every integration.
     pub cascade_enabled: bool,
     /// Whether the cascade shows the model Jev's answer (`jev.cascadeShowJevAnswer`).
@@ -413,6 +417,11 @@ impl JevSettings {
             |key: &str, dflt: &str| file_value(key, None).as_ref().and_then(coerce_num).filter(|n| *n >= 0.0).unwrap_or_else(|| dflt.parse().unwrap_or(0.0));
         let price_in = price("priceUsdPerMInput", defaults::text("jev.price_usd_per_m_input"));
         let price_out = price("priceUsdPerMOutput", defaults::text("jev.price_usd_per_m_output"));
+        let model_pin = file_value("modelPin", None).as_ref().and_then(coerce_str).map(|m| m.trim().to_string());
+        let state_max_tokens = match file_value("stateMaxTokens", None).as_ref().and_then(coerce_num) {
+            Some(n) if n >= 1.0 => n.floor() as u64,
+            _ => defaults::num("jev.state_max_tokens"),
+        };
         let flag = |entry: &'static defaults::V| -> bool {
             let (key, env) = (entry.str_field("key"), entry.str_field("env"));
             sources
@@ -447,6 +456,8 @@ impl JevSettings {
             prices,
             price_in,
             price_out,
+            model_pin,
+            state_max_tokens,
             cascade_enabled,
             cascade_show_jev,
             sources,

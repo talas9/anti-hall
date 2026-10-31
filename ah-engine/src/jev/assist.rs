@@ -680,14 +680,14 @@ impl Jev {
         let mode = s.mode(&req.id, false);
         if mode == Mode::Off {
             // The off path: no hashing, no cache, no network and, unless asked, no log row.
-            return self.finish(&s, req, mode, None, false, defaults::num("jev.log_off_rows") == 1);
+            return self.finish(&s, req, mode, None, false, defaults::num("jev.log_off_rows") == 1); // an off row keeps its Node shape: no skip field
         }
         if req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true) {
-            return self.finish(&s, req, mode, None, false, true); // nothing to relax: not consulted
+            return self.finish_skip(&s, req, mode, "jev.skip_nothing_to_relax", true); // nothing to relax: not consulted
         }
         if crate::budget::shedding() {
             crate::budget::note_shed_skipped(); // past the HARD CPU limit Jev is not consulted: the caller keeps its baseline
-            return self.finish(&s, req, mode, None, false, true);
+            return self.finish_skip(&s, req, mode, "jev.skip_shed", true);
         }
         // The cache is shared by every session, so an entry is only valid for a session that would have asked the same vendor
         // the same way: the key names the vendor chain, models and endpoints, and a test endpoint override never reads or
@@ -755,7 +755,7 @@ impl Jev {
         if cached {
             return self.ask(req); // a cached answer costs no wait
         }
-        let baseline = self.finish(&s, req, mode, None, false, false);
+        let baseline = self.finish_skip(&s, req, mode, "jev.skip_deferred", false);
         self.ask_async(req.clone());
         baseline
     }
@@ -871,7 +871,11 @@ impl Jev {
         let s = self.settings.get(req.env.as_ref());
         let mode = s.mode(&req.id, false);
         if mode == Mode::Off || (req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true)) {
-            self.finish(&s, &req, mode, None, false, true);
+            if mode == Mode::Off {
+                self.finish(&s, &req, mode, None, false, true);
+            } else {
+                self.finish_skip(&s, &req, mode, "jev.skip_nothing_to_relax", true);
+            }
             return;
         }
         let line = Jev::wire_line(&req, Jev::detached_budget(&s, &req));
@@ -1009,7 +1013,7 @@ impl Jev {
         let chain: String = vendors
             .iter()
             .enumerate()
-            .map(|(i, v)| format!("{}|{}|{}", v.as_str(), JevClient::model_for(*v), endpoint_for(s, *v, i == 0)))
+            .map(|(i, v)| format!("{}|{}|{}", v.as_str(), JevClient::model_for(s, *v), endpoint_for(s, *v, i == 0)))
             .collect::<Vec<_>>()
             .join(">");
         Some((self.hash_of(req), chain))
@@ -1022,6 +1026,19 @@ impl Jev {
 
     /// Apply the mode and trust rule, count it and write the one log row (Node: `finalize`).
     fn finish(&self, s: &JevSettings, req: &AskRequest, mode: Mode, r: Option<CallResult>, cached: bool, log: bool) -> Decision {
+        self.finish_with(s, req, mode, r, cached, log, None)
+    }
+
+    /// [`Jev::finish`] for a call that never reached Jev: `skip_key` is the config key of the reason text, written on the
+    /// row (`reason`) and in the telemetry event so a baseline-only row always says why.
+    fn finish_skip(&self, s: &JevSettings, req: &AskRequest, mode: Mode, skip_key: &str, log: bool) -> Decision {
+        // a row of an OFF integration keeps the shape the compiled ports are checked against: it is off, that is the reason
+        let skip = (mode != Mode::Off).then(|| defaults::text(skip_key));
+        self.finish_with(s, req, mode, None, false, log, skip)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_with(&self, s: &JevSettings, req: &AskRequest, mode: Mode, r: Option<CallResult>, cached: bool, log: bool, skip: Option<&str>) -> Decision {
         let threshold = s.assist_threshold;
         let answered = r.as_ref().filter(|x| x.ok());
         let confident = answered.is_some_and(|x| x.confidence >= threshold);
@@ -1075,7 +1092,7 @@ impl Jev {
                 "none"
             };
             self.stats.verdict(&req.id, verdict);
-            self.record_call(s, req, mode, r.as_ref(), backend, verdict, reason.as_ref(), cost_usd, changed);
+            self.record_call(s, req, mode, r.as_ref(), backend, verdict, reason.as_ref(), skip, cost_usd, changed);
             if backend == Backend::Jev {
                 // whole micro-dollars; a call cheaper than one rounds down, which the unit makes visible
                 self.stats.cost_micro_usd.fetch_add((cost_usd.unwrap_or(0.0) * 1e6).max(0.0) as u64, Ordering::Relaxed);
@@ -1124,6 +1141,7 @@ impl Jev {
                 backend,
                 cost_usd,
                 cost_source,
+                skip,
             ));
         }
         Decision {
@@ -1154,6 +1172,7 @@ impl Jev {
         backend: Backend,
         verdict: &str,
         reason: Option<&Reason>,
+        skip: Option<&str>,
         cost_usd: Option<f64>,
         changed: bool,
     ) {
@@ -1163,7 +1182,7 @@ impl Jev {
             crate::failopen::note(defaults::text("fail_open.reason_jev_breaker"), &req.id, mode.as_str());
         }
         if self.telemetry.load(Ordering::Relaxed) {
-            crate::telemetry::emit::event(self.call_event(s, req, mode, r, backend, verdict, reason, cost_usd, changed));
+            crate::telemetry::emit::event(self.call_event(s, req, mode, r, backend, verdict, reason, skip, cost_usd, changed));
         }
     }
 
@@ -1178,6 +1197,7 @@ impl Jev {
         backend: Backend,
         verdict: &str,
         reason: Option<&Reason>,
+        skip: Option<&str>,
         cost_usd: Option<f64>,
         changed: bool,
     ) -> crate::telemetry::event::Event {
@@ -1191,7 +1211,7 @@ impl Jev {
         };
         let asked = r.is_some() && backend != Backend::Cache;
         let breaker = if asked && self.client.breaker_open_for(s.transport, Some(&req.id)) { "open" } else { "closed" };
-        let error = reason.map(ToString::to_string);
+        let error = reason.map(ToString::to_string).or_else(|| skip.map(str::to_string));
         emit::jev_call(&emit::JevCall {
             integration: &req.id,
             mode: mode.as_str(),
@@ -1222,6 +1242,7 @@ impl Jev {
         backend: Backend,
         cost_usd: Option<f64>,
         cost_source: Option<CostSource>,
+        skip: Option<&str>,
     ) -> Row {
         let ok = r.filter(|x| x.ok());
         let mut row = Row::default();
@@ -1256,6 +1277,11 @@ impl Jev {
         {
             row.put("reason", json!(reason.to_string()));
         }
+        if r.is_none()
+            && let Some(why) = skip
+        {
+            row.put("skip", json!(why)); // never reached Jev: say why (a separate field: `reason` rows count as failures in the rollup)
+        }
         if let Some(x) = r.filter(|_| !cached) {
             if let Some(t) = x.transport {
                 row.put("transport", json!(t.as_str()));
@@ -1267,6 +1293,9 @@ impl Jev {
         if let Some(x) = r {
             row.put("costUsd", cost_usd.map_or(Value::Null, jnum));
             row.put("costSource", cost_source.map_or(Value::Null, |c| json!(c.as_str())));
+            if let Some(m) = x.model.as_ref().filter(|_| !cached) {
+                row.put("model", json!(m)); // the versioned id that answered
+            }
             if let Some(t) = x.tokens_in {
                 row.put("tokensIn", jnum(t));
             }
@@ -1345,6 +1374,24 @@ mod tests {
     }
 
     #[test]
+    fn a_call_that_never_reaches_jev_says_why_on_its_row() {
+        let (jev, f, log) = lane(&ON, vec![]);
+        jev.ask(&req("modelRouting", Trust::RelaxBlock, json!(false)));
+        let row = log.0.lock().unwrap()[0].clone();
+        assert_eq!(field(&row, "skip"), json!(defaults::text("jev.skip_nothing_to_relax")));
+        assert_eq!(field(&row, "reason"), json!("<absent>"), "a skip is not a failure");
+        assert!(f.seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_answering_model_id_is_logged() {
+        let body = r#"{"answers":{"decision":{"noul":0.9}},"model":"jev-1.14.0"}"#;
+        let (jev, _f, log) = lane(&ON, vec![ok(200, body)]);
+        jev.ask(&req("x", Trust::AddBlock, json!(false)));
+        assert_eq!(field(&log.0.lock().unwrap()[0], "model"), json!("jev-1.14.0"));
+    }
+
+    #[test]
     fn every_call_leaves_a_telemetry_event_with_verdict_latency_cost_and_breaker_state_and_no_text() {
         use crate::telemetry::emit;
         use crate::telemetry::event::{Extras, Kind, Outcome};
@@ -1356,7 +1403,7 @@ mod tests {
         let mut other = req("speculation", Trust::AddBlock, json!(false));
         other.state = "a different secret state text".into();
         jev.ask(&other); // the vendor fails
-        let evs = emit::take_queued();
+        let evs: Vec<_> = emit::take_queued().into_iter().filter(|e| e.kind == crate::telemetry::event::Kind::Jev).collect();
         assert_eq!(evs.len(), 3, "one event per call: {evs:?}");
         let jv = |e: &crate::telemetry::event::Event| match &e.extras {
             Extras::Jev(j) => j.clone(),

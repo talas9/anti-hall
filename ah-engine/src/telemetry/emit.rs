@@ -305,7 +305,7 @@ pub fn daemon_snapshot(degraded: bool, readings: &[(&str, u64)]) -> Event {
 pub struct ModelCall<'a> {
     /// The backend that served it (`jev`, `codex`, `claude`, ...): an identifier.
     pub backend: &'a str,
-    /// The model ALIAS (`haiku`, `sonnet`, ...), never a pinned version and never prompt text.
+    /// The model ALIAS (`haiku`, `sonnet`, ...) or, for Jev, the id sent (`jev-1.14.0`): an identifier, never prompt text.
     pub model: &'a str,
     /// What the call was for (`judge`, ...): an identifier.
     pub purpose: &'a str,

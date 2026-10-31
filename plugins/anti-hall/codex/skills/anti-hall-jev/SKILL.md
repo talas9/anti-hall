@@ -91,7 +91,8 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   their built-in rules, exactly as when Jev is off.
 - Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
 - Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
-- `ah-engine jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- `ah-engine jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.14.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- Model pin: the direct API is sent `jev-1.14.0` (setting `jev.modelPin`; `jev-latest` is a moving alias and the doctor warns). The gateway id is not pinned (no documented versioned form, UNVERIFIED). State text is cut to `jev.stateMaxTokens` (default 30000 estimated tokens; the provider caps a question at 32k). Rate limits are per organization (see the provider console); output tokens are free; `status`/doctor show the model sent. Rows that never reached Jev carry `skip` (why) and answered rows carry `model`. Last verified 2026-10-31 against docs.typesafe.ai.
 - UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
   reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
 
