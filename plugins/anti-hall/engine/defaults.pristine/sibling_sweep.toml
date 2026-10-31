@@ -174,6 +174,25 @@ unit = "tool calls"
 min = 1
 max = 1000
 
+[sibling_sweep.search_query_fields]
+doc = "Input fields of a search tool call that hold its query (Grep and Glob `pattern`, Bash `command`, Agent `prompt`), tried in order: the first string one gives the search's subject words. A search counts for a claim only when it relates to that claim's subject (sibling_sweep.relate_min_chars); a search with no query words counts for every claim."
+value = ["pattern", "command", "prompt"]
+
+[sibling_sweep.relate_split_re]
+doc = "JavaScript (u-flag) regex source that splits a claim sentence or a search query into words (camelCase humps are split too). Each claim in the latest text is swept only by a search after its anchor whose words relate to it: one word of either starts the other (stale_cache relates to 'a stale cache')."
+value = '[^\p{L}\p{N}]+'
+
+[sibling_sweep.relate_min_chars]
+doc = "The fewest characters a word needs to count as a subject word of a claim or a search query. A claim or query with no subject word relates to everything (as every search counted before claims were related)."
+value = 3
+unit = "characters"
+min = 1
+max = 100
+
+[sibling_sweep.relate_stop_words]
+doc = "Lower-case words that are never subject words of a claim or a search query: the words of the cue phrases and common function words, so 'the root cause was' or 'I fixed a typo I made' does not relate a claim to every search."
+value = ["the", "and", "was", "were", "are", "is", "that", "this", "these", "those", "with", "from", "for", "but", "not", "its", "it's", "into", "onto", "has", "have", "had", "been", "made", "make", "root", "cause", "causes", "caused", "culprit", "bug", "bugs", "issue", "problem", "fix", "fixed", "fixes", "fixing", "typo", "typos", "mistake", "mistakes", "own", "real", "actual", "found", "now", "then", "also", "just", "which", "should", "all", "any", "one", "out", "rg", "grep", "find", "src"]
+
 # ---- the cause matcher --------------------------------------------------------------------------------------
 
 [sibling_sweep.cause_cues]

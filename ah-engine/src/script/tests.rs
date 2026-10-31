@@ -1399,8 +1399,8 @@ mod sibling {
     fn a_search_already_run_or_quoted_or_code_text_keeps_the_self_correction_silent() {
         let msg = SELF[0];
         let d = h("self-neg-search");
-        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg), tool("Grep", json!({"pattern": "cfg"})), result()]);
-        assert_eq!(go(&d, &stop(&d, &p, msg)), Verdict::Allow, "a search ran in the turn");
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg), tool("Grep", json!({"pattern": "config_key"})), result()]);
+        assert_eq!(go(&d, &stop(&d, &p, msg)), Verdict::Allow, "a related search ran in the turn");
         let d2 = h("self-neg-quote");
         for text in [
             "> I fixed a typo I made in the config key.".to_string(),
@@ -1593,6 +1593,64 @@ mod sibling {
         );
         assert!(is_adv(&go(&d, &stop(&d, &p, last))), "the stale-cache cause still reminds");
         assert_eq!(results(&d, "cause", "result"), vec!["reminded".to_string()]);
+    }
+
+    /// Codex re-review of PR #455 (P1): every claim of the latest text has its own anchor and needs its own related search; a
+    /// self-correction and the search for it never satisfy or hide a root-cause claim, in either order or message.
+    #[test]
+    fn every_claim_needs_its_own_related_search() {
+        let typo = "I fixed a typo I made.";
+        let cases: [(&str, Vec<String>, &str, bool); 7] = [
+            (
+                "both",
+                vec![say(typo), tool("Grep", json!({"pattern": "unrelated_typo"})), result()],
+                "I fixed a typo I made. Root cause was a stale cache. Fixed.",
+                true,
+            ),
+            (
+                "rev",
+                vec![say(typo), tool("Grep", json!({"pattern": "unrelated_typo"})), result()],
+                "Root cause was a stale cache. I fixed a typo I made. Fixed.",
+                true,
+            ),
+            ("sep", vec![say("Root cause was a stale cache."), tool("Grep", json!({"pattern": "unrelated_typo"})), result()], typo, true),
+            (
+                "unrel",
+                vec![say("Root cause was a stale cache."), tool("Grep", json!({"pattern": "unrelated_typo"})), result()],
+                "Root cause was a stale cache. Fixed.",
+                true,
+            ),
+            (
+                "rel",
+                vec![say("Root cause was a stale cache."), tool("Grep", json!({"pattern": "stale_cache"})), result()],
+                "Root cause was a stale cache. Fixed.",
+                false,
+            ),
+            (
+                "bashrel",
+                vec![say("Root cause was a stale cache."), tool("Bash", json!({"command": "rg -n stale_cache src"})), result()],
+                "Root cause was a stale cache. Fixed.",
+                false,
+            ),
+            (
+                "relcamel",
+                vec![say("Root cause was a stale cache."), tool("Grep", json!({"pattern": "staleCache"})), result()],
+                "Root cause was a stale cache. Fixed.",
+                false,
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (tag, mid, last, remind) in cases {
+            let d = h(&format!("claims-{tag}"));
+            let mut lines = vec![user("fix"), tool("Edit", json!({})), result()];
+            lines.extend(mid);
+            lines.push(say(last));
+            let p = write(&d, "t.jsonl", &lines);
+            if is_adv(&go(&d, &stop(&d, &p, last))) != remind {
+                wrong.push(format!("{tag}: reminder expected {remind}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]

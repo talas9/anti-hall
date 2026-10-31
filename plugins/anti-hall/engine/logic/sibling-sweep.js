@@ -281,25 +281,45 @@ function swNamePattern(sentence, cueStart) {
   return swHead(swCollapse(after.trim()), max);
 }
 
-// The first assertive cause statement in `text`: {hash, pattern}, or null.
+// Every claim of `text` that is subject to the sweep, in text order: [{at, hash, pattern, family, words}].
 function swFindCause(t) { return swFindCauseIn(swPrepare(t)); }
-// The first sentence of `view` (split where `view` has a terminator) that holds one of `list`: the guards and the cues read
-// `view`'s text of the sentence, the hash and the named pattern the prepared text. Sentences
-// that start at or after `limit` are not looked at. {at, hash, pattern, family} or null.
-function swFirst(prepared, view, list, family, limit, pre, reported) {
+// The subject words of a text (a claim sentence or a search pattern): split at sibling_sweep.relate_split_re and at camelCase
+// humps, lower-cased, at least sibling_sweep.relate_min_chars long and none of sibling_sweep.relate_stop_words.
+function swWords(s) {
+  var id = 'relate';
+  if (!Object.prototype.hasOwnProperty.call(sws.memo, id)) {
+    var split;
+    try { split = new RegExp(swCfg('sibling_sweep.relate_split_re'), 'u'); } catch (e) {
+      swBad('sibling_sweep.relate_split_re');
+      split = new RegExp(ah.cfg('sibling_sweep.relate_split_re'), 'u');
+    }
+    var stop = {};
+    swCfg('sibling_sweep.relate_stop_words').forEach(function (w) { stop[w] = true; });
+    sws.memo[id] = { split: split, stop: stop, min: swNum('sibling_sweep.relate_min_chars') };
+  }
+  var r = sws.memo[id], out = [], seen = {};
+  s.replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, '$1 $2').split(r.split).forEach(function (w) {
+    w = w.toLowerCase();
+    if (swChars(w).length >= r.min && r.stop[w] !== true && seen[w] !== true) { seen[w] = true; out.push(w); }
+  });
+  return out;
+}
+// Every sentence of `view` (split where `view` has a terminator) that holds one of `list`, one claim per sentence: the guards
+// and the cues read `view`'s text of the sentence; the hash, the named pattern and the subject words (code spans included:
+// they name the subject best) read the prepared text.
+function swAll(prepared, view, list, family, pre, reported) {
   var windowChars = swNum('sibling_sweep.window_chars'), question = swCfg('sibling_sweep.question_terminator');
   var meta = swSpec('sibling_sweep.meta_re', 'i'), hedgeAny = swSpec('sibling_sweep.hedge_any_re', 'i');
   var hedgeBefore = swSpec('sibling_sweep.hedge_before_re', 'i');
   var operational = swSpec('sibling_sweep.operational_re', 'i'), attributed = swSpec('sibling_sweep.attributed_re', 'i');
-  var ss = swSentences(view);
-  for (var i = 0; i < ss.length && ss[i][0] < limit; i++) {
+  var ss = swSentences(view), out = [];
+  for (var i = 0; i < ss.length; i++) {
     var a = ss[i][0], b = ss[i][1], term = ss[i][2], subject = view.slice(a, b);
     // a sentence with none of the prefilter words holds no cue: one regex call instead of the guards and every cue
     if (pre !== null && !swTest(pre, subject)) continue;
-    var masked = view.slice(a, b);
-    if ((term !== null && question.indexOf(term) >= 0) || swTest(meta, masked) || swTest(hedgeAny, masked)) continue;
+    if ((term !== null && question.indexOf(term) >= 0) || swTest(meta, subject) || swTest(hedgeAny, subject)) continue;
     // an environment fact (lock file, load, disk) or a cause quoted from an agent's report is not the assistant's own code-bug finding
-    if (swTest(operational, masked) || swTest(attributed, masked)) continue;
+    if (swTest(operational, subject) || swTest(attributed, subject)) continue;
     for (var k = 0; k < list.length; k++) {
       var m = ah.re.find(list[k].src, list[k].flags, subject);
       if (m === null || m === undefined) continue;
@@ -308,26 +328,33 @@ function swFirst(prepared, view, list, family, limit, pre, reported) {
       // unquoted text of the sentence before the claim (never inside a quotation) skip the sentence
       if (reported !== null && swReported(reported, subject.slice(0, m[0]))) break;
       var sentence = prepared.slice(a, b), norm = swCollapse(sentence.trim()).toLowerCase();
-      return { at: a, hash: ah.sha1(swHead(norm, swNum('sibling_sweep.hash_chars'))), pattern: swNamePattern(sentence, m[0]), family: family };
+      out.push({ at: a, hash: ah.sha1(swHead(norm, swNum('sibling_sweep.hash_chars'))), pattern: swNamePattern(sentence, m[0]), family: family,
+        words: swWords(sentence) });
+      break;
     }
   }
-  return null;
+  return out;
 }
 
 function swFindCauseIn(prepared) {
   // one regex pass: text with none of the words every cue needs holds no statement
   var pre = swPre();
-  if (pre !== null && !swTest(pre, prepared)) return null;
+  if (pre !== null && !swTest(pre, prepared)) return [];
   // mask the whole reply first (code spans, then quotations), then split: a span or quotation never straddles a sentence
   var mk = swMasks(prepared);
   // the cause cues read the code-masked text (a quoted cause is still the reply's statement); the self-correction cues (the
   // agent reports fixing its own typo or mistake) read only the unquoted text (someone else's words are not the agent's), for
-  // the cues, the guards and the reported-speech prefix alike: same guards, same hash. The earlier sentence wins, the cause
-  // family on a tie.
-  var cause = swFirst(prepared, mk.code, swSpecs('sibling_sweep.cause_cues'), '', prepared.length + 1, pre, null);
-  var self = swFirst(prepared, mk.quote, swSpecs('sibling_sweep.self_correction_cues'), swCfg('sibling_sweep.self_correction_family'),
-    cause === null ? prepared.length + 1 : cause.at, pre, swSpec('sibling_sweep.reported_speech_re', 'i'));
-  return self !== null ? self : cause;
+  // the cues, the guards and the reported-speech prefix alike: same guards, same hash. Every claim is its own: a sentence that
+  // holds both is a cause claim, and a sentence repeated in the text is one claim.
+  var cause = swAll(prepared, mk.code, swSpecs('sibling_sweep.cause_cues'), '', pre, null);
+  var self = swAll(prepared, mk.quote, swSpecs('sibling_sweep.self_correction_cues'), swCfg('sibling_sweep.self_correction_family'), pre,
+    swSpec('sibling_sweep.reported_speech_re', 'i'));
+  var at = {}, hashes = {}, out = [];
+  cause.forEach(function (c) { at[c.at] = true; });
+  cause.concat(self.filter(function (c) { return at[c.at] !== true; })).sort(function (x, y) { return x.at - y.at; }).forEach(function (c) {
+    if (hashes[c.hash] !== true) { hashes[c.hash] = true; out.push(c); }
+  });
+  return out;
 }
 function swHasFix(t) { return swHasFixIn(swPrepare(t)); }
 function swHasFixIn(p) { return swTest(swSpec('sibling_sweep.fix_context_re', 'i'), p); }
@@ -346,6 +373,15 @@ function swToolKind(block) {
   if (name === swCfg('sibling_sweep.bash_tool') && swTest(swSpec('sibling_sweep.bash_search_re', ''), field(swCfg('sibling_sweep.f_command')))) return 'search';
   if (swCfg('sibling_sweep.agent_tools').indexOf(name) >= 0 && swCfg('sibling_sweep.search_agent_types').indexOf(field(swCfg('sibling_sweep.f_subagent_type'))) >= 0) return 'search';
   return 'other';
+}
+
+// The subject words of a search call's query (sibling_sweep.search_query_fields of its input, the first that is a string), or
+// [] when it has none: such a search counts for every claim, as a search always did.
+function swToolTerms(block) {
+  var input = block[swCfg('sibling_sweep.f_tool_input')], fields = swCfg('sibling_sweep.search_query_fields');
+  if (input === null || typeof input !== 'object') return [];
+  for (var i = 0; i < fields.length; i++) if (typeof input[fields[i]] === 'string') return swWords(input[fields[i]]);
+  return [];
 }
 
 function swIsObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
@@ -367,7 +403,8 @@ function swIsPrompt(entry) {
 function swKeep() {
   var c = ['message', 'content'], b = c.concat(['*']), input = b.concat([swCfg('sibling_sweep.f_tool_input')]);
   return [['type'], ['isMeta'], c, b.concat(['type']), b.concat(['text']), b.concat([swCfg('sibling_sweep.f_tool_name')]),
-    input.concat([swCfg('sibling_sweep.f_command')]), input.concat([swCfg('sibling_sweep.f_subagent_type')])];
+    input.concat([swCfg('sibling_sweep.f_command')]), input.concat([swCfg('sibling_sweep.f_subagent_type')])].concat(
+    swCfg('sibling_sweep.search_query_fields').map(function (f) { return input.concat([f]); }));
 }
 
 // {events, id, lastText, skipped}: events since the last human prompt, oldest first (the newest max_events kept). The turn is
@@ -404,10 +441,11 @@ function swReadTurn(path) {
         if (lastText === null) lastText = swCutBytes(b.text, textMax);
         if (full()) break;
         textChars += b.text.length;
-        var prepared = swPrepare(b.text), c = swFindCauseIn(prepared);
-        rev.push({ k: 'text', cause: c === null ? null : c.hash, family: c === null ? '' : c.family, sweep: swStatesSweepIn(prepared), fix: swHasFixIn(prepared) });
+        var prepared = swPrepare(b.text);
+        rev.push({ k: 'text', claims: swFindCauseIn(prepared), sweep: swStatesSweepIn(prepared), fix: swHasFixIn(prepared) });
       } else if (bt === bTool && !full()) {
-        rev.push({ k: 'tool', kind: swToolKind(b) });
+        var kind = swToolKind(b);
+        rev.push({ k: 'tool', kind: kind, terms: kind === 'search' ? swToolTerms(b) : [] });
       }
     }
   }
@@ -468,7 +506,7 @@ function swSelf(cause) { return cause.family !== undefined && cause.family !== '
 function swResolve(turn, pending) {
   if (turn.id !== pending.turn) return ['unknown', 0];
   var at = -1;
-  for (var i = turn.events.length - 1; i >= 0; i--) if (turn.events[i].k === 'text' && turn.events[i].cause === pending.cause) { at = i; break; }
+  for (var i = turn.events.length - 1; i >= 0; i--) if (turn.events[i].k === 'text' && turn.events[i].claims.some(function (c) { return c.hash === pending.cause; })) { at = i; break; }
   if (at < 0) return ['unknown', 0];
   var calls = turn.events.slice(at + 1).filter(function (e) { return e.k === 'tool'; }).slice(0, swNum('sibling_sweep.follow_window')).map(function (e) { return e.kind; });
   return [calls.indexOf('search') >= 0 ? 'followed' : 'ignored', calls.length];
@@ -505,9 +543,9 @@ function decide(p) {
   var scope = event === swCfg('sibling_sweep.subagent_event') ? 'subagent' : 'session';
   var replyRaw = p[swCfg('sibling_sweep.f_reply')];
   var reply = typeof replyRaw === 'string' && !swBlankJs(replyRaw) ? replyRaw : null;
-  var replyCause = reply === null ? null : swFindCause(reply);
+  var replyClaims = reply === null ? null : swFindCause(reply);
   // a reply with no cause statement and no open follow-through needs nothing from the transcript
-  if (reply !== null && replyCause === null && state.pending === null) return 'allow';
+  if (reply !== null && replyClaims.length === 0 && state.pending === null) return 'allow';
   if (transcript === null) return 'allow';
   var turn = swReadTurn(transcript);
   if (turn === null) { swWarn(swCfg('sibling_sweep.what_transcript')); return 'allow'; }
@@ -521,8 +559,9 @@ function decide(p) {
   }
   var finish = function (v) { if (dirty && !swSave(rel, state)) swWarn(swCfg('sibling_sweep.what_state')); return v; };
   var latest = reply !== null ? reply : turn.lastText;
-  var cause = replyCause !== null ? replyCause : (reply !== null ? null : (latest !== null ? swFindCause(latest) : null));
-  if (latest === null || cause === null) return finish('allow');
+  var claims = replyClaims !== null ? replyClaims : (latest !== null ? swFindCause(latest) : []);
+  if (latest === null || claims.length === 0) return finish('allow');
+  var cause = claims[0];
   var row = function (result) {
     // the self-correction family is counted by outcome: fired when it reminds, suppressed (by reason) when it stays quiet
     if (swSelf(cause)) swCount(result === 'reminded' ? 'sibling_sweep_self_correction_fired' : 'sibling_sweep_self_correction_suppressed', result === 'reminded' ? [] : ['reason', result]);
@@ -530,15 +569,18 @@ function decide(p) {
   };
   var fix = swHasFix(latest) || turn.events.some(function (e) { return (e.k === 'text' && e.fix) || (e.k === 'tool' && e.kind === 'edit'); });
   if (!fix) { swLog(row('no_fix_context')); return finish('allow'); }
-  // evidence: a search call, or an explicit statement, after the first statement of the turn of the SAME family as this
-  // cause: a self-correction (and a search after it) never anchors or sweeps a later root-cause statement, nor the reverse
-  var first = turn.events.length;
-  for (var j = 0; j < turn.events.length; j++) if (turn.events[j].k === 'text' && turn.events[j].cause !== null && turn.events[j].family === cause.family) { first = j; break; }
-  var swept = swStatesSweep(latest) || turn.events.slice(first).some(function (e) { return (e.k === 'tool' && e.kind === 'search') || (e.k === 'text' && e.sweep); });
-  if (swept) { swLog(row('swept')); return finish('allow'); }
+  // Every claim of the latest text is judged on its own: it is swept by an explicit sweep statement, or by a search call that
+  // relates to its subject after its anchor, the turn's first statement of the SAME family (a self-correction and a search
+  // for it never sweep or hide a root-cause claim, nor the reverse). The first claim left open is the one reminded of.
+  var stated = swStatesSweep(latest);
+  var open = stated ? [] : claims.filter(function (c) { return !swSwept(turn.events, c); });
+  if (open.length === 0) { swLog(row('swept')); return finish('allow'); }
+  cause = open[0];
   if (p[swCfg('sibling_sweep.f_active')] === true) { swLog(row('continuation')); return finish('allow'); }
   if (state.turn !== turn.id) { state.turn = turn.id; state.causes = []; dirty = true; }
-  if (state.causes.indexOf(cause.hash) >= 0) { swLog(row('duplicate')); return finish('allow'); }
+  var fresh = open.filter(function (c) { return state.causes.indexOf(c.hash) < 0; });
+  if (fresh.length === 0) { swLog(row('duplicate')); return finish('allow'); }
+  cause = fresh[0];
   if (state.fired >= swNum('sibling_sweep.max_per_scope')) { swLog(row('capped')); return finish('allow'); }
   state.fired += 1;
   state.causes.push(cause.hash);
@@ -549,6 +591,21 @@ function decide(p) {
   ah.state.prune(swCfg('sibling_sweep.state_prefix'), rel.slice(rel.lastIndexOf('/') + 1));
   swLog(row('reminded'));
   return { advisory: swReminder(cause.pattern) };
+}
+
+// A search relates to a claim when the claim names no subject word, the search names none (its query is unknown), or one word
+// of either starts the other (stale_cache and "stale caches").
+function swRelated(claim, terms) {
+  if (claim.words.length === 0 || terms.length === 0) return true;
+  return terms.some(function (t) { return claim.words.some(function (w) { return w.indexOf(t) === 0 || t.indexOf(w) === 0; }); });
+}
+// `claim` is swept in `events`: after the turn's first statement of its family, an explicit sweep statement or a related search.
+function swSwept(events, claim) {
+  var first = events.length;
+  for (var j = 0; j < events.length; j++) {
+    if (events[j].k === 'text' && events[j].claims.some(function (c) { return c.family === claim.family; })) { first = j; break; }
+  }
+  return events.slice(first).some(function (e) { return (e.k === 'tool' && e.kind === 'search' && swRelated(claim, e.terms)) || (e.k === 'text' && e.sweep); });
 }
 
 // `!s.trim().is_empty()` in the engine's sense of white space.
