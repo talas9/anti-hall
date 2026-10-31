@@ -680,7 +680,7 @@ impl Jev {
         let mode = s.mode(&req.id, false);
         if mode == Mode::Off {
             // The off path: no hashing, no cache, no network and, unless asked, no log row.
-            return self.finish_skip(&s, req, mode, "jev.skip_off", defaults::num("jev.log_off_rows") == 1);
+            return self.finish(&s, req, mode, None, false, defaults::num("jev.log_off_rows") == 1); // an off row keeps its Node shape: no skip field
         }
         if req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true) {
             return self.finish_skip(&s, req, mode, "jev.skip_nothing_to_relax", true); // nothing to relax: not consulted
@@ -871,8 +871,11 @@ impl Jev {
         let s = self.settings.get(req.env.as_ref());
         let mode = s.mode(&req.id, false);
         if mode == Mode::Off || (req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true)) {
-            let why = if mode == Mode::Off { "jev.skip_off" } else { "jev.skip_nothing_to_relax" };
-            self.finish_skip(&s, &req, mode, why, true);
+            if mode == Mode::Off {
+                self.finish(&s, &req, mode, None, false, true);
+            } else {
+                self.finish_skip(&s, &req, mode, "jev.skip_nothing_to_relax", true);
+            }
             return;
         }
         let line = Jev::wire_line(&req, Jev::detached_budget(&s, &req));
@@ -895,7 +898,7 @@ impl Jev {
     pub fn ask_async(&self, req: AskRequest) {
         let s = self.settings.get(req.env.as_ref());
         if s.mode(&req.id, false) == Mode::Off {
-            self.finish_skip(&s, &req, Mode::Off, "jev.skip_off", defaults::num("jev.log_off_rows") == 1);
+            self.finish(&s, &req, Mode::Off, None, false, defaults::num("jev.log_off_rows") == 1);
             return;
         }
         let mut req = req;
@@ -1029,7 +1032,9 @@ impl Jev {
     /// [`Jev::finish`] for a call that never reached Jev: `skip_key` is the config key of the reason text, written on the
     /// row (`reason`) and in the telemetry event so a baseline-only row always says why.
     fn finish_skip(&self, s: &JevSettings, req: &AskRequest, mode: Mode, skip_key: &str, log: bool) -> Decision {
-        self.finish_with(s, req, mode, None, false, log, Some(defaults::text(skip_key)))
+        // a row of an OFF integration keeps the shape the compiled ports are checked against: it is off, that is the reason
+        let skip = (mode != Mode::Off).then(|| defaults::text(skip_key));
+        self.finish_with(s, req, mode, None, false, log, skip)
     }
 
     #[allow(clippy::too_many_arguments)]

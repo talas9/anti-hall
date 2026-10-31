@@ -2621,7 +2621,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.settings_recheck_ms` | `2000` |  | ms | How often the settings files are re-checked for changes: at most one stat of each of the two files per window, taken by the first call after it elapses; between checks a call costs one clock read, so an off Jev stays off the hot path. |
 | `jev.skip_deferred` | `deferred` |  |  | The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the caller could not wait; the question went out asynchronously. |
 | `jev.skip_nothing_to_relax` | `nothing-to-relax` |  |  | The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: a relax-block guard whose baseline is not blocking. |
-| `jev.skip_off` | `off` |  |  | The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the integration is off. |
 | `jev.skip_shed` | `shed` |  |  | The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the engine is past its hard CPU limit. |
 | `jev.soft_ms` | `800` |  | ms | SOFT limit of one Jev call: a call slower than this is logged (jev_slow) and counted, and its answer is still used. The HARD limit that cuts the call (and falls back to the baseline) is jev.timeout_ms, capped by jev.max_timeout_ms. |
 | `jev.state_dir` | `state` |  |  | Directory of the Jev budget-watch state, relative to the anti-hall home directory (Node: state/). |

@@ -91,10 +91,6 @@ value = "call"
 doc = "The purpose label of the telemetry event recorded when a state was cut to jev.state_max_tokens (tokens_in = the estimated tokens removed)."
 value = "state_truncated"
 
-[jev.skip_off]
-doc = "The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the integration is off."
-value = "off"
-
 [jev.skip_nothing_to_relax]
 doc = "The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: a relax-block guard whose baseline is not blocking."
 value = "nothing-to-relax"
