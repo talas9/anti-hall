@@ -29,6 +29,8 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch file; build dev, not stale main (a dispatch keeps the selected ref)
       - name: Toolchain
         run: rustup toolchain install nightly --profile minimal
       # The fuzz crate is its own workspace; its dependency build (with the sanitizer flags) is cached on Cargo.lock + the toolchain.

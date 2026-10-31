@@ -199,8 +199,9 @@ impl Deadline {
 }
 
 impl Pool {
-    /// Start the limits of a call of `limit_ms` script time; `cut` also arms the request's client deadline.
-    fn arm(&self, limit_ms: u64, cut: bool) {
+    /// Start the limits of a call of `limit_ms` script time; `cut` (the check's grace in ms) also arms the request's client deadline,
+    /// that many ms later.
+    fn arm(&self, limit_ms: u64, cut: Option<u64>) {
         let cpu_now = crate::limits::thread_cpu_us();
         let hard_ms = hard_ms_of(limit_ms);
         self.deadline.start_cpu.store(cpu_now, Ordering::Relaxed);
@@ -208,13 +209,13 @@ impl Pool {
         let now = self.epoch.elapsed();
         let wall = hard_ms.saturating_mul(defaults::num("script.wall_limit_factor").max(1)).saturating_mul(1_000_000);
         self.deadline.wall.store((now.as_nanos() as u64).saturating_add(wall).max(1), Ordering::Relaxed);
-        let req = crate::deadline::at().filter(|_| cut).map_or(0, |at| {
-            let left = at.saturating_duration_since(Instant::now());
+        let req = crate::deadline::at().zip(cut).map_or(0, |(at, grace_ms)| {
+            let left = (at + std::time::Duration::from_millis(grace_ms)).saturating_duration_since(Instant::now());
             (now.as_nanos() as u64).saturating_add(left.as_nanos() as u64).max(1)
         });
         self.deadline.req.store(req, Ordering::Relaxed);
         self.deadline.trip.store(0, Ordering::Relaxed);
-        crate::deadline::set_cut_armed(req != 0);
+        crate::deadline::set_cut_grace(cut.filter(|_| req != 0)); // the native scans the call runs keep the same grace
     }
 
     /// Whether the call in progress has run past its request's client deadline.
@@ -837,7 +838,7 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
         };
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.arm(limit, false);
+            pool.arm(limit, None);
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(key.as_str()).catch(&c).map_err(|e| e.to_string())?;
@@ -863,20 +864,53 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
     }
 }
 
+/// The deadline policy of check `name`: its entry in `diagnostics.deadline_policy_by_check`, else `diagnostics.deadline_policy_default`.
+/// `cut` (the default): a call still running at its request's client deadline (plus its grace, [`deadline_grace_ms`]) is interrupted
+/// and the check answers by its failure policy ([`cut`]); `finish`: the call is never cut at the request deadline and runs to its own
+/// script limits, for a cheap check that carries a rule and is late only because its request waited in the queue (#463).
+pub fn deadline_policy(name: &str) -> &'static str {
+    defaults::raw("diagnostics.deadline_policy_by_check")
+        .get(name)
+        .and_then(defaults::V::as_str)
+        .unwrap_or_else(|| defaults::text("diagnostics.deadline_policy_default"))
+}
+
 /// Whether a call of check `name` on `event` is cut at its request's client deadline (`script.cut_at_request_deadline`). A cut call
-/// ends as [`unanswered`] (its failure policy); a check whose failure mode is `closed` on a guard event would allow what its
-/// failure blocks, so that one keeps only its own limit.
+/// ends as [`cut`] (its failure policy); a check whose failure mode is `closed` on a guard event would allow what its failure blocks,
+/// so that one keeps only its own limit, and so does a check whose deadline policy is `finish` ([`deadline_policy`]).
 pub fn cut_at_deadline(name: &str, event: &str) -> bool {
     defaults::num("script.cut_at_request_deadline") == 1
+        && deadline_policy(name) != defaults::text("diagnostics.deadline_policy_finish")
         && !(failure_mode(name) == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event))
 }
 
-/// A call cut at its request's client deadline: no failure of the script (nothing is counted as an error); the check gave no answer
-/// and the dispatcher resolves it with the check's failure policy ([`unanswered`]).
+/// How long past the hard request deadline `check` may still start, and a running call of it is still not cut
+/// (`diagnostics.deadline_grace_ms`, capped by `diagnostics.deadline_grace_cap_ms` so the reply stays inside the time the client waits
+/// for a late one). 0 for a check without a row.
+pub fn deadline_grace_ms(check: &str) -> u64 {
+    let grace = defaults::raw("diagnostics.deadline_grace_ms").get(check).and_then(defaults::V::as_integer).unwrap_or(0).max(0) as u64;
+    grace.min(defaults::num("diagnostics.deadline_grace_cap_ms"))
+}
+
+/// A call cut at its request's client deadline (or not started past it): no failure of the script (nothing is counted as an error).
+/// There is no Node hook to defer to any more (#463), so the check answers here by its own failure policy ([`unanswered`]: `open`
+/// allows and tells the user once per session, `closed` blocks on a guard event), never a deferral. Counted per check and outcome
+/// (`status` advisory `<diagnostics.deadline_cut_counter>.<check>.<outcome>`).
 pub fn cut(name: &str, event: &str) -> Verdict {
     crate::failopen::note(defaults::text("fail_open.reason_deadline"), name, event);
     crate::discard::note("script_deadline", &defaults::render("script.msg_deadline_cut", &[("check", &name), ("event", &event)]));
-    Verdict::Defer
+    let v = unanswered(name, event);
+    crate::obs::counters::advisory(defaults::text("diagnostics.deadline_cut_counter"), &format!("{name}.{}", cut_outcome(&v)));
+    v
+}
+
+/// The outcome word a deadline cut that answered `v` is counted under (`diagnostics.deadline_cut_outcome_*`).
+pub fn cut_outcome(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::Block(_) => defaults::text("diagnostics.deadline_cut_outcome_block"),
+        Verdict::Advisory(_) => defaults::text("diagnostics.deadline_cut_outcome_notice"),
+        _ => defaults::text("diagnostics.deadline_cut_outcome_allow"),
+    }
 }
 
 /// Direct `ah-hook <Event>` calls need not carry a plugin-root argument. Resolve the script's root from the
@@ -913,7 +947,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         let limit = limit_ms(name, event);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.arm(limit, cut_at_deadline(name, event));
+            pool.arm(limit, cut_at_deadline(name, event).then(|| deadline_grace_ms(name)));
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;

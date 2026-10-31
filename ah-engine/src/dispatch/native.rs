@@ -104,15 +104,22 @@ pub(crate) fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
 
 /// Whether `check` is skipped (shed) under load: `diagnostics.shed_checks` is on, the daemon is past its HARD CPU limit
 /// (`shedding`), the event cannot block (`guard_event` false) and the check is not listed in `diagnostics.shed_never`.
+/// Only a check of tier `diagnostics.shed_tier_optional` is shed (`diagnostics.shed_tier_by_check`, else `diagnostics.shed_tier_default`):
+/// a rule reminder the agent needs is never dropped to save CPU it barely uses (#464: the five reminders shed most cost 1 us to 8 ms).
 pub(crate) fn sheds(check: &str, guard_event: bool, shedding: bool) -> bool {
-    shedding && !guard_event && crate::defaults::num("diagnostics.shed_checks") == 1 && crate::defaults::raw("diagnostics.shed_never").get(check).is_none()
+    shedding
+        && !guard_event
+        && crate::defaults::num("diagnostics.shed_checks") == 1
+        && crate::defaults::raw("diagnostics.shed_never").get(check).is_none()
+        && shed_tier(check) == crate::defaults::text("diagnostics.shed_tier_optional")
 }
 
-/// How long past the hard request deadline `check` may still start (`diagnostics.deadline_grace_ms`, capped by
-/// `diagnostics.deadline_grace_cap_ms` so the reply stays inside the time the client waits for a late one). 0 for a check without a row.
-fn deadline_grace_ms(check: &str) -> u64 {
-    let grace = crate::defaults::raw("diagnostics.deadline_grace_ms").get(check).and_then(|v| v.as_integer()).unwrap_or(0).max(0) as u64;
-    grace.min(crate::defaults::num("diagnostics.deadline_grace_cap_ms"))
+/// The shed tier of `check`: its row in `diagnostics.shed_tier_by_check`, else `diagnostics.shed_tier_default`.
+pub(crate) fn shed_tier(check: &str) -> &'static str {
+    crate::defaults::raw("diagnostics.shed_tier_by_check")
+        .get(check)
+        .and_then(crate::defaults::V::as_str)
+        .unwrap_or_else(|| crate::defaults::text("diagnostics.shed_tier_default"))
 }
 
 /// Every matching entry with a built-in check, answered; entries without one are not listed.
@@ -153,6 +160,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
         let a = if sheds(check, guard_event, crate::budget::shedding()) {
             // past the HARD CPU limit (diagnostics.budget_cpu_hard_pct), when `diagnostics.shed_checks` is on, the pure-advice checks of events that cannot block wait (`diagnostics.shed_never` lists the ones that never do)
             crate::budget::note_shed_skipped();
+            crate::budget::note_shed_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default(), check);
             crate::budget::note_dropped(guard_event, check, &meta.event, "shed");
             Answer::Defer
         } else if crate::deadline::client_gone() {
@@ -162,11 +170,14 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             Answer::Defer
         } else if !crate::deadline::in_time()
             && crate::script::cut_at_deadline(check, &meta.event)
-            && crate::deadline::past_hard_ms() > deadline_grace_ms(check)
+            && crate::deadline::past_hard_ms() > crate::script::deadline_grace_ms(check)
         {
-            crate::script::cut(check, &meta.event);
+            // #463: the check answers by its own failure policy here; there is no Node hook to defer to
+            // the check never started, so the session of its guard-down notice is named here (not a previous request's)
+            crate::script::set_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default());
+            let v = crate::script::cut(check, &meta.event);
             crate::budget::note_dropped(guard_event, check, &meta.event, "hard_deadline");
-            Answer::Defer
+            answer_of(&e.id, Some(v))
         } else {
             let mark = crate::deadline::staged_mark();
             let a = if check == crate::defaults::text("upfront.check") {
@@ -287,9 +298,70 @@ mod tests {
         }
         assert!(seen >= 6, "the enforcement rows were found in the dispatch table ({seen})");
         // the simulation is real: a pure-advice check of the same events IS shed under load, and nothing is shed without load
-        assert!(sheds("procwatch-advisory", false, true));
-        assert!(!sheds("procwatch-advisory", false, false));
-        assert!(!sheds("procwatch-advisory", true, true));
+        assert!(sheds("codex-availability", false, true));
+        assert!(!sheds("codex-availability", false, false));
+        assert!(!sheds("codex-availability", true, true));
+    }
+
+    /// #464: under CPU pressure only the optional tier is shed; the rule reminders the agent needs (shed ~189 prompts in two days
+    /// while costing 1 us to 8 ms each) keep answering.
+    #[test]
+    fn shedding_under_cpu_pressure_keeps_the_rule_reminders() {
+        for check in [
+            "switch-notice",
+            "idle-agent-sweep",
+            "limit-conserve-inject",
+            "gh-rt-advisory",
+            "procwatch-advisory",
+            "engine-role-note",
+            "failure-root-cause-nudge",
+        ] {
+            assert!(!sheds(check, false, true), "{check} is a rule reminder: never shed");
+        }
+        for check in ["claude-cli-version", "devswarm-version", "jev-weekly-scorecard"] {
+            assert!(sheds(check, false, true), "{check} is optional: shed under load");
+        }
+        // every optional row names a real check of the dispatch table, so a typo cannot hide a reminder from the tiers
+        let tiers = crate::defaults::raw("diagnostics.shed_tier_by_check");
+        let mut all: Vec<&str> = Vec::new();
+        for key in ["dispatch.hooks_claude_SessionStart", "dispatch.hooks_claude_UserPromptSubmit", "dispatch.hooks_codex_SessionStart"] {
+            if crate::defaults::has(key) {
+                all.extend(crate::defaults::raw(key).as_array().into_iter().flatten().filter_map(|r| r.get("check").and_then(|v| v.as_str())));
+            }
+        }
+        for (check, _) in tiers.as_table().into_iter().flatten() {
+            assert!(all.contains(&&**check), "{check}: no such check on SessionStart/UserPromptSubmit");
+        }
+    }
+
+    /// #463: a check that has not started when its request is past the hard deadline answers by its own failure policy, never a
+    /// deferral to a Node hook that no longer runs.
+    #[test]
+    fn a_check_past_the_hard_deadline_answers_by_its_policy_not_a_deferral() {
+        // a session left on this worker thread by an earlier request must not take the notice of this one (Codex P2)
+        crate::script::set_session("");
+        let p = json!({"session_id": "s-463-pre-start-notice", "cwd": "/", "hook_event_name": "UserPromptSubmit", "prompt": "hi"});
+        let meta = Meta {
+            host: "claude".into(),
+            event: "UserPromptSubmit".into(),
+            tool: None,
+            root: None,
+            env: crate::reqenv::RequestEnv::from_pairs(Vec::<(String, String)>::new()),
+            only: Some(vec!["switch-notice".into()]),
+            plan: Vec::new(),
+            cfg: String::new(),
+            payload_sha1: None,
+            deadline_ms: None,
+        };
+        crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        crate::deadline::client_deadline(0);
+        let got = evaluate(&meta, &p, &|_| false, &|_, _, _| {});
+        crate::deadline::end();
+        let a = got.iter().find(|(id, _)| id == "switch-notice").map(|(_, a)| a.clone());
+        assert!(matches!(a, Some(Answer::Decided(..))), "past the deadline the check still answers by its policy: {a:?}");
+        // an open check that could not run tells the user once in THIS request's session (Codex P2: the pre-start cut skipped it)
+        assert!(format!("{a:?}").contains(crate::defaults::text("script.notice_key")), "the guard-down notice is told: {a:?}");
+        assert_eq!(crate::script::session(), "s-463-pre-start-notice");
     }
 
     #[test]
@@ -335,17 +407,20 @@ mod tests {
     /// policy: a loaded machine costs single entries, never the whole event's reply). A check that fails closed on a guard event keeps
     /// only its own limit, so it still decides.
     #[test]
-    fn past_the_clients_deadline_every_open_entry_gives_no_answer_without_running() {
+    fn past_the_clients_deadline_every_open_entry_answers_by_its_policy_without_running() {
         let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
         crate::deadline::begin(std::time::Instant::now());
         crate::deadline::client_deadline(0);
         let got = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
         crate::deadline::end();
         assert!(!got.is_empty());
-        assert!(got.iter().any(|(_, a)| matches!(a, Answer::Defer)), "{:?}", got.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        // #463: a cut check answers by its own failure policy (an open one allows), never a deferral to a Node hook
         for (id, a) in &got {
+            assert!(!matches!(a, Answer::Defer), "{id}: a cut never defers");
             let closed = crate::script::failure_mode(&entry_check(id)) == crate::defaults::text("script.failure_mode_closed");
-            assert_eq!(matches!(a, Answer::Defer), !closed, "{id}: only an open check is cut at the deadline");
+            if !closed {
+                assert!(matches!(a, Answer::Decided(r, _) if r.code != Some(2)), "{id}: an open check cut at the deadline allows");
+            }
         }
         let again = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
         assert!(again.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))), "in time it decides");

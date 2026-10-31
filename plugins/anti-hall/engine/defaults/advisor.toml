@@ -12,7 +12,7 @@
 
 [advisor.summary]
 doc = "One-line description of the advisor-guard check in the generated reference."
-value = "Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing."
+value = "Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). With a non-flagship main (phase 3): nudges, then blocks once per task, a thinking dispatch with no advisor call since the owner's last message (guards.advisorThinking), blocks once a second fix dispatch for one issue with no advisor call since the first (guards.advisorRetry) and one Stop per turn that announced an advisor call that did not follow (guards.advisorSayDo). The review rule lives in model-routing."
 
 [advisor.guard_name]
 doc = "The skip.json key and block label of the advisor rules."
@@ -55,8 +55,8 @@ min = 1024
 unit = "bytes"
 
 [advisor.max_lines]
-doc = "Most transcript lines read from the tail."
-value = 4000
+doc = "Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time)."
+value = 100000
 min = 10
 
 [advisor.review_signals]
@@ -147,3 +147,258 @@ value = "Hard decisions (review, plan, retry after a failure) belong to the advi
 [advisor.unknown_model_label]
 doc = "Label shown in the review block when the spawn names no model. Placeholder: {model} (the resolved session tier)."
 value = "the inherited {model} session tier"
+
+# Advisor mode phase 3 (GH #404): enforcement when the main session runs a non-flagship model. Three more rules in advisor-guard.js:
+#   thinking:  PreToolUse Agent/Task. Thinking work (fix, design, investigate, root cause, plan, review; advisor.thinking_types)
+#              dispatched by a non-flagship main with no advisor result since the owner's last message: the first dispatch of the
+#              task gets an advisory nudge, the second ONE block, every later one passes (counted block_capped). Never a loop.
+#   say-do:    Stop. The turn's text says it will ask the advisor and no advisor call follows in that turn: ONE Stop block per turn.
+#   second:    PreToolUse Agent/Task (switch guards.advisorRetry, the retry state). A second fix dispatch for the same issue key with
+#              no advisor call since the first is blocked once (a re-dispatch is read as "the first attempt did not land").
+# The main model, the owner's last message and the advisor calls are read from the transcript (the advisor is a server tool hooks do
+# not see). What was seen is folded into the per-agent state (offsets, "advisor seen"), so the rules do not depend on the tail window.
+
+[advisor.sw_thinking]
+doc = "Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only."
+value = { section = "guards", key = "advisorThinking", type = "boolean", env = "ANTIHALL_ADVISOR_THINKING", option = "", default = true }
+
+[advisor.sw_say_do]
+doc = "Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only."
+value = { section = "guards", key = "advisorSayDo", type = "boolean", env = "ANTIHALL_ADVISOR_SAY_DO", option = "", default = true }
+
+[advisor.result_types]
+doc = "Transcript content-block types that are an advisor result (the server tool's answer carries a tool_use_id, not a name); one counts as an advisor call."
+value = ["advisor_tool_result"]
+
+[advisor.flagship_model_re]
+doc = "Regular expression (Rust syntax, case-insensitive) of a main-session model id that is a flagship (Opus, Fable, a full Codex GPT model; a mini or nano variant is not): the thinking, say-do and second-attempt rules are silent for it."
+value = '(?i)opus|fable|^gpt-[0-9][0-9.]*(?:-codex)?(?:-max)?$'
+
+[advisor.known_model_re]
+doc = "Regular expression (Rust syntax) of a model id the rules recognise. The newest assistant entry whose model matches it (or the flagship pattern) is the main model; an unknown model (`<synthetic>`, empty) is skipped, and with no known model the rules stay silent."
+value = '(?i)sonnet|haiku|opus|fable|^gpt-|^o\d'
+
+[advisor.thinking_types]
+doc = "Thinking-work classes of a dispatch brief, in match order: the first whose pattern (Rust syntax) matches the description, else the head of the prompt, names the type (counter dispatch_<type>)."
+value = [
+  { type = "root_cause", re = '(?i)\broot[- ]?caus' },
+  { type = "investigate", re = '(?i)\b(?:investigat\w*|diagnos\w*|debug\w*|triage\w*|why does|why is|figure out why)\b' },
+  { type = "design", re = '(?i)\b(?:design\w*|architect\w*|trade-?offs?|approach for)\b' },
+  { type = "plan", re = '(?i)\b(?:plan|planning|roadmap)\b' },
+  { type = "review", re = '(?i)\b(?:review\w*|critique|critic)\b' },
+  { type = "fix", re = '(?i)\b(?:fix\w*|bug\w*|regression|repair\w*|hotfix|broken|failing)\b' },
+]
+
+[advisor.thinking_exempt_re]
+doc = "Regular expression (Rust syntax) of a dispatch description that is routine work even when its brief mentions a thinking word (a mechanical lane)."
+value = '(?i)\b(?:mechanical|rename|reformat|typo|regen\w*|bump (?:the )?version|changelog|status (?:check|poll)|watch(?:er)?|monitor)\b'
+
+[advisor.brief_head_bytes]
+doc = "How much of a dispatch prompt (from its start) is classified when the description names no thinking type."
+value = 2000
+min = 64
+unit = "bytes"
+
+[advisor.issue_key_re]
+doc = "Regular expression (Rust syntax) of the issue key of a fix dispatch (an issue number or a branch name) in its description, else its prompt: two fix dispatches with the same key are the same issue."
+value = '(?i)(?:#\d{1,7}\b|\b(?:issue|gh)[ -]?\d{1,7}\b|\b(?:fix|bug|hotfix|feat)/[A-Za-z0-9._/-]+)'
+
+[advisor.say_do_re]
+doc = "Regular expression (Rust syntax) of assistant text that announces an advisor call."
+value = '(?i)\b(?:i\W?ll|i will|let me|i\W?m going to|going to|will now|next,? i)\s+(?:\w+\s+){0,3}?(?:ask|consult|call|check with|run (?:it|this|that) by|get)\s+(?:the\s+)?advisor'
+
+[advisor.owner_skip_meta]
+doc = "A user entry with this field true is harness text (a reminder, a hook's feedback), not the owner."
+value = "isMeta"
+
+[advisor.owner_origin_kinds]
+doc = "A user entry whose `origin.kind` is set counts as the owner only when it is one of these (task notifications and peer messages are not the owner)."
+value = ["human"]
+
+[advisor.non_owner_text_re]
+doc = "Regular expression (Rust syntax) of a user text block that is harness text, not the owner (notifications, slash-command echoes, continuation banners)."
+value = '^\s*(?:<task-notification>|<command-name>|<command-message>|<local-command|<system-reminder>|Another Claude session|This session is being continued|Stop hook feedback|\[Request interrupted|Caveat:)'
+
+[advisor.agent_transcript_keys]
+doc = "Hook payload fields that may carry a subagent's own transcript path."
+value = ["agent_transcript_path"]
+
+[advisor.agent_transcript_tpl]
+doc = "Where a subagent's own transcript lies when the payload names none. Placeholders: {dir} (the main transcript's directory), {session} (its file name without .jsonl), {agent} (the agent id). A subagent is never judged by the main transcript; with no own transcript its rules stay silent."
+value = "{dir}/{session}/subagents/agent-{agent}.jsonl"
+
+[advisor.latency_buckets_s]
+doc = "Upper bounds (seconds) of the consult-latency buckets: the time from the owner's last message to the advisor call (counter latency_le_<n>s, else latency_gt_<last>s)."
+value = [10, 30, 60, 300, 900]
+
+[advisor.metric_dispatch_tpl]
+doc = "Counter name of a thinking dispatch of one type. Placeholder: {type}."
+value = "dispatch_{type}"
+
+[advisor.metric_latency_le_tpl]
+doc = "Counter name of a consult-latency bucket. Placeholder: {s}."
+value = "latency_le_{s}s"
+
+[advisor.metric_latency_gt_tpl]
+doc = "Counter name of a consult latency past the last bucket. Placeholder: {s}."
+value = "latency_gt_{s}s"
+
+[advisor.tasks_max]
+doc = "Most tasks (owner messages) and issue keys one agent's state keeps (the oldest go first)."
+value = 32
+min = 4
+
+[advisor.kind_thinking]
+doc = "Advisory kind (counters) of the thinking rule: dispatch, dispatch_<type>, consulted_before, nudge, blocked, block_capped, false_nag, and the derived consult_rate."
+value = "advisor_thinking"
+
+[advisor.kind_say_do]
+doc = "Advisory kind (counters) of the say-do rule: miss (an announced advisor call that did not follow), blocked."
+value = "advisor_say_do"
+
+[advisor.kind_second]
+doc = "Advisory kind (counters) of the second-attempt rule: gated (a second fix dispatch for one issue blocked)."
+value = "advisor_second_attempt"
+
+[advisor.msg_thinking_nudge]
+doc = "Advisory text of the thinking rule's first hit. Placeholders: {type}, {model}."
+value = "Advisor first: this {type} dispatch runs from a {model} main with no advisor call since the owner's last message. Call the advisor tool now, then dispatch."
+
+[advisor.msg_thinking_what]
+doc = "Block text of the thinking rule's second hit (once per task). Placeholders: {type}, {model}."
+value = "A second {type} dispatch from a {model} main, still with no advisor call since the owner's last message."
+
+[advisor.msg_thinking_instead]
+doc = "What to do instead for the thinking rule."
+value = "Call the advisor tool now, then dispatch. This is blocked once per task; the next dispatch passes."
+
+[advisor.msg_say_do_what]
+doc = "Block text of the say-do rule."
+value = "This turn says it will ask the advisor, but no advisor call followed."
+
+[advisor.msg_say_do_instead]
+doc = "What to do instead for the say-do rule."
+value = "Call the advisor tool now, or say plainly that you are not consulting it. Blocked once per turn."
+
+[advisor.msg_second_what]
+doc = "Block text of the second-attempt rule. Placeholder: {key}."
+value = "A second fix dispatch for {key} from a non-flagship main, with no advisor call since the first."
+
+[advisor.msg_second_instead]
+doc = "What to do instead for the second-attempt rule."
+value = "Call the advisor on why the first attempt missed, then dispatch. Blocked once per issue."
+
+[advisor.msg_why_flagship]
+doc = "The reason line of the phase-3 rules."
+value = "A non-flagship main gets one attempt at thinking work; design, investigation and retries go through the advisor."
+
+[advisor.dispatch_tools]
+doc = "Tool names that dispatch an agent: the thinking and second-attempt rules judge their brief (description, prompt)."
+value = ["Agent", "Task"]
+
+[advisor.transcript_ext]
+doc = "File extension of a transcript; the main transcript's name without it is the {session} of advisor.agent_transcript_tpl."
+value = ".jsonl"
+
+# Availability without prior use (GH #404 G1) and the subagent's own transcript (G4). The transcript is read incrementally per
+# agent (advisor.window_bytes per call from the saved offset; lines over advisor.line_max_bytes skipped unbuffered).
+
+[advisor.attachment]
+doc = "The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use."
+value = { field = "attachment", entry_type = "attachment", type = "advisor_tool", available_key = "available", change_key = "toolChange", change_on = ["add"] }
+
+[advisor.settings_files]
+doc = "Claude Code settings files that may set an advisor model (root: home = the user's home, cwd = the session's working directory, abs = the path as given). Read only when the head of the transcript was never read (so a missing advisor_tool attachment proves nothing); a set advisor.settings_key then counts as the advisor being available."
+value = [
+  { root = "home", path = ".claude/settings.json" },
+  { root = "cwd", path = ".claude/settings.json" },
+  { root = "cwd", path = ".claude/settings.local.json" },
+  { root = "abs", path = "/Library/Application Support/ClaudeCode/managed-settings.json" },
+  { root = "abs", path = "/etc/claude-code/managed-settings.json" },
+]
+
+[advisor.settings_key]
+doc = "Top-level key of a Claude Code settings file that names the advisor model; a non-empty string means an advisor is configured."
+value = "advisorModel"
+
+[advisor.settings_read_max_bytes]
+doc = "Most bytes of one settings file read (a longer file is not parsed and counts as not configured)."
+value = 1048576
+min = 1024
+unit = "bytes"
+
+[advisor.agent_file_tpl]
+doc = "File name (without advisor.transcript_ext) of a subagent's own transcript. Placeholder: {agent}."
+value = "agent-{agent}"
+
+[advisor.agent_head_bytes]
+doc = "Bytes read from the head of a subagent's transcript to check the agent id its first line records."
+value = 8192
+min = 256
+unit = "bytes"
+
+[advisor.agent_id_re]
+doc = "Regular expression (Rust syntax) of the agent id field in the head of a subagent's transcript; a match naming another agent than the payload's agent_id means a mismatch (the rules stay silent)."
+value = '"agentId"\s*:\s*"[^"]*"'
+
+[advisor.kind_availability]
+doc = "Advisory kind (counters) of why the advisor rules stayed silent or how availability was established: the names of advisor.silence_metrics."
+value = "advisor_availability"
+
+[advisor.silence_metrics]
+doc = "Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides)."
+value = { unknown = "silent_unknown", off = "silent_off", settings_only = "source_settings", model_unknown = "silent_model_unknown", no_agent_transcript = "silent_no_agent_transcript", agent_mismatch = "silent_agent_mismatch", state_unwritable = "allow_state_unwritable", lock_busy = "allow_lock_busy", rotated = "transcript_rewritten", gap_skipped = "gap_skipped" }
+
+[advisor.agent_subdirs]
+doc = "Subdirectories of a session's subagents directory that hold one more directory level of agent transcripts (Claude Code puts workflow agents in subagents/workflows/<run>/agent-<id>.jsonl)."
+value = ["workflows"]
+
+[advisor.fingerprint_bytes]
+doc = "Bytes at the head of a transcript remembered with the read offset. When they change, or the last line read is no longer at its offset with the same content, the file was rewritten in place (shorter or longer) and the fold starts afresh."
+value = 256
+min = 16
+unit = "bytes"
+
+[advisor.lock_suffix]
+doc = "Suffix of the per-agent state lock that the advisor-guard rules and the review rule hold while they read, decide and save the shared state."
+value = ".lock"
+
+[advisor.lock_stale_ms]
+doc = "An advisor state lock older than this is taken over, whatever its holder."
+value = 5000
+unit = "ms"
+
+[advisor.lock_wait_ms]
+doc = "How long a rule waits for the advisor state lock before it allows unjudged (fail open, counted allow_lock_busy)."
+value = 2000
+unit = "ms"
+
+[advisor.lock_step_ms]
+doc = "The pause between attempts to take the advisor state lock."
+value = 5
+unit = "ms"
+
+[advisor.lock_reclaim_stale_ms]
+doc = "A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over."
+value = 5000
+unit = "ms"
+
+[advisor.lock_release_tries]
+doc = "How many times releasing the lock tries to take the takeover marker before it removes its own lock unguarded."
+value = 5
+min = 1
+max = 100
+
+[advisor.lock_release_step_ms]
+doc = "The pause between those release attempts."
+value = 10
+unit = "ms"
+min = 1
+max = 1000
+
+[advisor.lock_boot_slop_s]
+doc = "Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution)."
+value = 5
+unit = "s"
+min = 0
+max = 3600

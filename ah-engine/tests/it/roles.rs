@@ -410,3 +410,124 @@ fn settings_tunables_lists_every_shipped_default_key() {
     assert_eq!(code, 0);
     assert!(one.contains("github_rt.enabled"), "{one}");
 }
+
+#[test]
+fn every_block_text_has_a_rule_row_and_every_listed_rule_is_in_the_generated_output() {
+    let problems = skillgen::rule_problems();
+    assert!(problems.is_empty(), "rule registry drift (fix guard_rules.toml, then run ah-regen): {problems:#?}");
+}
+
+#[test]
+fn the_digest_fits_its_budget_and_the_committed_digest_is_the_generated_one() {
+    let text = skillgen::digest_text();
+    assert!(text.len() as u64 <= ah_engine::defaults::num("roles.digest_budget"), "digest is {} bytes", text.len());
+    assert!(text.len() < 10_000, "10k injection cap");
+    let file = plugin().join(ah_engine::defaults::text("guard_rules.digest_file"));
+    assert_eq!(std::fs::read_to_string(file).unwrap_or_default(), skillgen::digest_file(), "stale: run ah-regen");
+}
+
+#[test]
+fn rules_json_keeps_no_message_text_of_its_own_where_a_defaults_text_exists() {
+    let rules: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plugin().join("engine/rules.json")).unwrap()).unwrap();
+    for r in rules["rules"].as_array().unwrap() {
+        // every rule takes its text from the defaults (one source with the skill and the digest), never its own copy
+        let k = r.get("message_ref").and_then(|v| v.as_str()).unwrap_or_else(|| panic!("{} has no message_ref", r["id"]));
+        assert!(r.get("message").is_none(), "{} keeps its own message beside message_ref", r["id"]);
+        let action = r["action"].as_str().unwrap_or_default();
+        assert!(!skillgen::compose(action, k).is_empty(), "{} message_ref {k} has no text for action {action}", r["id"]);
+        assert!(skillgen::rules().iter().any(|row| row.source == k), "{} message_ref {k} has no guard_rules.rules row", r["id"]);
+    }
+    let text = serde_json::to_string(&rules).unwrap();
+    assert!(!text.contains("Rewriting published history"), "the force-push text is duplicated in rules.json");
+}
+
+#[test]
+fn the_session_summary_has_no_codex_twin_because_codex_has_no_session_end_event() {
+    // the summary speaks at SessionEnd. If Codex ever lists that event, this fails: port the summary then (parity rule).
+    let events = |host: &str| ah_engine::defaults::raw("dispatch.thin_events").get(host).map(|v| v.strings()).unwrap_or_default();
+    assert!(events("claude").contains(&"SessionEnd"), "the Claude summary event moved");
+    assert!(!events("codex").contains(&"SessionEnd"), "Codex now has SessionEnd: add session-summary to its hook table");
+    let claude = std::fs::read_to_string(plugin().join("hooks/hooks.registry.json")).unwrap();
+    let codex = std::fs::read_to_string(plugin().join("codex/hooks/hooks.registry.json")).unwrap();
+    assert!(claude.contains("session-summary") && !codex.contains("session-summary"));
+}
+
+const DIGEST_HOSTS: [&str; 2] = ["claude", "codex"];
+
+/// The digest field of an essential rule for `host` (#462): `digest` inside an inline message table, or the sibling key with
+/// `what` replaced by `digest`; a string for every host or a table by host.
+fn digest_field(source: &str, host: &str) -> Option<String> {
+    use ah_engine::defaults;
+    let v = defaults::raw(source);
+    let d = if v.get("what").is_some() {
+        v.get("digest")?
+    } else {
+        let (sec, key) = source.split_once('.')?;
+        let k = format!("{sec}.{}", key.replacen("what", "digest", 1));
+        if !defaults::has(&k) {
+            return None;
+        }
+        defaults::raw(&k)
+    };
+    d.as_str().or_else(|| d.get(host).and_then(|x| x.as_str())).map(str::to_string)
+}
+
+fn digest_path(host: &str) -> PathBuf {
+    let key = if host == "claude" { "guard_rules.digest_file".to_string() } else { format!("guard_rules.digest_file_{host}") };
+    assert!(ah_engine::defaults::has(&key), "no digest file key {key}");
+    plugin().join(ah_engine::defaults::text(&key))
+}
+
+fn digest_essentials(host: &str) -> Vec<String> {
+    let raw = std::fs::read_to_string(digest_path(host)).unwrap_or_default();
+    let sep = format!("\n{}\n", ah_engine::defaults::text("guard_rules.digest_sep"));
+    raw.split(&sep)
+        .next()
+        .unwrap_or("")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split_once(ah_engine::defaults::text("guard_rules.digest_gate_sep")).map_or(l, |(_, t)| t).to_string())
+        .collect()
+}
+
+#[test]
+fn every_essential_rule_has_a_short_digest_field_for_each_host() {
+    for r in skillgen::rules().into_iter().filter(|r| r.tier == "essential") {
+        for h in DIGEST_HOSTS.into_iter().filter(|h| r.applies(h)) {
+            assert!(digest_field(r.source, h).is_some(), "{}: essential rule without a digest field for {h}", r.id);
+            let d = skillgen::digest_field(r.source, h); // {cfg:<key>} expanded at generation
+            assert!(!d.trim().is_empty() && !d.contains('{'), "{}: digest for {h} is empty or has a placeholder: {d}", r.id);
+        }
+    }
+}
+
+#[test]
+fn each_host_digest_line_says_what_to_do_has_no_placeholder_and_the_whole_fits_the_budget() {
+    use ah_engine::defaults;
+    let verbs = [
+        "never", "ask", "push", "unstage", "remove", "write", "verify", "delegate", "hand", "track", "confirm", "wait", "assign", "report", "use", "label",
+        "stop", "keep", "fix", "spawn", "route", "do ",
+    ];
+    for h in DIGEST_HOSTS {
+        let n = skillgen::rules().iter().filter(|r| r.tier == "essential" && r.applies(h)).count();
+        let lines = digest_essentials(h);
+        assert_eq!(lines.len(), n, "{h}: one digest line per essential rule");
+        for l in &lines {
+            assert!(!l.contains(defaults::text("guard_rules.placeholder")), "{h}: digest line with a placeholder: {l}");
+            assert!(verbs.iter().any(|v| l.to_lowercase().contains(v)), "{h}: digest line names no action: {l}");
+        }
+        let size = defaults::text("guard_rules.digest_head").len() + defaults::text("guard_rules.digest_foot").len() + 2 + lines.join("\n").len();
+        assert!(size as u64 <= defaults::num("roles.digest_budget"), "{h}: digest is {size} bytes, over roles.digest_budget");
+    }
+    let codex = std::fs::read_to_string(digest_path("codex")).unwrap_or_default().to_lowercase();
+    for m in ["haiku", "sonnet", "opus", "fable"] {
+        assert!(!codex.contains(m), "the codex digest names the Claude model {m}");
+    }
+}
+
+#[test]
+fn the_digest_cohort_and_retry_metrics_are_registered() {
+    for m in ["metric.rule_digest", "metric.rule_digest_calls", "metric.rule_retry_compliant"] {
+        assert!(ah_engine::defaults::has(m), "{m} is not registered");
+    }
+}

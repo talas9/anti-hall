@@ -404,6 +404,44 @@ value = "advisory only; the stop is not blocked."
 doc = "One-line description of the silent-agent-nudge check in the generated reference."
 value = "Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge."
 
+[silent_nudge.rt_stop_cap]
+doc = "How many times per session an open runtime escalation (agent_nudge.runtime_escalation) may block the coordinator's Stop (0 = never block); it never loops."
+value = 1
+min = 0
+max = 20
+
+[silent_nudge.rt_unrecorded_log]
+doc = "The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494)."
+value = { kind = "silent_nudge", text = "runtime escalation Stop not blocked: the block count could not be saved" }
+
+[metric.runtime_escalation_stop_unrecorded]
+doc = "Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap)."
+value = { kind = "counter", unit = "stops", labels = [] }
+
+[silent_nudge.rt_state_file]
+doc = "Per-session count of the runtime-escalation Stop blocks given, under the engine state directory."
+value = "runtime-escalation-stops.json"
+
+[silent_nudge.msg_rt_what]
+doc = "What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder."
+value = "{names}{more} still running after repeated runtime nudges, not finished and not stopped."
+
+[silent_nudge.msg_rt_item]
+doc = "One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes)."
+value = "'{name}' (running {dur})"
+
+[silent_nudge.msg_rt_instead]
+doc = "What to do about an escalated agent."
+value = "check its output now, then stop it or re-task it with a tighter scope; this block is shown once per session."
+
+[silent_nudge.rt_dur_hours]
+doc = "The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes."
+value = "{h} h {m} min"
+
+[silent_nudge.rt_dur_minutes]
+doc = "The runtime format under one hour; {m} minutes."
+value = "{m} min"
+
 [silent_nudge.guard_name]
 doc = "The guard id this check answers to in skip.json."
 value = "silent-agent-nudge"
@@ -650,6 +688,12 @@ value = "Override (only if the user explicitly confirmed this exact condition is
 doc = "How many walks the scan keeps between calls (one per transcript and window size), so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first, so more transcripts in use at once than this are each walked afresh (the walk of a long session is its cold cost: 64 MiB read and filtered)."
 value = 24
 unit = "count"
+
+[agent_scan.max_line_bytes]
+doc = "Longest transcript line, in bytes, the agent scan holds and parses. A longer line (in practice one huge tool_result, measured 2026-10-30 at 60 MB) is read past in the reader's own buffer without being held, is not parsed, is counted in transcript_line_skipped_oversize{reader} and is not parsed; because what it carried is unknown, a scan whose window holds one returns unknown (agent_scan_degraded{reader}; the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) rather than an answer made as if the line were absent. Before the bound the scan buffered the whole line and parsed it, and several scans overlapping on one such transcript made the daemon pass its RSS cap and restart (#436: one 60 MB line = 120.6 MB of line buffer plus two 62.9 MB parse copies). 4 MiB is above the longest line in 1.38 million lines of 5,613 local transcripts (2.95 MB; none over 1 MiB carried an agent launch or notice) and 15 times below the 60 MB line. 0 turns the bound off: every line is held and parsed whole, as before."
+value = 4194304
+min = 0
+unit = "bytes"
 
 [agent_scan.window_slack_pct]
 doc = "How far, as a percent of the scan window, the kept walk of a transcript longer than the window may begin before the window start; past that it is rebuilt from the window start. The walk is used only while it provably gives the answer of a fresh scan of the exact window (nothing older than the window start touched a launch, a stop or a teammate event, and no call older than it has its answer inside it), so this only bounds what the walk holds. 0 reads every window afresh."

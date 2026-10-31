@@ -38,8 +38,8 @@ doc = "Token counts in nudge texts: thousands and millions, and their suffixes."
 value = { k = 1000, m = 1000000, k_word = "k", m_word = "M" }
 
 [agent_nudge.evidence_fmt]
-doc = "The evidence fragments of a nudge, joined by join. idle ({min}), stuck ({step}: the call in flight or the signal's step), waste ({tokens} spent with no outcome), ci_wait (its latest calls check or watch CI: a legitimate wait), owner ({min}: the outcomes line the judge reads says when the owner last spoke), judge ({label}, {ref}: the agentHealth verdict and the evidence line it cited)."
-value = { idle = "no output for {min} min", stuck = "stuck on: {step}", waste = "{tokens} tokens with 0 outcomes", judge = "judge: {label} ({ref})", ci_wait = "its latest calls wait on CI (gh run/pr checks), so quiet is expected", owner = ", owner spoke {min} min ago", join = "; " }
+doc = "The evidence fragments of a nudge, joined by join. idle ({min}), stuck ({step}: the call in flight or the signal's step), waste ({tokens} spent with no outcome), building (a build call still in flight: shown instead of waste, GH #458), ci_wait (its latest calls check or watch CI: a legitimate wait), owner ({min}: the outcomes line the judge reads says when the owner last spoke), judge ({label}, {ref}: the agentHealth verdict and the evidence line it cited)."
+value = { idle = "no output for {min} min", stuck = "stuck on: {step}", waste = "{tokens} tokens with 0 outcomes", judge = "judge: {label} ({ref})", ci_wait = "its latest calls wait on CI (gh run/pr checks), so quiet is expected", building = "a build call is still in flight (it waits on or holds the build lock), so its spend is not counted as waste", owner = ", owner spoke {min} min ago", join = "; " }
 
 [agent_nudge.outcomes_line]
 doc = "The outcomes section line sent to the agentHealth judge. Placeholders: {commits}, {steps}, {checks}, {files}, {reports} (subagent results and report files), {owner} (the evidence_fmt owner text, empty when the owner has not spoken in the window)."
@@ -212,6 +212,14 @@ value = { section = "agents", key = "nudgeScope", env = "ANTIHALL_AGENT_NUDGE_SC
 [agent_nudge.suppress]
 doc = "Telemetry words of a nudge held back by the scope rules (class agent_nudge.words.class): the event, and its reason values judge_done (the health judge said the child is done) and answered (the parent answered after the last send, so the wake fallback does not queue it again)."
 value = { event = "suppressed", judge_done = "judge_done", answered = "answered" }
+
+[agent_nudge.runtime_escalation]
+doc = "Escalation of a long-running child whose nudges keep repeating (GH #484). after_reminders: nudges about one child (the first included) after which it counts as escalated if it has not finished or been stopped (0 = off). file: where the open escalations are published for the coordinator's Stop check, under the tracker's directory."
+value = { after_reminders = 3, file = "runtime-escalations.json" }
+
+[metric.runtime_escalations]
+doc = "Children whose repeated runtime nudges reached agent_nudge.runtime_escalation.after_reminders without the child finishing or being stopped; counted once per nudge."
+value = { kind = "counter", unit = "escalations", labels = [] }
 
 [metric.agent_nudge_sent]
 doc = "Nudges opened and delivered (or escalated to the owner when no parent is live), counted only when a delivery succeeded, by trigger (hung, idle, loop, waste)."

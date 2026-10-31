@@ -345,7 +345,6 @@ mod tests {
     use std::sync::atomic::AtomicUsize as TestAtomicUsize;
 
     static TEST_ID: TestAtomicUsize = TestAtomicUsize::new(1);
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     const ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
 
@@ -357,6 +356,7 @@ mod tests {
     }
 
     fn reset_lanes() {
+        crate::jev::testkit::hold_lanes();
         LANES.lock().unwrap_or_else(|e| e.into_inner()).clear();
         STARTING_WORKERS.store(0, Ordering::SeqCst);
         QUEUE_RESERVED.store(0, Ordering::SeqCst);
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn queue_byte_admission_is_reserved_atomically_across_threads() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::jev::testkit::hold_lanes();
         reset_lanes();
         let hard = defaults::num("mem.jev_queue_hard_bytes") as usize;
         assert!(hard > 2, "queue hard limit must come from mem.jev_queue_hard_bytes");
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn queue_admission_uses_per_payload_max_and_remaining_hard_budget() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::jev::testkit::hold_lanes();
         reset_lanes();
         let max = defaults::num("mem.jev_queue_max_bytes") as usize;
         let hard = defaults::num("mem.jev_queue_hard_bytes") as usize;
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn evicted_lanes_with_external_arcs_stay_registered_until_drop() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::jev::testkit::hold_lanes();
         reset_lanes();
         let env = Env::from_pairs(std::iter::empty::<(&str, &str)>());
         let cap = lane_budget().max_entries();
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn dropped_lanes_release_registry_capacity_from_the_memory_account() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::jev::testkit::hold_lanes();
         reset_lanes();
         let env = Env::from_pairs(std::iter::empty::<(&str, &str)>());
         let cap = lane_budget().max_entries();
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn live_workers_are_capped_even_when_evicted_lanes_are_still_held() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::jev::testkit::hold_lanes();
         reset_lanes();
         let cap = lane_budget().max_entries();
         assert!(cap > 0, "jev lane count cap must come from mem.jev_lanes_max_entries");

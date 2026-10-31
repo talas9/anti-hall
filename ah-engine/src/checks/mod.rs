@@ -180,7 +180,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 83] = [
+    static ALL: [&dyn Check; 86] = [
         &scripted::GIT_GUARD,
         &scripted::MERGE_SIDE_PICK,
         &scripted::SHIP_IT_GUARD,
@@ -194,6 +194,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::VERIFY_FIRST_SUBAGENT,
         &scripted::VERIFY_FIRST_FULL,
         &scripted::FABLE_AVAILABILITY,
+        &scripted::RULE_DIGEST,
+        &scripted::SESSION_BANNER,
+        &scripted::SESSION_SUMMARY,
         &scripted::INBOX_READ_GUARD,
         &scripted::PHASE_TRACKER,
         &scripted::ORCH_ON_SPAWN,

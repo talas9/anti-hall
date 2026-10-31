@@ -24,6 +24,7 @@ mod lockwatch;
 pub(crate) mod native_wake;
 pub mod nudge;
 mod procs;
+mod repo;
 mod signals;
 mod sinks;
 mod sources;
@@ -205,6 +206,18 @@ pub struct Pending {
     /// A background subagent launch: its result is only the launch acknowledgement, the report comes later as a task notice.
     #[serde(default)]
     pub ack: bool,
+    /// Files the shell command creates or appends (`>`, `>>`, `tee`, a download's output option; patterns.shell_write): each new one is
+    /// an outcome when the command succeeds (GH #458).
+    #[serde(default)]
+    pub writes: Vec<String>,
+    /// A shell command with a segment backgrounded by a top-level `&` (agent_tracker.bg_delims, found by the engine shell splitter):
+    /// its success is only the launching shell's, so it earns no HARD outcome (PR #472).
+    #[serde(default)]
+    pub amp: bool,
+    /// The directory the call ran in: the transcript line's working directory, its literal `cd`s followed (PR #472 round 5: its
+    /// repository's state decides HARD credit).
+    #[serde(default)]
+    pub cwd: String,
 }
 
 /// A raised signal on one agent.
@@ -378,6 +391,26 @@ pub struct Agent {
     pub errs: Vec<(u64, String, u64)>,
     /// Files it edited.
     pub files: Vec<String>,
+    /// When its soft outcomes happened (a file the shell wrote, a passing check, a completed live probe; GH #458): they never reset the
+    /// burn accounting, they may only hold off the pause (burn.soft_hold).
+    #[serde(default)]
+    pub soft_ts: Vec<u64>,
+    /// The burn episode the pause hold-offs belong to: the progress (hard outcomes) it started at, when it started (the last hard outcome,
+    /// or when the agent was first seen) and how many events (soft outcomes, build launches) came since. A hard outcome (progress moves)
+    /// starts a new episode; burn.soft_hold caps the events and the length of an episode (PR #472).
+    #[serde(default)]
+    pub soft_episode: (u64, u64, u64),
+    /// Real changes seen (PR #472 round 4): a successful edit, a fresh shell write, a commit. Outside a repository (or with git
+    /// unavailable) a passing check, build or test with no change since the last HARD credit is no HARD credit (PR #472 round 5).
+    #[serde(default)]
+    pub changes: u64,
+    /// The repo state (agents::repo::state) at the last HARD credit in each repository, by its top-level directory (PR #472 round 5):
+    /// a passing check, build or test, or a verified write, earns HARD only when its repository's state differs.
+    #[serde(default)]
+    pub repo_states: BTreeMap<String, String>,
+    /// `changes` at the last HARD credit (PR #472 round 5): outside a repository a check, build or test earns HARD only after a change.
+    #[serde(default)]
+    pub hard_changes: Option<u64>,
     /// The declared step.
     pub step: String,
     /// The task whose subject is the declared step (empty when the step came from elsewhere).
@@ -404,6 +437,17 @@ pub struct Agent {
     /// Background shell tasks it started and has not seen end: task id, when it started.
     #[serde(default)]
     pub bg_ids: BTreeMap<String, u64>,
+    /// Background tasks among `bg_ids` whose command is of a doubt class (burn.doubt.classes: a build), GH #458.
+    #[serde(default)]
+    pub bg_builds: Vec<String>,
+    /// The outcome a background shell task among `bg_ids` stands to earn once it ends with success (PR #472): it is a check, and the
+    /// files it writes. A background launch is at most a SOFT outcome; its completion notice with a success status is the HARD one.
+    #[serde(default)]
+    pub bg_outcomes: BTreeMap<String, (bool, Vec<String>)>,
+    /// When the call that launched each task in `bg_outcomes` began and its working directory: a file it claims counts only when
+    /// modified at or after that.
+    #[serde(default)]
+    pub bg_starts: BTreeMap<String, (u64, String)>,
     /// Background shell tasks that ended and are not yet reported: task id, when it ended.
     #[serde(default)]
     pub exited: Vec<(String, u64)>,
@@ -535,6 +579,20 @@ pub(crate) fn load_state(env: &Env) -> State {
     }
 }
 
+/// A child's launch identity for the guards: (the tool call id that launched it, its agent type), each "" when unknown. Both come
+/// from the host's meta file (`agent_tracker.meta` tool_use_id, `agent_tracker.no_work` agent_type_fields); a child the tracker
+/// knows as a Codex rescue wrapper has the rescue type even when its meta names none (hosts that keep the type in the launch input).
+fn launch_of(a: &Agent) -> (String, String) {
+    let meta = if is_child(a) { sources::json_of(std::path::Path::new(&facts::meta_path(&a.path))) } else { None };
+    let field = |k: &str| meta.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
+    let nw = defaults::raw("agent_tracker.no_work");
+    let tool_use_id = field(defaults::raw("agent_tracker.meta").str_field("tool_use_id"));
+    let named = nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().map(|k| field(k)).find(|t| !t.is_empty()).unwrap_or_default();
+    // an explicit type in the meta wins (a general-purpose child that merely runs Codex stays general-purpose); the rescue type is inferred only when none is named
+    let agent_type = if named.is_empty() && a.codex_rescue { nw.str_field("rescue_type").to_string() } else { named };
+    (tool_use_id, agent_type)
+}
+
 /// A read-only, request-local reconciliation of retained tracker rows for guards.
 /// Reuse the tracker's ingestion and state rules; never tick, save, probe a CLI,
 /// deliver reminders or rewrite the user's history from a hook decision.
@@ -573,8 +631,9 @@ pub(crate) fn guard_rows(env: &Env, session: &str, transcript: &str, cwd: &str) 
     for a in st.agents.values() {
         let state = signals::state_of(a);
         let known = readable.contains(&a.id) && a.last_output_ms > 0 && env.now_ms.saturating_sub(a.last_output_ms) <= lim("active_window_ms");
+        let (tool_use_id, agent_type) = launch_of(a);
         out.push(serde_json::json!({"id": a.id, "name": a.name, "parent": a.parent, "kind": a.kind,
-            "state": state, "known": known, "lastSeenMs": a.last_output_ms}));
+            "state": state, "known": known, "lastSeenMs": a.last_output_ms, "toolUseId": tool_use_id, "agentType": agent_type}));
         for (id, started) in &a.bg_ids {
             out.push(serde_json::json!({"id": id, "name": id, "parent": a.id,
                 "kind": defaults::text("agent_tracker.guard_job_kind"), "state": if a.dead || a.gone || a.finished { state } else { state_name("running") },

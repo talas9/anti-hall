@@ -47,13 +47,22 @@ fn the_counters_cost_under_a_tenth_of_a_percent_of_a_core_at_the_live_allocation
         }
         t.elapsed()
     };
-    let best = |on: bool| {
-        memstat::configure_measure(on, 1);
-        (0..7).map(|_| run()).min().unwrap()
-    };
-    let _ = best(true); // warm up the allocator
-    let off = best(false);
-    let on = best(true);
+    // Off and on are sampled in ALTERNATING rounds and each keeps its minimum: a slow patch of the machine (a noisy
+    // neighbour, a frequency step, parallel test processes) then hits both sides alike. Measuring all the "off" runs and
+    // then all the "on" runs let a drift between the two phases land entirely in the difference: the macOS full-tier run
+    // 41130018901 read 13.73 vs 29.90 ns (extra 16.17 > 15) while the same test passed on the earlier macOS runs.
+    const ROUNDS: usize = 25;
+    let mut best_off = Duration::MAX;
+    let mut best_on = Duration::MAX;
+    memstat::configure_measure(true, 1);
+    let _ = run(); // warm up the allocator
+    for _ in 0..ROUNDS {
+        memstat::configure_measure(false, 1);
+        best_off = best_off.min(run());
+        memstat::configure_measure(true, 1);
+        best_on = best_on.min(run());
+    }
+    let (off, on) = (best_off, best_on);
     let ns = |d: Duration| d.as_nanos() as f64 / N as f64;
     let extra = (ns(on) - ns(off)).max(0.0);
     let share = extra * LIVE_ALLOCS_PER_S / 1e9 * 100.0;

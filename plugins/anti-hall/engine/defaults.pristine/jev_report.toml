@@ -352,6 +352,22 @@ value = "REVIEW (label-only, no outcome signal yet)"
 doc = "The verdict when the p95 latency is over the integration's budget."
 value = "REVIEW (p95 latency exceeds budget)"
 
+[jevrep.t_verdict_off]
+doc = "Suggestion when every call in the window ran with the integration switched off (mode off): Jev was never asked."
+value = "OFF (mode off: {calls} calls logged, Jev not asked)"
+
+[jevrep.t_verdict_no_signal]
+doc = "Suggestion for an integration with no regex comparison, no outcome rows, no labels and no changed decision: nothing can show whether it helps."
+value = "REVIEW (no outcome signal: no comparison, outcomes or labels)"
+
+[jevrep.t_errors_by_kind_title]
+doc = "Title of the failed-calls-by-kind section."
+value = "\nfailed calls by kind (baseline used):"
+
+[jevrep.t_errors_by_kind_line]
+doc = "One integration's failed calls by kind."
+value = "  {id}: {kinds}"
+
 [jevrep.t_verdict_needs_labels]
 doc = "The verdict with too few labelled outcomes. Placeholders: {n}, {min}."
 value = "REVIEW (needs labels: {n}/{min})"

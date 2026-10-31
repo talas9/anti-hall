@@ -114,7 +114,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   KEEP suggestion first — see the scorecard walkthrough below.
 - **All integrations**: `speculation`/`triage` (legacy, default `on`);
   `modelRouting`, `claimLedger`, `mergeGateHedge`, `newRequest`,
-  `outputVerifyGuard`, `gitGuardSelfCredit` (add-block, never relaxes),
+  `outputVerifyGuard`, `gitGuardSelfCredit` (add-block, never relaxes; default off since #466: no changed decision in 7.1k calls),
   `parentGateQuestion` (cache-only, zero network), `tasklistTrivial`,
   `supervisorBlockerLabel` (cache-only, zero network; **v0.108.5 fix:** its
   ~90s sweep now asks/logs once per DISTINCT input — childId+kind+ts — per

@@ -62,7 +62,7 @@ impl Params {
     }
 
     /// The values of the defaults group `prefix` (`<prefix>.lock_stale_ms`, `.lock_wait_ms`, `.lock_step_ms`,
-    /// `.lock_reclaim_stale_ms`, `.lock_release_tries`, `.lock_release_step_ms`, `.lock_boot_slop_s`). `None` when the group
+    /// `.lock_reclaim_stale_ms`, `.lock_release_tries`, `.lock_release_step_ms`, `.lock_boot_slop_s`, optional `.lock_steal_dead`). `None` when the group
     /// is not shipped.
     pub fn from_group(prefix: &str) -> Option<Params> {
         let num = |k: &str| defaults::get(&format!("{prefix}.{k}")).and_then(|e| e.value.as_integer()).map(|_| defaults::num(&format!("{prefix}.{k}")));
@@ -74,7 +74,8 @@ impl Params {
             release_tries: num("lock_release_tries")?,
             release_step_ms: num("lock_release_step_ms")?,
             boot_slop_s: num("lock_boot_slop_s")?,
-            steal_dead: false,
+            // optional: a group that ships `<prefix>.lock_steal_dead` (the spawn reservation lock) takes over a dead holder at once
+            steal_dead: defaults::get(&format!("{prefix}.lock_steal_dead")).and_then(|e| e.value.as_bool()).unwrap_or(false),
         })
     }
 }
