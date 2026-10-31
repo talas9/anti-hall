@@ -115,6 +115,15 @@ value = ["UserPromptSubmit", "UserPromptExpansion", "SessionStart", "PostModelSw
 doc = "Text placed between the block reasons of several hooks that block the same event, when they are joined into the one block the dispatcher answers (the host shows the model every hook's block reason; Claude Code gives each Stop/SubagentStop block its own message)."
 value = "\n\n"
 
+[dispatch.stop_advisory_chars]
+doc = "Most characters of the other hooks' advisories folded into a Stop or SubagentStop block reason (#516): the model reads only the reason there, never a systemMessage or context."
+value = 2000
+min = 0
+
+[dispatch.msg_stop_advisories]
+doc = "The part of a Stop or SubagentStop block reason that carries the advisories of the hooks that did not block. Placeholders: {text}."
+value = "Also from other hooks:\n{text}"
+
 [dispatch.message_joiner]
 doc = "Text placed between the systemMessage values of several hooks when they are joined into one."
 value = "\n"
