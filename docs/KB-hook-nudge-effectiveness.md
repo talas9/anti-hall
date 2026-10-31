@@ -2,6 +2,99 @@
 
 Reference only. Written 2026-10-31 from web research plus first-party fetches. Every claim carries a grade. Nothing here is a change to hook code; the implications section lists what the graded findings support. A companion file, `docs/KB-hook-nudge-message-review.md`, scores the shipped messages against this KB.
 
+## Core: what reaches the model, what it respects, how to design nudges (consolidated 2026-10-31)
+
+Grades: [OFF] official Anthropic page fetched by a research lane (the fetch tool summarises pages, so read these as close paraphrase); [OFF-2] official but known only via an issue or search snippet; [MEAS] measured in a study; [ANEC] anecdotal; [LOCAL] our own telemetry; [OPEN] not settled.
+
+### 1. What reaches the model, by event
+
+| Event | Reaches the model | Notes |
+|---|---|---|
+| SessionStart | stdout or `additionalContext` [OFF] | Most trusted slot (system layer). A compact matcher or PostCompact can re-inject; visibility after a real compaction is [OPEN]. |
+| UserPromptSubmit | stdout or `additionalContext`, arriving with the user turn [OFF] | Does not follow a tool result, so it is outside the injection-suspicion slot. Default timeout 30 s [OFF]. |
+| PreToolUse | `additionalContext` beside the tool result; `permissionDecisionReason` on a deny [OFF] | Slot right after a tool result is suspect on Sonnet 5.5 and Haiku 5.5 [OFF]. |
+| PostToolUse | `additionalContext` beside the tool result; exit-2 stderr [OFF] | Same suspicion. |
+| Stop | Only the block reason, after which the turn continues [OFF]. Exit-0 stdout goes to the debug log, stderr is never seen, `systemMessage` is shown to the user only [OFF]. | Whether `additionalContext` reaches the model is [OPEN]: docs say yes, an older first-party observation says no. Cap: 8 consecutive blocks with no tool call between end the turn; override `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` [OFF-2]. `stop_hook_active` reported unreliable when reminders interleave [ANEC]: keep your own counter. |
+| SubagentStop | Its block reason becomes the subagent's next instruction [OFF] | To inject into the parent after a subagent returns, use PostToolUse on the Agent tool [OFF]. |
+| PreCompact | not found | |
+
+Limits for every event:
+- 10,000-character cap per string (`additionalContext`, `systemMessage`, stdout). Longer output goes to a file; the model gets a 2,000-character preview and is never asked to read the file [OFF].
+- anti-hall uses one hook command per event, so all checks share one string and one 10k budget per event. A per-string cap does not relieve a merged output.
+- Timeout: output discarded. Exit codes other than 0 and 2, and crashes, do not block [OFF]. `onFailure: "block"` is opt-in from v2.1.295 [OFF].
+- Parallel hooks: every `additionalContext` is delivered; the most restrictive decision wins [OFF].
+
+### 2. What the model respects and what it discounts
+
+Respects:
+- Blocks with an actionable reason [OFF; MEAS 9 of 9 in a small trial]. Emphasis does not rescue an ignored rule: move the rule into a hook [OFF].
+- System-layer text over tool-result text [OFF; system cards via secondary sources].
+- Rare, factual, explicitly scoped instructions; one brief instruction steers the newer models [OFF].
+- Grounding: asking the model to audit each progress claim against a tool result nearly eliminated fabricated status reports [OFF, no number].
+- An honest exit ("name the check you did not run") reduces false completion claims [OFF; MEAS on older models].
+- Outside feedback from tools and tests beats self-critique, which can make output worse [MEAS].
+
+Discounts:
+- Harness text after every tool result, on Sonnet 5.5 and Haiku 5.5: may be treated as injection, ignored, or reported to the user; send less often [OFF]. No such statement exists for Opus (an absence, not a confirmed difference).
+- Repeated identical alerts: acceptance falls with repeats; 90% false alarms produce alarm fatigue [MEAS clinical, search-only for repeats].
+- Capitals, CRITICAL, MUST over-trigger on Opus 4.5/4.6 [OFF].
+- Imperative system-command framing can trip injection defences; the model resists instructions that seem to work against the user. State facts [OFF].
+- Many competing instructions: best models about 68% at 500 instructions, earlier instructions favoured, mid-context least used [MEAS].
+- Long sessions: compliance decays; compaction summarises injected text; re-injecting after compaction was the second most common practitioner fix [ANEC, 5 sources].
+- Non-delivery mistaken for ignoring: many "ignored rule" reports were rules never loaded (staff-reproduced in Cursor). Prove delivery before blaming the model.
+
+Model profiles:
+- Sonnet 5.5, Haiku 5.5: injection suspicion; at low effort they report work done without running a check [OFF].
+- Opus 5: verifies unprompted (telling it to verify causes over-verification); tends to widen scope, so "do not do X" constraints help [OFF].
+- Sonnet 5 and Opus 4.8: literal, do not generalise; state the scope [OFF].
+- No Sonnet-versus-Opus rule-adherence numbers exist [NOT FOUND]. The owner's observation fits the direction of the evidence; it is not measured.
+
+### 3. Design rules
+
+1. Hard rule = mechanism: deny, Stop block, TaskCompleted gate, claim gate against a ledger the agent cannot write. Prose is for guidelines.
+2. Channel by trust: SessionStart (re-injected at compaction) and UserPromptSubmit carry rules; on Sonnet/Haiku 5.5 nothing important depends on a PreToolUse/PostToolUse advisory; use those events for block reasons.
+3. Trigger on state change, not per call: if the agent was already told this state, stay silent; fire again only on change.
+4. Escalation ladder, counted outside the model's context:
+   - L0: the relevant rule, at most 2 lines, last in the output.
+   - L1: specific advisory naming the observed act and the compliant step.
+   - L2: change form (e.g. a task-list item with acceptance evidence).
+   - L3: block the next action of that class, or the Stop; the reason says how to unblock and offers an honest exit.
+   - L4: after N blocks (under the 8 cap) stop blocking and hand to a verifier or human with the evidence.
+   - Reset on compliance evidence; escalate only while the violation is still present; irreversible/financial/deletion actions go straight to L3. The effect of the ladder on agents is unmeasured: instrument it.
+5. Wording: fact first, then one action, then a one-clause reason; no capitals or intensifiers; at most 2 lines; one instruction per string; explicit scope. Emoji effect untested.
+6. Budget: keep each event's combined output well under 10k, ordered by priority; drop whole low-priority notices and replace with one count line; never spill text meant for the model; never require a Read to learn a rule.
+7. Per-model profile: for Opus remove the verify nags; for Sonnet/Haiku 5.5 send fewer advisories, use more blocks, put a grounding paragraph in the system layer; consider effort level.
+8. Noise kills trust: measure false positives per kind; demote or delete advisories that fire benignly.
+9. Measure per message with no shared counters. Funnel: emitted, delivered (not suppressed, spilled, timed out, or Stop exit 0), acted on; split by kind and by model; add deferred-then-delivered and deferred-then-expired.
+
+### 4. Anti-patterns
+
+"Re-check your work" as the verifier or a same-model judge alone; repeating the same text verbatim; loading every rule on every event; letting the agent write its own evidence ledger or hook config; per-subject ids in an alert kind; a model-based hook as the only gate for a hard rule; a Stop block that ignores pending background work (loops); relying on `stop_hook_active` alone.
+
+### 5. Open questions, each with a test
+
+- Does Stop `additionalContext` reach the model? Stop hook emits a nonce only in `additionalContext`, control run puts it in the block reason; ask the model to repeat it (scratch setup).
+- Is re-injected text visible after a real compaction? Test compact matcher vs PostCompact.
+- Which wording works? A/B one high-volume nudge (fact vs imperative vs with-consequence), acted-on rate per model.
+- Does the ladder help? Compare the funnel before and after.
+- Is the Sonnet-versus-Opus gap real? Add the model to the funnel.
+- Local spill counts conflict: 196 files on disk against 10 spill events in 7 days [LOCAL].
+
+### 6. Status of the eight suspected causes
+
+1. Digest after compaction: direction supported; fixed in PR for #519; visibility after compaction still to test.
+2. Spill and budget: supported; one string per event means one budget; extend the priority budget from SessionStart to every event.
+3. Stop advisories: `systemMessage` and stderr are dead text [OFF]; for `additionalContext` run the test; if it fails, re-deliver at the next UserPromptSubmit or put the text in the block reason.
+4. Kind mapping: internal; fix structurally (kind tag from the TOML table plus a per-message counter).
+5. No escalation: supported; build the ladder above.
+6. Suppression: direction supported (vendors say send rarely) but key it on state; the ladder must count the underlying condition.
+7. Stuck-agent nudge: 8 sent against 222 suppressed [LOCAL]; read the suppression rule; the check must know about pending background work.
+8. Defers: 5,095 defer outcomes in 7 days [LOCAL]; add delivered/expired counters.
+
+### 7. Rule review rubric (used by the rule review task)
+
+One verdict per rule: keep, reword, merge, move channel, convert to block, drop; judged against design rules 1-9. Start with the four unscored high-volume texts (role note 2,600 fires and 1.7 MB; task tracker 1,005; parent-inbox advisory 745 and 1.0 MB; realtime advisory 724), and first count advisory injections per tool call per session on Sonnet 5.5.
+
 ## 1. Scope
 
 Question: when a hook injects text (advisory, reminder, block reason), what makes the model act on it, and what makes it discount it?
@@ -167,3 +260,60 @@ Derived only from graded findings above.
 9. Every Stop hook that blocks needs its own counter or cooldown and awareness of the 8-block cap. Basis: rows 6, 14, 15.
 10. Cut the count of concurrent nudges; merge overlapping ones. Basis: row 18 (older models; direction only).
 11. Run the A/B plan before rewriting at scale. No source measures hook-delivered wording.
+
+## Addendum: widened research (round 2)
+
+Rows are summaries from fetched pages only (the fetch tool summarises pages, so read them as close paraphrase). Grades follow section 1. Search-only and unread sources were dropped. The 25-row cap applies to the whole addendum (17 rows from three lanes plus 8 version rows).
+
+### A. Model differences
+
+| # | URL | Finding | Grade |
+|---|---|---|---|
+| A1 | https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-sonnet-5-5 | Sonnet 5.5 is trained to resist indirect injection and may treat text right after a tool result as a possible injection. The trigger is harness text after every tool result; an occasional reminder is far less likely to trigger. | OFFICIAL |
+| A2 | https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-haiku-5-5 | Haiku 5.5 carries the same injection-resistance text, skips checks at low or medium effort, and drifts from system-prompt rules under user pressure unless told they hold all conversation. | OFFICIAL |
+| A3 | https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5 | Opus 5 verifies its own work unprompted, so explicit verify instructions cause over-verification; it can expand scope, so constrain it explicitly. No injection-suspicion section was found for Opus. | OFFICIAL |
+| A4 | https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5 | A prompt that audits each progress claim against a tool result nearly eliminated fabricated status reports (no number given). | OFFICIAL |
+| A5 | https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices | Opus 4.5/4.6 can overtrigger on aggressive wording (all-caps MUST or CRITICAL); soften. Newer models are trained for precise instruction following. | OFFICIAL |
+| A6 | https://platform.claude.com/docs/en/models/overview | Default effort differs per tier (Opus 5.5 medium, Sonnet 5.5 high, Haiku 5.5 medium, Fable 5.1 high); effort changes verification and stopping behaviour. | OFFICIAL |
+
+No source tests short hook-appended advisories on Sonnet versus Opus; every hook implication from this lane is inference from harness-notice guidance.
+
+### B. Practitioner reports
+
+| # | URL | Finding | Grade |
+|---|---|---|---|
+| B1 | https://dev.to/yurukusa/your-claudemd-rules-arent-being-enforced-heres-what-actually-works-3aa8 | 39 trials, one task, one forbidden command: no prohibition 17/17 attempted, prohibition in CLAUDE.md 0/22 attempted, hook 9/9 blocked. Short sessions only; the author calls his own headline too strong. | MEASURED |
+| B2 | https://forum.cursor.com/t/alwaysapply-true-rules-are-being-completely-ignored-now/158551 | Some "ignored rules" were a loading bug (always-apply rules listed as requestable, not injected), fixed in a later release. Treat "ignored" reports as unverified until the rule is shown in context. | ANECDOTAL (staff-reproduced) |
+| B3 | https://dev.to/mikeadolan/i-wrote-500-lines-of-rules-for-claude-code-heres-how-i-made-it-actually-follow-them-3c8 | Longer rule files and bold warnings helped only marginally; session-start, prompt and compaction hooks reduced skipped protocols in the author's own counts, no baseline. | ANECDOTAL |
+| B4 | https://github.com/anthropics/claude-code/issues/4017 | Reports that CLAUDE.md is no longer followed after compaction; the cause is a reporter hypothesis, unconfirmed. Workaround: a hook that re-prints it. | ANECDOTAL |
+| B5 | https://github.com/anthropics/claude-code/issues/55754 | A Stop hook returning not-ok while a background subagent ran looped about 50 minutes; the hook ignored the stop-active flag. Root cause not confirmed by maintainers. | ANECDOTAL |
+| B6 | https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents | Context is a finite attention budget; compaction is lossy; keep prompts minimal and add instructions for observed failures. Rot severity varies by model, no numbers. | OFFICIAL |
+
+Contested: whether text rules fail through disobedience or non-delivery, and whether compaction drops CLAUDE.md, are mixed by tool and version. B1 tested only short sessions, so it does not contradict the long-session violation reports. [inference]
+
+### C. Enforcement patterns
+
+| # | URL | Finding | Grade |
+|---|---|---|---|
+| C1 | https://code.claude.com/docs/en/best-practices | Split rules into deterministic (hooks, deny rules, CI) and non-deterministic (prompts). A line that is still ignored after emphasis belongs in a hook. Consecutive Stop blocks are capped at 8. | OFFICIAL |
+| C2 | https://code.claude.com/docs/en/hooks | Stop and SubagentStop block reasons keep the agent working; a TaskCompleted hook can reject task closure. The stop-active semantics were not found in the segments read. | OFFICIAL |
+| C3 | https://arxiv.org/abs/2310.01798 | Without external feedback, models struggle to self-correct and sometimes get worse; a "re-check your work" prompt is a weak verifier. | MEASURED |
+| C4 | https://arxiv.org/abs/2507.11538 | Instruction following degrades as rule count grows (best models about 68% at 500 instructions, bias toward earlier ones). Fewer rules per injection. | MEASURED |
+| C5 | https://arxiv.org/abs/2307.03172 | Information at the start or end of context is used best, the middle worst; re-inject critical rules near the point of action. | MEASURED |
+
+Not found: any controlled study of escalation ladders for LLM agents, so the ladder in the enforcement lane is a hypothesis to instrument, not a result.
+
+### D. Version behaviour (changelog lane)
+
+Source for every row: https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md (locator is the version). The changelog was read through a summarising extractor and entries carry no dates; verify before quoting externally.
+
+| Version | Behaviour | Grade |
+|---|---|---|
+| 2.1.9 | PreToolUse hooks can return additionalContext to the model (context injection starts here). | OFFICIAL |
+| 2.1.143 | Stop hooks that block repeatedly no longer loop forever (before this, loops could run unbounded). | OFFICIAL |
+| 2.1.163 | Stop and SubagentStop hooks can return additionalContext (before this, Stop could only block). | OFFICIAL |
+| 2.1.201 | For Sonnet 5, harness reminders no longer use the mid-conversation system role. | OFFICIAL |
+| 2.1.292 | system-reminder tags written in hook output are escaped, so hook text cannot forge a reminder. | OFFICIAL |
+| 2.1.295 | onFailure "block" added for command and HTTP hooks; a failed or timed-out hook can now block. | OFFICIAL |
+| 2.1.311 | Fixed Claude seeing stale memory and CLAUDE.md content right after automatic compaction. | OFFICIAL |
+| 2.1.314 | Each hook's output is cut at 10,000 characters. CONFLICTS with the spill-to-file behaviour in section 5 and Core (2.1.89 and 2.1.280 entries say oversized output is saved to a file). Which applies is unverified; the more careful statement is to treat output over 10,000 characters as truncated or spilled, never delivered whole. | OFFICIAL (conflict) |
