@@ -198,17 +198,11 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
         c
     }
     fn wrapper_hook(&self, input: &str) -> (String, i32, Duration) {
-        let (out, _, code, dt) = self.wrapper_hook_err(input);
-        (out, code, dt)
-    }
-
-    /// [`Env::wrapper_hook`] that also returns the wrapper's stderr: (stdout trimmed, stderr, exit code, wall time).
-    fn wrapper_hook_err(&self, input: &str) -> (String, String, i32, Duration) {
         let t = Instant::now();
         let mut ch = self.wrapper_cmd().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         ch.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
-        (String::from_utf8_lossy(&o.stdout).trim().to_string(), String::from_utf8_lossy(&o.stderr).to_string(), o.status.code().unwrap_or(-1), t.elapsed())
+        (String::from_utf8_lossy(&o.stdout).trim().to_string(), o.status.code().unwrap_or(-1), t.elapsed())
     }
 
     fn diag(&self) -> String {
@@ -436,15 +430,6 @@ fn settle_after_cold_slow(e: &Env) {
     assert!(dt < common::scaled(Duration::from_secs(4)), "warm follow-up wrapper took {dt:?}");
 }
 
-/// #463 (Codex P1 on #473): a hook call whose daemon accepted it but never replied in the whole wait window answers each entry by
-/// its own failure policy, so DENY_IN's safety guard (a `closed` check on PreToolUse) fails closed: exit 2, nothing on stdout, and
-/// stderr says the check gave no answer (script.msg_unanswered). It is never the old blanket fail-open, and runs no Node hook.
-fn assert_timeout_fails_closed(code: i32, out: &str, err: &str) {
-    let unanswered = format!("({})", ah_engine::defaults::text("script.msg_unanswered"));
-    assert_eq!((code, out), (2, ""), "a timed-out safety guard fails closed: err={err:?}");
-    assert!(err.contains(&unanswered), "the block names the unanswered check: {err:?}");
-}
-
 fn clamped_num(key: &str, value: u64) -> u64 {
     let e = *ah_engine::defaults::all().iter().find(|e| e.key == key).unwrap();
     let min = e.min.map(|n| n.max(0) as u64).unwrap_or(0);
@@ -481,10 +466,10 @@ fn ah_hook_wrapper_failfast_no_daemon_hung_daemon_and_restart_loop() {
 
     let hung = Env::new("wrap-hung", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&hung, || None);
-    let (out, err, code, dt) = hung.wrapper_hook_err(DENY_IN);
+    let (code, out, dt) = wrapper_once(&hung);
     println!("TIMING wrapper hung-daemon wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
-    // no reply in the whole wait window: each entry answers by its policy (the safety guard blocks) and no Node hook runs
-    assert_timeout_fails_closed(code, &out, &err);
+    // no reply in the whole wait window: the call fails open and runs no Node hook (the daemon may have processed it already)
+    assert_eq!((code, out.as_str()), (0, ""), "{code} {out}");
     assert!(
         dt < common::scaled(Duration::from_millis(clamped_num("client.slow_fallback_max_ms", 3000)) + Duration::from_secs(1)),
         "hung-daemon wrapper took {dt:?}"
@@ -657,9 +642,9 @@ fn wrapper_fails_open_under_one_second_when_daemon_accepts_and_never_replies() {
     let _timing = wrapper_timing_lock();
     let e = Env::new("wraphung", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&e, || None);
-    let (out, err, code, dt) = e.wrapper_hook_err(DENY_IN);
+    let (out, code, dt) = e.wrapper_hook(DENY_IN);
     println!("TIMING wrapper hung-daemon separate wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
-    assert_timeout_fails_closed(code, &out, &err);
+    assert_eq!((code, out.as_str()), (0, ""), "no reply in the window fails open, no Node hook");
     assert!(dt < common::scaled(Duration::from_millis(clamped_num("client.slow_fallback_max_ms", 3000)) + Duration::from_secs(1)), "wrapper took {dt:?}");
     settle_after_cold_slow(&e);
     assert!(e.fresh_down_marker(), "hung wrapper did not write daemon-down marker");
@@ -671,9 +656,9 @@ fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
     let _timing = wrapper_timing_lock();
     let high = Env::new("wrapenvdeadline-high", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "5000"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&high, || None);
-    let (out, err, code, dt) = high.wrapper_hook_err(DENY_IN);
+    let (out, code, dt) = high.wrapper_hook(DENY_IN);
     println!("TIMING wrapper hung-daemon env-deadline-5000-clamped wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
-    assert_timeout_fails_closed(code, &out, &err);
+    assert_eq!((code, out.as_str()), (0, ""), "{code} {out}");
     assert!(dt < common::scaled(Duration::from_secs(4)), "wrapper took {dt:?}");
     settle_after_cold_slow(&high);
     assert!(high.fresh_down_marker(), "wrapper killed client before it wrote the daemon-down marker");
@@ -681,9 +666,9 @@ fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
 
     let lower = Env::new("wrapenvdeadline-low", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "200"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&lower, || None);
-    let (out, err, code, dt) = lower.wrapper_hook_err(DENY_IN);
+    let (out, code, dt) = lower.wrapper_hook(DENY_IN);
     println!("TIMING wrapper hung-daemon env-deadline-200 wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
-    assert_timeout_fails_closed(code, &out, &err);
+    assert_eq!((code, out.as_str()), (0, ""), "{code} {out}");
     assert!(dt < common::scaled(Duration::from_secs(4)), "wrapper took {dt:?}");
     lower.prime_defaults_cache();
     let (_, _, warm) = wrapper_once(&lower);

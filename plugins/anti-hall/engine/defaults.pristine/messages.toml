@@ -373,18 +373,6 @@ value = "the engine could not be started"
 doc = "The {why} of the engine-unreachable notice when the client could not reach the engine's daemon (down, breaker open, crash-loop stop)."
 value = "the engine daemon could not be reached"
 
-[msg.engine_slow_degraded_notice]
-doc = "Printed once per session on stderr when a call passes because the slow-reply recovery is tripped (client.slow_down_n timeouts in a row, no answer since). Placeholders: {event}, {n}."
-value = "anti-hall: the engine missed {n} replies in a row, so this {event} call and the next ones go through unchecked (safety guards included) until it answers again. Run `ah-engine doctor` if it keeps happening."
-
-[msg.engine_slow_degraded_log]
-doc = "Event-log line when the slow-reply recovery trips. Placeholder: {n}."
-value = "{n} timed-out replies in a row: calls pass unchecked until the daemon answers again"
-
-[msg.engine_slow_restored_log]
-doc = "Event-log line when the daemon answers again after the slow-reply recovery tripped."
-value = "the daemon answered again: the guards answer by their policies again"
-
 [msg.launcher_stale_engine]
 doc = "Printed once per session on stderr by the thin client when the installed engine is older than the version the plugin pins (ah-engine.lock): guards written for the newer engine may not run. Placeholders: {have} (installed), {want} (pinned)."
 value = "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install` (or the anti-hall setup skill) to update it."

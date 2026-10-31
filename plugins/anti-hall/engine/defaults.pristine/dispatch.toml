@@ -294,7 +294,7 @@ doc = "The status counter group (status.advisory.<group>.<check>) that counts th
 value = "fail_open"
 
 [dispatch.fail_open_notice_tag]
-doc = "The once-per-session stamp tag of the notice told when a non-safety guard entry was let through unanswered."
+doc = "The stamp tag of the could-not-run notice (a non-safety check let through unanswered, or a call passed because the daemon gave no reply): joined with the hook event, it is told at most once per session and event family, on stderr, and only once it is in the final answer."
 value = "dispatch-fail-open"
 
 [dispatch.msg_fail_open_log]

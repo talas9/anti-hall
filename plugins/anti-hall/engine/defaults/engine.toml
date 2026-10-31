@@ -214,14 +214,6 @@ value = "daemon.down.until"
 doc = "Client marker holding the count of consecutive slow (late) daemon replies and when the streak began; a normal reply removes it."
 value = "daemon.slow.streak"
 
-[files.slow_degraded]
-doc = "Client marker of a tripped slow-reply recovery (client.slow_down_n timeouts in a row): timed-out calls pass until a completed reply removes it. Holds the streak length."
-value = "daemon.slow.degraded"
-
-[files.slow_degraded_notice_dir]
-doc = "Directory (in the state dir) holding one empty stamp file per session that got the slow-reply recovery notice (msg.engine_slow_degraded_notice). A client creates the session's stamp exclusively, so the notice is shown once per session even when sessions alternate or calls run at once; at most client.slow_degraded_notice_max_stamps stamps are kept, the oldest go first."
-value = "slow-degraded-notice.d"
-
 [files.heartbeat]
 doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir); the watchdog thread touches its modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms)."
 value = "daemon.heartbeat"
@@ -618,7 +610,7 @@ value = 10
 unit = "ms"
 
 [client.slow_fallback_max_ms]
-doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then answers each entry by its failure policy (a safety guard fails closed) and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
+doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then fails the call open and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
 value = 3000
 env = "AH_ENGINE_SLOW_FALLBACK_MAX_MS"
 min = 0
@@ -636,46 +628,20 @@ env = "AH_ENGINE_DOWN_MARKER_TTL_MS"
 unit = "ms"
 
 [client.slow_down_n]
-doc = "Consecutive slow (late) daemon replies within client.slow_window_ms after which the daemon is treated as wedged and marked down. A single call that gets no reply in the window never marks it down: each of its entries answers by its own failure policy (a safety guard fails closed, the rest pass under guards.failOpenNonSafety) and the next client asks the daemon again."
+doc = "Consecutive slow (late) daemon replies within client.slow_window_ms after which the daemon is treated as wedged and marked down. A single call that gets no reply in the window never marks it down: it fails open and the next client asks the daemon again."
 value = 5
 env = "AH_ENGINE_SLOW_DOWN_N"
 min = 1
 
+[client.timeout_skip_name_key_by_check]
+doc = "Per check, the defaults key holding the name its script checks in the skip file (~/.anti-hall/skip.json). A check the daemon gave no answer for in a completed reply (a busy or unusable reply, a dropped answer) passes when that guard is skipped, as its script would; a check without a row is looked up by its own name. A skip of everything never covers guardkit.destructive_guards."
+value = { git = "git.guard_name", api-guard = "api_guard.guard_name", edit-guard = "edit_guard.guard_name", ship-it-guard = "ship_it.guard_name", command = "command.guard_name", merge-gate = "merge_gate.guard_name", swarm-guard = "swarm_guard.guard_name", compact-declaration-guard = "compact_decl.guard_name", inbox-read-guard = "inbox_read.skip_name", ask-guard = "ask_guard.guard_name" }
+
 [client.slow_window_ms]
-doc = "Window in which consecutive slow daemon replies are counted toward client.slow_down_n; a streak older than this starts over. 0 (the default) counts consecutive timeouts whatever their wall time, reset only by a completed reply: each serial timeout already waits client.slow_fallback_max_ms, so any window must be at least client.slow_down_n times that or the streak never trips (Codex P1 on #473: 5 x 2.6 s > 10 s left the safety guards blocked forever). Once it trips, timed-out calls pass with one notice per session (msg.engine_slow_degraded_notice) until the daemon answers again."
-value = 0
+doc = "Window in which consecutive slow daemon replies are counted toward client.slow_down_n; a streak older than this starts over."
+value = 10000
 env = "AH_ENGINE_SLOW_WINDOW_MS"
 unit = "ms"
-
-[client.slow_degraded_counter]
-doc = "Status advisory counter kind of the slow-reply recovery (#463, Codex P1 on #473): `tripped` when client.slow_down_n timeouts came in a row, `passed` for each call that then went through unchecked, `restored` when the daemon answered again (metric words: client.slow_degraded_tripped/passed/restored)."
-value = "client_slow_degraded"
-
-[client.slow_degraded_tripped]
-doc = "Metric of client.slow_degraded_counter counted when the slow-reply recovery trips."
-value = "tripped"
-
-[client.slow_degraded_passed]
-doc = "Metric of client.slow_degraded_counter counted for each call passed while the slow-reply recovery is tripped."
-value = "passed"
-
-[client.slow_degraded_stamp_failed]
-doc = "Metric of client.slow_degraded_counter counted when a session's notice stamp (files.slow_degraded_notice_dir) could not be created for a reason other than already existing: the notice is then not shown (silent, never repeated)."
-value = "notice_stamp_failed"
-
-[client.slow_degraded_notice_max_stamps]
-doc = "How many per-session notice stamps (files.slow_degraded_notice_dir) are kept; past it the oldest are removed after a new one is created. A session whose stamp was removed may be told once more."
-value = 256
-min = 1
-unit = "count"
-
-[client.slow_degraded_restored]
-doc = "Metric of client.slow_degraded_counter counted when the daemon answers again and the safety guards are restored."
-value = "restored"
-
-[client.timeout_skip_name_key_by_check]
-doc = "Per check, the defaults key holding the name its script checks in the skip file (~/.anti-hall/skip.json). A check the daemon gave no answer for (a timeout, a cut) passes when that guard is skipped, as its script would; a check without a row is looked up by its own name. A skip of everything never covers guardkit.destructive_guards."
-value = { git = "git.guard_name", api-guard = "api_guard.guard_name", edit-guard = "edit_guard.guard_name", ship-it-guard = "ship_it.guard_name", command = "command.guard_name", merge-gate = "merge_gate.guard_name", swarm-guard = "swarm_guard.guard_name", compact-declaration-guard = "compact_decl.guard_name", inbox-read-guard = "inbox_read.skip_name", ask-guard = "ask_guard.guard_name" }
 
 [client.heartbeat_stale_ms]
 doc = "A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. 0 disables the check."

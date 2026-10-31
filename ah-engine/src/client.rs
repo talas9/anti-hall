@@ -24,10 +24,6 @@ use std::time::{Duration, Instant};
 thread_local! {
     static LAST_NON_OK_REPLY: Cell<bool> = const { Cell::new(false) };
     static LAST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
-    /// The last exchange got no reply within its whole wait window (`Exch::Slow`): the daemon may be judging it still.
-    static LAST_TIMED_OUT: Cell<bool> = const { Cell::new(false) };
-    /// The last exchange's timeout tripped the slow-reply recovery ([`slow_streak_tripped`]): that call still answers by policy.
-    static LAST_TRIPPED: Cell<bool> = const { Cell::new(false) };
     /// Set by the dispatcher for a guard event (dispatch.guard_events): such a call waits for a starting daemon.
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
 }
@@ -36,16 +32,6 @@ thread_local! {
 /// (`client.cold_guard_wait_ms`) instead of answering nothing; prompts and advisories never wait.
 pub(crate) fn set_guard_call(on: bool) {
     GUARD_CALL.set(on);
-}
-
-/// Whether the last call timed out waiting for its reply (and clear the mark).
-pub(crate) fn take_timed_out() -> bool {
-    LAST_TIMED_OUT.replace(false)
-}
-
-/// Whether the last call's timeout tripped the slow-reply recovery (and clear the mark).
-pub(crate) fn take_tripped() -> bool {
-    LAST_TRIPPED.replace(false)
 }
 
 pub(crate) fn take_non_ok_reply() -> bool {
@@ -71,9 +57,8 @@ pub enum Exch {
     Failed(String),
     /// No reply within the whole wait window (the deadline, extended to `client.slow_fallback_max_ms` for a daemon that is alive
     /// but late; on macOS an SO_RCVTIMEO expiry reads as EAGAIN, os error 35). The daemon may already have processed the
-    /// request, so this call runs no Node hook (it would count twice): the dispatcher answers each entry by its own failure policy
-    /// (a safety guard fails closed, the rest pass under guards.failOpenNonSafety), and no down marker, spawn or breaker failure
-    /// follows unless `client.slow_down_n` such calls come in a row (a wedged daemon).
+    /// request, so this call runs no Node hook (it would count twice): it fails open, and no down marker, spawn or breaker
+    /// failure follows unless `client.slow_down_n` such calls come in a row (a wedged daemon).
     Slow(String),
     /// Past the deadline, and the daemon's heartbeat (`files.heartbeat`) is older than `client.heartbeat_stale_ms`: the process is
     /// stopped or wedged, not slow, so the call stops waiting at once (no slow window). `true` = confirmed (the same heartbeat
@@ -398,6 +383,12 @@ pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
     }
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the notice is still shown when the marker cannot be written
     crate::discard::logged("unreachable_notice_write", crate::atomic::write(&file, format!("{sid}\n")));
+    unreachable_text(event)
+}
+
+/// The text of the engine-unreachable notice (`msg.engine_unreachable_notice`) for `event`, without any once-per-session stamp:
+/// the dispatcher stamps it per session and event family itself.
+pub(crate) fn unreachable_text(event: Option<&str>) -> String {
     defaults::render("msg.engine_unreachable_notice", &[("event", &event.unwrap_or_default()), ("why", &defaults::text("msg.engine_unreachable_why_daemon"))])
 }
 
@@ -430,9 +421,7 @@ fn mark_daemon_down(reason: &str) {
 }
 
 /// Count this slow reply into the streak file (`count first_ts_ms`); true once `client.slow_down_n` slow replies came in a
-/// row (within `client.slow_window_ms` when that is not 0; 0, the default, counts consecutive timeouts whatever their wall time,
-/// since each serial timeout already waits the whole slow window). A completed reply removes the file. A trip also sets the
-/// degraded state ([`slow_degraded`]), which only an answer clears. Concurrent clients race on it, which only makes the
+/// row within `client.slow_window_ms`. A normal reply removes the file. Concurrent clients race on it, which only makes the
 /// count approximate, so an unreadable or unwritable streak counts as no streak.
 fn slow_streak_tripped() -> bool {
     let (now, window) = (health::now_ms(), defaults::num("client.slow_window_ms"));
@@ -443,15 +432,11 @@ fn slow_streak_tripped() -> bool {
         Some((it.next()?, it.next()?))
     });
     let (count, first) = match prev {
-        Some((c, f)) if window == 0 || now.saturating_sub(f) <= window => (c + 1, f),
+        Some((c, f)) if now.saturating_sub(f) <= window => (c + 1, f),
         _ => (1, now),
     };
     if count >= defaults::num("client.slow_down_n") {
         clear_slow_streak();
-        // #463 P1: a daemon that keeps a healthy heartbeat but misses every reply must not keep the safety guards blocked forever
-        crate::discard::logged("slow_degraded_write", crate::atomic::write(state_file("slow_degraded"), count.to_string()));
-        crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_tripped"));
-        health::log_event("client_slow_degraded", "daemon", &defaults::render("msg.engine_slow_degraded_log", &[("n", &count)]));
         return true;
     }
     crate::discard::logged("slow_streak_write", crate::atomic::write(&path, format!("{count} {first}")));
@@ -479,75 +464,6 @@ fn create_marker(p: &std::path::Path) -> std::io::Result<()> {
 
 fn clear_slow_streak() {
     crate::discard::harmless(std::fs::remove_file(state_file("slow_streak"))); // keep: absent streak is the desired state
-}
-
-/// True while the slow-reply recovery is tripped ([`slow_streak_tripped`]): `client.slow_down_n` timeouts came in a row and no
-/// answer since. A timed-out call then passes (each safety guard included) with one notice per session ([`slow_degraded_notice`]).
-pub(crate) fn slow_degraded() -> bool {
-    state_file("slow_degraded").exists()
-}
-
-/// The daemon answered (any completed reply): the slow streak starts over and a tripped recovery is restored.
-fn answered() {
-    clear_slow_streak();
-    if std::fs::remove_file(state_file("slow_degraded")).is_ok() {
-        crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_restored"));
-        health::log_event("client_slow_restored", "daemon", defaults::text("msg.engine_slow_restored_log"));
-    }
-}
-
-/// The once-per-session notice of a call passed while the slow-reply recovery is tripped ([`slow_degraded`]), counted each time
-/// at `client.slow_degraded_counter`; empty when this session already heard it. The session's stamp is created exclusively
-/// ([`first_notice_in`]), so alternating sessions and concurrent calls tell each session once.
-pub(crate) fn slow_degraded_notice(raw: &str, event: &str) -> String {
-    crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_passed"));
-    let sid = serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|p| p.get("session_id").and_then(|v| v.as_str().map(str::to_owned)))
-        .unwrap_or_else(|| "none".into());
-    if !first_notice_in(&state_file("slow_degraded_notice_dir"), &sid, defaults::num("client.slow_degraded_notice_max_stamps") as usize) {
-        return String::new();
-    }
-    let n = std::fs::read_to_string(state_file("slow_degraded")).unwrap_or_default();
-    defaults::render("msg.engine_slow_degraded_notice", &[("event", &event), ("n", &n.trim())])
-}
-
-/// True for exactly one caller per session id: the one that creates the session's stamp file in `dir` (named by the SHA-256 of the id,
-/// so any id is a safe file name). An existing stamp, or any failure to create one, answers false: a stamp that cannot be written
-/// is counted (`client.slow_degraded_stamp_failed`) and the notice stays silent rather than repeating. After a new stamp, the
-/// oldest ones past `max` are removed.
-fn first_notice_in(dir: &Path, sid: &str, max: usize) -> bool {
-    let failed = |code: &'static str, e: &dyn std::fmt::Display| {
-        crate::discard::logged::<(), _>(code, Err(e));
-        crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_stamp_failed"));
-        false
-    };
-    if let Err(e) = crate::limits::ensure_private_dir(dir) {
-        return failed("slow_degraded_stamp_dir", &e);
-    }
-    let name: String = ring::digest::digest(&ring::digest::SHA256, sid.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect();
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&name)) {
-        Ok(_) => {
-            prune_stamps(dir, &name, max);
-            true
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(e) => failed("slow_degraded_stamp_create", &e),
-    }
-}
-
-/// Keep at most `max` stamps in `dir`, removing the oldest by modification time; `keep` (the stamp just made) is never removed.
-fn prune_stamps(dir: &Path, keep: &str, max: usize) {
-    let Some(rd) = crate::discard::logged_ok("slow_degraded_stamp_list", std::fs::read_dir(dir)) else { return };
-    let mut stamps: Vec<(std::time::SystemTime, PathBuf)> =
-        rd.filter_map(Result::ok).filter(|e| e.file_name() != keep).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
-    if stamps.len() < max {
-        return;
-    }
-    stamps.sort();
-    for (_, p) in stamps.iter().take(stamps.len() + 1 - max) {
-        crate::discard::logged("slow_degraded_stamp_prune", std::fs::remove_file(p));
-    }
 }
 
 fn clear_daemon_down_marker() {
@@ -766,8 +682,6 @@ pub(crate) fn release_wait_marker() {
 fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_on_ok: bool) -> Option<String> {
     LAST_NON_OK_REPLY.set(false);
     LAST_UNAVAILABLE.set(false);
-    LAST_TIMED_OUT.set(false);
-    LAST_TRIPPED.set(false);
     if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked() {
         note_unavailable();
         health::log_event("client_skip", "daemon", defaults::text("msg.client_skip"));
@@ -783,12 +697,12 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
                 wait_marker(false);
             }
             clear_daemon_down_marker();
-            answered();
+            clear_slow_streak();
             Some(body)
         }
         Exch::Reply(_, _) => {
             // a completed valid reply (BUSY / ERR) is not a slow one: the streak counts consecutive slow replies only
-            answered();
+            clear_slow_streak();
             LAST_NON_OK_REPLY.set(true);
             None
         }
@@ -807,15 +721,11 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
         }
         Exch::Slow(why) => {
             // nothing came within the whole window, but the daemon may have processed the request already: running the Node
-            // hooks too would count the call twice, so this call never goes to Node; each entry answers by its failure policy
+            // hooks too would count the call twice, so this call fails open (the unavailable path), never to Node
             wait_marker(false);
             note_unavailable();
-            LAST_TIMED_OUT.set(true); // the dispatcher answers each entry by its policy: a safety guard fails closed (Codex P1)
             health::log_event("client_slow", "daemon", &why);
-            let was_degraded = slow_degraded();
             if slow_streak_tripped() {
-                // a fresh trip still answers by policy; a streak that trips again while already degraded passes like the calls before it
-                LAST_TRIPPED.set(!was_degraded);
                 mark_daemon_down(&why); // wedged: later clients skip it
             }
             None
@@ -902,21 +812,11 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
                         wait_marker(false);
                     }
                     clear_daemon_down_marker();
-                    answered();
                     Some(body)
                 }
                 Exch::Reply(_, _) => {
-                    answered();
                     wait_marker(false);
                     LAST_NON_OK_REPLY.set(true);
-                    None
-                }
-                Exch::Slow(why) => {
-                    // the started daemon was reached but its reply came too late: as in `attempt_with`, each entry by its policy
-                    wait_marker(false);
-                    note_unavailable();
-                    LAST_TIMED_OUT.set(true);
-                    health::log_event("client_slow", "daemon", &why);
                     None
                 }
                 _ => {
@@ -1251,41 +1151,8 @@ fn panic_code(_args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    /// Codex P1 on #473: the slow streak window must hold client.slow_down_n serial timeouts of the default wait, or it never trips.
-    #[test]
-    fn the_slow_streak_window_fits_the_default_serial_timeouts() {
-        let (w, n, each) = (defaults::num("client.slow_window_ms"), defaults::num("client.slow_down_n"), defaults::num("client.slow_fallback_max_ms"));
-        assert!(w == 0 || w >= n * each, "window {w} ms < {n} x {each} ms: the streak resets before it trips");
-    }
-
     use super::*;
     use crate::checks::Exact;
-
-    #[test]
-    fn a_notice_stamp_is_created_once_per_session_and_the_oldest_are_pruned() {
-        let dir = std::env::temp_dir().join(format!("ah-client-stamps-{}", std::process::id())).join("stamps");
-        assert!(first_notice_in(&dir, "a", 3));
-        assert!(first_notice_in(&dir, "b", 3));
-        assert!(!first_notice_in(&dir, "a", 3), "A again is not told twice");
-        std::thread::sleep(Duration::from_millis(20));
-        assert!(first_notice_in(&dir, "c", 3));
-        std::thread::sleep(Duration::from_millis(20));
-        assert!(first_notice_in(&dir, "d", 3));
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3, "bounded by the maximum");
-        assert!(!first_notice_in(&dir, "d", 3), "the newest stamp survives the prune");
-        crate::discard::harmless(std::fs::remove_dir_all(dir.parent().unwrap())); // keep: cleanup that raced; an absent file is the goal state
-    }
-
-    #[test]
-    fn an_unwritable_notice_stamp_dir_is_silent() {
-        let base = std::env::temp_dir().join(format!("ah-client-stamps-ro-{}", std::process::id()));
-        std::fs::create_dir_all(&base).unwrap();
-        let file = base.join("not-a-dir");
-        std::fs::write(&file, "x").unwrap();
-        assert!(!first_notice_in(&file.join("stamps"), "a", 3), "no stamp, no notice");
-        assert!(!first_notice_in(&file, "a", 3), "a file where the directory goes: no notice, never a repeat");
-        crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
-    }
 
     #[test]
     fn the_wait_marker_is_one_plain_empty_file_with_no_temp_file_left() {
