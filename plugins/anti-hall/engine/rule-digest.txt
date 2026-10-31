@@ -72,6 +72,15 @@ disk_watch.sw_enabled	- disk_watch.msg: Low disk space: ....
 	- git.commit_file_jev: commit message file credits an AI assistant.
 	- git.creating_credit: git ... would create a commit with AI credit.
 	- git.creating_credit_elsewhere: git ... is chained with text containing AI credit.
+	- git.commit_expansion: the commit message holds a shell expansion (...).
+	- git.push_credit: this push would publish commits with AI credit: ....
+	- git.push_dynamic_repo: this push runs in a repository path the guard cannot read before it runs (...).
+	- git.push_over_cap: more than ... local commits are on no remote, more than the credit check reads.
+	- git.push_same_call: this call creates a commit whose message the guard cannot read (git ...) and pushes in the same call.
+	- git.push_tag_credit: the local annotated tag ... carries an AI credit in its message.
+	- git.script_credit: this call runs ..., whose line ... carries an AI credit line.
+	- git_audit.credit: the commit(s) just written carry AI credit (...).
+	- git_audit.published: the commit(s) just written carry AI credit (...) and are already on a remote (...).
 	- edit_guard.self_edit: ... on .anti-hall/edit-allow.json is not allowed.
 	- edit_guard.outside: ... on a handover file outside the project is not allowed.
 	- edit_guard.new: a new handover must be written at the session path.
