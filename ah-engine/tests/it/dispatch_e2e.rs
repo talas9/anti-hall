@@ -1488,11 +1488,8 @@ fn a_timed_out_call_honors_the_guard_skip_file() {
 /// `command` check once fell back to `command` while its guard's name is `command-guard`. (Fail-open checks pass on a timeout anyway.)
 #[test]
 fn every_timeout_failing_closed_check_resolves_to_a_known_skip_name() {
-    let known: std::collections::BTreeSet<&str> = ah_engine::defaults::all()
-        .iter()
-        .filter(|e| e.key.ends_with("guard_name") || e.key.ends_with("skip_name"))
-        .filter_map(|e| e.value.as_str())
-        .collect();
+    let known: std::collections::BTreeSet<&str> =
+        ah_engine::defaults::all().iter().filter(|e| e.key.ends_with("guard_name") || e.key.ends_with("skip_name")).filter_map(|e| e.value.as_str()).collect();
     let names = ah_engine::defaults::raw("client.timeout_skip_name_key_by_check");
     let mut checks = std::collections::BTreeSet::new();
     for host in ah_engine::dispatch::table::hosts() {

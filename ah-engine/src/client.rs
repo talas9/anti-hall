@@ -539,11 +539,8 @@ fn first_notice_in(dir: &Path, sid: &str, max: usize) -> bool {
 /// Keep at most `max` stamps in `dir`, removing the oldest by modification time; `keep` (the stamp just made) is never removed.
 fn prune_stamps(dir: &Path, keep: &str, max: usize) {
     let Some(rd) = crate::discard::logged_ok("slow_degraded_stamp_list", std::fs::read_dir(dir)) else { return };
-    let mut stamps: Vec<(std::time::SystemTime, PathBuf)> = rd
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name() != keep)
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-        .collect();
+    let mut stamps: Vec<(std::time::SystemTime, PathBuf)> =
+        rd.filter_map(Result::ok).filter(|e| e.file_name() != keep).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
     if stamps.len() < max {
         return;
     }
