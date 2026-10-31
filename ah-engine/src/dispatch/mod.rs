@@ -516,7 +516,10 @@ fn start_node(e: &table::Entry, _raw: &[u8], _payload: Option<&File>) -> node::R
 /// a daemon that could not run it). There is no Node hook to hand it to, so the check's failure policy decides
 /// ([`crate::script::unanswered`]): `open` allows (counted `abandoned` and told to the user once per session), `closed` blocks on a
 /// guard event. Never a hook that "could not run", which on a guard event would fail the whole event closed.
-fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
+/// `tell`: the dispatcher itself tells the session the check could not run (only for a call whose daemon reply timed out, Codex P2
+/// on #473: that call used to carry the unreachable notice); otherwise an open check allows quietly here, as before #473, and a guard
+/// event's fail-open entries carry the one notice of [`fail_open_result`].
+fn resolve_unanswered(e: &table::Entry, event: &str, tell: bool) -> combine::HookResult {
     // the daemon says why (`answer_dropped` / `guard_answer_dropped` in the event log, `answers_dropped` in status); this side counts the decision
     crate::obs::counters::handback_why(
         crate::obs::counters::Handback::Abandoned,
@@ -526,9 +529,10 @@ fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
     let check = e.check.as_deref().unwrap_or(&e.id);
     let mut v = crate::script::unanswered(check, event);
     // the dispatcher is one process per call, so the script's in-memory once-per-session set forgets the notice by the next call:
-    // a persistent per-session stamp of the check keeps it to one per session across calls (#473: a timed-out check repeated it)
+    // one persistent per-session stamp keeps it to ONE could-not-run notice per session across calls and checks (#473: a timed-out
+    // check repeated it; a per-check stamp told every unanswered check of a call at once)
     let session = crate::script::session();
-    if matches!(v, crate::checks::Verdict::Advisory(_)) && !session.is_empty() && !health::first_in_session(&session, &notice_tag(check)) {
+    if matches!(v, crate::checks::Verdict::Advisory(_)) && (!tell || session.is_empty() || !health::first_in_session(&session, notice_tag())) {
         v = crate::checks::Verdict::Allow;
     }
     match native::answer_of(&e.id, Some(v)) {
@@ -537,9 +541,9 @@ fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
     }
 }
 
-/// The once-per-session stamp tag of check `check`'s could-not-run notice (`dispatch.fail_open_notice_tag` and the check).
-fn notice_tag(check: &str) -> String {
-    format!("{}|{check}", defaults::text("dispatch.fail_open_notice_tag"))
+/// The once-per-session stamp tag of the dispatcher's could-not-run notice (`dispatch.fail_open_notice_tag`), one for all checks.
+fn notice_tag() -> &'static str {
+    defaults::text("dispatch.fail_open_notice_tag")
 }
 
 /// Whether a call the daemon gave no answers for passes at once (exit 0, the unreachable notice) instead of answering every entry by
@@ -586,10 +590,10 @@ fn fail_open_result(e: &table::Entry, event: &str, payload: &Value) -> combine::
     crate::obs::counters::advisory(defaults::text("dispatch.fail_open_counter"), check);
     crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
     health::log_event("dispatch_fail_open", event, &defaults::render("dispatch.msg_fail_open_log", &[("check", &check), ("event", &event)]));
-    let mut r = resolve_unanswered(e, event);
+    let mut r = resolve_unanswered(e, event, false);
     let session = payload.get("session_id").and_then(Value::as_str).unwrap_or_default();
     // the same stamp as resolve_unanswered's own notice, so a call never tells the session twice
-    if r.out.is_empty() && !session.is_empty() && health::first_in_session(session, &notice_tag(check)) {
+    if r.out.is_empty() && !session.is_empty() && health::first_in_session(session, notice_tag()) {
         let why = defaults::text("script.msg_unanswered");
         let msg = defaults::render("script.msg_guard_down", &[("check", &check), ("why", &why)]);
         r.out = format!("{}\n", serde_json::json!({ defaults::text("script.notice_key"): msg }));
@@ -772,6 +776,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         // the daemon clamps its inner budgets (git, Jev) to what this client still waits (review finding 4)
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
     };
+    // set below for a call whose daemon reply timed out: only then does this process tell the session an open check could not run
+    let mut tell_unanswered = false;
     let answers = match (&parsed, complete) {
         // A payload serde_json cannot read falls back to Node (JS may still parse it, e.g. a lone surrogate escape): the
         // engine must not be a worse guard than Node (D74). Only a guard entry with no runnable Node command blocks.
@@ -791,6 +797,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 // payload's (Codex P2: unset, a timed-out open check allowed silently and a skipped safety guard still blocked)
                 crate::script::set_session(parsed.as_ref().and_then(|p| p.get("session_id")).and_then(serde_json::Value::as_str).unwrap_or_default());
                 let (non_ok, timed_out) = (crate::client::take_non_ok_reply(), crate::client::take_timed_out());
+                tell_unanswered = timed_out;
                 // the call that trips the slow recovery still answers by policy: only the calls after the trip pass
                 let tripped_now = crate::client::take_tripped();
                 let unavailable = crate::client::take_unavailable() || crate::client::fail_open_unavailable();
@@ -853,7 +860,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             // below, once the other hooks are running beside it; the Node hook only if it still defers
             Some((_, Answer::Defer)) if parsed.is_some() && e.check.as_deref().is_some_and(|c| blocking_checks.contains(&c)) => blocking.push(i),
             _ if shadow[i] => {} // measured only: nothing decides in its place
-            _ => results[i] = Some(resolve_unanswered(e, &args.event)),
+            _ => results[i] = Some(resolve_unanswered(e, &args.event, tell_unanswered)),
         }
     }
     if !blocking.is_empty() {
@@ -864,7 +871,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 Some(Answer::Decided(r, _)) if shadow[i] => shadow_results[i] = Some(r),
                 Some(Answer::Decided(r, _)) => results[i] = Some(r),
                 _ if shadow[i] => {}
-                _ => results[i] = Some(resolve_unanswered(e, &args.event)),
+                _ => results[i] = Some(resolve_unanswered(e, &args.event, tell_unanswered)),
             }
         }
     }
@@ -1127,7 +1134,7 @@ mod tests {
                     rows += 1;
                     let check = e.check.as_deref().unwrap_or_else(|| panic!("{host}/{event}/{}: a shipped row without a built-in check", e.id));
                     assert!(crate::checks::get(check).is_some(), "{host}/{event}/{}: unknown check {check}", e.id);
-                    let r = resolve_unanswered(&e, event);
+                    let r = resolve_unanswered(&e, event, false);
                     assert_eq!(r.id, e.id);
                     let closed = crate::script::failure_mode(check) == defaults::text("script.failure_mode_closed");
                     let guard = defaults::list("dispatch.guard_events").contains(&event);
@@ -1142,7 +1149,7 @@ mod tests {
     fn an_unanswered_stop_guard_and_session_start_role_allow_instead_of_failing_the_event_closed() {
         for (host, event, check) in [("claude", "Stop", "devswarm-parent-gate"), ("claude", "SessionStart", "devswarm-child-role")] {
             let e = table::entries(host, event).into_iter().find(|e| e.check.as_deref() == Some(check)).unwrap_or_else(|| panic!("{check} on {event}"));
-            let r = resolve_unanswered(&e, event);
+            let r = resolve_unanswered(&e, event, false);
             assert_eq!(r.code, Some(0), "{check}");
             assert!(!r.err.contains("BLOCKED"), "{check}: {}", r.err);
         }
