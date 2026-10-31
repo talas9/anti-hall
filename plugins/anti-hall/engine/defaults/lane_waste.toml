@@ -184,7 +184,7 @@ value = "tell the agent \"skip lane-test-guard\""
 # ---- queued-wait-guard (background builds and sleep loops) -------------------------------------------------
 
 [queued_wait.sw]
-doc = "Default on; off lets a subagent run heavy commands in the background and poll with sleep loops."
+doc = "Off lets a subagent poll background work with sleep loops."
 value = { section = "guards", key = "queuedWaitGuard", type = "boolean", env = "ANTIHALL_QUEUED_WAIT_GUARD", option = "", default = true }
 
 [queued_wait.guard_name]
