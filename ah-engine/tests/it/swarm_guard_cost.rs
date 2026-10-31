@@ -230,3 +230,42 @@ fn the_swarm_guard_failure_notice_is_told_once_per_session() {
     assert!(matches!(&first, ah_engine::checks::Verdict::Advisory(j) if j.contains("swarm-guard") && j.contains("boom")), "{first:?}");
     assert_eq!(ah_engine::script::failed("swarm-guard", "PreToolUse", "boom"), ah_engine::checks::Verdict::Allow);
 }
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let (p, q) = (e.path(), to.join(e.file_name()));
+        if p.is_dir() {
+            copy_tree(&p, &q);
+        } else {
+            std::fs::copy(&p, &q).unwrap();
+        }
+    }
+}
+
+/// D15 on the last-resort path: the editable script.toml is malformed and no last-known-good copy exists, so the engine answers
+/// from `defaults.pristine`; there swarm-guard must still fail open (exit 0, one notice), not return exit 2 BLOCKED.
+#[test]
+fn a_failing_swarm_guard_still_fails_open_when_the_engine_runs_on_the_pristine_copy() {
+    let h = scratch("cost-pristine");
+    put(&h, ".anti-hall/settings.json", NO_CAP);
+    put(&h, "t.jsonl", "");
+    put(&h, ".anti-hall/logic/swarm-guard.js", "throw new Error('injected');\n");
+    let plugin = h.join("plugin");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    copy_tree(&src.join("engine"), &plugin.join("engine"));
+    copy_tree(&src.join("hooks"), &plugin.join("hooks"));
+    let edited = plugin.join("engine/defaults/script.toml");
+    std::fs::write(&edited, "[script\nnot toml").unwrap();
+    assert!(!h.join("engine-state/defaults.lkg").exists(), "no last-known-good copy exists");
+    let root = plugin.to_string_lossy().into_owned();
+    let (code, out, err) = run(
+        &h,
+        &["hook", "--event", "PreToolUse", "--tool", "Agent"],
+        &payload(&h),
+        &[("AH_ENGINE_DISPATCH_IN_PROCESS", "1"), ("AH_ENGINE_PLUGIN_ROOT", &root)],
+    );
+    assert_eq!(code, 0, "a failed swarm-guard on the pristine copy must not refuse the spawn: {out} {err}");
+    assert!(!out.contains("BLOCKED") && !err.contains("BLOCKED"), "not blocked: {out} {err}");
+    assert_eq!(out.matches("swarm-guard guard could not run").count(), 1, "exactly one notice: {out}");
+}

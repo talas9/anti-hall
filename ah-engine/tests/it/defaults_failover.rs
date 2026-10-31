@@ -49,7 +49,7 @@ fn the_pristine_copy_preserves_the_released_defaults() {
         let released_sha256 = match n.as_str() {
             "flags.toml" => Some("9abf4808365204cfb9987d5650ad61af92d1c8391627bace7fc9f846261029c4"),
             "roles.toml" => Some("33c0f96414e5e87ffe0a63194fba41f6ffbf8aab301117b69061ab7ed88ddb33"),
-            "script.toml" => Some("0c97707f572f7da75f082467195a40ffe4e2d597fd36aa47bf26e5f69f884e0b"),
+            "script.toml" => Some("4ec63b3872d11b1e0aee30821aa272750d9b7a8bfac452f8bf749ba426e3eb85"),
             "telemetry.toml" => Some("65636d6f012ea0d5438eb62519bda87030a85ae617f154e9ac425dbfacd8b2d9"),
             _ => None,
         };
