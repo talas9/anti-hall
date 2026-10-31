@@ -210,19 +210,21 @@ fn expand_cfg(t: &str) -> String {
     let open = format!("{{{}", defaults::text("guard_rules.digest_cfg_ref"));
     let mut out = String::new();
     let mut rest = t;
-    while let Some(i) = rest.find(&open) {
-        let after = &rest[i + open.len()..];
-        let Some(j) = after.find('}') else { break };
-        let key = &after[..j];
+    while let Some((head, tail)) = rest.split_once(open.as_str()) {
+        let Some((key, after)) = tail.split_once('}') else { break };
         let v = if defaults::has(key) { Some(defaults::raw(key)) } else { None };
         let v = v.map(|v| v.get("default").unwrap_or(v));
         let txt = v.and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_integer().map(|n| n.to_string())));
-        out.push_str(&rest[..i]);
+        out.push_str(head);
         match txt {
             Some(x) => out.push_str(&x),
-            None => out.push_str(&rest[i..i + open.len() + j + 1]),
+            None => {
+                out.push_str(&open);
+                out.push_str(key);
+                out.push('}');
+            }
         }
-        rest = &after[j + 1..];
+        rest = after;
     }
     out.push_str(rest);
     out
@@ -251,15 +253,16 @@ pub fn rules() -> Vec<Rule> {
 fn plain(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
-    while let Some(i) = rest.find('{') {
-        out.push_str(&rest[..i]);
-        match rest[i..].find('}') {
-            Some(j) => {
+    while let Some((head, tail)) = rest.split_once('{') {
+        out.push_str(head);
+        match tail.split_once('}') {
+            Some((_, after)) => {
                 out.push_str(defaults::text("guard_rules.placeholder"));
-                rest = &rest[i + j + 1..];
+                rest = after;
             }
             None => {
-                out.push_str(&rest[i..]);
+                out.push('{');
+                out.push_str(tail);
                 rest = "";
             }
         }

@@ -1312,7 +1312,7 @@ value = ["completed"]
 
 [tasklist_hygiene.msg_done]
 doc = "What the done line says; {id} is the task id."
-value = "task {id} done: delegate its Cause/Fix/Verified ledger entry to a cheap teammate (facts, exact path, format, no heredoc)."
+value = "task {id} done: delegate its Cause/Fix/Verified ledger entry."
 
 [tasklist_hygiene.instead_done]
 doc = "What to do, in the done line."
@@ -1320,7 +1320,7 @@ value = "TaskUpdate status=deleted (own task entries are not user data)."
 
 [tasklist_hygiene.detail_done]
 doc = "Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from."
-value = "Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
+value = "Delegate the ledger entry to a cheap teammate (facts, exact path, format, no heredoc). Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
 
 [tasklist_hygiene.event_nudge]
 doc = "Counter event: a completed-task note was shown (one per TaskUpdate to a done status)."

@@ -4870,7 +4870,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `tasklist_hygiene.create_tool` | `TaskCreate` |  |  | The tool that creates a task. |
 | `tasklist_hygiene.delete_trigger` | `deleted` |  |  | The TaskUpdate statuses that count as deleting a task. |
-| `tasklist_hygiene.detail_done` | `Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own f...` |  |  | Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from. |
+| `tasklist_hygiene.detail_done` | `Delegate the ledger entry to a cheap teammate (facts, exact path, format, no ...` |  |  | Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from. |
 | `tasklist_hygiene.done_trigger` | `completed` |  |  | The TaskUpdate status values that count as a task being finished and trigger the delete-it line. |
 | `tasklist_hygiene.event_deleted` | `deleted` |  |  | Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge). |
 | `tasklist_hygiene.event_nudge` | `nudge` |  |  | Counter event: a completed-task note was shown (one per TaskUpdate to a done status). |
@@ -4880,7 +4880,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_hygiene.instead_budget` | `keep subjects as `T-<n> [P] title`, details in the history ledger; delete fin...` |  |  | What to do, in the advisory line. |
 | `tasklist_hygiene.instead_done` | `TaskUpdate status=deleted (own task entries are not user data).` |  |  | What to do, in the done line. |
 | `tasklist_hygiene.join` | ` ` |  |  | Separator between the parts of one line. |
-| `tasklist_hygiene.msg_done` | `task {id} done: delegate its Cause/Fix/Verified ledger entry to a cheap teamm...` |  |  | What the done line says; {id} is the task id. |
+| `tasklist_hygiene.msg_done` | `task {id} done: delegate its Cause/Fix/Verified ledger entry.` |  |  | What the done line says; {id} is the task id. |
 | `tasklist_hygiene.msg_open` | `{n} open tasks (budget {max}).` |  |  | The open-count breach; {n} is the open-task count and {max} handover.taskListBudget. |
 | `tasklist_hygiene.msg_subject` | `task subject is {n} chars (max {max}).` |  |  | The subject breach; {n} is the subject length and {max} handover.taskSubjectMax. |
 | `tasklist_hygiene.summary` | `Claude only (Codex has no task tools). After a task is marked completed, tell...` |  |  | One-line description of the tasklist-hygiene check in the generated reference. |
