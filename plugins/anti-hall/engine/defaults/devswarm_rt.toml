@@ -254,7 +254,7 @@ doc = "The compact snapshot copy the statusline segment reads (engine state dire
 value = "devswarm-line.json"
 
 [devswarm_rt.set_line_enabled]
-doc = "Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle)."
+doc = "DevSwarm statusline segment (hidden when idle)."
 value = { type = "bool", section = "statusline", key = "devswarm.enabled", env = "ANTIHALL_STATUSLINE_DEVSWARM", option = "statusline_devswarm_enabled", default = true }
 
 [devswarm_rt.set_line_format]
@@ -262,7 +262,7 @@ doc = "The segment text. `{parts}` is replaced by the non-empty counts (see devs
 value = { type = "string", section = "statusline", key = "devswarm.format", env = "ANTIHALL_STATUSLINE_DEVSWARM_FORMAT", option = "statusline_devswarm_format", default = "ws {parts}" }
 
 [devswarm_rt.set_line_max_chars]
-doc = "The segment is cut to this many characters (an ellipsis marks the cut)."
+doc = "Most characters of the segment."
 value = { type = "number", section = "statusline", key = "devswarm.max_chars", env = "ANTIHALL_STATUSLINE_DEVSWARM_MAX_CHARS", option = "statusline_devswarm_max_chars", min = 4, max = 200, default = 40 }
 
 [devswarm_rt.set_line_stale_ms]

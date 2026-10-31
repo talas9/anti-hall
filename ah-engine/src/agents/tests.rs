@@ -3205,3 +3205,156 @@ fn launch_type_prefers_explicit_metadata_over_the_codex_rescue_inference() {
         assert_eq!(launch_of(&a).1, want, "{meta}");
     }
 }
+
+// ---- nudge signals: stalled (GH #518), idle wake (GH #515), parallelism (GH #517) ----------------------------------------------
+
+fn sub_path(h: &Path, parent: &str) -> PathBuf {
+    h.join(format!(".claude/projects/p/{parent}/subagents/agent-w1.jsonl"))
+}
+
+/// A subagent of `parent` that said two progress lines and ran one answered tool call `last_min` minutes ago, its turn still open.
+fn running_sub(h: &Path, parent: &str, n: u64, last_min: u64) {
+    write(
+        &sub_path(h, parent),
+        &[
+            prompt(n - 40 * MIN, "/w"),
+            asst(n - 30 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "step one: reading the code"}]), None),
+            asst(n - 20 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "step two: building the gate"}]), None),
+            tool(n - last_min * MIN, "s3", 5, "t1", "Read", json!({"file_path": "/w/a"})),
+            result(n - last_min * MIN + 1000, "t1", "ok", false),
+        ],
+    );
+    std::fs::write(h.join(format!(".claude/projects/p/{parent}/subagents/agent-w1.meta.json")), r#"{"description":"gate worker"}"#).unwrap();
+}
+
+fn main_session(h: &Path, sid: &str, n: u64, idle_min: u64, reply: &str) {
+    register(h, std::process::id(), sid, "idle", n);
+    write(&sess(h, sid), &[prompt(n - 90 * MIN, "/w"), asst(n - idle_min * MIN, "p1", 5, 5, json!([{"type": "text", "text": reply}]), Some("end_turn"))]);
+}
+
+fn task_file(h: &Path, sid: &str, t: Value) {
+    let d = h.join(".claude/tasks").join(sid);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(format!("{}.json", t["id"].as_str().unwrap())), t.to_string()).unwrap();
+}
+
+#[test]
+fn a_running_subagent_with_no_observable_change_is_stalled_naming_its_age_and_last_two_progress_lines() {
+    let h = home("stalled");
+    let n = now0();
+    main_session(&h, "parent", n, 1, "waiting");
+    running_sub(&h, "parent", n, 2);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    assert!(!agent(&st, "w1").flags.contains_key("stalled"), "a fresh sample is no stall");
+    ticks(&h, &mut st, &[n + 16 * MIN, n + 17 * MIN]);
+    let a = agent(&st, "w1");
+    assert!(a.flags.contains_key("stalled") && !a.flags.contains_key("hung"), "flags={:?}", a.flags.keys().collect::<Vec<_>>());
+    let q: Vec<Value> = queue(&h, "parent").into_iter().filter(|r| r["signal"] == "stalled").collect();
+    assert_eq!(q.len(), 1, "{q:?}");
+    let t = q[0]["text"].as_str().unwrap();
+    assert!(t.contains("is STALLED") && t.contains("step one: reading the code") && t.contains("step two: building the gate") && t.contains("running "), "{t}");
+    assert_eq!(wake_rows(&h, "parent").iter().filter(|r| r["text"].as_str().unwrap_or("").contains("is STALLED")).count(), 1, "the coordinator is woken");
+}
+
+#[test]
+fn a_subagent_that_keeps_working_is_never_stalled_and_the_off_switch_holds_it() {
+    let h = home("not-stalled");
+    let n = now0();
+    main_session(&h, "parent", n, 1, "waiting");
+    running_sub(&h, "parent", n, 2);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    append(&sub_path(&h, "parent"), &[tool(n + 10 * MIN, "s4", 5, "t2", "Bash", json!({"command": "ls"})), result(n + 10 * MIN + 500, "t2", "ok", false)]);
+    ticks(&h, &mut st, &[n + 16 * MIN, n + 17 * MIN]);
+    assert!(!agent(&st, "w1").flags.contains_key("stalled"), "a new tool call is a change");
+    let h2 = home("stall-off");
+    main_session(&h2, "parent", n, 1, "waiting");
+    running_sub(&h2, "parent", n, 2);
+    std::fs::create_dir_all(h2.join(".anti-hall")).unwrap();
+    std::fs::write(h2.join(".anti-hall/settings.json"), r#"{"nudges":{"stall":false}}"#).unwrap();
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + 16 * MIN, n + 17 * MIN]);
+    assert!(!agent(&st2, "w1").flags.contains_key("stalled"), "nudges.stall off");
+}
+
+#[test]
+fn an_idle_session_with_open_unblocked_tasks_and_no_agent_gets_a_wake_row_that_reaches_it() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let h = home("idle-wake");
+    let n = now0();
+    main_session(&h, "s1", n, 15, "done for now");
+    task_file(&h, "s1", json!({"id": "1", "subject": "Port the gauge", "status": "pending", "owner": "", "blockedBy": []}));
+    task_file(&h, "s1", json!({"id": "2", "subject": "Ship the gauge", "status": "pending", "owner": "", "blockedBy": ["1"]}));
+    task_file(&h, "s1", json!({"id": "3", "subject": "Old work", "status": "completed", "owner": "", "blockedBy": []}));
+    let (seen, stop) = (Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(AtomicBool::new(false)));
+    let t = {
+        let (seen, stop, e2) = (Arc::clone(&seen), Arc::clone(&stop), env(&h, n));
+        std::thread::spawn(move || {
+            wake::pump(&e2, "s1", std::time::Duration::from_millis(20), &mut |l| seen.lock().unwrap().push(l.to_string()), &|| stop.load(Ordering::Relaxed))
+        })
+    };
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let rows = wake_rows(&h, "s1");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let text = rows[0]["text"].as_str().unwrap();
+    assert!(text.contains("1 open unblocked task(s)") && text.contains("Port the gauge") && !text.contains("Ship the gauge"), "{text}");
+    for _ in 0..200 {
+        if seen.lock().unwrap().iter().any(|l| l.contains("Port the gauge")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    stop.store(true, Ordering::Relaxed);
+    t.join().unwrap();
+    assert!(seen.lock().unwrap().iter().any(|l| l.contains("Port the gauge")), "the wake-watch delivers it: {:?}", seen.lock().unwrap());
+    let h2 = home("idle-wake-agent");
+    main_session(&h2, "s1", n, 15, "done for now");
+    task_file(&h2, "s1", json!({"id": "1", "subject": "Port the gauge", "status": "pending", "owner": "", "blockedBy": []}));
+    running_sub(&h2, "s1", n, 1);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + MIN]);
+    assert!(wake_rows(&h2, "s1").iter().all(|r| !r["text"].as_str().unwrap_or("").contains("open unblocked")), "an agent runs: no idle wake");
+}
+
+#[test]
+fn an_idle_teammate_claiming_running_work_with_nothing_running_wakes_the_coordinator() {
+    let n = now0();
+    for (tag, line, want) in [("claim", "The gate is still running in the background, I will report.", true), ("no-claim", "All done, report sent.", false)] {
+        let h = home(tag);
+        main_session(&h, "parent", n, 1, "waiting");
+        write(
+            &sub_path(&h, "parent"),
+            &[
+                prompt(n - 30 * MIN, "/w"),
+                tool(n - 20 * MIN, "s1", 5, "t1", "Read", json!({"file_path": "/w/a"})),
+                result(n - 20 * MIN + 500, "t1", "ok", false),
+                asst(n - 10 * MIN, "s2", 5, 5, json!([{"type": "text", "text": line}]), Some("end_turn")),
+            ],
+        );
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n, n + MIN]);
+        let q: Vec<Value> = queue(&h, "parent").into_iter().filter(|r| r["signal"] == "false_claim").collect();
+        assert_eq!(q.len(), usize::from(want), "{tag}: {q:?}");
+        if want {
+            assert!(q[0]["text"].as_str().unwrap().contains("claims running work but nothing is running"), "{q:?}");
+        }
+    }
+}
+
+#[test]
+fn an_idle_coordinator_under_the_cap_with_reply_gaps_not_in_the_task_list_is_told_to_dispatch_in_parallel() {
+    let h = home("parallel");
+    let n = now0();
+    main_session(&h, "s1", n, 5, "Status.\nKnown gaps:\n- wire the codex port\n- add the docs page\nThat is all.");
+    task_file(&h, "s1", json!({"id": "1", "subject": "Add the docs page", "status": "in_progress", "owner": "w1", "blockedBy": []}));
+    running_sub(&h, "s1", n, 1);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let q: Vec<Value> = queue(&h, "s1").into_iter().filter(|r| r["signal"] == "underparallel").collect();
+    assert_eq!(q.len(), 1, "{:?}", queue(&h, "s1"));
+    let t = q[0]["text"].as_str().unwrap();
+    assert!(t.contains("wire the codex port") && !t.contains("add the docs page") && t.contains("only 1 agent(s) running") && t.contains("in parallel"), "{t}");
+}

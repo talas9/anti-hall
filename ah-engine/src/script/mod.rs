@@ -1036,6 +1036,9 @@ pub fn expand_now(s: &str, now_ms: f64) -> String {
 #[cfg(test)]
 mod golden;
 #[cfg(test)]
+#[path = "ladder_kinds/tests.rs"]
+mod ladder_kinds;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 #[path = "golden_d6/tests.rs"]
