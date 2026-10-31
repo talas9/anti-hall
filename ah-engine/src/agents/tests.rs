@@ -350,6 +350,323 @@ fn burn_without_outcome_warns_at_the_soft_line_blocks_at_the_hard_line_and_a_com
     assert!(!marker.exists());
 }
 
+/// GH #458 / PR #472 soft outcomes. Threat model: an ACCIDENTAL runaway (a loop, polling, waiting), not deliberate spoofing. A live probe
+/// is a SOFT outcome: it never resets the burn accounting, it only holds off the pause for burn.soft_hold.hold_ms inside a burn episode
+/// that has not spent its cap, so a polling loop is paused after the cap (a shell-file write and a passing check are HARD: tests a1/a2).
+/// A build still in flight holds off the pause too (bounded by burn.doubt.max_ms) and the hard reminder says so.
+#[test]
+fn soft_outcomes_never_reset_burn_hold_off_the_pause_up_to_the_cap_and_a_build_in_flight_holds_it_gh458() {
+    let h = home("burn458");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 7 * MIN, "/w"), asst(n - 6 * MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n - 5 * MIN]);
+    // past the hard line while a build waits on the cargo lock: hard flag (the nudge) stands, the pause is held off and not claimed
+    append(
+        &p,
+        &[
+            asst(n + MIN, "m1", 3_500_000, 10, json!([{"type": "text", "text": "planning"}]), None),
+            tool(n + 2 * MIN, "m2", 10, "u2", "Bash", json!({"command": "lockf -t 3600 /x/cargo-heavy.lock nice -n 10 cargo build -j4"})),
+        ],
+    );
+    ticks(&h, &mut st, &[n + 3 * MIN]);
+    assert!(agent(&st, "s1").flags.contains_key("burn_hard"), "{:?}", agent(&st, "s1").flags.keys().collect::<Vec<_>>());
+    assert!(!marker.exists(), "a running build holds off the pause");
+    let note = queue(&h, "s1").iter().map(|r| r.to_string()).collect::<Vec<_>>().join(" ");
+    assert!(!note.contains("are paused"), "the hard reminder does not claim a pause it held off: {note}");
+    // the build fails: nothing holds the pause off any more
+    append(&p, &[result(n + 4 * MIN, "u2", "error: could not compile `x`", false)]);
+    ticks(&h, &mut st, &[n + 5 * MIN]);
+    assert!(marker.exists(), "no build in flight: the pause stands");
+    // a few live probes are soft outcomes: no progress, the burn count stands, but a recent one inside the episode holds off the pause
+    let mut lines = Vec::new();
+    for k in 0..2 {
+        let id = format!("s{k}");
+        lines.push(tool(n + 6 * MIN, &format!("ms{k}"), 10, &id, "Bash", json!({"command": format!("curl --version #{k}")})));
+        lines.push(result(n + 6 * MIN, &id, "ok", false));
+    }
+    append(&p, &lines);
+    ticks(&h, &mut st, &[n + 7 * MIN]);
+    let a = agent(&st, "s1");
+    assert_eq!(a.progress, 0, "soft outcomes never add progress");
+    assert!(crate::agents::signals::tokens_since_outcome(a, n + 7 * MIN) >= 3_000_000, "the burn count is not reset");
+    assert!(a.flags.contains_key("burn_hard"));
+    assert!(!marker.exists(), "a few recent soft outcomes hold off the pause");
+    // a polling loop: past burn.soft_hold.cap soft outcomes in the window the pause comes back
+    let mut lines = Vec::new();
+    for k in 2..10 {
+        let id = format!("p{k}");
+        lines.push(tool(n + 8 * MIN, &format!("mp{k}"), 10, &id, "Bash", json!({"command": format!("curl -s http://dev/status?t={k}")})));
+        lines.push(result(n + 8 * MIN, &id, "{\"mode\":\"test\"}", false));
+    }
+    append(&p, &lines);
+    ticks(&h, &mut st, &[n + 9 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0);
+    assert!(marker.exists(), "a polling loop is paused once it passes the soft cap");
+}
+
+/// GH #458 review: the soft hold-off is bounded per burn episode, not per sliding window. A polling loop every 6 minutes for 2 hours (each
+/// poll a soft outcome, each spending tokens) is paused once the episode's budget (burn.soft_hold cap / episode_ms) is spent.
+#[test]
+fn a_six_minute_polling_loop_is_paused_once_the_soft_episode_budget_is_spent_gh458() {
+    let h = home("poll458");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let mut paused_at = None;
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        let id = format!("p{k}");
+        append(
+            &p,
+            &[tool(t, &format!("mp{k}"), 700_000, &id, "Bash", json!({"command": format!("curl -s http://dev/status?t={k}")})), result(t, &id, "{}", false)],
+        );
+        ticks(&h, &mut st, &[t + MIN]);
+        if marker.exists() && paused_at.is_none() {
+            paused_at = Some(k);
+        }
+    }
+    assert_eq!(agent(&st, "s1").progress, 0, "polling is no hard outcome");
+    assert!(paused_at.is_some(), "a 6-minute polling loop is paused within 2 hours");
+    assert!(marker.exists(), "and stays paused while it keeps polling");
+}
+
+/// An agent past the hard burn line with its pause marker written (the start of the A1/A2 acceptance tests).
+fn burned(tag: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
+    burned_in(tag, "/w")
+}
+
+/// `burned`, the session working in `cwd` (an empty `cwd`: a directory `w` in the scratch home, created with its `out` folder).
+fn burned_in(tag: &str, cwd: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
+    let h = home(tag);
+    let w = h.join("w");
+    std::fs::create_dir_all(w.join("out")).unwrap();
+    // the directory is a project (its work-tree marker, no readable repository): a file in it is work though the scratch home is a temp dir
+    std::fs::create_dir_all(w.join(".git")).unwrap();
+    let cwd = if cwd.is_empty() { w.to_string_lossy().into_owned() } else { cwd.to_string() };
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, &cwd), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    append(&p, &[asst(n + 19 * MIN, "m1", 3_500_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    ticks(&h, &mut st, &[n + 20 * MIN]);
+    assert!(marker.exists(), "precondition: paused");
+    (h, p, marker, st, n)
+}
+
+/// PR #472 acceptance A1: a successful shell-file write is a HARD outcome: it adds progress and resets the burn episode.
+#[test]
+fn a1_a_shell_file_write_is_a_hard_outcome_and_resets_the_burn_pr472() {
+    let (h, p, marker, mut st, n) = burned_in("a1-472", "");
+    // the write happened: the file exists and was modified at or after the call began
+    touch(&h.join("w/out/result1.txt"), n + 21 * MIN + 1000);
+    append(&p, &[tool(n + 21 * MIN, "m2", 10, "w1", "Bash", json!({"command": "printf 'x\\n' > out/result1.txt"})), result(n + 21 * MIN, "w1", "", false)]);
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > 0, "a shell-file write adds progress");
+    assert!(crate::agents::signals::tokens_since_outcome(a, n + 22 * MIN) < 1_000_000, "the burn count restarts");
+    assert!(!a.flags.contains_key("burn_hard") && !marker.exists(), "the pause is lifted");
+}
+
+/// Create `p` with its modification time at `ms` (milliseconds since the epoch).
+fn touch(p: &Path, ms: u64) {
+    let f = std::fs::File::create(p).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms)).unwrap();
+}
+
+/// PR #472 round 3: a redirect inside a comment or a heredoc body is no write (the engine shell splitter drops both), so it earns no
+/// HARD credit even when the command ends with success.
+#[test]
+fn w1_a_redirect_in_a_comment_or_heredoc_body_is_no_write_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("w1-472", "");
+    for (k, c) in ["printf ok # example > out/comment-file", "cat <<'EOF'\n> out/heredoc-file\nEOF", "echo 'a > out/quoted-file'"].iter().enumerate() {
+        let t = n + (21 + k as u64) * MIN;
+        let id = format!("w{k}");
+        append(&p, &[tool(t, &format!("mw{k}"), 10, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
+        ticks(&h, &mut st, &[t + 30_000]);
+        assert_eq!(agent(&st, "s1").progress, 0, "no HARD credit for {c:?}");
+    }
+}
+
+/// PR #472 round 3: a shell write earns HARD credit only when its target exists after the call and was modified at or after the call
+/// began; a missing target, a stale one or a device is at most SOFT.
+#[test]
+fn w2_a_write_is_hard_only_when_the_target_exists_and_is_fresh_pr472() {
+    let (h, p, marker, mut st, n) = burned_in("w2-472", "");
+    touch(&h.join("w/out/stale.txt"), n - 60 * MIN);
+    for (k, c) in
+        ["printf x > out/missing.txt", "printf x >> out/stale.txt", "printf x > /dev/stderr", "printf x > ../../../../../../dev/null"].iter().enumerate()
+    {
+        let t = n + (21 + k as u64) * MIN;
+        let id = format!("s{k}");
+        append(&p, &[tool(t, &format!("ms{k}"), 10, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
+        ticks(&h, &mut st, &[t + 30_000]);
+        assert_eq!(agent(&st, "s1").progress, 0, "no HARD credit for {c:?}");
+    }
+    let t = n + 30 * MIN;
+    touch(&h.join("w/out/real.txt"), t + 1000);
+    append(&p, &[tool(t, "mr", 10, "r1", "Bash", json!({"command": "printf x > out/real.txt"})), result(t, "r1", "", false)]);
+    ticks(&h, &mut st, &[t + 30_000]);
+    assert!(agent(&st, "s1").progress > 0, "a real fresh write is HARD");
+    assert!(!marker.exists(), "and lifts the pause");
+}
+
+/// PR #472 round 3: an agent that names a new file each call but never writes one is not held off forever: it is paused.
+#[test]
+fn w3_a_new_apparent_path_each_call_still_pauses_pr472() {
+    let h = home("w3-472");
+    let w = h.join("w");
+    std::fs::create_dir_all(&w).unwrap();
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, &w.to_string_lossy()), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    for k in 0..24u64 {
+        let t = n + (5 * k + 1) * MIN;
+        let id = format!("f{k}");
+        let c = format!("printf ok # > out/f{k}.txt");
+        append(&p, &[tool(t, &format!("mf{k}"), 700_000, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
+        ticks(&h, &mut st, &[t + MIN]);
+    }
+    assert_eq!(agent(&st, "s1").progress, 0, "no write ever happened");
+    assert!(marker.exists(), "a changed apparent path each call does not hold off the pause");
+}
+
+/// PR #472 round 3: a check backgrounded with a top-level `&` has not run when its launching shell exits 0: at most SOFT.
+#[test]
+fn bg1_a_check_backgrounded_with_an_ampersand_is_at_most_soft_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("bg1-472", "");
+    append(&p, &[tool(n + 21 * MIN, "m2", 10, "c1", "Bash", json!({"command": "npx tsc --noEmit >/dev/null 2>&1 &"})), result(n + 21 * MIN, "c1", "", false)]);
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    let a = agent(&st, "s1");
+    assert_eq!(a.progress, 0, "a `&` check is no HARD outcome");
+    assert_eq!(a.soft_ts.len(), 1, "it is exactly one SOFT outcome (which may hold the pause off within burn.soft_hold)");
+}
+
+/// PR #472 round 3: a commit or push backgrounded with a top-level `&` earns no credit from its launching shell's exit status.
+#[test]
+fn bg2_a_commit_or_push_backgrounded_with_an_ampersand_earns_no_credit_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("bg2-472", "");
+    for (k, c) in ["git commit -m x >/dev/null 2>&1 &", "git push &"].iter().enumerate() {
+        let t = n + (21 + k as u64) * MIN;
+        let id = format!("g{k}");
+        append(&p, &[tool(t, &format!("mg{k}"), 10, &id, "Bash", json!({"command": c})), result(t, &id, "", false)]);
+        ticks(&h, &mut st, &[t + 30_000]);
+        let a = agent(&st, "s1");
+        assert_eq!((a.progress, a.commits, a.pushes), (0, 0, 0), "no credit for {c:?}");
+    }
+}
+
+/// PR #472 round 3: run_in_background plus a top-level `&` inside the task: the task's completion notice is only the launching shell's,
+/// so the check earns nothing from it.
+#[test]
+fn bg3_run_in_background_with_an_inner_ampersand_is_no_hard_outcome_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("bg3-472", "");
+    let t = n + 21 * MIN;
+    append(
+        &p,
+        &[
+            tool(t, "m2", 10, "c1", "Bash", json!({"command": "npx tsc --noEmit &", "run_in_background": true})),
+            result(t, "c1", "Command running in background with ID: bgx", false),
+        ],
+    );
+    ticks(&h, &mut st, &[t + 30_000]);
+    let done = "<task-notification>\n<task-id>bgx</task-id>\n<status>completed</status>\n</task-notification>";
+    append(&p, &[user_text(t + MIN, done)]);
+    ticks(&h, &mut st, &[t + 2 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0, "an inner `&` check is never HARD");
+}
+
+/// PR #472 acceptance A2: a passing check is a HARD outcome: it adds progress and resets the burn episode.
+#[test]
+fn a2_a_passing_check_is_a_hard_outcome_and_resets_the_burn_pr472() {
+    let (h, p, marker, mut st, n) = burned("a2-472");
+    // a failing check (non-zero exit: the tool result is an error) is no outcome
+    append(
+        &p,
+        &[tool(n + 20 * MIN, "m1f", 10, "c0", "Bash", json!({"command": "cargo fmt --all -- --check"})), result(n + 20 * MIN, "c0", "Exit code 1", true)],
+    );
+    ticks(&h, &mut st, &[n + 21 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0, "a failing check adds nothing");
+    append(&p, &[tool(n + 21 * MIN, "m2", 10, "c1", "Bash", json!({"command": "cargo fmt --all -- --check"})), result(n + 21 * MIN, "c1", "", false)]);
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > 0, "a passing check adds progress");
+    assert!(crate::agents::signals::tokens_since_outcome(a, n + 22 * MIN) < 1_000_000, "the burn count restarts");
+    assert!(!a.flags.contains_key("burn_hard") && !marker.exists(), "the pause is lifted");
+}
+
+/// PR #472 acceptance A3: the soft hold-off cap (burn.soft_hold cap / episode_ms) applies to every soft kind, a running build too: an
+/// endless chain of overlapping background builds with no outcome still reaches the cap and is paused.
+#[test]
+fn a3_overlapping_background_builds_without_outcomes_still_hit_the_cap_and_pause_pr472() {
+    let h = home("a3-472");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let mut paused_at = None;
+    for k in 0..24u64 {
+        let t = n + (5 * k + 1) * MIN;
+        let id = format!("b{k}");
+        append(
+            &p,
+            &[
+                tool(t, &format!("mb{k}"), 700_000, &id, "Bash", json!({"command": "cargo build -j4", "run_in_background": true})),
+                result(t, &id, &format!("Command running in background with ID: bg{k}"), false),
+            ],
+        );
+        ticks(&h, &mut st, &[t + MIN]);
+        if marker.exists() && paused_at.is_none() {
+            paused_at = Some(k);
+        }
+    }
+    assert_eq!(agent(&st, "s1").progress, 0, "a build that never ends is no outcome");
+    assert!(paused_at.is_some(), "an endless chain of overlapping background builds is paused within 2 hours");
+    assert!(marker.exists(), "and stays paused while it keeps launching builds");
+}
+
+/// PR #472 acceptance A4: the soft-hold episode clock starts at the last HARD outcome, not at the first soft one: a soft outcome that comes
+/// more than burn.soft_hold.episode_ms after the last hard outcome holds nothing off.
+#[test]
+fn a4_the_episode_clock_starts_at_the_last_hard_outcome_not_the_first_soft_one_pr472() {
+    let h = home("a4-472");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    // the last hard outcome: a commit at n+1
+    append(&p, &[tool(n + MIN, "m1", 10, "u1", "Bash", json!({"command": "git commit -m done"})), result(n + MIN, "u1", "ok", false)]);
+    ticks(&h, &mut st, &[n + 2 * MIN]);
+    let base = agent(&st, "s1").progress;
+    assert!(base > 0);
+    // 40 minutes of burn with no outcome at all (past the hard line inside the waste window)
+    ticks(&h, &mut st, &[n + 10 * MIN, n + 19 * MIN]);
+    append(&p, &[asst(n + 20 * MIN, "m2", 1_800_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    ticks(&h, &mut st, &[n + 21 * MIN]);
+    append(&p, &[asst(n + 38 * MIN, "m3", 1_800_000, 10, json!([{"type": "text", "text": "reading more"}]), None)]);
+    ticks(&h, &mut st, &[n + 39 * MIN]);
+    assert!(marker.exists(), "precondition: paused");
+    // the first soft outcome of this episode comes 40 minutes after the hard one: past episode_ms, it holds nothing off
+    append(&p, &[tool(n + 41 * MIN, "m4", 10, "q1", "Bash", json!({"command": "curl -s http://dev/status"})), result(n + 41 * MIN, "q1", "{}", false)]);
+    ticks(&h, &mut st, &[n + 42 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, base, "a probe is no hard outcome");
+    assert!(marker.exists(), "the episode began at the commit 40 minutes ago: its hold-off budget is spent");
+}
+
 // ---- drift --------------------------------------------------------------------------------------------------
 
 fn drift_lines(n: u64, path: &str) -> Vec<String> {
@@ -2316,6 +2633,482 @@ fn unowned_heartbeat_drop_is_counted() {
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     assert!(drained().counter("agent_wake_dropped", &[("reason", "foreign_agent")]) >= 1, "the dropped row is counted with its reason");
+}
+
+/// PR #472 review P1: a BACKGROUND check's launch acknowledgment is no outcome: the check has not run yet. The launch is at most SOFT (an
+/// event of the burn episode); HARD credit comes only when its completion notice says it ended with success. An agent that keeps
+/// launching background checks never resets the burn.
+#[test]
+fn p1_a_background_check_is_hard_only_once_its_successful_completion_is_seen_pr472() {
+    let h = home("p1-472");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    // an agent that keeps launching background checks (each launch acknowledged, none seen to end) is paused once the soft cap is spent
+    let mut paused_at = None;
+    let mut t = n;
+    for k in 0..24u64 {
+        t = n + (5 * k + 1) * MIN;
+        let id = format!("c{k}");
+        append(
+            &p,
+            &[
+                tool(t, &format!("mc{k}"), 700_000, &id, "Bash", json!({"command": "npx tsc --noEmit", "run_in_background": true})),
+                result(t, &id, &format!("Command running in background with ID: bgc{k}"), false),
+            ],
+        );
+        ticks(&h, &mut st, &[t + MIN]);
+        assert_eq!(agent(&st, "s1").progress, 0, "a background check launch is no hard outcome (launch {k})");
+        if marker.exists() && paused_at.is_none() {
+            paused_at = Some(k);
+        }
+    }
+    assert!(paused_at.is_some() && marker.exists(), "endless background check launches are paused");
+    // a failed completion adds nothing
+    append(&p, &[user_text(t + 2 * MIN, "<task-notification>\n<task-id>bgc22</task-id>\n<status>failed</status>\n</task-notification>")]);
+    ticks(&h, &mut st, &[t + 3 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0, "a failed background check is no outcome");
+    assert!(marker.exists(), "and lifts no pause");
+    // a successful completion is the HARD outcome
+    append(&p, &[user_text(t + 4 * MIN, "<task-notification>\n<task-id>bgc23</task-id>\n<status>completed</status>\n</task-notification>")]);
+    ticks(&h, &mut st, &[t + 5 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > 0, "a background check that completed with success adds progress");
+    assert_eq!(a.reports, 0, "a background check's end is no subagent result");
+    assert!(crate::agents::signals::tokens_since_outcome(a, t + 5 * MIN) < 1_000_000, "the burn count restarts");
+    assert!(!marker.exists(), "the pause is lifted");
+}
+
+/// PR #472 review P2: shell writes to distinct quoted paths are distinct files: each first write is a HARD outcome (A1).
+#[test]
+fn p2_writes_to_distinct_quoted_paths_are_distinct_hard_outcomes_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("p2-472", "");
+    touch(&h.join("w/out/first.txt"), n + 21 * MIN + 1000);
+    touch(&h.join("w/out/second.txt"), n + 23 * MIN + 1000);
+    append(&p, &[tool(n + 21 * MIN, "m2", 10, "w1", "Bash", json!({"command": "printf 'x\\n' > \"out/first.txt\""})), result(n + 21 * MIN, "w1", "", false)]);
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    let first = agent(&st, "s1").progress;
+    assert!(first > 0, "the first quoted write is an outcome");
+    append(&p, &[tool(n + 23 * MIN, "m3", 10, "w2", "Bash", json!({"command": "printf 'y\\n' > 'out/second.txt'"})), result(n + 23 * MIN, "w2", "", false)]);
+    ticks(&h, &mut st, &[n + 24 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > first, "a write to a second distinct quoted path is a new hard outcome");
+    assert!(
+        a.files.iter().any(|f| f.ends_with("/w/out/first.txt")) && a.files.iter().any(|f| f.ends_with("/w/out/second.txt")),
+        "the real paths are kept: {:?}",
+        a.files
+    );
+    // quoted text that is no redirect target still names no file
+    append(&p, &[tool(n + 25 * MIN, "m4", 10, "w3", "Bash", json!({"command": "echo \"a > b.txt\""})), result(n + 25 * MIN, "w3", "", false)]);
+    ticks(&h, &mut st, &[n + 26 * MIN]);
+    assert!(!agent(&st, "s1").files.iter().any(|f| f.contains("b.txt")), "a `>` inside quotes is no write");
+}
+
+/// One Bash call of `c` at `t` that ended with success, as a tool call and its result.
+fn ok_bash(p: &Path, t: u64, k: &str, tin: u64, c: &str) {
+    append(p, &[tool(t, &format!("m{k}"), tin, k, "Bash", json!({"command": c})), result(t, k, "", false)]);
+}
+
+/// PR #472 round 4 P1: a passing check repeated with nothing changed in between (no edit, no fresh shell write, no commit since its last
+/// HARD pass) is SOFT, so a polling `git diff --check` every 6 minutes is paused like any other poll.
+#[test]
+fn d1_a_repeated_passing_check_with_no_change_in_between_is_soft_and_pauses_pr472() {
+    let h = home("d1-472");
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let mut paused_at = None;
+    let mut first = 0;
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        ok_bash(&p, t, &format!("d{k}"), 700_000, "git diff --check");
+        ticks(&h, &mut st, &[t + MIN]);
+        if k == 0 {
+            first = agent(&st, "s1").progress;
+        }
+        if marker.exists() && paused_at.is_none() {
+            paused_at = Some(k);
+        }
+    }
+    assert!(first > 0, "the first pass is HARD (A2)");
+    assert_eq!(agent(&st, "s1").progress, first, "a repeat with no change since earns nothing");
+    assert!(paused_at.is_some() && marker.exists(), "a 6-minute `git diff --check` poll is paused within 2 hours");
+}
+
+/// PR #472 round 4 P1 (regression guard): check, edit, check: every pass after a real change is HARD again, even when the same file is
+/// edited each time (the change counter re-arms the check, not first-edit progress).
+#[test]
+fn d2_check_edit_check_keeps_earning_hard_pr472() {
+    let (h, p, marker, mut st, n) = burned_in("d2-472", "");
+    let f = h.join("w/out/a.txt").to_string_lossy().into_owned();
+    for k in 0..5u64 {
+        let t = n + (21 + 2 * k) * MIN;
+        append(
+            &p,
+            &[
+                tool(t, &format!("me{k}"), 10, &format!("e{k}"), "Edit", json!({"file_path": f, "old_string": "a", "new_string": "b"})),
+                result(t, &format!("e{k}"), "ok", false),
+            ],
+        );
+        ticks(&h, &mut st, &[t + 10_000]);
+        let before = agent(&st, "s1").progress;
+        ok_bash(&p, t + 20_000, &format!("c{k}"), 10, "git diff --check");
+        ticks(&h, &mut st, &[t + MIN]);
+        assert!(agent(&st, "s1").progress > before, "check {k} after an edit is HARD");
+    }
+    assert!(!marker.exists(), "legit work is not paused");
+}
+
+/// PR #472 round 4 P2: a leading `cd <literal dir>` in the same call is followed when resolving a relative write; a cd that cannot be
+/// resolved (an expansion) leaves the relative write at most SOFT.
+#[test]
+fn c1_a_leading_cd_is_followed_when_resolving_a_relative_write_pr472() {
+    let (h, p, marker, mut st, n) = burned_in("c1-472", "");
+    std::fs::create_dir_all(h.join("w/sub")).unwrap();
+    touch(&h.join("w/other.txt"), n + 21 * MIN + 1000);
+    ok_bash(&p, n + 21 * MIN, "x1", 10, "cd $SUBDIR && printf x > other.txt");
+    ticks(&h, &mut st, &[n + 22 * MIN]);
+    assert_eq!(agent(&st, "s1").progress, 0, "an unresolvable cd: the relative write is no HARD outcome");
+    assert_eq!(agent(&st, "s1").soft_ts.len(), 1, "but still a SOFT one");
+    touch(&h.join("w/sub/new.txt"), n + 23 * MIN + 1000);
+    ok_bash(&p, n + 23 * MIN, "x2", 10, "cd sub && printf x > new.txt");
+    ticks(&h, &mut st, &[n + 24 * MIN]);
+    let a = agent(&st, "s1");
+    assert!(a.progress > 0, "a write after `cd sub` is resolved in sub/ and is HARD");
+    assert!(a.files.iter().any(|f| f.ends_with("/w/sub/new.txt")), "the real path is kept: {:?}", a.files);
+    assert!(!marker.exists(), "and lifts the pause");
+}
+
+/// PR #472 round 4 P2: commit and push credit come from the command run (command position), never from quoted argument text.
+#[test]
+fn q1_quoted_git_commit_text_earns_no_commit_credit_pr472() {
+    let (h, p, _marker, mut st, n) = burned_in("q1-472", "");
+    for (k, c) in ["rg 'git commit' src", "echo \"git commit\"", "echo 'git push'"].iter().enumerate() {
+        let t = n + (21 + k as u64) * MIN;
+        ok_bash(&p, t, &format!("q{k}"), 10, c);
+        ticks(&h, &mut st, &[t + 30_000]);
+        let a = agent(&st, "s1");
+        assert_eq!((a.progress, a.commits, a.pushes), (0, 0, 0), "no credit for {c:?}");
+    }
+    for (k, c) in ["git commit -m x", "cd repo && git commit -m 'y'", "git -C \"my repo\" commit -m z"].iter().enumerate() {
+        let t = n + (30 + k as u64) * MIN;
+        ok_bash(&p, t, &format!("r{k}"), 10, c);
+        ticks(&h, &mut st, &[t + 30_000]);
+        assert_eq!(agent(&st, "s1").commits, k as u64 + 1, "a real commit counts: {c:?}");
+    }
+}
+
+/// PR #472 round 4: a polling loop at the lowest spend that reaches the hard burn line (burn.hard_tokens_no_outcome within one waste
+/// window, at a 6-minute cadence) is paused; below that line nothing pauses by design, but the soft episode is spent all the same, so
+/// nothing holds the pause off once the spend does reach the line.
+#[test]
+fn l1_low_spend_polling_spends_the_episode_and_pauses_at_the_burn_line_pr472() {
+    let hard = crate::defaults::num("burn.hard_tokens_no_outcome");
+    let polls = lim("waste_window_ms") / (6 * MIN);
+    for (tag, per, pauses) in [("l1lo-472", hard / polls / 2, false), ("l1hi-472", hard / polls + hard / 50, true)] {
+        let h = home(tag);
+        let n = now0();
+        let p = sess(&h, "s1");
+        let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+        write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n]);
+        let mut t = n;
+        for k in 0..20u64 {
+            t = n + (6 * k + 1) * MIN;
+            ok_bash(&p, t, &format!("p{k}"), per, &format!("curl -s http://dev/status?t={k}"));
+            ticks(&h, &mut st, &[t + MIN]);
+        }
+        assert_eq!(crate::agents::signals::hold_reason(agent(&st, "s1"), t + MIN), None, "{tag}: the soft episode is spent at {per} tokens per poll");
+        assert_eq!(marker.exists(), pauses, "{tag}: {per} tokens per 6-minute poll (hard line {hard} per {polls} polls)");
+    }
+}
+
+// ---- PR #472 round 5: full credit comes from a change in repo state, not from the command text -------------------------------
+
+/// Run git in `w` with an isolated configuration (no system or user config).
+fn git_in(w: &Path, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .current_dir(w)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ok.stderr));
+}
+
+/// A scratch git repo at `w`: one tracked file (`tracked.txt`) committed, `ignored/` gitignored, `out/` present.
+fn git_repo(w: &Path) {
+    std::fs::create_dir_all(w.join("out")).unwrap();
+    std::fs::create_dir_all(w.join("ignored")).unwrap();
+    std::fs::write(w.join("tracked.txt"), "v0\n").unwrap();
+    std::fs::write(w.join(".gitignore"), "ignored/\n").unwrap();
+    git_in(w, &["init", "-q"]);
+    git_in(w, &["add", "-A"]);
+    git_in(w, &["commit", "-qm", "init"]);
+}
+
+/// Write `body` to `p` and set its modification time to `ms` (a transcript call at `ms` wrote it).
+fn put(p: &Path, body: &str, ms: u64) {
+    std::fs::write(p, body).unwrap();
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms)).unwrap();
+}
+
+/// A fresh agent working in a scratch git repo `h/w` (not yet burned).
+fn fresh_in_repo(tag: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
+    let h = home(tag);
+    let w = h.join("w");
+    git_repo(&w);
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, &w.to_string_lossy()), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    (h, p, marker, st, n)
+}
+
+/// One Bash call of `c` at `t` that ended with success and printed `out`.
+fn ok_bash_out(p: &Path, t: u64, k: &str, tin: u64, c: &str, out: &str) {
+    append(p, &[tool(t, &format!("m{k}"), tin, k, "Bash", json!({"command": c})), result(t, k, out, false)]);
+}
+
+/// Spec (a): an unchanged `cargo test`, or a cached `cargo build`, repeated 20x at 6-minute intervals in a repo whose state never
+/// changes earns HARD at most once and is paused.
+#[test]
+fn r5a_an_unchanged_test_or_cached_build_repeated_pauses_pr472r5() {
+    for (tag, cmd, out) in [
+        ("r5a-test", "cargo test", "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"),
+        ("r5a-build", "cargo build", "    Finished `dev` profile [unoptimized] target(s) in 0.31s"),
+    ] {
+        let (h, p, marker, mut st, n) = fresh_in_repo(tag);
+        let mut first = 0;
+        let mut paused_at = None;
+        for k in 0..20u64 {
+            let t = n + (6 * k + 1) * MIN;
+            ok_bash_out(&p, t, &format!("t{k}"), 700_000, cmd, out);
+            ticks(&h, &mut st, &[t + MIN]);
+            if k == 0 {
+                first = agent(&st, "s1").progress;
+            }
+            if marker.exists() && paused_at.is_none() {
+                paused_at = Some(k);
+            }
+        }
+        assert_eq!(agent(&st, "s1").progress, first, "{tag}: a repeat with the repo unchanged earns nothing");
+        assert!(paused_at.is_some() && marker.exists(), "{tag}: a 6-minute unchanged `{cmd}` loop is paused");
+    }
+}
+
+/// Spec (b): `RUN_AT=<ts> npm run lint` repeated with a changing ts (a fresh command text each run) earns nothing new and pauses.
+#[test]
+fn r5b_a_check_with_a_changing_env_value_pauses_pr472r5() {
+    let (h, p, marker, mut st, n) = fresh_in_repo("r5b");
+    let mut first = 0;
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        ok_bash_out(&p, t, &format!("l{k}"), 700_000, &format!("RUN_AT={t} npm run lint"), "");
+        ticks(&h, &mut st, &[t + MIN]);
+        if k == 0 {
+            first = agent(&st, "s1").progress;
+        }
+    }
+    assert_eq!(agent(&st, "s1").progress, first, "a changing env value is no change in the repo");
+    assert!(marker.exists(), "the lint loop is paused");
+}
+
+/// Spec (c): a loop `curl ... > /tmp/out-<ts>.json` (a fresh real file each run, under the temp dir and outside the repo) pauses, in a
+/// repo and outside one.
+#[test]
+fn r5c_a_curl_to_a_fresh_tmp_file_each_run_pauses_pr472r5() {
+    for repo in [true, false] {
+        let tag = if repo { "r5c-repo" } else { "r5c-plain" };
+        let (h, p, marker, mut st, n) = fresh_in_repo(tag);
+        if !repo {
+            std::fs::remove_dir_all(h.join("w/.git")).unwrap();
+        }
+        let tmp = std::env::temp_dir().join("ah-test-agents").join(format!("{tag}-out-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for k in 0..20u64 {
+            let t = n + (6 * k + 1) * MIN;
+            let out = tmp.join(format!("out-{t}.json"));
+            put(&out, "{}", t + 500);
+            ok_bash_out(&p, t, &format!("c{k}"), 700_000, &format!("curl -s http://dev/status > {}", out.display()), "");
+            ok_bash_out(&p, t + 1000, &format!("d{k}"), 10, "curl -s http://dev/status > /tmp/out-$(date +%s).json", "");
+            ticks(&h, &mut st, &[t + MIN]);
+        }
+        assert_eq!(agent(&st, "s1").progress, 0, "{tag}: a temp-file write is no work");
+        assert!(marker.exists(), "{tag}: the curl loop is paused");
+    }
+}
+
+/// A fresh agent whose transcript cwd is `cwd` (not yet burned).
+fn fresh_at(tag: &str, cwd: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
+    let h = home(tag);
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, cwd), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    (h, p, marker, st, n)
+}
+
+/// Round 6 (a): `cd /tmp && curl URL -o out-<ts>.json` from a repo: the output is a fresh real file under the temp dir, the cwd the
+/// call cd-ed into; a probe loop of it pauses (the cwd never exempts a temp path).
+#[test]
+fn r6a_cd_tmp_curl_to_a_fresh_relative_output_pauses_pr472r6() {
+    let (h, p, marker, mut st, n) = fresh_in_repo("r6a");
+    let tag = std::process::id();
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        let name = format!("ah-r6a-{tag}-out-{t}.json");
+        put(&Path::new("/tmp").join(&name), "{}", t + 500);
+        ok_bash_out(&p, t, &format!("c{k}"), 700_000, &format!("cd /tmp && curl -s http://dev/status -o {name}"), "");
+        ticks(&h, &mut st, &[t + MIN]);
+        crate::discard::harmless(std::fs::remove_file(Path::new("/tmp").join(&name))); // keep: the probe file is disposable
+    }
+    assert_eq!(agent(&st, "s1").progress, 0, "a temp-dir output is no work");
+    assert!(marker.exists(), "the cd /tmp curl loop is paused");
+}
+
+/// Round 6 (b): a relative `-o out.json` with the transcript cwd /tmp pauses too.
+#[test]
+fn r6b_relative_output_with_cwd_tmp_pauses_pr472r6() {
+    let (h, p, marker, mut st, n) = fresh_at("r6b", "/tmp");
+    let name = format!("ah-r6b-{}-out.json", std::process::id());
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        put(&Path::new("/tmp").join(&name), "{}", t + 500);
+        ok_bash_out(&p, t, &format!("c{k}"), 700_000, &format!("curl -s http://dev/status -o {name}"), "");
+        ticks(&h, &mut st, &[t + MIN]);
+    }
+    crate::discard::harmless(std::fs::remove_file(Path::new("/tmp").join(&name))); // keep: the probe file is disposable
+    assert_eq!(agent(&st, "s1").progress, 0, "a temp-dir output is no work");
+    assert!(marker.exists(), "the relative-output loop in /tmp is paused");
+}
+
+/// Spec (d), regression guard: Edit tool -> `cargo test` -> Edit tool -> `cargo test` on the SAME tracked file: every edit changes the
+/// tree, so every passing test after it earns HARD and legit work is never paused.
+#[test]
+fn r5d_edit_then_test_keeps_earning_hard_pr472r5() {
+    let (h, p, marker, mut st, n) = fresh_in_repo("r5d");
+    let f = h.join("w/tracked.txt");
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        put(&f, &format!("v{}\n", k + 1), t);
+        append(
+            &p,
+            &[
+                tool(t, &format!("me{k}"), 350_000, &format!("e{k}"), "Edit", json!({"file_path": f.to_string_lossy(), "old_string": "v", "new_string": "v"})),
+                result(t, &format!("e{k}"), "ok", false),
+            ],
+        );
+        ticks(&h, &mut st, &[t + 10_000]);
+        let before = agent(&st, "s1").progress;
+        ok_bash_out(
+            &p,
+            t + 20_000,
+            &format!("t{k}"),
+            350_000,
+            "cargo test",
+            "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        );
+        ticks(&h, &mut st, &[t + MIN]);
+        assert!(agent(&st, "s1").progress > before, "test {k} after an edit earns HARD");
+        assert!(!marker.exists(), "edit/test work is never paused (round {k})");
+    }
+}
+
+/// Spec (e): a real shell write of a tracked file and of an untracked non-ignored file earns HARD once; the identical write repeated
+/// with no content change earns none; a write that really changes the content again is work again; a gitignored write earns none.
+#[test]
+fn r5e_a_shell_write_earns_hard_only_when_it_changes_the_repo_pr472r5() {
+    let (h, p, _marker, mut st, n) = fresh_in_repo("r5e");
+    let w = h.join("w");
+    let mut t = n + MIN;
+    let mut step = |file: &str, body: &str, k: &str| -> u64 {
+        t += 6 * MIN;
+        put(&w.join(file), body, t + 500);
+        let before = agent(&st, "s1").progress;
+        ok_bash_out(&p, t, k, 10, &format!("printf '{}' > {file}", body.trim_end()), "");
+        ticks(&h, &mut st, &[t + MIN]);
+        agent(&st, "s1").progress - before
+    };
+    assert!(step("tracked.txt", "v1\n", "w1") > 0, "a tracked write that changes the file is HARD");
+    assert_eq!(step("tracked.txt", "v1\n", "w2"), 0, "the identical write again is none");
+    assert!(step("tracked.txt", "v2\n", "w3") > 0, "a write that changes the content again is work");
+    assert!(step("out/new.txt", "n1\n", "w4") > 0, "an untracked non-ignored new file is HARD");
+    assert_eq!(step("out/new.txt", "n1\n", "w5"), 0, "the identical untracked write again is none");
+    assert_eq!(step("ignored/x.txt", "i1\n", "w6"), 0, "a gitignored write is none");
+}
+
+/// Spec (f): git missing, or git hanging past agent_tracker.repo_state.timeout_ms, falls back to the verified-write rule: a fresh write
+/// still earns HARD once, an edit re-arms a passing test, an unchanged repeat earns none, every call stays bounded (no wedge).
+#[test]
+fn r5f_git_unavailable_or_timing_out_falls_back_to_the_verified_write_rule_pr472r5() {
+    let hang = std::env::temp_dir().join("ah-test-agents").join(format!("r5f-hang-git-{}.sh", std::process::id()));
+    std::fs::create_dir_all(hang.parent().unwrap()).unwrap();
+    std::fs::write(&hang, "#!/bin/sh\nsleep 5\n").unwrap();
+    std::fs::set_permissions(&hang, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    for (tag, git, ms) in [("r5f-missing", "/nonexistent/ah-no-git".to_string(), 2000), ("r5f-hang", hang.to_string_lossy().into_owned(), 200)] {
+        let (h, p, marker, mut st, n) = fresh_in_repo(tag);
+        repo::GIT_OVERRIDE.with(|g| *g.borrow_mut() = Some((git, ms)));
+        let began = std::time::Instant::now();
+        let w = h.join("w");
+        let t = n + MIN;
+        put(&w.join("out/f.txt"), "x", t + 500);
+        ok_bash_out(&p, t, "w1", 10, "printf x > out/f.txt", "");
+        ticks(&h, &mut st, &[t + MIN]);
+        let p1 = agent(&st, "s1").progress;
+        assert!(p1 > 0, "{tag}: a verified write earns HARD without git");
+        put(&w.join("out/f.txt"), "x", t + 2 * MIN);
+        ok_bash_out(&p, t + 2 * MIN - 500, "w2", 10, "printf x > out/f.txt", "");
+        ticks(&h, &mut st, &[t + 3 * MIN]);
+        assert_eq!(agent(&st, "s1").progress, p1, "{tag}: the same file written again earns none");
+        for k in 0..3u64 {
+            let tk = t + (6 * k + 4) * MIN;
+            let f = w.join("tracked.txt").to_string_lossy().into_owned();
+            append(
+                &p,
+                &[
+                    tool(tk, &format!("me{k}"), 10, &format!("e{k}"), "Edit", json!({"file_path": f, "old_string": "v", "new_string": "v"})),
+                    result(tk, &format!("e{k}"), "ok", false),
+                ],
+            );
+            ticks(&h, &mut st, &[tk + 10_000]);
+            let before = agent(&st, "s1").progress;
+            ok_bash_out(
+                &p,
+                tk + 20_000,
+                &format!("t{k}"),
+                10,
+                "cargo test",
+                "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+            );
+            ok_bash_out(
+                &p,
+                tk + 30_000,
+                &format!("u{k}"),
+                10,
+                "cargo test",
+                "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+            );
+            ticks(&h, &mut st, &[tk + MIN]);
+            assert_eq!(agent(&st, "s1").progress, before + weight("test"), "{tag}: an edit re-arms one test credit, the repeat earns none ({k})");
+        }
+        assert!(!marker.exists(), "{tag}: legit work is not paused without git");
+        assert!(began.elapsed() < std::time::Duration::from_secs(30), "{tag}: every git read is bounded by the timeout");
+        repo::GIT_OVERRIDE.with(|g| *g.borrow_mut() = None);
+    }
 }
 
 /// GH #484 T5/T6: a child whose nudge reaches `agent_nudge.runtime_escalation.after_reminders` reminders without finishing or being stopped

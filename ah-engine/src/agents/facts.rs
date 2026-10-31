@@ -148,7 +148,7 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
             }
             if str_of(b, tr("type_key")) == tr("tool_use") {
                 a.running = true;
-                tool_use(a, b, ts);
+                tool_use(a, b, ts, str_of(v, tr("cwd")));
             }
         }
     } else if ty == tr("user") {
@@ -336,6 +336,14 @@ fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
         if a.bg_ids.contains_key(id) && terminal.iter().any(|w| w.eq_ignore_ascii_case(st)) {
             a.bg_ids.remove(id);
             a.exited.push((id.to_string(), ts));
+            // PR #472: a background check or shell write earns its HARD outcome only now, when it ended with success
+            let call = a.bg_starts.remove(id);
+            if let Some((check, writes)) = a.bg_outcomes.remove(id)
+                && let Some((start, dir)) = call
+                && defaults::raw("agent_tracker.bg_success_statuses").strings().iter().any(|w| w.eq_ignore_ascii_case(st))
+            {
+                hard_outcome(a, check, &writes, start, &dir);
+            }
         }
     }
     let keep = lim("loop_window") as usize;
@@ -360,7 +368,7 @@ fn usage(a: &mut Agent, m: &Value) {
     a.tcw += n("cw_tok");
 }
 
-fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
+fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let name = str_of(b, tr("name"));
     let input = b.get(tr("input")).cloned().unwrap_or(Value::Null);
     let id = str_of(b, "id").to_string();
@@ -374,7 +382,10 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     let is_edit = tools("edit").contains(&name);
     push_ring(&mut a.recent, (format!("{name}:{:x}", crate::health::fnv(&input.to_string())), format!("{name} {label}"), is_edit, ts), lim("loop_window"));
     let mut class = String::new();
+    let mut writes = Vec::new();
     let mut push = false;
+    let mut amp = false;
+    let mut call_dir = if cwd.is_empty() { a.cwd.clone() } else { cwd.to_string() };
     if is_edit {
         a.edits += 1;
         let path = str_of(&input, tr("file_path"));
@@ -397,8 +408,20 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
         for w in words(arg) {
             push_ring(&mut a.work, w, lim("work_words_max"));
         }
-        push = pat("push").is_some_and(|r| r.is_match(arg));
-        if pat("commit").is_some_and(|r| r.is_match(arg)) {
+        // PR #472: the command is read by the engine shell splitter (host_shell::split_detailed, the scanner the `command` check and the
+        // burn breaker's commit exemption use): its top-level segments hold no comment and no heredoc body, and its delimiters say
+        // which segment runs in the background (agent_tracker.bg_delims). The class, the push and the written files come from them.
+        let (segs, delims) = crate::script::host_shell::split_detailed(arg);
+        let bgd = defaults::raw("agent_tracker.bg_delims").strings();
+        amp = delims.iter().any(|d| bgd.iter().any(|b| b == d));
+        let code = segs.join("\n");
+        let arg = code.as_str();
+        // PR #472 round 4: commit, push, check and probe are matched per top-level segment with its quoted strings blanked, anchored at
+        // the program the segment runs: quoted argument text (`rg 'git commit' src`, `echo "git push"`) is never the command.
+        let unq: Vec<String> = segs.iter().map(|s| unquoted(s)).collect();
+        let seg_hit = |k: &str| pat(k).is_some_and(|r| unq.iter().any(|s| r.is_match(s)));
+        push = seg_hit("push");
+        if seg_hit("commit") {
             class = "commit".into();
         } else if pat("merge").is_some_and(|r| r.is_match(arg)) {
             class = "merge".into();
@@ -408,6 +431,57 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
             class = "test".into();
         } else if pat("build").is_some_and(|r| r.is_match(arg)) {
             class = "build".into();
+        } else if seg_hit("check") {
+            class = "check".into();
+        } else if seg_hit("probe") {
+            class = "probe".into();
+        }
+        // the directory each segment runs in: a `cd`/`pushd` to one literal directory, chained by a delimiter that runs the next segment
+        // only after it (agent_tracker.cd_follow), is followed; any other directory change makes the later relative writes unresolvable
+        // (at most SOFT). Each write is resolved here to an absolute path; one left relative names no file (PR #472 round 4).
+        let cf = defaults::raw("agent_tracker.cd_follow");
+        let (cds, lost, dls) = (
+            cf.get("commands").map(V::strings).unwrap_or_default(),
+            cf.get("unfollowed").map(V::strings).unwrap_or_default(),
+            cf.get("delims").map(V::strings).unwrap_or_default(),
+        );
+        let deny = cf.str_field("non_literal");
+        let base = if cwd.is_empty() { a.cwd.as_str() } else { cwd };
+        let mut dir = (!base.is_empty()).then(|| std::path::PathBuf::from(base));
+        for (i, s) in segs.iter().enumerate() {
+            let toks = crate::script::host_shell::tokenize(s);
+            let head = toks.first().map_or("", String::as_str);
+            if cds.contains(&head) {
+                let d = delims.get(i).copied().unwrap_or("");
+                let lit = toks.get(1).filter(|t| toks.len() == 2 && !t.is_empty() && !t.starts_with('-') && !t.chars().any(|c| deny.contains(c)));
+                dir = match lit {
+                    Some(t) if dls.contains(&d) => {
+                        if std::path::Path::new(t).is_absolute() {
+                            Some(std::path::PathBuf::from(t))
+                        } else {
+                            dir.map(|b| b.join(t))
+                        }
+                    }
+                    _ => None,
+                };
+                continue;
+            }
+            if lost.contains(&head) {
+                dir = None;
+            }
+            for w in shell_writes(s) {
+                let p = std::path::Path::new(&w);
+                let w = if p.is_absolute() { w.clone() } else { dir.as_ref().map_or(w.clone(), |d| d.join(p).to_string_lossy().into_owned()) };
+                if !writes.contains(&w) {
+                    writes.push(w);
+                }
+            }
+        }
+        // the directory the call ran in once its `cd`s are followed (else the transcript's): its repository's state decides HARD credit
+        call_dir = dir.as_ref().map_or_else(|| base.to_string(), |d| d.to_string_lossy().into_owned());
+        // a build launch is one event of the burn episode: an endless chain of builds with no outcome spends the episode's cap (PR #472)
+        if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == class) {
+            episode_event(a, ts);
         }
         if input.get(tr("background")).and_then(Value::as_bool) == Some(true) {
             push_ring(&mut a.bg_bash, ts, lim("loop_window"));
@@ -449,7 +523,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
         let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: call_dir });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -539,16 +613,49 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         && !failed
         && let Some(id) = pat("bg_started").and_then(|r| r.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())))
     {
+        if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == p.class) {
+            push_ring(&mut a.bg_builds, id.clone(), lim("loop_window"));
+        }
+        // a task backgrounded inside the task as well (a top-level `&`) ends when its launching shell does: no outcome waits for it
+        if !p.amp && (p.class == "check" || !p.writes.is_empty()) {
+            a.bg_outcomes.insert(id.clone(), (p.class == "check", p.writes.clone()));
+            a.bg_starts.insert(id.clone(), (p.ts, p.cwd.clone()));
+        }
         a.bg_ids.insert(id, ts);
         while a.bg_ids.len() > lim("loop_window") as usize {
             let Some(k) = a.bg_ids.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };
             a.bg_ids.remove(&k);
         }
+        let live = &a.bg_ids;
+        a.bg_outcomes.retain(|k, _| live.contains_key(k));
+        a.bg_starts.retain(|k, _| live.contains_key(k));
     }
     if failed {
         a.errors += 1;
         let head: String = text.chars().filter(|c| !c.is_ascii_digit()).take(lim("text_cap") as usize).collect();
         push_ring(&mut a.errs, (crate::health::fnv(&head), cap(&text, lim("text_cap")), ts), lim("error_window"));
+        return;
+    }
+    // PR #472 HARD outcomes: a file the shell created or appended for the first time and a passing check add progress (and so restart the
+    // burn count), like an edited file or a passing test. SOFT: a completed live probe or a shell write to a file already written; each
+    // is one event of the burn episode, which may only hold off the pause within the episode's cap (burn.soft_hold).
+    // A BACKGROUND launch's result is only its acknowledgment: the check has not run, so the launch is at most SOFT and the HARD outcome
+    // waits for its completion notice (task_ends). A command backgrounded with a top-level `&` (p.amp) has no completion notice at all:
+    // it is never more than SOFT.
+    // a successful edit is a real change: a check after it may earn HARD again (PR #472 round 4)
+    if tools("edit").contains(&p.name.as_str()) {
+        a.changes += 1;
+    }
+    let om = defaults::raw("agent_tracker.outcome_metric");
+    let hard = !p.bg && !p.amp && hard_outcome(a, p.class == "check", &p.writes, p.ts, &p.cwd);
+    if !hard && (p.class == "probe" || p.class == "check" || !p.writes.is_empty()) {
+        push_ring(&mut a.soft_ts, ts, lim("loop_window"));
+        episode_event(a, ts);
+        count_outcome(if p.class == "probe" || p.class == "check" { p.class.as_str() } else { om.str_field("shell_file") });
+    }
+    // a command backgrounded with a top-level `&` has not done its work when the launching shell exits: no commit, push, merge, deploy,
+    // build or test credit either (PR #472)
+    if p.amp {
         return;
     }
     if p.push || p.class == "commit" || p.class == "merge" || p.class == "deploy" {
@@ -565,21 +672,177 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     }
     if p.class == "commit" {
         a.commits += 1;
+        a.changes += 1;
         a.progress += weight("commit");
         a.waste.reset_at = ts; // a commit in any repo the command ran git in starts the waste window afresh
     } else if p.class == "build" {
         if pat("build_pass").is_some_and(|r| r.is_match(&text)) && !pat("build_fail").is_some_and(|r| r.is_match(&text)) {
             a.builds_ok += 1;
-            a.progress += weight("build");
-            a.waste.reset_at = ts;
+            // PR #472 round 5: a passing build is full credit only when the repo state changed since the last HARD credit
+            if repo_changed(a, super::repo::state(&p.cwd)) {
+                a.progress += weight("build");
+                a.waste.reset_at = ts;
+            }
         }
     } else if p.class == "test" {
         let ok = pat("test_pass").is_some_and(|r| r.is_match(&text)) && !pat("test_fail").is_some_and(|r| r.is_match(&text));
         if ok {
             a.tests_pass += 1;
-            a.progress += weight("test");
+            if repo_changed(a, super::repo::state(&p.cwd)) {
+                a.progress += weight("test");
+            }
         }
     }
+}
+
+/// One event of the current burn episode (a soft outcome or a build launch, PR #472): a hard outcome since the episode began (progress
+/// moved) starts a new one at `ts`. burn.soft_hold caps the events and the length of an episode.
+pub(crate) fn episode_event(a: &mut Agent, ts: u64) {
+    episode_sync(a, ts);
+    a.soft_episode.2 += 1;
+}
+
+/// Start a new burn episode at `ts` when a hard outcome came since the current one began (or none began yet): the episode clock starts
+/// at the last hard outcome (PR #472), and an agent with none yet starts its first episode when it is first seen.
+pub(crate) fn episode_sync(a: &mut Agent, ts: u64) {
+    if a.soft_episode.0 != a.progress || a.soft_episode.1 == 0 {
+        a.soft_episode = (a.progress, ts, 0);
+    }
+}
+
+/// A HARD outcome of a shell command that began at `start` in `dir` and ended with success (PR #472 round 5): full credit comes from a
+/// change in repo state, never from the command text. A verified write (`written_since`: the file is there, modified at or after
+/// `start`) or a passing check (`check`) earns HARD only when the state of the call's repository (agent::repo::state) changed since the
+/// last HARD credit of any kind there; a write must also be inside that repository and not ignored by git (a temp file or a gitignored
+/// one never changes the state). Outside a repository, or with git missing, failing or timing out, the verified-write rule applies: a
+/// write of a file not written before and not a temp-dir scratch file (wherever the call ran), or a check after a real change (`changes`: an
+/// edit, a fresh shell write, a commit) since the last HARD credit. False when it earned neither.
+fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64, dir: &str) -> bool {
+    let verified: Vec<String> = writes.iter().filter_map(|w| written_since(w, start)).collect();
+    if verified.is_empty() && !check {
+        return false;
+    }
+    let st = super::repo::state(dir);
+    let fresh: Vec<String> = match &st {
+        Some((top, _)) => {
+            let inside: Vec<String> = verified.into_iter().filter(|w| std::path::Path::new(w).starts_with(top)).collect();
+            let ign = super::repo::ignored(top, &inside);
+            inside.into_iter().filter(|w| !ign.contains(w)).collect()
+        }
+        None => verified.into_iter().filter(|w| !a.files.contains(w) && !super::repo::scratch(w)).collect(),
+    };
+    if fresh.is_empty() && !check {
+        return false;
+    }
+    // outside a repository a fresh verified write is itself the change; a check needs one since the last HARD credit
+    let fallback_write = st.is_none() && !fresh.is_empty();
+    if !fallback_write && !repo_changed(a, st) {
+        return false;
+    }
+    if fresh.is_empty() {
+        a.progress += weight("check");
+        count_outcome("check");
+        return true;
+    }
+    for w in fresh {
+        if !a.files.contains(&w) {
+            push_ring(&mut a.files, w, lim("files_max"));
+        }
+    }
+    a.changes += 1;
+    a.hard_changes = Some(a.changes);
+    a.progress += weight("shell_file");
+    count_outcome(defaults::raw("agent_tracker.outcome_metric").str_field("shell_file"));
+    true
+}
+
+/// Whether the repo state `st` (agent::repo::state of the call's directory) changed since the last HARD credit there, recording it
+/// as the new baseline when it did (PR #472 round 5). `st` None (no repository, git missing, failed or timed out): whether a real
+/// change (`changes`) came since the last HARD credit. Called only for a call that would otherwise earn HARD.
+fn repo_changed(a: &mut Agent, st: Option<(String, String)>) -> bool {
+    match st {
+        Some((top, state)) => {
+            if a.repo_states.get(&top) == Some(&state) {
+                return false;
+            }
+            a.repo_states.insert(top, state);
+            while a.repo_states.len() > lim("loop_window") as usize {
+                let Some(k) = a.repo_states.keys().next().cloned() else { break };
+                a.repo_states.remove(&k);
+            }
+        }
+        None if a.hard_changes == Some(a.changes) => return false,
+        None => {}
+    }
+    a.hard_changes = Some(a.changes);
+    true
+}
+
+/// The real path of a file the shell claims to have written, when it is a regular file (never a device, a pipe or a directory) that
+/// exists now and was modified at or after `start` (milliseconds since the epoch). A relative path (one the call's directory could not
+/// resolve) is None, as is anything else and a resolved path patterns.shell_write_skip names.
+fn written_since(path: &str, start: u64) -> Option<String> {
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        return None;
+    }
+    let real = std::fs::canonicalize(p).ok()?;
+    let s = real.to_string_lossy().into_owned();
+    if pat("shell_write_skip").is_some_and(|r| r.is_match(&s)) {
+        return None;
+    }
+    let md = std::fs::metadata(&real).ok().filter(std::fs::Metadata::is_file)?;
+    let ms = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
+    (ms >= start).then_some(s)
+}
+
+/// The files a shell command segment creates or appends: every capture of patterns.shell_write (the first group that matched), minus the
+/// paths patterns.shell_write_skip names (a device such as /dev/null). Quoted strings (burn.quoted_re) are masked while matching, so
+/// a `>` inside quotes is no redirect, and put back in a captured path (PR #472: `> "out/a.txt"` and `> "out/b.txt"` are two files);
+/// agent_tracker.write_mask is the sentinel around a masked string's index (empty: quoted strings are blanked, as before).
+fn shell_writes(cmd: &str) -> Vec<String> {
+    let (Some(re), skip) = (pat("shell_write"), pat("shell_write_skip")) else { return Vec::new() };
+    let mask = defaults::text("agent_tracker.write_mask");
+    let mut quoted: Vec<String> = Vec::new();
+    let masked = match Regex::new(defaults::text("burn.quoted_re")).ok().filter(|_| !mask.is_empty()) {
+        Some(q) => q
+            .replace_all(cmd, |c: &regex::Captures| {
+                let m = c.get(0).map_or("", |m| m.as_str());
+                quoted.push(m.get(1..m.len().saturating_sub(1)).unwrap_or("").to_string());
+                format!("{mask}{}{mask}", quoted.len() - 1)
+            })
+            .into_owned(),
+        None => unquoted(cmd),
+    };
+    let mut out: Vec<String> = Vec::new();
+    for c in re.captures_iter(&masked) {
+        let Some(m) = c.iter().skip(1).flatten().next() else { continue };
+        let path: String = m
+            .as_str()
+            .split(mask)
+            .enumerate()
+            .map(|(i, s)| if i % 2 == 1 { s.parse::<usize>().ok().and_then(|n| quoted.get(n)).map_or(s, String::as_str) } else { s })
+            .collect();
+        if !path.is_empty() && !skip.as_ref().is_some_and(|s| s.is_match(&path)) && !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// The command with each quoted string blanked (burn.quoted_re): text in an argument (`printf 'git diff --check'`, `echo "a > b"`) never
+/// names the program run or a file written.
+fn unquoted(cmd: &str) -> String {
+    match Regex::new(defaults::text("burn.quoted_re")).ok() {
+        Some(q) => q.replace_all(cmd, "q").into_owned(),
+        None => cmd.to_string(),
+    }
+}
+
+/// Count one outcome of a kind GH #458 added (shell_file, probe, check) in the registered counter agent_tracker.outcome_metric.
+fn count_outcome(kind: &str) {
+    let m = defaults::raw("agent_tracker.outcome_metric");
+    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), kind)]);
 }
 
 /// The path of a subagent's metadata file next to its transcript.
