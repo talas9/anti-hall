@@ -103,14 +103,26 @@ fn proc_ages_read_elapsed_seconds_then_the_start_time_and_leave_unknown_pids_out
 #[test]
 fn proc_managed_reports_the_platform_and_an_unverifiable_listing() {
     let h = home("managed");
-    put_override(&h, "zz-pmanaged", &format!("function decide(p){{ var res = ah.proc.managed([4242, 4343]); {WRITE} }}"));
     if cfg!(target_os = "macos") {
+        // the launchctl listing is faked, so the ids may be any fixed numbers
+        put_override(&h, "zz-pmanaged", &format!("function decide(p){{ var res = ah.proc.managed([4242, 4343]); {WRITE} }}"));
         let path = fakes(&h, &[("launchctl", "PID\tStatus\tLabel\n4242\t0\tcom.example.svc\n-\t0\tcom.example.idle")]);
         assert_eq!(run("zz-pmanaged", &env(&h, Some(&path))), Some(Some(Verdict::Allow)));
         assert_eq!(out(&h), json!({"platform": "launchd", "managed": [4242], "unverifiable": false}));
         assert_eq!(run("zz-pmanaged", &env(&h, Some(&format!("{h}/nowhere")))), Some(Some(Verdict::Allow)));
         assert_eq!(out(&h), json!({"platform": "launchd", "managed": [], "unverifiable": true}));
     } else {
+        // The Linux probe reads the real control-group file of each id, so fixed ids may belong to a live service on the host.
+        // Use ids of two children that were started and reaped: no such process exists now, so neither can be managed.
+        let gone: Vec<u32> = (0..2)
+            .map(|_| {
+                let mut c = std::process::Command::new("true").spawn().unwrap();
+                let id = c.id();
+                c.wait().unwrap();
+                id
+            })
+            .collect();
+        put_override(&h, "zz-pmanaged", &format!("function decide(p){{ var res = ah.proc.managed([{}, {}]); {WRITE} }}", gone[0], gone[1]));
         assert_eq!(run("zz-pmanaged", &env(&h, None)), Some(Some(Verdict::Allow)));
         let o = out(&h);
         assert_eq!(o["unverifiable"], json!(false));
