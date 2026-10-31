@@ -326,13 +326,15 @@ fn the_built_in_check_blocks_in_process_and_through_the_daemon() {
     assert_eq!(code, 2, "in-process: the git check blocks although git-guard's Node command says nothing");
     assert!(out.is_empty() && err.contains("force push"), "{out:?} {err:?}");
     // the first daemon call starts the daemon and answers through Node (D5); later calls are answered by the daemon
+    // Poll until the daemon answers with the native guard message itself: any exit 2 is not readiness on its own.
     let mut last = (0, String::new(), String::new());
-    for _ in 0..50 {
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    while Instant::now() < until {
         last = e.run(&args, false, &p, true);
-        if last.0 == 2 {
+        if last.0 == 2 && last.2 == err {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
     }
     let metrics = e.run(&["metrics", "--json"], false, "", true).1;
     e.stop();
@@ -1349,6 +1351,138 @@ fn a_reply_that_never_comes_fails_open_without_node_and_counts_in_the_slow_strea
     assert!(!marker.exists());
     assert!(e.state().join("daemon.down.until").exists(), "two slow calls in a row mark the daemon down: {}", engine_log(&e));
     assert_eq!(d.seen(), 2);
+}
+
+/// Codex P2 on #473: every fail-closed check the dispatch table can time out on resolves (client.timeout_skip_name_key_by_check, else
+/// its own id) to a name that some guard really answers to in skip.json, so a valid skip always unblocks a timed-out check. The
+/// `command` check once fell back to `command` while its guard's name is `command-guard`. (Fail-open checks pass on a timeout anyway.)
+#[test]
+fn every_timeout_failing_closed_check_resolves_to_a_known_skip_name() {
+    let known: std::collections::BTreeSet<&str> =
+        ah_engine::defaults::all().iter().filter(|e| e.key.ends_with("guard_name") || e.key.ends_with("skip_name")).filter_map(|e| e.value.as_str()).collect();
+    let names = ah_engine::defaults::raw("client.timeout_skip_name_key_by_check");
+    let mut checks = std::collections::BTreeSet::new();
+    for host in ah_engine::dispatch::table::hosts() {
+        for ev in ah_engine::dispatch::table::events(host) {
+            checks.extend(ah_engine::dispatch::table::entries(host, ev).into_iter().filter_map(|x| x.check));
+        }
+    }
+    let closed = ah_engine::defaults::text("script.failure_mode_closed");
+    let bad: Vec<String> = checks
+        .iter()
+        .filter(|c| ah_engine::script::failure_mode(c) == closed)
+        .filter_map(|c| {
+            let name = names.get(c.as_str()).and_then(|v| v.as_str()).map_or(c.clone(), |k| ah_engine::defaults::text(k).to_string());
+            (!known.contains(name.as_str())).then(|| format!("{c} -> {name}"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "fail-closed checks whose resolved skip name no guard answers to: {bad:?}");
+    for (check, key) in names.as_table().unwrap() {
+        let key = key.as_str().unwrap();
+        assert!(ah_engine::defaults::has(key) && known.contains(ah_engine::defaults::text(key)), "mapping {check} -> {key} names no known skip name");
+    }
+}
+
+/// The older `ah-engine hook` path without `--event` (no dispatch table: the daemon dispatches) knows no entries, so no check policy
+/// can apply; a timeout there passes, and only the dispatcher path (`--event`, what ah-hook runs) answers by policy. Pinned so a change
+/// of either is deliberate.
+#[test]
+fn the_legacy_hook_path_without_event_passes_a_timeout() {
+    let e = Env::new("slow-legacy");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let (code, _, err) = e.run_with(
+        &["hook"],
+        false,
+        &bash("git push --force origin main", &e.dir),
+        true,
+        &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW],
+    );
+    assert_eq!(code, 0, "{err:?}");
+}
+
+/// A daemon reply for a Bash PreToolUse call of `cmd` that answers each built-in check `decide` gives a code for (2 blocks with
+/// DAEMONBLOCK) and gives no answer at all for the rest: a partial reply.
+fn partial_reply(e: &Env, cmd: &str, decide: impl Fn(&str) -> Option<i32>) -> &'static str {
+    use ah_engine::dispatch::native::{Answer, encode};
+    let valid: serde_json::Value = serde_json::from_str(&bash(cmd, &e.dir)).unwrap();
+    let answers: Vec<(String, Answer)> = ah_engine::dispatch::table::select("claude", "PreToolUse", &valid, Some("Bash"))
+        .into_iter()
+        .filter_map(|x| {
+            let code = decide(x.check.as_deref()?)?;
+            let err = if code == 2 { "DAEMONBLOCK\n" } else { "" };
+            let r = ah_engine::dispatch::combine::HookResult { id: x.id.clone(), code: Some(code), out: String::new(), err: err.into() };
+            Some((x.id, Answer::Decided(r, Vec::new())))
+        })
+        .collect();
+    Box::leak(encode(&answers).into_boxed_str())
+}
+
+fn is_closed(check: &str) -> bool {
+    ah_engine::script::failure_mode(check) == ah_engine::defaults::text("script.failure_mode_closed")
+}
+
+/// The fixed middle of the could-not-run notice (`script.msg_guard_down` between its first two placeholders).
+fn guard_down_mid() -> String {
+    let tmpl = ah_engine::defaults::text("script.msg_guard_down");
+    tmpl.split('{').nth(1).and_then(|s| s.split('}').nth(1)).unwrap().to_string()
+}
+
+/// Codex P2 on #473: a partial reply (git denies, the open checks such as coordinator-work-guard give no answer) blocks with the
+/// git denial AND tells the could-not-run notice beside it, once (never one line per unanswered check); the stamp is keyed by
+/// session and event family, so the same session's first unanswered Stop check still gets its own first notice.
+#[test]
+fn a_partial_reply_tells_one_notice_beside_the_block_and_a_later_stop_still_gets_its_first() {
+    let e = Env::new("partial-notice");
+    assert!(!is_closed("coordinator-work-guard"), "the unanswered check of this test is an open one");
+    let body = partial_reply(&e, "git push --force origin main", |c| {
+        if !is_closed(c) {
+            None
+        } else if c == "git" {
+            Some(2)
+        } else {
+            Some(0)
+        }
+    });
+    assert!(!body.contains("coordinator-work-guard"), "coordinator-work-guard gets no answer: {body}");
+    let ok = ah_engine::frame::Kind::Ok;
+    let _d = scripted_daemon(&e, vec![(0, ok, body), (0, ok, body), (0, ok, "[]"), (0, ok, "[]")]);
+    let pre = ["hook", "--event", "PreToolUse"];
+    let env = [("AH_ENGINE_NOSPAWN", "1")];
+    let mid = guard_down_mid();
+    let (code, out, err) = e.run_with(&pre, false, &bash("git push --force origin main", &e.dir), true, &env);
+    assert_eq!(code, 2, "the git denial still blocks: out={out:?} err={err:?}");
+    assert!(err.contains("DAEMONBLOCK"), "{err:?}");
+    assert_eq!(err.matches(&mid).count(), 1, "ONE could-not-run notice beside the block, not one per unanswered check: {err:?}");
+    let (code, _, err) = e.run_with(&pre, false, &bash("git push --force origin main", &e.dir), true, &env);
+    assert_eq!(code, 2, "{err:?}");
+    assert!(!err.contains(&mid), "once per session and event family: {err:?}");
+    let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "stop_hook_active": false}).to_string();
+    // an exit-0 Stop carries it as its systemMessage (stdout), the channel the host shows on a pass
+    let (_, out, err) = e.run_with(&["hook", "--event", "Stop"], false, &stop, true, &env);
+    assert_eq!(format!("{out}{err}").matches(&mid).count(), 1, "the Stop family's first unanswered check is told once: out={out:?} err={err:?}");
+    let (_, out, err) = e.run_with(&["hook", "--event", "Stop"], false, &stop, true, &env);
+    assert!(!out.contains(&mid) && !err.contains(&mid), "and not again: out={out:?} err={err:?}");
+}
+
+/// The owner contract (roadmap C9): a timed-out call passes with ONE notice per session and event family, so a timeout on
+/// PreToolUse never silences the first notice of a timed-out Stop of the same session.
+#[test]
+fn a_timeout_notice_is_once_per_session_and_event_family() {
+    let e = Env::new("slow-family");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let env = [("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "9")];
+    let unchecked = "went through unchecked";
+    let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "stop_hook_active": false}).to_string();
+    let calls: Vec<(i32, bool)> =
+        [("PreToolUse", bash("git push --force origin main", &e.dir)), ("PreToolUse", bash("ls", &e.dir)), ("Stop", stop.clone()), ("Stop", stop)]
+            .iter()
+            .map(|(ev, p)| {
+                let (code, out, err) = e.run_with(&["hook", "--event", ev], false, p, true, &env);
+                assert!(out.is_empty(), "{ev}: {out:?}");
+                (code, err.matches(unchecked).count() == 1)
+            })
+            .collect();
+    assert_eq!(calls, [(0, true), (0, false), (0, true), (0, false)], "each call passes; each family is told once");
 }
 
 #[test]

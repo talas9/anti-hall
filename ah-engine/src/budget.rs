@@ -15,6 +15,27 @@ static SHEDDING: AtomicBool = AtomicBool::new(false);
 /// Optional work skipped while shedding (checks of non-guard events, Jev consultations).
 static SHED_SKIPPED: AtomicU64 = AtomicU64::new(0);
 
+/// The checks shed per session (#464: which advice a session lost to the CPU hard limit), session -> check -> count; bounded by
+/// `diagnostics.shed_sessions_max` sessions (the oldest-named are evicted first) and reported in `status` budget.shed_by_session.
+static SHED_BY_SESSION: std::sync::Mutex<BTreeMap<String, BTreeMap<String, u64>>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// Count one answer of `check` shed in `session` (an empty session is counted under `diagnostics.shed_session_unknown`).
+pub fn note_shed_session(session: &str, check: &str) {
+    let session = if session.is_empty() { crate::defaults::text("diagnostics.shed_session_unknown") } else { session };
+    let mut m = SHED_BY_SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    let max = crate::defaults::num("diagnostics.shed_sessions_max") as usize;
+    while !m.contains_key(session) && m.len() >= max.max(1) {
+        let Some(first) = m.keys().next().cloned() else { break };
+        m.remove(&first);
+    }
+    *m.entry(session.to_string()).or_default().entry(check.to_string()).or_default() += 1;
+}
+
+/// The per-session shed report ([`note_shed_session`]).
+pub fn shed_by_session() -> Value {
+    json!(*SHED_BY_SESSION.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// True while the hard CPU limit is crossed: optional work (advisory checks, Jev, background duties) waits.
 pub fn shedding() -> bool {
     SHEDDING.load(Relaxed)
@@ -203,6 +224,7 @@ impl State {
             "shedding": shedding(),
             "cpu_hard_breaches": self.hard_breaches,
             "shed_skipped": SHED_SKIPPED.load(Relaxed),
+            "shed_by_session": shed_by_session(),
         })
     }
 }
@@ -210,6 +232,18 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #464: the shed report names the session and the check, and stays bounded.
+    #[test]
+    fn shed_is_reported_per_session_and_bounded() {
+        note_shed_session("s-464-a", "idle-agent-sweep");
+        note_shed_session("s-464-a", "idle-agent-sweep");
+        assert_eq!(shed_by_session()["s-464-a"]["idle-agent-sweep"], 2);
+        for i in 0..crate::defaults::num("diagnostics.shed_sessions_max") + 2 {
+            note_shed_session(&format!("s-464-b{i}"), "x");
+        }
+        assert!(shed_by_session().as_object().unwrap().len() as u64 <= crate::defaults::num("diagnostics.shed_sessions_max"));
+    }
 
     #[test]
     fn cpu_breaches_after_consecutive_windows_and_clears_on_one_quiet_window() {

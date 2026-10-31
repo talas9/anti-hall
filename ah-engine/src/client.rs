@@ -383,6 +383,12 @@ pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
     }
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the notice is still shown when the marker cannot be written
     crate::discard::logged("unreachable_notice_write", crate::atomic::write(&file, format!("{sid}\n")));
+    unreachable_text(event)
+}
+
+/// The text of the engine-unreachable notice (`msg.engine_unreachable_notice`) for `event`, without any once-per-session stamp:
+/// the dispatcher stamps it per session and event family itself.
+pub(crate) fn unreachable_text(event: Option<&str>) -> String {
     defaults::render("msg.engine_unreachable_notice", &[("event", &event.unwrap_or_default()), ("why", &defaults::text("msg.engine_unreachable_why_daemon"))])
 }
 
