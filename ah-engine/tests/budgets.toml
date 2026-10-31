@@ -46,3 +46,10 @@ debug_factor = 10
 # on, never above `max`. AH_TEST_TIME_SCALE=<n> overrides it (CI sets it).
 load_per_core = 0.5
 max = 8
+
+[memory_soak]
+# The mixed hook soak (tests/it/memory_soak.rs), issue #471: the slope of the heap no registered holder names (`other` of
+# `status --memory`, live heap less every holder) after warm-up, in KB per 1000 calls. Measured 2026-10-30 on scratch daemons
+# with this hook mix plus churning sessions, 30 working directories and growing real-shaped transcripts: `other` stayed between
+# 5 and 8 MB from 600 to 12000 calls (no slope above sampling noise). A structure that keeps a few hundred bytes per call crosses it.
+other_kb_per_kcalls = 512

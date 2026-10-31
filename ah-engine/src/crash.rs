@@ -137,6 +137,7 @@ pub fn spawn_supervised(
 ) -> Option<std::thread::JoinHandle<()>> {
     let thread_name = name.to_string();
     let spawn = std::thread::Builder::new().name(thread_name.clone()).spawn(move || {
+        crate::mem::attribute_thread(name);
         let mut panics = 0_u64;
         loop {
             let _guard = enter("thread", "", "", "", name);

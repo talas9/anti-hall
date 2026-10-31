@@ -609,3 +609,22 @@ value = "footprint"
 [mem.leak_basis_heap]
 doc = "Word for the counted heap in the leak notice's `basis` placeholder."
 value = "heap"
+
+# ---- heap attribution by subsystem (issue #471) -------------------------------------------------------------------------------
+# Each long-lived service thread (and the request workers) charges the bytes it allocates minus the bytes it frees to a counter
+# named after it. `status --memory` and the leak sentinel list these counters as gauges (`gauge: true`, no limits) beside the
+# holders, so the heap no holder names is split by subsystem and what is left is the residual.
+
+[mem.thread_sites_max]
+doc = "Distinct thread names whose allocations are attributed (one counter each, kept for the life of the process). A thread whose name would be past this count is not attributed and its bytes stay in the residual. Each allocation records its site in a 2-byte tag, hence the maximum."
+value = 64
+min = 0
+max = 65535
+
+[mem.requests_site]
+doc = "Gauge name under which the request worker threads' heap is attributed."
+value = "requests"
+
+[mem.leak_gauge_label]
+doc = "Name the leak sentinel gives a per-subsystem gauge in its verdict (flagged list and top grower), so a gauge never collides with a holder of the same name. Placeholder: name."
+value = "thread {name}"

@@ -19,7 +19,7 @@ use std::alloc::System;
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
 
 /// The allocator selected for this process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +94,25 @@ thread_local! {
     static TL_ALLOC: Cell<u64> = const { Cell::new(0) };
     static TL_FREE: Cell<u64> = const { Cell::new(0) };
     static TL_PEAK: Cell<i64> = const { Cell::new(0) };
+    // The subsystem this thread's allocations are charged to (issue #471: attribution of the heap no holder names). `Copy`,
+    // `const` and no `Drop`, like the counters above, so reading it in the allocator never allocates.
+    static TL_SITE: Cell<Option<&'static AtomicI64>> = const { Cell::new(None) };
+}
+
+/// Charge every later allocation and free on this thread to `site` (bytes allocated minus bytes freed here).
+pub(crate) fn bind_thread(site: &'static AtomicI64) {
+    TL_SITE.with(|c| c.set(Some(site)));
+}
+
+/// Whether this thread's allocations are charged to a site.
+pub(crate) fn thread_bound() -> bool {
+    TL_SITE.with(Cell::get).is_some()
+}
+
+fn charge(by: i64) {
+    if let Some(s) = TL_SITE.with(Cell::get) {
+        s.fetch_add(by, Relaxed);
+    }
 }
 
 // `diagnostics.check_mem` and `diagnostics.check_mem_sample_every`, set by [`configure_measure`]. 1 is the identity (every call).
@@ -109,6 +128,7 @@ fn grow(by: usize) {
     let live = LIVE.fetch_add(by as u64, Relaxed) + by as u64;
     PEAK.fetch_max(live, Relaxed);
     ALLOCS.fetch_add(1, Relaxed);
+    charge(by as i64);
     if MEASURE_ON.load(Relaxed) {
         let alloc = TL_ALLOC.with(|c| {
             let a = c.get().wrapping_add(by as u64);
@@ -126,6 +146,7 @@ fn grow(by: usize) {
 
 fn shrink(by: usize) {
     LIVE.fetch_sub(by as u64, Relaxed);
+    charge(-(by as i64));
     if MEASURE_ON.load(Relaxed) {
         TL_FREE.with(|c| c.set(c.get().wrapping_add(by as u64)));
     }
