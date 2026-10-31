@@ -791,10 +791,15 @@ fn an_inert_credit_mention_in_a_script_is_allowed_and_a_credited_message_literal
     let e = Env::new("inert");
     let (work, _) = pushed_repo(&e);
     let w = work.to_str().unwrap();
-    std::fs::write(work.join("comment.sh"), format!("#!/bin/sh\n# Generated with Claude Code\n  # {CO}\ngit commit -q --allow-empty -m 'feat: plain'\ngit {P} -q origin main\n")).unwrap();
+    std::fs::write(
+        work.join("comment.sh"),
+        format!("#!/bin/sh\n# Generated with Claude Code\n  # {CO}\ngit commit -q --allow-empty -m 'feat: plain'\ngit {P} -q origin main\n"),
+    )
+    .unwrap();
     std::fs::write(work.join("grep.sh"), format!("#!/bin/sh\ngit log -1 --format=%B | grep -q 'Generated with Claude' && exit 1\ngit commit -q --allow-empty -m 'feat: plain'\ngit {P} -q origin main\n")).unwrap();
     std::fs::write(work.join("nogit.sh"), format!("#!/bin/sh\necho \"{CO}\" > notes.txt\n")).unwrap();
-    std::fs::write(work.join("literal.sh"), format!("#!/bin/sh\n# plain header\ngit commit -q --allow-empty -m \"x\\n\\n{CO}\"\ngit {P} -q origin main\n")).unwrap();
+    std::fs::write(work.join("literal.sh"), format!("#!/bin/sh\n# plain header\ngit commit -q --allow-empty -m \"x\\n\\n{CO}\"\ngit {P} -q origin main\n"))
+        .unwrap();
     let _ = e.hook("echo warm");
     for f in ["comment.sh", "grep.sh", "nogit.sh"] {
         assert_eq!(e.hook_in(&format!("bash {f}"), w), (String::new(), String::new(), 0), "{f} is inert");
