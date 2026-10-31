@@ -598,6 +598,69 @@ fn any_unpushed_credited_commit_refuses_every_push_shape() {
     }
 }
 
+/// GH #506 review (P1): git itself reads the configuration, so every spelling it accepts of a mirror (or another setting that makes
+/// a bare push send more than HEAD) widens the push, and a clean `main` does not hide a credited branch.
+#[test]
+fn every_spelling_git_accepts_of_a_widening_push_config_refuses_a_bare_push() {
+    let e = Env::new("scope_cfg");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["branch", "credited"]);
+    git_ok(&work, &["checkout", "-q", "credited"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let cfg = work.join(".git/config");
+    let base = std::fs::read_to_string(&cfg).unwrap();
+    let inc = e.dir.join("extra.gitconfig");
+    std::fs::write(&inc, "[remote \"origin\"]\n\tmirror\n").unwrap();
+    let inc = inc.to_str().unwrap().to_string();
+    let _ = e.hook("echo warm");
+    let r = |s: &str| s.to_string();
+    let blocked: Vec<(&str, String, String)> = vec![
+        ("bare mirror", r("[remote \"origin\"]\n\tmirror\n"), r("git push origin")),
+        ("mirror = true", r("[remote \"origin\"]\n\tmirror = true\n"), r("git push origin")),
+        ("mirror = yes", r("[remote \"origin\"]\n\tmirror = yes\n"), r("git push origin")),
+        ("mirror = on", r("[remote \"origin\"]\n\tmirror = on\n"), r("git push origin")),
+        ("mirror = 1", r("[remote \"origin\"]\n\tmirror = 1\n"), r("git push origin")),
+        ("mirror = TRUE", r("[remote \"origin\"]\n\tmirror = TRUE\n"), r("git push origin")),
+        ("mixed-case names", r("[REMOTE \"origin\"]\n\tMiRrOr\n"), r("git push origin")),
+        ("bare mirror, bare push", r("[remote \"origin\"]\n\tmirror\n"), r("git push")),
+        ("included file", format!("[include]\n\tpath = {inc}\n"), r("git push origin")),
+        ("includeIf", format!("[includeIf \"onbranch:main\"]\n\tpath = {inc}\n"), r("git push origin")),
+        ("unreadable boolean", r("[remote \"origin\"]\n\tmirror = banana\n"), r("git push origin")),
+        ("glob push refspec", r("[remote \"origin\"]\n\tpush = +refs/*:refs/*\n"), r("git push origin")),
+        ("push.default matching", r("[push]\n\tdefault = matching\n"), r("git push origin")),
+        ("push.followTags bare", r("[push]\n\tfollowTags\n"), r("git push origin")),
+        ("-c bare mirror", String::new(), r("git -c remote.origin.mirror push origin")),
+        ("--mirror", String::new(), r("git push --mirror origin")),
+        ("--all", String::new(), r("git push --all origin")),
+        ("--tags", String::new(), r("git push --tags origin")),
+    ];
+    let mut missed = Vec::new();
+    for (name, add, cmd) in &blocked {
+        std::fs::write(&cfg, format!("{base}{add}")).unwrap();
+        let (out, err, code) = e.hook_in(cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{name}: {cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    // settings that leave a bare push on HEAD stay narrowed: the clean `main` is allowed
+    for (name, add) in [
+        ("no extra config", ""),
+        ("mirror = false", "[remote \"origin\"]\n\tmirror = false\n"),
+        ("push.default current", "[push]\n\tdefault = current\n"),
+        ("push.followTags = false", "[push]\n\tfollowTags = false\n"),
+    ] {
+        std::fs::write(&cfg, format!("{base}{add}")).unwrap();
+        let got = e.hook_in("git push origin", w);
+        if got != (String::new(), String::new(), 0) {
+            missed.push(format!("{name} must allow: {got:?}"));
+        }
+    }
+    std::fs::write(&cfg, &base).unwrap();
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
 /// Layer 1 cannot read a message built from a file or an expansion; a push in the same call is refused before anything runs.
 #[test]
 fn a_commit_layer_one_cannot_read_and_a_push_in_the_same_call_are_refused() {

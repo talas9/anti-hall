@@ -863,13 +863,29 @@ value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "
 doc = "git arguments listing the commits of the refs a push sends that no remote has (GH #506), used for a push its command line and configuration narrow (guards.gitPushCreditScope): {dir}, {repo} and {n} as in push_argv_log, {revs} expands to the revisions the push names (its refspec sources, or HEAD for a bare push)."
 value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "{revs}", "--not", "--remotes", "--"]
 
-[git.push_argv_config]
-doc = "git arguments listing the repository's effective configuration, read to see whether a push could send more than its command line names (push_scope_config_re)."
-value = ["-C", "{dir}", "{repo}", "config", "--list"]
+[git.push_argv_config_bool]
+doc = "git arguments asking git itself for each boolean configuration key matching {pattern} (git.push_scope_bool_patterns), parsed by git as a boolean in every spelling it accepts (a bare key, `= true`, yes, on, 1, any case, included files, includeIf): `<key> true` lines widen a push. Exit 1 with no output means no key matched; any other failure (a value git cannot read as a boolean) is treated as widening."
+value = ["-C", "{dir}", "{repo}", "config", "--type=bool", "--get-regexp", "{pattern}"]
 
-[git.push_scope_config_re]
-doc = "Regular expression (JavaScript syntax, multiline) over `git config --list`: a line that matches (a remote with a configured push refspec or mirror flag, push.default matching) means a bare push may send more than the current branch, so the push is not narrowed to its own commits."
-value = "^(?:remote\\..+\\.(?:push|mirror)=|push\\.default=matching$)"
+[git.push_argv_config_raw]
+doc = "git arguments listing each configuration key matching {pattern} (git.push_scope_any_patterns, git.push_scope_default_pattern) with its raw value, as `<key> <value>` lines. Exit 1 with no output means no key matched; any other failure is treated as widening."
+value = ["-C", "{dir}", "{repo}", "config", "--get-regexp", "{pattern}"]
+
+[git.push_scope_bool_patterns]
+doc = "Key patterns (git --get-regexp syntax) of boolean settings that make a bare push send more than the current branch when true: a remote mirror flag, push.followTags (git lowercases section and variable names, not the remote name)."
+value = ["^remote\\..*\\.mirror$", "^push\\.followtags$"]
+
+[git.push_scope_any_patterns]
+doc = "Key patterns (git --get-regexp syntax) of settings that widen a push whatever their value: a configured push refspec of a remote (it can be a glob or +refs/*; a bare push sends it instead of the current branch)."
+value = ["^remote\\..*\\.push$"]
+
+[git.push_scope_default_pattern]
+doc = "Key pattern (git --get-regexp syntax) of the push.default setting."
+value = "^push\\.default$"
+
+[git.push_default_narrow]
+doc = "push.default values (lower case) under which a bare push sends only the current branch. Any other value, including one this list does not know, widens the push (git.push_scope_default_pattern); an unset push.default is `simple`."
+value = ["nothing", "current", "upstream", "tracking", "simple"]
 
 [git.push_unscoped_opts]
 doc = "git push options after which the commits sent cannot be read from the command line (every branch, every tag, a mirror, pruning): the push is not narrowed to its own commits."

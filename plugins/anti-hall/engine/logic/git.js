@@ -2167,11 +2167,33 @@ function pushScope(ev) {
   return revs.length ? revs : null;
 }
 
-// GH #506: true when the repository's configuration cannot make a push send more than the refs its command line names.
+// GH #506: true when the repository's configuration cannot make a push send more than the refs its command line names. Git itself
+// reads and interprets the configuration (every spelling of a boolean, included files, includeIf); a query that fails, is cut
+// short or returns a line this code cannot read counts as "may send more" (the blocking side), never as "sends only HEAD".
+function pushConfigQuery(tplKey, pattern, dir, repo, env) {
+  const tpl = ah.cfg(tplKey).map((a) => a.split('{pattern}').join(pattern));
+  const r = ah.exec(ah.cfg('git.git_binary'), fillPushArgv(tpl, dir, repo, 0), { env: env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  if (r === null || r.truncated === true) return null;
+  const out = String(r.stdout || '');
+  if (r.status === 1 && out.trim() === '') return []; // no key matched
+  if (r.status !== 0) return null;
+  return out.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
 function pushConfigNarrow(dir, repo, env) {
-  const r = ah.exec(ah.cfg('git.git_binary'), fillPushArgv(ah.cfg('git.push_argv_config'), dir, repo, 0), { env: env, timeoutMs: ah.cfg('git.push_timeout_ms') });
-  if (r === null || r.status !== 0 || r.truncated === true) return false;
-  return !new RegExp(ah.cfg('git.push_scope_config_re'), 'm').test(String(r.stdout || ''));
+  for (const p of ah.cfg('git.push_scope_bool_patterns')) {
+    const lines = pushConfigQuery('git.push_argv_config_bool', p, dir, repo, env);
+    if (lines === null) return false;
+    if (lines.some((l) => !/ false$/.test(l))) return false; // true, or anything git did not report as false
+  }
+  for (const p of ah.cfg('git.push_scope_any_patterns')) {
+    const lines = pushConfigQuery('git.push_argv_config_raw', p, dir, repo, env);
+    if (lines === null || lines.length) return false;
+  }
+  const defaults = pushConfigQuery('git.push_argv_config_raw', ah.cfg('git.push_scope_default_pattern'), dir, repo, env);
+  if (defaults === null) return false;
+  const narrow = ah.cfg('git.push_default_narrow');
+  return defaults.every((l) => narrow.includes(l.slice(l.indexOf(' ') + 1).trim().toLowerCase()));
 }
 
 function unpushedCredit(dir, repo, env, scope) {
