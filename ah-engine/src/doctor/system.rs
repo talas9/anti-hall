@@ -261,6 +261,11 @@ fn expand(tok: &str, home: &str) -> String {
 /// SH-01..07: the optional Node witness kit.
 pub fn witness_section(doc: &mut Doc, ctx: &Ctx) {
     doc.head(defaults::text("doctor_msg.head_witness"));
+    if let Some(deployed) = ctx.plugin_root.as_deref() {
+        for live in crate::operator::routine::live_root_mismatches(&ctx.home, Path::new(deployed)) {
+            doc.warnl(defaults::render("doctor_msg.witness_live_root", &[("live", &live), ("deployed", &deployed)]));
+        }
+    }
     let dir = Path::new(&ctx.home).join(defaults::text("paths.base_dir")).join(defaults::text("doctor.shadow_dir"));
     let script = defaults::text("doctor.shadow_script");
     let settings = Path::new(&ctx.home).join(defaults::text("doctor.claude_settings"));
