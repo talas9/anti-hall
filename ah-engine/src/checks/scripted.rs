@@ -288,3 +288,12 @@ pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles
 
 /// `gh-rt-advisory` (UserPromptSubmit; engine-only): tells a session about GitHub edges (CI red or green, PR merged, changes requested).
 pub static GH_RT_ADVISORY: Scripted = Scripted::new("gh-rt-advisory", "github_rt.advisory_summary");
+
+/// `rule-digest` (SessionStart): the essential rules in the session context.
+pub static RULE_DIGEST: Scripted = Scripted::new("rule-digest", "guard_rules.summary");
+
+/// `session-banner` (SessionStart): one user-visible line.
+pub static SESSION_BANNER: Scripted = Scripted::new("session-banner", "guard_rules.summary_banner");
+
+/// `session-summary` (SessionEnd): one user-visible line.
+pub static SESSION_SUMMARY: Scripted = Scripted::new("session-summary", "guard_rules.summary_session");

@@ -150,7 +150,7 @@ fn the_task_done_note_leads_with_the_action_and_fits_before_the_cut() {
     let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
     let out = s.check("tasklist-hygiene", &payload, &[]);
     let first = out.split("\\n").next().unwrap_or("");
-    assert!(first.contains("task 1 done: log Cause/Fix/Verified in the history ledger."), "the action leads the first line: {out}");
+    assert!(first.contains("task 1 done: delegate its Cause/Fix/Verified ledger entry"), "the action leads the first line: {out}");
     assert!(first.chars().count() < 115 + 40, "the first line stays short enough to survive the digest cut: {first}");
     assert!(out.contains("TaskUpdate status=deleted (own task entries are not user data)"), "the delete instruction sits on the second line: {out}");
 }

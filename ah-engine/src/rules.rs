@@ -46,6 +46,9 @@ struct RawRule {
     options: Value,
     #[serde(default)]
     message: String,
+    /// A defaults key whose what/why/instead texts make the message (one source with the skill and the digest).
+    #[serde(default)]
+    message_ref: Option<String>,
     #[serde(default)]
     paths: Vec<String>,
     #[serde(default = "enabled_by_default")]
@@ -158,7 +161,10 @@ impl RuleSet {
                 field: r.field,
                 re,
                 action,
-                message: r.message,
+                message: match r.message_ref.as_deref() {
+                    Some(k) if !k.is_empty() => crate::skillgen::compose(&r.action, k),
+                    _ => r.message,
+                },
                 paths: r.paths,
                 check: r.check,
                 options: r.options,

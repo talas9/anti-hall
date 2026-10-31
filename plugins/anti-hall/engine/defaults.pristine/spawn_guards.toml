@@ -640,6 +640,10 @@ value = "reset time unknown"
 doc = "What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause."
 value = "new agents can't start: the {limit} usage limit is at {pct}% (stop at {cap}%, {resets})."
 
+[spawn_usage.msg_block_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "At the usage-limit cap start no agents: finish running work or wait for reset."
+
 [spawn_usage.msg_block_why]
 doc = "Why the hard block applies."
 value = "Another spawn could use up the limit and stop all work, including agents already running."
@@ -677,6 +681,10 @@ value = "Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Cod
 [nested_spawn.msg_what]
 doc = "What the block says."
 value = "this agent is a worker and can't start agents of its own."
+
+[nested_spawn.msg_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "Workers never spawn agents: do the task yourself and report back."
 
 [nested_spawn.msg_why]
 doc = "Why nested spawns are blocked."

@@ -224,7 +224,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     }
     let indirect = |k: &str| {
         k.starts_with("routine.flag_") // routine::flag constructs these CLI names from its argument
-            || ["metric.spawns_denied_over_cap", "metric.spawn_reservations", "metric.runtime_escalation_stop_unrecorded", "metric.tasklist_integration_skipped", "metric.tasklist_progress_carried", "metric.command_heavy_segment_named", "metric.devswarm_parent_gate_fired", "metric.devswarm_parent_gate_suppressed", "metric.devswarm_parent_gate_count_mismatch", "metric.devswarm_orphans_warning_suppressed", "metric.git_blocked", "metric.git_push_blocked", "metric.git_push_ack_downgraded", "metric.git_audit_blocked", "devswarm_role.pg_repeat_step"].contains(&k) // counted by the scripts through ah.advisory(kind, name) / ah.metric(name); pg_repeat_step is named by the repeat.allowed_keys table; the name is a literal in the script
+            || ["metric.spawns_denied_over_cap", "metric.spawn_reservations", "metric.runtime_escalation_stop_unrecorded", "metric.rule_digest", "guard_rules.msg_rm_rf_root", "guard_rules.msg_no_heredoc", "metric.tasklist_integration_skipped", "metric.tasklist_progress_carried", "metric.command_heavy_segment_named", "metric.devswarm_parent_gate_fired", "metric.devswarm_parent_gate_suppressed", "metric.devswarm_parent_gate_count_mismatch", "metric.devswarm_orphans_warning_suppressed", "metric.git_blocked", "metric.git_push_blocked", "metric.git_push_ack_downgraded", "metric.git_audit_blocked", "devswarm_role.pg_repeat_step"].contains(&k) // counted by the scripts through ah.advisory(kind, name) / ah.metric(name); pg_repeat_step is named by the repeat.allowed_keys table; the name is a literal in the script
             || k.starts_with("webapi.source_") // web::query enumerates this registry with defaults::with_prefix
             || k.starts_with("jevrep.t_") // the texts and thresholds of the report, handed whole to the plugin script rules/jev-report (`jev_report::cfg`)
             || k.starts_with("jevrep.thr_")
@@ -271,6 +271,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("claim_evidence.reach_") && k != "claim_evidence.reach_label" // each suppress row names its reach by key (claim_evidence.suppress reach)
             || k.starts_with("devswarm_sup.duty.") // the supervisor duties, read by name from the ordered list devswarm_sup.duties
             || k.starts_with("devswarm_sup.set_") // Node settings entries, named by the duty that uses them (the duty's `sec` / `mode` fields)
+            || ah_engine::skillgen::rules().iter().any(|r| r.source.split_once('.').is_some_and(|(s, n)| *k == format!("{s}.{}", n.replacen("what", "digest", 1)))) // the digest field beside a rule's split message entry (skillgen::digest_field)
     };
     let read = |k: &String| {
         let (section, name) = k.split_once('.').unwrap_or(("", k));

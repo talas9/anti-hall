@@ -1,0 +1,126 @@
+git.setting_git_guard,git.setting_handover_guard	- Never commit a session handover: unstage it before committing.
+git.setting_git_guard	- Never force push (--force, -f, +ref): push normally or ask the owner.
+git.setting_git_guard	- No AI co-author or credit line in commits or PRs: remove it, then commit.
+edit_guard.setting	- The coordinator and orchestrator never edit files: hand the change to a worker.
+api_guard.setting	- Verify API names against the installed runtime before writing calls to them.
+speculation_guard.setting	- No unverified claims: verify with a tool or label the claim unverified.
+!nested_spawn.setting	- Workers never spawn agents: do the task yourself and report back.
+task_guard.setting	- Never stop with open tasks idle: assign each to an agent or report why.
+	- Never delete data without the owner's explicit OK; delete only paths you created.
+	- Write files with the edit tools, never a Bash heredoc.
+tasklist_guard.setting	- Track work in the task list and a fresh progress file: changes with no tasks or a missing/stale progress file block the stop.
+--
+	- silent_nudge.msg: ... of your own ... have gone silent past the ...m threshold: .......
+	- silent_nudge.runtime: ...... still running after repeated runtime nudges, not finished and not stopped.
+	- broad_kill.pattern: `...` is blocked: it kills every process that matches a name or pattern, not one process you started.
+	- broad_kill.everyone: `...` is blocked: it signals every process you own, or your whole process group.
+	- broad_kill.lookup: `...` is blocked: it kills whatever a name or port lookup returns, not a process you started.
+	- burn.msg: this tool call is paused after work with no recorded outcome.
+	- burn.waste: this tool call is paused after repeated work with no outcome.
+claim_evidence.sw_claim	- claim_evidence.claim: "..." (...) has no matching check run this turn.
+claim_evidence.sw_claim	- claim_evidence.pushed: pushed this turn, then called done, but CI and merge state were never checked.
+	- codex_handover.avail_note: Codex unavailable until ... (...).
+	- codex_handover.avail: Codex binary detected on PATH (per a SessionStart PATH probe).
+	- codex_handover.neg: No session handover found under .anti-hall/handovers/.
+	- codex_handover.nudge: ... edits across ... files have no Codex review.
+	- codex_handover.quota: codex:codex-rescue reported quota exhaustion (...).
+	- codex_handover.snaponly: a snapshot exists, but no session handover was saved.
+	- command.heavy: ...... can't run in the main thread.
+	- command.edit: this shell file edit must run in a helper agent.
+	- command.send: `hivecontrol workspace ...` is blocked.
+	- command.mailbox: a helper tried to drain the DevSwarm mailbox.
+	- command.stash: `git stash ...` is blocked for ....
+	- command.rawread_inbox: a shell read of the raw DevSwarm inbox file is blocked.
+	- command.dsread_monitor: `hivecontrol workspace monitor` is blocked.
+	- command.dsread_rm: `hivecontrol workspace read-messages` is blocked.
+	- ctxbudget.lc: limit conservation is active (...).
+	- ctxbudget.ah_tokens: context is ~...K tokens, past your autoHandover.maxTokens ceiling...: write a handover now.
+	- ctxbudget.ah_pct: context is at ~...%...: write a handover now.
+	- ctxbudget.ah_nag: context is now ~...% (handover already saved earlier this session).
+	- ctxbudget.ah_soft: context looks high (~...%, ESTIMATED).
+	- ctxbudget.ah_pause: good stopping point: context is still ~...% and a handover is already saved.
+	- ctxbudget.ah_gate: new work exceeds the post-handover budget (...).
+	- ctxbudget.ah_backstop: context is ~...%, past the post-handover budget.
+	- ctxbudget.ca: your reply recommends compacting ("...") but ....
+	- ctxbudget.hb: your reply declares ready to compact/restart ("...") but the handover is not consolidated: ....
+devswarm_role.sw_child_role	- devswarm_role.pg_warning: workspace status needs attention.
+disk_watch.sw_enabled	- disk_watch.msg: Low disk space: ....
+	- git.launcher: a write to the managed launcher folder was stopped.
+	- git.reused_message: reused commit message has an AI co-author line.
+	- git.gh_credit: PR, issue or release text has an AI credit line.
+	- git.gh_credit_elsewhere: chained command text has an AI credit line.
+	- git.runner_placeholder: a runner hides the command beside a force or delete flag.
+	- git.runner_no_subcommand: a runner hides the git subcommand beside an unsafe flag.
+	- git.runner_push: a runner could hide a force-push argument.
+	- git.find_push: find could supply hidden force-push arguments.
+	- git.delete_ref: remote branch or tag deletion was stopped.
+	- git.push_cmdsubst: command substitution could hide a force-push flag.
+	- git.trailer_remap: a trailer setting adds AI credit.
+	- git.commit_file_credit: commit message file has an AI co-author line.
+	- git.gh_jev: PR, issue or release text credits an AI assistant.
+	- git.commit_jev: commit message credits an AI assistant.
+	- git.commit_file_jev: commit message file credits an AI assistant.
+	- git.creating_credit: git ... would create a commit with AI credit.
+	- git.creating_credit_elsewhere: git ... is chained with text containing AI credit.
+	- git.commit_expansion: the commit message holds a shell expansion (...).
+	- git.push_credit: this push would publish commits with AI credit: ....
+	- git.push_dynamic_repo: this push runs in a repository path the guard cannot read before it runs (...).
+	- git.push_over_cap: more than ... local commits are on no remote, more than the credit check reads.
+	- git.push_same_call: this call creates a commit whose message the guard cannot read (git ...) and pushes in the same call.
+	- git.push_tag_credit: the local annotated tag ... carries an AI credit in its message.
+	- git.script_credit: this call runs ..., whose line ... carries an AI credit line.
+	- git_audit.credit: the commit(s) just written carry AI credit (...).
+	- git_audit.published: the commit(s) just written carry AI credit (...) and are already on a remote (...).
+	- edit_guard.self_edit: ... on .anti-hall/edit-allow.json is not allowed.
+	- edit_guard.outside: ... on a handover file outside the project is not allowed.
+	- edit_guard.new: a new handover must be written at the session path.
+	- edit_guard.patch: this apply_patch could not be read (...), so its targets can't be checked.
+	- compact_decl_v1.msg: new work started after a SAFE TO COMPACT declaration.
+	- inbox_read_v1.store: a raw DevSwarm store read was stopped.
+	- handovers.advisory: ... handover problem(s) and ... day brief(s) out of date in ...
+	- inference.msg: your reply states a cause as fact ('...') but no tool output in this session mentions it.
+	- speculation_judge.msg: your reply states an unchecked claim as fact.
+lane_test.sw_allow_suites	- lane_test.policy: tests are off by owner policy (...): ...
+lane_test.sw_allow_suites	- lane_test.msg: a helper cannot run this full suite (...): ...
+	- queued_wait.bg: a helper cannot start this build or test in the background: ...
+	- queued_wait.sleep: this wait is too long (...s; limit ...s): ...
+	- queued_wait.loop: this poll loop waits too long (...s per round; limit ...s): ...
+wide_search.sw_allow	- wide_search.msg: `...` was stopped: it would scan all of `...`.
+procwatch.sw_enabled	- procwatch.orphans: ... processes remain from ended sessions.
+procwatch.sw_enabled	- procwatch.stuck: ... background agent(s) printed nothing for ...+ minutes: .......
+idle_sweep.sw_enabled	- idle_sweep.: ... finished agent... idle and not ...: .......
+resource_watch.sw_enabled	- resource_watch.proc: pid ... (..., session ...) is using ...; threshold ...
+resource_watch.sw_enabled	- resource_watch.msg: Resource use is high: ....
+	- speculation_guard.jev: your reply asserts a cause or outcome without evidence.
+	- output_verify.msg: command output contains conflicting results.
+	- jev_weekly.notice: ... is ready to switch ....
+	- standdown.msg: spawning is stopped (...); doing this inline is allowed.
+	- merge_side_pick.msg: a push follows a one-sided conflict resolution with no tests.
+	- ship_it.block: L-risk file ... edited with no PLAN.md.
+	- ship_it.adv: ... is missing from the plan phase file list.
+	- scan_throttle.group: a grouped command contains a heavy project scan.
+	- scan_throttle.first: a heavy project scan needs throttling.
+	- coordinator_work.nudge: ... file-changing steps in the main thread within ... min.
+	- failure_nudge.msg: this command failed....
+	- merge_gate.msg: the merge is paused while recent work remains unverified.
+	- edit_guard.launcher: an edit to the managed launcher folder was stopped.
+	- inbox_read.inbox: reading the raw DevSwarm inbox file directly is blocked.
+	- devswarm_comms.main: target "main" points back to this session.
+	- devswarm_comms.block: target "..." belongs to a DevSwarm workspace.
+	- devswarm_comms.ok: target "..." is a live session; messaging is allowed.
+	- swarm_guard.rate: spawn limit reached (... in 60s, cap ...).
+	- swarm_guard.shared: another agent is already writing in this working tree.
+	- spawn_ceiling.msg: ... agents are running (limit ...).
+	- spawn_ceiling.cap: ... agents are running (limit ..., your guards.maxConcurrentAgents cap): .......
+	- spawn_usage.soft: the ... usage limit is at ...% (...).
+	- task_guard.generic: open tasks remain unfinished.
+	- tasklist_guard.reset: the task list was lost during session restore.
+	- tasklist_guard.stalled: ... tasks are marked in progress with no active agent.
+	- tasklist_guard.progress: ... files changed but progress is missing or stale.
+	- tasklist_guard.reduced: ... files changed but no work tracked.
+	- task_tracker.full: requests need tracking before work starts.
+	- task_tracker.short: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
+	- task_tracker.primary: workspace-sized work needs a child workspace.
+	- uncommitted.msg: this edit is paused: ... lines are uncommitted (limit ...).
+--
+
