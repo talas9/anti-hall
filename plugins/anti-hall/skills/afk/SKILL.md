@@ -58,6 +58,7 @@ next prompt. A manual AFK lasts until `back`.
 | `afk.measure` | true | Output tokens per turn, AFK vs present |
 | `afk.conciseCodex` | true | Concise reply rule at Codex session start |
 | `afk.noQuestions` | true | Deny the question tool and hold a turn ending on a question, while AFK |
+| `afk.answerPresence` | true | An answered question-tool call counts as owner presence (no idle AFK while the owner answers) |
 
 Texts, limits and patterns: `engine/defaults/afk.toml`.
 
@@ -65,7 +66,7 @@ Texts, limits and patterns: `engine/defaults/afk.toml`.
 
 `ah-engine metrics` shows `afk_entered{how}`, `afk_turns`, `digest_entries`, `idle_trips`, `afk_overlong_turns{action}`,
 `afk_output_tokens{mode}`, `afk_turns_measured{mode}` (tokens / turns = output tokens per turn, AFK vs present),
-`afk_question_denied{tool}` and `afk_question_parked{action}` (nudged, capped, listed).
+`afk_question_denied{tool}`, `afk_question_parked{action}` (nudged, capped, listed) and `afk_stale_injection_suppressed{event}` (an idle AFK ended because owner presence was newer).
 
 ## Concise style
 
