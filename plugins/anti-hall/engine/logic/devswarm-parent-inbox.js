@@ -557,7 +557,13 @@ function piRoster(ctx, summary) {
     if (noticeIgnoreDead) {
       if (archivedRow) deadWhy = 'archived';
       else if (wtPath && !piPresent(wtPath)) deadWhy = 'worktree_gone';
-      else if (noticeMaxAgeMs > 0 && piFinite(oldestForGate) && now - oldestForGate > noticeMaxAgeMs) deadWhy = 'too_old';
+      else if (noticeMaxAgeMs > 0 && !piHigh(urgencyMax)) {
+        // inactive, not merely holding an old message: judged by the workspace's latest activity (an old unread beside newer mail or a live
+        // child never ages the row out, and an urgent backlog is never aged out); with no activity on record, by the oldest unread
+        var hbRow = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
+        var lastAct = Math.max(verdict && piFinite(verdict.lastOutboundTs) ? verdict.lastOutboundTs : 0, hbRow && typeof hbRow === 'object' && piFinite(hbRow.ts) ? hbRow.ts : 0);
+        if (lastAct > 0 ? now - lastAct > noticeMaxAgeMs : (piFinite(oldestForGate) && now - oldestForGate > noticeMaxAgeMs)) deadWhy = 'too_old';
+      }
     }
     var wouldNag = ((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused;
     if (deadWhy !== null && wouldNag) { out.ignoredDead++; ah.metric('devswarm_notice_rows_ignored', ['reason', deadWhy]); }

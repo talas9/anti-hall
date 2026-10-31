@@ -617,6 +617,7 @@ mod dead_notice_rows_tests {
         std::fs::write(dev.join("workspaces/gone-1.json"), &gone).unwrap();
         std::fs::write(dev.join("workspaces/live-1.json"), format!(r#"{{"id":"live-1","worktreePath":"{}","sessionId":"s2"}}"#, live.display())).unwrap();
         let rows = dead_rows(&dev);
+        assert!(defaults::render("doctor_msg.ds_dead_rows", &[("n", &rows.len())]).starts_with("1 archived rows ignored"), "the doctor line");
         assert_eq!(rows.len(), 1, "only the row with a missing worktree is dead");
         assert_eq!(rows[0].0, "gone-1");
         // the heal writes the marker the notices already honour, and keeps the descriptor
