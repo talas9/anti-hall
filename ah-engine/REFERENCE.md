@@ -11980,6 +11980,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jevrep.t_credit_no_key` | `\ncredit balance (vercel): n/a — {notice}` |  |  | The balance needs a key this process cannot see. Placeholder: {notice}. |
 | `jevrep.t_credit_this_transport` | `this transport` |  |  | Names the transport when a transport has no balance endpoint and none is named. |
 | `jevrep.t_credit_unsupported` | `\ncredit balance: not available on {transport} (no balance endpoint)` |  |  | The transport has no balance endpoint. Placeholder: {transport}. |
+| `jevrep.t_errors_by_kind_line` | `  {id}: {kinds}` |  |  | One integration's failed calls by kind. |
+| `jevrep.t_errors_by_kind_title` | `\nfailed calls by kind (baseline used):` |  |  | Title of the failed-calls-by-kind section. |
 | `jevrep.t_group_cost_line` | `    {id}: calls={calls} ${total} {perCall}` |  |  | One integration of a --by group's real cost. Placeholders: {id}, {calls}, {total}, {perCall}. |
 | `jevrep.t_group_cost_total` | `  real cost: ${total} total` |  |  | A --by group's real cost total. Placeholder: {total}. |
 | `jevrep.t_group_title` | `\n=== {by}: {key} ({n} row(s)) ===` |  |  | Heading of a --by group. Placeholders: {by}, {key}, {n}. |
@@ -12026,7 +12028,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jevrep.t_verdict_label_only` | `REVIEW (label-only, no outcome signal yet)` |  |  | The verdict of a label-only integration with no labelled outcome. |
 | `jevrep.t_verdict_latency` | `REVIEW (p95 latency exceeds budget)` |  |  | The verdict when the p95 latency is over the integration's budget. |
 | `jevrep.t_verdict_needs_labels` | `REVIEW (needs labels: {n}/{min})` |  |  | The verdict with too few labelled outcomes. Placeholders: {n}, {min}. |
+| `jevrep.t_verdict_no_signal` | `REVIEW (no outcome signal: no comparison, outcomes or labels)` |  |  | Suggestion for an integration with no regex comparison, no outcome rows, no labels and no changed decision: nothing can show whether it helps. |
 | `jevrep.t_verdict_not_enough` | `REVIEW (not enough data: {calls} < {min} calls)` |  |  | The verdict with too few calls. Placeholders: {calls}, {min}. |
+| `jevrep.t_verdict_off` | `OFF (mode off: {calls} calls logged, Jev not asked)` |  |  | Suggestion when every call in the window ran with the integration switched off (mode off): Jev was never asked. |
 | `jevrep.t_verdict_remove` | `REMOVE` |  |  | The verdict of an integration with a proven bad record. |
 | `jevrep.t_verdict_review` | `REVIEW` |  |  | The verdict that needs a look; every REVIEW verdict starts with this word. |
 | `jevrep.t_verdict_review_note` | `REVIEW ({note})` |  |  | The REVIEW verdict with a note. Placeholder: {note}. |

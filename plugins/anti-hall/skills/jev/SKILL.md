@@ -521,7 +521,7 @@ into the new key automatically (see `migrations`
 | `mergeGateHedge` | does this text hedge on merge-readiness | `relax-block` | `shadow` | yes | yes |
 | `newRequest` | classify a prompt: new-request/follow-up/correction/question | `advisory` | `shadow` | yes | yes |
 | `outputVerifyGuard` | does this test-runner output actually indicate a pass | `advisory` | `shadow` | yes | no — reads a `PostToolUse` Bash `tool_response` whose exact shape on Codex's shell tool is unverified (no captured payload); not wired until proven, to avoid a hook whose trigger never actually fires as intended |
-| `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `shadow` | yes | yes |
+| `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `off` (#466: 7.1k calls, 0 changed) | yes | yes |
 | `parentGateQuestion` | is this unread child message really a question awaiting reply | `add-block` (cache-only, zero network) | `shadow` | yes | yes |
 | `tasklistTrivial` | is this session a genuinely non-trivial, multi-part effort | `relax-block` | `shadow` | yes | yes |
 | `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — the engine supervisor duty identity-binds to `claude --resume` processes specifically |

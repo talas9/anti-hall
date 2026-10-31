@@ -38,6 +38,12 @@ fn open_for_write() -> Result<TelDb, String> {
     crate::db::Db::open(&dir).map(TelDb::new).map_err(|e| e.to_string())
 }
 
+/// The advisory counters (advisor adherence, availability and every other advisory kind) as `status` shows them: the durable
+/// journal plus this process's own table, so `telemetry summary` carries them whether or not a daemon answered.
+fn advisory_counts() -> Value {
+    crate::obs::counters::snapshot().get("advisory").cloned().unwrap_or_else(|| json!({}))
+}
+
 /// Run a telemetry subcommand (`rest` is everything after the command word, without `--json`). Returns the report and the
 /// exit code.
 pub fn run(rest: &[String]) -> (Value, i32) {
@@ -58,6 +64,9 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             }
             if let Some(mut v) = client::ctl_json(&verb) {
                 v["from"] = json!("daemon");
+                if sub == "summary" {
+                    v["advisory"] = advisory_counts();
+                }
                 return (v, 0);
             }
             let tel = open_existing();
@@ -69,6 +78,7 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             };
             if sub == "summary" {
                 v["agent_cost"] = crate::agents::cost_report();
+                v["advisory"] = advisory_counts();
             }
             v["from"] = json!("files");
             v["running"] = json!(false);
