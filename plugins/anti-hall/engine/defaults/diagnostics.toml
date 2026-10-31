@@ -365,6 +365,14 @@ value = "the site gave no reason"
 doc = "The event-log line for an abandoned decision. {site} is the counted site, {why} the reason with its key inputs, {n} how many were counted at the site since the last line."
 value = "abandoned at {site} (x{n}): {why}"
 
+[diagnostics.durable_counter_kinds]
+doc = "Counter kinds the daemon writes to the shared journal like every other process, instead of keeping them in memory, so they survive a daemon restart (GH #404: the advisory counters, which the advisor adherence report reads, were lost on every restart). One append per event; the journal is folded at diagnostics.counters_max_bytes."
+value = ["advisory"]
+
+[diagnostics.advisory_ratios]
+doc = "Ratios derived in the advisory report (status `advisory.<kind>.<name>`): name = { kind, num, den }, num / den of two counters of that kind, three decimals, absent while den is 0. consult_rate: thinking dispatches (fix, design, investigate, root cause, plan, review) of a non-flagship main that had an advisor call since the owner's last message, over all such dispatches."
+value = { consult_rate = { kind = "advisor_thinking", num = "consulted_before", den = "dispatch" } }
+
 [diagnostics.counters_max_bytes]
 doc = "Size at which the counter journal is folded into one line per counter (atomically, under the journal lock), so it never grows without bound."
 value = 262144
