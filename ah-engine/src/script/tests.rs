@@ -1371,6 +1371,402 @@ mod sibling {
         assert!(n >= 60, "the corpus must hold at least 60 messages");
         assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
     }
+
+    // ---- the self-correction cue family (GH #454) ----
+
+    const SELF: [&str; 4] = [
+        "I fixed a typo I made in the config key.",
+        "Found a mistake in my earlier edit and corrected it.",
+        "My mistake: the flag name was wrong, fixed now.",
+        "I used the wrong path, which should have been `src/lib.rs`, corrected.",
+    ];
+
+    #[test]
+    fn a_reply_reporting_a_fix_of_the_agents_own_typo_or_mistake_gets_one_reminder() {
+        for (i, msg) in SELF.iter().enumerate() {
+            let d = h(&format!("self-pos{i}"));
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+            assert!(is_adv(&go(&d, &stop(&d, &p, msg))), "reminded: {msg}");
+            let s: Value = serde_json::from_str(&std::fs::read_to_string(format!("{d}/.anti-hall/sibling-sweep-s1.json")).unwrap()).unwrap();
+            assert_eq!(s["pending"]["family"], "self_correction", "{msg}");
+            // the same cause again in the same turn: once
+            assert_eq!(go(&d, &stop(&d, &p, msg)), Verdict::Allow, "repeat of the same cause is silent: {msg}");
+            assert_eq!(rows(&d).iter().filter(|r| r["result"] == "duplicate").count(), 1);
+        }
+    }
+
+    #[test]
+    fn a_search_already_run_or_quoted_or_code_text_keeps_the_self_correction_silent() {
+        let msg = SELF[0];
+        let d = h("self-neg-search");
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg), tool("Grep", json!({"pattern": "config_key"})), result()]);
+        assert_eq!(go(&d, &stop(&d, &p, msg)), Verdict::Allow, "a related search ran in the turn");
+        let d2 = h("self-neg-quote");
+        for text in [
+            "> I fixed a typo I made in the config key.".to_string(),
+            format!("```\n{msg}\n```"),
+            "Please explain what a typo I made would look like.".to_string(),
+        ] {
+            let p2 = write(&d2, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
+            assert_eq!(go(&d2, &stop(&d2, &p2, &text)), Verdict::Allow, "not a statement: {text}");
+        }
+    }
+
+    fn bumped(name: &str, labels: &[(&str, &str)]) -> u64 {
+        crate::metrics::bumped_on_this_thread(name, labels)
+    }
+
+    #[test]
+    fn the_self_correction_counters_hold_the_right_values() {
+        let d = h("self-cnt");
+        let msg = SELF[0];
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        let (f0, s0, t0) = (
+            bumped("sibling_sweep_self_correction_fired", &[]),
+            bumped("sibling_sweep_self_correction_suppressed", &[("reason", "duplicate")]),
+            bumped("sibling_sweep_self_correction_followed_through", &[]),
+        );
+        assert!(is_adv(&go(&d, &stop(&d, &p, msg))));
+        assert_eq!(bumped("sibling_sweep_self_correction_fired", &[]), f0 + 1, "fired");
+        assert_eq!(go(&d, &stop(&d, &p, msg)), Verdict::Allow);
+        assert_eq!(bumped("sibling_sweep_self_correction_suppressed", &[("reason", "duplicate")]), s0 + 1, "suppressed");
+        let d3 = h("self-cnt-ft");
+        let p3 = write(&d3, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        assert!(is_adv(&go(&d3, &stop(&d3, &p3, msg))));
+        append(&p3, &[tool("Read", json!({})), result(), say("Looked.")]);
+        go(&d3, &continuation(&d3, &p3, "Looked."));
+        assert_eq!(bumped("sibling_sweep_self_correction_followed_through", &[]), t0, "an ignored reminder is not followed through");
+        let d4 = h("self-cnt-ft2");
+        let p4 = write(&d4, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        assert!(is_adv(&go(&d4, &stop(&d4, &p4, msg))));
+        append(&p4, &[tool("Grep", json!({"pattern": "x"})), result(), say("Searched: no other occurrences.")]);
+        go(&d4, &continuation(&d4, &p4, "Searched: no other occurrences."));
+        assert_eq!(bumped("sibling_sweep_self_correction_followed_through", &[]), t0 + 1, "followed through");
+        // the cause family never touches the self-correction counters
+        let d2 = h("self-cnt-cause");
+        fire(&d2, "t");
+        assert_eq!(bumped("sibling_sweep_self_correction_fired", &[]), f0 + 3, "only the self-correction reminders are counted");
+    }
+
+    #[test]
+    fn other_peoples_corrections_quoted_text_double_backtick_spans_and_tilde_fences_are_no_statement() {
+        let silent = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            assert_eq!(go(&d, &stop(&d, &p, text)), Verdict::Allow, "{tag}: {text}");
+        };
+        let loud = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            assert!(is_adv(&go(&d, &stop(&d, &p, text))), "{tag}: {text}");
+        };
+        silent("o1", "Alice fixed her mistake: the option should have been false.");
+        silent("o2", "The user wrote \"my mistake: config should have been lower-case\" in the ticket.");
+        loud("o2c", "The user wrote my mistake: config should have been lower-case in the ticket.");
+        loud("o3", "I got it wrong: the option should have been false.");
+        silent("o4", "The string ``the root cause was a stale cache`` is in the fix.");
+        loud("o4c", "The root cause was a stale cache, and the string is in the fix.");
+        silent("o5", "~~~\nThe root cause was a stale cache.\n~~~\nDone.");
+        loud("o5c", "The root cause was a stale cache. Fixed.");
+    }
+
+    /// PR #455 review: spans and quotations are masked over the whole reply before it is split into sentences, and a
+    /// self-correction cue binds the agent as the actor of the mistake or its fix.
+    #[test]
+    fn masks_precede_the_sentence_split_and_a_self_correction_needs_the_agent_as_the_actor() {
+        let verdict = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            (go(&d, &stop(&d, &p, text)), d)
+        };
+        let mut wrong = Vec::new();
+        for (tag, text) in [
+            ("m1", "The user wrote \"my mistake. Config should have been lower-case\" in the ticket."),
+            ("m2", "The string ``example. The root cause was a stale cache`` is in the fix."),
+            ("m3", "I reviewed Alice's fix: the option should have been false."),
+            ("m3b", "I reviewed the patch Alice made, which should have been smaller."),
+        ] {
+            if verdict(tag, text).0 != Verdict::Allow {
+                wrong.push(format!("silent expected: {text}"));
+            }
+        }
+        // a quote character inside a code span erases no prose
+        let (v, d) = verdict("m4", "I wrote `\"` and fixed my mistake around `\"`.");
+        let family = std::fs::read_to_string(format!("{d}/.anti-hall/sibling-sweep-s1.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .map(|s| s["pending"]["family"].clone());
+        if !is_adv(&v) || family != Some(json!("self_correction")) {
+            wrong.push(format!("self_correction reminder expected (m4): {v:?} {family:?}"));
+        }
+        for (tag, text) in [
+            ("a1", "I've fixed a typo in the loader."),
+            ("a2", "I typed `retries`, which should have been `retry`, now corrected."),
+            ("a3", "Corrected: my edit set the flag, which should have been off."),
+        ] {
+            if !is_adv(&verdict(tag, text).0) {
+                wrong.push(format!("reminder expected: {text}"));
+            }
+        }
+        assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
+    }
+
+    /// Codex review of PR #455 (P2s): a cheap prefilter, a wrong-path cue, single-quoted spans and reported speech.
+    #[test]
+    fn neutral_text_costs_one_regex_pass_and_a_cue_still_fires_after_the_prefilter() {
+        let mut costly: Vec<(&str, u64)> = Vec::new();
+        let neutral = "The quick brown fox jumps over the lazy dog while the build runs quietly in the evening. ";
+        for (tag, bytes) in [("n64k", 65536usize), ("n1m", 1048576usize)] {
+            let d = h(tag);
+            configure(&d, json!({"text_max_bytes": 1048576}));
+            let text = neutral.repeat(bytes / neutral.len());
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
+            let (before, t0) = (super::host::re_calls(), std::time::Instant::now());
+            let v = go(&d, &stop(&d, &p, &text));
+            let (calls, ms) = (super::host::re_calls() - before, t0.elapsed().as_millis());
+            eprintln!("MEASURE {tag}: {calls} regex calls, {ms} ms");
+            assert_eq!(v, Verdict::Allow);
+            costly.push((tag, calls));
+        }
+        assert!(costly.iter().all(|(_, n)| *n <= 40), "neutral text must cost a bounded number of regex calls: {costly:?}");
+        // the prefilter never hides a cue: one cause sentence at the end of a long neutral text still reminds
+        let d = h("n-cue");
+        let text = format!("{}Root cause: `read_window` holds the file twice, so memory doubles. Fixed by streaming.", neutral.repeat(200));
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
+        assert!(is_adv(&go(&d, &stop(&d, &p, &text))));
+    }
+
+    #[test]
+    fn review_p2_wrong_path_single_quotes_and_reported_speech() {
+        let verdict = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            go(&d, &stop(&d, &p, text))
+        };
+        let mut wrong = Vec::new();
+        for (tag, text) in [
+            ("r1", "I fixed the wrong path I used earlier."),
+            ("r1b", "Fixed the incorrect flag I had typed in the config."),
+            ("q3", "The ticket said it's broken and I fixed a typo I made in the loader."),
+            ("q4", "Don't worry, it's done: I've fixed a typo in the loader."),
+        ] {
+            if !is_adv(&verdict(tag, text)) {
+                wrong.push(format!("reminder expected: {text}"));
+            }
+        }
+        for (tag, text) in [
+            ("q1", "The user wrote 'I fixed a typo' in the ticket."),
+            ("q2", "The user wrote 'my mistake. Config should have been lower-case' in the ticket."),
+            ("q5", "The user wrote \u{2018}I fixed a typo\u{2019} in the ticket."),
+            ("s1", "Alice said: I fixed a typo in the loader."),
+            ("s2", "Bob told me that I made a mistake in my earlier edit, which should have been smaller."),
+            ("s3", "The reviewer wrote, I fixed a typo in the loader."),
+        ] {
+            if verdict(tag, text) != Verdict::Allow {
+                wrong.push(format!("silent expected: {text}"));
+            }
+        }
+        assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
+    }
+
+    /// Codex review of PR #455 (P2s, round 3): a contraction is one token, so "I've said" is the agent's own speech, and an
+    /// apostrophe (contraction, singular or plural possessive) never closes a quotation early. One apostrophe classifier,
+    /// by neighbouring characters and balanced pairing per line, serves both.
+    #[test]
+    fn a_self_correction_never_anchors_the_sweep_of_a_later_cause() {
+        // Codex review of PR #455 (P1): an earlier self-correction and a search after it must not count as the sweep for a
+        // later root-cause statement; each family is anchored to its own first statement.
+        let d = h("anchor");
+        let last = "Root cause was a stale cache. Fixed.";
+        let p = write(
+            &d,
+            "t.jsonl",
+            &[
+                user("fix"),
+                tool("Edit", json!({})),
+                result(),
+                say("I fixed a typo I made."),
+                tool("Grep", json!({"pattern": "unrelated_typo"})),
+                result(),
+                say(last),
+            ],
+        );
+        assert!(is_adv(&go(&d, &stop(&d, &p, last))), "the stale-cache cause still reminds");
+        assert_eq!(results(&d, "cause", "result"), vec!["reminded".to_string()]);
+    }
+
+    /// Codex re-review of PR #455 (P1): every claim of the latest text has its own anchor and needs its own related search; a
+    /// self-correction and the search for it never satisfy or hide a root-cause claim, in either order or message.
+    #[test]
+    fn every_claim_needs_its_own_related_search() {
+        let typo = "I fixed a typo I made.";
+        let cases: [(&str, Vec<String>, &str, bool); 7] = [
+            (
+                "both",
+                vec![say(typo), tool("Grep", json!({"pattern": "unrelated_typo"})), result()],
+                "I fixed a typo I made. Root cause was a stale cache. Fixed.",
+                true,
+            ),
+            (
+                "rev",
+                vec![say(typo), tool("Grep", json!({"pattern": "unrelated_typo"})), result()],
+                "Root cause was a stale cache. I fixed a typo I made. Fixed.",
+                true,
+            ),
+            ("sep", vec![say("Root cause was a stale cache."), tool("Grep", json!({"pattern": "unrelated_typo"})), result()], typo, true),
+            (
+                "unrel",
+                vec![say("Root cause was a stale cache."), tool("Grep", json!({"pattern": "unrelated_typo"})), result()],
+                "Root cause was a stale cache. Fixed.",
+                true,
+            ),
+            (
+                "rel",
+                vec![say("Root cause was a stale cache."), tool("Grep", json!({"pattern": "stale_cache"})), result()],
+                "Root cause was a stale cache. Fixed.",
+                false,
+            ),
+            (
+                "bashrel",
+                vec![say("Root cause was a stale cache."), tool("Bash", json!({"command": "rg -n stale_cache src"})), result()],
+                "Root cause was a stale cache. Fixed.",
+                false,
+            ),
+            (
+                "relcamel",
+                vec![say("Root cause was a stale cache."), tool("Grep", json!({"pattern": "staleCache"})), result()],
+                "Root cause was a stale cache. Fixed.",
+                false,
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (tag, mid, last, remind) in cases {
+            let d = h(&format!("claims-{tag}"));
+            let mut lines = vec![user("fix"), tool("Edit", json!({})), result()];
+            lines.extend(mid);
+            lines.push(say(last));
+            let p = write(&d, "t.jsonl", &lines);
+            if is_adv(&go(&d, &stop(&d, &p, last))) != remind {
+                wrong.push(format!("{tag}: reminder expected {remind}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn apostrophes_are_word_tokens_for_reported_speech_and_quotation_pairing() {
+        let verdict = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            go(&d, &stop(&d, &p, text))
+        };
+        let mut wrong = Vec::new();
+        for (tag, text) in [
+            ("t1", "As I've said, I fixed a typo in the loader."),
+            ("t2", "As I\u{2019}ve said, I fixed a typo in the loader."),
+            ("t3", "As I'd told Bob, I fixed a typo in the loader."),
+            ("t4", "As I have said, I fixed a typo in the loader."),
+            ("t5", "I fixed a typo in the files' names."),
+            ("t6", "I renamed 'doc' and fixed my mistake in the users' table."),
+            ("t7", "Don't panic: I've fixed a typo, it's in the user's config."),
+            ("t8", "The user wrote 'see below.\nI fixed a typo in the loader."),
+        ] {
+            if !is_adv(&verdict(tag, text)) {
+                wrong.push(format!("reminder expected: {text}"));
+            }
+        }
+        for (tag, text) in [
+            ("u1", "The user wrote 'the files' names were wrong, I fixed a typo' in the ticket."),
+            ("u2", "Alice's reviewer said: I fixed a typo in the loader."),
+            ("u3", "Bob wrote \"she said 'I fixed a typo' then left\" in the ticket."),
+            ("u4", "Bob wrote \u{201c}she said \u{2018}I fixed a typo\u{2019} then\u{201d} today."),
+            ("u5", "The user wrote 'Alice's fix: I fixed a typo' in the ticket."),
+            ("u6", "The user wrote 'I fixed a typo in the ticket."),
+        ] {
+            if verdict(tag, text) != Verdict::Allow {
+                wrong.push(format!("silent expected: {text}"));
+            }
+        }
+        assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
+    }
+
+    /// The self-correction corpus (tests/fixtures/sibling_sweep_corpus.ndjson): every row {text, expect: remind|silent, source}
+    /// gets its verdict from the real script in QuickJS, each in its own home (so no cap or duplicate hash carries over). A new
+    /// misjudged phrasing is a new row here, not a new heuristic in the script.
+    #[test]
+    fn every_row_of_the_self_correction_corpus_gets_its_expected_verdict() {
+        let corpus = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sibling_sweep_corpus.ndjson"))
+            .expect("the corpus file is readable");
+        let mut wrong: Vec<String> = Vec::new();
+        let mut n = 0;
+        for (i, line) in corpus.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let (text, expect) = (row["text"].as_str().unwrap(), row["expect"].as_str().unwrap());
+            assert!(matches!(expect, "remind" | "silent"), "row {i}: expect must be remind or silent");
+            let d = h(&format!("corpus{i}"));
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            let v = go(&d, &stop(&d, &p, text));
+            let got = if is_adv(&v) {
+                "remind"
+            } else if v == Verdict::Allow {
+                "silent"
+            } else {
+                "other"
+            };
+            if got != expect {
+                wrong.push(format!("{expect} <- {got} ({}): {text}", row["source"]));
+            }
+            n += 1;
+        }
+        assert!(n >= 40, "the corpus is read ({n} rows)");
+        assert!(wrong.is_empty(), "corpus rows with the wrong verdict: {wrong:#?}");
+    }
+
+    /// A 5000-character line dense with apostrophes and quote characters is tokenized in one linear pass: the claim before it
+    /// still reminds (a CPU-limit kill would fail open to Allow) and the call stays far under the check's limit.
+    #[test]
+    fn a_long_line_of_apostrophes_is_tokenized_in_linear_time() {
+        // one untimed call first: the first call of a test binary compiles the shared regex programs (seconds in a debug build)
+        let w = h("long0");
+        let wp = write(&w, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say("I fixed a typo in the loader.")]);
+        assert!(is_adv(&go(&w, &stop(&w, &wp, "I fixed a typo in the loader."))));
+        let mut wrong = Vec::new();
+        for (tag, filler) in [("long1", "the users' 'names' don't "), ("long2", "'a "), ("long3", "x' "), ("long4", "\u{2018}a\u{2019}s' \"b ")] {
+            let mut text = String::from("I fixed a typo in the loader. ");
+            while text.chars().count() < 5000 {
+                text.push_str(filler);
+            }
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
+            let t0 = std::time::Instant::now();
+            let v = go(&d, &stop(&d, &p, &text));
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            eprintln!("sibling-sweep long line {tag}: {} chars, {ms:.1} ms", text.chars().count());
+            if !is_adv(&v) {
+                wrong.push(format!("{tag}: reminder expected, got {v:?}"));
+            }
+            // a debug build on a loaded machine: a quadratic pass over 5000 characters would take far longer
+            if ms > 3000.0 {
+                wrong.push(format!("{tag}: {ms:.1} ms"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn the_self_correction_family_follows_through_and_the_cue_list_is_a_settings_edit() {
+        let d = h("self-ft");
+        let msg = SELF[1];
+        let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        assert!(is_adv(&go(&d, &stop(&d, &p, msg))));
+        append(&p, &[tool("Grep", json!({"pattern": "x"})), result(), say("Searched: no other occurrences.")]);
+        go(&d, &continuation(&d, &p, "Searched: no other occurrences."));
+        assert_eq!(results(&d, "followthrough", "outcome"), ["followed"]);
+        let d2 = h("self-off");
+        configure(&d2, json!({"self_correction_cues": ["\\bzorp slip\\b"]}));
+        let p2 = write(&d2, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(msg)]);
+        assert_eq!(go(&d2, &stop(&d2, &p2, msg)), Verdict::Allow, "an edited cue list replaces the shipped phrases");
+    }
 }
 
 #[test]

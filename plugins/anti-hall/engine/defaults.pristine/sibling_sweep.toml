@@ -174,6 +174,25 @@ unit = "tool calls"
 min = 1
 max = 1000
 
+[sibling_sweep.search_query_fields]
+doc = "Input fields of a search tool call that hold its query (Grep and Glob `pattern`, Bash `command`, Agent `prompt`), tried in order: the first string one gives the search's subject words. A search counts for a claim only when it relates to that claim's subject (sibling_sweep.relate_min_chars); a search with no query words counts for every claim."
+value = ["pattern", "command", "prompt"]
+
+[sibling_sweep.relate_split_re]
+doc = "JavaScript (u-flag) regex source that splits a claim sentence or a search query into words (camelCase humps are split too). Each claim in the latest text is swept only by a search after its anchor whose words relate to it: one word of either starts the other (stale_cache relates to 'a stale cache')."
+value = '[^\p{L}\p{N}]+'
+
+[sibling_sweep.relate_min_chars]
+doc = "The fewest characters a word needs to count as a subject word of a claim or a search query. A claim or query with no subject word relates to everything (as every search counted before claims were related)."
+value = 3
+unit = "characters"
+min = 1
+max = 100
+
+[sibling_sweep.relate_stop_words]
+doc = "Lower-case words that are never subject words of a claim or a search query: the words of the cue phrases and common function words, so 'the root cause was' or 'I fixed a typo I made' does not relate a claim to every search."
+value = ["the", "and", "was", "were", "are", "is", "that", "this", "these", "those", "with", "from", "for", "but", "not", "its", "it's", "into", "onto", "has", "have", "had", "been", "made", "make", "root", "cause", "causes", "caused", "culprit", "bug", "bugs", "issue", "problem", "fix", "fixed", "fixes", "fixing", "typo", "typos", "mistake", "mistakes", "own", "real", "actual", "found", "now", "then", "also", "just", "which", "should", "all", "any", "one", "out", "rg", "grep", "find", "src"]
+
 # ---- the cause matcher --------------------------------------------------------------------------------------
 
 [sibling_sweep.cause_cues]
@@ -188,6 +207,21 @@ value = [
   '\bthe\s+(?:actual\s+|real\s+)?(?:issue|problem|failure|crash|regression|defect)\s+(?:is|was)\s+(?:that|in|due|because|a|an|the)\b',
   '\bstems?\s+from\b',
   '^\s*(?:[-#]+\s*)?(?:the\s+)?(?:root\s+)?(?:cause|culprit)\s*:',
+]
+
+[sibling_sweep.self_correction_family]
+doc = "The label of the self-correction cue family (the agent reports fixing its own typo or mistake): written to the per-scope state with the pending reminder so follow-through is counted for it. Empty is not allowed."
+value = "self_correction"
+
+[sibling_sweep.self_correction_cues]
+doc = "Regex sources, any of which is the agent reporting a correction of its own typo or mistake. Each cue binds the agent as the actor of the mistake or its fix, not a first-person word anywhere in the sentence: 'I/I've/I'd fixed (found, made ...) a typo', 'found a mistake I made' or 'in my earlier edit', 'my (own) mistake', 'I used (typed, set ...) X, which should have been Y' or 'my edit ... should have been'; 'I reviewed Alice's fix: X should have been Y' is no statement. Matched like cause_cues (same hedge, negation, operational and attributed filters, same once-per-cause key, search evidence and per-scope cap) after fenced code and quoted lines are removed, on the whole reply with code spans and then the inline quotations (sibling_sweep.quote_chars_re) blanked before it is split into sentences; the guards and the reported-speech check read the same unquoted text."
+value = [
+  '''\bi(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:just\s+|now\s+|also\s+|then\s+)?(?:fix(?:ed)?|correct(?:ed)?|repair(?:ed)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e)|made|introduced|left)\s+(?:a|an|the|my|one|this|that)\s+(?:own\s+)?(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)s?\b''',
+  '''\b(?:fix(?:ed|ing)?|correct(?:ed|ing)?|repair(?:ed|ing)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e))\s+(?:a|an|the|one)\s+(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)s?\s+(?:(?:that|which)\s+)?(?:i(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:made|introduced|wrote|added|left)|(?:in|from)\s+my\s+(?:own\s+)?(?:\w+\s+){0,2}(?:edit|change|commit|patch|fix|code|diff|update)s?)\b''',
+  '\bmy\s+(?:own\s+)?(?:mistake|bad|fault|typo|slip(?:-?up)?|oversight)\b',
+  '''\bi(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:used|typed|got|put|set|passed|named|picked|spelled|spelt|entered|chose|gave|pointed|added|left)\b[^.\n]{0,80}\bshould\s+have\s+(?:been|said|read|used)\b''',
+  '\bmy\s+(?:own\s+)?(?:\w+\s+)?(?:edit|change|commit|patch|code|diff)s?\b[^.\n]{0,80}\bshould\s+have\s+(?:been|said|read|used)\b',
+  '''\b(?:wrong|incorrect|mistyped|misspelled|misspelt)\s+(?:\w+\s+){0,2}(?:that\s+)?i(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:used|typed|set|passed|named|picked|spelled|spelt|entered|chose|wrote|gave|added|left|put)\b''',
 ]
 
 [sibling_sweep.hedge_any_re]
@@ -206,13 +240,53 @@ value = '\b(?:git\s+lock|index\.lock|(?:leftover|left-?over|orphaned?|hung)\s+(?
 doc = "Regex source of a cause that is quoted from someone else's report (an agent, worker, lane, reviewer or Codex says it, or 'according to', 'the report says'): it is the report's claim, not a finding the assistant states itself, so it is no cause statement here. First-person findings ('I found the root cause') never match."
 value = '\b(?:(?:sub)?agents?|workers?|lanes?|reviewers?|auditors?|critics?|codex|explorers?|builders?|the\s+report|reports?)(?:.s)?\s+(?:report(?:s|ed)?|says?|said|found|finds|claims?|claimed|states?|stated|notes?|noted|identified|diagnosed|blames?|blamed|attributes?|attributed|summary|result|finding)\b|\b(?:agent|lane|worker|subagent|codex|reviewer)\s+(?:report|summary|result|finding)s?\b|\baccording\s+to\b|\bper\s+the\s+(?:agent|report|lane|worker)\b'
 
+[sibling_sweep.reported_speech_re]
+doc = "Regex source of a speech verb with the word before it ('Alice said: ...', 'Bob told me that ...', 'the reviewer wrote, ...', 'Bob wrote' before a quotation): a self-correction cue whose sentence holds one in its unquoted text BEFORE the cue is someone else's claim, not the agent's own correction. Quotations are blanked first (their opener kept), so speech quoted in the reply never counts. The speaker is the whole word token the match starts in (a contraction is one token: I've, I'd, Alice's), with sibling_sweep.speech_aux_words skipped leftwards; when its base (the part before an apostrophe) is one of sibling_sweep.self_speakers the speech is the agent's own ('I said, ...', 'As I've said, ...', 'I have said, ...') and still counts. Applies to the self-correction family only."
+value = '''\b\w+\s+(?:(?:said|says|wrote|writes|replied|replies|commented|claimed|claims|answered)|(?:told|tells|asked|asks)\s+\w+)(?:\s*[:,]|\s+that\b|\s*["'“‘])'''
+
+[sibling_sweep.speech_aux_words]
+doc = "Lower-case words skipped leftwards between the speaker and the speech verb of sibling_sweep.reported_speech_re ('I have said', 'Bob just wrote'), so the speaker is the word before them."
+value = ["have", "has", "had", "just", "also", "already", "then", "earlier", "once", "previously", "now"]
+
+[sibling_sweep.self_speakers]
+doc = "Lower-case speaker bases that are the agent itself: speech by one of them is the agent's own words, not reported speech (the base of I've and I'd is i)."
+value = ["i"]
+
+[sibling_sweep.prefilter_re]
+doc = "Regex source of one cheap whole-text scan that every cue needs: text (or a sentence) with none of these words cannot hold a cause or self-correction statement, so the per-sentence guard and cue patterns are skipped and neutral text costs one regex pass. It must match a word of every shipped cause_cues and self_correction_cues entry (a test checks the shipped corpora); when either cue list is edited away from the shipped one the prefilter is not used, and an empty value turns it off."
+value = '\b(?:cause[sd]?|culprit|bug|stems?|issue|problem|failure|crash|regression|defect|typo|mistake|slip|misspell\w*|misspelt|oversight|bad|fault|should\s+have|wrong|incorrect|mistyped)'
+
 [sibling_sweep.meta_re]
 doc = "Regex source of mentions of the root-cause machinery itself (the skill, the nudge, a guard, a protocol): a sentence that holds one is about the tooling, not a bug cause."
 value = '\broot[- ]cause[- ](?:claim|attribution|statement|skill|nudge|guard|hook|protocol|discipline|playbook|analysis|investigation|check|rule|section|step|field|label|column|template|tracer|nudges)\b|anti-hall:root-cause|/root-cause|root-cause\.md|root_cause|\brca\b'
 
 [sibling_sweep.fence_re]
-doc = "Regex source of a fenced code block, which is removed before matching (code and logs are not statements)."
-value = '```[\s\S]*?```'
+doc = "Regex source of a fenced code block (backtick or tilde fence), which is removed before matching (code and logs are not statements)."
+value = '```[\s\S]*?```|~~~[\s\S]*?~~~'
+
+[sibling_sweep.quote_chars_re]
+doc = "Regex source of the characters that may open or close an inline quotation or be an apostrophe (straight and curly quotes). The quotation tokenizer makes one left-to-right pass over them in the reply with its code spans blanked (a quote character inside a code span is inert), before the reply is split into sentences, so a quotation that holds a terminator is masked as one piece. Each is classified by its neighbours: one of sibling_sweep.apostrophes between two word characters is part of the word; an apostrophe character opens only after the start, white space or one of sibling_sweep.quote_open_after and closes only before the end, white space or one of sibling_sweep.quote_close_before; any other quote character opens when no word character precedes it and closes when no word character follows it. An opener pairs with the nearest closer of its pair (sibling_sweep.quote_pairs) on its line; quote characters of other pairs inside it are part of it; a second opener of the same pair first, or the end of the line, leaves it unbalanced: plain text, nothing masked (fail open). The inside and closer of each quotation are blanked (the opener stays, so 'Bob wrote' before a quotation reads as speech) and the self_correction_cues, their guards and the reported-speech check read only the rest."
+value = "[\"'\u201c\u201d\u2018\u2019]"
+
+[sibling_sweep.quote_pairs]
+doc = "The quotation delimiters, each an opener and a closer (two characters; the same character twice for a straight quote), paired by the tokenizer of sibling_sweep.quote_chars_re: an opener with the nearest closer of its pair on its line."
+value = ['""', "''", "\u201c\u201d", "\u2018\u2019"]
+
+[sibling_sweep.apostrophes]
+doc = "The characters that are also apostrophes. Between two word characters one is part of the word (don't, I've, Alice's) and never a delimiter; elsewhere it opens or closes a quotation only next to white space, a text edge or sibling_sweep.quote_open_after / quote_close_before, so a possessive (users', files') can close an open quotation but never open one. The reported-speech speaker token includes it."
+value = ["'", "\u2019"]
+
+[sibling_sweep.word_char_class]
+doc = "A JavaScript (u-flag) character class of the word characters the quotation tokenizer sees as a quote character's neighbours."
+value = '[\p{L}\p{N}\p{M}_]'
+
+[sibling_sweep.quote_open_after]
+doc = "Characters after which an apostrophe character (sibling_sweep.apostrophes) may open a quotation, besides white space and the start of the text: open brackets, other quote openers, slashes and dashes."
+value = "([{<\"\u201c\u2018/-\u2013\u2014"
+
+[sibling_sweep.quote_close_before]
+doc = "Characters before which an apostrophe character (sibling_sweep.apostrophes) may close a quotation, besides white space and the end of the text: sentence punctuation, close brackets, other quote closers, slashes, dashes and the ellipsis."
+value = ".,;:!?)]}>\"\u201d\u2019/-\u2013\u2014\u2026"
 
 [sibling_sweep.quote_line_re]
 doc = "Regex source of a quoted line (a Markdown quote), removed before matching."
@@ -235,7 +309,7 @@ doc = "The terminator that makes a sentence a question; a question is never a ca
 value = "?"
 
 [sibling_sweep.code_span]
-doc = "The character that opens and closes an inline code span; the first span of the cause sentence names the pattern in the reminder."
+doc = "The character that opens and closes an inline code span: a run of it is closed by the next run of the same length on the same line (an unclosed run is plain text). Code spans are blanked over the whole reply before it is split into sentences, so a phrase or a quote character inside one is no statement and no delimiter; the first span of the cause sentence names the pattern in the reminder."
 value = "`"
 
 [sibling_sweep.fix_context_re]
@@ -367,3 +441,17 @@ value = "sibling-sweep: cannot write {what}: {error}"
 [sibling_sweep.msg_bad_setting]
 doc = "Daemon log line, written once per process, when a settings file holds an invalid value for a sibling_sweep setting (a pattern that does not compile, a rejected config file); the shipped value is used instead. Placeholder: {setting}."
 value = "sibling-sweep: ignoring an invalid value ({setting}), using the shipped one"
+
+# ---- the self-correction counters ---------------------------------------------------------------------------
+
+[metric.sibling_sweep_self_correction_fired]
+doc = "Sibling-sweep reminders sent because a reply reported fixing the agent's own typo or mistake (the self_correction_cues family) and the turn showed no search for other occurrences."
+value = { kind = "counter", unit = "reminders", labels = [] }
+
+[metric.sibling_sweep_self_correction_suppressed]
+doc = "Self-correction statements that did not remind, by reason: no_fix_context, swept (a search or a sweep statement was already there), continuation (the Stop already continues a Stop block), duplicate (the same cause was reminded this turn) or capped (the per-scope limit was reached)."
+value = { kind = "counter", unit = "statements", labels = ["reason"] }
+
+[metric.sibling_sweep_self_correction_followed_through]
+doc = "Self-correction reminders after which a search tool call followed within sibling_sweep.follow_window tool calls."
+value = { kind = "counter", unit = "reminders", labels = [] }

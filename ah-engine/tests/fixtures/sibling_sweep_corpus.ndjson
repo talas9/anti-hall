@@ -1,0 +1,51 @@
+{"text": "Bob just wrote: I fixed a typo.", "expect": "silent", "source": "PR455 r3 finding 1: helper word skipped by char code"}
+{"text": "I fixed a typo after reading \"Alice said, hello\".", "expect": "remind", "source": "PR455 r3 finding 2: speech inside a quotation"}
+{"text": "I renamed 'users' and I fixed a typo in the files' names.", "expect": "remind", "source": "PR455 r3 finding 3: later plural possessive"}
+{"text": "I renamed ‘users’ and I fixed a typo in the files’ names.", "expect": "remind", "source": "PR455 r3 finding 3, curly"}
+{"text": "\"Alice said, hello\" was the log line, and I fixed a typo in it.", "expect": "remind", "source": "finding 2 variant: quoted speech before the claim"}
+{"text": "As I've said, I fixed a typo in the loader.", "expect": "remind", "source": "r2: own speech, contraction"}
+{"text": "As I’ve said, I fixed a typo in the loader.", "expect": "remind", "source": "r2: own speech, curly contraction"}
+{"text": "As I'd told Bob, I fixed a typo in the loader.", "expect": "remind", "source": "r2: own speech, I'd"}
+{"text": "As I have said, I fixed a typo in the loader.", "expect": "remind", "source": "own speech, helper word"}
+{"text": "I just said: I fixed a typo in the loader.", "expect": "remind", "source": "own speech, helper word just"}
+{"text": "The user wrote \"the files' names were wrong, I fixed a typo\".", "expect": "silent", "source": "r2: possessive inside a double quotation"}
+{"text": "The user wrote 'the files' names were wrong, I fixed a typo' in the ticket.", "expect": "silent", "source": "r2 u1: reported speech before the claim"}
+{"text": "The user wrote 'I fixed a typo in the ticket.", "expect": "silent", "source": "r2 u6: unbalanced opener after a speech verb"}
+{"text": "Alice's reviewer said: I fixed a typo in the loader.", "expect": "silent", "source": "r2 u2: speaker after a singular possessive"}
+{"text": "Bob wrote \"she said 'I fixed a typo' then left\" in the ticket.", "expect": "silent", "source": "nested mixed quotes"}
+{"text": "Bob wrote “she said ‘I fixed a typo’ then” today.", "expect": "silent", "source": "nested curly quotes"}
+{"text": "Bob wrote “she said 'I fixed a typo'”.", "expect": "silent", "source": "nested curly and straight"}
+{"text": "The user wrote 'Alice's fix: I fixed a typo' in the ticket.", "expect": "silent", "source": "in-word apostrophe inside a quotation"}
+{"text": "Bob has also said: I fixed a typo in the loader.", "expect": "silent", "source": "two helper words skipped"}
+{"text": "Bob told me that I fixed a typo in the loader.", "expect": "silent", "source": "told X that"}
+{"text": "The reviewer wrote, I fixed a typo in the loader.", "expect": "silent", "source": "speaker noun"}
+{"text": "She wrote ‘I fixed a typo’ yesterday.", "expect": "silent", "source": "curly single quotation"}
+{"text": "\"I fixed a typo,\" Bob said.", "expect": "silent", "source": "claim only inside a quotation"}
+{"text": "'I fixed a typo' is what the log says.", "expect": "silent", "source": "claim only inside a straight quotation"}
+{"text": "I fixed a typo in the files' names.", "expect": "remind", "source": "plural possessive"}
+{"text": "I renamed 'doc' and fixed my mistake in the users' table.", "expect": "remind", "source": "quotation then plural possessive"}
+{"text": "Don't panic: I've fixed a typo, it's in the user's config.", "expect": "remind", "source": "contractions and singular possessive"}
+{"text": "The user wrote 'see below.\nI fixed a typo in the loader.", "expect": "remind", "source": "unbalanced opener never reaches the next line"}
+{"text": "I fixed a typo in the users' and the groups' tables.", "expect": "remind", "source": "two plural possessives"}
+{"text": "The users' 'names' list was wrong and I fixed a typo in it.", "expect": "remind", "source": "possessive then quotation"}
+{"text": "I fixed a typo in Alice's 'loader' config.", "expect": "remind", "source": "singular possessive then quotation"}
+{"text": "I fixed my mistake in the 90's config.", "expect": "remind", "source": "digit apostrophe"}
+{"text": "In the '90s build I fixed a typo in Bob's 'config'.", "expect": "remind", "source": "leading apostrophe that is no quotation"}
+{"text": "'quoted' I fixed a typo 'again'.", "expect": "remind", "source": "claim between two quotations"}
+{"text": "I fixed a typo in \"loader.", "expect": "remind", "source": "unbalanced double quote"}
+{"text": "I fixed a typo in “loader.", "expect": "remind", "source": "unbalanced curly double quote"}
+{"text": "I fixed a typo in 'loader.", "expect": "remind", "source": "unbalanced single quote"}
+{"text": "I fixed a typo in `don't_load`.", "expect": "remind", "source": "apostrophe inside a code span"}
+{"text": "Run `bob said, x` and then I fixed a typo in the loader.", "expect": "remind", "source": "speech inside a code span"}
+{"text": "Use `it's` here: I fixed a typo in 'cfg'.", "expect": "remind", "source": "code span apostrophe then quotation"}
+{"text": "The `'` key was wrong and I fixed a typo in it.", "expect": "remind", "source": "lone quote inside a code span is inert"}
+{"text": "I fixed a typo in \"maybe_load\".", "expect": "remind", "source": "hedge word inside a quotation does not void the claim"}
+{"text": "I've fixed a typo in the loader.", "expect": "remind", "source": "contraction I've"}
+{"text": "I'd fixed a typo earlier in the loader.", "expect": "remind", "source": "contraction I'd"}
+{"text": "The loader didn't start; I fixed a typo in it.", "expect": "remind", "source": "contraction before the claim"}
+{"text": "Bob said: nothing new. I fixed a typo in the loader.", "expect": "remind", "source": "speech in an earlier sentence"}
+{"text": "I fixed a typo; Bob said: that is fine.", "expect": "remind", "source": "speech after the claim, other sentence"}
+{"text": "My mistake: the loader reads the file twice.", "expect": "remind", "source": "my mistake cue"}
+{"text": "Would I have fixed a typo?", "expect": "silent", "source": "question"}
+{"text": "I probably fixed a typo in the loader.", "expect": "silent", "source": "hedge"}
+{"text": "Nothing about it here, just 'quotes' and the users' things.", "expect": "silent", "source": "no claim"}
