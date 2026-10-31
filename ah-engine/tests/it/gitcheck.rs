@@ -784,6 +784,42 @@ fn a_script_run_by_path_is_scanned_for_credit_lines() {
     }
 }
 
+/// An inert mention of credit text (a comment line, a grep of a pattern, a script that never commits or pushes) is no credit
+/// line: only a script that commits, tags, merges or pushes AND carries the text where it can reach a message is refused.
+#[test]
+fn an_inert_credit_mention_in_a_script_is_allowed_and_a_credited_message_literal_is_still_denied() {
+    let e = Env::new("inert");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    std::fs::write(work.join("comment.sh"), format!("#!/bin/sh\n# Generated with Claude Code\n  # {CO}\ngit commit -q --allow-empty -m 'feat: plain'\ngit {P} -q origin main\n")).unwrap();
+    std::fs::write(work.join("grep.sh"), format!("#!/bin/sh\ngit log -1 --format=%B | grep -q 'Generated with Claude' && exit 1\ngit commit -q --allow-empty -m 'feat: plain'\ngit {P} -q origin main\n")).unwrap();
+    std::fs::write(work.join("nogit.sh"), format!("#!/bin/sh\necho \"{CO}\" > notes.txt\n")).unwrap();
+    std::fs::write(work.join("literal.sh"), format!("#!/bin/sh\n# plain header\ngit commit -q --allow-empty -m \"x\\n\\n{CO}\"\ngit {P} -q origin main\n")).unwrap();
+    let _ = e.hook("echo warm");
+    for f in ["comment.sh", "grep.sh", "nogit.sh"] {
+        assert_eq!(e.hook_in(&format!("bash {f}"), w), (String::new(), String::new(), 0), "{f} is inert");
+    }
+    let (out, err, code) = e.hook_in("bash literal.sh", w);
+    assert!(code == 2 && err.contains("literal.sh") && err.contains("line 3"), "credited literal: code={code} stdout={out} stderr={err}");
+}
+
+/// `link/..` is resolved by the kernel, so with link -> /other/sub, `bash link/../publish.sh` runs /other/publish.sh: that
+/// file is the one scanned, not /repo/publish.sh.
+#[test]
+fn a_script_path_through_a_symlink_and_dotdot_scans_the_file_that_runs() {
+    let e = Env::new("symdd");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    let other = e.dir.join("other");
+    std::fs::create_dir_all(other.join("sub")).unwrap();
+    std::os::unix::fs::symlink(other.join("sub"), work.join("link")).unwrap();
+    std::fs::write(other.join("publish.sh"), format!("#!/bin/sh\ngit commit -q --allow-empty -m \"x\\n\\n{CO}\"\ngit {P} -q origin main\n")).unwrap();
+    std::fs::write(work.join("publish.sh"), "#!/bin/sh\ngit commit -q --allow-empty -m 'feat: plain'\n").unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in("bash link/../publish.sh", w);
+    assert!(code == 2 && err.contains("publish.sh") && err.contains("line 2"), "symlink + dotdot: code={code} stdout={out} stderr={err}");
+}
+
 /// A continued merge, rebase, cherry-pick or revert, a merge without -m and a revert without --no-edit take a message layer 1
 /// cannot read (a prepared MERGE_MSG): a push in the same call is refused; alone, or with a literal message, they run.
 #[test]
