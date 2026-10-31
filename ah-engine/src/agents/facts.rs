@@ -452,11 +452,11 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         for (i, s) in segs.iter().enumerate() {
             let toks = crate::script::host_shell::tokenize(s);
             let head = toks.first().map_or("", String::as_str);
-            if cds.iter().any(|c| *c == head) {
+            if cds.contains(&head) {
                 let d = delims.get(i).copied().unwrap_or("");
                 let lit = toks.get(1).filter(|t| toks.len() == 2 && !t.is_empty() && !t.starts_with('-') && !t.chars().any(|c| deny.contains(c)));
                 dir = match lit {
-                    Some(t) if dls.iter().any(|x| *x == d) => {
+                    Some(t) if dls.contains(&d) => {
                         if std::path::Path::new(t).is_absolute() {
                             Some(std::path::PathBuf::from(t))
                         } else {
@@ -467,7 +467,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
                 };
                 continue;
             }
-            if lost.iter().any(|c| *c == head) {
+            if lost.contains(&head) {
                 dir = None;
             }
             for w in shell_writes(s) {
