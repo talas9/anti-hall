@@ -857,6 +857,11 @@ pub fn first_in_session(session: &str, tag: &str) -> bool {
     first
 }
 
+/// Whether [`first_in_session`] already stamped this `session` and `tag` (a read only: it creates nothing).
+pub fn told_in_session(session: &str, tag: &str) -> bool {
+    state_file("advised_dir").join(format!("{:016x}", fnv(&format!("{session}|{tag}")))).exists()
+}
+
 /// A few words, once per session, when the engine is running below full strength (a self-restart in the window, a tripped
 /// breaker) and no failure advisory applies, so the owner learns of a degraded engine without digging through logs.
 fn degraded_notice(session: &str) -> Option<String> {

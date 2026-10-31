@@ -1457,10 +1457,11 @@ fn a_partial_reply_tells_one_notice_beside_the_block_and_a_later_stop_still_gets
     assert_eq!(code, 2, "{err:?}");
     assert!(!err.contains(&mid), "once per session and event family: {err:?}");
     let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "stop_hook_active": false}).to_string();
+    // an exit-0 Stop carries it as its systemMessage (stdout), the channel the host shows on a pass
     let (_, out, err) = e.run_with(&["hook", "--event", "Stop"], false, &stop, true, &env);
-    assert_eq!(err.matches(&mid).count(), 1, "the Stop family's first unanswered check is told once: out={out:?} err={err:?}");
-    let (_, _, err) = e.run_with(&["hook", "--event", "Stop"], false, &stop, true, &env);
-    assert!(!err.contains(&mid), "and not again: {err:?}");
+    assert_eq!(format!("{out}{err}").matches(&mid).count(), 1, "the Stop family's first unanswered check is told once: out={out:?} err={err:?}");
+    let (_, out, err) = e.run_with(&["hook", "--event", "Stop"], false, &stop, true, &env);
+    assert!(!out.contains(&mid) && !err.contains(&mid), "and not again: out={out:?} err={err:?}");
 }
 
 /// The owner contract (roadmap C9): a timed-out call passes with ONE notice per session and event family, so a timeout on

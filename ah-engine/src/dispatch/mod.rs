@@ -516,9 +516,9 @@ fn start_node(e: &table::Entry, _raw: &[u8], _payload: Option<&File>) -> node::R
 /// a daemon that could not run it). There is no Node hook to hand it to, so the check's failure policy decides
 /// ([`crate::script::unanswered`]): `open` allows (counted `abandoned` and told to the user once per session), `closed` blocks on a
 /// guard event. Never a hook that "could not run", which on a guard event would fail the whole event closed.
-/// An open check's allow owes the session ONE could-not-run notice ([`owe_notice`]), told on stderr after the combine at most once
-/// per session and event family ([`deliver_notice`]); a missing answer is never told per check (#473: the notice flood).
-fn resolve_unanswered(e: &table::Entry, event: &str, session: &str) -> combine::HookResult {
+/// An open check allows quietly here; a guard event's let-through entries tell the one notice of [`fail_open_result`], never one
+/// per check (#473: the notice flood).
+fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
     // the daemon says why (`answer_dropped` / `guard_answer_dropped` in the event log, `answers_dropped` in status); this side counts the decision
     crate::obs::counters::handback_why(
         crate::obs::counters::Handback::Abandoned,
@@ -528,9 +528,7 @@ fn resolve_unanswered(e: &table::Entry, event: &str, session: &str) -> combine::
     let check = e.check.as_deref().unwrap_or(&e.id);
     let mut v = crate::script::unanswered(check, event);
     if !matches!(v, crate::checks::Verdict::Block(_)) {
-        // the script's in-memory once-per-session set forgets by the next call (one process per call): the dispatcher tells instead
-        owe_notice(session, guard_down_text(check));
-        v = crate::checks::Verdict::Allow;
+        v = crate::checks::Verdict::Allow; // the script's in-memory once-per-session notice forgets by the next call (one process per call)
     }
     match native::answer_of(&e.id, Some(v)) {
         native::Answer::Decided(r, _) => r,
@@ -539,8 +537,9 @@ fn resolve_unanswered(e: &table::Entry, event: &str, session: &str) -> combine::
 }
 
 thread_local! {
-    /// The could-not-run notice this dispatcher call owes its session (session, text), told by [`deliver_notice`] after the combine.
-    static OWED_NOTICE: std::cell::RefCell<Option<(String, String)>> = const { std::cell::RefCell::new(None) };
+    /// The could-not-run notice this dispatcher call owes its session (session, text, whether an entry's stdout already carries it),
+    /// told by [`deliver_notice`] after the combine.
+    static OWED_NOTICE: std::cell::RefCell<Option<(String, String, bool)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// `script.msg_guard_down` for check `check` that gave no answer (`script.msg_unanswered`).
@@ -550,12 +549,12 @@ fn guard_down_text(check: &str) -> String {
 
 /// Owe `session` one could-not-run notice; the first owed in a call wins (one line per call, never one per check). A call
 /// without a session id owes none (there is no session to tell once).
-fn owe_notice(session: &str, text: String) {
+fn owe_notice(session: &str, text: String, in_out: bool) {
     if session.is_empty() {
         return;
     }
     OWED_NOTICE.with(|o| {
-        o.borrow_mut().get_or_insert_with(|| (session.to_string(), text));
+        o.borrow_mut().get_or_insert_with(|| (session.to_string(), text, in_out));
     });
 }
 
@@ -565,12 +564,18 @@ fn notice_tag(event: &str) -> String {
     format!("{}|{event}", defaults::text("dispatch.fail_open_notice_tag"))
 }
 
-/// Tell the notice this call owes ([`owe_notice`]) as one stderr line of the FINAL outcome, once per session and event family.
-/// The stamp is created only here, after the combine, so a block that wins the combine never consumes it unseen (Codex P2 on #473),
-/// and creating it exclusively keeps concurrent first calls to one line. A deferral to the Node hooks tells nothing.
+/// Settle the notice this call owes ([`owe_notice`]) on the FINAL outcome, once per session and event family. The stamp is created
+/// only here, after the combine: a notice an entry's stdout carried that survived the combine is stamped as told; one the combine
+/// dropped (a block wins, Codex P2 on #473) or one owed with no entry to carry it goes to stderr as one line, only if this call creates
+/// the stamp (so concurrent first calls tell one line). A deferral to the Node hooks tells nothing.
 fn deliver_notice(mut o: Outcome, event: &str) -> Outcome {
-    let Some((session, text)) = OWED_NOTICE.with(|n| n.borrow_mut().take()) else { return o };
-    if i64::from(o.code) == defaults::num("dispatch.defer_exit") as i64 || !health::first_in_session(&session, &notice_tag(event)) {
+    let Some((session, text, in_out)) = OWED_NOTICE.with(|n| n.borrow_mut().take()) else { return o };
+    if i64::from(o.code) == defaults::num("dispatch.defer_exit") as i64 {
+        return o;
+    }
+    let escaped = serde_json::to_string(&text).unwrap_or_default();
+    let carried = in_out && (o.out.contains(&text) || o.out.contains(escaped.trim_matches('"')));
+    if !health::first_in_session(&session, &notice_tag(event)) || carried {
         return o;
     }
     if !o.err.is_empty() && !o.err.ends_with('\n') {
@@ -610,8 +615,17 @@ fn fail_open_result(e: &table::Entry, event: &str, payload: &Value) -> combine::
     crate::obs::counters::advisory(defaults::text("dispatch.fail_open_counter"), check);
     crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
     health::log_event("dispatch_fail_open", event, &defaults::render("dispatch.msg_fail_open_log", &[("check", &check), ("event", &event)]));
+    let mut r = resolve_unanswered(e, event);
     let session = payload.get("session_id").and_then(Value::as_str).unwrap_or_default();
-    resolve_unanswered(e, event, session) // its allow owes the one could-not-run notice of the call
+    // the notice rides this entry's stdout (a systemMessage) unless the session and event family were already told; the stamp is set
+    // after the combine ([`deliver_notice`]), so a block that drops this stdout never consumes it
+    let owed = OWED_NOTICE.with(|o| o.borrow().is_some()); // one entry per call carries it: never one line per unanswered check
+    if r.out.is_empty() && !owed && !session.is_empty() && !health::told_in_session(session, &notice_tag(event)) {
+        let msg = guard_down_text(check);
+        r.out = format!("{}\n", serde_json::json!({ defaults::text("script.notice_key"): msg }));
+        owe_notice(session, msg, true);
+    }
+    r
 }
 
 /// [`start_node`] for a hook that runs for `event`, so its telemetry event says which.
@@ -810,7 +824,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             // passes with ONE notice per session and event family (roadmap C9; a check that DID answer deny still blocks)
             None if crate::client::take_unavailable() || crate::client::fail_open_unavailable() => {
                 // a payload without a session id is still told once, under the session `none` (as the unreachable notice always was)
-                owe_notice(if session_id.is_empty() { "none" } else { &session_id }, crate::client::unreachable_text(Some(&args.event)));
+                owe_notice(if session_id.is_empty() { "none" } else { &session_id }, crate::client::unreachable_text(Some(&args.event)), false);
                 return Outcome { out: String::new(), code: 0, err: String::new() };
             }
             None => Vec::new(),
@@ -865,7 +879,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             // below, once the other hooks are running beside it; the Node hook only if it still defers
             Some((_, Answer::Defer)) if parsed.is_some() && e.check.as_deref().is_some_and(|c| blocking_checks.contains(&c)) => blocking.push(i),
             _ if shadow[i] => {} // measured only: nothing decides in its place
-            _ => results[i] = Some(resolve_unanswered(e, &args.event, &session_id)),
+            _ => results[i] = Some(resolve_unanswered(e, &args.event)),
         }
     }
     if !blocking.is_empty() {
@@ -876,7 +890,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 Some(Answer::Decided(r, _)) if shadow[i] => shadow_results[i] = Some(r),
                 Some(Answer::Decided(r, _)) => results[i] = Some(r),
                 _ if shadow[i] => {}
-                _ => results[i] = Some(resolve_unanswered(e, &args.event, &session_id)),
+                _ => results[i] = Some(resolve_unanswered(e, &args.event)),
             }
         }
     }
@@ -1129,7 +1143,7 @@ mod tests {
                     rows += 1;
                     let check = e.check.as_deref().unwrap_or_else(|| panic!("{host}/{event}/{}: a shipped row without a built-in check", e.id));
                     assert!(crate::checks::get(check).is_some(), "{host}/{event}/{}: unknown check {check}", e.id);
-                    let r = resolve_unanswered(&e, event, "");
+                    let r = resolve_unanswered(&e, event);
                     assert_eq!(r.id, e.id);
                     let closed = crate::script::failure_mode(check) == defaults::text("script.failure_mode_closed");
                     let guard = defaults::list("dispatch.guard_events").contains(&event);
@@ -1144,7 +1158,7 @@ mod tests {
     fn an_unanswered_stop_guard_and_session_start_role_allow_instead_of_failing_the_event_closed() {
         for (host, event, check) in [("claude", "Stop", "devswarm-parent-gate"), ("claude", "SessionStart", "devswarm-child-role")] {
             let e = table::entries(host, event).into_iter().find(|e| e.check.as_deref() == Some(check)).unwrap_or_else(|| panic!("{check} on {event}"));
-            let r = resolve_unanswered(&e, event, "");
+            let r = resolve_unanswered(&e, event);
             assert_eq!(r.code, Some(0), "{check}");
             assert!(!r.err.contains("BLOCKED"), "{check}: {}", r.err);
         }
