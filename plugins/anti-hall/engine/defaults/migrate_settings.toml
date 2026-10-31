@@ -29,6 +29,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"advisorPlan\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ADVISOR_PLAN\"}",
   "{\"section\":\"guards\",\"key\":\"advisorRetry\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ADVISOR_RETRY\"}",
   "{\"section\":\"guards\",\"key\":\"advisorThinking\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ADVISOR_THINKING\"}",
+  "{\"section\":\"guards\",\"key\":\"advisorRank\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ADVISOR_RANK\"}",
   "{\"section\":\"guards\",\"key\":\"advisorSayDo\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ADVISOR_SAY_DO\"}",
   "{\"section\":\"guards\",\"key\":\"allowWideSearch\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_ALLOW_WIDE_SEARCH\"}",
   "{\"section\":\"guards\",\"key\":\"delegateStandDown\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DELEGATE_STAND_DOWN\"}",

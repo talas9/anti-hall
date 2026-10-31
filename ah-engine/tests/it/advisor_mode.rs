@@ -829,3 +829,81 @@ fn p2_the_task_block_cap_spans_issue_keys() {
     assert_eq!(got, vec![0, 2, 0, 0], "nudge, the one block, then passes for every key");
     assert_eq!(stats("p24")["block_capped"], 2);
 }
+
+// GH #500: the guard applies only while the main model ranks below the advisor model.
+const RANK_ATTACH: &str = r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"}}"#;
+
+fn main_model(m: &str) -> String {
+    format!(r#"{{"type":"assistant","message":{{"role":"assistant","model":"{m}","content":[{{"type":"text","text":"working"}}]}}}}"#)
+}
+
+fn plan_write(session: &str, main: &str, extra: &[(&str, &str)]) -> (i32, String) {
+    let tp = transcript(session, &[RANK_ATTACH, USER, &main_model(main)]);
+    run_out("advisor-guard", extra, &tool(session, &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md", "content": "x"})))
+}
+
+#[test]
+fn rank_lower_main_is_blocked_with_the_fact_and_the_clear_step() {
+    for (s, m) in [("rk1", "claude-sonnet-5-5"), ("rk2", "claude-haiku-5")] {
+        let (code, out) = plan_write(s, m, &[]);
+        assert_eq!(code, 2, "{m}: {out}");
+        assert!(out.contains(&format!("Plan written with no advisor call: main {m} is below advisor claude-opus-5-5.")), "{out}");
+        assert!(out.contains("Call the advisor tool once on this plan first, then write it."), "{out}");
+    }
+}
+
+#[test]
+fn rank_equal_or_higher_main_is_allowed_whatever_the_version() {
+    for (s, m) in [("rk3", "claude-opus-5-5"), ("rk4", "claude-opus-9-9"), ("rk5", "claude-fable-1")] {
+        assert_eq!(plan_write(s, m, &[]), (0, String::new()), "{m}");
+    }
+}
+
+#[test]
+fn rank_unknown_main_or_advisor_keeps_the_guard_on() {
+    let (code, out) = plan_write("rk6", "gpt-5.5", &[]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("Plan written with no advisor call: main gpt-5.5 or advisor claude-opus-5-5 unranked."), "{out}");
+    // no model on the attachment and no settings file: the advisor model is unknown
+    let bare = r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":true,"toolChange":"add"}}"#;
+    let tp = transcript("rk7", &[bare, USER, &main_model("claude-opus-5-5")]);
+    let (code, out) = run_out("advisor-guard", &[], &tool("rk7", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
+    assert_eq!(code, 2, "{out}");
+}
+
+#[test]
+fn rank_switch_off_applies_the_guard_to_an_equal_main() {
+    let tp = transcript("rk8", &[RANK_ATTACH, USER, &main_model("claude-opus-5-5")]);
+    // the env override of guards.advisorRank
+    let (code, _) =
+        run_out("advisor-guard", &[("ANTIHALL_ADVISOR_RANK", "false")], &tool("rk8", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn rank_counters_reach_the_telemetry_summary() {
+    let state = dir().join("rank-tel-state");
+    std::fs::create_dir_all(&state).unwrap();
+    for (s, m) in [("rk9", "claude-opus-5-5"), ("rk10", "claude-sonnet-5-5"), ("rk11", "gpt-5.5")] {
+        let tp = transcript(s, &[RANK_ATTACH, USER, &main_model(m)]);
+        run_in(&state, "advisor-guard", &tool(s, &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
+    }
+    let d = dir();
+    let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+        .args(["telemetry", "summary", "--json"])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", d.join("home"))
+        .env("AH_ENGINE_DIR", &state)
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let g = &v["advisory"]["advisor_guard"];
+    assert_eq!(
+        (g["skipped_equal_or_higher"].as_u64(), g["applied_lower_model"].as_u64(), g["applied_unknown_model"].as_u64()),
+        (Some(1), Some(1), Some(1)),
+        "{g}"
+    );
+}

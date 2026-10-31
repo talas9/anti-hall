@@ -168,7 +168,7 @@ function agDecide(p) {
     var ps = advisorKit.load(p), pv = advisorKit.fold(p, ps);
     if (pv !== null) { advisorKit.consults(ps, pv.scan); advisorKit.save(p, ps); }
     if (pv !== null && advisorKit.present(p, pv.scan, pv) && pv.lastAdvisor < pv.lastUser && advisorKit.gate('advisor.kind_plan', p, tool + ':' + file)) {
-      return advisorKit.block(ah.cfg('advisor.msg_plan_what'), ah.cfg('advisor.msg_plan_instead'));
+      return advisorKit.block(advisorKit.what(pv, ah.cfg('advisor.msg_plan_what'), ah.cfg('advisor.msg_plan_what_lower'), ah.cfg('advisor.msg_plan_what_unknown'), {}), ah.cfg('advisor.msg_plan_instead'));
     }
   }
   if (isEdit && ah.settings.bool('advisor.sw_retry')) {
@@ -184,7 +184,7 @@ function agDecide(p) {
       else if (v !== null && advisorKit.present(p, v.scan, v) && advisorKit.gate('advisor.kind_retry', p, file)) {
         s.blocked = { advisorAt: v.lastAdvisor };
         s.fail = null;
-        verdict = advisorKit.block(text.render(ah.cfg('advisor.msg_retry_what'), { file: file }), ah.cfg('advisor.msg_retry_instead'));
+        verdict = advisorKit.block(advisorKit.what(v, ah.cfg('advisor.msg_retry_what'), ah.cfg('advisor.msg_retry_what_lower'), ah.cfg('advisor.msg_retry_what_unknown'), { file: file }), ah.cfg('advisor.msg_retry_instead'));
       }
     }
     if (v !== null) advisorKit.consults(s, v.scan);

@@ -152,8 +152,12 @@ value = [
 ]
 
 [guard_rules.exempt]
-doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording."
+doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry)."
 value = [
+  "advisor.msg_plan_what_lower",
+  "advisor.msg_plan_what_unknown",
+  "advisor.msg_retry_what_lower",
+  "advisor.msg_retry_what_unknown",
   "msg.client_what_timeout",
   "jev.what_read_requests",
   "jev.what_read_texts",

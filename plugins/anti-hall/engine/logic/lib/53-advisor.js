@@ -87,7 +87,7 @@ var advisorKit = {
     return r.lines[0][0] !== tx.lastOff || ah.sha1(JSON.stringify(r.lines[0][1])) !== tx.lastSig;
   },
   // A fold of transcript `tp` that has read nothing yet.
-  freshTx: function (tp) { return { path: tp, pos: -1, full: false, lastAdvisor: -1, lastUser: -1, userTs: -1, seen: false, avail: null, model: null, sayAt: -1 }; },
+  freshTx: function (tp) { return { path: tp, pos: -1, full: false, lastAdvisor: -1, lastUser: -1, userTs: -1, seen: false, avail: null, model: null, sayAt: -1, advisorModel: null }; },
   // The transcript read INCREMENTALLY into the per-agent state `st` (st.tx): only the bytes appended since the last call (from
   // st.tx.pos, at most advisor.window_bytes per call, a line over advisor.line_max_bytes skipped without being buffered), folded
   // into the newest owner message, advisor call, main model, advisor announcement and advisor_tool attachment. A first read of a
@@ -100,7 +100,7 @@ var advisorKit = {
     var keep = [['type'], ['uuid'], ['isMeta'], ['origin', 'kind'], ['timestamp'], ['message', 'model'], ['message', 'content'], ['message', 'content', '*', 'type'],
       ['message', 'content', '*', 'name'], ['message', 'content', '*', 'text']];
     var att = ah.cfg('advisor.attachment');
-    keep.push([att.field, 'type'], [att.field, att.available_key], [att.field, att.change_key]);
+    keep.push([att.field, 'type'], [att.field, att.available_key], [att.field, att.change_key], [att.field, att.model_key]);
     var tx = jx.isObj(st.tx) && st.tx.path === tp && typeof st.tx.pos === 'number' && typeof st.tx.full === 'boolean' ? st.tx : advisorKit.freshTx(tp);
     // the same path rewritten (shorter or LONGER): its first bytes differ from the ones the fold started on, so start afresh
     if (tx.pos >= 0 && advisorKit.rewritten(tp, tx, keep)) { tx = advisorKit.freshTx(tp); advisorKit.silence('rotated'); }
@@ -122,6 +122,7 @@ var advisorKit = {
       if (e.type === att.entry_type && jx.isObj(a) && a.type === att.type) { // the harness put the advisor tool in (or took it out of) the prompt
         var ch = a[att.change_key];
         tx.avail = a[att.available_key] !== false && (typeof ch !== 'string' || att.change_on.indexOf(ch) >= 0);
+        if (typeof a[att.model_key] === 'string' && a[att.model_key] !== '') tx.advisorModel = a[att.model_key];
         continue;
       }
       if (!jx.isObj(e.message)) continue;
@@ -152,7 +153,7 @@ var advisorKit = {
     tx.read = r.read; tx.peak = r.peak; // the last read's bytes and largest line buffer: the latency test reads them
     st.tx = tx;
     advisorKit.consults(st, { calls: calls }); // counted where read: a call is read once, by whichever rule folds first
-    return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, avail: tx.avail, full: tx.full, model: tx.model, sayAt: tx.sayAt,
+    return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, avail: tx.avail, full: tx.full, model: tx.model, sayAt: tx.sayAt, advisorModel: typeof tx.advisorModel === 'string' ? tx.advisorModel : null,
       scan: { calls: calls, size: r.size, read: r.read, peak: r.peak } };
   },
   // Does the session have an advisor tool? Signals that need no earlier advisor use come first: the payload's tool list, then the
@@ -161,6 +162,39 @@ var advisorKit = {
   // missing attachment proves nothing), an advisor model configured in the Claude Code settings (advisor.settings_files). Else
   // unknown: silent (fail open), counted.
   present: function (p, scan, view) {
+    if (!advisorKit.presentRaw(p, scan, view)) return false;
+    return view ? advisorKit.rank(p, view) !== 'skip' : true;
+  },
+  // Rank rule (GH #500): the guard applies while the main model ranks below the advisor model; equal or higher is skipped. An
+  // unknown main or advisor model keeps it on. Counted (advisor.rank_metrics). Returns 'skip' | 'apply'; sets view.rankKind and view.rankArgs.
+  rank: function (p, view) {
+    if (!ah.settings.bool('advisor.sw_rank')) return 'apply';
+    var m = ah.cfg('advisor.rank_metrics'), unk = ah.cfg('advisor.rank_unknown_label');
+    var adv = typeof view.advisorModel === 'string' && view.advisorModel !== '' ? view.advisorModel : advisorKit.configuredModel(p);
+    var mr = advisorKit.modelRank(view.model), ar = advisorKit.modelRank(adv);
+    var args = { model: typeof view.model === 'string' && view.model !== '' ? view.model : unk, advisor: typeof adv === 'string' && adv !== '' ? adv : unk };
+    if (mr === null || ar === null) { view.rankKind = 'unknown'; view.rankArgs = args; advisorKit.raw('advisor.kind_rank', m.applied_unknown); return 'apply'; }
+    if (mr >= ar) { advisorKit.raw('advisor.kind_rank', m.skipped); return 'skip'; }
+    view.rankKind = 'lower'; view.rankArgs = args;
+    advisorKit.raw('advisor.kind_rank', m.applied);
+    return 'apply';
+  },
+  // The block text of a rule: the ranked variant (names the models) when the rank rule ran, else the plain one. The three texts
+  // are passed in (advisor.msg_<rule>_what, _what_lower, _what_unknown); `extra` holds the rule's own placeholders.
+  what: function (view, plain, lower, unknown, extra) {
+    if (!jx.isObj(view) || !view.rankKind) return text.render(plain, extra);
+    var args = { model: view.rankArgs.model, advisor: view.rankArgs.advisor };
+    for (var k in extra) args[k] = extra[k];
+    return text.render(view.rankKind === 'lower' ? lower : unknown, args);
+  },
+  // The rank of a model id (advisor.model_ranks, substring, case-insensitive), null when none matches.
+  modelRank: function (model) {
+    if (typeof model !== 'string' || model === '') return null;
+    var low = model.toLowerCase(), t = ah.cfg('advisor.model_ranks');
+    for (var i = 0; i < t.length; i++) if (jx.isObj(t[i]) && typeof t[i].match === 'string' && low.indexOf(t[i].match) >= 0) return t[i].rank;
+    return null;
+  },
+  presentRaw: function (p, scan, view) {
     var names = ah.cfg('advisor.tool_names'), listed = advisorKit.payloadTools(p);
     for (var i = 0; i < listed.length; i++) if (names.indexOf(listed[i]) >= 0) return true;
     if (!view) { advisorKit.silence('unknown'); return false; }
@@ -172,6 +206,11 @@ var advisorKit = {
   },
   // Is an advisor model set in one of the Claude Code settings files (advisor.settings_files: {root: home|cwd|abs, path})?
   configured: function (p) {
+    var v = advisorKit.configuredModel(p);
+    return typeof v === 'string' && v !== '';
+  },
+  // The advisor model named by a Claude Code settings file ('' when none).
+  configuredModel: function (p) {
     var files = ah.cfg('advisor.settings_files'), key = ah.cfg('advisor.settings_key'), max = ah.cfgNum('advisor.settings_read_max_bytes');
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
@@ -182,9 +221,9 @@ var advisorKit = {
       var t = ah.fs.readText(full, max), o = null;
       if (typeof t !== 'string' || t === '') continue;
       try { o = JSON.parse(t); } catch (x) { continue; }
-      if (jx.isObj(o) && typeof o[key] === 'string' && o[key] !== '') return true;
+      if (jx.isObj(o) && typeof o[key] === 'string' && o[key] !== '') return o[key];
     }
-    return false;
+    return '';
   },
   // Is the main model a flagship? null when no known model was seen (the phase-3 rules are then silent).
   flagship: function (model) {

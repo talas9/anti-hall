@@ -26,8 +26,49 @@ value = { section = "guards", key = "advisorReview", type = "boolean", env = "AN
 doc = "Blocks a plan written with no advisor call once. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorPlan", type = "boolean", env = "ANTIHALL_ADVISOR_PLAN", option = "", default = true }
 
+[advisor.sw_rank]
+doc = "Skip when main ranks >= advisor."
+value = { section = "guards", key = "advisorRank", type = "boolean", env = "ANTIHALL_ADVISOR_RANK", option = "", default = true }
+
+[advisor.model_ranks]
+doc = "Model family ranks, matched case-insensitively as a substring of the model id (so a version bump needs no edit); the highest rank is the strongest model. The advisor model comes from the advisor_tool attachment (advisor.attachment.model_key), else the settings key advisor.settings_key (an alias such as opus matches too). No match = unknown rank = the guard stays on."
+value = [
+  { match = "haiku", rank = 1 },
+  { match = "sonnet", rank = 2 },
+  { match = "opus", rank = 3 },
+  { match = "fable", rank = 4 },
+]
+
+[advisor.kind_rank]
+doc = "Advisory kind (counters) of the rank rule: see advisor.rank_metrics."
+value = "advisor_guard"
+
+[advisor.rank_metrics]
+doc = "Counter names of advisor.kind_rank: skipped (the main model ranks equal or higher than the advisor model: the guard stayed silent), applied (the main ranks lower: the guard applied), applied_unknown (the main or advisor model could not be ranked: the guard applied)."
+value = { skipped = "skipped_equal_or_higher", applied = "applied_lower_model", applied_unknown = "applied_unknown_model" }
+
+[advisor.msg_plan_what_lower]
+doc = "Block text of the plan rule when the main model ranks below the advisor model (the fact and what was done; the hook's line is capped near 115 characters). Placeholders: {model}, {advisor}."
+value = "Plan written with no advisor call: main {model} is below advisor {advisor}."
+
+[advisor.msg_plan_what_unknown]
+doc = "Block text of the plan rule when the main or advisor model could not be ranked, so the guard stays on. Placeholders: {model}, {advisor} (a label when unknown)."
+value = "Plan written with no advisor call: main {model} or advisor {advisor} unranked."
+
+[advisor.msg_retry_what_lower]
+doc = "Block text of the retry rule when the main model ranks below the advisor model. Placeholders: {file}, {model}, {advisor}."
+value = "Re-edit of {file} after a failed run, no advisor call: main {model} is below advisor {advisor}."
+
+[advisor.msg_retry_what_unknown]
+doc = "Block text of the retry rule when the main or advisor model could not be ranked, so the guard stays on. Placeholders: {file}, {model}, {advisor}."
+value = "Re-edit of {file} after a failed run, no advisor call: main {model} or advisor {advisor} unranked."
+
+[advisor.rank_unknown_label]
+doc = "Label for a model that is not known."
+value = "unknown"
+
 [advisor.sw_retry]
-doc = "Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only."
+doc = "Blocks a re-edit after a failed run, with no advisor call. Default on."
 value = { section = "guards", key = "advisorRetry", type = "boolean", env = "ANTIHALL_ADVISOR_RETRY", option = "", default = true }
 
 [advisor.tool_names]
@@ -130,7 +171,7 @@ value = "A plan is being written with no advisor call since the task began."
 
 [advisor.msg_plan_instead]
 doc = "What to do instead for the plan rule."
-value = "Call the advisor on this plan first, then write it."
+value = "Call the advisor tool once on this plan first, then write it."
 
 [advisor.msg_retry_what]
 doc = "Block text of the retry rule. Placeholder: {file}."
@@ -163,7 +204,7 @@ doc = "Nudges, then blocks once, thinking work dispatched by a non-flagship main
 value = { section = "guards", key = "advisorThinking", type = "boolean", env = "ANTIHALL_ADVISOR_THINKING", option = "", default = true }
 
 [advisor.sw_say_do]
-doc = "Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only."
+doc = "Blocks a Stop once per turn that announced an advisor call which did not follow. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorSayDo", type = "boolean", env = "ANTIHALL_ADVISOR_SAY_DO", option = "", default = true }
 
 [advisor.result_types]
@@ -304,8 +345,8 @@ value = ".jsonl"
 # agent (advisor.window_bytes per call from the saved offset; lines over advisor.line_max_bytes skipped unbuffered).
 
 [advisor.attachment]
-doc = "The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use."
-value = { field = "attachment", entry_type = "attachment", type = "advisor_tool", available_key = "available", change_key = "toolChange", change_on = ["add"] }
+doc = "The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. Its `model_key` names the advisor model (read for the rank rule, advisor.model_ranks)."
+value = { field = "attachment", entry_type = "attachment", type = "advisor_tool", available_key = "available", change_key = "toolChange", change_on = ["add"], model_key = "model" }
 
 [advisor.settings_files]
 doc = "Claude Code settings files that may set an advisor model (root: home = the user's home, cwd = the session's working directory, abs = the path as given). Read only when the head of the transcript was never read (so a missing advisor_tool attachment proves nothing); a set advisor.settings_key then counts as the advisor being available."
