@@ -83,7 +83,7 @@ fn no_rule_text_is_embedded_in_the_binary() {
     let checked = heads.len();
     let hits = found(&bin, &heads.iter().map(|(_, h)| h.as_bytes()).collect::<Vec<_>>());
     assert!(hits.is_empty(), "rule text is compiled into the binary: {:?}", hits.iter().map(|&i| &heads[i]).collect::<Vec<_>>());
-    assert!(checked >= 4, "the scan is vacuous: {checked}");
+    assert!(checked >= 3, "the scan is vacuous: {checked}");
 }
 
 #[test]

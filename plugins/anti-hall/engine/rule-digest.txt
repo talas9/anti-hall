@@ -16,6 +16,9 @@ tasklist_guard.setting	- Track work in the task list and a fresh progress file: 
 advisor.sw_review	- advisor.review: A review-shaped agent on ... is not allowed while the advisor is available.
 advisor.sw_review	- advisor.plan: A plan is being written with no advisor call since the task began.
 advisor.sw_review	- advisor.retry: ... is being edited again after a failed test or build, with no advisor call in between.
+advisor.sw_thinking	- advisor.thinking: A second ... dispatch from a ... main, still with no advisor call since the owner's last message.
+advisor.sw_say_do	- advisor.say_do: This turn says it will ask the advisor, but no advisor call followed.
+advisor.sw_retry	- advisor.second: A second fix dispatch for ... from a non-flagship main, with no advisor call since the first.
 	- ask_guard.advise: do not hold work on a question.
 	- ask_guard.block: this question would pause authorized work.
 	- silent_nudge.msg: ... of your own ... have gone silent past the ...m threshold: .......
