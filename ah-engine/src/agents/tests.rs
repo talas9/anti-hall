@@ -2827,3 +2827,171 @@ fn l1_low_spend_polling_spends_the_episode_and_pauses_at_the_burn_line_pr472() {
         assert_eq!(marker.exists(), pauses, "{tag}: {per} tokens per 6-minute poll (hard line {hard} per {polls} polls)");
     }
 }
+
+// ---- PR #472 round 5: full credit comes from a change in repo state, not from the command text -------------------------------
+
+/// Run git in `w` with an isolated configuration (no system or user config).
+fn git_in(w: &Path, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .current_dir(w)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ok.stderr));
+}
+
+/// A scratch git repo at `w`: one tracked file (`tracked.txt`) committed, `ignored/` gitignored, `out/` present.
+fn git_repo(w: &Path) {
+    std::fs::create_dir_all(w.join("out")).unwrap();
+    std::fs::create_dir_all(w.join("ignored")).unwrap();
+    std::fs::write(w.join("tracked.txt"), "v0\n").unwrap();
+    std::fs::write(w.join(".gitignore"), "ignored/\n").unwrap();
+    git_in(w, &["init", "-q"]);
+    git_in(w, &["add", "-A"]);
+    git_in(w, &["commit", "-qm", "init"]);
+}
+
+/// Write `body` to `p` and set its modification time to `ms` (a transcript call at `ms` wrote it).
+fn put(p: &Path, body: &str, ms: u64) {
+    std::fs::write(p, body).unwrap();
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms)).unwrap();
+}
+
+/// A fresh agent working in a scratch git repo `h/w` (not yet burned).
+fn fresh_in_repo(tag: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
+    let h = home(tag);
+    let w = h.join("w");
+    git_repo(&w);
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, &w.to_string_lossy()), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    (h, p, marker, st, n)
+}
+
+/// One Bash call of `c` at `t` that ended with success and printed `out`.
+fn ok_bash_out(p: &Path, t: u64, k: &str, tin: u64, c: &str, out: &str) {
+    append(p, &[tool(t, &format!("m{k}"), tin, k, "Bash", json!({"command": c})), result(t, k, out, false)]);
+}
+
+/// Spec (a): an unchanged `cargo test`, or a cached `cargo build`, repeated 20x at 6-minute intervals in a repo whose state never
+/// changes earns HARD at most once and is paused.
+#[test]
+fn r5a_an_unchanged_test_or_cached_build_repeated_pauses_pr472r5() {
+    for (tag, cmd, out) in [
+        ("r5a-test", "cargo test", "test result: ok. 3 passed; 0 failed"),
+        ("r5a-build", "cargo build", "    Finished `dev` profile [unoptimized] target(s) in 0.31s"),
+    ] {
+        let (h, p, marker, mut st, n) = fresh_in_repo(tag);
+        let mut first = 0;
+        let mut paused_at = None;
+        for k in 0..20u64 {
+            let t = n + (6 * k + 1) * MIN;
+            ok_bash_out(&p, t, &format!("t{k}"), 700_000, cmd, out);
+            ticks(&h, &mut st, &[t + MIN]);
+            if k == 0 {
+                first = agent(&st, "s1").progress;
+            }
+            if marker.exists() && paused_at.is_none() {
+                paused_at = Some(k);
+            }
+        }
+        assert_eq!(agent(&st, "s1").progress, first, "{tag}: a repeat with the repo unchanged earns nothing");
+        assert!(paused_at.is_some() && marker.exists(), "{tag}: a 6-minute unchanged `{cmd}` loop is paused");
+    }
+}
+
+/// Spec (b): `RUN_AT=<ts> npm run lint` repeated with a changing ts (a fresh command text each run) earns nothing new and pauses.
+#[test]
+fn r5b_a_check_with_a_changing_env_value_pauses_pr472r5() {
+    let (h, p, marker, mut st, n) = fresh_in_repo("r5b");
+    let mut first = 0;
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        ok_bash_out(&p, t, &format!("l{k}"), 700_000, &format!("RUN_AT={t} npm run lint"), "");
+        ticks(&h, &mut st, &[t + MIN]);
+        if k == 0 {
+            first = agent(&st, "s1").progress;
+        }
+    }
+    assert_eq!(agent(&st, "s1").progress, first, "a changing env value is no change in the repo");
+    assert!(marker.exists(), "the lint loop is paused");
+}
+
+/// Spec (c): a loop `curl ... > /tmp/out-<ts>.json` (a fresh real file each run, under the temp dir and outside the repo) pauses, in a
+/// repo and outside one.
+#[test]
+fn r5c_a_curl_to_a_fresh_tmp_file_each_run_pauses_pr472r5() {
+    for repo in [true, false] {
+        let tag = if repo { "r5c-repo" } else { "r5c-plain" };
+        let (h, p, marker, mut st, n) = fresh_in_repo(tag);
+        if !repo {
+            std::fs::remove_dir_all(h.join("w/.git")).unwrap();
+        }
+        let tmp = std::env::temp_dir().join("ah-test-agents").join(format!("{tag}-out-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for k in 0..20u64 {
+            let t = n + (6 * k + 1) * MIN;
+            let out = tmp.join(format!("out-{t}.json"));
+            put(&out, "{}", t + 500);
+            ok_bash_out(&p, t, &format!("c{k}"), 700_000, &format!("curl -s http://dev/status > {}", out.display()), "");
+            ok_bash_out(&p, t + 1000, &format!("d{k}"), 10, "curl -s http://dev/status > /tmp/out-$(date +%s).json", "");
+            ticks(&h, &mut st, &[t + MIN]);
+        }
+        assert_eq!(agent(&st, "s1").progress, 0, "{tag}: a temp-file write is no work");
+        assert!(marker.exists(), "{tag}: the curl loop is paused");
+    }
+}
+
+/// Spec (d), regression guard: Edit tool -> `cargo test` -> Edit tool -> `cargo test` on the SAME tracked file: every edit changes the
+/// tree, so every passing test after it earns HARD and legit work is never paused.
+#[test]
+fn r5d_edit_then_test_keeps_earning_hard_pr472r5() {
+    let (h, p, marker, mut st, n) = fresh_in_repo("r5d");
+    let f = h.join("w/tracked.txt");
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        put(&f, &format!("v{}\n", k + 1), t);
+        append(
+            &p,
+            &[
+                tool(t, &format!("me{k}"), 350_000, &format!("e{k}"), "Edit", json!({"file_path": f.to_string_lossy(), "old_string": "v", "new_string": "v"})),
+                result(t, &format!("e{k}"), "ok", false),
+            ],
+        );
+        ticks(&h, &mut st, &[t + 10_000]);
+        let before = agent(&st, "s1").progress;
+        ok_bash_out(&p, t + 20_000, &format!("t{k}"), 350_000, "cargo test", "test result: ok. 3 passed; 0 failed");
+        ticks(&h, &mut st, &[t + MIN]);
+        assert!(agent(&st, "s1").progress > before, "test {k} after an edit earns HARD");
+        assert!(!marker.exists(), "edit/test work is never paused (round {k})");
+    }
+}
+
+/// Spec (e): a real shell write of a tracked file and of an untracked non-ignored file earns HARD once; the identical write repeated
+/// with no content change earns none; a write that really changes the content again is work again; a gitignored write earns none.
+#[test]
+fn r5e_a_shell_write_earns_hard_only_when_it_changes_the_repo_pr472r5() {
+    let (h, p, _marker, mut st, n) = fresh_in_repo("r5e");
+    let w = h.join("w");
+    let mut t = n + MIN;
+    let mut step = |file: &str, body: &str, k: &str| -> u64 {
+        t += 6 * MIN;
+        put(&w.join(file), body, t + 500);
+        let before = agent(&st, "s1").progress;
+        ok_bash_out(&p, t, k, 10, &format!("printf '{}' > {file}", body.trim_end()), "");
+        ticks(&h, &mut st, &[t + MIN]);
+        agent(&st, "s1").progress - before
+    };
+    assert!(step("tracked.txt", "v1\n", "w1") > 0, "a tracked write that changes the file is HARD");
+    assert_eq!(step("tracked.txt", "v1\n", "w2"), 0, "the identical write again is none");
+    assert!(step("tracked.txt", "v2\n", "w3") > 0, "a write that changes the content again is work");
+    assert!(step("out/new.txt", "n1\n", "w4") > 0, "an untracked non-ignored new file is HARD");
+    assert_eq!(step("out/new.txt", "n1\n", "w5"), 0, "the identical untracked write again is none");
+    assert_eq!(step("ignored/x.txt", "i1\n", "w6"), 0, "a gitignored write is none");
+}
