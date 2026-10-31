@@ -414,12 +414,14 @@ struct Tail {
 }
 
 impl Tail {
-    /// `None` for a missing, unreadable or empty file (`readTail` returns null).
-    fn open(path: &str, max: u64) -> Option<Tail> {
-        if path.is_empty() {
+    /// `None` for an unreadable or empty file (`readTail` returns null). The window is read from `file` itself (a duplicate of
+    /// the handle), never from a second open of its path, so the bytes read and the length the window is cut from are one file's.
+    fn of(file: &std::fs::File, max: u64) -> Option<Tail> {
+        #[cfg(test)]
+        if test_seam::clone_fails_at(max) {
             return None;
         }
-        let mut f = std::fs::File::open(path).ok()?;
+        let mut f = file.try_clone().ok()?;
         let size = f.metadata().ok()?.len();
         if size == 0 {
             return None;
@@ -1269,16 +1271,29 @@ pub fn scan_transcript(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> 
         // A relative path means the hook's own working directory, which the engine does not share.
         return Err(Unsupported);
     }
-    if !path.is_empty()
-        && defaults::num("agent_scan.cache_max_paths") > 0
-        && let Ok(f) = std::fs::File::open(path)
-        && let Ok(m) = f.metadata()
+    let Some(f) = open_transcript(path) else { return Ok(None) };
+    scan_transcript_on(path, &f, tail, opts)
+}
+
+/// The transcript at `path` opened for a scan, or `None` when it is missing or unreadable (a scan of it is then `None`).
+fn open_transcript(path: &str) -> Option<std::fs::File> {
+    if path.is_empty() { None } else { std::fs::File::open(path).ok() }
+}
+
+/// [`scan_transcript`] over a handle already open on `path`: every byte the scan reads, and the length its window is cut from,
+/// come from `file`, so a caller that judges the scan by that same handle judges the file the scan read.
+fn scan_transcript_on(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
+    if !path.starts_with('/') {
+        return Err(Unsupported);
+    }
+    if defaults::num("agent_scan.cache_max_paths") > 0
+        && let Ok(m) = file.metadata()
         && m.len() > 0
         && (m.len() <= tail || slack_of(tail) > 0)
     {
-        return scan_kept(path, tail, f, &m, opts);
+        return scan_kept(path, tail, file, &m, opts);
     }
-    scan_window(path, tail, opts)
+    scan_window(path, file, tail, opts)
 }
 
 /// How far before the window start a kept walk may begin before it is rebuilt: `agent_scan.window_slack_pct` percent of the window.
@@ -1307,12 +1322,13 @@ pub fn scan_transcript_uncached(path: &str, tail: u64, opts: &Opts) -> Res<Optio
     if !path.is_empty() && !path.starts_with('/') {
         return Err(Unsupported);
     }
-    scan_window(path, tail, opts)
+    let Some(f) = open_transcript(path) else { return Ok(None) };
+    scan_window(path, &f, tail, opts)
 }
 
-/// The scan of the last `tail` bytes, read afresh.
-fn scan_window(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
-    let Some(mut t) = Tail::open(path, tail) else { return Ok(None) };
+/// The scan of the last `tail` bytes of `file` (open on `path`), read afresh.
+fn scan_window(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
+    let Some(mut t) = Tail::of(file, tail) else { return Ok(None) };
     let mut w = Walk::new();
     let mut buf: Vec<u8> = Vec::new();
     let mut seq: u64 = 0;
@@ -1382,17 +1398,17 @@ fn window_start(f: &std::fs::File, size: u64, tail: u64) -> Option<u64> {
 ///   what the walk holds).
 ///
 /// Anything else, and any error the older lines raise, makes the scan read its window afresh, which is what it did before.
-fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -> Res<Option<Scan>> {
+fn scan_kept(path: &str, tail: u64, f: &std::fs::File, m: &std::fs::Metadata, opts: &Opts) -> Res<Option<Scan>> {
     let size = m.len();
     let fp = defaults::num("agent_scan.cache_fingerprint_bytes").max(1);
     let gen_ = defaults::generation();
     let s = size - window_len(size, tail);
     let slack = slack_of(tail);
-    let Some(start) = window_start(&f, size, tail) else { return scan_window(path, tail, opts) };
+    let Some(start) = window_start(f, size, tail) else { return scan_window(path, f, tail, opts) };
     let key = (path.to_string(), tail);
     let taken = walk_cache().remove(&key);
     let mut k = match taken {
-        Some(k) if kept_miss_reason(&k, gen_, m, size, s, start, slack, &f, fp).is_none() => {
+        Some(k) if kept_miss_reason(&k, gen_, m, size, s, start, slack, f, fp).is_none() => {
             crate::load::note_count("agent_scan_kept", "result", "hit");
             k
         }
@@ -1401,7 +1417,7 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
             crate::load::note_count(
                 "agent_scan_kept_miss",
                 "reason",
-                other.as_ref().and_then(|k| kept_miss_reason(k, gen_, m, size, s, start, slack, &f, fp)).unwrap_or("none"),
+                other.as_ref().and_then(|k| kept_miss_reason(k, gen_, m, size, s, start, slack, f, fp)).unwrap_or("none"),
             );
             Kept { gen_, dev: m.dev(), ino: m.ino(), base: start, built_s: s, off: start, seq: 0, head: 0, back: 0, walk: Walk::new() }
         }
@@ -1409,7 +1425,7 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
     let banded = k.base < start;
     let want = size - k.off;
     crate::load::note_scan(want);
-    let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, &f);
+    let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, f);
     if rd.seek(SeekFrom::Start(k.off)).is_err() {
         return Ok(None);
     }
@@ -1434,7 +1450,7 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
             } else if let Err(e) = feed(&mut k.walk, &mut k.seq, &buf) {
                 // what an older line raises is not an error of this window
                 crate::load::note_count("agent_scan_kept_miss", "reason", "error");
-                return if banded { scan_window(path, tail, opts) } else { Err(e) };
+                return if banded { scan_window(path, f, tail, opts) } else { Err(e) };
             }
             k.off += line.len;
         } else {
@@ -1453,14 +1469,14 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
         let mut seq = k.seq;
         w.cur_off = k.off;
         if let Err(e) = feed(&mut w, &mut seq, &p) {
-            return if banded { scan_window(path, tail, opts) } else { Err(e) };
+            return if banded { scan_window(path, f, tail, opts) } else { Err(e) };
         }
     }
     // the appended lines (the unfinished one included) may judge, by an answer, a call that already left the exact window: such a
     // walk no longer holds what a fresh scan of the window holds, so the window is read afresh
     if w.straddles(start) {
         crate::load::note_count("agent_scan_kept_miss", "reason", "straddles_after");
-        return scan_window(path, tail, opts);
+        return scan_window(path, f, tail, opts);
     }
     if k.base < start {
         w.others.retain(|o| o.off >= start);
@@ -1472,7 +1488,7 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
     if (scan.is_ok() || degraded_now) && walk_bytes(&k.walk) <= defaults::num("agent_scan.cache_max_bytes") {
         let now = now_ms() as u64;
         let fpn = fp.min(k.off - k.base);
-        if let (Some(head), Some(back)) = (digest_at(&f, k.base, fpn), digest_at(&f, k.off - fpn, fpn)) {
+        if let (Some(head), Some(back)) = (digest_at(f, k.base, fpn), digest_at(f, k.off - fpn, fpn)) {
             k.head = head;
             k.back = back;
             let ttl = defaults::num("agent_scan.cache_idle_ms");
@@ -1739,8 +1755,8 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows
-/// launched (all finished when `rows` is `None`), and how many bytes of transcript the proof covers (0: the agents were found
-/// in the default window; the whole file size when it fits a window).
+/// launched (all finished when `rows` is `None`), how many bytes of transcript the proof covers (0: the agents were found
+/// in the default window; the whole file size when it fits a window), and whether the scanned window was the whole transcript.
 pub struct Proof {
     /// The running agents, or `None` when the count cannot be trusted.
     pub rows: Option<Vec<Row>>,
@@ -1748,33 +1764,80 @@ pub struct Proof {
     pub seen: Vec<String>,
     /// Bytes of transcript the proof covers.
     pub window_bytes: u64,
+    /// The window that produced `rows` held the whole transcript. `false`: it was a tail of a longer file, so an agent launched
+    /// before it is invisible and the rows prove only that the agents they list run, never that some other agent does not.
+    pub complete: bool,
+}
+
+/// The transcript as opened once for a proof: the handle every scan of the proof reads, and its length when it was opened.
+struct Probe(Option<(std::fs::File, u64)>);
+
+impl Probe {
+    fn open(path: &str) -> Probe {
+        Probe(open_transcript(path).and_then(|f| f.metadata().ok().map(|m| (f, m.len()))))
+    }
+
+    fn file(&self) -> Option<&std::fs::File> {
+        self.0.as_ref().map(|(f, _)| f)
+    }
+
+    /// The length of the scanned file, taken from the handle the scans read (fstat), or `None` when what they read can no
+    /// longer be judged: the handle's file shrank since it was opened (truncated or rewritten in place), or `path` now names
+    /// another file (device or inode differs: replaced or rotated). The path is looked up only for its identity, never its length.
+    fn size_if_unchanged(&self, path: &str) -> Option<u64> {
+        let (f, opened_len) = self.0.as_ref()?;
+        let held = f.metadata().ok()?;
+        if held.len() < *opened_len {
+            return None;
+        }
+        let named = std::fs::metadata(path).ok()?;
+        (named.dev() == held.dev() && named.ino() == held.ino()).then_some(held.len())
+    }
 }
 
 /// `agentCountProof(path)`: [`running_agents_or_null`] with what it saw, so a caller can say why a count is unknown.
 pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
-    let none = |seen: Vec<String>, window_bytes: u64| Proof { rows: None, seen, window_bytes };
+    // One handle, opened before any scan: every scan below reads it, and the length that decides completeness is that handle's
+    // (fstat), so a compaction or rotation that swaps or truncates the file while a scan runs leaves the proof incomplete instead of
+    // judging the scanned bytes by another file's length.
+    if !path.is_empty() && !path.starts_with('/') {
+        return Err(Unsupported);
+    }
+    let probe = Probe::open(path);
+    let none = |seen: Vec<String>, window_bytes: u64| Proof { rows: None, seen, window_bytes, complete: false };
     let seen_of = |s: &Scan| s.launched.iter().map(|(id, _)| id.clone()).collect::<Vec<String>>();
     let tail = defaults::num("agent_scan.tail_bytes");
-    let Some(scan) = scan_transcript(path, tail, opts)? else { return Ok(none(Vec::new(), 0)) };
+    let Some(file) = probe.file() else { return Ok(none(Vec::new(), 0)) };
+    let Some(scan) = scan_transcript_on(path, file, tail, opts)? else { return Ok(none(Vec::new(), 0)) };
     let rows = scan.rows();
+    #[cfg(test)]
+    test_seam::fire();
+    let size = probe.size_if_unchanged(path);
     if !rows.is_empty() {
-        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: 0 });
+        // agents seen in the default window answer at once; the answer is complete only when that window was the whole file
+        let complete = size.is_some_and(|n| n <= tail);
+        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: 0, complete });
     }
-    let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return Ok(none(Vec::new(), 0)) };
+    let Some(size) = size else { return Ok(none(Vec::new(), 0)) };
     if size <= tail {
-        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: size });
+        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: size, complete: true });
     }
     let wide_bytes = defaults::num("agent_scan.wide_tail_bytes");
     // `scanTranscript(path, readTail(path, WIDE) )`: an unreadable wide read falls back to the default tail read.
-    let wide_window = if Tail::open(path, wide_bytes).is_some() { wide_bytes } else { tail };
-    let Some(wide) = scan_transcript(path, wide_window, opts)? else { return Ok(none(seen_of(&scan), tail)) };
+    let wide_window = if Tail::of(file, wide_bytes).is_some() { wide_bytes } else { tail };
+    let Some(wide) = scan_transcript_on(path, file, wide_window, opts)? else { return Ok(none(seen_of(&scan), tail)) };
     let wrows = wide.rows();
     let seen = seen_of(&wide);
+    // the file may have been replaced or shrunk during the wide scan too: then nothing it read proves completeness
+    let size = probe.size_if_unchanged(path);
+    let Some(size) = size else { return Ok(none(seen, wide_bytes)) };
     if !wrows.is_empty() {
-        return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes });
+        return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes, complete: size <= wide_window });
     }
-    if size <= wide_bytes {
-        return Ok(Proof { rows: Some(Vec::new()), seen, window_bytes: wide_bytes });
+    // an empty result proves "no agent" only for the bytes actually scanned: when the widening handle could not be obtained
+    // `wide_window` is the default tail, and a file longer than that is unknown, never complete
+    if size <= wide_window {
+        return Ok(Proof { rows: Some(Vec::new()), seen, window_bytes: wide_bytes, complete: true });
     }
     Ok(none(seen, wide_bytes))
 }
@@ -1783,4 +1846,27 @@ pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
 /// or one longer than the widened window with no agent found in it).
 pub fn running_agents_or_null(path: &str, opts: &Opts) -> Res<Option<Vec<Row>>> {
     Ok(agent_count_proof(path, opts)?.rows)
+}
+
+/// A test hook fired between a proof's first scan and its completeness check, so a test can swap or truncate the file there.
+#[cfg(test)]
+pub(crate) mod test_seam {
+    use std::cell::RefCell;
+    thread_local! { static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) }; }
+    thread_local! { static CLONE_FAILS_AT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) }; }
+    /// Makes the handle duplication of a window read of exactly `max` bytes fail, as descriptor exhaustion (EMFILE) would.
+    pub(crate) fn fail_clone_at(max: Option<u64>) {
+        CLONE_FAILS_AT.with(|c| c.set(max));
+    }
+    pub(super) fn clone_fails_at(max: u64) -> bool {
+        CLONE_FAILS_AT.with(|c| c.get() == Some(max))
+    }
+    pub(crate) fn set(f: Box<dyn FnOnce()>) {
+        HOOK.with(|h| *h.borrow_mut() = Some(f));
+    }
+    pub(super) fn fire() {
+        if let Some(f) = HOOK.with(|h| h.borrow_mut().take()) {
+            f();
+        }
+    }
 }

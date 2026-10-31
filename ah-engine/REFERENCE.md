@@ -3765,7 +3765,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.framed_instructions` | `This hedge sits under a heading or line labelled as a plan/expectation (e.g. ...` |  |  | The Noul question of the framed-expectation ask (byte-identical to the Node hook's FRAMED_JEV_QUESTION). |
 | `speculation_guard.framed_true` | `Unverified claim presented as fact: despite the label, it asserts what IS tru...` |  |  | The label for a true answer of the framed-expectation question. |
 | `speculation_guard.guard_name` | `speculation-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
-| `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node. |
+| `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence (lib/80-inference.js) and, with the switch on, blocks once per reply a confident causal claim that no tool result supports. |
 | `speculation_guard.jev_false` | `Not speculative: it reports what a tool actually showed (command output such ...` |  |  | The label for a false answer of the speculation question. |
 | `speculation_guard.jev_framed_id` | `speculationFramed` |  |  | The Jev integration id of the framed-expectation question (relax-block trust). |
 | `speculation_guard.jev_gate` | `claim` |  |  | When the Stop waits for Jev on the speculation question: `claim` (default) when the hedge scan found a marker OR the reply makes an unhedged completion claim (speculation_guard.claim_markers) that neither acknowledges nor cites evidence, `hit` only on a hedge marker (acknowledged or not), `would_block` only when the rule layer would itself block, `always` on every Stop (every Stop then costs a Jev round trip: not for the Stop latency bar). Any other value is read as `claim`. The wait is bounded by jev.stop_soft_ms / jev.stop_hard_ms and fails open. Ignored while jev.gate_enabled is 0. |
@@ -4103,6 +4103,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
 | `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
 | `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
+| `silent_nudge.msg_rt_instead` | `check its output now, then stop it or re-task it with a tighter scope; this b...` |  |  | What to do about an escalated agent. |
+| `silent_nudge.msg_rt_item` | `'{name}' (running {dur})` |  |  | One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes). |
+| `silent_nudge.msg_rt_what` | `{names}{more} still running after repeated runtime nudges, not finished and n...` |  |  | What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder. |
 | `silent_nudge.msg_what` | `{count} of your own {noun} have gone silent past the {min}m threshold: {shown...` |  |  | Headline of the nudge. |
 | `silent_nudge.msg_why` | `Advisory only; nothing was auto-killed.` |  |  | Why line of the nudge. |
 | `silent_nudge.noun_agent` | `background subagent(s)` |  |  | What the headline calls silent agents. |
@@ -4112,6 +4115,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.pronoun_many` | `them` |  |  | The pronoun for several silent agents. |
 | `silent_nudge.pronoun_one` | `it` |  |  | The pronoun for one silent agent. |
 | `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
+| `silent_nudge.rt_dur_hours` | `{h} h {m} min` |  |  | The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes. |
+| `silent_nudge.rt_dur_minutes` | `{m} min` |  |  | The runtime format under one hour; {m} minutes. |
+| `silent_nudge.rt_state_file` | `runtime-escalation-stops.json` |  |  | Per-session count of the runtime-escalation Stop blocks given, under the engine state directory. |
+| `silent_nudge.rt_stop_cap` | `1` |  |  | How many times per session an open runtime escalation (agent_nudge.runtime_escalation) may block the coordinator's Stop (0 = never block); it never loops. |
+| `silent_nudge.rt_unrecorded_log` | `2 entries` |  |  | The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494). |
 | `silent_nudge.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES). |
 | `silent_nudge.session_id_len` | `36` |  |  | Length of a session id (the directory name that precedes tasks/ in an output file path). |
 | `silent_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.silentAgentNudge, default on). |
@@ -4174,6 +4182,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_comms.supervisor_setting` | `7 entries` |  |  | The setting devswarm.supervisorMode (auto, on or off): whether DevSwarm counts as active for this session. |
 | `devswarm_comms.tool` | `SendMessage` |  |  | The only tool this guard decides on. |
 
+### spawn_guards.toml / guards
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `guards.cap_excluded_agent_types` | `codex:codex-rescue` |  |  | Agent types outside the owner's concurrent-agent cap (guards.maxConcurrentAgents): neither counted as running nor reserved nor capped (the Codex reviewers, on their own quota). |
+
 ### spawn_guards.toml / nested_spawn
 
 | Key | Default | Env override | Unit | What it is |
@@ -4190,7 +4204,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `spawn_ceiling.answered_line_max_bytes` | `8388608` |  |  | Transcript lines longer than this are not read for those tool results (a long foreground answer then holds its slot until the TTL). |
+| `spawn_ceiling.answered_window_bytes` | `2097152` |  |  | The transcript tail searched for the tool results that end this session's open reservations (an async launch or a foreground answer). |
+| `spawn_ceiling.background_field` | `run_in_background` |  |  | The spawn input field that says the call runs in the background; only a background call reserves a cap slot (a foreground call returns before the next one). |
 | `spawn_ceiling.base` | `12` |  |  | The ceiling at full usage headroom: a spawn is blocked when this many agents already run. |
+| `spawn_ceiling.cap_excluded_tracked_kinds` | `shell` |  |  | Agent-tracker child kinds that are not agents of the concurrent-agent cap (background shell jobs, agent_tracker.guard_job_kind). |
 | `spawn_ceiling.control_re` | `[\x00-\x1f\x7f]+` |  |  | JavaScript regex source (global): control characters cut from an agent description before it is shown. |
 | `spawn_ceiling.desc_max` | `60` |  |  | How many characters of an agent description the message keeps. |
 | `spawn_ceiling.excluded_task_types` | `local_bash` |  |  | Background task types that do not consume an agent spawn slot; their owners can still cover task-guard work. |
@@ -4199,14 +4217,35 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_ceiling.ignore_unknown_liveness` | `true` |  |  | Do not count a transcript row toward the spawn ceiling unless the agent tracker proves it live; missing, unreadable or stale evidence fails open. False retains the legacy count for unknown rows. |
 | `spawn_ceiling.join` | `; ` |  |  | The separator between the listed agent names. |
 | `spawn_ceiling.list_max` | `8` |  |  | How many running agents the block message names. |
+| `spawn_ceiling.max_concurrent_setting` | `9 entries` |  |  | Cap on agents running at once (default 6, 0 = no cap). A spawn over it is denied. Unlike the usage-scaled ceiling below, an agent of unknown liveness counts as running until the session proves it ended (GH #484). |
+| `spawn_ceiling.msg_cap_instead` | `wait for one of them to finish or stop one you no longer need, then spawn. Th...` |  |  | What to do instead of spawning past the owner's cap. |
+| `spawn_ceiling.msg_cap_what` | `{n} agents are running (limit {cap}, your guards.maxConcurrentAgents cap): {n...` |  |  | What the concurrency-cap block says; {n} running, {cap} the owner's cap, {names} the listed agents, {more} the remainder clause. |
 | `spawn_ceiling.msg_instead` | `wait for a running agent to finish.` |  |  | What to do instead of spawning past the ceiling. |
 | `spawn_ceiling.msg_more` | ` and {n} more` |  |  | The remainder clause when more agents run than are listed; {n} is how many are not listed. |
 | `spawn_ceiling.msg_what` | `{n} agents are running (limit {ceiling}).` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
 | `spawn_ceiling.msg_why` | `More agents rarely add results, and each one costs tokens whether or not it f...` |  |  | Why the ceiling block applies. |
+| `spawn_ceiling.reservation_file` | `spawn-reservations.json` |  |  | The open spawn reservations of the concurrent-agent cap (GH #494), under swarm_guard.state_dir: one row per allowed spawn whose launch is not yet in the transcript, {id (the tool call id), session, at}. |
+| `spawn_ceiling.reservation_lock` | `spawn-reservations.lock` |  |  | The lock that makes the cap's count and its reservation one step, under swarm_guard.state_dir (timings: the swarm_guard lock group). |
+| `spawn_ceiling.reservation_lock_group` | `spawn_reservation` |  |  | The lock timings group of the reservation lock (<group>.lock_*): its wait, its stale timeout and whether a dead holder is taken over at once. |
+| `spawn_ceiling.reservation_ttl_ms` | `30000` |  |  | How long a reservation holds its slot when its launch never shows in the transcript (a crashed or denied call). |
+| `spawn_ceiling.reserve_unflagged` | `true` |  |  | Whether a call without spawn_ceiling.background_field reserves a slot (the host may background it); its reservation ends with its tool result. |
 | `spawn_ceiling.setting` | `6 entries` |  |  | On by default; off makes the fan-out ceiling a no-op. |
 | `spawn_ceiling.step_pct` | `70, 85, 92` |  |  | Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce. |
 | `spawn_ceiling.step_reduce` | `3, 6, 9` |  |  | How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies). |
 | `spawn_ceiling.unnamed` | `(unnamed)` |  |  | The name of a running agent with no description. |
+
+### spawn_guards.toml / spawn_reservation
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `spawn_reservation.lock_boot_slop_s` | `5` |  |  | Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution). |
+| `spawn_reservation.lock_reclaim_stale_ms` | `5000` |  |  | A reservation-lock takeover marker older than this belongs to a reclaimer that died and may be taken over. |
+| `spawn_reservation.lock_release_step_ms` | `10` |  |  | The pause between those tries. |
+| `spawn_reservation.lock_release_tries` | `5` |  |  | How many times releasing the reservation lock tries to take the takeover marker before it removes its own lock unguarded. |
+| `spawn_reservation.lock_stale_ms` | `5000` |  |  | A reservation lock older than this is taken over whatever its holder (a hung check), so a check cut or killed while holding it never wedges the next spawn (GH #494). |
+| `spawn_reservation.lock_steal_dead` | `true` |  |  | Take over a reservation lock whose holder process is dead at once, whatever its age (a check that crashed holding it). |
+| `spawn_reservation.lock_step_ms` | `5` |  |  | The pause between attempts to take the reservation lock. |
+| `spawn_reservation.lock_wait_ms` | `2000` |  |  | How long a spawn check waits for the reservation lock (at most script.lock_wait_max_ms); still busy: the same count, read unlocked, decides and nothing is reserved. |
 
 ### spawn_guards.toml / spawn_usage
 
@@ -4641,7 +4680,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `task_guard.advise_unresolved_owners` | `true` |  |  | Advise instead of blocking Stop when a non-coordinator task owner cannot be resolved to known live or finished tracker work. False restores blocking for unresolved owners. |
+| `task_guard.advise_unmatched_owners` | `false` |  |  | Advise instead of blocking Stop when a non-coordinator task owner names no agent, tracked agent or live DevSwarm workspace this session can see. False (the default) blocks such a task like any open task, as the Node task-guard did. |
+| `task_guard.advise_unresolved_owners` | `true` |  |  | Advise instead of blocking Stop when a non-coordinator task owner names agent work this session can see (a launched or tracked agent) whose liveness no source can tell. An owner whose agent is known to have ended is not unresolved and blocks. False restores blocking for unresolved owners. |
 | `task_guard.agent_max_age_default_min` | `30` |  |  | The agent age limit used when the setting does not resolve to a number, in minutes. |
 | `task_guard.agent_max_age_setting` | `6 entries` |  |  | Max age of an agent counted as cover. Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never). |
 | `task_guard.agents_dir` | `agents` |  |  | The directory of agent heartbeat files inside the anti-hall directory (the legacy liveness signal). |
@@ -5823,7 +5863,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `388 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `389 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8237,7 +8277,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `394 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `395 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -9482,7 +9522,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.kinds` | `6 entries` |  |  | The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), teammate (an in-process teammate of an agent team: a subagent transcript whose meta names it one), codex (a Codex CLI session, from its rollout file), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file). |
 | `agent_tracker.limits` | `61 entries` |  |  | Bounds and thresholds of one tick (milliseconds unless the name says otherwise). active_window_ms: a transcript untouched this long is not tracked. max_agents: most agents followed (newest first). first_read_bytes: how much of the end of a transcript is read the first time it is seen (its totals then count from there). read_max_bytes: most read from one transcript per tick. hung_ms: a running agent with no activity this long is hung; hung_pending_ms: the same while a tool call is still unanswered (a long build or wait is legitimate). loop_window: how many recent tool calls are compared; loop_repeats: identical calls in that window that make a loop; loop_edit_repeats: the same for edits of one file; loop_span_ms: the repeats must fall within this much time of the newest one (the same poll every few minutes is not a loop); error_window, error_repeats: the same for an identical error text. waste_window_ms: the window tokens and progress are compared over; waste_min_span_ms: the least history needed before it is judged; waste_min_tokens: tokens spent in the window below which nothing is wasted; waste_max_progress: progress units in that window at or below which the spend is waste; cache_read_pct: how much a cache-read token counts toward the spend, in percent. drift_min_events: edits and commands seen under the current step before drift is judged; drift_max_overlap_pct: the share of the step's words the recent work may share before it is drift; drift_min_step_words, drift_min_word_len: how small a step or a word is too small to judge; work_words_max: how many recent work words are kept. heartbeat_stale_ms: a running agent heartbeat older than this is stale (the Node watchdog default). monitor_min_bg: background tasks running before a missing wake path is reported; bg_bash_ms: how long a background shell command counts as running. confirm_ticks: ticks a signal must stay up before its first reminder. outcome_timeout_ms: a reminded signal still up after this is recorded as not recovered. fp_min_progress: progress that makes a cleared, un-reminded flag a false positive. samples_max: samples kept per agent. files_max: distinct edited files remembered per agent. series_every_ms: how often an agent's series sample is written to the telemetry store and the series file. series_retention_ms, series_max_bytes: age and size cut of the series file. day_retention: days of daily totals kept. state_max_bytes: a state file bigger than this is discarded (it is only a cache). delivered_max: delivered rows read per tick. text_cap: characters kept of a command, a step or an evidence line. claude_cli_timeout_ms: bound of one `claude` subprocess. probe_ttl_ms: how long a cached capability probe is trusted when the version did not change. cli_list_ttl_ms: how long the host's session listing (`claude agents --json`, one heavy process) is trusted before it is asked again; between listings each agent keeps the host state and gone flag of the last one, and a listing is also taken at once when a main or workspace agent appears that the last listing did not see. stale_lock_ms: a wake-watch lock older than this does not count as armed (the DevSwarm wake-watch rule). queue_keep_ms: a fully delivered queue file is removed after this. idle_open_ms: a subagent or workspace that finished its turn with a task still open and has been silent this long is idle with open work (the wake signal idle_open_task). exit_keep_ms: how long an ended background shell task stays reported by the signal watched_exit. max_codex: most Codex sessions followed (newest first, on top of max_agents). codex_days: how many of the newest day directories of the Codex tree are looked at. codex_running_ms: a Codex rollout written to this recently is running, an older one waits (Codex has no process registry to join). codex_first_line_max: most bytes read of a rollout's first line (its session metadata). rollout_stamp_len: characters of the timestamp and dash between the prefix and the session id in a rollout file name. done_keep_ms: how long a finished agent (state done) stays in the status list after its last output; live agents always show. headless_head_bytes: how much of the start of a transcript is read to find its entrypoint. pid_start_slack_ms: a registered process that started later than its session plus this is a reused pid, not that session. codex_done_after_ms: a one-shot Codex run (`codex exec`) with no output for this long is done even without a terminal record. codex_stale_after_ms: any Codex rollout with no output for this long is done (an interactive session idle that long is over). codex_tail_bytes: how much of the end of a rollout is read to find whether its last turn ended. dead_idle_ms: a subagent, teammate or session with no live process, silent this long, whose parent session is not live either, is dead (one whose transcript or project directory is gone is dead at once). owner_active_ms: a main or workspace session whose owner sent a message this recently is healthy (the token-waste signal stays down; agents.nudgeOwnerActive). drift_once_per_step: 1 = the drift reminder is sent once per declared step (a cleared and re-raised flag on the same step text is not reminded again), 0 = every raise. drift_min_hits: shared words between the step (plus its task description) and the recent work that already count as on-step. |
 | `agent_tracker.live_plan` | `2 entries` |  |  | The live facts of a DevSwarm workspace's work that the roster shows beside its plan (the plan is the workspace's own `heartbeat --step` report and goes stale). dir: the folder under the tracker's directory holding one file per workspace (task-list completions, commits, pushes, merges and deploys, when it last shipped); stale_ms: how far after the plan's last report a commit, push, merge or deploy must be before the roster says the plan is behind. |
-| `agent_tracker.meta` | `6 entries` |  |  | Field names of a subagent's meta file (the host's format). task_kind and teammate: a subagent whose task_kind field equals teammate is an in-process teammate of an agent team; name: its team name for it; description: the task description the launcher gave it (a stop of the teammate is answered with this text); team: the team; finished: true once the host recorded the agent as finished. |
+| `agent_tracker.meta` | `7 entries` |  |  | Field names of a subagent's meta file (the host's format). task_kind and teammate: a subagent whose task_kind field equals teammate is an in-process teammate of an agent team; name: its team name for it; description: the task description the launcher gave it (a stop of the teammate is answered with this text); team: the team; finished: true once the host recorded the agent as finished; tool_use_id: the tool call id of the launch that started it (the spawn cap releases that launch's reservation when the child shows). |
 | `agent_tracker.native_wake` | `7 entries` |  |  | The native wake of an idle DevSwarm workspace (`workspace reactivate-child`, run after a mesh send to the workspace and by `agents send`; switched with agents.wakeWatch). idle_ms: how long a running-looking workspace must have been silent before it is woken (one that ended its turn is woken at once); cooldown_ms: the least gap between two wakes of one workspace; timeout_ms: the bound of each hivecontrol call; text_cap: characters of a preview or an error kept; dir: the folder (under the tracker's base) holding each workspace's last-wake stamp. info_args: the hivecontrol arguments that read the workspace (its branch), before the workspace id. reactivate_args: the hivecontrol arguments that queue the wake prompt, before the branch and the prompt. |
 | `agent_tracker.no_work` | `5 entries` |  |  | The no_work signal requires a valid transcript scanned from its start through its current end. Partial, truncated or unread scans are unknown and never notify. Rescue wrappers (agent type or Codex job id in a result) are excluded because their work happens elsewhere. max_tools controls the threshold. |
 | `agent_tracker.no_work_states` | `4 entries` |  |  | No-work evidence states in agents status: unknown means incomplete scan, excluded a Codex-rescue wrapper, no_work a proven empty finished child, clear otherwise. |
@@ -9614,6 +9654,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_nudge.reason_plausible` | `plausible` |  |  | The nudgeReason label that lets the requested snooze stand. |
 | `agent_nudge.ref_alphabet` | `abcdefghjkmnpqrstuvwxyz23456789` |  |  | The characters a nudge's ref token is made of (lower case and digits, no look-alikes). |
 | `agent_nudge.reply_integration` | `nudgeReply` |  |  | The Jev evidence integration that classifies a prose reply into an answer word. |
+| `agent_nudge.runtime_escalation` | `2 entries` |  |  | Escalation of a long-running child whose nudges keep repeating (GH #484). after_reminders: nudges about one child (the first included) after which it counts as escalated if it has not finished or been stopped (0 = off). file: where the open escalations are published for the coordinator's Stop check, under the tracker's directory. |
 | `agent_nudge.scope_setting` | `6 entries` |  |  | Where the switch of the nudge and wake scope rules is read from (agents.nudgeScope, default on): on, an answered nudge is never queued again by the wake fallback, an agentHealth verdict of done holds the nudge, and heartbeat and lock-holder wake rows go only to the session that owns them (agent_tracker.wake_scope); off, the earlier behaviour. |
 | `agent_nudge.setting` | `6 entries` |  |  | Where the nudge loop's switch is read from (agents.nudge, default on): on, an unhealthy child's signals go to its direct parent as a nudge (the plain reminder routes stay quiet about them); off, the plain reminder routes of agent_tracker.routes deliver them as before. |
 | `agent_nudge.snooze_setting` | `6 entries` |  |  | Where the switch of the held snooze is read from (agents.nudgeSnoozeHold, default on): on, a snooze is kept per child and trigger, outlives the nudge it was given to and holds a re-raised condition (no new nudge until it runs out; its count carries over); off, a snooze lives and dies with its nudge. |
@@ -14515,6 +14556,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_turns_measured` | counter | turns | mode | Main-session turns whose output tokens were measured, by mode (afk, present). |
 | `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
 | `idle_trips` | counter | events |  | AFK periods started by idle detection. |
+| `runtime_escalation_stop_unrecorded` | counter | stops |  | Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap). |
+| `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided). |
+| `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
@@ -14545,6 +14589,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `agent_nudge_suppressed` | counter | nudges | reason | Nudges held back by the scope rules (agents.nudgeScope), by reason: judge_done (the agentHealth judge said the child's work is finished, so the done hold starts; the hold then keeps suppressing without a judge call or another count until it runs out or the child writes) and answered (the parent answered after the last send, so the wake fallback does not queue it again). |
 | `agent_nudge_to_owner` | counter | notices | where | Notices sent to the owner's channel (escalations, acted-on notices, dead-child notices with no live parent), by where: session (the newest live armed main session of the child's project) or file (the owner notices file, when no such session exists). |
 | `agent_wake_dropped` | counter | rows | reason | Wake rows dropped because no followed session owns them (agents.nudgeScope on), by reason: foreign_agent (a heartbeat whose writer is no followed session), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started). |
+| `runtime_escalations` | counter | escalations |  | Children whose repeated runtime nudges reached agent_nudge.runtime_escalation.after_reminders without the child finishing or being stopped; counted once per nudge. |
 | `dsx_actions` | counter | actions | feature, outcome | Automatic archive and nag attempts of the DevSwarm expansion features, by feature and outcome (ok, refused, failed). |
 | `dsx_auto_archive_mistake_rate` | gauge | ratio |  | Mistake signals per successful auto-archive since the engine started (gauge). |
 | `dsx_auto_archive_success_rate` | gauge | ratio |  | ok / (ok + failed) of auto-archive attempts since the engine started (gauge, 0..1); a refusal is a safety check working and is not counted. |
