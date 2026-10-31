@@ -1,14 +1,21 @@
 # ah-engine shipped defaults for disk hygiene: `ah-engine hygiene [--report|--clean]` and the scheduled job `disk_hygiene`
 # (docs/AH-ENGINE.md, "Disk hygiene"). Format: see the header of engine.toml.
 #
-# The report lists, under the configured work roots, every scratch clone with a class: KEEP, REMOVE-TARGET-ONLY (only its
-# build output may go) or REMOVE-SAFE (the whole clone may go to the Trash). A clone is REMOVE-SAFE only when it is proved
-# idle, clean (no change, no untracked or ignored file outside the regenerable names), every commit is on a remote-tracking
-# ref, it has no stash and no linked worktree, and no live process has its working directory or an open file inside it.
-# Anything it cannot prove is KEEP. Reusable caches and the designated reusable clone are always KEEP. The report also lists
-# old spill files and deploy copies beyond the newest few. The scheduled job only reports; it never removes anything. Only an
-# explicit `--clean` acts: it moves REMOVE-SAFE items to the Trash by rename (never a recursive delete; a move across volumes
-# is refused) and deletes only the build directories of REMOVE-TARGET-ONLY clones, re-checking each item just before.
+# The report lists, under the configured work roots, every scratch clone with a class:
+#   KEEP         a live process has its working directory (or an open file) inside it, or it was active within the idle
+#                window (diskHygiene.idleHours); also symlinks, reusable caches, paths outside a work root, a `.git` file,
+#                linked worktrees and a failed process probe. `--clean` does nothing to it.
+#   TARGET-ONLY  a dirty tree, untracked files, a stash, unpushed commits (HEAD included), or a remote that cannot be
+#                verified (no remote, `git ls-remote` failed or timed out, or the clone is behind a served branch tip it
+#                never fetched: the report never fetches). `--clean` removes only its ignored, untracked
+#                build directories (`target/`); nothing tracked, nothing outside the clone.
+#   REMOVE-SAFE  clean, no stash or untracked file, HEAD and every branch tip reachable from a tip the remote serves right
+#                now (`git ls-remote`, read only, never a stale remote-tracking ref); idle. `--clean` moves it to the Trash.
+# The report also lists old spill files and deploy copies beyond the newest few. The report path (`hygiene --report`, the
+# scheduled job) deletes nothing except the temporary file of its own failed report write; a failed report write exits
+# nonzero. Only an explicit `--clean` acts: it probes processes again and re-checks each item just before, moves REMOVE-SAFE
+# items to the Trash by rename (never a recursive delete; a move across volumes is refused) and deletes only the build
+# directories of TARGET-ONLY clones.
 
 [disk_hygiene.sw_enabled]
 doc = "Where the disk hygiene on/off switch is read from (diskHygiene.enabled, default on). Off: the report and the clean do nothing."
@@ -25,6 +32,15 @@ value = { section = "diskHygiene", key = "spillDays", env = "ANTIHALL_DISK_HYGIE
 [disk_hygiene.deploy_keep]
 doc = "How many deploy copies (disk_hygiene.deploy_prefix) are always kept, newest first (diskHygiene.deployKeep)."
 value = { section = "diskHygiene", key = "deployKeep", env = "ANTIHALL_DISK_HYGIENE_DEPLOY_KEEP", aliases = [], option = "", default = 3, min = 0 }
+
+[disk_hygiene.remote_timeout_secs]
+doc = "How long one `git ls-remote` of a clone's remote may take (diskHygiene.remoteTimeoutSecs). A remote that fails or takes longer cannot be verified: the clone is TARGET-ONLY (remote_unverified), never REMOVE-SAFE."
+value = { section = "diskHygiene", key = "remoteTimeoutSecs", env = "ANTIHALL_DISK_HYGIENE_REMOTE_TIMEOUT_SECS", aliases = [], option = "", default = 20, min = 1 }
+
+[disk_hygiene.remote_poll_ms]
+doc = "How often a running `git ls-remote` is checked against its timeout."
+value = 50
+unit = "ms"
 
 [disk_hygiene.reusable_clone]
 doc = "The one designated reusable clone, a path relative to a work root (diskHygiene.reusableClone); always KEEP. Empty = none."
@@ -51,7 +67,7 @@ doc = "Directories, relative to HOME, whose old files are spill output (over-cap
 value = [".anti-hall/context-spill", ".anti-hall/block-details"]
 
 [disk_hygiene.build_dirs]
-doc = "Build output directory names at the top of a clone or under its first level: regenerable, so REMOVE-TARGET-ONLY may delete them."
+doc = "Build output directory names at the top of a clone or under its first level: regenerable, so TARGET-ONLY may delete them."
 value = ["target"]
 
 [disk_hygiene.regenerable_ignored]
@@ -102,9 +118,37 @@ value = ["check-ignore", "-q", "--"]
 doc = "The porcelain prefix of an ignored file."
 value = "!! "
 
-[disk_hygiene.git_unpushed]
-doc = "git arguments that list commits of HEAD and of every local branch that no remote-tracking ref holds (local refs only, no network)."
-value = ["rev-list", "HEAD", "--branches", "--not", "--remotes"]
+[disk_hygiene.git_untracked_prefix]
+doc = "The porcelain prefix of an untracked file (reason untracked, not dirty)."
+value = "?? "
+
+[disk_hygiene.git_remotes]
+doc = "git arguments that list a clone's remotes, one name per line. None: the remote cannot be verified (TARGET-ONLY)."
+value = ["remote"]
+
+[disk_hygiene.git_ls_remote]
+doc = "git arguments (followed by a remote name) that list the tips the remote serves right now. Read only: no fetch, no ref of the clone changes, no activity stamp moves."
+value = ["ls-remote", "--"]
+
+[disk_hygiene.remote_env]
+doc = "Environment (NAME=value) set on every `git ls-remote`, so it never waits for a password or a host-key answer."
+value = ["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes"]
+
+[disk_hygiene.git_unreachable]
+doc = "git arguments (followed by disk_hygiene.git_not and the remote tips) that list commits of HEAD and of every local branch no remote tip holds; a tip the clone lacks is ignored (only stricter)."
+value = ["rev-list", "HEAD", "--branches", "--ignore-missing"]
+
+[disk_hygiene.git_present]
+doc = "git arguments (followed by the branch tips a remote serves) that print the tips present in the clone. A served branch tip the clone lacks (behind, never fetched) makes an unreachable commit remote_unverified instead of unpushed."
+value = ["rev-list", "--no-walk", "--ignore-missing"]
+
+[disk_hygiene.branch_ref_prefix]
+doc = "The ls-remote ref name prefix of a branch tip."
+value = "refs/heads/"
+
+[disk_hygiene.git_not]
+doc = "The rev-list argument before the remote tips."
+value = "--not"
 
 [disk_hygiene.git_stash]
 doc = "git arguments that list stashes."
@@ -164,7 +208,7 @@ value = "KEEP"
 
 [disk_hygiene.class_target]
 doc = "Class of a clone of which only the build directories may go."
-value = "REMOVE-TARGET-ONLY"
+value = "TARGET-ONLY"
 
 [disk_hygiene.class_safe]
 doc = "Class of an item that may go to the Trash whole."
@@ -183,8 +227,8 @@ doc = "Item kind: a deploy copy."
 value = "deploy"
 
 [disk_hygiene.reasons]
-doc = "Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty, unpushed, stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. outside (not proved inside a work root), spill_only (a spill file: report only)."
-value = { reusable = "reusable", symlink = "symlink", linked = "linked", unprovable = "unprovable", live = "live_process", recent = "recent", dirty = "dirty", unpushed = "unpushed", stash = "stash", worktrees = "worktrees", newest = "deploy_newest", fresh = "fresh", safe = "clean_pushed_idle", outside = "outside_root", spill_only = "spill_report_only" }
+doc = "Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty (a tracked change), untracked (an untracked file, or an ignored one outside the regenerable names), unpushed (a commit no remote tip holds), remote_unverified (no remote, or ls-remote failed or timed out), stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. outside (not proved inside a work root), spill_only (a spill file: report only)."
+value = { reusable = "reusable", symlink = "symlink", linked = "linked", unprovable = "unprovable", untracked = "untracked", remote_unverified = "remote_unverified", live = "live_process", recent = "recent", dirty = "dirty", unpushed = "unpushed", stash = "stash", worktrees = "worktrees", newest = "deploy_newest", fresh = "fresh", safe = "clean_pushed_idle", outside = "outside_root", spill_only = "spill_report_only" }
 
 [disk_hygiene.flag_report]
 doc = "The report flag (the default when no flag is given)."
@@ -199,8 +243,8 @@ doc = "Telemetry command label of the hygiene counters: one cmd event per counte
 value = "hygiene"
 
 [disk_hygiene.tel_counters]
-doc = "Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused)."
-value = { reclaimable = "bytes_reclaimable", reclaimed = "bytes_reclaimed", listed = "items_listed", skipped = "items_skipped_" }
+doc = "Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, report writes that failed (1 per failed run), the prefix of the per-class item counts, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused)."
+value = { reclaimable = "bytes_reclaimable", reclaimed = "bytes_reclaimed", listed = "items_listed", report_failed = "report_write_failed", class = "items_class_", skipped = "items_skipped_" }
 
 [disk_hygiene.health_kind]
 doc = "Engine health-log kind of the low-disk notice and of a refused clean step."
@@ -209,6 +253,18 @@ value = "disk_hygiene"
 [disk_hygiene.health_low]
 doc = "Health-log code of the low-disk notice (a watched volume is below the disk_watch warn floor)."
 value = "low_disk"
+
+[disk_hygiene.health_report_failed]
+doc = "Health-log code of a failed report write (the run then exits disk_hygiene.exit_report_failed)."
+value = "report_write_failed"
+
+[disk_hygiene.exit_report_failed]
+doc = "Exit code of a hygiene run whose report file could not be written."
+value = 1
+
+[disk_hygiene.msg_report_failed]
+doc = "Health-log detail and stderr line of a failed report write; {path}, {err}."
+value = "hygiene report not written: {path}: {err}"
 
 [disk_hygiene.health_refused]
 doc = "Health-log code of a clean step that was refused (the item changed, the move failed)."
@@ -251,7 +307,7 @@ doc = "Why a clean step was refused: no Trash on this operating system, or the m
 value = "move to the Trash failed"
 
 [cmd.hygiene]
-doc = "Disk hygiene. `--report` (the default) lists scratch clones under the work roots as KEEP, REMOVE-TARGET-ONLY or REMOVE-SAFE with the reason, plus old spill files and deploy copies beyond the newest few, and writes the report to the state directory; dirty, unpushed, busy or unprovable clones are never removable. `--clean` (explicit only) re-checks each item, moves REMOVE-SAFE items to the Trash and deletes only the build directories of REMOVE-TARGET-ONLY clones; idempotent. The job `disk_hygiene` only reports, and logs a notice when disk is below the disk_watch warn floor."
+doc = "Disk hygiene. `--report` (the default) lists scratch clones under the work roots as KEEP, TARGET-ONLY or REMOVE-SAFE with the reason, plus old spill files and deploy copies beyond the newest few, and writes the report to the state directory; busy or recent clones are KEEP; dirty, untracked, stashed, unpushed or remote-unverified clones are TARGET-ONLY (only ignored build directories go); only a clean, idle clone every tip of which a remote serves now (ls-remote) is REMOVE-SAFE; a failed report write exits nonzero. `--clean` (explicit only) re-checks each item, moves REMOVE-SAFE items to the Trash and deletes only the build directories of TARGET-ONLY clones; idempotent. The job `disk_hygiene` only reports, and logs a notice when disk is below the disk_watch warn floor."
 value = { args = "[--report|--clean]", read_only = false, status = "implemented" }
 
 [job.disk_hygiene]

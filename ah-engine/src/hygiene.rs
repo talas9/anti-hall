@@ -1,11 +1,20 @@
 //! Disk hygiene: `ah-engine hygiene [--report|--clean]` and the scheduled job `disk_hygiene` (a `hygiene --report`
-//! subprocess). The report classifies what lies under the configured work roots: scratch clones (KEEP, REMOVE-TARGET-ONLY,
-//! REMOVE-SAFE), deploy copies beyond the newest few and old spill files. It fails closed: a clone is REMOVE-SAFE only when it
-//! is proved idle, clean, fully pushed, without stash or linked worktree (every checked-out submodule too, whatever its ignore
-//! setting), inside a work root without a symlink on the way, and no live process works inside it; whatever a probe cannot
-//! answer is KEEP. A build directory goes only when git tracks nothing in it and ignores it. Spill files are report only. The job only reports (and logs a notice below the disk_watch warn floor). Only an explicit `--clean`
-//! acts: it re-checks each item, moves REMOVE-SAFE items to the Trash by rename (never a recursive delete, never across
-//! volumes) and deletes only the build directories of REMOVE-TARGET-ONLY clones. Every value lives in `disk_hygiene.toml`.
+//! subprocess). The report classifies what lies under the configured work roots: scratch clones, deploy copies beyond the
+//! newest few and old spill files. The class contract of a clone:
+//!
+//! - KEEP: a live process has its working directory (or an open file) inside it, or it was active within the idle window;
+//!   also the structural guards (symlink, reusable, outside a work root, `.git` a file, linked worktrees, a failed process
+//!   probe). `--clean` does nothing.
+//! - TARGET-ONLY: a dirty tree, untracked files, a stash, unpushed commits (HEAD included), or a remote that cannot be
+//!   verified. `--clean` removes only ignored, untracked build directories (`target/`) inside the clone.
+//! - REMOVE-SAFE: clean, no stash or untracked file, HEAD and every branch tip reachable from a tip the remote serves right
+//!   now (`git ls-remote`, read only: never a local, possibly stale remote-tracking ref, never a fetch); idle. `--clean`
+//!   moves it to the Trash by rename (never a recursive delete, never across volumes).
+//!
+//! Live processes: every process's working directory (macOS `proc_pidinfo(PROC_PIDVNODEPATHINFO)`, Linux
+//! `/proc/<pid>/cwd`) plus the open-files listing `lsof -Fn` when installed; the working directory of a process of another
+//! user cannot be read without privileges. `--clean` probes again just before acting on each item. The report path deletes
+//! nothing except the temporary file of its own failed report write. Every value lives in `disk_hygiene.toml`.
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::settings::{get_bool, get_number, get_string};
 use crate::cli::Parsed;
@@ -36,15 +45,15 @@ fn now_s() -> u64 {
 pub struct Item {
     /// clone, deploy or spill (`disk_hygiene.kind_*`).
     pub kind: &'static str,
-    /// KEEP, REMOVE-TARGET-ONLY or REMOVE-SAFE (`disk_hygiene.class_*`).
+    /// KEEP, TARGET-ONLY or REMOVE-SAFE (`disk_hygiene.class_*`).
     pub class: &'static str,
     /// Why (`disk_hygiene.reasons`).
     pub reason: &'static str,
     /// Where it is.
     pub path: PathBuf,
-    /// What a clean would free: the whole item (REMOVE-SAFE), its build directories (REMOVE-TARGET-ONLY), 0 (KEEP).
+    /// What a clean would free: the whole item (REMOVE-SAFE), its build directories (TARGET-ONLY), 0 (KEEP).
     pub bytes: u64,
-    /// The build directories a REMOVE-TARGET-ONLY clean deletes.
+    /// The build directories a TARGET-ONLY clean deletes.
     pub targets: Vec<PathBuf>,
 }
 
@@ -55,6 +64,7 @@ struct Cfg {
     spill_s: u64,
     deploy_keep: usize,
     reusable: String,
+    remote_timeout: std::time::Duration,
 }
 
 impl Cfg {
@@ -65,6 +75,7 @@ impl Cfg {
             spill_s: get_number(st, defaults::raw("disk_hygiene.spill_days")).max(0.0) as u64 * defaults::num("disk_hygiene.secs_per_day"),
             deploy_keep: get_number(st, defaults::raw("disk_hygiene.deploy_keep")).max(0.0) as usize,
             reusable: get_string(st, defaults::raw("disk_hygiene.reusable_clone")),
+            remote_timeout: std::time::Duration::from_secs(get_number(st, defaults::raw("disk_hygiene.remote_timeout_secs")).max(1.0) as u64),
         }
     }
 
@@ -192,36 +203,105 @@ fn regenerable(clone: &Path, dir: &Path) -> bool {
     git("git_tracked", clone, &[&rel]).is_some_and(|o| o.trim().is_empty()) && git("git_check_ignore", clone, &[&rel]).is_some()
 }
 
-/// What git says against removal: None (clean and fully pushed, every checked-out submodule too), Some(reason), or Err
-/// (unprovable).
-fn git_objection(clone: &Path, depth: u64) -> Result<Option<&'static str>, ()> {
-    if depth == 0 {
+/// What git says about a clone: removable whole, only its build directories, or nothing.
+enum Verdict {
+    Safe,
+    Target(&'static str),
+    Keep(&'static str),
+}
+
+/// Whether HEAD and every local branch tip are reachable from a tip some remote serves right now (`git ls-remote` per
+/// remote, bounded by `remote_timeout`, read only: no fetch, no object or ref written). Ok(true) proved, Ok(false) a commit
+/// no remote holds, Err no remote, a remote that failed or timed out, or a served branch tip this clone lacks (it is behind
+/// and never fetched, so the remote may hold the commit): cannot be verified.
+fn remote_holds_all(clone: &Path, timeout: std::time::Duration) -> Result<bool, ()> {
+    let remotes = git("git_remotes", clone, &[]).ok_or(())?;
+    let names: Vec<&str> = remotes.lines().map(str::trim).filter(|r| !r.is_empty()).collect();
+    if names.is_empty() {
         return Err(());
     }
-    let status = git("git_status", clone, &[]).ok_or(())?;
+    let (mut tips, mut heads): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for r in names {
+        let mut cmd = Command::new(t("git_program"));
+        cmd.args(defaults::list("disk_hygiene.git_ls_remote")).arg(r).current_dir(clone).env(t("git_env_name"), t("git_env_value"));
+        for kv in defaults::list("disk_hygiene.remote_env") {
+            if let Some((k, v)) = kv.split_once('=') {
+                cmd.env(k, v);
+            }
+        }
+        let out = crate::proc::run(cmd, t("git_program"), timeout, defaults::millis("disk_hygiene.remote_poll_ms")).map_err(|_| ())?;
+        if !out.status.success() {
+            return Err(());
+        }
+        for l in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut f = l.split_whitespace();
+            if let (Some(sha), Some(name)) = (f.next(), f.next()) {
+                tips.push(sha.to_string());
+                if name.starts_with(t("branch_ref_prefix")) {
+                    heads.push(sha.to_string());
+                }
+            }
+        }
+    }
+    // every served tip is reachability proof; a tip this clone lacks the objects of is skipped by rev-list
+    let mut args: Vec<&str> = vec![t("git_not")];
+    args.extend(tips.iter().map(String::as_str));
+    if git("git_unreachable", clone, &args).ok_or(())?.trim().is_empty() {
+        return Ok(true);
+    }
+    // a commit no present tip holds: unpushed, unless a branch tip the remote serves is missing here (the clone is behind
+    // and never fetched): then the remote may hold it and it cannot be verified without a fetch, which the report never does
+    if heads.is_empty() {
+        return Ok(false);
+    }
+    let heads_ref: Vec<&str> = heads.iter().map(String::as_str).collect();
+    let present = git("git_present", clone, &heads_ref).ok_or(())?;
+    let present: std::collections::BTreeSet<&str> = present.lines().map(str::trim).collect();
+    if heads.iter().any(|h| !present.contains(h.as_str())) {
+        return Err(());
+    }
+    Ok(false)
+}
+
+/// What git says against removal (every checked-out submodule too): Safe, Target(reason) or Keep(reason). A local probe
+/// that fails is Target (unprovable): a build directory goes only after its own tracked and ignored checks succeed.
+fn git_verdict(clone: &Path, depth: u64, timeout: std::time::Duration) -> Verdict {
+    if depth == 0 {
+        return Verdict::Target(reason("unprovable"));
+    }
+    let Some(status) = git("git_status", clone, &[]) else { return Verdict::Target(reason("unprovable")) };
     let ignored = t("git_ignored_prefix");
+    let untracked = t("git_untracked_prefix");
     let regen = defaults::list("disk_hygiene.regenerable_ignored");
-    let dirty = status.lines().filter(|l| !l.is_empty()).any(|l| match l.strip_prefix(ignored) {
+    let lines: Vec<&str> = status.lines().filter(|l| !l.is_empty()).collect();
+    if lines.iter().any(|l| !l.starts_with(ignored) && !l.starts_with(untracked)) {
+        return Verdict::Target(reason("dirty"));
+    }
+    // an untracked file, or an ignored one outside the regenerable names, may be the only copy of local data
+    let local_data = lines.iter().any(|l| match l.strip_prefix(ignored) {
         Some(p) => !p.split('/').next().is_some_and(|top| regen.contains(&top)),
         None => true,
     });
-    if dirty {
-        return Ok(Some(reason("dirty")));
+    if local_data {
+        return Verdict::Target(reason("untracked"));
     }
-    if !git("git_unpushed", clone, &[]).ok_or(())?.trim().is_empty() {
-        return Ok(Some(reason("unpushed")));
-    }
-    if !git("git_stash", clone, &[]).ok_or(())?.trim().is_empty() {
-        return Ok(Some(reason("stash")));
+    match git("git_stash", clone, &[]) {
+        None => return Verdict::Target(reason("unprovable")),
+        Some(o) if !o.trim().is_empty() => return Verdict::Target(reason("stash")),
+        Some(_) => {}
     }
     let wt = t("worktree_prefix");
-    if git("git_worktrees", clone, &[]).ok_or(())?.lines().filter(|l| l.starts_with(wt)).count() > 1 {
-        return Ok(Some(reason("worktrees")));
+    match git("git_worktrees", clone, &[]) {
+        None => return Verdict::Target(reason("unprovable")),
+        Some(o) if o.lines().filter(|l| l.starts_with(wt)).count() > 1 => return Verdict::Keep(reason("worktrees")),
+        Some(_) => {}
     }
     // each submodule is a repository of its own: its changes, commits and stashes count as the clone's
     let link = t("gitlink_prefix");
-    for rec in git("git_gitlinks", clone, &[]).ok_or(())?.split('\0').filter(|r| r.starts_with(link)) {
-        let sub = clone.join(rec.split_once('\t').ok_or(())?.1);
+    let Some(index) = git("git_gitlinks", clone, &[]) else { return Verdict::Target(reason("unprovable")) };
+    for rec in index.split('\0').filter(|r| r.starts_with(link)) {
+        let Some((_, rel)) = rec.split_once('\t') else { return Verdict::Target(reason("unprovable")) };
+        let sub = clone.join(rel);
         if sub.join(t("git_marker")).symlink_metadata().is_err() {
             // not checked out: nothing local, unless the directory holds files
             let holds_files = match std::fs::read_dir(&sub) {
@@ -229,15 +309,21 @@ fn git_objection(clone: &Path, depth: u64) -> Result<Option<&'static str>, ()> {
                 Err(_) => sub.exists(),
             };
             if holds_files {
-                return Err(());
+                return Verdict::Target(reason("unprovable"));
             }
             continue;
         }
-        if let Some(why) = git_objection(&sub, depth - 1)? {
-            return Ok(Some(why));
+        match git_verdict(&sub, depth - 1, timeout) {
+            Verdict::Safe => {}
+            other => return other,
         }
     }
-    Ok(None)
+    // last: the only network probe, after every local check passed
+    match remote_holds_all(clone, timeout) {
+        Ok(true) => Verdict::Safe,
+        Ok(false) => Verdict::Target(reason("unpushed")),
+        Err(()) => Verdict::Target(reason("remote_unverified")),
+    }
 }
 
 fn keep(kind: &'static str, path: &Path, why: &'static str) -> Item {
@@ -267,15 +353,13 @@ fn classify_clone(kind: &'static str, path: &Path, reusable: bool, cfg: &Cfg, bu
     if idle_for(path) < cfg.idle_s {
         return keep(kind, path, reason("recent"));
     }
-    match git_objection(path, defaults::num("disk_hygiene.submodule_depth")) {
-        Err(()) => keep(kind, path, reason("unprovable")),
-        Ok(None) => Item { kind, class: t("class_safe"), reason: reason("safe"), path: path.to_path_buf(), bytes: size_of(path), targets: Vec::new() },
-        Ok(Some(why)) => {
+    match git_verdict(path, defaults::num("disk_hygiene.submodule_depth"), cfg.remote_timeout) {
+        Verdict::Keep(why) => keep(kind, path, why),
+        Verdict::Safe => Item { kind, class: t("class_safe"), reason: reason("safe"), path: path.to_path_buf(), bytes: size_of(path), targets: Vec::new() },
+        Verdict::Target(why) => {
+            // only an ignored, untracked build directory goes; none (or none provable) leaves 0 bytes and nothing to do
             let targets: Vec<PathBuf> = build_dirs(path).into_iter().filter(|d| contained(cfg, d) && regenerable(path, d)).collect();
             let bytes: u64 = targets.iter().map(|d| size_of(d)).sum();
-            if bytes == 0 {
-                return keep(kind, path, why);
-            }
             Item { kind, class: t("class_target"), reason: why, path: path.to_path_buf(), bytes, targets }
         }
     }
@@ -389,8 +473,9 @@ fn refused(p: &Path, why: &str) {
     crate::health::log_event(t("health_kind"), t("health_refused"), &detail);
 }
 
-/// Act on the REMOVE items, re-checking each one just before. Returns (bytes reclaimed, refusals by reason).
-fn clean(st: &Settings, items: &[Item], busy: &Busy) -> (u64, BTreeMap<String, u64>) {
+/// Act on the REMOVE-SAFE and TARGET-ONLY items, re-checking each one just before against a fresh process probe. Returns
+/// (bytes reclaimed, refusals by reason).
+fn clean(st: &Settings, items: &[Item]) -> (u64, BTreeMap<String, u64>) {
     let cfg = Cfg::load(st);
     let mut freed = 0u64;
     let mut skipped: BTreeMap<String, u64> = BTreeMap::new();
@@ -398,7 +483,9 @@ fn clean(st: &Settings, items: &[Item], busy: &Busy) -> (u64, BTreeMap<String, u
         if it.kind == t("kind_spill") {
             continue; // report only
         }
-        let again = if it.kind == t("kind_deploy") { classify_deploy(&it.path, &cfg, busy) } else { classify_clone(it.kind, &it.path, false, &cfg, busy) };
+        // a process may have entered the item since the report's probe
+        let busy = Busy::probe();
+        let again = if it.kind == t("kind_deploy") { classify_deploy(&it.path, &cfg, &busy) } else { classify_clone(it.kind, &it.path, false, &cfg, &busy) };
         if again.class != it.class {
             refused(&it.path, t("why_changed"));
             *skipped.entry(again.reason.to_string()).or_insert(0) += 1;
@@ -448,8 +535,8 @@ fn low_disk(st: &Settings, reclaimable: u64) -> Option<String> {
     Some(defaults::render("disk_hygiene.msg_low", &[("list", &low.join(", ")), ("reclaimable", &disk::human(reclaimable))]))
 }
 
-fn count(name: &str, value: u64, micros: u64) {
-    crate::telemetry::emit::event(crate::telemetry::emit::command_run(t("tel_cmd"), name, 0, micros, value));
+fn count(name: &str, value: u64, micros: u64, exit: i32) {
+    crate::telemetry::emit::event(crate::telemetry::emit::command_run(t("tel_cmd"), name, exit, micros, value));
 }
 
 /// The verb's handler.
@@ -468,13 +555,17 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     let started = std::time::Instant::now();
     let busy = Busy::probe();
     let (items, mut skipped) = classify(&st, &busy);
+    let mut classes: BTreeMap<&str, u64> = [t("class_keep"), t("class_target"), t("class_safe")].into_iter().map(|c| (c, 0)).collect();
+    for i in &items {
+        *classes.entry(i.class).or_insert(0) += 1;
+    }
     for i in items.iter().filter(|i| i.class == t("class_keep")) {
         *skipped.entry(i.reason.to_string()).or_insert(0) += 1;
     }
     let reclaimable: u64 = items.iter().map(|i| i.bytes).sum();
     let mut reclaimed = 0u64;
     if is_clean {
-        let (freed, refusals) = clean(&st, &items, &busy);
+        let (freed, refusals) = clean(&st, &items);
         reclaimed = freed;
         for (k, v) in refusals {
             *skipped.entry(k).or_insert(0) += v;
@@ -484,23 +575,37 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     if let Some(n) = &notice {
         crate::health::log_event(t("health_kind"), t("health_low"), n);
     }
-    let micros = started.elapsed().as_micros() as u64;
-    let c = defaults::raw("disk_hygiene.tel_counters");
-    count(c.str_field("reclaimable"), reclaimable, micros);
-    count(c.str_field("reclaimed"), reclaimed, micros);
-    count(c.str_field("listed"), items.len() as u64, micros);
-    for (k, v) in &skipped {
-        count(&format!("{}{k}", c.str_field("skipped")), *v, micros);
-    }
-    let report = json!({
+    let mut report = json!({
         "ts_s": now_s(), "mode": if is_clean { t("flag_clean") } else { t("flag_report") },
         "items": items.iter().map(item_json).collect::<Vec<_>>(),
         "bytes_reclaimable": reclaimable, "bytes_reclaimed": reclaimed, "items_listed": items.len(), "items_skipped": skipped,
-        "notice": notice,
+        "items_by_class": classes, "notice": notice,
     });
+    // the report file: a failed write (the only file this run may then unlink is the temporary one it created) fails the run
     let dir = crate::paths::dir();
-    crate::discard::logged("hygiene_report", std::fs::create_dir_all(&dir));
-    crate::discard::logged("hygiene_report", crate::atomic::write(dir.join(t("report_file")), report.to_string()));
+    let written = std::fs::create_dir_all(&dir).and_then(|()| crate::atomic::write(dir.join(t("report_file")), report.to_string()));
+    let code = match &written {
+        Ok(()) => 0,
+        Err(e) => {
+            let detail = defaults::render("disk_hygiene.msg_report_failed", &[("path", &dir.join(t("report_file")).display()), ("err", e)]);
+            crate::health::log_event(t("health_kind"), t("health_report_failed"), &detail);
+            eprintln!("{detail}");
+            report["report_error"] = json!(e.to_string());
+            defaults::num("disk_hygiene.exit_report_failed") as i32
+        }
+    };
+    let micros = started.elapsed().as_micros() as u64;
+    let c = defaults::raw("disk_hygiene.tel_counters");
+    count(c.str_field("reclaimable"), reclaimable, micros, code);
+    count(c.str_field("reclaimed"), reclaimed, micros, code);
+    count(c.str_field("listed"), items.len() as u64, micros, code);
+    count(c.str_field("report_failed"), u64::from(written.is_err()), micros, code);
+    for (k, v) in &classes {
+        count(&format!("{}{k}", c.str_field("class")), *v, micros, code);
+    }
+    for (k, v) in &skipped {
+        count(&format!("{}{k}", c.str_field("skipped")), *v, micros, code);
+    }
     if p.json {
         println!("{report}");
     } else {
@@ -525,5 +630,5 @@ pub fn run_cmd(p: &Parsed) -> i32 {
             println!("{n}");
         }
     }
-    0
+    code
 }

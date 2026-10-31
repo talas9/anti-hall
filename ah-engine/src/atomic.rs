@@ -63,16 +63,16 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result
 pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<()> {
     let path = path.as_ref();
     let t0 = std::time::Instant::now();
-    let tmp = tmp_path(path, style);
     let bytes_len = bytes.as_ref().len() as u64;
-    if let Err(e) = stage(&tmp, bytes, style) {
-        if !style.bootstrap {
-            crate::web::io::path_op(path, 0, false, true, None);
+    let tmp = match stage_own(path, bytes, style) {
+        Ok(tmp) => tmp,
+        Err(e) => {
+            if !style.bootstrap {
+                crate::web::io::path_op(path, 0, false, true, None);
+            }
+            return Err(e);
         }
-        // Best effort: the original error is the one worth returning; a leftover temp file is swept later.
-        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
-        return Err(e);
-    }
+    };
     let r = replace(&tmp, path, style);
     if !style.bootstrap {
         crate::web::io::path_op(path, bytes_len, r.is_ok(), true, Some(t0.elapsed().as_micros() as u64));
@@ -94,20 +94,57 @@ pub fn write_after_reply(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style:
     if !crate::deadline::in_request() {
         return write_styled(path, bytes, style);
     }
-    let tmp = tmp_path(path, style);
     let bytes_len = bytes.as_ref().len() as u64;
-    if let Err(e) = stage(&tmp, bytes, style) {
-        if !style.bootstrap {
-            crate::web::io::path_op(path, 0, false, true, None);
+    let tmp = match stage_own(path, bytes, style) {
+        Ok(tmp) => tmp,
+        Err(e) => {
+            if !style.bootstrap {
+                crate::web::io::path_op(path, 0, false, true, None);
+            }
+            return Err(e);
         }
-        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
-        return Err(e);
-    }
+    };
     if !style.bootstrap {
         crate::web::io::path_op(path, bytes_len, true, true, None);
     }
     crate::deadline::stage(tmp, path.to_path_buf(), style);
     Ok(())
+}
+
+/// The first half of an atomic write that names its own temporary file: create a fresh sibling of `path` exclusively
+/// (`create_new`: never an existing file truncated, never a symlink followed), write `bytes`, sync it. A name already taken
+/// is skipped for the next one, at most `atomic.create_attempts` names (one for a bootstrap write). Only a file this call
+/// created is ever removed: when the write or sync fails after the create. Returns the temporary path.
+///
+/// # Errors
+/// The create error (no file removed), or the write or sync error (the file this call created removed).
+fn stage_own(path: &Path, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<PathBuf> {
+    let attempts = if style.bootstrap { 1 } else { defaults::num("atomic.create_attempts").max(1) };
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    if let Some(m) = style.mode {
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, m);
+    }
+    let mut last = None;
+    for _ in 0..attempts {
+        let tmp = tmp_path(path, style);
+        let mut f = match o.open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last = Some(e);
+                continue; // not ours: never touched
+            }
+            Err(e) => return Err(e),
+        };
+        let written = f.write_all(bytes.as_ref()).and_then(|()| if style.skip_sync { Ok(()) } else { f.sync_all() });
+        if let Err(e) = written {
+            // Best effort: the original error is the one worth returning; this call created the file, so it may remove it.
+            crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
+            return Err(e);
+        }
+        return Ok(tmp);
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
 }
 
 /// The first half of an atomic write, for a caller that must name the temporary file itself (a temp name the Node hooks
@@ -214,6 +251,33 @@ mod tests {
         assert!(write_styled(&target, "new", Style { leave_temp_on_rename_failure: true, ..Style::default() }).is_err());
         assert_eq!(entries(&d).len(), 2, "the temp file stays, as Node leaves it: {:?}", entries(&d));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
+    }
+
+    #[test]
+    fn a_taken_temp_name_is_never_truncated_or_removed_and_the_write_uses_the_next_name() {
+        // PR 522 review: the temporary file is created exclusively; a file already at the next name (a stray of an earlier
+        // process with the same pid, or a planted symlink) is neither truncated nor unlinked, also when the rename fails.
+        crate::defaults::init().unwrap();
+        let d = dir("taken");
+        let target = d.join("t.json");
+        let n = SEQ.load(Ordering::Relaxed);
+        let stray = PathBuf::from(format!("{}.{}.{n}{}", target.display(), std::process::id(), defaults::text("atomic.tmp_suffix")));
+        std::fs::write(&stray, "not ours").unwrap();
+        write(&target, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&stray).unwrap(), "not ours", "a taken name is skipped, never truncated");
+        // a failed rename (target is a nonempty directory) removes only the temp this call created
+        let dirt = d.join("r.json");
+        std::fs::create_dir(&dirt).unwrap();
+        std::fs::write(dirt.join("keep"), "x").unwrap();
+        let n = SEQ.load(Ordering::Relaxed);
+        let stray2 = PathBuf::from(format!("{}.{}.{n}{}", dirt.display(), std::process::id(), defaults::text("atomic.tmp_suffix")));
+        std::fs::write(&stray2, "not ours either").unwrap();
+        assert!(write(&dirt, "new").is_err());
+        assert_eq!(std::fs::read_to_string(&stray2).unwrap(), "not ours either");
+        assert!(dirt.join("keep").exists());
+        assert_eq!(entries(&d).len(), 4, "target, stray, dir, stray2 only: {:?}", entries(&d));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]

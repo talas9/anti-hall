@@ -67,7 +67,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `afk` | `on\|off\|status` | no | implemented | AFK mode, machine-wide: `on` starts it (agents work silently and log milestone bullets to their progress files), `off` ends it, `status` shows it. Lasts until `back` / `off`. Settings: afk.*. |
 | `back` | `` | no | implemented | End AFK mode and print each session's digest: the checklist bullets after the AFK marker in its progress file, with the percentage of [x] bullets. |
 | `mcp-reaper` | `run [--dry-run]` | no | implemented | The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line. |
-| `hygiene` | `[--report\|--clean]` | no | implemented | Disk hygiene. `--report` (the default) lists scratch clones under the work roots as KEEP, REMOVE-TARGET-ONLY or REMOVE-SAFE with the reason, plus old spill files and deploy copies beyond the newest few, and writes the report to the state directory; dirty, unpushed, busy or unprovable clones are never removable. `--clean` (explicit only) re-checks each item, moves REMOVE-SAFE items to the Trash and deletes only the build directories of REMOVE-TARGET-ONLY clones; idempotent. The job `disk_hygiene` only reports, and logs a notice when disk is below the disk_watch warn floor. |
+| `hygiene` | `[--report\|--clean]` | no | implemented | Disk hygiene. `--report` (the default) lists scratch clones under the work roots as KEEP, TARGET-ONLY or REMOVE-SAFE with the reason, plus old spill files and deploy copies beyond the newest few, and writes the report to the state directory; busy or recent clones are KEEP; dirty, untracked, stashed, unpushed or remote-unverified clones are TARGET-ONLY (only ignored build directories go); only a clean, idle clone every tip of which a remote serves now (ls-remote) is REMOVE-SAFE; a failed report write exits nonzero. `--clean` (explicit only) re-checks each item, moves REMOVE-SAFE items to the Trash and deletes only the build directories of TARGET-ONLY clones; idempotent. The job `disk_hygiene` only reports, and logs a notice when disk is below the disk_watch warn floor. |
 | `refresh` | `[--force] [--home <dir>]` | no | implemented | Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert), the Claude Code and DevSwarm CLI versions (the drift probes) and the reload repair (repair-on-reload), each as a bounded subprocess; `--force` runs every probe whether requested or not (never the repair unless requested). Prints one result per probe. The scheduler runs it every refresh.every_ms. |
 | `engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` | no | implemented | Update the engine binary: runs the thin client's updater (ah-engine update) with the given arguments (--from FILE [--sha256 X] [--yes] \| --channel stable\|dev \| --rollback \| --auto \| --dry-run). The engine itself does no network access. |
 | `post-update-check` | `[--dry-run] [--expect-sha <sha256>]` | no | implemented | The step every update ends with: verify exactly one live engine runs the installed binary (sha, path, answers status and a ping inside its budget), stop stale and scratch daemons and duplicate watchers by verified pid (never pkill), let watchers on a replaced binary re-execute themselves, report servers on an old binary, and clean old binary copies, dead pid files, a dead socket and dead temp files. --dry-run reports and changes nothing. Exit 0 verified, 1 not. |
@@ -91,7 +91,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--by` | `jev-report` | Group the report by `project` or `session` (`jev-report`). |
 | `--channel` | `engine-update` | Update channel to install from: `stable` or `dev` (`engine-update`). |
 | `--check` | `config`, `doctor`, `metrics`, `shadow-compare`, `update` | Name of one check to limit the output to (`metrics`), a read-only check without repairs (`doctor`, `update`), or validation only without writing (`config set`). |
-| `--clean` | `hygiene` | hygiene: move REMOVE-SAFE items to the Trash and delete the build dirs of REMOVE-TARGET-ONLY clones (explicit only). |
+| `--clean` | `hygiene` | hygiene: move REMOVE-SAFE items to the Trash and delete the ignored build dirs of TARGET-ONLY clones; KEEP items untouched (explicit only). |
 | `--clear` | `devswarm` | Comma-separated gates to clear (`devswarm gate`). |
 | `--confirm-ids` | `devswarm` | Comma-separated workspace ids the owner confirmed for pruning (`devswarm prune`). |
 | `--confirmed` | `config`, `proc`, `settings` | Confirm a change to a safety-relevant setting, after the one-line warning (`settings set`, `settings reset`). |
@@ -441,6 +441,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `atomic.create_attempts` | `4` |  |  | How many temporary names an atomic write tries: the temporary file is created exclusively (never an existing file truncated, never a symlink followed), so a name already taken (a stray of an earlier process with the same pid) is skipped for the next one. A write made without loadable defaults tries once. |
 | `atomic.tmp_suffix` | `.tmp` |  |  | Suffix of the temporary file every atomic state write goes through before the rename (a `.json` target keeps a `.json` ending after it). |
 
 ### engine.toml / cli
@@ -8078,13 +8079,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `disk_hygiene.block_bytes` | `512` |  |  | Bytes in one allocated block of a file's st_blocks. |
-| `disk_hygiene.build_dirs` | `target` |  |  | Build output directory names at the top of a clone or under its first level: regenerable, so REMOVE-TARGET-ONLY may delete them. |
+| `disk_hygiene.branch_ref_prefix` | `refs/heads/` |  |  | The ls-remote ref name prefix of a branch tip. |
+| `disk_hygiene.build_dirs` | `target` |  |  | Build output directory names at the top of a clone or under its first level: regenerable, so TARGET-ONLY may delete them. |
 | `disk_hygiene.class_keep` | `KEEP` |  |  | Class of an item that must stay. |
 | `disk_hygiene.class_safe` | `REMOVE-SAFE` |  |  | Class of an item that may go to the Trash whole. |
-| `disk_hygiene.class_target` | `REMOVE-TARGET-ONLY` |  |  | Class of a clone of which only the build directories may go. |
+| `disk_hygiene.class_target` | `TARGET-ONLY` |  |  | Class of a clone of which only the build directories may go. |
 | `disk_hygiene.clone_depth` | `2` |  |  | How many directory levels under a work root are searched for clones (a directory holding disk_hygiene.git_marker is a clone and is not searched further). |
 | `disk_hygiene.deploy_keep` | `7 entries` |  |  | How many deploy copies (disk_hygiene.deploy_prefix) are always kept, newest first (diskHygiene.deployKeep). |
 | `disk_hygiene.deploy_prefix` | `deploy-` |  |  | A directory directly under a work root whose name starts with this is a deploy copy. |
+| `disk_hygiene.exit_report_failed` | `1` |  |  | Exit code of a hygiene run whose report file could not be written. |
 | `disk_hygiene.flag_clean` | `--clean` |  |  | The clean flag: explicit invocation only. |
 | `disk_hygiene.flag_report` | `--report` |  |  | The report flag (the default when no flag is given). |
 | `disk_hygiene.git_check_ignore` | `check-ignore, -q, --` |  |  | git arguments (followed by a build directory) that succeed only when it is ignored: only an ignored, untracked build directory is regenerable. |
@@ -8092,17 +8095,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_hygiene.git_env_value` | `0` |  |  | Its value. |
 | `disk_hygiene.git_gitlinks` | `ls-files, --stage, -z` |  |  | git arguments that list the index entries (NUL separated), so the submodules (disk_hygiene.gitlink_prefix) are found and each is checked as a repository of its own. |
 | `disk_hygiene.git_ignored_prefix` | `!! ` |  |  | The porcelain prefix of an ignored file. |
+| `disk_hygiene.git_ls_remote` | `ls-remote, --` |  |  | git arguments (followed by a remote name) that list the tips the remote serves right now. Read only: no fetch, no ref of the clone changes, no activity stamp moves. |
 | `disk_hygiene.git_marker` | `.git` |  |  | The entry that makes a directory a clone: a directory is a clone; a file (a linked worktree or submodule) is KEEP. |
+| `disk_hygiene.git_not` | `--not` |  |  | The rev-list argument before the remote tips. |
+| `disk_hygiene.git_present` | `rev-list, --no-walk, --ignore-missing` |  |  | git arguments (followed by the branch tips a remote serves) that print the tips present in the clone. A served branch tip the clone lacks (behind, never fetched) makes an unreachable commit remote_unverified instead of unpushed. |
 | `disk_hygiene.git_program` | `git` |  |  | The git program. |
+| `disk_hygiene.git_remotes` | `remote` |  |  | git arguments that list a clone's remotes, one name per line. None: the remote cannot be verified (TARGET-ONLY). |
 | `disk_hygiene.git_stash` | `stash, list` |  |  | git arguments that list stashes. |
 | `disk_hygiene.git_status` | `7 items` |  |  | git arguments that list changed, untracked and ignored files (porcelain), submodule changes included whatever a submodule ignore setting says. |
 | `disk_hygiene.git_tracked` | `ls-files, --` |  |  | git arguments (followed by a build directory) that list tracked files under it: any makes the directory not regenerable. |
-| `disk_hygiene.git_unpushed` | `rev-list, HEAD, --branches, --not, --remotes` |  |  | git arguments that list commits of HEAD and of every local branch that no remote-tracking ref holds (local refs only, no network). |
+| `disk_hygiene.git_unreachable` | `rev-list, HEAD, --branches, --ignore-missing` |  |  | git arguments (followed by disk_hygiene.git_not and the remote tips) that list commits of HEAD and of every local branch no remote tip holds; a tip the clone lacks is ignored (only stricter). |
+| `disk_hygiene.git_untracked_prefix` | `?? ` |  |  | The porcelain prefix of an untracked file (reason untracked, not dirty). |
 | `disk_hygiene.git_worktrees` | `worktree, list, --porcelain` |  |  | git arguments that list the worktrees of a clone (porcelain). |
 | `disk_hygiene.gitlink_prefix` | `160000 ` |  |  | The start of an index entry that is a submodule (gitlink mode). |
 | `disk_hygiene.health_kind` | `disk_hygiene` |  |  | Engine health-log kind of the low-disk notice and of a refused clean step. |
 | `disk_hygiene.health_low` | `low_disk` |  |  | Health-log code of the low-disk notice (a watched volume is below the disk_watch warn floor). |
 | `disk_hygiene.health_refused` | `clean_refused` |  |  | Health-log code of a clean step that was refused (the item changed, the move failed). |
+| `disk_hygiene.health_report_failed` | `report_write_failed` |  |  | Health-log code of a failed report write (the run then exits disk_hygiene.exit_report_failed). |
 | `disk_hygiene.idle_files` | `.git/index, .git/HEAD, .git/logs/HEAD, .git/FETCH_HEAD` |  |  | Activity stamps inside a clone, relative to it; with the clone directory itself, the newest decides the idle age. |
 | `disk_hygiene.idle_hours` | `7 entries` |  |  | A clone or deploy copy is idle when its newest activity stamp (disk_hygiene.idle_files, the directory itself) is older than this many hours (diskHygiene.idleHours). |
 | `disk_hygiene.job_every_ms` | `21600000` | `AH_ENGINE_DISK_HYGIENE_MS` | ms | Interval of the disk hygiene report job; 0 turns it off. |
@@ -8114,13 +8123,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_hygiene.msg_low` | `Low disk space ({list}); disk hygiene finds {reclaimable} reclaimable. Run `a...` |  |  | Low-disk notice; {list} the volume lines, {reclaimable} what a clean would free. |
 | `disk_hygiene.msg_off` | `disk hygiene is off (diskHygiene.enabled)` |  |  | Answer when diskHygiene.enabled is off. |
 | `disk_hygiene.msg_refused` | `{path}: {why}` |  |  | Health-log detail of a refused clean step; {path}, {why}. |
+| `disk_hygiene.msg_report_failed` | `hygiene report not written: {path}: {err}` |  |  | Health-log detail and stderr line of a failed report write; {path}, {err}. |
 | `disk_hygiene.msg_total` | `{n} items, reclaimable {reclaimable}, reclaimed {reclaimed}` |  |  | Report footer; {n} items, {reclaimable} size reclaimable, {reclaimed} size reclaimed by this run. |
 | `disk_hygiene.msg_usage` | `usage: ah-engine hygiene [--report\|--clean] [--json]` |  |  | Usage line. |
 | `disk_hygiene.msg_vol` | `{path}: {free} free` |  |  | One volume of the notice; {path}, {free}. |
 | `disk_hygiene.open_files_argv` | `lsof, -n, -P, -w, -Fn` |  |  | Command that lists every open file of every process, one `n<path>` line each (field output). Not installed: only working directories are probed. |
 | `disk_hygiene.open_files_prefix` | `n` |  |  | The line prefix of a path in the open-files listing. |
-| `disk_hygiene.reasons` | `15 entries` |  |  | Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty, unpushed, stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. outside (not proved inside a work root), spill_only (a spill file: report only). |
+| `disk_hygiene.reasons` | `17 entries` |  |  | Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty (a tracked change), untracked (an untracked file, or an ignored one outside the regenerable names), unpushed (a commit no remote tip holds), remote_unverified (no remote, or ls-remote failed or timed out), stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. outside (not proved inside a work root), spill_only (a spill file: report only). |
 | `disk_hygiene.regenerable_ignored` | `target, node_modules, .DS_Store` |  |  | Top-level names an ignored file may sit under and still count as clean (anything else ignored makes the clone KEEP: it may be the only copy of local data). |
+| `disk_hygiene.remote_env` | `GIT_TERMINAL_PROMPT=0, GIT_SSH_COMMAND=ssh -o BatchMode=yes` |  |  | Environment (NAME=value) set on every `git ls-remote`, so it never waits for a password or a host-key answer. |
+| `disk_hygiene.remote_poll_ms` | `50` |  | ms | How often a running `git ls-remote` is checked against its timeout. |
+| `disk_hygiene.remote_timeout_secs` | `7 entries` |  |  | How long one `git ls-remote` of a clone's remote may take (diskHygiene.remoteTimeoutSecs). A remote that fails or takes longer cannot be verified: the clone is TARGET-ONLY (remote_unverified), never REMOVE-SAFE. |
 | `disk_hygiene.report_file` | `hygiene-report.json` |  |  | The last report, in the engine state directory. |
 | `disk_hygiene.reusable_clone` | `6 entries` |  |  | The one designated reusable clone, a path relative to a work root (diskHygiene.reusableClone); always KEEP. Empty = none. |
 | `disk_hygiene.secs_per_day` | `86400` |  |  | Seconds in a day. |
@@ -8131,7 +8144,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_hygiene.submodule_depth` | `8` |  |  | How deep nested submodules are checked; a deeper one makes the clone KEEP (unprovable). |
 | `disk_hygiene.sw_enabled` | `6 entries` |  |  | Where the disk hygiene on/off switch is read from (diskHygiene.enabled, default on). Off: the report and the clean do nothing. |
 | `disk_hygiene.tel_cmd` | `hygiene` |  |  | Telemetry command label of the hygiene counters: one cmd event per counter, its name in the event field and its value in items. |
-| `disk_hygiene.tel_counters` | `4 entries` |  |  | Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused). |
+| `disk_hygiene.tel_counters` | `6 entries` |  |  | Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, report writes that failed (1 per failed run), the prefix of the per-class item counts, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused). |
 | `disk_hygiene.trash_dirs` | `2 entries` |  |  | The Trash directory per operating system, relative to HOME. An operating system not listed has no Trash: nothing is moved. |
 | `disk_hygiene.trash_name` | `{name}.{ts}` |  |  | Name of an item in the Trash; {name} its own name, {ts} seconds since the epoch (set only when the plain name is taken). |
 | `disk_hygiene.why_changed` | `no longer removable on re-check` |  |  | Why a clean step was refused: the item no longer classifies as it did. |

@@ -1,8 +1,8 @@
 //! `ah-engine hygiene`, end to end: the real binary in a scratch HOME and state dir (never the real HOME or a live engine),
-//! over seeded clones of a local bare remote: a dirty clone, a clone with an unpushed commit, a clone a live process works in,
-//! a merged and clean clone, a dirty clone with a stale `target/`, a reusable cache, deploy copies and spill files. Asserts the
-//! classification, that `--clean` moves only the REMOVE-SAFE items to the scratch Trash, deletes only the stale `target/`, never
-//! touches the dirty, unpushed and live clones, and is idempotent; and that the counters land in the telemetry inbox.
+//! over seeded clones of a local bare remote. One real-fixture test per row of the class contract (KEEP: a live process
+//! works inside, or recent; TARGET-ONLY: dirty, untracked, stash, unpushed, remote unverifiable, only the ignored `target/`
+//! goes; REMOVE-SAFE: clean, idle, every tip on a tip `git ls-remote` serves now), the failed report write (nonzero exit, a
+//! counter, nothing but its own temp unlinked), plus the older broad shape tests.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -62,12 +62,30 @@ impl World {
             .unwrap();
         assert!(st.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&st.stderr));
     }
+    fn git_out(&self, cwd: &Path, args: &[&str]) -> String {
+        let o = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("HOME", self.home())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    }
     fn clone(&self, name: &str) -> PathBuf {
         let to = self.work().join("scratch").join(name);
         self.git(&self.dir, &["clone", "-q", self.dir.join("remote.git").to_str().unwrap(), to.to_str().unwrap()]);
         to
     }
     fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Value {
+        let (code, v, err) = self.run_raw(args, env);
+        assert_eq!(code, 0, "hygiene {args:?}: {err}");
+        v
+    }
+    /// The run's exit code, its last stdout line as JSON, and its stderr.
+    fn run_raw(&self, args: &[&str], env: &[(&str, &str)]) -> (i32, Value, String) {
         let mut c = Command::new(BIN);
         c.args(args)
             .arg("--json")
@@ -83,9 +101,9 @@ impl World {
             c.env(k, v);
         }
         let out = c.output().unwrap();
-        assert!(out.status.success(), "hygiene {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
-        serde_json::from_str(text.lines().last().unwrap_or_default()).unwrap_or_else(|e| panic!("{e}: {text}"))
+        let v = serde_json::from_str(text.lines().last().unwrap_or_default()).unwrap_or_else(|e| panic!("{e}: {text}"));
+        (out.status.code().unwrap_or(-1), v, String::from_utf8_lossy(&out.stderr).into_owned())
     }
 }
 
@@ -167,8 +185,11 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     let subdirty = w.clone("subdirty");
     w.git(&subdirty, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", w.dir.join("child.git").to_str().unwrap(), "child"]);
     w.git(&subdirty, &["commit", "-q", "-m", "add child"]);
-    w.git(&subdirty, &["push", "-q", "origin", "HEAD:main"]);
+    // its own branch, so the other clones stay level with main (a clone behind a tip it never fetched is unverifiable)
+    w.git(&subdirty, &["push", "-q", "origin", "HEAD:sub"]);
     w.git(&subdirty, &["config", "submodule.child.ignore", "all"]);
+    // has every branch tip the remote serves, so its local commit is provably unpushed (not merely unverifiable)
+    w.git(&unpushed, &["fetch", "-q"]);
     std::fs::write(subdirty.join("child/README"), "uncommitted submodule work\n").unwrap();
     let cache = w.work().join("sccache");
     std::fs::create_dir_all(&cache).unwrap();
@@ -192,16 +213,22 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     w.kids.push(Command::new("sleep").arg("600").current_dir(&live).spawn().unwrap());
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    let keep = "KEEP";
+    let (keep, tgt) = ("KEEP", "TARGET-ONLY");
     let r = w.run(&["hygiene", "--report"], &[]);
-    assert_eq!(class_of(&r, &dirty), (keep.into(), "dirty".into()));
-    assert_eq!(class_of(&r, &unpushed), (keep.into(), "unpushed".into()));
+    assert_eq!(class_of(&r, &dirty), (tgt.into(), "untracked".into()));
+    assert_eq!(class_of(&r, &unpushed), (tgt.into(), "unpushed".into()));
     assert_eq!(class_of(&r, &live), (keep.into(), "live_process".into()));
     assert_eq!(class_of(&r, &merged), ("REMOVE-SAFE".into(), "clean_pushed_idle".into()));
-    assert_eq!(class_of(&r, &stale), ("REMOVE-TARGET-ONLY".into(), "dirty".into()));
+    assert_eq!(class_of(&r, &stale), (tgt.into(), "untracked".into()));
     assert_eq!(class_of(&r, &cache), (keep.into(), "reusable".into()));
-    assert_eq!(class_of(&r, &tracked).0, keep, "a build dir with a tracked file is not regenerable");
-    assert_eq!(class_of(&r, &subdirty), (keep.into(), "dirty".into()), "a submodule change hidden by ignore=all still counts");
+    assert_eq!(class_of(&r, &tracked), (tgt.into(), "dirty".into()));
+    let tracked_item = r["items"].as_array().unwrap().iter().find(|i| i["path"] == *tracked.to_string_lossy()).unwrap();
+    assert_eq!(
+        (tracked_item["bytes"].as_u64(), tracked_item["targets"].as_array().map(Vec::len)),
+        (Some(0), Some(0)),
+        "a build dir with a tracked file is not regenerable"
+    );
+    assert_eq!(class_of(&r, &subdirty), (tgt.into(), "dirty".into()), "a submodule change hidden by ignore=all still counts");
     for d in &deploys[2..] {
         assert_eq!(class_of(&r, d), (keep.into(), "deploy_newest".into()));
     }
@@ -211,7 +238,7 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     assert_eq!(class_of(&r, &spill.join("old.txt")), (keep.into(), "spill_report_only".into()), "spill files lie outside the work roots: report only");
     assert!(r["items"].as_array().unwrap().iter().all(|i| i["path"] != *spill.join("new.txt").to_string_lossy()), "a fresh spill file is not listed");
     assert!(r["bytes_reclaimable"].as_u64().unwrap() > 256 * 1024);
-    assert!(r["items_skipped"]["dirty"].as_u64() == Some(3), "dirty, tracked and subdirty: {r}");
+    assert_eq!(r["items_by_class"]["TARGET-ONLY"].as_u64(), Some(5), "dirty, unpushed, stale, tracked, subdirty: {r}");
     assert_eq!(r["bytes_reclaimed"], 0);
     assert!(r["items_skipped"]["fresh"].as_u64() == Some(1), "{r}");
     // the report changed nothing, and the idle age survived the git probes
@@ -234,13 +261,21 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     // idempotent: nothing is left to remove and nothing more changes
     let c2 = w.run(&["hygiene", "--clean"], &[]);
     assert_eq!(c2["bytes_reclaimed"], 0, "{c2}");
-    assert!(c2["items"].as_array().unwrap().iter().all(|i| i["class"] == keep), "{c2}");
+    assert!(c2["items"].as_array().unwrap().iter().all(|i| i["class"] != "REMOVE-SAFE" && i["bytes"] == 0), "{c2}");
     assert_eq!(before, [&dirty, &unpushed, &live, &tracked, &subdirty].iter().map(|c| snapshot(c)).collect::<Vec<_>>());
 
     // counters reached the telemetry inbox; a low-disk floor raises the notice; the off switch does nothing
     ah_engine::defaults::init().unwrap();
     let inbox = std::fs::read_to_string(w.dir.join("eng").join(ah_engine::defaults::text("files.telemetry_inbox"))).unwrap();
-    for k in ["bytes_reclaimable", "bytes_reclaimed", "items_listed", "items_skipped_dirty"] {
+    for k in [
+        "bytes_reclaimable",
+        "bytes_reclaimed",
+        "items_listed",
+        "report_write_failed",
+        "items_class_TARGET-ONLY",
+        "items_class_REMOVE-SAFE",
+        "items_skipped_live_process",
+    ] {
         assert!(inbox.contains(k), "telemetry counter {k} missing");
     }
     let low = w.run(&["hygiene"], &[("ANTIHALL_DISK_WATCH_WARN_GB", "100000000")]);
@@ -294,6 +329,7 @@ fn hygiene_keeps_every_unsafe_or_unprovable_shape_and_fails_safe() {
     w.git(&seed, &["commit", "-q", "-m", "more"]);
     w.git(&seed, &["push", "-q", w.dir.join("remote.git").to_str().unwrap(), "HEAD:main"]);
     w.git(&behind, &["fetch", "-q"]);
+    w.git(&detached, &["fetch", "-q"]);
     let outside = w.dir.join("outside-clone");
     w.git(&w.dir, &["clone", "-q", w.dir.join("remote.git").to_str().unwrap(), outside.to_str().unwrap()]);
     let link = w.work().join("scratch").join("link");
@@ -309,19 +345,19 @@ fn hygiene_keeps_every_unsafe_or_unprovable_shape_and_fails_safe() {
     let keepers = [&nremote, &detached, &wtmain, &wt, &spaced, &stashed, &corrupt, &outside];
     let before: Vec<_> = keepers.iter().map(|c| snapshot(c)).collect();
 
-    // no git on PATH: nothing is provable, so every clone is KEEP and --clean removes nothing (not even the behind clone)
+    // no git on PATH: nothing is provable, so no clone is REMOVE-SAFE and --clean removes nothing (not even the behind clone)
     let nogit = w.run(&["hygiene", "--clean"], &[("PATH", "/nonexistent")]);
     assert_eq!(nogit["bytes_reclaimed"], 0, "{nogit}");
-    assert!(nogit["items"].as_array().unwrap().iter().all(|i| i["class"] == "KEEP"), "{nogit}");
+    assert!(nogit["items"].as_array().unwrap().iter().all(|i| i["class"] != "REMOVE-SAFE" && i["bytes"] == 0), "{nogit}");
     assert!(behind.join(".git").exists());
 
     let r = w.run(&["hygiene", "--report"], &[]);
-    assert_eq!(class_of(&r, &nremote), ("KEEP".into(), "unpushed".into()));
-    assert_eq!(class_of(&r, &detached), ("KEEP".into(), "unpushed".into()));
+    assert_eq!(class_of(&r, &nremote), ("TARGET-ONLY".into(), "remote_unverified".into()));
+    assert_eq!(class_of(&r, &detached), ("TARGET-ONLY".into(), "unpushed".into()));
     assert_eq!(class_of(&r, &wtmain), ("KEEP".into(), "worktrees".into()));
-    assert_eq!(class_of(&r, &spaced), ("KEEP".into(), "dirty".into()));
-    assert_eq!(class_of(&r, &stashed), ("KEEP".into(), "stash".into()));
-    assert_eq!(class_of(&r, &corrupt), ("KEEP".into(), "unprovable".into()));
+    assert_eq!(class_of(&r, &spaced), ("TARGET-ONLY".into(), "untracked".into()));
+    assert_eq!(class_of(&r, &stashed), ("TARGET-ONLY".into(), "stash".into()));
+    assert_eq!(class_of(&r, &corrupt), ("TARGET-ONLY".into(), "unprovable".into()));
     assert_eq!(class_of(&r, &behind), ("REMOVE-SAFE".into(), "clean_pushed_idle".into()));
     let listed = |p: &Path| r["items"].as_array().unwrap().iter().find(|i| i["path"] == *p.to_string_lossy()).map(|i| i["class"].clone());
     assert!(listed(&wt).is_none_or(|c| c == "KEEP") && listed(&link).is_none_or(|c| c == "KEEP"), "{r}");
@@ -352,4 +388,197 @@ fn hygiene_keeps_every_unsafe_or_unprovable_shape_and_fails_safe() {
     assert_eq!(r2["bytes_reclaimed"], 0, "{r2}");
     assert!(r2["items"].as_array().unwrap().iter().all(|i| i["class"] == "KEEP"), "{r2}");
     assert!(m.join(".git").exists());
+}
+
+/// An ignored `target/` with a 64 KiB artifact inside `clone`.
+fn with_target(clone: &Path) {
+    std::fs::create_dir_all(clone.join("target/debug")).unwrap();
+    std::fs::write(clone.join("target/debug/artifact"), vec![1u8; 64 * 1024]).unwrap();
+}
+
+/// A snapshot of `clone` without its `target/`.
+fn without_target(clone: &Path) -> Vec<(PathBuf, u64)> {
+    let t = clone.join("target");
+    snapshot(clone).into_iter().filter(|(p, _)| !p.starts_with(&t)).collect()
+}
+
+fn item<'a>(r: &'a Value, path: &Path) -> &'a Value {
+    r["items"].as_array().unwrap().iter().find(|i| i["path"] == *path.to_string_lossy()).unwrap_or_else(|| panic!("{} not listed: {r}", path.display()))
+}
+
+/// Contract row KEEP: a live process with its working directory inside the clone (here a subdirectory), or activity within
+/// the idle window, makes the clone KEEP, and `--clean` does nothing to it, not even its ignored `target/`.
+#[test]
+fn contract_keep_live_process_or_recent_clean_touches_nothing_not_even_target() {
+    let mut w = seeded("keep");
+    // a dirty clone with an ignored target/ and a real child process whose cwd is a subdirectory of the clone
+    let busy_dirty = w.clone("busy-dirty");
+    std::fs::write(busy_dirty.join("README"), "tracked change\n").unwrap();
+    with_target(&busy_dirty);
+    std::fs::create_dir_all(busy_dirty.join("src/deep")).unwrap();
+    // a clean, fully pushed clone a process works in: never moved to the Trash
+    let busy_clean = w.clone("busy-clean");
+    // a clean, fully pushed clone that is not idle (not aged): KEEP recent
+    let recent = w.clone("recent");
+    with_target(&recent);
+    age_clone(&busy_dirty);
+    age_clone(&busy_clean);
+    w.kids.push(Command::new("sleep").arg("600").current_dir(busy_dirty.join("src/deep")).spawn().unwrap());
+    w.kids.push(Command::new("sleep").arg("600").current_dir(&busy_clean).spawn().unwrap());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let before: Vec<_> = [&busy_dirty, &busy_clean, &recent].iter().map(|c| snapshot(c)).collect();
+
+    let r = w.run(&["hygiene", "--report"], &[]);
+    assert_eq!(class_of(&r, &busy_dirty), ("KEEP".into(), "live_process".into()));
+    assert_eq!(class_of(&r, &busy_clean), ("KEEP".into(), "live_process".into()));
+    assert_eq!(class_of(&r, &recent), ("KEEP".into(), "recent".into()));
+    assert_eq!(r["items_by_class"]["KEEP"].as_u64(), Some(3), "{r}");
+    let c = w.run(&["hygiene", "--clean"], &[]);
+    assert_eq!(c["bytes_reclaimed"], 0, "{c}");
+    assert_eq!(before, [&busy_dirty, &busy_clean, &recent].iter().map(|c| snapshot(c)).collect::<Vec<_>>(), "--clean touched a KEEP clone");
+    assert!(busy_dirty.join("target/debug/artifact").exists() && recent.join("target/debug/artifact").exists(), "KEEP: not even target/ goes");
+}
+
+/// Contract row TARGET-ONLY: a dirty tree, untracked files, a stash and unpushed commits each leave the clone intact; only
+/// its ignored, untracked `target/` goes, and nothing outside the clone changes.
+#[test]
+fn contract_target_only_protected_shapes_lose_only_their_ignored_target() {
+    let w = seeded("tgt");
+    let dirty = w.clone("dirty");
+    std::fs::write(dirty.join("README"), "tracked change\n").unwrap();
+    let untracked = w.clone("untracked");
+    std::fs::write(untracked.join("notes.txt"), "only copy\n").unwrap();
+    let stash = w.clone("stash");
+    std::fs::write(stash.join("README"), "stashed\n").unwrap();
+    w.git(&stash, &["stash", "-q"]);
+    let unpushed = w.clone("unpushed");
+    std::fs::write(unpushed.join("local.txt"), "local\n").unwrap();
+    w.git(&unpushed, &["add", "."]);
+    w.git(&unpushed, &["commit", "-q", "-m", "local only"]);
+    let shapes = [(&dirty, "dirty"), (&untracked, "untracked"), (&stash, "stash"), (&unpushed, "unpushed")];
+    for (c, _) in shapes {
+        with_target(c);
+        age_clone(c);
+    }
+    let sentinel = w.work().join("scratch").join("sentinel.txt");
+    std::fs::write(&sentinel, "outside every clone\n").unwrap();
+    let before: Vec<_> = shapes.iter().map(|(c, _)| without_target(c)).collect();
+    let head_before: Vec<_> = shapes.iter().map(|(c, _)| std::fs::read(c.join(".git/HEAD")).unwrap()).collect();
+
+    let r = w.run(&["hygiene", "--report"], &[]);
+    for (c, why) in shapes {
+        assert_eq!(class_of(&r, c), ("TARGET-ONLY".into(), why.into()), "{}", c.display());
+        let it = item(&r, c);
+        assert_eq!(it["targets"].as_array().unwrap().len(), 1, "{it}");
+        assert!(it["bytes"].as_u64().unwrap() >= 64 * 1024, "{it}");
+    }
+    assert!(shapes.iter().all(|(c, _)| c.join("target/debug/artifact").exists()), "the report removed nothing");
+
+    let c = w.run(&["hygiene", "--clean"], &[]);
+    assert!(c["bytes_reclaimed"].as_u64().unwrap() >= 4 * 64 * 1024, "{c}");
+    for (i, (cl, why)) in shapes.iter().enumerate() {
+        assert!(!cl.join("target").exists(), "{why}: target/ goes");
+        assert_eq!(without_target(cl), before[i], "{why}: only target/ goes, everything else stays");
+        assert_eq!(std::fs::read(cl.join(".git/HEAD")).unwrap(), head_before[i]);
+    }
+    assert!(std::fs::read_to_string(&sentinel).unwrap() == "outside every clone\n");
+    assert_eq!(w.git_out(&stash, &["stash", "list"]).lines().count(), 1, "the stash survives");
+    assert!(w.git_out(&unpushed, &["log", "--oneline", "-1"]).contains("local only"), "the unpushed commit survives");
+}
+
+/// Contract row REMOVE-SAFE: a pushed but unmerged branch is loss-free, proved against the tips `git ls-remote` serves now;
+/// a branch deleted on the remote whose stale remote-tracking ref still exists locally is unpushed (TARGET-ONLY); a remote
+/// that cannot be reached is TARGET-ONLY (remote_unverified), never REMOVE-SAFE.
+#[test]
+fn contract_remove_safe_needs_tips_the_remote_serves_now_and_an_unreachable_remote_is_target_only() {
+    let w = seeded("safe");
+    let remote = w.dir.join("remote.git");
+    // pushed, not merged into main
+    let pushed = w.clone("pushed-unmerged");
+    w.git(&pushed, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(pushed.join("f.txt"), "feature\n").unwrap();
+    w.git(&pushed, &["add", "."]);
+    w.git(&pushed, &["commit", "-q", "-m", "feature"]);
+    w.git(&pushed, &["push", "-q", "origin", "feature"]);
+    // stale: pushed, then deleted on the remote from another clone; the tracking ref stays (no fetch here)
+    let stale = w.clone("stale-ref");
+    w.git(&stale, &["checkout", "-q", "-b", "gone"]);
+    std::fs::write(stale.join("g.txt"), "gone\n").unwrap();
+    w.git(&stale, &["add", "."]);
+    w.git(&stale, &["commit", "-q", "-m", "gone"]);
+    w.git(&stale, &["push", "-q", "-u", "origin", "gone"]);
+    w.git(&w.dir, &["--git-dir", remote.to_str().unwrap(), "branch", "-D", "gone"]);
+    assert!(w.git_out(&stale, &["rev-list", "HEAD", "--branches", "--not", "--remotes"]).trim().is_empty(), "the old check would call it pushed");
+    // unreachable: a clean clone whose remote is gone
+    let unreachable = w.clone("unreachable");
+    w.git(&unreachable, &["remote", "set-url", "origin", w.dir.join("no-such-remote.git").to_str().unwrap()]);
+    with_target(&unreachable);
+    // behind: the remote's main moves on after the clone and the clone never fetches; the report never fetches either, so
+    // its commits cannot be proved on the remote: remote_unverified, only target/ goes
+    // (a world of its own: here the feature branch, based on the old main, would prove it)
+    let w2 = seeded("safe2");
+    let behind = w2.clone("behind-unfetched");
+    with_target(&behind);
+    let seed = w2.dir.join("seed");
+    std::fs::write(seed.join("later"), "later\n").unwrap();
+    w2.git(&seed, &["add", "."]);
+    w2.git(&seed, &["commit", "-q", "-m", "later"]);
+    w2.git(&seed, &["push", "-q", w2.dir.join("remote.git").to_str().unwrap(), "HEAD:main"]);
+    // a plain fetch (no prune) keeps the stale tracking ref and gives the clone every served tip: provably unpushed
+    w.git(&stale, &["fetch", "-q"]);
+    assert!(stale.join(".git/refs/remotes/origin/gone").exists());
+    for c in [&pushed, &stale, &unreachable, &behind] {
+        age_clone(c);
+    }
+    let before_unreachable = without_target(&unreachable);
+    let before_behind = without_target(&behind);
+
+    let r = w.run(&["hygiene", "--report"], &[]);
+    assert_eq!(class_of(&r, &pushed), ("REMOVE-SAFE".into(), "clean_pushed_idle".into()));
+    assert_eq!(class_of(&r, &stale), ("TARGET-ONLY".into(), "unpushed".into()));
+    assert_eq!(class_of(&r, &unreachable), ("TARGET-ONLY".into(), "remote_unverified".into()));
+    let r2 = w2.run(&["hygiene", "--report"], &[]);
+    assert_eq!(class_of(&r2, &behind), ("TARGET-ONLY".into(), "remote_unverified".into()));
+    assert!(pushed.join(".git").exists() && stale.join(".git/refs/remotes/origin/gone").exists(), "the report changed nothing, no ref pruned");
+
+    let c = w.run(&["hygiene", "--clean"], &[]);
+    assert!(!pushed.exists(), "{c}");
+    let trashed = [w.home().join(".Trash/pushed-unmerged"), w.home().join(".local/share/Trash/files/pushed-unmerged")];
+    assert!(trashed.iter().any(|t| t.join(".git").exists()), "moved to the Trash, not deleted");
+    assert!(stale.join("g.txt").exists() && stale.join(".git").exists());
+    assert!(!unreachable.join("target").exists() && without_target(&unreachable) == before_unreachable, "only target/ goes");
+    w2.run(&["hygiene", "--clean"], &[]);
+    assert!(!behind.join("target").exists() && without_target(&behind) == before_behind, "only target/ goes");
+}
+
+/// The report path: a report file that cannot be written (a nonempty directory in its place) exits nonzero, counts
+/// `report_write_failed`, removes nothing it did not create (the directory, its content and a stray file stay) and leaves no
+/// temporary file of its own.
+#[test]
+fn a_failed_report_write_exits_nonzero_counts_and_unlinks_nothing_it_did_not_create() {
+    let w = seeded("rpt");
+    let eng = w.dir.join("eng");
+    std::fs::create_dir_all(eng.join("hygiene-report.json")).unwrap();
+    std::fs::write(eng.join("hygiene-report.json/keep"), "owner data\n").unwrap();
+    std::fs::write(eng.join("unrelated.tmp"), "not the run's\n").unwrap();
+    let listing = |d: &Path| {
+        let mut v: Vec<String> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    };
+    let (code, r, err) = w.run_raw(&["hygiene", "--report"], &[]);
+    assert_ne!(code, 0, "a failed report write must fail the run: {r} {err}");
+    assert!(r["report_error"].is_string() && err.contains("hygiene report not written"), "{r} {err}");
+    assert_eq!(std::fs::read_to_string(eng.join("hygiene-report.json/keep")).unwrap(), "owner data\n");
+    assert_eq!(std::fs::read_to_string(eng.join("unrelated.tmp")).unwrap(), "not the run's\n");
+    assert!(listing(&eng).iter().all(|n| !n.starts_with("hygiene-report.json.")), "no temporary file left: {:?}", listing(&eng));
+    ah_engine::defaults::init().unwrap();
+    let inbox = std::fs::read_to_string(eng.join(ah_engine::defaults::text("files.telemetry_inbox"))).unwrap();
+    let failed: Vec<&str> = inbox.lines().filter(|l| l.contains("report_write_failed")).collect();
+    assert!(failed.iter().any(|l| l.contains("\"items\":1")), "report_write_failed counted: {failed:?}");
+    // once the way is clear the report writes and the run succeeds
+    std::fs::remove_dir_all(eng.join("hygiene-report.json")).unwrap();
+    let (code, _, err) = w.run_raw(&["hygiene", "--report"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(eng.join("hygiene-report.json").is_file());
 }
