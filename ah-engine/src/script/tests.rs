@@ -4006,8 +4006,15 @@ fn the_session_summary_speaks_at_the_end_and_off_is_silent() {
 // ---- GH #508: which workspace rows the parent-inbox notice leaves out ----
 
 fn notice_text(rows: impl Fn(f64) -> serde_json::Value, setup: impl Fn(&std::path::Path, &str, f64)) -> String {
+    notice_text_with(true, false, rows, setup)
+}
+
+/// The notice for `rows`, with devswarm.nudgeIgnoreDeadRows `ignore_dead`; `stale` also lists every row whose worktree is gone in the
+/// summary's `staleRegistryPartitions` (the stale-workspaces notice, the second reader of the dead-row hint).
+fn notice_text_with(ignore_dead: bool, stale: bool, rows: impl Fn(f64) -> serde_json::Value, setup: impl Fn(&std::path::Path, &str, f64)) -> String {
+    let settings = json!({"devswarm": {"supervisorMode": "on", "nudgeIgnoreDeadRows": ignore_dead}}).to_string();
     let case = json!({"env": {"HOME": "{HOME}"}, "event": "UserPromptSubmit",
-        "files": {".anti-hall/settings.json": "{\"devswarm\":{\"supervisorMode\":\"on\"}}"}, "payload": {"hook_event_name": "UserPromptSubmit", "prompt": "hi"}});
+        "files": {".anti-hall/settings.json": settings}, "payload": {"hook_event_name": "UserPromptSubmit", "prompt": "hi"}});
     let mut l = golden::lay(&case);
     let home = std::path::PathBuf::from(&l.home);
     let git = |dir: &std::path::Path, args: &[&str]| {
@@ -4041,7 +4048,16 @@ fn notice_text(rows: impl Fn(f64) -> serde_json::Value, setup: impl Fn(&std::pat
         e["id"] = json!(id);
         ws.insert(id, e);
     }
-    std::fs::write(dev.join(format!("summaries/{key}.json")), json!({"generatedAt": now, "requiredGates": [], "workspaces": ws}).to_string()).unwrap();
+    let gone: Vec<serde_json::Value> = ws
+        .iter()
+        .filter(|(_, e)| stale && e["worktreePath"].as_str().is_some_and(|w| !std::path::Path::new(w).exists()))
+        .map(|(id, e)| json!({"id": id, "worktreePath": e["worktreePath"], "unread": e["unread"]}))
+        .collect();
+    let mut summary = json!({"generatedAt": now, "requiredGates": [], "workspaces": ws});
+    if !gone.is_empty() {
+        summary["staleRegistryPartitions"] = json!(gone);
+    }
+    std::fs::write(dev.join(format!("summaries/{key}.json")), summary.to_string()).unwrap();
     l.payload["cwd"] = json!(proj.to_string_lossy());
     l.payload["session_id"] = json!("s-508");
     let got = golden::run_case("devswarm-parent-inbox", &l, 1);
@@ -4164,4 +4180,88 @@ fn notice_shows_the_row_when_its_hint_cannot_be_read() {
     };
     let out = notice_text(rows, |home, _, _| write_hint(home, "w-bad", "{not json"));
     assert!(notice_shown(&out), "an unreadable hint is no hint (fail visible): {out}");
+}
+
+// GH #527: every override of the dead-row hint, with a valid hint and with none, on a row whose worktree is missing (the Codex fixture: a
+// valid hint, a missing worktree, two direct unread, urgent mail). For each override the WHOLE output with nudgeIgnoreDeadRows on must
+// equal the output with it off, and the notice text itself must be there (not just the live-table row).
+fn ages_masked(s: &str) -> String {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    R.get_or_init(|| regex::Regex::new(r"\b[0-9]+(ms|s|m|h|d)\b").unwrap()).replace_all(s, "N$1").into_owned()
+}
+
+#[test]
+fn dead_row_hint_overrides_match_the_switch_off_output_with_and_without_a_hint() {
+    const GONE: &str = "/nonexistent/w-child-gone";
+    let base = |now: f64| {
+        json!({"worktreePath": GONE, "sessionId": "sess-c", "directUnread": 2, "unread": 2, "total": 2, "cursor": 0, "urgencyMax": "normal",
+            "oldestDirectUnreadTs": now - DAY_MS})
+    };
+    let hint =
+        |home: &std::path::Path, now: f64| write_hint(home, "w-child", &json!({"id": "w-child", "setAt": now - 2.0 * DAY_MS, "totalAtSet": 2}).to_string());
+    type Row = fn(&mut serde_json::Value);
+    type Live = fn(&std::path::Path, f64);
+    let none_row: Row = |_| {};
+    let none_live: Live = |_, _| {};
+    let cases: [(&str, Row, Live); 5] = [
+        ("urgent mail", |e| e["urgencyMax"] = json!("urgent"), none_live),
+        (
+            "new direct unread",
+            |e| {
+                e["directUnread"] = json!(3);
+                e["unread"] = json!(3);
+                e["total"] = json!(3);
+            },
+            none_live,
+        ),
+        ("newer heartbeat", none_row, |home, now| beat(home, "w-child", now - 1000.0)),
+        ("worktree back", |e| e["worktreePath"] = json!("@LIVE"), none_live),
+        ("error", none_row, |home, _| {
+            let hb = home.join(".anti-hall/devswarm/heartbeats");
+            std::fs::create_dir_all(&hb).unwrap();
+            std::fs::write(hb.join("w-child.json"), "{corrupt").unwrap();
+        }),
+    ];
+    let mut failed = Vec::new();
+    for (name, row, live) in cases {
+        for with_hint in [true, false] {
+            let rows = |now: f64| {
+                let mut e = base(now);
+                row(&mut e);
+                json!({ "w-child": e })
+            };
+            let setup = |home: &std::path::Path, _: &str, now: f64| {
+                if with_hint {
+                    hint(home, now);
+                } else if name == "error" {
+                    write_hint(home, "w-child", "{corrupt"); // no hint: the hint itself cannot be read
+                }
+                live(home, now);
+            };
+            let on = ages_masked(&notice_text_with(true, true, rows, setup));
+            let off = ages_masked(&notice_text_with(false, true, rows, setup));
+            let cell = format!("{name} x {}", if with_hint { "valid hint" } else { "no hint" });
+            if !notice_shown(&off) {
+                failed.push(format!("{cell}: control, the switch-off output has no notice: {off}"));
+            } else if !notice_shown(&on) {
+                failed.push(format!("{cell}: the attention notice is missing: {on}"));
+            } else if on != off {
+                failed.push(format!("{cell}: output differs from the switch-off output\n on: {on}\noff: {off}"));
+            }
+        }
+    }
+    // controls: a valid hint with no live evidence leaves the row out (so the cells above are not vacuous) and the switch off shows it;
+    // a missing worktree alone, with no hint, is a single sighting and never hides the row
+    let plain = |now: f64| json!({ "w-child": base(now) });
+    let hidden = notice_text_with(true, true, plain, |home, _, now| hint(home, now));
+    let shown = notice_text_with(false, true, plain, |home, _, now| hint(home, now));
+    if notice_shown(&hidden) || hidden.contains("stale-workspaces") || !notice_shown(&shown) {
+        failed.push(format!("control valid hint x no override: on must hide the notice and the stale line, off must show it\n on: {hidden}\noff: {shown}"));
+    }
+    let on = ages_masked(&notice_text_with(true, true, plain, |_, _, _| {}));
+    let off = ages_masked(&notice_text_with(false, true, plain, |_, _, _| {}));
+    if !notice_shown(&on) || on != off {
+        failed.push(format!("control no hint x missing worktree: a single sighting must not hide the row\n on: {on}\noff: {off}"));
+    }
+    assert!(failed.is_empty(), "{} cell(s) failed:\n{}", failed.len(), failed.join("\n"));
 }

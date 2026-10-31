@@ -273,20 +273,31 @@ function piTrend(home, id, curr) {
 function piStuck(status) { return !!status && ah.cfg('devswarm_parent.stuck_statuses').indexOf(status) >= 0; }
 function piHigh(u) { return ah.cfg('devswarm_parent.high_urgencies').indexOf(u) >= 0; }
 
-// The heal sweep's dead-row hint for a row (GH #508): true when the hint is set and no live evidence beats it. The hint is a guess from
-// repeated "worktree missing" sightings, never an archive: the worktree back, a heartbeat newer than the hint, mail newer than it (the
-// row's total grew) or high/urgent mail each win, and are counted (shown_despite_hint). An unreadable hint is no hint (fail visible).
-function piDeadHint(home, id, wtPath, total, urgencyMax) {
-  if (!piSafeId(id)) return false;
-  var dir = piDevswarmDir(home) + '/';
-  var h = piJson(dir + ah.cfg('devswarm_parent.dead_hint_dir') + '/' + id + '.json');
-  if (!jx.isObj(h) || !piFinite(h.setAt) || (h.clearedAt !== undefined && h.clearedAt !== null)) return false;
-  var hb = piJson(dir + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
-  var live = (wtPath && piPresent(wtPath)) || (jx.isObj(hb) && piFinite(hb.ts) && hb.ts > h.setAt)
-    || (piFinite(total) && piFinite(h.totalAtSet) && total > h.totalAtSet) || (urgencyMax !== null && piHigh(urgencyMax));
-  if (live) { ah.metric('devswarm_dead_row_hint', ['event', 'shown_despite_hint']); return false; }
-  return true;
+// The one decision every reader of the heal sweep's dead-row hint goes through (GH #508, #527): leave a row out only when its hint is valid
+// and no live evidence beats it. The hint is a guess from repeated "worktree missing" sightings, never an archive, and a missing worktree
+// alone (a single sighting, no hint) never hides a row. Overrides, each counted (shown_despite_hint): high/urgent mail, mail newer than
+// the hint (the row's total grew past the total when it was set, or that total is unknown), a heartbeat newer than the hint, the worktree
+// back, and any error (a hint or heartbeat that exists but cannot be read, or a throw): any doubt shows the row (fail visible).
+// `ev`: { wtPath, total, urgencyMax } of the row as the summary has it (null where unknown).
+function piDeadHint(home, id, ev) {
+  try {
+    if (!piSafeId(id)) return false;
+    var dir = piDevswarmDir(home) + '/';
+    var hp = dir + ah.cfg('devswarm_parent.dead_hint_dir') + '/' + id + '.json';
+    var h = piJson(hp);
+    if (h === null && piPresent(hp)) return piDeadHintShown(); // a hint that cannot be read is an error, not a hint
+    if (!jx.isObj(h) || !piFinite(h.setAt) || (h.clearedAt !== undefined && h.clearedAt !== null)) return false; // no valid hint
+    if (ev.wtPath && piPresent(ev.wtPath)) return piDeadHintShown(); // the worktree is back
+    if (ev.urgencyMax !== null && ev.urgencyMax !== undefined && piHigh(ev.urgencyMax)) return piDeadHintShown(); // high/urgent mail
+    if (piFinite(ev.total) && (!piFinite(h.totalAtSet) || ev.total > h.totalAtSet)) return piDeadHintShown(); // new mail since the hint
+    var bp = dir + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json';
+    var hb = piJson(bp);
+    if (hb === null && piPresent(bp)) return piDeadHintShown(); // a heartbeat that cannot be read is an error
+    if (jx.isObj(hb) && piFinite(hb.ts) && hb.ts > h.setAt) return piDeadHintShown(); // a heartbeat newer than the hint
+    return true;
+  } catch (e) { ah.unable('devswarm-parent-inbox:dead_row_decide'); return false; }
 }
+function piDeadHintShown() { ah.metric('devswarm_dead_row_hint', ['event', 'shown_despite_hint']); return false; }
 
 // `tierOf(w)`.
 function piTier(w) {
@@ -566,14 +577,14 @@ function piRoster(ctx, summary) {
     var appArchivedRow = st.app;
     var rowWs = appWs(id, wtPath);
     var ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
-    // a row anti-hall's own marker calls archived, whose worktree is gone, or whose oldest unread is past the age limit cannot be acted on
-    // (GH #508): it is left out of the nudges and counted once instead (devswarm.nudgeIgnoreDeadRows)
+    // a row anti-hall's own marker calls archived, whose dead-row hint no live evidence beats, or whose oldest unread is past the age limit
+    // cannot be acted on (GH #508): it is left out of the nudges and counted once instead (devswarm.nudgeIgnoreDeadRows). A missing
+    // worktree alone is a single sighting and hides nothing (GH #527): only the heal sweep's hint, through piDeadHint, may.
     var deadWhy = null;
     if (noticeIgnoreDead) {
       try {
         if (archivedRow) deadWhy = 'archived';
-        else if (wtPath && !piPresent(wtPath)) deadWhy = 'worktree_gone';
-        else if (piDeadHint(home, id, wtPath, total, urgencyMax)) deadWhy = 'dead_hint';
+        else if (piDeadHint(home, id, { wtPath: wtPath, total: piFinite(entry.total) ? entry.total : null, urgencyMax: urgencyMax })) deadWhy = 'dead_hint';
         else if (noticeMaxAgeMs > 0 && !piHigh(urgencyMax)) {
           // inactive, not merely holding an old message: judged by the workspace's latest activity (an old unread beside newer mail or a live
           // child never ages the row out, and an urgent backlog is never aged out); with no activity on record, by the oldest unread
@@ -1368,7 +1379,12 @@ function piDecide(p, opts) {
             var why = null;
             try {
               if (piPresent(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_archived') + '/' + row.id + '.json')) why = 'archived'; // anti-hall's own archive marker
-              else if (piDeadHint(home, String(row.id), piStrField(row.worktreePath), null, null)) why = 'dead_hint'; // a hint no live evidence beats
+              else {
+                // the same evidence the roster weighs: the summary's row for this workspace, when it has one
+                var se = jx.isObj(summary.workspaces) && jx.isObj(summary.workspaces[row.id]) ? summary.workspaces[row.id] : {};
+                var ev = { wtPath: piStrField(row.worktreePath), total: piFinite(se.total) ? se.total : null, urgencyMax: se.urgencyMax || null };
+                if (piDeadHint(home, String(row.id), ev)) why = 'dead_hint'; // a hint no live evidence beats
+              }
             } catch (e) { ah.unable('devswarm-parent-inbox:dead_row_decide'); why = null; }
             if (why !== null) { ah.metric('devswarm_notice_rows_ignored', ['reason', why]); return false; } // put away, not actionable (GH #508)
           }
