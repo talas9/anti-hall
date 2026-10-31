@@ -302,8 +302,11 @@ CHANGELOG 0.108.4.
   integration tests against a local mock server (never a live call in CI or in this
   repo's test suite).
 - **Rate limits can change.** The benchmark's "no 429s at concurrency 8" observation
-  (§7) reflects one measurement window on one date; TypeSafe/Vercel's actual limits are
-  not publicly documented and may tighten or loosen without notice. `jev-client.js`'s
+  (§7) reflects one measurement window on one date. TypeSafe documents its limits as
+  per ORGANIZATION (tokens per second and requests per second, visible in its developer
+  console; higher limits by request); exceeding either returns `429`. The numbers are
+  account-specific, so this KB states none. The Vercel gateway's own limits are
+  UNVERIFIED. `jev-client.js`'s
   hard `timeoutMs` (default 1500 ms) and full fail-open behavior (§4) mean a rate-limit
   regression degrades to "falls back to the regex," not to a hung or broken hook.
 
@@ -722,7 +725,7 @@ rate-limit headers. What differs, and what cannot be unified:
 
 | | typesafe (`api.typesafe.ai`) | vercel (`ai-gateway.vercel.sh/typesafe/...`) |
 |---|---|---|
-| request model | `jev-latest` (serves `jev-1.13.0`) | `typesafe-ai/jev` |
+| request model | `jev-1.14.0` (pinned; `jev-latest` is a moving alias) | `typesafe-ai/jev` (no versioned form documented) |
 | usage tokens | `usage.input_tokens/output_tokens` | same, plus `provider_metadata` |
 | per-request cost | none (jev-assist prices the tokens: `default-price` / `price-table`) | `provider_metadata.gateway.cost` (string; read as `costSource: gateway`) |
 | balance endpoint | none (`/v1/credits`, `/balance`, `/usage`, `/account`, `/me` all 404) | `GET /v1/credits` |
@@ -738,3 +741,27 @@ the response `model`, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev
 triage rows and `jev report` ("by transport") carry the serving `transport` (rows from before this tracking read as
 "unrecorded", vercel being the default then, assumed). The gateway response routes to provider `typesafe-ai`, so the two
 transports very likely reach the same model (inference; unconfirmed): `jev.fallbackTransport` is not full redundancy.
+
+## Provider limits, pinning and pricing (provider docs)
+
+Last verified 2026-10-31 against docs.typesafe.ai (`/models`, `/api`).
+
+- **Versions.** `jev-1.14.0` (released 2026-10-14) and `jev-1.13.0`. `jev-latest` and
+  `jev-preview` are aliases and both currently point to `jev-1.14.0`. The provider
+  advises sending a versioned id once thresholds are tuned on a version, because an alias
+  moves silently. The engine therefore sends `jev.model_pin` (default `jev-1.14.0`;
+  override with the `jev.modelPin` setting) to the direct API. Thresholds here were
+  tuned on 1.13: re-check them against 1.14, or pin `jev-1.13.0`. The gateway id
+  `typesafe-ai/jev` is left as is: the docs do not define a versioned gateway id
+  (UNVERIFIED). Each response's `model` field names the id that answered; the decision
+  log row records it.
+- **Context.** Default 64k tokens per request and 32k per question; the header
+  `TypeSafe-Danger-Zone-Long-Context: true` raises both to 262k (slower and less accurate;
+  not used by the engine). The engine cuts the state to `jev.state_max_tokens` (30k,
+  estimated at `jev.chars_per_token` = 4 characters per token) before sending.
+- **Pricing.** $0.042 per million input tokens; output tokens are free (the engine's
+  output price defaults to 0). Long context costs the same per token.
+- **Rate limits.** Per organization, see above.
+- **UNVERIFIED (the docs are silent):** a 401 or 402 for an exhausted or rejected key
+  (only 400 and 422 are documented error bodies), the gateway passthrough URL, and data
+  retention or privacy terms for the direct API.

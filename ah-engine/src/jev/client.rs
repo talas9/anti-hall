@@ -256,17 +256,42 @@ impl JevClient {
     }
 
     /// The model name sent to `vendor`.
-    pub(crate) fn model_for(vendor: Vendor) -> &'static str {
+    /// The direct vendor gets the pinned versioned id (`jev.modelPin`, else the shipped `jev.model_pin`); an empty pin falls
+    /// back to the moving alias `jev.model_typesafe`. The gateway id is never pinned (no documented versioned form).
+    pub(crate) fn model_for(s: &JevSettings, vendor: Vendor) -> String {
         match vendor {
-            Vendor::Vercel => defaults::text("jev.model_vercel"),
-            Vendor::Typesafe => defaults::text("jev.model_typesafe"),
+            Vendor::Vercel => defaults::text("jev.model_vercel").to_string(),
+            Vendor::Typesafe => {
+                let pin = s.model_pin.as_deref().unwrap_or_else(|| defaults::text("jev.model_pin"));
+                if pin.is_empty() { defaults::text("jev.model_typesafe") } else { pin }.to_string()
+            }
         }
+    }
+
+    /// Cut the (already scrubbed) state to the per-question cap, on a character boundary; counts the cut in the telemetry.
+    fn clamp_state(s: &JevSettings, state: String) -> String {
+        let cap = (s.state_max_tokens.saturating_mul(defaults::num("jev.chars_per_token"))) as usize;
+        if state.chars().count() <= cap {
+            return state;
+        }
+        let cut: String = state.chars().take(cap).collect();
+        crate::telemetry::emit::model(&crate::telemetry::emit::ModelCall {
+            backend: defaults::text("jev.telemetry_backend"),
+            model: &Self::model_for(s, s.transport),
+            purpose: defaults::text("jev.telemetry_purpose_truncated"),
+            outcome: crate::telemetry::event::Outcome::Advise,
+            micros: 0,
+            tokens_in: Some((state.chars().count() - cap) as u64 / defaults::num("jev.chars_per_token").max(1)),
+            tokens_out: None,
+        });
+        cut
     }
 
     /// One attempt against one vendor (Node: `attemptTransport`).
     fn attempt(&self, s: &JevSettings, target: &Target<'_>, body_for: &dyn Fn(&str) -> String, parse: Parse<'_>, budget_ms: u64) -> CallResult {
         let url = endpoint_for(s, target.vendor, target.primary);
-        let body = body_for(Self::model_for(target.vendor));
+        let model = Self::model_for(s, target.vendor);
+        let body = body_for(&model);
         let mut out = match post_systemone(self.transport.as_ref(), self.clock.as_ref(), &url, target.key.expose(), &body, Duration::from_millis(budget_ms)) {
             Posted::Json(json, ms) => parse(&json, ms),
             Posted::Failed { reason, ms, balance } => {
@@ -277,6 +302,20 @@ impl JevClient {
             }
         };
         out.transport = Some(target.vendor);
+        // calls by model id (the id SENT, so an alias move shows as its own row)
+        crate::telemetry::emit::model(&crate::telemetry::emit::ModelCall {
+            backend: defaults::text("jev.telemetry_backend"),
+            model: &model,
+            purpose: defaults::text("jev.telemetry_purpose_call"),
+            outcome: match (&out.reason, out.ok()) {
+                (_, true) => crate::telemetry::event::Outcome::Allow,
+                (Some(Reason::Timeout), _) => crate::telemetry::event::Outcome::Timeout,
+                _ => crate::telemetry::event::Outcome::Error,
+            },
+            micros: out.ms.saturating_mul(1000),
+            tokens_in: out.tokens_in.map(|t| t as u64),
+            tokens_out: out.tokens_out.map(|t| t as u64),
+        });
         out
     }
 
@@ -367,7 +406,7 @@ impl JevClient {
         }
         let budget = budget_for(s, timeout_ms);
         // The ONE outbound scrub: every body, primary and fallback alike, carries the scrubbed text.
-        let outbound = scrub_secrets(state);
+        let outbound = Self::clamp_state(s, scrub_secrets(state));
         let kind = question.kind;
         let qwire = question.to_wire();
         let body_for = |model: &str| format!("{{\"state\":{},\"model\":{},\"questions\":{{\"decision\":{}}}}}", json_str(&outbound), json_str(model), qwire);
@@ -405,7 +444,7 @@ impl JevClient {
         }
         let budget = budget_for(s, timeout_ms); // Node applies no ceiling to a multi call; the engine does (a key never waits unbounded)
         let ordered = js_key_order(questions.iter().map(|(k, q)| (k.clone(), q.to_wire())).collect());
-        let outbound = scrub_secrets(state);
+        let outbound = Self::clamp_state(s, scrub_secrets(state));
         let qs: Vec<String> = ordered.iter().map(|(k, w)| format!("{}:{}", json_str(k), w)).collect();
         let body_for = |model: &str| format!("{{\"state\":{},\"model\":{},\"questions\":{{{}}}}}", json_str(&outbound), json_str(model), qs.join(","));
         let answers = std::cell::RefCell::new(Vec::new());
@@ -518,6 +557,39 @@ mod tests {
     }
 
     #[test]
+    fn the_direct_vendor_is_sent_the_pinned_version_and_the_setting_overrides_it() {
+        let direct = |jev: Value| {
+            let f = Arc::new(Fake::new(vec![ok(200, r#"{"answers":{"decision":{"noul":1}}}"#)]));
+            let mut j = json!({"transport": "typesafe"});
+            j.as_object_mut().unwrap().extend(jev.as_object().unwrap().clone());
+            client(&f).decide(&settings(&KEYS, j), &q(), "x", None);
+            let b = f.seen.lock().unwrap()[0].2.clone().unwrap();
+            b
+        };
+        assert!(direct(json!({})).contains(r#""model":"jev-1.14.0""#), "the shipped pin, not the alias");
+        assert!(direct(json!({"modelPin": "jev-1.13.0"})).contains(r#""model":"jev-1.13.0""#));
+        assert!(direct(json!({"modelPin": "jev-latest"})).contains(r#""model":"jev-latest""#), "the alias stays reachable by choice");
+    }
+
+    #[test]
+    fn a_state_over_the_per_question_cap_is_cut_and_counted() {
+        let _ = crate::telemetry::emit::take_queued();
+        let f = Arc::new(Fake::new(vec![ok(200, r#"{"answers":{"decision":{"noul":1}}}"#)]));
+        let s = settings(&KEYS, json!({"stateMaxTokens": 10}));
+        let (a, b) = ("ab ".repeat(40), "ab ".repeat(13));
+        client(&f).decide(&s, &q(), &a, None);
+        let b = f.seen.lock().unwrap()[0].2.clone().unwrap();
+        assert!(b.contains(&format!("\"state\":\"{}\"", &a[..40])), "40 chars = 10 tokens at 4 chars each: {b}");
+        let evs = crate::telemetry::emit::take_queued();
+        let truncated = defaults::text("jev.telemetry_purpose_truncated");
+        assert!(evs.iter().any(|e| e.to_json().to_string().contains(truncated)), "the cut is counted");
+        // under the cap: untouched
+        let f = Arc::new(Fake::new(vec![ok(200, r#"{"answers":{"decision":{"noul":1}}}"#)]));
+        client(&f).decide(&s, &q(), &b, None);
+        assert!(f.seen.lock().unwrap()[0].2.clone().unwrap().contains(b.trim_end()));
+    }
+
+    #[test]
     fn a_malformed_answer_is_a_bad_response() {
         for body in [r#"{}"#, r#"{"answers":{"decision":{}}}"#, r#"{"answers":{"decision":{"noul":"x"}}}"#, r#"{"answers":{"decision":{"choice":""}}}"#] {
             let f = Arc::new(Fake::new(vec![ok(200, body)]));
@@ -536,7 +608,7 @@ mod tests {
         assert_eq!((r.answer, r.fell_back, r.transport), (Some(Answer::Bool(false)), true, Some(Vendor::Typesafe)));
         let seen = f.seen.lock().unwrap();
         assert_eq!((seen[0].1.as_str(), seen[1].1.as_str()), ("vk", "tk"));
-        assert!(seen[0].2.as_ref().unwrap().contains("typesafe-ai/jev") && seen[1].2.as_ref().unwrap().contains("jev-latest"));
+        assert!(seen[0].2.as_ref().unwrap().contains("typesafe-ai/jev") && seen[1].2.as_ref().unwrap().contains("\"model\":\"jev-1.14.0\""));
         assert_eq!(seen[1].0, "https://api.typesafe.ai/v1/systemone");
     }
 
