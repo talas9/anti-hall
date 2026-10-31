@@ -471,3 +471,11 @@ value = "--name"
 [flag.out]
 doc = "Write generated documentation to the named output file."
 value = "--out"
+
+[flag.clean]
+doc = "hygiene: move REMOVE-SAFE items to the Trash and delete the build dirs of REMOVE-TARGET-ONLY clones (explicit only)."
+value = "--clean"
+
+[flag.report]
+doc = "hygiene: list what is removable and change nothing (the default)."
+value = "--report"

@@ -91,7 +91,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--by` | `jev-report` | Group the report by `project` or `session` (`jev-report`). |
 | `--channel` | `engine-update` | Update channel to install from: `stable` or `dev` (`engine-update`). |
 | `--check` | `config`, `doctor`, `metrics`, `shadow-compare`, `update` | Name of one check to limit the output to (`metrics`), a read-only check without repairs (`doctor`, `update`), or validation only without writing (`config set`). |
-| `--clean` | `hygiene` | undocumented |
+| `--clean` | `hygiene` | hygiene: move REMOVE-SAFE items to the Trash and delete the build dirs of REMOVE-TARGET-ONLY clones (explicit only). |
 | `--clear` | `devswarm` | Comma-separated gates to clear (`devswarm gate`). |
 | `--confirm-ids` | `devswarm` | Comma-separated workspace ids the owner confirmed for pruning (`devswarm prune`). |
 | `--confirmed` | `config`, `proc`, `settings` | Confirm a change to a safety-relevant setting, after the one-line warning (`settings set`, `settings reset`). |
@@ -162,7 +162,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--repair-ingest-orphans` | `doctor` | Add the report section that previews retiring orphaned ingest entries; with `--apply` it does so (`doctor`). |
 | `--repair-resurrected` | `doctor` | Add the report section that previews retiring resurrected entries (`doctor`). |
 | `--repair-test-stores` | `doctor` | Add the report section that previews moving test stores out of the live state; with `--apply` it does so (`doctor`). |
-| `--report` | `hygiene` | undocumented |
+| `--report` | `hygiene` | hygiene: list what is removable and change nothing (the default). |
 | `--request` | `devswarm` | Request id that makes a repeated owner action idempotent (`devswarm`). |
 | `--role` | `jev-setup` | Which key to set; only `fallback` (`jev-setup`). |
 | `--rollback` | `update`, `engine-update` | Restore the previous engine binary; run twice to toggle (`engine-update`). |
