@@ -388,6 +388,9 @@ impl Shared {
     /// The `telemetry` control verb: `summary` or `events [kind=<k>] [limit=<n>]`, each with `window=<7d>`.
     fn telemetry_json(&self, args: &str) -> serde_json::Value {
         let sub = args.split_whitespace().next().unwrap_or("summary");
+        if sub == defaults::text("delivery.report_verb") {
+            return self.telemetry.funnel_json(&kv(args, "by"), &kv(args, "window"));
+        }
         let limit = kv(args, "limit").parse().unwrap_or(defaults::num("telemetry.recent_default") as usize);
         self.telemetry.telemetry_json(sub, &kv(args, "window"), &kv(args, "kind"), limit)
     }
@@ -1114,6 +1117,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     crate::memdiag::note_payload(&p);
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
+    let _funnel_request = crate::funnel::request(session, &phash); // B1: a shed answer (no payload at hand) is counted under this session and project
     crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
     if let Some(why) = rate_limited(sh, session, &pkey) {
         sh.stats.busy.fetch_add(1, SeqCst);
@@ -1154,8 +1158,13 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
                 crate::hookio::Observer::route(&obs, check, &meta.event, r);
             }
         }
-        if matches!(a, Answer::Decided(r, _) if !r.out.is_empty() || r.code == Some(2)) {
-            crate::delivery::decided(&sh.telemetry, session, check); // #312: it said something (a message or a block): delivery is counted at the end of the request
+        if let Answer::Decided(r, _) = a
+            && (!r.out.is_empty() || r.code == Some(2))
+        {
+            // #312: it said something (a message or a block): delivery is counted at the end of the request. B1: with the session's model and project
+            let who = crate::funnel::ctx(session, &p, &phash);
+            crate::delivery::decided(&sh.telemetry, session, check, &who);
+            crate::funnel::channels(&sh.telemetry, check, &meta.event, r, &who);
         }
         let answer = if v == Verdict::Defer { "defer" } else { "decided" };
         sh.telemetry.with_metrics(|m| m.inc("dispatch_checks", &[("event", meta.event.as_str()), ("check", check), ("answer", answer)]));
@@ -1183,9 +1192,8 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         tripped.set(tripped.get() || over);
         over
     };
-    if meta.event == defaults::text("delivery.react_event") {
-        crate::delivery::observe_tool(&sh.telemetry, session, p.get("tool_name").and_then(|v| v.as_str()).unwrap_or("")); // #312: the agent's reaction to what was delivered
-    }
+    // #312: the agent's reaction to what was delivered; B1: any event can advance an armed window (a turn end, a prompt)
+    crate::delivery::observe(&sh.telemetry, session, &meta.event, p.get("tool_name").and_then(|v| v.as_str()).unwrap_or(""));
     let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
     if tripped.get() {
         record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));

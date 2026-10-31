@@ -27,6 +27,10 @@ min = 1
 doc = "Most distinct label combinations kept per metric; further combinations keep the labels named in overflow_keep_labels (up to max_series_kept) and collapse the rest into one overflow value."
 value = 128
 
+[telemetry.max_series_by_metric]
+doc = "Per metric, a larger label-combination cap than telemetry.max_series. delivery_funnel and delivery_channel carry check x model x project x stage (or channel), which would collapse into the overflow label at 128 series and erase the split the funnel exists for; both stay bounded by delivery.project_slots and the model families, and by this cap."
+value = { delivery_funnel = 768, delivery_channel = 512 }
+
 [telemetry.overflow_keep_labels]
 doc = "Label names that keep their own value once a metric has more than max_series label combinations: the other labels of the series collapse into the overflow label, so the cost per check stays readable (the pre-fix cap folded every label into `other` and hid 1.8 GB of transcript reads). The series that keep a value are bounded by max_series_kept."
 value = ["check"]
@@ -278,6 +282,14 @@ value = { kind = "counter", unit = "answers", labels = ["check", "stage"] }
 [metric.delivery_lost]
 doc = "Per check and reason, answers that did not reach the agent: shed (CPU hard limit), hard_deadline, cpu_budget, client_gone, check_deferred (the reasons of answers_dropped) and undelivered (the reply was not written in time). Lifetime."
 value = { kind = "counter", unit = "answers", labels = ["check", "reason"] }
+
+[metric.delivery_funnel]
+doc = "The delivery funnel split by the session's model family and the project (B1; `telemetry funnel`): per check, model, project and stage (decided, delivered, acted_on, ignored, lost, shed), how many answers reached it. acted_on and ignored follow the check's delivery.act (else delivery.react) condition. Lifetime. Off with delivery.funnel_enabled = 0."
+value = { kind = "counter", unit = "answers", labels = ["check", "model", "project", "stage"] }
+
+[metric.delivery_channel]
+doc = "Per check, model, project and output channel (delivery.channel_label: block, soft_block, advisory, system_message, stderr, plain), how many answers used it. An answer using several channels counts once in each. Lifetime. Off with delivery.funnel_enabled = 0."
+value = { kind = "counter", unit = "answers", labels = ["check", "channel", "model", "project"] }
 
 [metric.context_spills]
 doc = "Joined hook contexts that were over the host's inline cap and spilled to a file (#311), by event. Lifetime; `status` delivery.spills_by_event."

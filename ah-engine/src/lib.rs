@@ -41,6 +41,7 @@ pub mod dswire;
 pub mod error;
 pub mod failopen;
 pub mod frame;
+pub mod funnel;
 pub mod gate;
 pub mod ghrt;
 pub mod gitcache;

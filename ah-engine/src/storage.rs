@@ -111,6 +111,11 @@ pub trait Store: Send + Sync {
     fn load_metrics(&self) -> Option<(u64, serde_json::Value)>;
     /// Rollups of `resolution` from `since_ms` on, oldest first, as `{bucket_ms, ts_ms, metrics}`.
     fn rollups(&self, resolution: &str, since_ms: u64) -> Vec<serde_json::Value>;
+    /// The newest rollup of `resolution` taken at or before `cutoff_ms` as (time, snapshot, true); when none is that old, the
+    /// oldest one as (time, snapshot, false); `None` when there is no rollup at all.
+    fn rollup_at(&self, _resolution: &str, _cutoff_ms: u64) -> Option<(u64, serde_json::Value, bool)> {
+        None
+    }
 }
 
 /// The configured rollup resolutions: (name, bucket length in ms, how long rollups are kept in ms).
@@ -313,6 +318,20 @@ impl Store for SqliteStore {
         let (ts, body): (i64, String) =
             self.db.read(|c| c.query_row(sql::METRICS_LOAD, [], |r| Ok((r.get(0)?, r.get(1)?)))).ok_logged("storage_metrics_load")?;
         Some((ts.max(0) as u64, serde_json::from_str(&body).ok()?))
+    }
+
+    fn rollup_at(&self, resolution: &str, cutoff_ms: u64) -> Option<(u64, serde_json::Value, bool)> {
+        let row = |sql: &'static str, args: &[&dyn rusqlite::ToSql]| {
+            self.db
+                .archive(|c| Ok(c.prepare_cached(sql)?.query_row(args, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).ok()))
+                .or_default_logged("db_read")
+        };
+        let cutoff = cutoff_ms as i64;
+        let (found, exact) = match row(sql::ROLLUP_AT, &[&resolution, &cutoff]) {
+            Some(r) => (r, true),
+            None => (row(sql::ROLLUP_OLDEST, &[&resolution])?, false),
+        };
+        Some((found.0.max(0) as u64, serde_json::from_str(&found.1).ok()?, exact))
     }
 
     fn rollups(&self, resolution: &str, since_ms: u64) -> Vec<serde_json::Value> {

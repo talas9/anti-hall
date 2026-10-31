@@ -157,8 +157,12 @@ impl Metrics {
         if exists || labels.is_empty() {
             return k;
         }
+        let cap = defaults::raw("telemetry.max_series_by_metric")
+            .get(name)
+            .and_then(defaults::V::as_integer)
+            .map_or(defaults::num("telemetry.max_series") as usize, |c| c.max(1) as usize);
         let n = self.series_per_metric.entry(name.to_string()).or_insert(0);
-        if *n >= defaults::num("telemetry.max_series") as usize {
+        if *n >= cap {
             let over = defaults::text("telemetry.overflow_label");
             // past the cap the labels that name WHO (`telemetry.overflow_keep_labels`, e.g. the check) stay and the others collapse, so
             // a per-check cost stays visible; those series are bounded in turn by `telemetry.max_series_kept`

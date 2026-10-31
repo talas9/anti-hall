@@ -342,6 +342,44 @@ fn the_built_in_check_blocks_in_process_and_through_the_daemon() {
     assert!(metrics.contains("dispatch_checks") && metrics.contains("decided"), "the daemon counts what it answered: {metrics}");
 }
 
+/// B1: a real hook call through the daemon (a force push on a Bash PreToolUse payload that names its model) lands in the funnel
+/// as one decided and delivered answer of the git check, labelled with the payload's model family and the project, on the block
+/// channel, and `telemetry funnel --by model,project` reads it back.
+#[test]
+fn a_real_hook_call_is_counted_in_the_funnel_by_model_project_and_channel() {
+    let e = Env::new("funnel");
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let p = serde_json::json!({
+        "session_id": "e2e-funnel", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "model": "claude-opus-4-8",
+        "tool_input": {"command": "git push --force origin main"},
+    })
+    .to_string();
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut row = serde_json::Value::Null;
+    while Instant::now() < until {
+        e.run(&args, false, &p, true);
+        let (code, out, _) = e.run(&["telemetry", "funnel", "--by", "model,project", "--json"], false, "", true);
+        if code == 0
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+            && let Some(r) = v["funnel"]["rows"].as_array().and_then(|rows| rows.iter().find(|r| r["check"] == "git" && r["delivered"].as_u64() > Some(0)))
+        {
+            row = r.clone();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let status = e.run(&["status", "--json"], false, "", true).1;
+    e.stop();
+    assert!(!row.is_null(), "the git check's answer reached the funnel: {status}");
+    assert_eq!(row["model"], "opus", "the payload's model id is read to its family: {row}");
+    assert!(row["decided"].as_u64() >= Some(1) && row["delivered"].as_u64() >= Some(1), "{row}");
+    assert!(row["channels"]["block"].as_u64() >= Some(1), "a force push is blocked: {row}");
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["delivery"]["funnel"]["enabled"], true, "status --json carries the funnel block: {status}");
+    assert!(status["delivery"]["funnel"]["totals"]["decided"].as_u64() >= Some(1), "{status}");
+}
+
 /// The three agent controls are answered by the dispatcher itself: their Node commands (which would print `NODE-RAN`) are
 /// never run, an ask-guard block carries Node's exact bytes (the JSON decision on stdout, exit 2, nothing on stderr), and the
 /// answer is the same in process and through the daemon.
