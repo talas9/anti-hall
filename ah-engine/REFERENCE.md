@@ -5451,6 +5451,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wide_search.unresolvable_re` | `[*?\[\]{}$`]` |  |  | A path word the guard cannot resolve (a glob or a variable): it is not judged. Regular expression (Rust syntax). |
 | `wide_search.whole_disk` | `/` |  |  | The root a Spotlight search (mdfind) without a scope flag covers. |
 
+### channel_ratchet.toml / channel_ratchet
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `channel_ratchet.block_events` | `8 items` |  |  | Events where a block reason (exit 2 stderr, decision block, a PreToolUse deny) is shown to the model. |
+| `channel_ratchet.context_events` | `10 items` |  |  | Events whose hookSpecificOutput.additionalContext reaches the model (KB-claude-code-hooks.md table, additionalContext column; Stop per plan v2 F5). |
+| `channel_ratchet.offenders` | `11 items` |  |  | Today's offenders: text a check emits on a channel the model cannot read. One row per check, event and channel. Only ever removed from (the fix is plan v2 C1/C2); a new offender fails the test, so does a row that no longer offends. |
+| `channel_ratchet.unexercised` | `51 items` |  |  | Check and event pairs of the dispatch table that have no recorded advisory in the golden corpus, so the test cannot see them. Only ever removed from, by adding a golden case or a fixture; a pair added here hides a check from the test. |
+| `channel_ratchet.user_only` | `4 entries` |  |  | Text a check says to the USER by design (a banner), not a model-facing advisory: it is not an offender, but the row must say why and the check must still speak on that channel (otherwise the row is removed). |
+
 ### advisor.toml / advisor
 
 | Key | Default | Env override | Unit | What it is |
