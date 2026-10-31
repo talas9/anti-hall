@@ -12,8 +12,8 @@ Every rule the engine enforces, with what, why and what to do instead.
 Generated from the same config the engine reads. Tier: essential rules are also in the session-start digest.
 
 - `advisor.review` (skill, switch `guards.advisorReview`): A review-shaped agent on ... is not allowed while the advisor is available. Instead: Use an Opus, Fable or Codex agent for the review, or call the advisor yourself; retry this spawn once if the model is deliberate.
-- `advisor.plan` (skill, switch `guards.advisorReview`): A plan is being written with no advisor call since the task began. Instead: Call the advisor on this plan first, then write it.
-- `advisor.retry` (skill, switch `guards.advisorReview`): ... is being edited again after a failed test or build, with no advisor call in between. Instead: Consult the advisor on the failure before editing again.
+- `advisor.plan` (skill, switch `guards.advisorPlan`): A plan is being written with no advisor call since the task began. Instead: Call the advisor on this plan first, then write it.
+- `advisor.retry` (skill, switch `guards.advisorRetry`): ... is being edited again after a failed test or build, with no advisor call in between. Instead: Consult the advisor on the failure before editing again.
 - `advisor.thinking` (skill, switch `guards.advisorThinking`): A second ... dispatch from a ... main, still with no advisor call since the owner's last message. Instead: Call the advisor tool now, then dispatch. This is blocked once per task; the next dispatch passes.
 - `advisor.say_do` (skill, switch `guards.advisorSayDo`): This turn says it will ask the advisor, but no advisor call followed. Instead: Call the advisor tool now, or say plainly that you are not consulting it. Blocked once per turn.
 - `advisor.second` (skill, switch `guards.advisorRetry`): A second fix dispatch for ... from a non-flagship main, with no advisor call since the first. Instead: Call the advisor on why the first attempt missed, then dispatch. Blocked once per issue.
