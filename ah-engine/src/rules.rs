@@ -338,6 +338,8 @@ mod shipped_rules {
         }
         assert_eq!(hit(&rs, "git commit -m \"x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\""), ["git-no-ai-self-credit"]);
         assert!(hit(&rs, "git commit -m \"fix: thing\"").is_empty());
+        // a message that discusses the policy is prose, not a trailer: the session-trailer decision is the git script's alone (PR #469)
+        assert!(hit(&rs, "git commit -m 'docs: reject Claude-Session: trailers'").is_empty());
         assert_eq!(hit(&rs, "rm -rf ~/"), ["rm-rf-root-or-home"]);
         assert_eq!(hit(&rs, "rm -rf /"), ["rm-rf-root-or-home"]);
         assert!(hit(&rs, "rm -rf ./build").is_empty());
