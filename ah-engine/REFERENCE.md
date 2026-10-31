@@ -388,7 +388,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
 | `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on). |
 | `wide-search-guard` | PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
-| `advisor-guard` | Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). The review rule lives in model-routing. |
+| `advisor-guard` | Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). With a non-flagship main (phase 3): nudges, then blocks once per task, a thinking dispatch with no advisor call since the owner's last message (guards.advisorThinking), blocks once a second fix dispatch for one issue with no advisor call since the first (guards.advisorRetry) and one Stop per turn that announced an advisor call that did not follow (guards.advisorSayDo). The review rule lives in model-routing. |
 | `switch-notice` | Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
 | `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
 | `afk-mode` | UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse, Stop (Codex): AFK mode. Machine-wide flag (ah-engine afk on\|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file (NEEDS OWNER bullets first), a capped Stop hold of overlong AFK replies, no blocking questions (AskUserQuestion denied with the question ladder, a capped hold of a turn ending on a question), output tokens per turn AFK vs present (afk.*). |
@@ -2843,10 +2843,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PostToolUse` | `12 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PostToolUseFailure` | `4 entries, 4 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `4 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_claude_PreToolUse` | `33 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PreToolUse` | `34 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `4 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `19 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
-| `dispatch.hooks_claude_Stop` | `14 items` |  |  | The claude Stop hook entries, in dispatch order. |
+| `dispatch.hooks_claude_Stop` | `15 items` |  |  | The claude Stop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStart` | `4 entries, 4 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStop` | `4 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `4 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
@@ -3854,6 +3854,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_scan.json_unsupported` | `recursion limit, out of range` |  |  | Fragments of a JSON parser error that mean the text is JSON to JavaScript but not to serde (nesting past the parser's limit, a number past f64 range); such a line defers to the Node hook. |
 | `agent_scan.launch_text` | `Async agent launched successfully` |  |  | Text a launch tool_result begins with. |
 | `agent_scan.launch_tools` | `Agent, Task` |  |  | Tools whose tool_result can be a launch of an agent. |
+| `agent_scan.max_line_bytes` | `4194304` |  | bytes | Longest transcript line, in bytes, the agent scan holds and parses. A longer line (in practice one huge tool_result, measured 2026-10-30 at 60 MB) is read past in the reader's own buffer without being held, is not parsed, is counted in transcript_line_skipped_oversize{reader} and is not parsed; because what it carried is unknown, a scan whose window holds one returns unknown (agent_scan_degraded{reader}; the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) rather than an answer made as if the line were absent. Before the bound the scan buffered the whole line and parsed it, and several scans overlapping on one such transcript made the daemon pass its RSS cap and restart (#436: one 60 MB line = 120.6 MB of line buffer plus two 62.9 MB parse copies). 4 MiB is above the longest line in 1.38 million lines of 5,613 local transcripts (2.95 MB; none over 1 MiB carried an agent launch or notice) and 15 times below the 60 MB line. 0 turns the bound off: every line is held and parsed whole, as before. |
 | `agent_scan.not_a_report_keys` | `12 items` |  |  | Keys the host stamps on records that come from a person, a queue, a tool result or a compaction, and never on a real teammate report (NOT_A_REPORT_KEYS). |
 | `agent_scan.notification_tag` | `<task-notification>` |  |  | The opening tag of a completion notice. |
 | `agent_scan.object_string` | `[object Object]` |  |  | What String() gives for an object. |
@@ -4887,7 +4888,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisory.kind_tasklist_omc` | `tasklist_omc` |  |  | The advisory kind name of the task-list guard's step-aside note while an OMC loop runs. |
 | `advisory.kind_tasklist_plan_mode` | `tasklist_plan_mode` |  |  | The advisory kind name of the task-list guard's plan-mode note. |
 | `advisory.max_kinds` | `32` |  |  | The most advisory kinds one session's state file keeps (the least recently used go first). |
-| `advisory.metric_names` | `11 entries` |  |  | The metric names the scripts count per advisory kind, by role: a rule flagged a candidate, a question was put to Jev, Jev confirmed, the advisory reached the model, it was held back (unchanged table, repeat, cap, Jev declined, rate-limited fallback), a Jev question failed, an advisory fired past its soft cap; the advisor-mode adherence counts: a failure armed the retry rule, the advisor was consulted after that failure, a retry block was acted on (advisor consulted before the next edit), an advisor call was seen. |
+| `advisory.metric_names` | `21 entries` |  |  | The metric names the scripts count per advisory kind, by role: a rule flagged a candidate, a question was put to Jev, Jev confirmed, the advisory reached the model, it was held back (unchanged table, repeat, cap, Jev declined, rate-limited fallback), a Jev question failed, an advisory fired past its soft cap; the advisor-mode adherence counts: a failure armed the retry rule, the advisor was consulted after that failure, a retry block was acted on (advisor consulted before the next edit), an advisor call was seen; phase 3 (GH #404): an advisor call after a phase-3 nudge or block (nudged) or with none pending (spontaneous), a thinking dispatch, one with an advisor call since the owner message (consulted_before), a nudge, a block, a hit past the one block per task (block_capped), a nudge followed by routine work (false_nag), a second fix attempt gated, an announced advisor call that did not follow (miss). |
 | `advisory.repeat_turns_by_kind` | `5 entries` |  |  | Per-kind override of advisory.repeat_turns_default. |
 | `advisory.repeat_turns_default` | `12` |  |  | How many further calls a fixed-text advisory is held back after it fired, unless its kind has its own entry in advisory.repeat_turns_by_kind. |
 | `advisory.session_safe_max` | `80` |  |  | The longest sanitised session id used in the advisory state file name. |
@@ -5269,37 +5270,89 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `advisor.agent_file_tpl` | `agent-{agent}` |  |  | File name (without advisor.transcript_ext) of a subagent's own transcript. Placeholder: {agent}. |
+| `advisor.agent_head_bytes` | `8192` |  | bytes | Bytes read from the head of a subagent's transcript to check the agent id its first line records. |
+| `advisor.agent_id_re` | `"agentId"\s*:\s*"[^"]*"` |  |  | Regular expression (Rust syntax) of the agent id field in the head of a subagent's transcript; a match naming another agent than the payload's agent_id means a mismatch (the rules stay silent). |
+| `advisor.agent_subdirs` | `workflows` |  |  | Subdirectories of a session's subagents directory that hold one more directory level of agent transcripts (Claude Code puts workflow agents in subagents/workflows/<run>/agent-<id>.jsonl). |
+| `advisor.agent_transcript_keys` | `agent_transcript_path` |  |  | Hook payload fields that may carry a subagent's own transcript path. |
+| `advisor.agent_transcript_tpl` | `{dir}/{session}/subagents/agent-{agent}.jsonl` |  |  | Where a subagent's own transcript lies when the payload names none. Placeholders: {dir} (the main transcript's directory), {session} (its file name without .jsonl), {agent} (the agent id). A subagent is never judged by the main transcript; with no own transcript its rules stay silent. |
+| `advisor.attachment` | `6 entries` |  |  | The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. |
 | `advisor.block_types` | `tool_use, server_tool_use` |  |  | Transcript content-block types that are a tool call (the advisor is a server tool, so its block may be server_tool_use). |
+| `advisor.brief_head_bytes` | `2000` |  | bytes | How much of a dispatch prompt (from its start) is classified when the description names no thinking type. |
+| `advisor.dispatch_tools` | `Agent, Task` |  |  | Tool names that dispatch an agent: the thinking and second-attempt rules judge their brief (description, prompt). |
 | `advisor.edit_tools` | `Write, Edit, MultiEdit` |  |  | Tool names whose file_path is an edit target. |
+| `advisor.fingerprint_bytes` | `256` |  | bytes | Bytes at the head of a transcript remembered with the read offset. When they change, or the last line read is no longer at its offset with the same content, the file was rewritten in place (shorter or longer) and the fold starts afresh. |
+| `advisor.flagship_model_re` | `(?i)opus\|fable\|^gpt-[0-9][0-9.]*(?:-codex)?(?:-max)?$` |  |  | Regular expression (Rust syntax, case-insensitive) of a main-session model id that is a flagship (Opus, Fable, a full Codex GPT model; a mini or nano variant is not): the thinking, say-do and second-attempt rules are silent for it. |
 | `advisor.generic_agent_types` | `, general-purpose` |  |  | Agent types (lower case) that carry no model of their own, so a spawn without a model inherits the session tier. Any other agent type is a named agent whose own definition may set the model, so the review rule leaves it alone. |
 | `advisor.guard_name` | `advisor-guard` |  |  | The skip.json key and block label of the advisor rules. |
+| `advisor.issue_key_re` | `(?i)(?:#\d{1,7}\b\|\b(?:issue\|gh)[ -]?\d{1,7}\b\|\b(?:fix\|bug\|hotfix\|feat)/[A-Z...` |  |  | Regular expression (Rust syntax) of the issue key of a fix dispatch (an issue number or a branch name) in its description, else its prompt: two fix dispatches with the same key are the same issue. |
+| `advisor.kind_availability` | `advisor_availability` |  |  | Advisory kind (counters) of why the advisor rules stayed silent or how availability was established: the names of advisor.silence_metrics. |
 | `advisor.kind_consult` | `advisor_consult` |  |  | Advisory kind (counter) of the advisor calls seen in the transcript. Adherence monitoring (phase 2): the engine report's `advisory` section shows, per session-independent total, advisor_consult.consult (consults), advisor_retry.armed (failures watched), advisor_retry.consulted (consulted after the failure), advisor_retry.injected (retry blocks fired), advisor_retry.acted_on (blocks followed by a consult), advisor_review.injected and .suppressed (non-flagship review/plan spawns blocked and held back). The same tallies are kept per session in the retry state file. |
 | `advisor.kind_plan` | `advisor_plan` |  |  | Advisory kind (counters and cap) of the plan rule. |
 | `advisor.kind_retry` | `advisor_retry` |  |  | Advisory kind (counters and cap) of the retry rule. |
 | `advisor.kind_review` | `advisor_review` |  |  | Advisory kind (counters and cap) of the review rule. |
+| `advisor.kind_say_do` | `advisor_say_do` |  |  | Advisory kind (counters) of the say-do rule: miss (an announced advisor call that did not follow), blocked. |
+| `advisor.kind_second` | `advisor_second_attempt` |  |  | Advisory kind (counters) of the second-attempt rule: gated (a second fix dispatch for one issue blocked). |
+| `advisor.kind_thinking` | `advisor_thinking` |  |  | Advisory kind (counters) of the thinking rule: dispatch, dispatch_<type>, consulted_before, nudge, blocked, block_capped, false_nag, and the derived consult_rate. |
+| `advisor.known_model_re` | `(?i)sonnet\|haiku\|opus\|fable\|^gpt-\|^o\d` |  |  | Regular expression (Rust syntax) of a model id the rules recognise. The newest assistant entry whose model matches it (or the flagship pattern) is the main model; an unknown model (`<synthetic>`, empty) is skipped, and with no known model the rules stay silent. |
+| `advisor.latency_buckets_s` | `10, 30, 60, 300, 900` |  |  | Upper bounds (seconds) of the consult-latency buckets: the time from the owner's last message to the advisor call (counter latency_le_<n>s, else latency_gt_<last>s). |
 | `advisor.line_max_bytes` | `1048576` |  | bytes | A transcript line longer than this is skipped when looking for advisor calls. |
-| `advisor.max_lines` | `4000` |  |  | Most transcript lines read from the tail. |
+| `advisor.lock_boot_slop_s` | `5` |  | s | Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution). |
+| `advisor.lock_reclaim_stale_ms` | `5000` |  | ms | A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over. |
+| `advisor.lock_release_step_ms` | `10` |  | ms | The pause between those release attempts. |
+| `advisor.lock_release_tries` | `5` |  |  | How many times releasing the lock tries to take the takeover marker before it removes its own lock unguarded. |
+| `advisor.lock_stale_ms` | `5000` |  | ms | An advisor state lock older than this is taken over, whatever its holder. |
+| `advisor.lock_step_ms` | `5` |  | ms | The pause between attempts to take the advisor state lock. |
+| `advisor.lock_suffix` | `.lock` |  |  | Suffix of the per-agent state lock that the advisor-guard rules and the review rule hold while they read, decide and save the shared state. |
+| `advisor.lock_wait_ms` | `2000` |  | ms | How long a rule waits for the advisor state lock before it allows unjudged (fail open, counted allow_lock_busy). |
+| `advisor.max_lines` | `100000` |  |  | Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time). |
+| `advisor.metric_dispatch_tpl` | `dispatch_{type}` |  |  | Counter name of a thinking dispatch of one type. Placeholder: {type}. |
+| `advisor.metric_latency_gt_tpl` | `latency_gt_{s}s` |  |  | Counter name of a consult latency past the last bucket. Placeholder: {s}. |
+| `advisor.metric_latency_le_tpl` | `latency_le_{s}s` |  |  | Counter name of a consult-latency bucket. Placeholder: {s}. |
 | `advisor.msg_plan_instead` | `Call the advisor on this plan first, then write it.` |  |  | What to do instead for the plan rule. |
 | `advisor.msg_plan_what` | `A plan is being written with no advisor call since the task began.` |  |  | Block text of the plan rule. |
 | `advisor.msg_retry_instead` | `Consult the advisor on the failure before editing again.` |  |  | What to do instead for the retry rule. |
 | `advisor.msg_retry_what` | `{file} is being edited again after a failed test or build, with no advisor ca...` |  |  | Block text of the retry rule. Placeholder: {file}. |
 | `advisor.msg_review_instead` | `Use an Opus, Fable or Codex agent for the review, or call the advisor yoursel...` |  |  | What to do instead for the review rule. |
 | `advisor.msg_review_what` | `A review-shaped agent on {model} is not allowed while the advisor is available.` |  |  | Block text of the review rule. Placeholder: {model}. |
+| `advisor.msg_say_do_instead` | `Call the advisor tool now, or say plainly that you are not consulting it. Blo...` |  |  | What to do instead for the say-do rule. |
+| `advisor.msg_say_do_what` | `This turn says it will ask the advisor, but no advisor call followed.` |  |  | Block text of the say-do rule. |
+| `advisor.msg_second_instead` | `Call the advisor on why the first attempt missed, then dispatch. Blocked once...` |  |  | What to do instead for the second-attempt rule. |
+| `advisor.msg_second_what` | `A second fix dispatch for {key} from a non-flagship main, with no advisor cal...` |  |  | Block text of the second-attempt rule. Placeholder: {key}. |
+| `advisor.msg_thinking_instead` | `Call the advisor tool now, then dispatch. This is blocked once per task; the ...` |  |  | What to do instead for the thinking rule. |
+| `advisor.msg_thinking_nudge` | `Advisor first: this {type} dispatch runs from a {model} main with no advisor ...` |  |  | Advisory text of the thinking rule's first hit. Placeholders: {type}, {model}. |
+| `advisor.msg_thinking_what` | `A second {type} dispatch from a {model} main, still with no advisor call sinc...` |  |  | Block text of the thinking rule's second hit (once per task). Placeholders: {type}, {model}. |
 | `advisor.msg_why` | `Hard decisions (review, plan, retry after a failure) belong to the advisor mo...` |  |  | The reason line shared by the three rules. |
+| `advisor.msg_why_flagship` | `A non-flagship main gets one attempt at thinking work; design, investigation ...` |  |  | The reason line of the phase-3 rules. |
+| `advisor.non_owner_text_re` | `^\s*(?:<task-notification>\|<command-name>\|<command-message>\|<local-command\|<s...` |  |  | Regular expression (Rust syntax) of a user text block that is harness text, not the owner (notifications, slash-command echoes, continuation banners). |
+| `advisor.owner_origin_kinds` | `human` |  |  | A user entry whose `origin.kind` is set counts as the owner only when it is one of these (task notifications and peer messages are not the owner). |
+| `advisor.owner_skip_meta` | `isMeta` |  |  | A user entry with this field true is harness text (a reminder, a hook's feedback), not the owner. |
 | `advisor.payload_tool_keys` | `tools, available_tools, allowed_tools` |  |  | Hook payload fields that may list the tools available to the session (an array of names or of objects with a name); the advisor counts as available when one names it. |
 | `advisor.plan_file_re` | `(?i)(?:^\|/)PLAN\.md$\|(?:^\|/)(?:\.omc/plans\|\.claude/plans\|\.anti-hall/plans\|p...` |  |  | Regular expression (Rust syntax) of a file path that is a plan file: PLAN.md anywhere, or a markdown file in a plans directory. |
 | `advisor.plan_tools` | `ExitPlanMode` |  |  | Tool names that always count as writing a plan. |
+| `advisor.result_types` | `advisor_tool_result` |  |  | Transcript content-block types that are an advisor result (the server tool's answer carries a tool_use_id, not a name); one counts as an advisor call. |
 | `advisor.review_signals` | `review, reviewer, critique, critic` |  |  | Token phrases that make an agent spawn review-shaped (matched against its description and agent type like model_routing.complex). Reviews and plans only: audits and scans may run on a cheaper model. |
+| `advisor.say_do_re` | `(?i)\b(?:i\W?ll\|i will\|let me\|i\W?m going to\|going to\|will now\|next,? i)\s+(?...` |  |  | Regular expression (Rust syntax) of assistant text that announces an advisor call. |
 | `advisor.session_safe_max` | `128` |  |  | Longest session-id part kept in a state file name. |
+| `advisor.settings_files` | `2 entries, 2 entries, 2 entries, 2 entries, 2 entries` |  |  | Claude Code settings files that may set an advisor model (root: home = the user's home, cwd = the session's working directory, abs = the path as given). Read only when the head of the transcript was never read (so a missing advisor_tool attachment proves nothing); a set advisor.settings_key then counts as the advisor being available. |
+| `advisor.settings_key` | `advisorModel` |  |  | Top-level key of a Claude Code settings file that names the advisor model; a non-empty string means an advisor is configured. |
+| `advisor.settings_read_max_bytes` | `1048576` |  | bytes | Most bytes of one settings file read (a longer file is not parsed and counts as not configured). |
+| `advisor.silence_metrics` | `10 entries` |  |  | Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides). |
 | `advisor.state_ext` | `.json` |  |  | File-name extension of the per-session retry state. |
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
 | `advisor.summary` | `Advisor sessions only: blocks once a plan written with no advisor call this t...` |  |  | One-line description of the advisor-guard check in the generated reference. |
 | `advisor.sw_plan` | `6 entries` |  |  | Blocks a plan written with no advisor call once. Default on, advisor sessions only. |
 | `advisor.sw_retry` | `6 entries` |  |  | Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only. |
 | `advisor.sw_review` | `6 entries` |  |  | Blocks a review agent on a non-flagship model once. Default on, advisor sessions only. |
+| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only. |
+| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only. |
+| `advisor.tasks_max` | `32` |  |  | Most tasks (owner messages) and issue keys one agent's state keeps (the oldest go first). |
 | `advisor.test_cmd_re` | `\b(?:cargo\s+(?:\+\S+\s+)?(?:test\|nextest\|build\|check\|clippy)\|npm\s+(?:run\s+...` |  |  | Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run. |
 | `advisor.test_file_re` | `(?i)(?:^\|/)(?:tests?\|__tests__\|specs?)/\|[._-](?:test\|spec)\.[A-Za-z0-9]+$\|_te...` |  |  | Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run). |
+| `advisor.thinking_exempt_re` | `(?i)\b(?:mechanical\|rename\|reformat\|typo\|regen\w*\|bump (?:the )?version\|chang...` |  |  | Regular expression (Rust syntax) of a dispatch description that is routine work even when its brief mentions a thinking word (a mechanical lane). |
+| `advisor.thinking_types` | `2 entries, 2 entries, 2 entries, 2 entries, 2 entries, 2 entries` |  |  | Thinking-work classes of a dispatch brief, in match order: the first whose pattern (Rust syntax) matches the description, else the head of the prompt, names the type (counter dispatch_<type>). |
 | `advisor.tool_names` | `advisor` |  |  | Names of the advisor tool, in a transcript tool_use block or in the payload's tool list. |
+| `advisor.transcript_ext` | `.jsonl` |  |  | File extension of a transcript; the main transcript's name without it is the {session} of advisor.agent_transcript_tpl. |
 | `advisor.unknown_model_label` | `the inherited {model} session tier` |  |  | Label shown in the review block when the spawn names no model. Placeholder: {model} (the resolved session tier). |
 | `advisor.window_bytes` | `4194304` |  | bytes | Bytes of the transcript tail read to find advisor calls and the last user message. |
 
@@ -5641,7 +5694,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `386 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `388 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8055,7 +8108,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `392 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `394 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -11928,6 +11981,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jevrep.t_credit_no_key` | `\ncredit balance (vercel): n/a — {notice}` |  |  | The balance needs a key this process cannot see. Placeholder: {notice}. |
 | `jevrep.t_credit_this_transport` | `this transport` |  |  | Names the transport when a transport has no balance endpoint and none is named. |
 | `jevrep.t_credit_unsupported` | `\ncredit balance: not available on {transport} (no balance endpoint)` |  |  | The transport has no balance endpoint. Placeholder: {transport}. |
+| `jevrep.t_errors_by_kind_line` | `  {id}: {kinds}` |  |  | One integration's failed calls by kind. |
+| `jevrep.t_errors_by_kind_title` | `\nfailed calls by kind (baseline used):` |  |  | Title of the failed-calls-by-kind section. |
 | `jevrep.t_group_cost_line` | `    {id}: calls={calls} ${total} {perCall}` |  |  | One integration of a --by group's real cost. Placeholders: {id}, {calls}, {total}, {perCall}. |
 | `jevrep.t_group_cost_total` | `  real cost: ${total} total` |  |  | A --by group's real cost total. Placeholder: {total}. |
 | `jevrep.t_group_title` | `\n=== {by}: {key} ({n} row(s)) ===` |  |  | Heading of a --by group. Placeholders: {by}, {key}, {n}. |
@@ -11974,7 +12029,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jevrep.t_verdict_label_only` | `REVIEW (label-only, no outcome signal yet)` |  |  | The verdict of a label-only integration with no labelled outcome. |
 | `jevrep.t_verdict_latency` | `REVIEW (p95 latency exceeds budget)` |  |  | The verdict when the p95 latency is over the integration's budget. |
 | `jevrep.t_verdict_needs_labels` | `REVIEW (needs labels: {n}/{min})` |  |  | The verdict with too few labelled outcomes. Placeholders: {n}, {min}. |
+| `jevrep.t_verdict_no_signal` | `REVIEW (no outcome signal: no comparison, outcomes or labels)` |  |  | Suggestion for an integration with no regex comparison, no outcome rows, no labels and no changed decision: nothing can show whether it helps. |
 | `jevrep.t_verdict_not_enough` | `REVIEW (not enough data: {calls} < {min} calls)` |  |  | The verdict with too few calls. Placeholders: {calls}, {min}. |
+| `jevrep.t_verdict_off` | `OFF (mode off: {calls} calls logged, Jev not asked)` |  |  | Suggestion when every call in the window ran with the integration switched off (mode off): Jev was never asked. |
 | `jevrep.t_verdict_remove` | `REMOVE` |  |  | The verdict of an integration with a proven bad record. |
 | `jevrep.t_verdict_review` | `REVIEW` |  |  | The verdict that needs a look; every REVIEW verdict starts with this word. |
 | `jevrep.t_verdict_review_note` | `REVIEW ({note})` |  |  | The REVIEW verdict with a note. Placeholder: {note}. |
@@ -12878,6 +12935,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `diagnostics.abandoned_log_keys_max` | `256` |  |  | How many (site, reason) pairs the abandoned-decision log limiter remembers before it forgets them all (bounds its memory; a forgotten pair logs once more). |
 | `diagnostics.abandoned_no_reason` | `the site gave no reason` |  |  | The reason shown in the event-log line of an abandoned decision whose site gave none (the site name still says where). |
 | `diagnostics.advisory_counter_kind` | `advisory` |  |  | The journal kind under which the advisory counters (flagged, asked, confirmed, injected, suppressed, jev_error per advisory kind) are kept in the shared counter journal. |
+| `diagnostics.advisory_ratios` | `1 entries` |  |  | Ratios derived in the advisory report (status `advisory.<kind>.<name>`): name = { kind, num, den }, num / den of two counters of that kind, three decimals, absent while den is 0. consult_rate: thinking dispatches (fix, design, investigate, root cause, plan, review) of a non-flagship main that had an advisor call since the owner's last message, over all such dispatches. |
 | `diagnostics.allocator` | `jemalloc` |  |  | Allocator for the daemon the client spawns: jemalloc (default) or system. The client passes it on as AH_ENGINE_ALLOCATOR unless that is already set. Changing it requires a daemon restart. |
 | `diagnostics.allocator_choices` | `jemalloc, system` |  |  | Allocator names the client accepts from diagnostics.allocator; any other value is logged and the daemon starts with jemalloc. |
 | `diagnostics.allocator_env` | `AH_ENGINE_ALLOCATOR` |  |  | Environment variable the client sets on the daemon it spawns to select the allocator (the daemon reads it before its first allocation). An existing value in the client's own environment wins. |
@@ -12904,6 +12962,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `diagnostics.debug_thread_top` | `8` |  |  | Threads (grouped by name) listed per per-thread CPU sample in the debug log. |
 | `diagnostics.diag_top` | `15` |  |  | Rows shown per ranking in `diag hooks` and `diag fs`. |
 | `diagnostics.diag_topics` | `11 items` |  |  | The topics of `ah-engine diag <topic>`: read-only reports over state the engine already keeps (not feature-gated). `trace` dumps the always-on trace ring. |
+| `diagnostics.durable_counter_kinds` | `advisory` |  |  | Counter kinds the daemon writes to the shared journal like every other process, instead of keeping them in memory, so they survive a daemon restart (GH #404: the advisory counters, which the advisor adherence report reads, were lost on every restart). One append per event; the journal is folded at diagnostics.counters_max_bytes. |
 | `diagnostics.duration_units` | `4 entries` |  |  | Suffixes the `--for` duration of `ctl profile on` accepts, each with its length in milliseconds (a bare number is seconds). |
 | `diagnostics.fd_dir` | `/dev/fd` |  |  | Directory that lists this process's open file descriptors (`diag fs` counts its entries). |
 | `diagnostics.file_max_bytes` | `65536` |  |  | Most bytes `diag file <id>` reads from the end of a file. |
@@ -14202,6 +14261,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tail_newest_reads` | counter | reads | mode | Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap). |
 | `command_heavy_segment_named` | counter | blocks | kind | Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own. |
 | `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
+| `agent_scan_degraded` | counter | scans | reader | Agent scans that returned unknown (the callers' unsure path: the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) because the window held a line longer than agent_scan.max_line_bytes that was skipped unparsed, by reader: scan_window or scan_kept. Any oversize line degrades the scan, noise or not, since the skipped line may have carried a completion. |
 | `agent_scan_kept` | counter | lookups | result | Kept-walk lookups of the agent scan (silent-agent-nudge and the agent gates): hit (the walk resumed from where the last scan stopped) or miss. |
 | `agent_scan_kept_miss` | counter | lookups | reason | Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised). |
 | `answers_dropped` | counter | answers | event, kind, reason | Check answers a request did not get, by the event, whether it was a guard event's (kind guard) or an optional one's (kind optional) and the reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred). The check's failure policy decided in their place. Lifetime; status answers_dropped.this_daemon has the count since the daemon started. |
@@ -14281,6 +14341,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tier_hits` | gauge | reads |  | Key-value reads answered from memory since the daemon started. |
 | `tier_items` | gauge | items |  | Active key-value items held in memory (D22). |
 | `tier_misses` | gauge | reads |  | Key-value reads that went to SQLite since the daemon started. |
+| `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
 | `jev_asked_sync` | counter | calls | id | Stop/SubagentStop asks the gate let wait for Jev (the rule layer had flagged a likely unverified claim), by integration. |
