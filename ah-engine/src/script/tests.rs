@@ -3579,7 +3579,11 @@ fn the_codex_digest_carries_codex_lines_within_the_budget_and_no_claude_model_na
     let Some(Some(Verdict::Advisory(a))) = got else { panic!("codex digest must answer with context, got {got:?}") };
     let ctx = serde_json::from_str::<Value>(&a).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
     assert!(ctx.contains(&digest_of("git.msg_force_push", "codex")), "{ctx}");
-    assert!(!ctx.contains(&crate::skillgen::digest_field("model_routing.msg_row1_what", "codex")) || crate::skillgen::digest_field("model_routing.msg_row1_what", "codex").is_empty(), "the model-routing guard is Claude-only: {ctx}");
+    assert!(
+        !ctx.contains(&crate::skillgen::digest_field("model_routing.msg_row1_what", "codex"))
+            || crate::skillgen::digest_field("model_routing.msg_row1_what", "codex").is_empty(),
+        "the model-routing guard is Claude-only: {ctx}"
+    );
     for m in ["haiku", "sonnet", "opus", "fable"] {
         assert!(!ctx.to_lowercase().contains(m), "codex digest names the Claude model {m}: {ctx}");
     }
@@ -3636,7 +3640,10 @@ fn rule_rows() -> Vec<Value> {
 fn switch_off(setting: &str, inverted: bool) -> Value {
     let (sec, key) = setting.split_once('.').unwrap();
     let entries = defaults::all();
-    let spec = entries.iter().find(|e| e.value.get("section").and_then(|v| v.as_str()) == Some(sec) && e.value.get("key").and_then(|v| v.as_str()) == Some(key)).unwrap_or_else(|| panic!("no settings entry for {setting}"));
+    let spec = entries
+        .iter()
+        .find(|e| e.value.get("section").and_then(|v| v.as_str()) == Some(sec) && e.value.get("key").and_then(|v| v.as_str()) == Some(key))
+        .unwrap_or_else(|| panic!("no settings entry for {setting}"));
     let offs = defaults::raw("guard_rules.digest_off_values").strings();
     let v = match spec.value.get("values").map(|v| v.strings()) {
         Some(vals) => json!(vals.iter().find(|x| offs.contains(x)).unwrap_or_else(|| panic!("{setting} has no off value"))),
@@ -3671,7 +3678,7 @@ fn a_digest_line_whose_rule_switch_is_off_is_left_out_and_all_on_keeps_every_lin
             let inv = r.get("inverted").and_then(|v| v.as_bool()).unwrap_or(false);
             let ctx = digest_with("digest-one-off", "claude", &switch_off(one, inv)).expect("digest still on");
             assert!(!ctx.contains(&line), "{} still in the digest with {one} off: {ctx}", r["id"]);
-            assert!(ctx.contains(&digest_of("git.msg_commit_credit", "claude")) || r["id"] == "git.commit_credit", "other lines dropped with {one} off");
+            assert!(ctx.contains(&digest_of("guard_rules.msg_no_heredoc", "claude")), "a line with no switch dropped with {one} off");
             assert!(ctx.len() as u64 <= budget, "digest over budget with {one} off");
             checked += 1;
         }

@@ -58,24 +58,24 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `git.runner_no_subcommand` (skill): a runner hides the git subcommand beside an unsafe flag. Why: ... supplies the subcommand later, so it could be a push with that flag. Instead: run git directly with explicit arguments.
 - `git.runner_push` (skill): a runner could hide a force-push argument. Why: ... adds words to the command, so a hidden --force can't be ruled out. Instead: run git push directly with explicit arguments.
 - `git.find_push` (skill): find could supply hidden force-push arguments. Why: find fills in the arguments, so a force push (`+ref`) can't be ruled out. Instead: run git push directly with explicit arguments.
-- `git.handover` (essential): this commit includes a private session handover. Why: Handovers are private session notes and are never committed. Instead: unstage the handover before committing.
-- `git.force_push` (essential): a force push was stopped. Why: Rewriting published history should be a deliberate human decision. Instead: push without rewriting published history.
+- `git.handover` (essential, switch `safety.gitGuard, guards.handoverCommitGuard`): this commit includes a private session handover. Why: Handovers are private session notes and are never committed. Instead: unstage the handover before committing.
+- `git.force_push` (essential, switch `safety.gitGuard`): a force push was stopped. Why: Rewriting published history should be a deliberate human decision. Instead: push without rewriting published history.
 - `git.delete_ref` (skill): remote branch or tag deletion was stopped. Why: Deleting published refs needs the owner's explicit OK. Instead: get the owner’s approval for this exact deletion.
 - `git.push_cmdsubst` (skill): command substitution could hide a force-push flag. Why: It could hide a --force flag from the check. Instead: use literal arguments for git push.
 - `git.trailer_remap` (skill): a trailer setting adds AI credit. Why: Commits in this setup carry no AI co-author line. Instead: remove the trailer setting and commit again.
-- `git.commit_credit` (essential): commit has an AI co-author line. Why: Commits in this setup carry no AI co-author line. Instead: remove the Co-Authored-By line and commit again.
+- `git.commit_credit` (essential, switch `safety.gitGuard`): commit has an AI co-author line. Why: Commits in this setup carry no AI co-author line. Instead: remove the Co-Authored-By line and commit again.
 - `git.commit_file_credit` (skill): commit message file has an AI co-author line. Why: Commits in this setup carry no AI co-author line. Instead: remove the Co-Authored-By line and commit again.
 - `git.gh_jev` (skill): PR, issue or release text credits an AI assistant. Why: Pull requests and issues in this setup carry no AI credit. Instead: remove the AI credit and retry.
 - `git.commit_jev` (skill): commit message credits an AI assistant. Why: Commits in this setup carry no AI co-author line. Instead: remove the AI credit and commit again.
 - `git.commit_file_jev` (skill): commit message file credits an AI assistant. Why: Commits in this setup carry no AI co-author line. Instead: remove the AI credit and commit again.
 - `git.creating_credit` (skill): git ... would create a commit with AI credit. Why: Commits in this setup carry no AI co-author line, however it reaches git. Instead: remove the Co-Authored-By line and commit again.
 - `git.creating_credit_elsewhere` (skill): git ... is chained with text containing AI credit. Why: The credit line is in the `...` part, not in the commit message. Instead: remove the credit from the chained command.
-- `edit_guard.msg` (essential): ... is not allowed: the ... does not edit files directly.
+- `edit_guard.msg` (essential, switch `safety.editGuard`): ... is not allowed: the ... does not edit files directly.
 - `edit_guard.self_edit` (skill): ... on .anti-hall/edit-allow.json is not allowed. Why: That file decides which files the main thread may edit, so the main thread never edits it. Instead: ask the user to update and re-trust the edit allowlist.
 - `edit_guard.outside` (skill): ... on a handover file outside the project is not allowed. Why: Handovers live inside the project, where they are found on resume. Instead: write it yourself at ...; no subagent or override is needed.
 - `edit_guard.new` (skill): a new handover must be written at the session path. Why: New handovers belong under .anti-hall/handovers/<date>/<session>/HANDOVER.md. Instead: write it at the session handover path.
 - `edit_guard.patch` (skill): this apply_patch could not be read (...), so its targets can't be checked. Why: Edits in the main thread are checked against the delegation rule. Instead: send a well-formed patch.
-- `api_guard_v1.msg` (essential): this edit references APIs missing from the installed runtime. Why: These attributes are absent from the real module/object; they look like fabrications. Instead: verify the API names and correct the references.
+- `api_guard_v1.msg` (essential, switch `guards.apiGuard`): this edit references APIs missing from the installed runtime. Why: These attributes are absent from the real module/object; they look like fabrications. Instead: verify the API names and correct the references.
 - `compact_decl_v1.msg` (skill): new work started after a SAFE TO COMPACT declaration. Why: The declaration must be the last act of the turn; new work after it makes the handover stale. Instead: retract the declaration before continuing.
 - `inbox_read_v1.store` (skill): a raw DevSwarm store read was stopped. Why: The store is the write/derive layer; a raw read risks a partial view and a layering violation. Instead: read through the mesh inbox CLI.
 - `handovers.advisory` (skill): ... handover problem(s) and ... day brief(s) out of date in ... Why: Searches for earlier work and decisions read these briefs, and a malformed or unindexed handover is invisible to them. Instead: run the handover maintenance command.
@@ -92,7 +92,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `idle_sweep.` (skill, switch `guards.idleAgentSweep`): ... finished agent... idle and not ...: ....... Why: ... until it is .... Instead: ... each finished agent you will not reuse.
 - `resource_watch.proc` (skill, switch `resourceWatch.enabled`): pid ... (..., session ...) is using ...; threshold ...
 - `resource_watch.msg` (skill, switch `resourceWatch.enabled`): Resource use is high: .... Why: A runaway process slows every session on this machine and can push it into swap. Instead: check whether the resource use is expected.
-- `speculation_guard.msg` (essential): your reply makes an unverified claim ("..."). Why: Unverified claims read as facts. Instead: verify the claim or label it unverified.
+- `speculation_guard.msg` (essential, switch `guards.speculationGuard`): your reply makes an unverified claim ("..."). Why: Unverified claims read as facts. Instead: verify the claim or label it unverified.
 - `speculation_guard.jev` (skill): your reply asserts a cause or outcome without evidence.
 - `output_verify.msg` (skill): command output contains conflicting results. Why: A mixed summary is not a clean pass. Instead: read the full output before reporting the result.
 - `jev_weekly.notice` (skill): ... is ready to switch .... Instead: run /anti-hall:jev.
@@ -103,12 +103,12 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `scan_throttle.group` (skill): a grouped command contains a heavy project scan. Instead: consider running the scan background-throttled, e.g. `... <that command>`.
 - `scan_throttle.first` (skill): a heavy project scan needs throttling. Why: To keep the machine responsive. Instead: re-run it background-throttled: `...`.
 - `coordinator_work.nudge` (skill): ... file-changing steps in the main thread within ... min. Instead: hand the rest to a subagent now.
-- `coordinator_work.block` (essential): this step was stopped after repeated main-thread edits. Why: Too much hands-on work in the main thread. This is not a question for the user; it clears by itself in about ... min. Instead: hand the remaining work to a helper agent.
+- `coordinator_work.block` (essential, switch `safety.commandGuard`): this step was stopped after repeated main-thread edits. Why: Too much hands-on work in the main thread. This is not a question for the user; it clears by itself in about ... min. Instead: hand the remaining work to a helper agent.
 - `model_routing.update` (skill): a subagent spawn that runs the anti-hall update is blocked. Why: update.js runs migrations and the main session must judge the result. Instead: run `ah-engine update ...` directly in the main session.
 - `model_routing.handover` (skill): this spawn looks like it writes a session handover. Why: A subagent never lived this session, so its reconstruction loses decision/trial fidelity. Instead: invoke the handover skill yourself in the session that holds the memory.
 - `model_routing.deploy_omitted` (skill): deploy/migration/secret-shaped spawn sets no explicit model. Instead: set model:'...' or higher, never haiku.
 - `model_routing.deploy_low` (skill): deploy/migration/secret-shaped spawn runs on '...'. Instead: use model:'...' or higher....
-- `model_routing.row1` (essential): routine execution was assigned to a flagship model. Why: This hook cannot see the parent model; execution-only work needs an explicit cheap model. Instead: respawn with model:'haiku' (or 'sonnet' if it authors code).
+- `model_routing.row1` (essential, switch `guards.modelRouting`): routine execution was assigned to a flagship model. Why: This hook cannot see the parent model; execution-only work needs an explicit cheap model. Instead: respawn with model:'haiku' (or 'sonnet' if it authors code).
 - `model_routing.row1_role` (skill): flagship spawn allowed for a debate role. Instead: if it is genuinely mechanical work, prefer model:'haiku'.
 - `model_routing.row1_research` (skill): flagship spawn allowed for research.
 - `model_routing.row2_block` (skill): execution-shaped spawn with no explicit model is blocked (strict default). Why: An omitted model inherits the orchestrator's and cannot be verified here; on a flagship orchestrator that silently makes an all-flagship swarm. Instead: set model:'haiku' (or 'sonnet' for code) on the spawn.
@@ -128,15 +128,15 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `swarm_guard.rate` (skill): spawn limit reached (... in 60s, cap ...). Why: A runaway swarm can make the OS unusable. Instead: wait for running agents to finish before spawning more.
 - `swarm_guard.shared` (skill): another agent is already writing in this working tree. Why: Two such agents can stage and commit each other's uncommitted changes. Instead: give the new agent its own worktree.
 - `spawn_ceiling.msg` (skill): ... agents are running (limit ...). Why: More agents rarely add results, and each one costs tokens whether or not it finishes. Instead: wait for a running agent to finish.
-- `spawn_usage.block` (essential): new agents can't start: the ... usage limit is at ...% (stop at ...%, ...). Why: Another spawn could use up the limit and stop all work, including agents already running. Instead: wait for the usage limit to reset.
+- `spawn_usage.block` (essential, switch `guards.usageAwareDispatch`): new agents can't start: the ... usage limit is at ...% (stop at ...%, ...). Why: Another spawn could use up the limit and stop all work, including agents already running. Instead: wait for the usage limit to reset.
 - `spawn_usage.soft` (skill): the ... usage limit is at ...% (...). Why: Headroom is getting short; avoid spending tokens that produce no commit, finished step or passing check. Instead: use cheaper models for routine work.
-- `nested_spawn.msg` (essential): this agent is a worker and can't start agents of its own. Why: Nested agents hide their cost from the coordinator (one burned about 2.5M tokens in 30 minutes). Instead: report back to the coordinator if more agents are needed.
-- `task_guard.idle` (essential): ... open tasks have no agent working on them. Why: Work that could run in parallel is sitting idle. Instead: assign the pending tasks to agents.
+- `nested_spawn.msg` (essential, switch `guards.allowNestedSpawns`): this agent is a worker and can't start agents of its own. Why: Nested agents hide their cost from the coordinator (one burned about 2.5M tokens in 30 minutes). Instead: report back to the coordinator if more agents are needed.
+- `task_guard.idle` (essential, switch `guards.taskGuard`): ... open tasks have no agent working on them. Why: Work that could run in parallel is sitting idle. Instead: assign the pending tasks to agents.
 - `task_guard.generic` (skill): open tasks remain unfinished. Why: Open tasks should not be left behind when the session stops. Instead: finish the pending tasks before stopping.
 - `tasklist_guard.reset` (skill): the task list was lost during session restore. Why: The old tasks are gone, not finished. Instead: restore the open tasks, then stop again.
 - `rules_json.rm_rf_root` (essential): `rm -rf` on / or the home directory. Why: Deleting data cannot be undone and needs the owner's explicit confirmation. Instead: confirm with the owner before deleting data, and delete only the exact paths you created.
 - `write.no_heredoc` (essential): a file written through a Bash heredoc. Why: The git and command guards scan the heredoc body as shell, so file content gets blocked or misread. Instead: write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.
-- `tasklist_guard.no_tasks` (essential): ... files changed but no tasks tracked. Why: Work this size needs a task list and a progress file.
+- `tasklist_guard.no_tasks` (essential, switch `guards.tasklistGuard`): ... files changed but no tasks tracked. Why: Work this size needs a task list and a progress file.
 - `tasklist_guard.stalled` (skill): ... tasks are marked in progress with no active agent. Why: They are stalled, not running in parallel. Instead: assign an agent to each stalled task.
 - `tasklist_guard.progress` (skill): ... files changed but progress is missing or stale. Why: The progress file must record what was done. Instead: update the progress file, then stop again.
 - `tasklist_guard.reduced` (skill): ... files changed but no work tracked. Why: Untracked work gets lost. Instead: list the open tasks and their status in your reply, priority first.
