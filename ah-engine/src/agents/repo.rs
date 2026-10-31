@@ -21,10 +21,7 @@ fn list(k: &str) -> Vec<&'static str> {
 }
 
 #[cfg(test)]
-thread_local! {
-    /// Test override of the git program and the timeout (ms), per test thread: a missing program or one that hangs (spec (f)).
-    pub(crate) static GIT_OVERRIDE: std::cell::RefCell<Option<(String, u64)>> = const { std::cell::RefCell::new(None) };
-}
+pub(crate) use tests::GIT_OVERRIDE;
 
 fn git_and_timeout() -> (String, u64) {
     #[cfg(test)]
@@ -110,4 +107,12 @@ pub(crate) fn scratch(path: &str, dir: &str) -> bool {
     }
     let env: Vec<String> = list("tmp_env").iter().filter_map(|k| std::env::var(k).ok()).filter(|v| !v.is_empty()).collect();
     list("tmp_prefixes").into_iter().map(str::to_string).chain(env).any(|t| p.starts_with(&t) || p.starts_with(canon(&t)))
+}
+
+#[cfg(test)]
+mod tests {
+    thread_local! {
+        /// Test override of the git program and the timeout (ms), per test thread: a missing program or one that hangs (spec (f)).
+        pub(crate) static GIT_OVERRIDE: std::cell::RefCell<Option<(String, u64)>> = const { std::cell::RefCell::new(None) };
+    }
 }
