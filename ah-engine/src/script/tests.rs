@@ -1573,6 +1573,29 @@ mod sibling {
     /// apostrophe (contraction, singular or plural possessive) never closes a quotation early. One apostrophe classifier,
     /// by neighbouring characters and balanced pairing per line, serves both.
     #[test]
+    fn a_self_correction_never_anchors_the_sweep_of_a_later_cause() {
+        // Codex review of PR #455 (P1): an earlier self-correction and a search after it must not count as the sweep for a
+        // later root-cause statement; each family is anchored to its own first statement.
+        let d = h("anchor");
+        let last = "Root cause was a stale cache. Fixed.";
+        let p = write(
+            &d,
+            "t.jsonl",
+            &[
+                user("fix"),
+                tool("Edit", json!({})),
+                result(),
+                say("I fixed a typo I made."),
+                tool("Grep", json!({"pattern": "unrelated_typo"})),
+                result(),
+                say(last),
+            ],
+        );
+        assert!(is_adv(&go(&d, &stop(&d, &p, last))), "the stale-cache cause still reminds");
+        assert_eq!(results(&d, "cause", "result"), vec!["reminded".to_string()]);
+    }
+
+    #[test]
     fn apostrophes_are_word_tokens_for_reported_speech_and_quotation_pairing() {
         let verdict = |tag: &str, text: &str| {
             let d = h(tag);

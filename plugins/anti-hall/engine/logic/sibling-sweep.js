@@ -405,7 +405,7 @@ function swReadTurn(path) {
         if (full()) break;
         textChars += b.text.length;
         var prepared = swPrepare(b.text), c = swFindCauseIn(prepared);
-        rev.push({ k: 'text', cause: c === null ? null : c.hash, sweep: swStatesSweepIn(prepared), fix: swHasFixIn(prepared) });
+        rev.push({ k: 'text', cause: c === null ? null : c.hash, family: c === null ? '' : c.family, sweep: swStatesSweepIn(prepared), fix: swHasFixIn(prepared) });
       } else if (bt === bTool && !full()) {
         rev.push({ k: 'tool', kind: swToolKind(b) });
       }
@@ -530,9 +530,10 @@ function decide(p) {
   };
   var fix = swHasFix(latest) || turn.events.some(function (e) { return (e.k === 'text' && e.fix) || (e.k === 'tool' && e.kind === 'edit'); });
   if (!fix) { swLog(row('no_fix_context')); return finish('allow'); }
-  // evidence: a search call, or an explicit statement, after the first cause statement of the turn
+  // evidence: a search call, or an explicit statement, after the first statement of the turn of the SAME family as this
+  // cause: a self-correction (and a search after it) never anchors or sweeps a later root-cause statement, nor the reverse
   var first = turn.events.length;
-  for (var j = 0; j < turn.events.length; j++) if (turn.events[j].k === 'text' && turn.events[j].cause !== null) { first = j; break; }
+  for (var j = 0; j < turn.events.length; j++) if (turn.events[j].k === 'text' && turn.events[j].cause !== null && turn.events[j].family === cause.family) { first = j; break; }
   var swept = swStatesSweep(latest) || turn.events.slice(first).some(function (e) { return (e.k === 'tool' && e.kind === 'search') || (e.k === 'text' && e.sweep); });
   if (swept) { swLog(row('swept')); return finish('allow'); }
   if (p[swCfg('sibling_sweep.f_active')] === true) { swLog(row('continuation')); return finish('allow'); }
