@@ -242,7 +242,9 @@ static MEM: Mutex<Option<Folded>> = Mutex::new(None);
 
 fn note(kind: &str, name: &str, outcome: &str, v: Val) {
     let key = (kind.to_string(), clean(name), outcome.to_string());
-    if crate::telemetry::emit::in_daemon() {
+    // A durable kind (diagnostics.durable_counter_kinds: the advisory counters) goes to the journal even inside the daemon, so a
+    // daemon restart does not lose it (GH #404: the advisor adherence counts were gone after every restart).
+    if in_memory(crate::telemetry::emit::in_daemon(), kind) {
         let (soft, hard, other) = limits();
         MEM.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Folded::default).add(key, v, soft, hard, other);
         return;
@@ -250,6 +252,12 @@ fn note(kind: &str, name: &str, outcome: &str, v: Val) {
     if let Err(e) = append_to(&journal_path(), &line_of(&key, &v), defaults::num("diagnostics.counters_max_bytes")) {
         health::log_event("obs", "counter", &defaults::render("msg.obs_counter_write_failed", &[("err", &e)]));
     }
+}
+
+/// Does a count of `kind` stay in this process's memory (the daemon, and a kind not listed in diagnostics.durable_counter_kinds)
+/// instead of going to the journal?
+fn in_memory(daemon: bool, kind: &str) -> bool {
+    daemon && !defaults::list("diagnostics.durable_counter_kinds").contains(&kind)
 }
 
 /// Count one hand-back at `site` (a stable id such as `dispatch.git-guard`), and note it in the trace ring.
@@ -349,6 +357,7 @@ pub fn report(f: &Folded) -> Value {
             e.insert(o.name().to_string(), json!(cur + if o.name() == outcome { v.n } else { 0 }));
         }
     }
+    ratios(&mut adv);
     let mut hb = Map::new();
     for h in Handback::all() {
         hb.insert(h.name().to_string(), json!(totals.get(h.name()).copied().unwrap_or(0)));
@@ -360,6 +369,21 @@ pub fn report(f: &Folded) -> Value {
         "advisory": adv,
         "counters": {"dropped": f.dropped, "soft_hits": f.soft_hits, "malformed": f.malformed},
     })
+}
+
+/// The derived ratios of the advisory report (diagnostics.advisory_ratios: name -> {kind, num, den}), each written into its kind's
+/// map as `num / den` rounded to three places; a ratio whose denominator is 0 or absent is left out.
+fn ratios(adv: &mut BTreeMap<&str, Map<String, Value>>) {
+    let Some(table) = defaults::raw("diagnostics.advisory_ratios").as_table() else { return };
+    for (name, spec) in table {
+        let field = |k: &str| spec.str_field(k);
+        let Some(e) = adv.get_mut(field("kind")) else { continue };
+        let num = e.get(field("num")).and_then(Value::as_u64).unwrap_or(0);
+        let den = e.get(field("den")).and_then(Value::as_u64).unwrap_or(0);
+        if den > 0 {
+            e.insert((*name).to_string(), json!(((num as f64 / den as f64) * 1000.0).round() / 1000.0));
+        }
+    }
 }
 
 /// Everything counted so far: the journal's totals plus this process's own table (the daemon's).
@@ -379,6 +403,22 @@ pub fn snapshot() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #404: the daemon kept the advisory counters in memory only, so `status` lost every advisor count on a restart. They now go
+    /// to the journal from the daemon too; a restarted daemon (empty memory) reads them back from the journal.
+    #[test]
+    fn advisory_counts_are_durable_across_a_daemon_restart() {
+        let adv = defaults::text("diagnostics.advisory_counter_kind");
+        assert!(!in_memory(true, adv), "the daemon journals advisory counts");
+        assert!(in_memory(true, "duty"), "other daemon counts stay in memory");
+        assert!(!in_memory(false, "duty"), "outside the daemon everything is journalled");
+        let line = format!("{adv}\tadvisor_thinking\tdispatch\t4\t0\t0\n{adv}\tadvisor_thinking\tconsulted_before\t1\t0\t0\n");
+        let r = report(&fold(&line, 99, 99, "other")); // what a fresh daemon (no memory table) reports from the journal alone
+        assert_eq!(r["advisory"]["advisor_thinking"]["dispatch"], 4);
+        assert_eq!(r["advisory"]["advisor_thinking"]["consult_rate"], 0.25, "the derived consult rate");
+        let none = report(&fold(&format!("{adv}\tadvisor_thinking\tconsulted_before\t1\t0\t0\n"), 99, 99, "other"));
+        assert!(none["advisory"]["advisor_thinking"].get("consult_rate").is_none(), "no ratio while the denominator is 0");
+    }
 
     #[test]
     fn counters_are_keyed_by_kind_site_and_outcome_and_the_fold_is_bounded() {

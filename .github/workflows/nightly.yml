@@ -43,6 +43,8 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch file; build dev, not stale main (a dispatch keeps the selected ref)
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -87,6 +89,8 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch file; build dev, not stale main (a dispatch keeps the selected ref)
       - name: open or update the nightly failure issue
         env:
           GH_TOKEN: ${{ github.token }}

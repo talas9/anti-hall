@@ -558,6 +558,7 @@ value = [
   { id = "silent-agent-nudge", matcher = "", timeout = 30, check = "silent-agent-nudge" },
   { id = "compact-advice-guard", matcher = "", timeout = 30, check = "compact-advice-guard" },
   { id = "sibling-sweep", matcher = "", timeout = 10, check = "sibling-sweep" },
+  { id = "advisor-guard:stop", matcher = "", timeout = 10, check = "advisor-guard" },
   { id = "afk-mode:stop", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
@@ -596,6 +597,7 @@ value = [
   { id = "wide-search-guard", matcher = "Bash", timeout = 10, check = "wide-search-guard" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
   { id = "advisor-guard", matcher = "Write|Edit|MultiEdit|ExitPlanMode", timeout = 10, check = "advisor-guard" },
+  { id = "advisor-guard:dispatch", matcher = "Agent|Task", timeout = 10, check = "advisor-guard" },
   { id = "afk-mode:pre", matcher = "AskUserQuestion", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
