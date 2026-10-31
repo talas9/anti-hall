@@ -1211,9 +1211,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.push_ack_state_prefix` | `git-push-ack-` |  |  | File name prefix of the per-session push acknowledgement stamp (push_ack_max_shas), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it. |
 | `git.push_argv_branch_contains` | `7 items` |  |  | git arguments listing the local branches that contain one credited commit, for the block message ({dir}, {repo} as in push_argv_log; {sha} the commit). At most git.shown hits are looked up, each bounded by push_timeout_ms. |
 | `git.push_argv_cdup` | `-C, {dir}, {repo}, rev-parse, --show-cdup` |  |  | git arguments printing the path from the push directory to the top of its work tree (empty at the top and in a bare repository); .gitmodules there means submodules are scanned. |
+| `git.push_argv_config` | `-C, {dir}, {repo}, config, --list` |  |  | git arguments listing the repository's effective configuration, read to see whether a push could send more than its command line names (push_scope_config_re). |
 | `git.push_argv_log` | `12 items` |  |  | git arguments listing every local commit no remote has (the pre-push credit check reads all of them, whatever the push would publish): {dir} is the repository directory, {repo} expands to the command's --git-dir/--work-tree, {n} the most commits read (the cap plus one, to see an overflow). Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
+| `git.push_argv_log_scoped` | `11 items` |  |  | git arguments listing the commits of the refs a push sends that no remote has (GH #506), used for a push its command line and configuration narrow (guards.gitPushCreditScope): {dir}, {repo} and {n} as in push_argv_log, {revs} expands to the revisions the push names (its refspec sources, or HEAD for a bare push). |
 | `git.push_argv_submodules` | `8 items` |  |  | git arguments printing the absolute path of each checked-out submodule, nested ones included; each is scanned with push_argv_log, and all of them share push_max_commits. |
 | `git.push_argv_tags` | `8 items` |  |  | git arguments listing the newest local tags ({n} of them, the commit cap plus one) as object type, name, tagged object and message. An annotated tag (push_tag_object_type) is in scope only when the commit it tags is itself unpushed (in the push_argv_log result): a tag on a commit a remote already has is taken as public, so a fetched credited tag never blocks, and a tag made locally on an already-pushed commit (or a tag of a tag) is not scanned. One in scope whose message carries an AI credit refuses the push. Fields end with US and records with RS. |
+| `git.push_bare_rev` | `HEAD` |  |  | The revision a push that names no refspec (a bare push, or one naming only a remote) is narrowed to: the current branch of the push's repository. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
 | `git.push_dynamic_path_res` | `^~[^/], ^[^'"]*[*?\[]` |  |  | Regular expressions (JavaScript syntax) for a repository path, as written, that the guard cannot expand (a ~user home, an unquoted glob); a $ or backtick expansion is always one. |
 | `git.push_dynamic_repo_cmd_re` | `(?:^\|[;&\|\n(]\s*)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&\|'"]*\s+)*git\s+(?:[^\s;&\|'"...` |  |  | Regular expression (JavaScript syntax) over the whole command for a git push at command position whose -C, --git-dir or --work-tree value holds an unquoted command substitution (a quoted one is read on the token): the segment splitter cuts the command there, so the push is matched on the raw text (msg_push_dynamic_repo). |
@@ -1222,7 +1225,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.push_hit_no_branch_format` | `{sha} (on no local branch){where}` |  |  | One credited commit in msg_push_credit that no local branch contains (a tag, a custom ref, a detached HEAD), or whose branches could not be read. Placeholders: {sha}, {where}. |
 | `git.push_hit_where_format` | ` in submodule {path}` |  |  | Appended to a credited commit found inside a submodule. Placeholder: {path} (the submodule directory). |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
-| `git.push_max_commits` | `50` |  |  | Most unpushed local commits (on any ref, pushed or not by this push) the pre-push credit check reads; more is refused (msg_push_over_cap), never allowed unread. |
+| `git.push_max_commits` | `50` |  |  | Most unpushed local commits the pre-push credit check reads: those the push sends when it is narrowed (push_argv_log_scoped), else every one of the repository's (on any ref). More is refused (msg_push_over_cap), never allowed unread. |
+| `git.push_refspec_unscoped_re` | `^(?:[-:]\|tag$\|.*[*?\[\\$`])` |  |  | Regular expression (JavaScript syntax) over a push refspec source: a glob, a bare `:` (matching), the word `tag`, a leading dash or a shell expansion character makes the push not narrowable to its own commits (any other source, revision syntax such as HEAD~1 included, is what git log reads). |
 | `git.push_repo_env_names` | `GIT_DIR, GIT_WORK_TREE` |  |  | Environment names that move the repository a push runs in: a value the shell expands at run time refuses the push (msg_push_dynamic_repo), and submodule scans run without them. |
 | `git.push_repo_opts` | `-C, --git-dir, --work-tree` |  |  | git options before the subcommand whose value is the repository a push runs in; a value the shell expands at run time refuses the push (msg_push_dynamic_repo). |
 | `git.push_same_call_always` | `am, cherry-pick` |  |  | Subcommands that write a commit message layer 1 never reads (a patch, a copied commit); with a push in the same Bash call they are refused. |
@@ -1234,10 +1238,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.push_same_call_opts` | `^-[A-Za-z]*[Ccte], ^--(?:reuse-message\\|reedit-message\\|template\\|edit\\|conti...` |  |  | Regular expressions (JavaScript syntax) for options that take the message from somewhere layer 1 does not read (a reused or edited commit, a template, an editor: -e or --edit); any one makes the message unread. A short-flag cluster ending in m (-em) is matched on its flags before the m. |
 | `git.push_same_call_quoted_heredoc` | `<<-?[ \t]*(?:'[^']+'\|"[^"]+"\|\\\S)` |  |  | Regular expression (JavaScript syntax) for a quoted heredoc on the commit's own command: -F - fed by one is read by layer 1 (its body never expands). |
 | `git.push_same_call_subs` | `commit, commit-tree, tag, merge, revert, rebase` |  |  | Subcommands whose message the same-call check reads: with a push in the same Bash call, one whose message layer 1 cannot read is refused (msg_push_same_call). |
+| `git.push_scope_config_re` | `^(?:remote\..+\.(?:push\|mirror)=\|push\.default=matching$)` |  |  | Regular expression (JavaScript syntax, multiline) over `git config --list`: a line that matches (a remote with a configured push refspec or mirror flag, push.default matching) means a bare push may send more than the current branch, so the push is not narrowed to its own commits. |
 | `git.push_skip_opts` | `--dry-run, -n, --delete, -d` |  |  | git push options after which nothing is published, so the pre-push credit backstop is skipped. |
 | `git.push_tag_object_type` | `tag` |  |  | The object type for-each-ref prints for an annotated tag (a lightweight tag prints its commit's type and is covered by the commit scan). |
 | `git.push_timeout_ms` | `4000` |  | ms | Timeout of each git query the pre-push credit backstop runs. |
 | `git.push_unchecked_advisory` | `anti-hall: this push was not checked for AI credit lines (git could not run, ...` |  |  | Advisory when a git query of the pre-push credit check could not run (unavailable), failed (non-zero exit, e.g. not a repository) or passed push_timeout_ms: the push is let through unchecked. |
+| `git.push_unscoped_env_prefixes` | `GIT_CONFIG` |  |  | Environment variable name prefixes set on a push that change the configuration it runs with (GIT_CONFIG_COUNT/KEY/VALUE, GIT_CONFIG_PARAMETERS, GIT_CONFIG_GLOBAL): the push is not narrowed to its own commits. |
+| `git.push_unscoped_globals` | `-c, --config-env` |  |  | git options before the subcommand that change the configuration or the environment a push runs with: the push is not narrowed to its own commits. |
+| `git.push_unscoped_opts` | `--all, --branches, --mirror, --tags, --follow-tags, --prune` |  |  | git push options after which the commits sent cannot be read from the command line (every branch, every tag, a mirror, pruning): the push is not narrowed to its own commits. |
+| `git.push_value_opts` | `-o, --push-option, --repo, --receive-pack, --exec` |  |  | git push options that take their value as the next word, skipped when the command's refspecs are read (an option whose value is optional, such as --signed, takes it only after `=` and is not listed). |
 | `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
 | `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
 | `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
@@ -1253,6 +1262,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.setting_handover_guard` | `6 entries` |  |  | Switch for the handover-commit guard. |
 | `git.setting_heredoc_data` | `6 entries` |  |  | Switch for data-heredoc masking. |
 | `git.setting_push_credit` | `6 entries` |  |  | Switch for the pre-push credit backstop (GH #457): off lets a push through although an unpushed commit carries an AI credit. |
+| `git.setting_push_credit_scope` | `6 entries` |  |  | Switch for narrowing the pre-push credit check to the commits a push sends (GH #506): off reads every unpushed commit of the repository for every push, as before. |
 | `git.setting_reused_message` | `6 entries` |  |  | Switch for the reused-commit-message check. |
 | `git.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument is itself a script to scan. |
 | `git.skip_command` | `~/.anti-hall/ah-engine/bin/ah-engine mesh skip {key}` |  |  | Command that records a skip for a guard ({key} is the guard id): the native thin client. |
@@ -5871,7 +5881,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `389 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `391 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8285,7 +8295,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `395 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `397 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14330,7 +14340,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |
 | `git.msg_push_credit` | Block: a push would publish commits that carry an AI credit. Placeholder: {shown} (each short hash with the branches that hold it, push_hit_format). |
 | `git.msg_push_dynamic_repo` | Block: a push whose repository (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) is a path the shell expands at run time. Placeholder: {arg}. |
-| `git.msg_push_over_cap` | Block: more local commits are on no remote than the pre-push credit check reads, so a credit past the cap could not be ruled out. Placeholder: {cap}. |
+| `git.msg_push_over_cap` | Block: more local commits are on no remote than the pre-push credit check reads, so a credit past the cap could not be ruled out. Placeholders: {cap}, {repo} (the repository directory the push runs in) and {count} (the commits counted, read up to one past the cap). |
 | `git.msg_push_same_call` | Block: one Bash call creates a commit whose message layer 1 cannot read and pushes. Placeholder: {sub} (the subcommand). |
 | `git.msg_push_tag_credit` | Block: a local annotated tag's message carries an AI credit. Placeholder: {tags} (the tag names). |
 | `git.msg_reused_message` | Block: a reused commit message carries an AI self-credit. Placeholder: {origin}. |
@@ -14468,6 +14478,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git_blocked` | counter | commands | reason | Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push). |
 | `git_push_ack_downgraded` | counter | pushes |  | Pushes the credit backstop let through as an advisory because the identical push had been blocked once and git.push_ack_max_shas acknowledges it (off by default). |
 | `git_push_blocked` | counter | pushes |  | Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457). |
+| `git_push_scoped` | counter | pushes |  | Pushes whose credit check read only the commits the push sends, not every unpushed commit of the repository (GH #506). |
 | `command_heavy_segment_named` | counter | blocks | kind | Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own. |
 | `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
 | `agent_scan_degraded` | counter | scans | reader | Agent scans that returned unknown (the callers' unsure path: the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) because the window held a line longer than agent_scan.max_line_bytes that was skipped unparsed, by reader: scan_window or scan_kept. Any oversize line degrades the scan, noise or not, since the skipped line may have carried a completion. |
