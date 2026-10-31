@@ -86,11 +86,13 @@ var vf = {
     return false;
   },
   // What a SessionStart owes a session about a block it already served (emit on change, not every start): 'first' (send the whole text:
-  // a fresh context, no record, or the switch context.protocolOnce off), 'resend' (compacted or resumed since: the short form) or 'repeat'
+  // a fresh context, no record, the switch context.protocolOnce off, or a compaction or resume while context.protocolFullAfterCompact
+  // is on), 'resend' (compacted or resumed since, that switch off: the short form) or 'repeat'
   // (served earlier, neither fresh nor compaction: one line). One small record per session under script.write_root/<dirKey>; any problem
   // with it means 'first', never silence. Sources: verify_first.fresh_sources / resend_sources.
-  deliveryKind: function (p, dirKey, prefixKey) {
-    if (!ah.settings.bool('verify_first.setting_once')) return 'first';
+  // `fullAfterCompact`: the caller's text is the protocol, sent whole again after a compaction or resume while the switch is on (#519).
+  deliveryKind: function (p, dirKey, prefixKey, fullAfterCompact) {
+    if (!ah.settings.bool('verify_first.setting_once')) { ah.metric('protocol_delivery', ['hook', ah.cfg(prefixKey), 'kind', ah.cfg('verify_first.metric_kind').first]); return 'first'; }
     var sid = jx.isObj(p) && typeof p.session_id === 'string' && p.session_id !== '' ? p.session_id : null;
     var home = spawn.stateHome();
     if (sid === null || home.ok === undefined) return 'first';
@@ -100,6 +102,9 @@ var vf = {
     var source = typeof p.source === 'string' ? p.source : '';
     var kind = 'first';
     if (seen && ah.cfg('verify_first.fresh_sources').indexOf(source) < 0) kind = ah.cfg('verify_first.resend_sources').indexOf(source) >= 0 ? 'resend' : 'repeat';
+    // a compaction or resume buries the earlier text: the whole text again, once per such start (#519), unless switched off
+    if (kind === 'resend' && fullAfterCompact === true && ah.settings.bool('verify_first.setting_full_after_compact')) kind = 'first';
+    ah.metric('protocol_delivery', ['hook', prefix, 'kind', ah.cfg('verify_first.metric_kind')[kind]]);
     try { ah.state.writeAtomic(rel, JSON.stringify({ source: source, kind: kind })); } catch (e) { /* a lost write only means the next start sends the whole text */ }
     gk.pruneStale(dirRel, prefix);
     return kind;

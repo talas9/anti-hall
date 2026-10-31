@@ -414,6 +414,14 @@ max = 20
 doc = "The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494)."
 value = { kind = "silent_nudge", text = "runtime escalation Stop not blocked: the block count could not be saved" }
 
+[metric.silent_agent_nudge_fired]
+doc = "Stop nudges said by silent-agent-nudge for a background agent or heartbeat quiet for guards.silentAgentNudgeMin minutes (#519)."
+value = { kind = "counter", unit = "stops", labels = [] }
+
+[metric.silent_agent_nudge_acked]
+doc = "Stop nudges of silent-agent-nudge withheld because this exact set of agents was acked for the session (silent_nudge.ack_*)."
+value = { kind = "counter", unit = "stops", labels = [] }
+
 [metric.runtime_escalation_stop_unrecorded]
 doc = "Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap)."
 value = { kind = "counter", unit = "stops", labels = [] }

@@ -254,7 +254,7 @@ doc = "The compact snapshot copy the statusline segment reads (engine state dire
 value = "devswarm-line.json"
 
 [devswarm_rt.set_line_enabled]
-doc = "Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle)."
+doc = "Show the DevSwarm statusline segment."
 value = { type = "bool", section = "statusline", key = "devswarm.enabled", env = "ANTIHALL_STATUSLINE_DEVSWARM", option = "statusline_devswarm_enabled", default = true }
 
 [devswarm_rt.set_line_format]

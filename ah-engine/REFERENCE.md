@@ -3088,14 +3088,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.full_codex` | `VERIFY-FIRST + ROOT-CAUSE PROTOCOL (re-stated so it survives context growth a...` |  |  | The same full text for a Codex session (DISCIPLINES_INDEX_CODEX in place of DISCIPLINES_INDEX). |
 | `verify_first.guard_subagent` | `verify-first-subagent` |  |  | The guard id verify-first-subagent answers to in skip.json. |
 | `verify_first.judge_child_env` | `2 entries` |  |  | Environment variable that marks the headless judge child; a hook that runs in it prints nothing. |
+| `verify_first.metric_kind` | `3 entries` |  |  | The kind label of metric.protocol_delivery per delivery decision: first (the whole text), resend (the short digest), repeat (the one line). |
 | `verify_first.mn_line` | `M/N. Workers do not re-delegate; read-only research -> Explore; 3+ parallel/n...` |  |  | The model-routing and no-re-delegation line the compact SessionStart text gains when the orchestration hook is switched off (Claude). |
 | `verify_first.mn_line_codex` | `M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent;...` |  |  | The same line for a Codex session. |
 | `verify_first.repeat_session` | `ANTI-HALL VERIFY-FIRST: already delivered earlier this session. No speculatio...` |  |  | The one line sent when the session was already served the protocol and this start is neither fresh nor a compaction or resume; each <abs> is replaced by the plugin root directory. |
 | `verify_first.resend_session` | `ANTI-HALL VERIFY-FIRST (re-sent after compaction or resume; the full text was...` |  |  | The short protocol digest sent after a compaction or resume; each <abs> is replaced by the plugin root directory. |
 | `verify_first.resend_sources` | `compact, resume` |  |  | SessionStart sources after which the earlier text is gone or buried (the session was compacted or resumed): the short digest is sent. Any other source of an already-served session gets the one-line repeat. |
 | `verify_first.root_probe` | `hooks/install.sh` |  |  | File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file. |
+| `verify_first.setting_full_after_compact` | `6 entries` |  |  | Full rules on compaction. Where the switch is read from (context.protocolFullAfterCompact, default on): a SessionStart whose source is in verify_first.resend_sources (a compaction or resume) gets the whole compact text again, once per such start, instead of the short digest, which drops the RULES, SCOPE, AUTONOMY, SKIP and WORKER sections (#519). false = the short digest (verify_first.resend_session). |
 | `verify_first.setting_level` | `5 entries` |  |  | Where the protocol size is read from (context.protocolLevel: compact or full, default compact). |
-| `verify_first.setting_once` | `6 entries` |  |  | Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start. |
+| `verify_first.setting_once` | `6 entries` |  |  | Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume the whole text again while verify_first.setting_full_after_compact is on (else a short digest), and a repeated start in the same session one line. false = the whole text at every start. |
 | `verify_first.setting_orchestration` | `6 entries` |  |  | Orchestration rules switch. Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself. |
 | `verify_first.setting_session` | `6 entries` |  |  | Where the on/off switch of verify-first-full is read from (context.verifyFirstSession, default on). |
 | `verify_first.setting_subagent` | `6 entries` |  |  | Verify-first-subagent switch. Where the on/off switch of verify-first-subagent is read from (context.verifyFirstSubagent, default on). |
@@ -3540,6 +3542,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.events` | `SessionStart` |  |  | The hook events whose contexts are capped: the ones that fire at every start, resume and compaction. |
 | `context_size.file` | `{event}-full-{ts}-{pid}-{seq}.txt` |  |  | File name of the full texts of one event (in dispatch.spill_dir, mode 0600, swept like the other spill files). Placeholders: {event}, {ts} (milliseconds), {pid}, {seq} (a per-process counter: the daemon dispatches on several threads). |
 | `context_size.hook_caps` | `1 entries` |  |  | Per hook entry id, the inline cap in characters that replaces context_size.num_hook_cap (0 = no per-hook cap for that hook). The DevSwarm comms manual is reference text that the full mesh help also prints. |
+| `context_size.label_low` | `low` |  |  | Class label of metric.context_shrunk for a shrunk context below dispatch.context_pin_priority. |
+| `context_size.label_pinned` | `pinned` |  |  | Class label of metric.context_shrunk for a shrunk context at or above dispatch.context_pin_priority. |
 | `context_size.msg_ref` | `{summary}\n[anti-hall: full text, {chars} characters, in {path} - Read it bef...` |  |  | What a shrunk context becomes. Placeholders: {summary} the first line, {chars} the size of the full text, {path} the file that holds it. |
 | `context_size.msg_shrunk` | `{hooks} hook context(s) shrunk: {before} characters became {after} inline, th...` |  |  | Event-log detail after contexts were replaced by summaries. Placeholders: {hooks}, {before}, {after} (characters), {path}. |
 | `context_size.never` | `verify-first-full, verify-first-orch, handover-resume, engine-role-note` |  |  | Dispatch entry ids (a variant suffix is ignored) whose context is never shrunk: behavioural blocks that size themselves (the verify-first protocol and orchestration rules, delivered once per session or on the first spawn) and the handover resume steps, which are the task. |
@@ -3549,6 +3553,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.section_head` | `== {id} ==\n` |  |  | Heading before each hook's full text in that file. Placeholder: {id}. |
 | `context_size.summary_chars` | `280` |  |  | Longest summary line a shrunk context keeps inline: its first line, cut at a word end. |
 | `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the inline caps. Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
+| `context_size.sw_keep_pinned` | `5 entries` |  |  | Pinned inline. Switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519). |
 
 ### session.toml / session
 
@@ -4208,7 +4213,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nested_spawn.msg_instead` | `report back to the coordinator if more agents are needed.` |  |  | What to do instead of a nested spawn. |
 | `nested_spawn.msg_what` | `this agent is a worker and can't start agents of its own.` |  |  | What the block says. |
 | `nested_spawn.msg_why` | `Nested agents hide their cost from the coordinator (one burned about 2.5M tok...` |  |  | Why nested spawns are blocked. |
-| `nested_spawn.setting` | `6 entries` |  |  | On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them. |
+| `nested_spawn.setting` | `6 entries` |  |  | On lets subagents and teammates start agents. |
 | `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): b...` |  |  | One-line description of the nested-spawn check in the generated reference. |
 
 ### spawn_guards.toml / spawn_ceiling
@@ -5423,7 +5428,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
 | `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
 | `queued_wait.summary` | `PreToolUse on Bash, subagents only: blocks a build or test command started wi...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
-| `queued_wait.sw` | `6 entries` |  |  | Default on; off lets a subagent run heavy commands in the background and poll with sleep loops. |
+| `queued_wait.sw` | `6 entries` |  |  | Off lets a subagent poll background work with sleep loops. |
 
 ### lane_waste.toml / wide_search
 
@@ -8128,7 +8133,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_rt.probe_cache_racy_ms` | `2000` |  | ms | A heartbeat, plan or descriptor file modified more recently than this when it is read is read again by the next reconcile, even if its size and modification time look unchanged (a rewrite inside the clock's granularity could otherwise be missed). Older files are parsed once and kept until their inode, modification time or size changes. |
 | `devswarm_rt.reconcile_ms` | `60000` |  | ms | How often the whole state is re-read from its sources and diffed (the safety net under the event layer); every change it finds that events missed counts in `rt_reconcile_repairs`. |
 | `devswarm_rt.restart_grace_ms` | `120000` |  | ms | Changes found by the start-up diff (flagged while_down) are not notified before this long after start, and only if the condition still holds then. |
-| `devswarm_rt.set_line_enabled` | `6 entries` |  |  | Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle). |
+| `devswarm_rt.set_line_enabled` | `6 entries` |  |  | Show the DevSwarm statusline segment. |
 | `devswarm_rt.set_line_format` | `6 entries` |  |  | The segment text. `{parts}` is replaced by the non-empty counts (see devswarm_rt.line_parts), in the order of devswarm_rt.line_order. |
 | `devswarm_rt.set_line_max_chars` | `8 entries` |  |  | The segment is cut to this many characters (an ellipsis marks the cut). |
 | `devswarm_rt.set_line_stale_ms` | `8 entries` |  |  | Data older than this shows as `?`, not a guess. |
@@ -14586,9 +14591,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
+| `protocol_delivery` | counter | starts | hook, kind | SessionStart protocol texts sent, by hook (the delivery record prefix: verify_first.delivery_prefix for the protocol, the orchestration rules' own prefix) and kind (verify_first.metric_kind): full (a fresh start, or a compaction or resume while verify_first.setting_full_after_compact is on), digest (the short text after a compaction or resume), repeat (the one line). |
 | `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
+| `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
 | `claim_evidence_suppressor_rejected` | counter | candidates | reason | Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427). |
@@ -14605,6 +14612,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
 | `idle_trips` | counter | events |  | AFK periods started by idle detection. |
 | `runtime_escalation_stop_unrecorded` | counter | stops |  | Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap). |
+| `silent_agent_nudge_acked` | counter | stops |  | Stop nudges of silent-agent-nudge withheld because this exact set of agents was acked for the session (silent_nudge.ack_*). |
+| `silent_agent_nudge_fired` | counter | stops |  | Stop nudges said by silent-agent-nudge for a background agent or heartbeat quiet for guards.silentAgentNudgeMin minutes (#519). |
 | `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided). |
 | `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
