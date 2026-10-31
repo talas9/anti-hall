@@ -515,17 +515,18 @@ pub fn memory() -> String {
 
 /// `agents(path)`: the agents a transcript shows as running, from the engine's streaming transcript scan (widened to a longer
 /// window when the default one shows none): `null` (unreadable, or the count cannot be trusted), `{"unsure":true}` (a line JavaScript might read differently, or a relative path), else
-/// `{"rows":[{"id","description","spawnInput"}]}` (`spawnInput`: the input of the launching tool call when it was in the
-/// window, else `null`).
+/// `{"rows":[{"id","description","spawnInput"}],"truncated":bool}` (`spawnInput`: the input of the launching tool call when it was
+/// in the window, else `null`; `truncated`: the rows came from a tail of a longer transcript, so an agent launched before that
+/// window is not in them and their absence proves nothing).
 pub fn agents(path: &str) -> String {
     use crate::checks::agent_scan;
     let opts = agent_scan::Opts { now_ms: crate::checks::replykit::io::now_ms(), ignore_unanswered_stops: false };
-    match agent_scan::running_agents_or_null(path, &opts) {
+    match agent_scan::agent_count_proof(path, &opts) {
         Err(_) => r#"{"unsure":true}"#.into(),
-        Ok(None) => "null".into(),
-        Ok(Some(rows)) => {
+        Ok(agent_scan::Proof { rows: None, .. }) => "null".into(),
+        Ok(agent_scan::Proof { rows: Some(rows), complete, .. }) => {
             let rows: Vec<serde_json::Value> = rows.iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
-            serde_json::json!({"rows": rows}).to_string()
+            serde_json::json!({"rows": rows, "truncated": !complete}).to_string()
         }
     }
 }
@@ -1245,6 +1246,8 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("advisory", Function::new(c.clone(), |kind: String, metric: String| crate::obs::counters::advisory(&kind, &metric))?)?;
     // add `by` to the registered counter `name` with the labels of the JSON object `labels` (an unregistered name is ignored)
     h.set("metric", Function::new(c.clone(), |name: String, labels: String, by: f64| metric_add(&name, &labels, by))?)?;
+    // the recorded guard blocks of one session and of the latest other session, as JSON (`ui.banner`, `ui.sessionSummary`)
+    h.set("sessionBlocks", Function::new(c.clone(), |session: String| session_blocks(&session))?)?;
     h.set("log", Function::new(c.clone(), |kind: String, text: String| crate::discard::note("script_log", &format!("{kind}: {text}")))?)?;
     h.set("deadlineLeftMs", Function::new(c.clone(), deadline_left_ms)?)?;
     h.set("realpathEx", Function::new(c.clone(), |p: String| realpath_ex(&p))?)?;
@@ -1309,4 +1312,103 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     super::host_transcript::install(c, &h)?;
     c.globals().set("ahHost", h)?;
     Ok(())
+}
+
+/// `{"current": n, "top": [[rule, n], ..], "last": n}`: blocks recorded for `session`, its most frequent rules, and the block
+/// count of the session that started before it (0 when it had none, or none is known). Sessions are known from their own
+/// start records (`guard_rules.sessions_key`, written here on the first call for a session), not from block rows, so a
+/// session without a block is still the previous one. Empty counts when the telemetry store cannot be opened.
+fn session_blocks(session: &str) -> String {
+    let days = defaults::num("guard_rules.blocks_window_days");
+    let since = crate::health::now_ms().saturating_sub(days.saturating_mul(defaults::num("web.query_day_ms")));
+    let rows = crate::telemetry::cli::open_existing().map(|t| t.blocks(since, defaults::num("guard_rules.blocks_limit") as usize)).unwrap_or_default();
+    let marks = with_settings(|st| crate::checks::guardkit::state::FileState::new(&st.home))
+        .ok()
+        .flatten()
+        .map(|s| touch_session(&s, session, crate::health::now_ms()))
+        .unwrap_or_default();
+    session_counts(&rows, &marks, session)
+}
+
+/// Record `session`'s start (first sight wins) in the bounded session list and answer the list as `(session, start_ms)`.
+fn touch_session(store: &dyn crate::checks::guardkit::state::SessionState, session: &str, now: u64) -> Vec<(String, u64)> {
+    let (ns, key) = (defaults::text("guard_rules.sessions_ns"), defaults::text("guard_rules.sessions_key"));
+    let keep = defaults::num("guard_rules.sessions_keep") as usize;
+    let mut out = Vec::new();
+    store.update(ns, key, &mut |cur| {
+        let mut list: Vec<(String, u64)> = cur.and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+        if !session.is_empty() && !list.iter().any(|(s, _)| s == session) {
+            list.push((session.to_string(), now));
+        }
+        if list.len() > keep {
+            list.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
+            list.truncate(keep);
+        }
+        out = list.clone();
+        serde_json::to_string(&list).ok()
+    });
+    out
+}
+
+/// The counts for `session`: its blocks and top rules, and the blocks of the latest session that started before it.
+fn session_counts(rows: &[crate::storage::BlockRow], marks: &[(String, u64)], session: &str) -> String {
+    let own_start = marks.iter().find(|(s, _)| s == session).map(|(_, t)| *t);
+    let previous = marks.iter().filter(|(s, t)| s != session && own_start.is_none_or(|o| *t <= o)).max_by_key(|(_, t)| *t).map(|(s, _)| s.as_str());
+    let mut per_rule: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let (mut current, mut last) = (0u64, 0u64);
+    for b in rows.iter().filter(|b| !b.session.is_empty()) {
+        if b.session == session {
+            current += 1;
+            *per_rule.entry(b.rule.clone()).or_insert(0) += 1;
+        } else if Some(b.session.as_str()) == previous {
+            last += 1;
+        }
+    }
+    let mut top: Vec<(String, u64)> = per_rule.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    serde_json::json!({"current": current, "top": top, "last": last}).to_string()
+}
+
+#[cfg(test)]
+mod session_blocks_tests {
+    use super::*;
+    use crate::checks::guardkit::state::MemoryState;
+
+    fn row(session: &str, rule: &str) -> crate::storage::BlockRow {
+        crate::storage::BlockRow { session: session.into(), rule: rule.into(), ..Default::default() }
+    }
+
+    fn last(rows: &[crate::storage::BlockRow], marks: &[(String, u64)], me: &str) -> u64 {
+        serde_json::from_str::<serde_json::Value>(&session_counts(rows, marks, me)).unwrap()["last"].as_u64().unwrap()
+    }
+
+    fn marks(v: &[(&str, u64)]) -> Vec<(String, u64)> {
+        v.iter().map(|(s, t)| (s.to_string(), *t)).collect()
+    }
+
+    #[test]
+    fn the_previous_session_is_the_one_that_started_last_even_with_no_block_rows() {
+        // old = 3 blocks, mid = started later and had none, me = now: the banner says 0, not old's 3
+        let rows = [row("old", "a"), row("old", "a"), row("old", "b")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("mid", 20), ("me", 30)]), "me"), 0);
+        // when mid did block, its count is reported
+        let rows = [row("mid", "a"), row("old", "a"), row("old", "a")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("mid", 20), ("me", 30)]), "me"), 1);
+        // no other known session: nothing to report
+        assert_eq!(last(&rows, &marks(&[("me", 30)]), "me"), 0);
+    }
+
+    #[test]
+    fn a_session_started_after_this_one_is_not_its_previous() {
+        let rows = [row("later", "a"), row("old", "a")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("me", 20), ("later", 30)]), "me"), 1);
+    }
+
+    #[test]
+    fn the_first_call_for_a_session_records_its_start_and_a_second_call_keeps_it() {
+        let st = MemoryState::new();
+        assert_eq!(touch_session(&st, "a", 5), marks(&[("a", 5)]));
+        assert_eq!(touch_session(&st, "b", 9), marks(&[("a", 5), ("b", 9)]));
+        assert_eq!(touch_session(&st, "a", 99), marks(&[("a", 5), ("b", 9)]));
+    }
 }

@@ -369,8 +369,12 @@ doc = "Case-insensitive phrases in a task owner, subject or description that mea
 value = ["owner-go", "waiting owner", "needs your OK"]
 
 [task_guard.advise_unresolved_owners]
-doc = "Advise instead of blocking Stop when a non-coordinator task owner cannot be resolved to known live or finished tracker work. False restores blocking for unresolved owners."
+doc = "Advise instead of blocking Stop when a non-coordinator task owner names agent work this session can see (a launched or tracked agent) whose liveness no source can tell. An owner whose agent is known to have ended is not unresolved and blocks. False restores blocking for unresolved owners."
 value = true
+
+[task_guard.advise_unmatched_owners]
+doc = "Advise instead of blocking Stop when a non-coordinator task owner names no agent, tracked agent or live DevSwarm workspace this session can see. False (the default) blocks such a task like any open task, as the Node task-guard did."
+value = false
 
 [task_guard.unresolved_owner_advisory]
 doc = "Fail-open advisory for unresolved task owners; {list} uses the existing bounded task renderer."
@@ -553,6 +557,10 @@ value = "apply_patch"
 [task_guard.idle_what]
 doc = "The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail."
 value = "{n} open tasks have no agent working on them."
+
+[task_guard.idle_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "Never stop with open tasks idle: assign each to an agent or report why."
 
 [task_guard.idle_why]
 doc = "The why line of the idle-neglect block."
@@ -955,6 +963,10 @@ value = "The old tasks are gone, not finished."
 doc = "Block headline when work was done and no task was tracked; {n} is the work count."
 value = "{n} files changed but no tasks tracked."
 
+[tasklist_guard.digest_no_tasks]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "Track work in the task list and a fresh progress file: changes with no tasks or a missing/stale progress file block the stop."
+
 [tasklist_guard.why_no_tasks]
 doc = "Block reason when no task was tracked."
 value = "Work this size needs a task list and a progress file."
@@ -1013,7 +1025,7 @@ value = "add the work as tasks, then stop again."
 
 [tasklist_guard.instead_files]
 doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
-value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
+value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. Delegate the entry to a cheap teammate (Haiku or Sonnet) with the facts, the exact path and the format; handovers stay self-written. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
 
 [tasklist_guard.append_claude]
 doc = "How to append to the history file (Claude wording)."
@@ -1304,7 +1316,7 @@ value = ["completed"]
 
 [tasklist_hygiene.msg_done]
 doc = "What the done line says; {id} is the task id."
-value = "task {id} done: log Cause/Fix/Verified in the history ledger."
+value = "task {id} done: delegate its Cause/Fix/Verified ledger entry."
 
 [tasklist_hygiene.instead_done]
 doc = "What to do, in the done line."
@@ -1312,7 +1324,7 @@ value = "TaskUpdate status=deleted (own task entries are not user data)."
 
 [tasklist_hygiene.detail_done]
 doc = "Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from."
-value = "Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
+value = "Delegate the ledger entry to a cheap teammate (facts, exact path, format, no heredoc). Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
 
 [tasklist_hygiene.event_nudge]
 doc = "Counter event: a completed-task note was shown (one per TaskUpdate to a done status)."

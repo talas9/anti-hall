@@ -13,6 +13,7 @@
 //! * [`route`]: routing events joined to spawn results, and the NET savings estimate (D77);
 //! * [`report`]: the `telemetry` and `impact` report bodies.
 pub mod cli;
+pub mod cohort;
 pub mod emit;
 pub mod event;
 pub mod persist;
@@ -372,6 +373,7 @@ impl Telemetry {
             Verdict::Routed(_, _) => (Outcome::Allow, 0),
         };
         self.record(Kind::Check, check, event, outcome, micros, injected);
+        cohort::observe(check, &who.session, outcome);
         {
             let mut m = lk(&self.metrics);
             m.inc("check_calls", &[("check", check)]);
@@ -536,6 +538,26 @@ impl Default for Telemetry {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn calls_are_counted_by_the_session_digest_state_and_a_retry_after_a_block_is_scored() {
+        // #462: blocks per 100 matching calls with the digest on versus off, and rule.retry_compliant
+        let t = Telemetry::new();
+        let who = |s: &str| Who { session: s.into(), ..Default::default() };
+        let digest = defaults::text("guard_rules.digest_check");
+        let calls = |state: &str, outcome: &str| crate::metrics::bumped_on_this_thread("rule_digest_calls", &[("state", state), ("outcome", outcome)]);
+        let retry = |result: &str| crate::metrics::bumped_on_this_thread("rule_retry_compliant", &[("check", "git"), ("result", result)]);
+        t.observe_check_who("SessionStart", digest, "", &Verdict::Advisory("{}".into()), 1, "p", &who("coh-on"));
+        t.observe_check_who("SessionStart", digest, "", &Verdict::Allow, 1, "p", &who("coh-off"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Block("x".into()), 1, "p", &who("coh-on"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Allow, 1, "p", &who("coh-on"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Block("x".into()), 1, "p", &who("coh-off"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Block("x".into()), 1, "p", &who("coh-off"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Allow, 1, "p", &who("coh-unknown"));
+        assert_eq!((calls("on", "block"), calls("on", "allow")), (1, 1));
+        assert_eq!((calls("off", "block"), calls("off", "allow")), (2, 0));
+        assert_eq!((retry("compliant"), retry("repeat")), (1, 1), "coh-on fixed the cause, coh-off was blocked again");
+    }
 
     #[test]
     fn what_a_request_records_counts_only_once_its_reply_is_written() {

@@ -231,6 +231,18 @@
             "type": "command",
             "command": "[ -f \"${PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex",
             "timeout": 10,
+            "id": "rule-digest"
+          },
+          {
+            "type": "command",
+            "command": "[ -f \"${PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "session-banner"
+          },
+          {
+            "type": "command",
+            "command": "[ -f \"${PLUGIN_ROOT}/hooks/install.sh\" ] && AH_CLIENT=\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex || exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex",
+            "timeout": 10,
             "id": "verify-first-orch"
           },
           {

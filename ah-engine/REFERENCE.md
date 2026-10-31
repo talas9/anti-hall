@@ -350,10 +350,13 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `command` | command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook. |
 | `model-routing` | Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches. |
 | `failure-root-cause-nudge` | Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals, a shell glob/echo artefact beside output that printed fine, and repeats within a turn. |
-| `git-audit` | Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer. |
+| `git-audit` | Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) carries an AI self-credit; one HEAD reaches and no remote has is blocked until reworded, one a remote already has (committed and pushed in one call) is blocked once and reported as published. |
 | `verify-first-subagent` | SubagentStart context: injects the verify-first protocol (compact, or full when context.protocolLevel is full) into every spawned subagent. |
 | `verify-first-full` | SessionStart context: injects the verify-first protocol and discipline index for the session, Claude or Codex text. |
 | `fable-availability` | SessionStart: records whether a Fable model is available (from the host's model cache) in ~/.anti-hall/fable-availability.json and tells the session when it is. |
+| `rule-digest` | SessionStart: puts the essential rules the engine enforces (one source with the engine-rules skill) into the session context; context.ruleDigest turns it off. |
+| `session-banner` | SessionStart: one user-visible line with the plugin version, the rules enforced and last session's blocks; ui.banner turns it off. |
+| `session-summary` | SessionEnd: one user-visible line with this session's blocks and the rules that fired most; ui.sessionSummary = off turns it off. |
 | `inbox-read-guard` | Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is active. |
 | `phase-tracker` | Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm bar and the running-agents heartbeat); never blocks. |
 | `orch-on-spawn` | Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker takes the claim (a file created only when absent) and sends the full rules; only the retry slot after the claim lease, which needs the transcript scan, defers to Node. |
@@ -1104,7 +1107,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.argv_log_message` | `log, -1, --format=%B, {rev}, --` |  |  | git arguments that print one commit message; {rev} is the revision. |
 | `git.backstop_commit_subs` | `commit, merge, commit-tree, interpret-trailers, tag` |  |  | Subcommands whose messages the backstop scan checks for AI self-credit. |
 | `git.block_emoji` | `⛔` |  |  | Leading symbol of a block message. |
+| `git.block_key_prefix` | `msg_` |  |  | The prefix of a message key that is removed to make the reason label of the git_blocked counter. |
 | `git.block_mark` | ` anti-hall · git safety: ` |  |  | Product and guard label after the symbol; also the marker alias notes are inserted after. |
+| `git.block_reason_other` | `other` |  |  | The reason label of the git_blocked counter for a block that has no message key. |
 | `git.budget_handover_evals` | `50` |  |  | Commit evaluations the handover check may do per command. |
 | `git.budget_handover_queries` | `8` |  |  | Distinct git queries the handover check may run per command. |
 | `git.budget_launcher_fs` | `64` |  |  | Filesystem probes the launcher check may spend per command. |
@@ -1114,6 +1119,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.check_summary` | `Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self...` |  |  | One-line description of the check for the generated reference. |
 | `git.commit_cluster_value_flags` | `mFCct` |  |  | Short commit flags that take a value inside a cluster (-m, -F, -C, -c, -t). |
 | `git.commit_creating` | `9 items` |  |  | Subcommands that create a commit, where self-credit and handover checks apply. |
+| `git.commit_expansion_allow` | `^\$\([ \t]*cat[ \t]*<<, ^\$\([ \t]*:[ \t]*\)` |  |  | Regular expressions tested against the text that starts at an expansion; a match means the expansion is a form the guard already reads (a heredoc substitution, or the `$(:)` stand-in the guard puts where it already scanned a heredoc body), so it is not refused. |
+| `git.commit_expansion_patterns` | `\$[A-Za-z_{], \$\(, `` |  |  | Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it. |
 | `git.commit_hash_len` | `40` |  |  | Length of a full commit hash, used to shorten it in messages. |
 | `git.commit_hash_short` | `12` |  |  | Length a commit hash is shortened to in messages. |
 | `git.commit_long` | `48 items` |  |  | Long options of the commit subcommand, for resolving abbreviations in reused-message checks. |
@@ -1123,13 +1130,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.credit_generated_alts` | `claude code, claude, chatgpt, codex, copilot` |  |  | Names after a "Generated with" footer that count as an AI tool. |
 | `git.credit_gpt` | `2 entries` |  |  | A gpt- model name in a trailer: the prefix and the version digits that count. |
 | `git.credit_label_gh_words` | `2` |  |  | How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`). |
+| `git.credit_session_keys` | `claude-session` |  |  | Trailer keys (lowercase) whose line credits an AI tool whatever its value is, e.g. a session trailer a coding assistant appends (GH #457). Checked in commit messages, reused messages, gh bodies and the audit. |
+| `git.credit_url_markers` | `claude.ai/code/session` |  |  | URL fragments of an AI tool's session link (GH #457). In a commit message a line that is only the link, or a trailer key and the link, counts as a credit; in a gh body the link anywhere does (see gh_body_markers). |
+| `git.expansion_shown_chars` | `12` |  | chars | How many characters of the expansion the refusal shows. |
 | `git.file_write_tip` | `\nTip: this file's content was scanned as shell. Write the file with the Writ...` |  |  | Added to a block when the command writes a file with shell text: the file was scanned as shell. |
 | `git.find_exec_flags` | `-exec, -execdir, -ok, -okdir` |  |  | find actions that run a command. |
 | `git.forward_config_indexed` | `KEY_, VALUE_` |  |  | GIT_CONFIG_<prefix><n> variable families that are forwarded. |
 | `git.forward_config_names` | `GLOBAL, SYSTEM, NOSYSTEM, COUNT, PARAMETERS` |  |  | GIT_CONFIG_<name> variables that are forwarded. |
 | `git.forward_env_names` | `GIT_DIR, GIT_WORK_TREE, HOME, XDG_CONFIG_HOME` |  |  | Environment names a wrapper forwards to git (config and repo location). |
 | `git.gh_actions` | `create, edit, comment, merge` |  |  | gh actions whose bodies are checked. |
-| `git.gh_body_markers` | `claude.com/claude-code, chatgpt.com/codex, <noreply@anthropic.com>` |  |  | Markers in a gh pr, issue or release body or title that credit an AI tool. |
+| `git.gh_body_markers` | `claude.com/claude-code, chatgpt.com/codex, <noreply@anthropic.com>, claude.ai...` |  |  | Markers in a gh pr, issue or release body or title that credit an AI tool. |
 | `git.gh_file_opts` | `--body-file, -F, --notes-file` |  |  | gh options that name a file holding body text as the next word. |
 | `git.gh_file_prefixes` | `--body-file=, --notes-file=` |  |  | gh options that name a file holding body text after an equals sign. |
 | `git.gh_subs` | `pr, issue, release` |  |  | gh subcommands whose bodies are checked. |
@@ -1195,16 +1205,53 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.origin_commit` | `commit `{ref}`` |  |  | Where a reused message came from: a named commit. Placeholder: {ref}. |
 | `git.origin_template` | `the commit template` |  |  | Where a reused message came from: the commit template. |
 | `git.parallel_separators` | `:::, ::::, :::+, ::::+` |  |  | GNU parallel argument-source separators. |
+| `git.push_ack_advisory` | `anti-hall: this push was let through although it may publish commits with AI ...` |  |  | Advisory when a push is let through because its credited commits were acknowledged in this session (push_ack_max_shas). Placeholder: {shown} (as in msg_push_credit). |
+| `git.push_ack_max_shas` | `0` |  |  | OFF by default (0): a credited commit never reaches a push, and an identical retry of a blocked push is blocked again. When set above 0 (PR #469 round 6), after msg_push_credit blocked a push once, the identical push retried unchanged (same command text and directory) downgrades the commits it named to push_ack_advisory for the rest of the session; a new credited commit still blocks first, and past this many the oldest acknowledgement is dropped. Trade-off: a commit that is already public but whose remote-tracking ref was pruned looks unpushed offline and blocks every push until it is acknowledged, so the owner may enable this knowingly; it also lets ANY credited commit through on an identical retry, which agents do after a block. A stamp that cannot be written lets the blocked commits through with the advisory at once (fails toward advisory). |
+| `git.push_ack_state_prefix` | `git-push-ack-` |  |  | File name prefix of the per-session push acknowledgement stamp (push_ack_max_shas), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it. |
+| `git.push_argv_branch_contains` | `7 items` |  |  | git arguments listing the local branches that contain one credited commit, for the block message ({dir}, {repo} as in push_argv_log; {sha} the commit). At most git.shown hits are looked up, each bounded by push_timeout_ms. |
+| `git.push_argv_cdup` | `-C, {dir}, {repo}, rev-parse, --show-cdup` |  |  | git arguments printing the path from the push directory to the top of its work tree (empty at the top and in a bare repository); .gitmodules there means submodules are scanned. |
+| `git.push_argv_log` | `12 items` |  |  | git arguments listing every local commit no remote has (the pre-push credit check reads all of them, whatever the push would publish): {dir} is the repository directory, {repo} expands to the command's --git-dir/--work-tree, {n} the most commits read (the cap plus one, to see an overflow). Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
+| `git.push_argv_submodules` | `8 items` |  |  | git arguments printing the absolute path of each checked-out submodule, nested ones included; each is scanned with push_argv_log, and all of them share push_max_commits. |
+| `git.push_argv_tags` | `8 items` |  |  | git arguments listing the newest local tags ({n} of them, the commit cap plus one) as object type, name, tagged object and message. An annotated tag (push_tag_object_type) is in scope only when the commit it tags is itself unpushed (in the push_argv_log result): a tag on a commit a remote already has is taken as public, so a fetched credited tag never blocks, and a tag made locally on an already-pushed commit (or a tag of a tag) is not scanned. One in scope whose message carries an AI credit refuses the push. Fields end with US and records with RS. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
+| `git.push_dynamic_path_res` | `^~[^/], ^[^'"]*[*?\[]` |  |  | Regular expressions (JavaScript syntax) for a repository path, as written, that the guard cannot expand (a ~user home, an unquoted glob); a $ or backtick expansion is always one. |
+| `git.push_dynamic_repo_cmd_re` | `(?:^\|[;&\|\n(]\s*)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&\|'"]*\s+)*git\s+(?:[^\s;&\|'"...` |  |  | Regular expression (JavaScript syntax) over the whole command for a git push at command position whose -C, --git-dir or --work-tree value holds an unquoted command substitution (a quoted one is read on the token): the segment splitter cuts the command there, so the push is matched on the raw text (msg_push_dynamic_repo). |
+| `git.push_gitmodules_file` | `.gitmodules` |  |  | The file at the top of a work tree whose presence makes the pre-push credit check scan each checked-out submodule too. |
+| `git.push_hit_format` | `{sha} on {branches}{where}` |  |  | One credited commit in msg_push_credit. Placeholders: {sha} (short hash), {branches} (the local branches that contain it, from push_argv_branch_contains), {where} (push_hit_where_format for a submodule, else empty). |
+| `git.push_hit_no_branch_format` | `{sha} (on no local branch){where}` |  |  | One credited commit in msg_push_credit that no local branch contains (a tag, a custom ref, a detached HEAD), or whose branches could not be read. Placeholders: {sha}, {where}. |
+| `git.push_hit_where_format` | ` in submodule {path}` |  |  | Appended to a credited commit found inside a submodule. Placeholder: {path} (the submodule directory). |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
+| `git.push_max_commits` | `50` |  |  | Most unpushed local commits (on any ref, pushed or not by this push) the pre-push credit check reads; more is refused (msg_push_over_cap), never allowed unread. |
+| `git.push_repo_env_names` | `GIT_DIR, GIT_WORK_TREE` |  |  | Environment names that move the repository a push runs in: a value the shell expands at run time refuses the push (msg_push_dynamic_repo), and submodule scans run without them. |
+| `git.push_repo_opts` | `-C, --git-dir, --work-tree` |  |  | git options before the subcommand whose value is the repository a push runs in; a value the shell expands at run time refuses the push (msg_push_dynamic_repo). |
+| `git.push_same_call_always` | `am, cherry-pick` |  |  | Subcommands that write a commit message layer 1 never reads (a patch, a copied commit); with a push in the same Bash call they are refused. |
+| `git.push_same_call_here_string` | `<<<` |  |  | Regular expression (JavaScript syntax) for a here-string on the commit's command; it expands, so -F - fed by one is unread. |
+| `git.push_same_call_need_message` | `commit, merge, revert` |  |  | Subcommands of push_same_call_subs that open an editor or reuse a message without a literal -m (or -F - fed by a quoted heredoc): with none, the message counts as unread. |
+| `git.push_same_call_no_commit_opts` | `^--(?:abort\\|quit\\|skip\\|ff-only\\|squash\\|no-commit)$` |  |  | Regular expressions (JavaScript syntax) for options with which a subcommand of push_same_call_subs writes no commit of its own (an aborted, skipped or fast-forward-only merge, rebase or revert): the same-call check lets it through. |
+| `git.push_same_call_no_edit_opt` | `--no-edit` |  |  | The option that makes git write the message of a push_same_call_no_edit_subs subcommand itself, with no editor and no prepared message. |
+| `git.push_same_call_no_edit_subs` | `revert` |  |  | Subcommands of push_same_call_need_message whose message git writes itself when push_same_call_no_edit_opt is given (a revert's own subject line): that option counts as a read message. |
+| `git.push_same_call_opts` | `^-[A-Za-z]*[Ccte], ^--(?:reuse-message\\|reedit-message\\|template\\|edit\\|conti...` |  |  | Regular expressions (JavaScript syntax) for options that take the message from somewhere layer 1 does not read (a reused or edited commit, a template, an editor: -e or --edit); any one makes the message unread. A short-flag cluster ending in m (-em) is matched on its flags before the m. |
+| `git.push_same_call_quoted_heredoc` | `<<-?[ \t]*(?:'[^']+'\|"[^"]+"\|\\\S)` |  |  | Regular expression (JavaScript syntax) for a quoted heredoc on the commit's own command: -F - fed by one is read by layer 1 (its body never expands). |
+| `git.push_same_call_subs` | `commit, commit-tree, tag, merge, revert, rebase` |  |  | Subcommands whose message the same-call check reads: with a push in the same Bash call, one whose message layer 1 cannot read is refused (msg_push_same_call). |
+| `git.push_skip_opts` | `--dry-run, -n, --delete, -d` |  |  | git push options after which nothing is published, so the pre-push credit backstop is skipped. |
+| `git.push_tag_object_type` | `tag` |  |  | The object type for-each-ref prints for an annotated tag (a lightweight tag prints its commit's type and is covered by the commit scan). |
+| `git.push_timeout_ms` | `4000` |  | ms | Timeout of each git query the pre-push credit backstop runs. |
+| `git.push_unchecked_advisory` | `anti-hall: this push was not checked for AI credit lines (git could not run, ...` |  |  | Advisory when a git query of the pre-push credit check could not run (unavailable), failed (non-zero exit, e.g. not a repository) or passed push_timeout_ms: the push is let through unchecked. |
 | `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
 | `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
 | `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
 | `git.re_file_write_tee` | `\btee\b\s+(?:-a\s+)?[^\s&;\|<>()-][^\s&;\|<>()]*` |  |  | JavaScript regex source: a tee into a file, which counts as a redirect for the file-write shape. |
+| `git.script_inert_line_re` | `^[ \t]*(?:#\|(?:(?:e\|f)?grep\|rg)\b[^\|<>;&`$]*$)` |  |  | A line of a script that cannot put text into a commit message: a pure comment line, or a plain grep, egrep, fgrep or rg of a pattern. A grep line with a pipe, a here-string or other input or output redirection, a process or command substitution, a variable expansion or a ; / & continuation is live (it can feed a command). The script credit scan ignores inert lines, and a script that never commits, merges, tags, pushes or publishes with gh (push_same_call_subs, push, and a gh command of gh_subs and gh_actions, whose body is checked like the direct command) is not scanned for credit text at all. |
+| `git.script_run_verbs` | `source, .` |  |  | Commands whose first argument is a script file run in the current shell (source, .); the file is scanned like a script run by path (msg_script_credit). |
+| `git.script_scan_max_bytes` | `262144` |  |  | Largest script (in bytes) a Bash call runs by literal path (bash x.sh, sh x.sh, ./x.sh, source x) that is read and scanned for AI credit lines and a same-call commit and push; a larger, missing or non-literal one is let through with script_unchecked_advisory. |
+| `git.script_unchecked_advisory` | `anti-hall: the script {file} was not checked for AI credit lines (missing, to...` |  |  | Advisory when a script a Bash call runs by path could not be read (missing, over script_scan_max_bytes, or not a literal path): it is let through unchecked. Placeholder: {file}. |
 | `git.setting_alias_resolve` | `6 entries` |  |  | Switch for git alias and shell definition resolution. |
+| `git.setting_commit_audit` | `6 entries` |  |  | Switch for the authoritative post-call commit check (PR #469): off lets a commit with an AI credit stand until the push check. |
+| `git.setting_commit_expansion` | `6 entries` |  |  | Switch for the unresolved-shell-expansion check on inline commit messages (GH #457): off lets a message built from $VAR, $(...) or backticks through (the credit check cannot read it). |
 | `git.setting_git_guard` | `6 entries` |  |  | Master switch of the check: settings.json section and key, environment variable and plugin-option name. |
 | `git.setting_handover_guard` | `6 entries` |  |  | Switch for the handover-commit guard. |
 | `git.setting_heredoc_data` | `6 entries` |  |  | Switch for data-heredoc masking. |
+| `git.setting_push_credit` | `6 entries` |  |  | Switch for the pre-push credit backstop (GH #457): off lets a push through although an unpushed commit carries an AI credit. |
 | `git.setting_reused_message` | `6 entries` |  |  | Switch for the reused-commit-message check. |
 | `git.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument is itself a script to scan. |
 | `git.skip_command` | `~/.anti-hall/ah-engine/bin/ah-engine mesh skip {key}` |  |  | Command that records a skip for a guard ({key} is the guard id): the native thin client. |
@@ -1222,20 +1269,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `git_audit.argv_log` | `7 items` |  |  | git arguments of the audit's log query; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e). |
+| `git_audit.argv_log` | `9 items` |  |  | git arguments of the audit's log query: the commits HEAD reaches that no remote has; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e). |
+| `git_audit.argv_published` | `-C, {dir}, log, --no-walk=unsorted, --format=%H%x1f%B%x1e, {shas}` |  |  | git arguments reading the stored messages of the commits the audit found written in its window that the unpushed log did not list (a remote already has them, or they were amended away). {dir} is the repository directory and {shas} expands to the hashes. Fields and records as in argv_log. |
+| `git_audit.argv_reflog` | `9 items` |  |  | git arguments reading HEAD's reflog (newest first): full hash, the entry's selector with its unix time, and git's own description of the step. {dir} and {n} as in argv_log. |
+| `git_audit.argv_remote_has` | `8 items` |  |  | git arguments naming one remote-tracking ref that contains a commit ({sha}); empty output means no remote has it (an amended-away commit, never reported). |
+| `git_audit.block_reason` | `audit_credit` |  |  | The reason label of git_blocked for an audit block. |
+| `git_audit.block_reason_published` | `audit_credit_published` |  |  | The reason label of git_blocked for an audit block on a credited commit a remote already has. |
 | `git_audit.cd_verb` | `cd` |  |  | The verb whose directory argument moves the audit's working directory. |
 | `git_audit.commits` | `20` |  |  | How many commits at HEAD the audit reads. |
 | `git_audit.dir_opt` | `-C` |  |  | The global git option that changes the repository directory. |
 | `git_audit.eval_verb` | `eval` |  |  | The verb whose payload is scanned as a command. |
-| `git_audit.event` | `PostToolUse` |  |  | The hook event name in the audit's output. |
 | `git_audit.field_sep` | `` |  |  | The character that separates the fields of one commit record (US). |
 | `git_audit.git_verb` | `git` |  |  | The verb of a git command. |
 | `git_audit.max_buffer` | `1048576` |  |  | Largest log output, in bytes, the audit accepts from one repository (Node's child-process buffer cap: a larger output is dropped). |
 | `git_audit.max_depth` | `3` |  |  | How deep eval and shell -c payloads are followed when looking for commit-creating git commands. |
-| `git_audit.msg` | `⚠️ git safety: recent commits contain AI credit.\nDo instead: remove the cred...` |  |  | Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes). |
+| `git_audit.msg` | `4 entries` |  |  | Block after a commit git stored with an AI credit. Placeholders: {hits} (short hashes), {first} (the oldest one). |
+| `git_audit.msg_published` | `4 entries` |  |  | Block after a commit git stored with an AI credit that a remote already has (committed and pushed in one call). Placeholders: {hits} (short hashes), {remotes} (the remote-tracking refs that have them). |
 | `git_audit.opts_with_value` | `-c, --git-dir, --work-tree, --namespace, --config-env` |  |  | Global git options that take a value in the next word (skipped when looking for the repository directory). |
+| `git_audit.published_file` | `git-audit-published.json` |  |  | State file, under replykit.state_dir, holding the hashes of published credited commits already reported, so each one blocks once: the agent cannot clear it itself. |
+| `git_audit.published_memory` | `500` |  |  | How many reported published commit hashes the audit remembers (oldest dropped first). |
 | `git_audit.record_sep` | `` |  |  | The character that ends one commit record of the audit's log output (RS). |
-| `git_audit.summary` | `Advisory after a commit-creating git command: a commit made in the last 15 mi...` |  |  | One-line description of the git-audit check in the generated reference. |
+| `git_audit.reflog_creating` | `commit, merge, cherry-pick, rebase, revert, am` |  |  | Lower-case starts of the reflog descriptions of steps that write a commit (a checkout, reset or pull only moves HEAD and is not read). |
+| `git_audit.reflog_skip` | `^[a-z -]*\((?:start\\|finish\\|abort)\), : fast-forward$` |  |  | Regular expressions (JavaScript syntax) for reflog descriptions of reflog_creating steps that write no commit (a fast-forward, the start, finish or abort of a rebase): HEAD then points at a commit that already existed, often public history (PR #469 P2). |
+| `git_audit.summary` | `Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) c...` |  |  | One-line description of the git-audit check in the generated reference. |
 | `git_audit.timeout_ms` | `4000` |  | ms | Timeout of the git log the audit runs in each repository. |
 | `git_audit.window_s` | `900` |  |  | How recent, in seconds, a commit must be for the audit to look at it. |
 
@@ -1861,6 +1917,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `coordinator_work.agent_markers` | `agent_id, agent_type` |  |  | Payload fields the host puts on a subagent's hook payload and never on the main thread's. |
 | `coordinator_work.block_allowed` | `reads, recovery commands (--abort/--quit, stash pop/apply) and loosely matche...` |  |  | What stays allowed past the block threshold. |
+| `coordinator_work.block_digest` | `Main thread: delegate heavy commands (builds, tests) from the first call; aft...` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `coordinator_work.block_instead` | `hand the remaining work to a helper agent.` |  |  | What to do instead of a blocked work call. {clear_min} is the minutes until the window clears. |
 | `coordinator_work.block_override` | `{skip} (15-min TTL)` |  |  | The override line of the block ({skip} is the skip command). |
 | `coordinator_work.block_setting` | `5 entries` |  |  | The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never. |
@@ -2252,6 +2309,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.msg_handover_instead` | `invoke the handover skill yourself in the session that holds the memory.` |  |  | Handover-delegation advisory advice. |
 | `model_routing.msg_handover_what` | `this spawn looks like it writes a session handover.` |  |  | Handover-delegation advisory headline. |
 | `model_routing.msg_handover_why` | `A subagent never lived this session, so its reconstruction loses decision/tri...` |  |  | Handover-delegation advisory reason. |
+| `model_routing.msg_row1_digest` | `2 entries` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). A table by host: each host names only its own models. |
 | `model_routing.msg_row1_instead` | `respawn with model:'haiku' (or 'sonnet' if it authors code).` |  |  | Row-1 block advice. |
 | `model_routing.msg_row1_jev_instead` | `if it is genuinely mechanical work, prefer model:'haiku'.` |  |  | Row-1 Jev relaxation advisory advice. |
 | `model_routing.msg_row1_jev_what` | `flagship spawn allowed after a non-mechanical verdict.` |  |  | Row-1 Jev relaxation advisory headline. |
@@ -2825,7 +2883,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.context_cap` | `2 entries` |  |  | Per host, the characters of one hook's additionalContext the host delivers inline (Claude: 10000, documented at code.claude.com/docs/en/hooks; over it the host spills the whole value to a file and leaves a ~2000 character preview). The dispatcher joins several hooks' contexts into one value, so a join over the cap is logged as dispatch_context_over_cap; the host then spills it the way it spills any over-cap hook output, and nothing is cut by the engine. Codex documents its cap in tokens; the same count is a conservative proxy. |
 | `dispatch.context_joiner` | `\n\n` |  |  | Text placed between the additionalContext values of several hooks when they are joined into one. |
 | `dispatch.context_pin_priority` | `80` |  |  | A hook entry at or above this priority is pinned: it is placed first and is meant to stay inline. A pinned context that still had to spill (the pinned ones alone are over the cap) is counted in `status` delivery.pinned_spills and logged, so the cap or the priorities can be tuned. |
-| `dispatch.context_priority` | `28 entries` |  |  | Per hook entry id (a variant suffix after ':' or '#' takes its base name's row), the priority of its additionalContext in the combined output of an event that cannot block: protocol and role text and the reminders an agent must act on are pinned (>= dispatch.context_pin_priority), housekeeping notices are lowest. Blocks and decisions are not contexts and are never spilled. |
+| `dispatch.context_priority` | `29 entries` |  |  | Per hook entry id (a variant suffix after ':' or '#' takes its base name's row), the priority of its additionalContext in the combined output of an event that cannot block: protocol and role text and the reminders an agent must act on are pinned (>= dispatch.context_pin_priority), housekeeping notices are lowest. Blocks and decisions are not contexts and are never spilled. |
 | `dispatch.context_priority_default` | `50` |  |  | The priority of a hook entry that has no row in dispatch.context_priority. |
 | `dispatch.decision_precedence` | `deny, defer, ask, allow` |  |  | PreToolUse permissionDecision values, strongest first: the combined decision is the strongest any hook returned (Claude docs: deny > defer > ask > allow). |
 | `dispatch.default_host` | `claude` |  |  | The host whose table is used when `--host` is not given. |
@@ -2844,8 +2902,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PostToolUseFailure` | `4 entries, 4 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `4 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreToolUse` | `34 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
-| `dispatch.hooks_claude_SessionEnd` | `4 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
-| `dispatch.hooks_claude_SessionStart` | `19 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SessionEnd` | `4 entries, 4 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SessionStart` | `21 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `15 items` |  |  | The claude Stop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStart` | `4 entries, 4 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStop` | `4 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
@@ -2855,7 +2913,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_codex_PostToolUse` | `4 entries, 4 entries, 4 entries, 4 entries, 4 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `4 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreToolUse` | `19 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
-| `dispatch.hooks_codex_SessionStart` | `19 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_codex_SessionStart` | `21 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `12 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `4 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_UserPromptSubmit` | `14 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
@@ -3035,6 +3093,72 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.summary_full` | `SessionStart context: injects the verify-first protocol and discipline index ...` |  |  | One-line description of the verify-first-full check in the generated reference. |
 | `verify_first.summary_subagent` | `SubagentStart context: injects the verify-first protocol (compact, or full wh...` |  |  | One-line description of the verify-first-subagent check in the generated reference. |
 | `verify_first.worker` | `WORKER: do the task yourself; do not re-delegate unless told to. Your assignm...` |  |  | The WORKER line that follows the compact subagent protocol. |
+
+### guard_rules.toml / guard_rules
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `guard_rules.area` | `rules` |  |  | The key of the feature area (roles.groups) whose skill lists the rules. |
+| `guard_rules.banner_last` | `; last session {blocks} blocks` |  |  | The last-session clause of the banner when blocks were recorded. Placeholders: {blocks}. |
+| `guard_rules.banner_text` | `anti-hall {version} active: {rules} rules enforced{last}.` |  |  | The session banner. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause. |
+| `guard_rules.blocks_limit` | `2000` |  |  | How many recorded blocks the banner and summary read at most. |
+| `guard_rules.blocks_window_days` | `14` |  | days | How many days of recorded blocks the banner and summary look back over to find a session. |
+| `guard_rules.cohort_labels` | `4 entries` |  |  | Label values of the #462 counters: the digest state of a session (on, off) in rule_digest_calls, and the result of the next call of a check after it blocked (compliant: not blocked again; repeat: blocked again) in rule_retry_compliant. |
+| `guard_rules.cohort_track_max` | `4096` |  |  | How many sessions (digest state) and session-check pairs (a block waiting for its retry) the daemon tracks in memory for the cohort counters; past it new ones are not tracked until the daemon restarts. |
+| `guard_rules.digest_cfg_ref` | `cfg:` |  |  | Placeholder prefix in a digest field: {cfg:<defaults key>} becomes that entry's value (a settings entry's default) when the digest is generated, so a threshold or role name has one source. |
+| `guard_rules.digest_check` | `rule-digest` |  |  | The check whose answer marks a session's digest state for the cohort counters: an advisory (the digest was injected) is on, anything else off. |
+| `guard_rules.digest_entry` | `{digest}` |  |  | How an essential rule's digest text is built: from the rule's own `digest` field, which sits beside its enforced message entry (a `digest` key inside an inline what/why/instead table, or the sibling key with `what` replaced by `digest`; a string, or a table by host). One short line naming the rule and what to do; the enforced message is too long for the budget. Placeholders: {digest}, {what}, {instead}. |
+| `guard_rules.digest_file` | `engine/rule-digest.txt` |  |  | The generated digest of the default host (dispatch.default_host), relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above. Another host's digest is `guard_rules.digest_file_<host>`. |
+| `guard_rules.digest_file_codex` | `engine/rule-digest.codex.txt` |  |  | The generated digest of the Codex host (its own model guidance), relative to the plugin root; the session script picks it on a Codex request (standdown.codex_host). |
+| `guard_rules.digest_foot` | `More: skill engine-rules. After a block fix the cause, retry once.` |  |  | Last line of the digest. |
+| `guard_rules.digest_gate_not` | `!` |  |  | Prefix of a gate key whose rule is enforced while the switch is off (an inverted row). |
+| `guard_rules.digest_gate_sep` | `	` |  |  | In the generated digest file, the separator between a line's gate (the defaults keys of the rule's switches, comma-joined) and its text; the session script reads the gate and strips it. |
+| `guard_rules.digest_head` | `anti-hall rules (same config the engine enforces):` |  |  | First line of the session-start digest. |
+| `guard_rules.digest_hosts` | `claude, codex` |  |  | The hosts a digest is generated for, each from the host's own digest text (a `digest` table by host, or one string for all). |
+| `guard_rules.digest_line` | `- {line}` |  |  | One essential digest line. Placeholder: {line}, the enforced rule's own text (what, instead) composed by `guard_rules.digest_entry`; no separate copy. |
+| `guard_rules.digest_off_values` | `false, off` |  |  | The effective setting values that mean a rule's switch is off (a boolean switch false, an enum switch off); the session script leaves out the digest line of a rule whose switch has one of them (the opposite for an inverted row). |
+| `guard_rules.digest_sep` | `--` |  |  | The line that splits the essential lines from the extra lines (tier skill) in the generated digest file. |
+| `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
+| `guard_rules.enum_digest_tier` | `7 entries` |  |  | Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget. |
+| `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
+| `guard_rules.exempt` | `42 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording. |
+| `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}. |
+| `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
+| `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
+| `guard_rules.msg_no_heredoc` | `4 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
+| `guard_rules.msg_rm_rf_root` | `4 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
+| `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
+| `guard_rules.problem_digest` | `{id}: missing from the generated digest` |  |  | Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}. |
+| `guard_rules.problem_id` | `rule id empty or duplicate: {id}` |  |  | Registry problem: a rule id that is empty or repeated. Placeholder: {id}. |
+| `guard_rules.problem_line` | `{id}: essential rule without a usable digest field for {host}` |  |  | Registry problem: an essential rule with no digest field for a host, or a digest line with a placeholder left in it. Placeholders: {id}, {host}. |
+| `guard_rules.problem_setting` | `{id}: setting {setting} matches no settings entry` |  |  | Registry problem: a rule row's setting names no settings entry (section and key). Placeholders: {id}, {setting}. |
+| `guard_rules.problem_skill` | `{id}: missing from the generated skill` |  |  | Registry problem: a rule is missing from the generated rules skill. Placeholder: {id}. |
+| `guard_rules.problem_source` | `{id}: source {source} does not exist` |  |  | Registry problem: the source key of a rule does not exist. Placeholders: {id}, {source}. |
+| `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
+| `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
+| `guard_rules.rules` | `148 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
+| `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
+| `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
+| `guard_rules.setting_sep` | `, ` |  |  | Separator of several settings keys in one rule row's setting (each must be on for the rule to be enforced). |
+| `guard_rules.skill_head` | `Rules the engine enforces` |  |  | Heading of the rules section in the engine-guards skill. |
+| `guard_rules.skill_instead` | `Instead: {instead}` |  |  | Label in front of a rule's instead. Placeholder: {instead}. |
+| `guard_rules.skill_intro` | `Generated from the same config the engine reads. Tier: essential rules are al...` |  |  | Lead-in of the rules section in the engine-guards skill. |
+| `guard_rules.skill_rule` | `- `{id}` ({tier}{setting}): {what} {why} {instead}` |  |  | One rule in the skill. Placeholders: {id}, {tier}, {setting}, {what}, {why}, {instead}. |
+| `guard_rules.skill_setting` | `, switch `{setting}`` |  |  | Appended to the tier of a rule that has a setting. Placeholder: {setting}. |
+| `guard_rules.skill_use_when` | `Use when {use_when}.` |  |  | The description of a generated sub-skill: the sentence that makes the host load it. Placeholder: {use_when}, the area's `use_when` in `roles.areas`. |
+| `guard_rules.skill_why` | `Why: {why}` |  |  | Label in front of a rule's why. Placeholder: {why}. |
+| `guard_rules.source_line` | `- {id}: {what} {why} {instead}` |  |  | One line of the generated digest file's third section (after the second separator): an essential rule's full enforced text. The session script never reads it; it is there so an edit of the enforced message makes the committed digest stale (`ah-regen --check`) and the digest line is reviewed with it. Placeholders: {id}, {what}, {why}, {instead}. |
+| `guard_rules.summary` | `SessionStart: puts the essential rules the engine enforces (one source with t...` |  |  | One-line description of the rule-digest check in the generated reference. |
+| `guard_rules.summary_banner` | `SessionStart: one user-visible line with the plugin version, the rules enforc...` |  |  | One-line description of the session-banner check in the generated reference. |
+| `guard_rules.summary_none` | `anti-hall this session: no blocks.` |  |  | The summary when the session had no block. |
+| `guard_rules.summary_session` | `SessionEnd: one user-visible line with this session's blocks and the rules th...` |  |  | One-line description of the session-summary check in the generated reference. |
+| `guard_rules.summary_text` | `anti-hall this session: {blocks} blocks{top}.` |  |  | The session summary. Placeholders: {blocks} blocks in this session, {top} the most frequent rules. |
+| `guard_rules.summary_top` | ` (most: {top})` |  |  | The most-frequent clause of the summary. Placeholders: {top}. |
+| `guard_rules.summary_top_n` | `3` |  |  | How many rules the summary names. |
+| `guard_rules.sw_banner` | `8 entries` |  |  | Where the session banner on/off switch is read from (ui.banner, default on): a one-line message to the user at session start. |
+| `guard_rules.sw_digest` | `8 entries` |  |  | Where the rule-digest on/off switch is read from (context.ruleDigest, default on): off keeps the digest out of the session-start and post-compact context. |
+| `guard_rules.tiers` | `essential, skill, off` |  |  | The tiers, lowest detail last. A rule is shown to agents when its tier is listed; `off` rules are enforced but not described. |
 
 ### prompt_emit.toml / emit_dedupe
 
@@ -3641,7 +3765,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.framed_instructions` | `This hedge sits under a heading or line labelled as a plan/expectation (e.g. ...` |  |  | The Noul question of the framed-expectation ask (byte-identical to the Node hook's FRAMED_JEV_QUESTION). |
 | `speculation_guard.framed_true` | `Unverified claim presented as fact: despite the label, it asserts what IS tru...` |  |  | The label for a true answer of the framed-expectation question. |
 | `speculation_guard.guard_name` | `speculation-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
-| `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node. |
+| `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence (lib/80-inference.js) and, with the switch on, blocks once per reply a confident causal claim that no tool result supports. |
 | `speculation_guard.jev_false` | `Not speculative: it reports what a tool actually showed (command output such ...` |  |  | The label for a false answer of the speculation question. |
 | `speculation_guard.jev_framed_id` | `speculationFramed` |  |  | The Jev integration id of the framed-expectation question (relax-block trust). |
 | `speculation_guard.jev_gate` | `claim` |  |  | When the Stop waits for Jev on the speculation question: `claim` (default) when the hedge scan found a marker OR the reply makes an unhedged completion claim (speculation_guard.claim_markers) that neither acknowledges nor cites evidence, `hit` only on a hedge marker (acknowledged or not), `would_block` only when the rule layer would itself block, `always` on every Stop (every Stop then costs a Jev round trip: not for the Stop latency bar). Any other value is read as `claim`. The wait is bounded by jev.stop_soft_ms / jev.stop_hard_ms and fails open. Ignored while jev.gate_enabled is 0. |
@@ -3654,6 +3778,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.markers` | `15 items` |  |  | Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried. |
 | `speculation_guard.max_blocks` | `3` |  |  | Most blocks per cap_scope window; retries with changing text share this budget. A new real owner turn resets it in owner_turn scope; same-text dedupe remains independent. |
 | `speculation_guard.modal_markers` | `must be, should be` |  |  | Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own. |
+| `speculation_guard.msg_digest` | `No unverified claims: verify with a tool or label the claim unverified.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `speculation_guard.msg_instead` | `verify the claim or label it unverified.` |  |  | Block advice. |
 | `speculation_guard.msg_what` | `your reply makes an unverified claim ("{marker}").` |  |  | Block headline; {marker} is the hedge found. |
 | `speculation_guard.msg_what_jev` | `your reply asserts a cause or outcome without evidence.` |  |  | Block headline when Jev added the block. |
@@ -3978,6 +4103,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
 | `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
 | `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
+| `silent_nudge.msg_rt_instead` | `check its output now, then stop it or re-task it with a tighter scope; this b...` |  |  | What to do about an escalated agent. |
+| `silent_nudge.msg_rt_item` | `'{name}' (running {dur})` |  |  | One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes). |
+| `silent_nudge.msg_rt_what` | `{names}{more} still running after repeated runtime nudges, not finished and n...` |  |  | What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder. |
 | `silent_nudge.msg_what` | `{count} of your own {noun} have gone silent past the {min}m threshold: {shown...` |  |  | Headline of the nudge. |
 | `silent_nudge.msg_why` | `Advisory only; nothing was auto-killed.` |  |  | Why line of the nudge. |
 | `silent_nudge.noun_agent` | `background subagent(s)` |  |  | What the headline calls silent agents. |
@@ -3987,6 +4115,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.pronoun_many` | `them` |  |  | The pronoun for several silent agents. |
 | `silent_nudge.pronoun_one` | `it` |  |  | The pronoun for one silent agent. |
 | `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
+| `silent_nudge.rt_dur_hours` | `{h} h {m} min` |  |  | The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes. |
+| `silent_nudge.rt_dur_minutes` | `{m} min` |  |  | The runtime format under one hour; {m} minutes. |
+| `silent_nudge.rt_state_file` | `runtime-escalation-stops.json` |  |  | Per-session count of the runtime-escalation Stop blocks given, under the engine state directory. |
+| `silent_nudge.rt_stop_cap` | `1` |  |  | How many times per session an open runtime escalation (agent_nudge.runtime_escalation) may block the coordinator's Stop (0 = never block); it never loops. |
+| `silent_nudge.rt_unrecorded_log` | `2 entries` |  |  | The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494). |
 | `silent_nudge.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES). |
 | `silent_nudge.session_id_len` | `36` |  |  | Length of a session id (the directory name that precedes tasks/ in an output file path). |
 | `silent_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.silentAgentNudge, default on). |
@@ -4049,11 +4182,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_comms.supervisor_setting` | `7 entries` |  |  | The setting devswarm.supervisorMode (auto, on or off): whether DevSwarm counts as active for this session. |
 | `devswarm_comms.tool` | `SendMessage` |  |  | The only tool this guard decides on. |
 
+### spawn_guards.toml / guards
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `guards.cap_excluded_agent_types` | `codex:codex-rescue` |  |  | Agent types outside the owner's concurrent-agent cap (guards.maxConcurrentAgents): neither counted as running nor reserved nor capped (the Codex reviewers, on their own quota). |
+
 ### spawn_guards.toml / nested_spawn
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `nested_spawn.guard_name` | `nested-spawn-guard` |  |  | Guard name in the block message and the skip file. |
+| `nested_spawn.msg_digest` | `Workers never spawn agents: do the task yourself and report back.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `nested_spawn.msg_instead` | `report back to the coordinator if more agents are needed.` |  |  | What to do instead of a nested spawn. |
 | `nested_spawn.msg_what` | `this agent is a worker and can't start agents of its own.` |  |  | What the block says. |
 | `nested_spawn.msg_why` | `Nested agents hide their cost from the coordinator (one burned about 2.5M tok...` |  |  | Why nested spawns are blocked. |
@@ -4064,7 +4204,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `spawn_ceiling.answered_line_max_bytes` | `8388608` |  |  | Transcript lines longer than this are not read for those tool results (a long foreground answer then holds its slot until the TTL). |
+| `spawn_ceiling.answered_window_bytes` | `2097152` |  |  | The transcript tail searched for the tool results that end this session's open reservations (an async launch or a foreground answer). |
+| `spawn_ceiling.background_field` | `run_in_background` |  |  | The spawn input field that says the call runs in the background; only a background call reserves a cap slot (a foreground call returns before the next one). |
 | `spawn_ceiling.base` | `12` |  |  | The ceiling at full usage headroom: a spawn is blocked when this many agents already run. |
+| `spawn_ceiling.cap_excluded_tracked_kinds` | `shell` |  |  | Agent-tracker child kinds that are not agents of the concurrent-agent cap (background shell jobs, agent_tracker.guard_job_kind). |
 | `spawn_ceiling.control_re` | `[\x00-\x1f\x7f]+` |  |  | JavaScript regex source (global): control characters cut from an agent description before it is shown. |
 | `spawn_ceiling.desc_max` | `60` |  |  | How many characters of an agent description the message keeps. |
 | `spawn_ceiling.excluded_task_types` | `local_bash` |  |  | Background task types that do not consume an agent spawn slot; their owners can still cover task-guard work. |
@@ -4073,14 +4217,35 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_ceiling.ignore_unknown_liveness` | `true` |  |  | Do not count a transcript row toward the spawn ceiling unless the agent tracker proves it live; missing, unreadable or stale evidence fails open. False retains the legacy count for unknown rows. |
 | `spawn_ceiling.join` | `; ` |  |  | The separator between the listed agent names. |
 | `spawn_ceiling.list_max` | `8` |  |  | How many running agents the block message names. |
+| `spawn_ceiling.max_concurrent_setting` | `9 entries` |  |  | Cap on agents running at once (default 6, 0 = no cap). A spawn over it is denied. Unlike the usage-scaled ceiling below, an agent of unknown liveness counts as running until the session proves it ended (GH #484). |
+| `spawn_ceiling.msg_cap_instead` | `wait for one of them to finish or stop one you no longer need, then spawn. Th...` |  |  | What to do instead of spawning past the owner's cap. |
+| `spawn_ceiling.msg_cap_what` | `{n} agents are running (limit {cap}, your guards.maxConcurrentAgents cap): {n...` |  |  | What the concurrency-cap block says; {n} running, {cap} the owner's cap, {names} the listed agents, {more} the remainder clause. |
 | `spawn_ceiling.msg_instead` | `wait for a running agent to finish.` |  |  | What to do instead of spawning past the ceiling. |
 | `spawn_ceiling.msg_more` | ` and {n} more` |  |  | The remainder clause when more agents run than are listed; {n} is how many are not listed. |
 | `spawn_ceiling.msg_what` | `{n} agents are running (limit {ceiling}).` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
 | `spawn_ceiling.msg_why` | `More agents rarely add results, and each one costs tokens whether or not it f...` |  |  | Why the ceiling block applies. |
+| `spawn_ceiling.reservation_file` | `spawn-reservations.json` |  |  | The open spawn reservations of the concurrent-agent cap (GH #494), under swarm_guard.state_dir: one row per allowed spawn whose launch is not yet in the transcript, {id (the tool call id), session, at}. |
+| `spawn_ceiling.reservation_lock` | `spawn-reservations.lock` |  |  | The lock that makes the cap's count and its reservation one step, under swarm_guard.state_dir (timings: the swarm_guard lock group). |
+| `spawn_ceiling.reservation_lock_group` | `spawn_reservation` |  |  | The lock timings group of the reservation lock (<group>.lock_*): its wait, its stale timeout and whether a dead holder is taken over at once. |
+| `spawn_ceiling.reservation_ttl_ms` | `30000` |  |  | How long a reservation holds its slot when its launch never shows in the transcript (a crashed or denied call). |
+| `spawn_ceiling.reserve_unflagged` | `true` |  |  | Whether a call without spawn_ceiling.background_field reserves a slot (the host may background it); its reservation ends with its tool result. |
 | `spawn_ceiling.setting` | `6 entries` |  |  | On by default; off makes the fan-out ceiling a no-op. |
 | `spawn_ceiling.step_pct` | `70, 85, 92` |  |  | Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce. |
 | `spawn_ceiling.step_reduce` | `3, 6, 9` |  |  | How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies). |
 | `spawn_ceiling.unnamed` | `(unnamed)` |  |  | The name of a running agent with no description. |
+
+### spawn_guards.toml / spawn_reservation
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `spawn_reservation.lock_boot_slop_s` | `5` |  |  | Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution). |
+| `spawn_reservation.lock_reclaim_stale_ms` | `5000` |  |  | A reservation-lock takeover marker older than this belongs to a reclaimer that died and may be taken over. |
+| `spawn_reservation.lock_release_step_ms` | `10` |  |  | The pause between those tries. |
+| `spawn_reservation.lock_release_tries` | `5` |  |  | How many times releasing the reservation lock tries to take the takeover marker before it removes its own lock unguarded. |
+| `spawn_reservation.lock_stale_ms` | `5000` |  |  | A reservation lock older than this is taken over whatever its holder (a hung check), so a check cut or killed while holding it never wedges the next spawn (GH #494). |
+| `spawn_reservation.lock_steal_dead` | `true` |  |  | Take over a reservation lock whose holder process is dead at once, whatever its age (a check that crashed holding it). |
+| `spawn_reservation.lock_step_ms` | `5` |  |  | The pause between attempts to take the reservation lock. |
+| `spawn_reservation.lock_wait_ms` | `2000` |  |  | How long a spawn check waits for the reservation lock (at most script.lock_wait_max_ms); still busy: the same count, read unlocked, decides and nothing is reserved. |
 
 ### spawn_guards.toml / spawn_usage
 
@@ -4091,6 +4256,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_usage.bucket_pct` | `fiveHourPercent, weeklyPercent` |  |  | The usage-cache fields holding each bucket percent (the 5-hour and weekly limits; there is no separate Sonnet pool). |
 | `spawn_usage.bucket_resets` | `fiveHourResetsAt, weeklyResetsAt` |  |  | The usage-cache fields holding each bucket reset time, parallel to bucket_pct. |
 | `spawn_usage.guard_name` | `spawn-usage` |  |  | Guard name in the messages and the skip file. |
+| `spawn_usage.msg_block_digest` | `At the usage-limit cap start no agents: finish running work or wait for reset.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `spawn_usage.msg_block_instead` | `wait for the usage limit to reset.` |  |  | What to do instead of the blocked spawn. |
 | `spawn_usage.msg_block_what` | `new agents can't start: the {limit} usage limit is at {pct}% (stop at {cap}%,...` |  |  | What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause. |
 | `spawn_usage.msg_block_why` | `Another spawn could use up the limit and stop all work, including agents alre...` |  |  | Why the hard block applies. |
@@ -4514,7 +4680,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `task_guard.advise_unresolved_owners` | `true` |  |  | Advise instead of blocking Stop when a non-coordinator task owner cannot be resolved to known live or finished tracker work. False restores blocking for unresolved owners. |
+| `task_guard.advise_unmatched_owners` | `false` |  |  | Advise instead of blocking Stop when a non-coordinator task owner names no agent, tracked agent or live DevSwarm workspace this session can see. False (the default) blocks such a task like any open task, as the Node task-guard did. |
+| `task_guard.advise_unresolved_owners` | `true` |  |  | Advise instead of blocking Stop when a non-coordinator task owner names agent work this session can see (a launched or tracked agent) whose liveness no source can tell. An owner whose agent is known to have ended is not unresolved and blocks. False restores blocking for unresolved owners. |
 | `task_guard.agent_max_age_default_min` | `30` |  |  | The agent age limit used when the setting does not resolve to a number, in minutes. |
 | `task_guard.agent_max_age_setting` | `6 entries` |  |  | Max age of an agent counted as cover. Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never). |
 | `task_guard.agents_dir` | `agents` |  |  | The directory of agent heartbeat files inside the anti-hall directory (the legacy liveness signal). |
@@ -4553,6 +4720,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.guard_name` | `task-guard` |  |  | The guard id of task-guard (the skip key and the message prefix). |
 | `task_guard.hash_sep` | ` ` |  |  | The separator between the task ids hashed into the loop state (a NUL character). |
 | `task_guard.idle_allowed` | `a task waiting on the user (hardware, a decision): mark it blocked on 'owner'...` |  |  | The allowed-here line of the idle-neglect block. |
+| `task_guard.idle_digest` | `Never stop with open tasks idle: assign each to an agent or report why.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `task_guard.idle_hash_tags` | `idle, no-agents` |  |  | The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's. |
 | `task_guard.idle_instead` | `assign the pending tasks to agents.` |  |  | The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing). |
 | `task_guard.idle_what` | `{n} open tasks have no agent working on them.` |  |  | The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail. |
@@ -4695,6 +4863,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.details_ext` | `.md` |  |  | File extension of the tasklist-guard details file. |
 | `tasklist_guard.details_head` | `Task list and progress file: what to do` |  |  | First line of the tasklist-guard details file. |
 | `tasklist_guard.details_label` | `details: ` |  |  | Label of the last line of a tasklist-guard block: the file with the long instructions. |
+| `tasklist_guard.digest_no_tasks` | `Track work in the task list and a fresh progress file: changes with no tasks ...` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `tasklist_guard.evidence_deferred_prefix` | `deferred_tools` |  |  | Prefix of the attachment type that lists deferred tools. |
 | `tasklist_guard.evidence_names` | `TaskCreate, TaskUpdate, TodoWrite, task_reminder` |  |  | Tool names, attachment types and prefixes that can make a transcript line evidence of task tools (the cheap pre-filter). |
 | `tasklist_guard.evidence_reminder` | `task_reminder` |  |  | Attachment type that proves task tools exist. |
@@ -4794,7 +4963,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `tasklist_hygiene.create_tool` | `TaskCreate` |  |  | The tool that creates a task. |
 | `tasklist_hygiene.delete_trigger` | `deleted` |  |  | The TaskUpdate statuses that count as deleting a task. |
-| `tasklist_hygiene.detail_done` | `Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own f...` |  |  | Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from. |
+| `tasklist_hygiene.detail_done` | `Delegate the ledger entry to a cheap teammate (facts, exact path, format, no ...` |  |  | Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from. |
 | `tasklist_hygiene.done_trigger` | `completed` |  |  | The TaskUpdate status values that count as a task being finished and trigger the delete-it line. |
 | `tasklist_hygiene.event_deleted` | `deleted` |  |  | Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge). |
 | `tasklist_hygiene.event_nudge` | `nudge` |  |  | Counter event: a completed-task note was shown (one per TaskUpdate to a done status). |
@@ -4804,7 +4973,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_hygiene.instead_budget` | `keep subjects as `T-<n> [P] title`, details in the history ledger; delete fin...` |  |  | What to do, in the advisory line. |
 | `tasklist_hygiene.instead_done` | `TaskUpdate status=deleted (own task entries are not user data).` |  |  | What to do, in the done line. |
 | `tasklist_hygiene.join` | ` ` |  |  | Separator between the parts of one line. |
-| `tasklist_hygiene.msg_done` | `task {id} done: log Cause/Fix/Verified in the history ledger.` |  |  | What the done line says; {id} is the task id. |
+| `tasklist_hygiene.msg_done` | `task {id} done: delegate its Cause/Fix/Verified ledger entry.` |  |  | What the done line says; {id} is the task id. |
 | `tasklist_hygiene.msg_open` | `{n} open tasks (budget {max}).` |  |  | The open-count breach; {n} is the open-task count and {max} handover.taskListBudget. |
 | `tasklist_hygiene.msg_subject` | `task subject is {n} chars (max {max}).` |  |  | The subject breach; {n} is the subject length and {max} handover.taskSubjectMax. |
 | `tasklist_hygiene.summary` | `Claude only (Codex has no task tools). After a task is marked completed, tell...` |  |  | One-line description of the tasklist-hygiene check in the generated reference. |
@@ -5149,8 +5318,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.cli_cmd` | `ah-engine {verb}` |  |  | How a verb is typed, for the skills. |
 | `roles.declared_env` | `ANTIHALL_ROLE` |  |  | Environment variable a wrapper may set to declare the caller's role on the command line (a role name from roles.names). It can only narrow what the environment says is possible, never name a role the detection ruled out: a workspace child stays a workspace child. |
 | `roles.describe` | `4 entries` |  |  | What each role is, in one line (shown in the role note and the engine skill). |
+| `roles.digest_budget` | `1400` |  | bytes | Size limit of the rule digest in bytes (the essentials injected at session start and after compaction). A test fails when the generated digest is over it. |
 | `roles.engine_bin` | `ah-engine` |  |  | The engine's executable name, as an agent types it in a Bash command. |
-| `roles.groups` | `12 entries` |  |  | The feature areas, in skill order. `skill` is the sub-skill name (the main skill is `engine`), `title` its heading, `brief` the one line the main skill shows, `use_when` the sentence that makes the host load the sub-skill (a skill's description is what triggers loading), `prefixes` the engine checks (guards) it covers by name prefix and `settings_prefixes` the switches it lists by `section.key` prefix (first area that matches wins; the rest go to `guards`). |
+| `roles.groups` | `13 entries` |  |  | The feature areas, in skill order. `skill` is the sub-skill name (the main skill is `engine`), `title` its heading, `brief` the one line the main skill shows, `use_when` the sentence that makes the host load the sub-skill (a skill's description is what triggers loading), `prefixes` the engine checks (guards) it covers by name prefix and `settings_prefixes` the switches it lists by `section.key` prefix (first area that matches wins; the rest go to `guards`). |
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
 | `roles.line_max` | `100` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
 | `roles.main_skill` | `3 entries` |  |  | The main skill: its name, its description (when to load it) and its intro line. |
@@ -5168,7 +5338,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.refuse_exit` | `77` |  |  | Exit status of the command line when the caller's role may not run the verb. |
 | `roles.script_words` | `eval` |  |  | Commands besides the shells of git.shell_verbs whose quoted argument is itself a script, so an engine call quoted there still counts for the role guard; any other quoted engine name (a commit message, an echo) is text. |
 | `roles.self_flags` | `--id, --workspace, --builder` |  |  | Command-line flags whose value names a workspace; a workspace child may only name itself there. |
-| `roles.skill_budget` | `2 entries` |  |  | Size limits of the generated skills, in bytes of SKILL.md: the main skill must stay tiny, a sub-skill bounded. A test fails when a generated skill is over its limit; shrink the area (split it into two) rather than raise the number. |
+| `roles.skill_budget` | `3 entries` |  |  | Size limits of the generated skills, in bytes of SKILL.md: the main skill must stay tiny, a sub-skill bounded. A test fails when a generated skill is over its limit; shrink the area (split it into two) rather than raise the number. |
 | `roles.skill_frontmatter` | `---\nname: {name}\ndescription: "{description}"\n---\n\n` |  |  | Front matter of a generated skill. Placeholders: {name}, {description}. |
 | `roles.skill_host` | `2 entries` |  |  | Per host: where the generated skill files go under the plugin root, the skill folder name prefix, the command that names a skill in prose and the front matter name prefix. Codex skills are folders named anti-hall-<skill>. |
 | `roles.skill_labels` | `13 entries` |  |  | Labels the generated skills use. `roles_head` heads the role table, `verbs_head` the verb table, `guards_head` the guard list, `settings_head` the switches, `none` marks an empty cell, `yes` an allowed role, `self` a self-only role. |
@@ -5700,7 +5870,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `388 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `389 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7649,7 +7819,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.path_arg_max_chars` | `4096` |  |  | Longest directory argument (in characters) the git check tracks through a `cd`; a longer one is left to Node. |
 | `git.self_credit_coauthor_key` | `co-authored-by` |  |  | The trailer key (lowercase) that credits a co-author; an AI tool named after it is a self-credit. |
 | `git.self_credit_generated_prefix` | `generated with ` |  |  | The footer prefix (lowercase, with its trailing space) after which an AI tool name is a self-credit. |
-| `git.self_credit_trailer_keys` | `co-authored-by, generated-with, generated with` |  |  | The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under. |
+| `git.self_credit_trailer_keys` | `co-authored-by, generated-with, generated with, claude-session` |  |  | The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under. |
 | `git.shown_hits` | `3` |  |  | How many commit hashes the handover message names before it adds the more-marker. |
 
 ### limits.toml / gitcache
@@ -7743,7 +7913,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.check_scope` | `(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : u...` |  |  | How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB. |
 | `script.cut_at_request_deadline` | `1` | `AH_ENGINE_SCRIPT_CUT_AT_DEADLINE` |  | 1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry takes its check's failure policy while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up). Not counted as a script error. A check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline (the Node parity harness sets AH_ENGINE_SCRIPT_CUT_AT_DEADLINE=0 so its daemon answers every case, however loaded the machine). |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `83 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
+| `script.engine_only_checks` | `86 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -7787,7 +7957,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.notice_key` | `systemMessage` |  |  | The key of the JSON line a hook prints for a message the user sees (the guard-down notice). |
 | `script.notice_max` | `4096` |  |  | Most (session, check) pairs remembered for the guard-down notice; the memory is cleared when full, so at worst a notice repeats. |
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
-| `script.p95_budget_by_check` | `20 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). Batch 6 (2026-10-09, release no LTO, machine load average 12 to 17, so roughly twice the quiet figures): speculation-guard p50 236 us, p95 1,064 us (its corpus holds Jev asks and state writes), tasklist-guard p50 881 us, p95 2,775 us (it creates the progress directory, stats the progress and history files and appends to the session indexes); the other batch-6 checks stay under the 1,000 us default (dispatch-tier p95 510, model-routing 607, speculation-judge 338, silent-agent-nudge 967, task-guard 935). The compiled ports were not timed before removal, so these are the scripts' own p95s, not an added figure; merge-side-pick p50 38 then 106 us, p95 7,199 then 6,104 us (both are the per-session state file's locked read-modify-write; measured 2026-10-09 on a machine at load 25-30). Measured 2026-10-09 (lane d88fd, release, thread CPU time, best of three): command p50 77 then 295 us, p95 1,804 then 2,761 us on the 5,827-scenario command-guard lane corpus (the compiled port short-cut commands that cannot write or run anything heavy; the script runs the Node functions, and the corpus is skewed to heavy and write cases, which resolve repositories and spawn `git`); coordinator-work-guard p50 28 then 1,128 us, p95 798 then 3,009 us on its golden corpus, where the compiled port deferred 149 of 192 calls to a Node process (tens of milliseconds each) and the script answers all of them. Batch 7 (lane d88e, 2026-10-09, release no LTO, load average 5 to 8, own p95 over the golden corpus): idle-agent-sweep p95 1.4 ms (it writes the emit-dedupe state file durably, as the compiled port did); session-end-mcp-reaper p50 1.3 s, p95 1.7 s (its 500 ms grace period between the polite and the forced signal, plus the process listing, the age and service-manager probes and the re-listing, each a child process; the compiled port waited for the same); stale-agent-stop-note 207 us, claim-ledger 258 us, auto-handover-pause-nag 409 us and compact-advice-guard 258 us stay under the 1,000 us default. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. Batch 8 (lane d88f, 2026-10-09, release no LTO, load average 13 to 15, own p95 over the golden corpus): task-tracker p50 1.1 ms, p95 8.7 ms (UserPromptSubmit: it reads and parses the transcript tail on every prompt), verify-first p50 0.6 ms, p95 1.26 ms, codex-availability p50 0.37 ms, p95 1.4 ms (it writes the availability record on every session start), codex-nudge p50 0.6 ms, p95 1.2 ms; verify-first-orch p50 0.19 ms, p95 0.63 ms stays under the 1,000 us default. |
+| `script.p95_budget_by_check` | `23 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). Batch 6 (2026-10-09, release no LTO, machine load average 12 to 17, so roughly twice the quiet figures): speculation-guard p50 236 us, p95 1,064 us (its corpus holds Jev asks and state writes), tasklist-guard p50 881 us, p95 2,775 us (it creates the progress directory, stats the progress and history files and appends to the session indexes); the other batch-6 checks stay under the 1,000 us default (dispatch-tier p95 510, model-routing 607, speculation-judge 338, silent-agent-nudge 967, task-guard 935). The compiled ports were not timed before removal, so these are the scripts' own p95s, not an added figure; merge-side-pick p50 38 then 106 us, p95 7,199 then 6,104 us (both are the per-session state file's locked read-modify-write; measured 2026-10-09 on a machine at load 25-30). Measured 2026-10-09 (lane d88fd, release, thread CPU time, best of three): command p50 77 then 295 us, p95 1,804 then 2,761 us on the 5,827-scenario command-guard lane corpus (the compiled port short-cut commands that cannot write or run anything heavy; the script runs the Node functions, and the corpus is skewed to heavy and write cases, which resolve repositories and spawn `git`); coordinator-work-guard p50 28 then 1,128 us, p95 798 then 3,009 us on its golden corpus, where the compiled port deferred 149 of 192 calls to a Node process (tens of milliseconds each) and the script answers all of them. Batch 7 (lane d88e, 2026-10-09, release no LTO, load average 5 to 8, own p95 over the golden corpus): idle-agent-sweep p95 1.4 ms (it writes the emit-dedupe state file durably, as the compiled port did); session-end-mcp-reaper p50 1.3 s, p95 1.7 s (its 500 ms grace period between the polite and the forced signal, plus the process listing, the age and service-manager probes and the re-listing, each a child process; the compiled port waited for the same); stale-agent-stop-note 207 us, claim-ledger 258 us, auto-handover-pause-nag 409 us and compact-advice-guard 258 us stay under the 1,000 us default. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. Batch 8 (lane d88f, 2026-10-09, release no LTO, load average 13 to 15, own p95 over the golden corpus): task-tracker p50 1.1 ms, p95 8.7 ms (UserPromptSubmit: it reads and parses the transcript tail on every prompt), verify-first p50 0.6 ms, p95 1.26 ms, codex-availability p50 0.37 ms, p95 1.4 ms (it writes the availability record on every session start), codex-nudge p50 0.6 ms, p95 1.2 ms; verify-first-orch p50 0.19 ms, p95 0.63 ms stays under the 1,000 us default. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
 | `script.prewarm_checks` | `speculation-guard, sibling-sweep` |  |  | Script entries loaded on each daemon worker before accepting requests; only definitions are loaded, no decision function runs. Normal fingerprint invalidation still reloads edits. |
 | `script.prewarm_patterns` | `16 items` |  |  | Shared regex programs compiled before the daemon workers accept requests (defaults key and JavaScript flags). Moves Stop's first marker, acknowledgment and sibling-scan compilation out of its client wait. |
@@ -8114,7 +8284,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `394 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `395 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -9362,7 +9532,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.kinds` | `6 entries` |  |  | The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), teammate (an in-process teammate of an agent team: a subagent transcript whose meta names it one), codex (a Codex CLI session, from its rollout file), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file). |
 | `agent_tracker.limits` | `61 entries` |  |  | Bounds and thresholds of one tick (milliseconds unless the name says otherwise). active_window_ms: a transcript untouched this long is not tracked. max_agents: most agents followed (newest first). first_read_bytes: how much of the end of a transcript is read the first time it is seen (its totals then count from there). read_max_bytes: most read from one transcript per tick. hung_ms: a running agent with no activity this long is hung; hung_pending_ms: the same while a tool call is still unanswered (a long build or wait is legitimate). loop_window: how many recent tool calls are compared; loop_repeats: identical calls in that window that make a loop; loop_edit_repeats: the same for edits of one file; loop_span_ms: the repeats must fall within this much time of the newest one (the same poll every few minutes is not a loop); error_window, error_repeats: the same for an identical error text. waste_window_ms: the window tokens and progress are compared over; waste_min_span_ms: the least history needed before it is judged; waste_min_tokens: tokens spent in the window below which nothing is wasted; waste_max_progress: progress units in that window at or below which the spend is waste; cache_read_pct: how much a cache-read token counts toward the spend, in percent. drift_min_events: edits and commands seen under the current step before drift is judged; drift_max_overlap_pct: the share of the step's words the recent work may share before it is drift; drift_min_step_words, drift_min_word_len: how small a step or a word is too small to judge; work_words_max: how many recent work words are kept. heartbeat_stale_ms: a running agent heartbeat older than this is stale (the Node watchdog default). monitor_min_bg: background tasks running before a missing wake path is reported; bg_bash_ms: how long a background shell command counts as running. confirm_ticks: ticks a signal must stay up before its first reminder. outcome_timeout_ms: a reminded signal still up after this is recorded as not recovered. fp_min_progress: progress that makes a cleared, un-reminded flag a false positive. samples_max: samples kept per agent. files_max: distinct edited files remembered per agent. series_every_ms: how often an agent's series sample is written to the telemetry store and the series file. series_retention_ms, series_max_bytes: age and size cut of the series file. day_retention: days of daily totals kept. state_max_bytes: a state file bigger than this is discarded (it is only a cache). delivered_max: delivered rows read per tick. text_cap: characters kept of a command, a step or an evidence line. claude_cli_timeout_ms: bound of one `claude` subprocess. probe_ttl_ms: how long a cached capability probe is trusted when the version did not change. cli_list_ttl_ms: how long the host's session listing (`claude agents --json`, one heavy process) is trusted before it is asked again; between listings each agent keeps the host state and gone flag of the last one, and a listing is also taken at once when a main or workspace agent appears that the last listing did not see. stale_lock_ms: a wake-watch lock older than this does not count as armed (the DevSwarm wake-watch rule). queue_keep_ms: a fully delivered queue file is removed after this. idle_open_ms: a subagent or workspace that finished its turn with a task still open and has been silent this long is idle with open work (the wake signal idle_open_task). exit_keep_ms: how long an ended background shell task stays reported by the signal watched_exit. max_codex: most Codex sessions followed (newest first, on top of max_agents). codex_days: how many of the newest day directories of the Codex tree are looked at. codex_running_ms: a Codex rollout written to this recently is running, an older one waits (Codex has no process registry to join). codex_first_line_max: most bytes read of a rollout's first line (its session metadata). rollout_stamp_len: characters of the timestamp and dash between the prefix and the session id in a rollout file name. done_keep_ms: how long a finished agent (state done) stays in the status list after its last output; live agents always show. headless_head_bytes: how much of the start of a transcript is read to find its entrypoint. pid_start_slack_ms: a registered process that started later than its session plus this is a reused pid, not that session. codex_done_after_ms: a one-shot Codex run (`codex exec`) with no output for this long is done even without a terminal record. codex_stale_after_ms: any Codex rollout with no output for this long is done (an interactive session idle that long is over). codex_tail_bytes: how much of the end of a rollout is read to find whether its last turn ended. dead_idle_ms: a subagent, teammate or session with no live process, silent this long, whose parent session is not live either, is dead (one whose transcript or project directory is gone is dead at once). owner_active_ms: a main or workspace session whose owner sent a message this recently is healthy (the token-waste signal stays down; agents.nudgeOwnerActive). drift_once_per_step: 1 = the drift reminder is sent once per declared step (a cleared and re-raised flag on the same step text is not reminded again), 0 = every raise. drift_min_hits: shared words between the step (plus its task description) and the recent work that already count as on-step. |
 | `agent_tracker.live_plan` | `2 entries` |  |  | The live facts of a DevSwarm workspace's work that the roster shows beside its plan (the plan is the workspace's own `heartbeat --step` report and goes stale). dir: the folder under the tracker's directory holding one file per workspace (task-list completions, commits, pushes, merges and deploys, when it last shipped); stale_ms: how far after the plan's last report a commit, push, merge or deploy must be before the roster says the plan is behind. |
-| `agent_tracker.meta` | `6 entries` |  |  | Field names of a subagent's meta file (the host's format). task_kind and teammate: a subagent whose task_kind field equals teammate is an in-process teammate of an agent team; name: its team name for it; description: the task description the launcher gave it (a stop of the teammate is answered with this text); team: the team; finished: true once the host recorded the agent as finished. |
+| `agent_tracker.meta` | `7 entries` |  |  | Field names of a subagent's meta file (the host's format). task_kind and teammate: a subagent whose task_kind field equals teammate is an in-process teammate of an agent team; name: its team name for it; description: the task description the launcher gave it (a stop of the teammate is answered with this text); team: the team; finished: true once the host recorded the agent as finished; tool_use_id: the tool call id of the launch that started it (the spawn cap releases that launch's reservation when the child shows). |
 | `agent_tracker.native_wake` | `7 entries` |  |  | The native wake of an idle DevSwarm workspace (`workspace reactivate-child`, run after a mesh send to the workspace and by `agents send`; switched with agents.wakeWatch). idle_ms: how long a running-looking workspace must have been silent before it is woken (one that ended its turn is woken at once); cooldown_ms: the least gap between two wakes of one workspace; timeout_ms: the bound of each hivecontrol call; text_cap: characters of a preview or an error kept; dir: the folder (under the tracker's base) holding each workspace's last-wake stamp. info_args: the hivecontrol arguments that read the workspace (its branch), before the workspace id. reactivate_args: the hivecontrol arguments that queue the wake prompt, before the branch and the prompt. |
 | `agent_tracker.no_work` | `5 entries` |  |  | The no_work signal requires a valid transcript scanned from its start through its current end. Partial, truncated or unread scans are unknown and never notify. Rescue wrappers (agent type or Codex job id in a result) are excluded because their work happens elsewhere. max_tools controls the threshold. |
 | `agent_tracker.no_work_states` | `4 entries` |  |  | No-work evidence states in agents status: unknown means incomplete scan, excluded a Codex-rescue wrapper, no_work a proven empty finished child, clear otherwise. |
@@ -9497,6 +9667,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_nudge.reason_plausible` | `plausible` |  |  | The nudgeReason label that lets the requested snooze stand. |
 | `agent_nudge.ref_alphabet` | `abcdefghjkmnpqrstuvwxyz23456789` |  |  | The characters a nudge's ref token is made of (lower case and digits, no look-alikes). |
 | `agent_nudge.reply_integration` | `nudgeReply` |  |  | The Jev evidence integration that classifies a prose reply into an answer word. |
+| `agent_nudge.runtime_escalation` | `2 entries` |  |  | Escalation of a long-running child whose nudges keep repeating (GH #484). after_reminders: nudges about one child (the first included) after which it counts as escalated if it has not finished or been stopped (0 = off). file: where the open escalations are published for the coordinator's Stop check, under the tracker's directory. |
 | `agent_nudge.scope_setting` | `6 entries` |  |  | Where the switch of the nudge and wake scope rules is read from (agents.nudgeScope, default on): on, an answered nudge is never queued again by the wake fallback, an agentHealth verdict of done holds the nudge, and heartbeat and lock-holder wake rows go only to the session that owns them (agent_tracker.wake_scope); off, the earlier behaviour. |
 | `agent_nudge.setting` | `6 entries` |  |  | Where the nudge loop's switch is read from (agents.nudge, default on): on, an unhealthy child's signals go to its direct parent as a nudge (the plain reminder routes stay quiet about them); off, the plain reminder routes of agent_tracker.routes deliver them as before. |
 | `agent_nudge.snooze_setting` | `6 entries` |  |  | Where the switch of the held snooze is read from (agents.nudgeSnoozeHold, default on): on, a snooze is kept per child and trigger, outlives the nudge it was given to and holds a re-raised condition (no new nudge until it runs out; its count carries over); off, a snooze lives and dies with its nudge. |
@@ -12667,6 +12838,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `api_guard_v1.max_code_chars` | `600000` |  |  | A code chunk longer than this (JavaScript string length) is not checked, as in the Node guard. |
 | `api_guard_v1.max_modules` | `8` |  |  | Most module groups probed per language (one interpreter run each), as the Node guard bounds them. |
+| `api_guard_v1.msg_digest` | `Verify API names against the installed runtime before writing calls to them.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `api_guard_v1.msg_instead` | `verify the API names and correct the references.` |  |  | Block message: what to do instead. |
 | `api_guard_v1.msg_item_prefix` | `  • ` |  |  | Prefix of each fabricated reference listed under the block message. |
 | `api_guard_v1.msg_override` | `only if you target a NEWER version where it exists: write ~/.anti-hall/skip.j...` |  |  | Block message: the override. |
@@ -12856,6 +13028,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `edit_guard.descriptor_dir` | `.anti-hall, devswarm, workspaces` |  |  | Where anti-hall's DevSwarm workspace descriptors live under the home directory, as its parts. |
 | `edit_guard.descriptor_ext` | `.json` |  |  | The extension of a workspace descriptor file. |
 | `edit_guard.handover_parts` | `3 entries` |  |  | The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory. |
+| `edit_guard.msg_digest` | `The {cfg:command.msg_edit_who_coord} and {cfg:command.msg_edit_who_orch} neve...` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `edit_guard.msg_new_allowed` | `.anti-hall/handovers/**.` |  |  | What stays allowed next to a redirected handover document. |
 | `edit_guard.msg_new_instead` | `write it at the session handover path.` |  |  | What to do instead for a new handover document. |
 | `edit_guard.msg_new_override` | `tell the agent "skip edit-guard" (lasts 15 minutes).` |  |  | The override line of the handover redirect ({skip} is the skip command). |
@@ -14127,6 +14300,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.updater_verified_lock` | Said when the download also matches the plugin lock. |
 | `msg.window_bad` | Printed when a --window / --since value is not a whole number of days (the telemetry data is kept in per-day buckets, so hours and minutes cannot be honoured). Placeholder: {window}. |
 | `git.msg_commit_credit` | Block: an inline commit message with an AI self-credit. |
+| `git.msg_commit_expansion` | Block: an inline commit message holds an unresolved shell expansion. Placeholder: {shown} (the first expansion found). |
 | `git.msg_commit_file_credit` | Block: a commit message read from a file or heredoc with an AI self-credit. |
 | `git.msg_commit_file_jev` | Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased). |
 | `git.msg_commit_jev` | Block: Jev judged an inline commit message to credit an AI assistant (paraphrased). |
@@ -14141,10 +14315,16 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |
+| `git.msg_push_credit` | Block: a push would publish commits that carry an AI credit. Placeholder: {shown} (each short hash with the branches that hold it, push_hit_format). |
+| `git.msg_push_dynamic_repo` | Block: a push whose repository (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) is a path the shell expands at run time. Placeholder: {arg}. |
+| `git.msg_push_over_cap` | Block: more local commits are on no remote than the pre-push credit check reads, so a credit past the cap could not be ruled out. Placeholder: {cap}. |
+| `git.msg_push_same_call` | Block: one Bash call creates a commit whose message layer 1 cannot read and pushes. Placeholder: {sub} (the subcommand). |
+| `git.msg_push_tag_credit` | Block: a local annotated tag's message carries an AI credit. Placeholder: {tags} (the tag names). |
 | `git.msg_reused_message` | Block: a reused commit message carries an AI self-credit. Placeholder: {origin}. |
 | `git.msg_runner_no_subcommand` | Block: a runner with git and no subcommand beside a force or delete flag. Placeholder: {runner}. |
 | `git.msg_runner_placeholder` | Block: a runner placeholder stands for the command or subcommand beside a force or delete flag. |
 | `git.msg_runner_push` | Block: a push through xargs or parallel. Placeholder: {runner}. |
+| `git.msg_script_credit` | Block: a Bash call runs a script whose text carries an AI credit line. Placeholders: {file} (the script path), {line} (the first line with the credit). |
 | `git.msg_trailer_remap` | Block: a trailer remap to an AI self-credit key. |
 | `msg.cfg_err_hooks` | A hook configuration section ([events.*], [entries.*]) is invalid (D87). |
 | `msg.cfg_err_io` | A config file could not be read. |
@@ -14271,6 +14451,10 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `requests_served` | counter | requests |  | Requests the daemon ran checks for (not skipped because the client had already hung up: see client_gone_skipped). |
 | `sigint_drains` | counter | drains |  | Graceful drains started by SIGINT (the same drain as SIGTERM). |
 | `tail_newest_reads` | counter | reads | mode | Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap). |
+| `git_audit_blocked` | counter | blocks |  | Bash calls the post-call commit check blocked because a commit git just wrote carries an AI credit (PR #469). |
+| `git_blocked` | counter | commands | reason | Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push). |
+| `git_push_ack_downgraded` | counter | pushes |  | Pushes the credit backstop let through as an advisory because the identical push had been blocked once and git.push_ack_max_shas acknowledges it (off by default). |
+| `git_push_blocked` | counter | pushes |  | Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457). |
 | `command_heavy_segment_named` | counter | blocks | kind | Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own. |
 | `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
 | `agent_scan_degraded` | counter | scans | reader | Agent scans that returned unknown (the callers' unsure path: the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) because the window held a line longer than agent_scan.max_line_bytes that was skipped unparsed, by reader: scan_window or scan_kept. Any oversize line degrades the scan, noise or not, since the skipped line may have carried a completion. |
@@ -14368,6 +14552,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
+| `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
+| `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
+| `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
 | `claim_evidence_suppressor_rejected` | counter | candidates | reason | Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427). |
@@ -14382,6 +14569,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_turns_measured` | counter | turns | mode | Main-session turns whose output tokens were measured, by mode (afk, present). |
 | `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
 | `idle_trips` | counter | events |  | AFK periods started by idle detection. |
+| `runtime_escalation_stop_unrecorded` | counter | stops |  | Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap). |
+| `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided). |
+| `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
@@ -14416,6 +14606,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `agent_nudge_suppressed` | counter | nudges | reason | Nudges held back by the scope rules (agents.nudgeScope), by reason: judge_done (the agentHealth judge said the child's work is finished, so the done hold starts; the hold then keeps suppressing without a judge call or another count until it runs out or the child writes) and answered (the parent answered after the last send, so the wake fallback does not queue it again). |
 | `agent_nudge_to_owner` | counter | notices | where | Notices sent to the owner's channel (escalations, acted-on notices, dead-child notices with no live parent), by where: session (the newest live armed main session of the child's project) or file (the owner notices file, when no such session exists). |
 | `agent_wake_dropped` | counter | rows | reason | Wake rows dropped because no followed session owns them (agents.nudgeScope on), by reason: foreign_agent (a heartbeat whose writer is no followed session), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started). |
+| `runtime_escalations` | counter | escalations |  | Children whose repeated runtime nudges reached agent_nudge.runtime_escalation.after_reminders without the child finishing or being stopped; counted once per nudge. |
 | `dsx_actions` | counter | actions | feature, outcome | Automatic archive and nag attempts of the DevSwarm expansion features, by feature and outcome (ok, refused, failed). |
 | `dsx_auto_archive_mistake_rate` | gauge | ratio |  | Mistake signals per successful auto-archive since the engine started (gauge). |
 | `dsx_auto_archive_success_rate` | gauge | ratio |  | ok / (ok + failed) of auto-archive attempts since the engine started (gauge, 0..1); a refusal is a safety check working and is not counted. |
