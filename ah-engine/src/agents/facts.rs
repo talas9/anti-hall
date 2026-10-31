@@ -715,7 +715,7 @@ pub(crate) fn episode_sync(a: &mut Agent, ts: u64) {
 /// `start`) or a passing check (`check`) earns HARD only when the state of the call's repository (agent::repo::state) changed since the
 /// last HARD credit of any kind there; a write must also be inside that repository and not ignored by git (a temp file or a gitignored
 /// one never changes the state). Outside a repository, or with git missing, failing or timing out, the verified-write rule applies: a
-/// write of a file not written before and not a temp-dir scratch file outside `dir`, or a check after a real change (`changes`: an
+/// write of a file not written before and not a temp-dir scratch file (wherever the call ran), or a check after a real change (`changes`: an
 /// edit, a fresh shell write, a commit) since the last HARD credit. False when it earned neither.
 fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64, dir: &str) -> bool {
     let verified: Vec<String> = writes.iter().filter_map(|w| written_since(w, start)).collect();
@@ -729,7 +729,7 @@ fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64, dir: 
             let ign = super::repo::ignored(top, &inside);
             inside.into_iter().filter(|w| !ign.contains(w)).collect()
         }
-        None => verified.into_iter().filter(|w| !a.files.contains(w) && !super::repo::scratch(w, dir)).collect(),
+        None => verified.into_iter().filter(|w| !a.files.contains(w) && !super::repo::scratch(w)).collect(),
     };
     if fresh.is_empty() && !check {
         return false;

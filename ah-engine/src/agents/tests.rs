@@ -446,6 +446,8 @@ fn burned_in(tag: &str, cwd: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
     let h = home(tag);
     let w = h.join("w");
     std::fs::create_dir_all(w.join("out")).unwrap();
+    // the directory is a project (its work-tree marker, no readable repository): a file in it is work though the scratch home is a temp dir
+    std::fs::create_dir_all(w.join(".git")).unwrap();
     let cwd = if cwd.is_empty() { w.to_string_lossy().into_owned() } else { cwd.to_string() };
     let n = now0();
     let p = sess(&h, "s1");
@@ -2946,6 +2948,52 @@ fn r5c_a_curl_to_a_fresh_tmp_file_each_run_pauses_pr472r5() {
         assert_eq!(agent(&st, "s1").progress, 0, "{tag}: a temp-file write is no work");
         assert!(marker.exists(), "{tag}: the curl loop is paused");
     }
+}
+
+/// A fresh agent whose transcript cwd is `cwd` (not yet burned).
+fn fresh_at(tag: &str, cwd: &str) -> (PathBuf, PathBuf, PathBuf, State, u64) {
+    let h = home(tag);
+    let n = now0();
+    let p = sess(&h, "s1");
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    write(&p, &[prompt(n - 2 * MIN, cwd), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    (h, p, marker, st, n)
+}
+
+/// Round 6 (a): `cd /tmp && curl URL -o out-<ts>.json` from a repo: the output is a fresh real file under the temp dir, the cwd the
+/// call cd-ed into; a probe loop of it pauses (the cwd never exempts a temp path).
+#[test]
+fn r6a_cd_tmp_curl_to_a_fresh_relative_output_pauses_pr472r6() {
+    let (h, p, marker, mut st, n) = fresh_in_repo("r6a");
+    let tag = std::process::id();
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        let name = format!("ah-r6a-{tag}-out-{t}.json");
+        put(&Path::new("/tmp").join(&name), "{}", t + 500);
+        ok_bash_out(&p, t, &format!("c{k}"), 700_000, &format!("cd /tmp && curl -s http://dev/status -o {name}"), "");
+        ticks(&h, &mut st, &[t + MIN]);
+        crate::discard::harmless(std::fs::remove_file(Path::new("/tmp").join(&name))); // keep: the probe file is disposable
+    }
+    assert_eq!(agent(&st, "s1").progress, 0, "a temp-dir output is no work");
+    assert!(marker.exists(), "the cd /tmp curl loop is paused");
+}
+
+/// Round 6 (b): a relative `-o out.json` with the transcript cwd /tmp pauses too.
+#[test]
+fn r6b_relative_output_with_cwd_tmp_pauses_pr472r6() {
+    let (h, p, marker, mut st, n) = fresh_at("r6b", "/tmp");
+    let name = format!("ah-r6b-{}-out.json", std::process::id());
+    for k in 0..20u64 {
+        let t = n + (6 * k + 1) * MIN;
+        put(&Path::new("/tmp").join(&name), "{}", t + 500);
+        ok_bash_out(&p, t, &format!("c{k}"), 700_000, &format!("curl -s http://dev/status -o {name}"), "");
+        ticks(&h, &mut st, &[t + MIN]);
+    }
+    crate::discard::harmless(std::fs::remove_file(Path::new("/tmp").join(&name))); // keep: the probe file is disposable
+    assert_eq!(agent(&st, "s1").progress, 0, "a temp-dir output is no work");
+    assert!(marker.exists(), "the relative-output loop in /tmp is paused");
 }
 
 /// Spec (d), regression guard: Edit tool -> `cargo test` -> Edit tool -> `cargo test` on the SAME tracked file: every edit changes the

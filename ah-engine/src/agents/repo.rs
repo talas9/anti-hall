@@ -104,16 +104,17 @@ pub(crate) fn ignored(top: &str, paths: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Whether `path` (canonical) is under a temp directory (tmp_prefixes, or the directory a tmp_env variable names) and outside `dir`
-/// (the call's directory): a scratch file of the call, never work in itself.
-pub(crate) fn scratch(path: &str, dir: &str) -> bool {
+/// Whether `path` (absolute, resolved from the call's directory first) is under a temp directory (tmp_prefixes, or the directory a
+/// tmp_env variable names) and in no work tree (no worktree_marker in an ancestor), wherever the call ran: a scratch file, never work
+/// in itself. A directory the call cd-ed into does not exempt it. The marker keeps a project that lives under a temp directory working
+/// when git itself is unavailable.
+pub(crate) fn scratch(path: &str) -> bool {
     let p = Path::new(path);
     let canon = |s: &str| std::fs::canonicalize(s).unwrap_or_else(|_| PathBuf::from(s));
-    if !dir.is_empty() && p.starts_with(canon(dir)) {
-        return false;
-    }
     let env: Vec<String> = list("tmp_env").iter().filter_map(|k| std::env::var(k).ok()).filter(|v| !v.is_empty()).collect();
-    list("tmp_prefixes").into_iter().map(str::to_string).chain(env).any(|t| p.starts_with(&t) || p.starts_with(canon(&t)))
+    let under = list("tmp_prefixes").into_iter().map(str::to_string).chain(env).any(|t| p.starts_with(&t) || p.starts_with(canon(&t)));
+    let marker = cfg().get("worktree_marker").and_then(V::as_str).unwrap_or_default();
+    under && (marker.is_empty() || !p.ancestors().skip(1).any(|d| d.join(marker).exists()))
 }
 
 #[cfg(test)]
