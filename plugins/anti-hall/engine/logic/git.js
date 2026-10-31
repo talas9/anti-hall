@@ -2276,6 +2276,22 @@ function scriptFileVerdict(tok, cdDir, byPath) {
     if (gitFatal(e)) throw e;
     reaches = true; // unparsed: keep the credit scan, as before
   }
+  // PR #469 round 10: a gh pr/issue/release command (gh_subs x gh_actions) publishes its body text like a commit does; its body
+  // and --body-file / --notes-file text are checked as the direct command is
+  let ghHit = null;
+  try {
+    for (const seg of splitSegments(liveBody)) {
+      const gev = effectiveVerb(tokenize(seg));
+      if (gev && gev.verb === 'gh' && ghSelfCreditMessage(gev.args)) { ghHit = seg; break; }
+    }
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+  }
+  if (ghHit !== null) {
+    const first = ghHit.trim().split(/\s+/)[0] || '';
+    const gl = live.findIndex((l) => l.includes(first) && /\bgh\b/.test(l));
+    return gmKey('msg_script_credit', { file: tok.text, line: gl < 0 ? 1 : gl + 1 });
+  }
   // a script that never commits, merges, tags or pushes cannot publish a credit line it mentions
   if (reaches && hasSelfCredit(liveBody)) {
     const line = live.findIndex((l) => hasSelfCredit(l));

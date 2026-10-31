@@ -808,6 +808,64 @@ fn an_inert_credit_mention_in_a_script_is_allowed_and_a_credited_message_literal
     assert!(code == 2 && err.contains("literal.sh") && err.contains("line 3"), "credited literal: code={code} stdout={out} stderr={err}");
 }
 
+/// PR #469 round 10 (P2-1): a script run by path that publishes a body with a gh command (no git command) is scanned like the
+/// direct command: a credited --body/--notes/--body-file is denied, a clean one runs.
+#[test]
+fn a_gh_publishing_command_in_a_script_run_by_path_is_scanned_for_credit() {
+    let e = Env::new("ghscript");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    std::fs::write(work.join("credit.md"), format!("body\n\n{CO}\n")).unwrap();
+    std::fs::write(work.join("clean.md"), "body only\n").unwrap();
+    let cases = [
+        ("pr_create.sh", format!("#!/bin/sh\ngh pr create --title t --body \"fix\\n\\n{CO}\"\n"), true),
+        ("issue_create.sh", format!("#!/bin/sh\ngh issue create --title t --body \"x {CO}\"\n"), true),
+        ("release.sh", format!("#!/bin/sh\ngh release create v1 --notes \"x {CO}\"\n"), true),
+        ("pr_edit.sh", format!("#!/bin/sh\ngh pr edit 1 --body \"x {CO}\"\n"), true),
+        ("pr_comment.sh", format!("#!/bin/sh\ngh pr comment 1 --body \"x {CO}\"\n"), true),
+        ("issue_comment.sh", format!("#!/bin/sh\ngh issue comment 1 --body \"x {CO}\"\n"), true),
+        ("bodyfile.sh", "#!/bin/sh\ngh pr create --title t --body-file credit.md\n".to_string(), true),
+        ("notesfile.sh", "#!/bin/sh\ngh release create v1 --notes-file credit.md\n".to_string(), true),
+        ("clean_create.sh", "#!/bin/sh\ngh pr create --title t --body \"plain body\"\n".to_string(), false),
+        ("clean_file.sh", "#!/bin/sh\ngh pr create --title t --body-file clean.md\n".to_string(), false),
+    ];
+    for (f, body, _) in &cases {
+        std::fs::write(work.join(f), body).unwrap();
+    }
+    let _ = e.hook("echo warm");
+    let mut bad = Vec::new();
+    for (f, _, deny) in &cases {
+        let (out, err, code) = e.hook_in(&format!("bash {f}"), w);
+        if *deny != (code == 2 && err.contains(f)) {
+            bad.push(format!("{f}: deny={deny} code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// PR #469 round 10 (P2-2): a line starting with grep is inert only when it is a plain grep; a grep that pipes, takes a
+/// here-string, a process substitution, a redirection, a command substitution or continues with && / ; is live.
+#[test]
+fn a_grep_line_that_pipes_into_a_commit_is_live_and_a_plain_grep_check_is_inert() {
+    let e = Env::new("griplive");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    let credit_line = format!("grep -v '^$' <<< $'subject\\n{CO}' | git commit -q --allow-empty -F -");
+    std::fs::write(work.join("pipe.sh"), format!("#!/bin/bash\n{credit_line}\n")).unwrap();
+    std::fs::write(work.join("semi.sh"), format!("#!/bin/bash\ngrep -q x f ; git commit -q --allow-empty -m \"x\\n\\n{CO}\"\n")).unwrap();
+    std::fs::write(
+        work.join("harmless.sh"),
+        format!("#!/bin/sh\ngrep -n \"{CO}\" notes.txt\ngit commit -q --allow-empty -m 'feat: plain'\ngit {P} -q origin main\n"),
+    )
+    .unwrap();
+    let _ = e.hook("echo warm");
+    for f in ["pipe.sh", "semi.sh"] {
+        let (out, err, code) = e.hook_in(&format!("bash {f}"), w);
+        assert!(code == 2 && err.contains(f), "{f} must be denied: code={code} stdout={out} stderr={err}");
+    }
+    assert_eq!(e.hook_in("bash harmless.sh", w), (String::new(), String::new(), 0), "harmless grep line is inert");
+}
+
 /// `link/..` is resolved by the kernel, so with link -> /other/sub, `bash link/../publish.sh` runs /other/publish.sh: that
 /// file is the one scanned, not /repo/publish.sh.
 #[test]

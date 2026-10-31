@@ -914,8 +914,8 @@ min = 1024
 max = 16777216
 
 [git.script_inert_line_re]
-doc = "A line of a script that cannot put text into a commit message: a comment line, or a grep, egrep, fgrep or rg of a pattern. The script credit scan ignores such lines, and a script that never commits, merges, tags or pushes (push_same_call_subs and push) is not scanned for credit text at all."
-value = "^[ \\t]*(?:#|(?:e|f)?grep\\b|rg\\b)"
+doc = "A line of a script that cannot put text into a commit message: a pure comment line, or a plain grep, egrep, fgrep or rg of a pattern. A grep line with a pipe, a here-string or other input or output redirection, a process or command substitution, a variable expansion or a ; / & continuation is live (it can feed a command). The script credit scan ignores inert lines, and a script that never commits, merges, tags, pushes or publishes with gh (push_same_call_subs, push, and a gh command of gh_subs and gh_actions, whose body is checked like the direct command) is not scanned for credit text at all."
+value = "^[ \\t]*(?:#|(?:(?:e|f)?grep|rg)\\b[^|<>;&`$]*$)"
 
 [git.msg_script_credit]
 doc = "Block: a Bash call runs a script whose text carries an AI credit line. Placeholders: {file} (the script path), {line} (the first line with the credit)."
