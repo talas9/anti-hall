@@ -1354,6 +1354,76 @@ fn five_serial_default_timeouts_trip_the_slow_recovery_and_then_calls_pass_with_
     assert!(d.seen() >= 6);
 }
 
+/// A timed-out Bash call of session `sid` against a tripped slow-reply recovery (the state marker is seeded), through the daemon stub
+/// that never answers in time.
+fn degraded_call(e: &Env, map: &Path, sid: &str) -> (i32, String, String) {
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let payload = bash("ls", &e.dir).replace("\"session_id\":\"e2e\"", &format!("\"session_id\":\"{sid}\""));
+    assert!(payload.contains(sid), "{payload}");
+    e.run_with(&args, false, &payload, true, &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW])
+}
+
+fn seed_degraded(e: &Env) {
+    std::fs::create_dir_all(e.state()).unwrap();
+    std::fs::write(e.state().join("daemon.slow.degraded"), "5").unwrap();
+}
+
+/// Codex P2 on #473: the recovery notice is once per SESSION, not once per change of session. Sessions A, B, A tell A once and B once.
+#[test]
+fn the_degraded_notice_is_told_once_per_session_when_sessions_alternate() {
+    let e = Env::new("degraded-abab");
+    let map = event_map(&e, "PreToolUse", "echo NODEBLOCK >&2; exit 2", "true");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    seed_degraded(&e);
+    let told: Vec<bool> = ["sess-a", "sess-b", "sess-a"].iter().map(|s| degraded_call(&e, &map, s).2.contains(&degraded_notice_text())).collect();
+    assert_eq!(told, [true, true, false], "A is told once, B once; A again is not told twice");
+}
+
+/// Codex P2 on #473: concurrent first calls of one session tell it once (the stamp is created exclusively).
+#[test]
+fn concurrent_degraded_calls_of_one_session_tell_it_once() {
+    let e = Env::new("degraded-race");
+    let map = event_map(&e, "PreToolUse", "echo NODEBLOCK >&2; exit 2", "true");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    seed_degraded(&e);
+    let barrier = std::sync::Barrier::new(4);
+    let told = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..4)
+            .map(|_| {
+                s.spawn(|| {
+                    barrier.wait();
+                    degraded_call(&e, &map, "sess-race").2.contains(&degraded_notice_text())
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).filter(|t| *t).count()
+    });
+    assert_eq!(told, 1, "exactly one concurrent call tells the session");
+}
+
+/// Codex P2 on #473: a notice stamp that cannot be written never repeats the notice (silent, counted), instead of telling every call.
+#[test]
+fn an_unwritable_notice_stamp_never_repeats_the_degraded_notice() {
+    let e = Env::new("degraded-unwritable");
+    let map = event_map(&e, "PreToolUse", "echo NODEBLOCK >&2; exit 2", "true");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    seed_degraded(&e);
+    // a regular file where the stamp directory goes (and a directory where the old single stamp file went): no stamp can be created
+    for key in ["files.slow_degraded_notice", "files.slow_degraded_notice_dir"] {
+        if ah_engine::defaults::has(key) {
+            let p = e.state().join(ah_engine::defaults::text(key));
+            if key.ends_with("_dir") {
+                std::fs::write(&p, "x").unwrap();
+            } else {
+                std::fs::create_dir_all(&p).unwrap();
+            }
+        }
+    }
+    let told = (0..3).filter(|_| degraded_call(&e, &map, "sess-ro").2.contains(&degraded_notice_text())).count();
+    assert!(told <= 1, "a failed stamp must not repeat the notice: told {told} of 3 calls");
+    assert_eq!(told, 0, "fail toward silent");
+}
+
 /// One completed reply between timeouts resets the streak; once tripped git/Bash pass with the notice; the next answer restores
 /// the guards, and a single isolated timeout then blocks the safety guard again (the policy is intact).
 #[test]
@@ -1408,6 +1478,39 @@ fn a_timed_out_call_honors_the_guard_skip_file() {
     let _d = scripted_daemon(&e, vec![NEVER]);
     let (code, _, err) = slow_call(&e, &map, &[WINDOW]);
     assert_eq!(code, 0, "every safety guard is skipped: the timeout must not block: {err:?}");
+}
+
+/// Codex P2 on #473: every fail-closed check the dispatch table can time out on resolves (client.timeout_skip_name_key_by_check, else
+/// its own id) to a name that some guard really answers to in skip.json, so a valid skip always unblocks a timed-out check. The
+/// `command` check once fell back to `command` while its guard's name is `command-guard`. (Fail-open checks pass on a timeout anyway.)
+#[test]
+fn every_timeout_failing_closed_check_resolves_to_a_known_skip_name() {
+    let known: std::collections::BTreeSet<&str> = ah_engine::defaults::all()
+        .iter()
+        .filter(|e| e.key.ends_with("guard_name") || e.key.ends_with("skip_name"))
+        .filter_map(|e| e.value.as_str())
+        .collect();
+    let names = ah_engine::defaults::raw("client.timeout_skip_name_key_by_check");
+    let mut checks = std::collections::BTreeSet::new();
+    for host in ah_engine::dispatch::table::hosts() {
+        for ev in ah_engine::dispatch::table::events(host) {
+            checks.extend(ah_engine::dispatch::table::entries(host, ev).into_iter().filter_map(|x| x.check));
+        }
+    }
+    let closed = ah_engine::defaults::text("script.failure_mode_closed");
+    let bad: Vec<String> = checks
+        .iter()
+        .filter(|c| ah_engine::script::failure_mode(c) == closed)
+        .filter_map(|c| {
+            let name = names.get(c.as_str()).and_then(|v| v.as_str()).map_or(c.clone(), |k| ah_engine::defaults::text(k).to_string());
+            (!known.contains(name.as_str())).then(|| format!("{c} -> {name}"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "fail-closed checks whose resolved skip name no guard answers to: {bad:?}");
+    for (check, key) in names.as_table().unwrap() {
+        let key = key.as_str().unwrap();
+        assert!(ah_engine::defaults::has(key) && known.contains(ah_engine::defaults::text(key)), "mapping {check} -> {key} names no known skip name");
+    }
 }
 
 /// Codex P2 on #473: a timed-out non-guard check answers by its policy in the dispatcher, which must know the payload's session, or
