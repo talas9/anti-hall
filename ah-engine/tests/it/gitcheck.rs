@@ -1135,3 +1135,81 @@ fn a_continued_or_prepared_merge_message_and_a_push_in_the_same_call_are_refused
         assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "{cmd}");
     }
 }
+
+/// GH #506 / PR #524 review (P1): the narrowed scan reads git configuration and HEAD before the call has run anything, so an
+/// earlier part of the same Bash call that changes what the push publishes must keep the repository-wide scan. The repository is a
+/// clean `main` and another branch `credited`; every command below is judged on real hook input and must be refused with the credit.
+#[test]
+fn an_earlier_part_of_the_same_call_that_changes_what_the_push_publishes_keeps_the_wide_scan() {
+    let e = Env::new("scope_chain");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["branch", "credited"]);
+    git_ok(&work, &["checkout", "-q", "credited"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut cmds: Vec<String> = Vec::new();
+    for sep in ["&&", ";", "||"] {
+        cmds.push(format!("git config remote.origin.mirror true {sep} git {P} origin"));
+        cmds.push(format!("git config remote.origin.{P} credited {sep} git {P} origin"));
+        cmds.push(format!("git switch credited {sep} git {P} origin HEAD:refs/heads/x"));
+    }
+    cmds.extend([
+        format!("git -c remote.origin.mirror=true {P} origin"),
+        format!("sh -c 'git config remote.origin.mirror true; git {P} origin'"),
+        format!("f() {{ git config remote.origin.mirror true; git {P} origin; }}; f"),
+        format!("f() {{ git config remote.origin.mirror true; git {P} origin; }} && f"),
+        format!("git switch credited; git {P} origin HEAD:x"),
+        format!("git switch credited & git {P} origin HEAD:x"),
+        format!("git switch credited | cat; git {P} origin HEAD:x"),
+        format!("$(git switch credited) && git {P} origin HEAD:x"),
+        format!("`git switch credited` && git {P} origin HEAD:x"),
+        format!("eval 'git switch credited' && git {P} origin HEAD:x"),
+        format!("source ./setup.sh && git {P} origin HEAD:x"),
+        format!("alias g='git switch credited' && g && git {P} origin HEAD:x"),
+        format!("git checkout credited && git {P} origin HEAD:x && git {P} origin main"),
+        format!("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git {P} origin"),
+        format!("GIT_DIR={w}/.git git {P} origin HEAD:x"),
+        format!("git -c remote.origin.{P}=credited {P} origin"),
+        format!("cd {w} && git config remote.origin.mirror true && git {P} origin"),
+        format!("cd - && git {P} origin HEAD:x"),
+    ]);
+    let mut missed = Vec::new();
+    for cmd in &cmds {
+        let (out, err, code) = e.hook_in(cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    let m = String::from_utf8_lossy(&e.cmd().args(["metrics", "--json"]).output().unwrap().stdout).to_string();
+    assert!(m.contains("git_push_narrow_unproven"), "the wide reads are counted: {m}");
+}
+
+/// GH #506 / PR #524 review: the SkyCrew case still narrows. The repository holds 60 unpushed commits on other branches (more than
+/// the cap); a plain push of `main`, alone or after `cd <path> &&`, is judged only on the commits it sends.
+#[test]
+fn a_plain_push_alone_or_after_a_cd_still_narrows_with_sixty_unpushed_commits_elsewhere() {
+    let e = Env::new("scope_plain");
+    let (work, origin) = pushed_repo(&e);
+    git_ok(&work, &["checkout", "-q", "-b", "big"]);
+    for i in 0..60 {
+        git_ok(&work, &["commit", "-q", "--allow-empty", "-m", &format!("big {i}")]);
+    }
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let o = origin.to_str().unwrap().to_string(); // the session directory: a repository other than the one pushed from
+    let _ = e.hook("echo warm");
+    for (cmd, cwd) in [
+        (format!("git {P} origin main"), w.to_string()),
+        (format!("cd {w} && git {P} origin main"), o.clone()),
+        (format!("cd {w} && git {P} origin"), o.clone()),
+    ] {
+        assert_eq!(e.hook_in(&cmd, &cwd), (String::new(), String::new(), 0), "{cmd}");
+    }
+    // the same call with a second git command is read whole: 60 commits is over the cap
+    let (_, err, code) = e.hook_in(&format!("git status && git {P} origin main"), w);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("more than 50 local commits"), "{err}");
+}

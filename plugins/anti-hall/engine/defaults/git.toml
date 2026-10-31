@@ -899,6 +899,26 @@ value = ["-o", "--push-option", "--repo", "--receive-pack", "--exec", "--recurse
 doc = "git push options that take no separate value (GH #506). With push_value_opts this is the whole option table a command-line option is resolved against the way git resolves it: an exact name, else a unique prefix of a long name, the `--no-` forms included. An option that resolves to no entry or to more than one is not understood, and the push is not narrowed to its own commits (every unpushed commit is read)."
 value = ["-v", "--verbose", "-q", "--quiet", "--all", "--branches", "--mirror", "-d", "--delete", "--tags", "-n", "--dry-run", "--porcelain", "-f", "--force", "--force-with-lease", "--force-if-includes", "--thin", "-u", "--set-upstream", "--progress", "--prune", "--no-verify", "--verify", "--follow-tags", "--signed", "--atomic", "-4", "--ipv4", "-6", "--ipv6"]
 
+[git.push_narrow_re_flags]
+doc = "Regular expression flags for the push_narrow_* patterns (empty: case-sensitive)."
+value = ""
+
+[git.push_narrow_forbidden_re]
+doc = "Regular expression (JavaScript syntax) of what makes a Bash call unprovable for narrowing a push to its own commits (GH #506, PR #524 review): a command chain or pipe other than a double ampersand (semicolon, double bar, bar, a single ampersand, a newline), a substitution or subshell (dollar-paren, backtick, parentheses), a block or function body (braces), a here-document or here-string, and the words eval, source, alias, function, a shell name, exec, command, builtin, env, xargs, time or a leading dot (source). Any match: the push counts every unpushed commit of the repository."
+value = '[;|\n\r`(){}]|(?<!&)&(?!&)|<<|\$\(|(?:^|[\s&])(?:eval|source|alias|function|sh|bash|zsh|dash|ksh|exec|command|builtin|env|xargs|time|\.)\s'
+
+[git.push_narrow_separator]
+doc = "The only command separator a narrowed push may follow."
+value = "&&"
+
+[git.push_narrow_push_re]
+doc = "Regular expression (JavaScript syntax) the last segment of a call must match to be narrowed: the push itself, starting at `git push`, with no environment prefix and no option before the subcommand except -C <plain path> (-c and --config-env are not allowed)."
+value = '''^\s*git\s+(?:-C\s+(?:[A-Za-z0-9_./~@%+=:,-]|'[^']*'|"[^"$`\\]*")+\s+)?push(?:\s|$)'''
+
+[git.push_narrow_before_res]
+doc = "Allowlist of segments (regular expressions, JavaScript syntax) that may run before a narrowed push: only commands that change nothing a push publishes. Start: `cd <path>` with a plain path (not `cd -`, which goes to the previous directory)."
+value = ['''^\s*cd\s+(?:--\s+)?(?!-)(?:[A-Za-z0-9_./~@%+=:,-]|'[^']*'|"[^"$`\\]*")+\s*$''']
+
 [git.push_unscoped_globals]
 doc = "git options before the subcommand that change the configuration or the environment a push runs with: the push is not narrowed to its own commits."
 value = ["-c", "--config-env"]
@@ -917,6 +937,10 @@ value = "^(?:[-:]|tag$|.*[*?\\[\\\\$`])"
 
 [metric.git_push_scoped]
 doc = "Pushes whose credit check read only the commits the push sends, not every unpushed commit of the repository (GH #506)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
+[metric.git_push_narrow_unproven]
+doc = "Pushes read in full because the same Bash call could not be proven to leave what the push publishes unchanged before it runs (a chain, a substitution, another command, an option or an environment prefix before the push; GH #506, PR #524 review)."
 value = { kind = "counter", unit = "pushes", labels = [] }
 
 [git.msg_push_over_cap]

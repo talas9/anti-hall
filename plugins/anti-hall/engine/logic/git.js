@@ -1995,11 +1995,13 @@ function pushCreditVerdict(ev, lastCdDir) {
       break;
     }
     const key = [dir].concat(repo).join('\n');
-    const scope = pushScope(ev);
+    const proven = pushNarrowProven(S.raw);
+    const scope = proven ? pushScope(ev) : null;
     const ckey = key + '\n' + (scope ? scope.join('\u0001') : '');
     if (!S.pushChecks.has(ckey)) {
       const fresh = unpushedCredit(dir, repo, ev.env, scope);
       if (fresh.scoped) ah.metric('git_push_scoped', []);
+      if (!proven) ah.metric('git_push_narrow_unproven', []);
       S.pushChecks.set(ckey, fresh);
     }
     const r = S.pushChecks.get(ckey);
@@ -2118,6 +2120,23 @@ function resolvePushLongOpt(table, word) {
   if (word.length <= 2) return null;
   const hits = table.filter((o) => o.spelled.startsWith('--') && o.spelled.startsWith(word));
   return hits.length === 1 ? hits[0] : null;
+}
+
+// GH #506 / PR #524 review: the narrowed scan reads git configuration and HEAD when the push is checked, BEFORE the call has run
+// anything, so it is valid only on positive proof that nothing in the same Bash call runs before the push and changes what it
+// publishes. Proof (all of it patterns in plugin TOML, git.push_narrow_*): no character that chains or substitutes commands,
+// every `&&` segment before the push matches the non-mutating allowlist (so none of them is a git command), and the last segment is
+// the one and only git command, the push itself, with no env prefix and no option before `push` (but -C <plain path>).
+// Anything else is read whole, as before #506: at worst the old false positive, never a credit leak.
+function pushNarrowProven(cmd) {
+  if (typeof cmd !== 'string') return false;
+  const flags = ah.cfg('git.push_narrow_re_flags');
+  if (new RegExp(ah.cfg('git.push_narrow_forbidden_re')).test(cmd)) return false;
+  const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
+  const last = segs.pop();
+  if (!new RegExp(ah.cfg('git.push_narrow_push_re'), flags).test(last)) return false;
+  const allow = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
+  return segs.every((sg) => allow.some((re) => re.test(sg)));
 }
 
 function pushScope(ev) {
