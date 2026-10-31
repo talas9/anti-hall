@@ -2178,6 +2178,14 @@ value = "mailbox-cron-missing warnings shown: {n} (cron-missing-warned.jsonl —
 doc = "The heading of the Jev health section (shown only when Jev is enabled)."
 value = "Jev"
 
+[doctor_msg.jev_model]
+doc = "Finding: the model id each Jev vendor is sent. Placeholders: {models} (vendor=model pairs, primary first). An alias (jev-latest) is flagged by the doctor as moving."
+value = "Jev model: {models}"
+
+[doctor_msg.jev_model_alias]
+doc = "Warning: the direct TypeSafe vendor is sent a moving alias, so thresholds tuned on one version can silently meet another. Placeholders: {model}."
+value = "Jev model {model} is a moving alias; set jev.modelPin to a versioned id"
+
 [doctor_msg.jev_ok]
 doc = "Finding: the Jev test call answered in time. Placeholders: {ms}, {transport}, {limit}."
 value = "Jev answered in {ms} ms ({transport})"
@@ -2512,3 +2520,7 @@ value = ["config", "--file", ".gitmodules", "--get-regexp", '^submodule\..*\.pat
 [doctor_msg.stray_submodule_history]
 doc = "Existing history inside a submodule; diagnostic only, never moved or removed."
 value = "stray submodule history: {path} (left unchanged; history belongs at the superproject root)"
+
+[doctor_msg.witness_live_root]
+doc = "A host hook registration runs from a plugin root other than the deployed one. Placeholders: {live}, {deployed}."
+value = "a live hook runs hooks from {live}, not the deployed plugin {deployed} - Fix: re-register the hooks (codex-install) from the deployed plugin"

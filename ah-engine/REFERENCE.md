@@ -2584,6 +2584,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.cache_file` | `cache/jev-assist.json` |  |  | The answer cache file, relative to the anti-hall home directory; the same file the Node hooks use (Node: cache/jev-assist.json), so a text asked by either side is asked once. |
 | `jev.cache_max_depth` | `128` |  |  | Nesting past which the answer cache file is left alone: only JavaScript reads it, so the engine neither serves from it nor rewrites it (JSON.parse reads deeper than this port does). |
 | `jev.cache_max_entries` | `500` |  |  | Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES). |
+| `jev.chars_per_token` | `4` |  |  | Characters per token in the state-size estimate (a rough heuristic, not a tokenizer). |
 | `jev.confidence_threshold` | `0.85` |  |  | Default minimum confidence for an answer to count as trusted, a decimal between 0 and 1 (Node: DEFAULT_CONFIDENCE_THRESHOLD). |
 | `jev.default_modes` | `25 entries` |  |  | Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36). |
 | `jev.detached_args` | `jev, ask, --json` |  |  | The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does). |
@@ -2612,7 +2613,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.max_response_bytes` | `1048576` |  | bytes | Largest response body read from a vendor; a longer one is treated as unparsable, so a misbehaving endpoint cannot grow the daemon's memory (D15). |
 | `jev.max_timeout_ms` | `3000` |  | ms | Hard ceiling on any configured or per-call timeout, so a Jev call can never outlast the hook that asked (Node: MAX_TIMEOUT_MS). |
 | `jev.min_fallback_ms` | `150` |  | ms | Below this much remaining budget no real call can finish, so the fallback is skipped (Node: MIN_FALLBACK_MS). |
-| `jev.model_typesafe` | `jev-latest` |  |  | Model name sent to the direct TypeSafe transport (Node: TYPESAFE.model). |
+| `jev.model_pin` | `jev-1.14.0` |  |  | The versioned model id sent to the direct TypeSafe API, so a provider alias move (jev-latest) cannot change the model under tuned thresholds; the provider advises pinning a versioned id. Override with the jev.modelPin setting (set it to jev-latest to follow the moving alias; the doctor warns). An empty shipped value falls back to jev.model_typesafe. Not applied to the Vercel gateway id (jev.model_vercel): the gateway docs do not document a versioned id there. |
+| `jev.model_typesafe` | `jev-latest` |  |  | The moving alias sent to the direct TypeSafe transport only when the shipped jev.model_pin is emptied; the doctor warns while it is in use (Node: TYPESAFE.model). |
 | `jev.model_vercel` | `typesafe-ai/jev` |  |  | Model name sent to the Vercel transport (Node: GATEWAY.model). |
 | `jev.price_usd_per_m_input` | `0.042` |  |  | USD per million input tokens used when a response reports tokens but no cost; Jev's own published rate (Node: jev.priceUsdPerMInput). |
 | `jev.price_usd_per_m_output` | `0` |  |  | USD per million output tokens used when a response reports tokens but no cost; output is free on the published rate (Node: jev.priceUsdPerMOutput). |
@@ -2628,11 +2630,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.scrub_rules` | `17 items` |  |  | The outbound secret-scrub rules every Jev request body passes through, in order : `pattern` (Rust regex syntax: JavaScript look-behind is `no_alnum_before`, a hit right after an ASCII letter or digit is skipped; `\s` is spelled as JavaScript's whitespace set; the `i` flag as explicit [xX] classes), `to` the replacement (`${n}` a group). A rule that does not compile makes the scrubber redact the whole text (jev.scrub_failed_text). |
 | `jev.settings_file` | `settings.json` |  |  | The unified settings file, relative to the anti-hall home directory (Node: settings.json). |
 | `jev.settings_recheck_ms` | `2000` |  | ms | How often the settings files are re-checked for changes: at most one stat of each of the two files per window, taken by the first call after it elapses; between checks a call costs one clock read, so an off Jev stays off the hot path. |
+| `jev.skip_deferred` | `deferred` |  |  | The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the caller could not wait; the question went out asynchronously. |
+| `jev.skip_nothing_to_relax` | `nothing-to-relax` |  |  | The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: a relax-block guard whose baseline is not blocking. |
+| `jev.skip_shed` | `shed` |  |  | The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the engine is past its hard CPU limit. |
 | `jev.soft_ms` | `800` |  | ms | SOFT limit of one Jev call: a call slower than this is logged (jev_slow) and counted, and its answer is still used. The HARD limit that cuts the call (and falls back to the baseline) is jev.timeout_ms, capped by jev.max_timeout_ms. |
 | `jev.state_dir` | `state` |  |  | Directory of the Jev budget-watch state, relative to the anti-hall home directory (Node: state/). |
+| `jev.state_max_tokens` | `30000` |  | tokens | Per-question input cap in estimated tokens: the state text is cut to this many tokens (jev.chars_per_token characters each) before it is sent, because the provider rejects a question over its default 32k-token limit (the long-context header is not used). Override with the jev.stateMaxTokens setting. |
 | `jev.stop_hard_ms` | `1500` |  | ms | HARD limit of a Jev call made by a Stop or SubagentStop: the wait is cut there and the check keeps its baseline (fail-open). PreToolUse and UserPromptSubmit never wait: they answer from the baseline and the cache while the question goes out asynchronously. 1500 equals jev.timeout_ms (Node's limit) and fits inside daemon.request_hard_ms less daemon.reply_slack_ms and the client late-reply wait; a late answer still lands in the cache and the log. |
 | `jev.stop_soft_ms` | `800` |  | ms | SOFT limit of a Jev call made by a Stop or SubagentStop (dispatch.stop_events), the only events that wait for Jev: slower is logged (jev_slow) and counted, the answer is still used. Only a Stop whose rule checks flagged a claim with evidence waits at all (jev.gate_enabled, speculation_guard.jev_gate), so the other Stops pay nothing. |
 | `jev.sync_min_ms` | `700` |  | ms | Least time a request must still have for a check inside it to wait on Jev; with less, the check keeps its baseline, the question goes out asynchronously and its answer is cached for the next ask of the same text. Jev answered in 300-680 ms in live use while a hook client waits about 250 ms, so a shorter wait could only time out and open the breaker. |
+| `jev.telemetry_backend` | `jev` |  |  | The backend label of Jev's model-call telemetry events (counted per model id sent). |
+| `jev.telemetry_purpose_call` | `call` |  |  | The purpose label of the telemetry event recorded for each request, per model id sent. |
+| `jev.telemetry_purpose_truncated` | `state_truncated` |  |  | The purpose label of the telemetry event recorded when a state was cut to jev.state_max_tokens (tokens_in = the estimated tokens removed). |
 | `jev.timeout_ms` | `1500` |  | ms | HARD limit (the per-call time budget) for one Jev call, request, headers and body together; the SOFT limit is jev.soft_ms (Node: DEFAULT_TIMEOUT_MS). |
 | `jev.turn_ref_window_bytes` | `65536` |  | bytes | How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript). |
 | `jev.unlisted_mode` | `shadow` |  |  | Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones). |
@@ -3090,14 +3099,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.full_codex` | `VERIFY-FIRST + ROOT-CAUSE PROTOCOL (re-stated so it survives context growth a...` |  |  | The same full text for a Codex session (DISCIPLINES_INDEX_CODEX in place of DISCIPLINES_INDEX). |
 | `verify_first.guard_subagent` | `verify-first-subagent` |  |  | The guard id verify-first-subagent answers to in skip.json. |
 | `verify_first.judge_child_env` | `2 entries` |  |  | Environment variable that marks the headless judge child; a hook that runs in it prints nothing. |
+| `verify_first.metric_kind` | `3 entries` |  |  | The kind label of metric.protocol_delivery per delivery decision: first (the whole text), resend (the short digest), repeat (the one line). |
 | `verify_first.mn_line` | `M/N. Workers do not re-delegate; read-only research -> Explore; 3+ parallel/n...` |  |  | The model-routing and no-re-delegation line the compact SessionStart text gains when the orchestration hook is switched off (Claude). |
 | `verify_first.mn_line_codex` | `M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent;...` |  |  | The same line for a Codex session. |
 | `verify_first.repeat_session` | `ANTI-HALL VERIFY-FIRST: already delivered earlier this session. No speculatio...` |  |  | The one line sent when the session was already served the protocol and this start is neither fresh nor a compaction or resume; each <abs> is replaced by the plugin root directory. |
 | `verify_first.resend_session` | `ANTI-HALL VERIFY-FIRST (re-sent after compaction or resume; the full text was...` |  |  | The short protocol digest sent after a compaction or resume; each <abs> is replaced by the plugin root directory. |
 | `verify_first.resend_sources` | `compact, resume` |  |  | SessionStart sources after which the earlier text is gone or buried (the session was compacted or resumed): the short digest is sent. Any other source of an already-served session gets the one-line repeat. |
 | `verify_first.root_probe` | `hooks/install.sh` |  |  | File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file. |
+| `verify_first.setting_full_after_compact` | `6 entries` |  |  | Full rules on compaction. Where the switch is read from (context.protocolFullAfterCompact, default on): a SessionStart whose source is in verify_first.resend_sources (a compaction or resume) gets the whole compact text again, once per such start, instead of the short digest, which drops the RULES, SCOPE, AUTONOMY, SKIP and WORKER sections (#519). false = the short digest (verify_first.resend_session). |
 | `verify_first.setting_level` | `5 entries` |  |  | Where the protocol size is read from (context.protocolLevel: compact or full, default compact). |
-| `verify_first.setting_once` | `6 entries` |  |  | Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start. |
+| `verify_first.setting_once` | `6 entries` |  |  | Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume the whole text again while verify_first.setting_full_after_compact is on (else a short digest), and a repeated start in the same session one line. false = the whole text at every start. |
 | `verify_first.setting_orchestration` | `6 entries` |  |  | Orchestration rules switch. Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself. |
 | `verify_first.setting_session` | `6 entries` |  |  | Where the on/off switch of verify-first-full is read from (context.verifyFirstSession, default on). |
 | `verify_first.setting_subagent` | `6 entries` |  |  | Verify-first-subagent switch. Where the on/off switch of verify-first-subagent is read from (context.verifyFirstSubagent, default on). |
@@ -3542,6 +3553,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.events` | `SessionStart` |  |  | The hook events whose contexts are capped: the ones that fire at every start, resume and compaction. |
 | `context_size.file` | `{event}-full-{ts}-{pid}-{seq}.txt` |  |  | File name of the full texts of one event (in dispatch.spill_dir, mode 0600, swept like the other spill files). Placeholders: {event}, {ts} (milliseconds), {pid}, {seq} (a per-process counter: the daemon dispatches on several threads). |
 | `context_size.hook_caps` | `1 entries` |  |  | Per hook entry id, the inline cap in characters that replaces context_size.num_hook_cap (0 = no per-hook cap for that hook). The DevSwarm comms manual is reference text that the full mesh help also prints. |
+| `context_size.label_low` | `low` |  |  | Class label of metric.context_shrunk for a shrunk context below dispatch.context_pin_priority. |
+| `context_size.label_pinned` | `pinned` |  |  | Class label of metric.context_shrunk for a shrunk context at or above dispatch.context_pin_priority. |
 | `context_size.msg_ref` | `{summary}\n[anti-hall: full text, {chars} characters, in {path} - Read it bef...` |  |  | What a shrunk context becomes. Placeholders: {summary} the first line, {chars} the size of the full text, {path} the file that holds it. |
 | `context_size.msg_shrunk` | `{hooks} hook context(s) shrunk: {before} characters became {after} inline, th...` |  |  | Event-log detail after contexts were replaced by summaries. Placeholders: {hooks}, {before}, {after} (characters), {path}. |
 | `context_size.never` | `verify-first-full, verify-first-orch, handover-resume, engine-role-note` |  |  | Dispatch entry ids (a variant suffix is ignored) whose context is never shrunk: behavioural blocks that size themselves (the verify-first protocol and orchestration rules, delivered once per session or on the first spawn) and the handover resume steps, which are the task. |
@@ -3551,6 +3564,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.section_head` | `== {id} ==\n` |  |  | Heading before each hook's full text in that file. Placeholder: {id}. |
 | `context_size.summary_chars` | `280` |  |  | Longest summary line a shrunk context keeps inline: its first line, cut at a word end. |
 | `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the inline caps. Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
+| `context_size.sw_keep_pinned` | `5 entries` |  |  | Pinned inline. Switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519). |
 
 ### session.toml / session
 
@@ -3959,6 +3973,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.rule_text` | `AFK MODE: the owner is away. Until told otherwise: (1) no narration between t...` |  |  | The AFK rule, injected once per session per AFK period. Placeholders: {progress} (the session's progress file). |
 | `afk.session_id_unsafe` | `[^A-Za-z0-9_.-]` |  |  | Characters removed from a session id before it becomes part of a file name (regular expression, JavaScript syntax). |
 | `afk.session_prefix` | `afk-sess-` |  |  | Prefix of the per-session AFK state file under the per-user state directory (the sanitised session id and the JSON extension follow). `ah-engine back` reads these to find each session's progress file. |
+| `afk.set_answer_presence` | `8 entries` |  |  | The afk.answerPresence setting: an answered question-tool call (PostToolUse of afk.question_tools) counts as owner presence, so idle detection does not start AFK while the owner is answering, and an idle AFK whose recorded presence is newer than its start ends instead of injecting (afk_stale_injection_suppressed). |
 | `afk.set_concise_codex` | `8 entries` |  |  | The afk.conciseCodex setting: on Codex (no output styles), inject the concise reply rule (afk.concise_text) once at session start. On Claude the shipped output style `concise` (force-for-plugin) carries the same rule. |
 | `afk.set_enabled` | `8 entries` |  |  | The afk.enabled setting (master switch): off turns the whole AFK feature off (no idle detection, no prompt commands, no rule, no enforcement, no measurement); the `ah-engine afk` verbs still edit the flag. |
 | `afk.set_enforce` | `8 entries` |  |  | The afk.enforce setting: while AFK, nudge once and then hold (at most afk.max_blocks times) a Stop whose final reply is over afk.max_reply_chars or afk.max_reply_lines. |
@@ -4209,7 +4224,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nested_spawn.msg_instead` | `report back to the coordinator if more agents are needed.` |  |  | What to do instead of a nested spawn. |
 | `nested_spawn.msg_what` | `this agent is a worker and can't start agents of its own.` |  |  | What the block says. |
 | `nested_spawn.msg_why` | `Nested agents hide their cost from the coordinator (one burned about 2.5M tok...` |  |  | Why nested spawns are blocked. |
-| `nested_spawn.setting` | `6 entries` |  |  | On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them. |
+| `nested_spawn.setting` | `6 entries` |  |  | On lets subagents and teammates start agents. |
 | `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): b...` |  |  | One-line description of the nested-spawn check in the generated reference. |
 
 ### spawn_guards.toml / spawn_ceiling
@@ -5424,7 +5439,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
 | `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
 | `queued_wait.summary` | `PreToolUse on Bash, subagents only: blocks a build or test command started wi...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
-| `queued_wait.sw` | `6 entries` |  |  | Default on; off lets a subagent run heavy commands in the background and poll with sleep loops. |
+| `queued_wait.sw` | `6 entries` |  |  | Off lets a subagent poll background work with sleep loops. |
 
 ### lane_waste.toml / wide_search
 
@@ -6355,6 +6370,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.inbox_corrupt` | `{n} of the last {m} lines of {file} are not JSON` |  |  | LG-04. Placeholders: {n}, {m}, {file}. |
 | `doctor_msg.inbox_huge` | `{file} is {mb} MB (cap {cap_mb} MB) - Fix: ah-engine maintain` |  |  | LG-03. Placeholders: {file}, {mb}, {cap_mb}. |
 | `doctor_msg.jev_fail` | `Jev call failed via {transport}: {why} (after {ms} ms)` |  |  | Finding: the Jev test call failed. Placeholders: {why}, {ms}, {transport}. |
+| `doctor_msg.jev_model` | `Jev model: {models}` |  |  | Finding: the model id each Jev vendor is sent. Placeholders: {models} (vendor=model pairs, primary first). An alias (jev-latest) is flagged by the doctor as moving. |
+| `doctor_msg.jev_model_alias` | `Jev model {model} is a moving alias; set jev.modelPin to a versioned id` |  |  | Warning: the direct TypeSafe vendor is sent a moving alias, so thresholds tuned on one version can silently meet another. Placeholders: {model}. |
 | `doctor_msg.jev_no_key` | `Jev is enabled but has no API key for {transport}` |  |  | Finding: Jev is enabled but no API key resolves for its transport, so the test call was not made. Placeholder: {transport}. |
 | `doctor_msg.jev_ok` | `Jev answered in {ms} ms ({transport})` |  |  | Finding: the Jev test call answered in time. Placeholders: {ms}, {transport}, {limit}. |
 | `doctor_msg.jev_slow_fail` | `Jev is too slow: {ms} ms via {transport} (limit {limit} ms)` |  |  | Finding: the Jev test call answered, but past the fail limit. Placeholders: {ms}, {transport}, {limit}. |
@@ -6497,6 +6514,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.why_truncated` | `truncated header` |  |  | BIN-04 reason. |
 | `doctor_msg.why_unknown` | `unrecognised header` |  |  | BIN-04 reason. |
 | `doctor_msg.witness_absent` | `Node witness not installed (optional)` |  |  | SH-01. |
+| `doctor_msg.witness_live_root` | `a live hook runs hooks from {live}, not the deployed plugin {deployed} - Fix:...` |  |  | A host hook registration runs from a plugin root other than the deployed one. Placeholders: {live}, {deployed}. |
 | `doctor_msg.witness_log_huge` | `{file} is {mb} MB - Fix: rotate it` |  |  | SH-05. Placeholders: {file}, {mb}. |
 | `doctor_msg.witness_no_skip` | `{dir} has no node-shadow.skip; the witness runs nothing - Fix: node-shadow.sh...` |  |  | SH-03. Placeholder: {dir}. |
 | `doctor_msg.witness_ok` | `Node witness installed ({n} hook entries, log {mb} MB)` |  |  | SH-02. Placeholders: {mb}, {n}. |
@@ -8126,7 +8144,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_rt.probe_cache_racy_ms` | `2000` |  | ms | A heartbeat, plan or descriptor file modified more recently than this when it is read is read again by the next reconcile, even if its size and modification time look unchanged (a rewrite inside the clock's granularity could otherwise be missed). Older files are parsed once and kept until their inode, modification time or size changes. |
 | `devswarm_rt.reconcile_ms` | `60000` |  | ms | How often the whole state is re-read from its sources and diffed (the safety net under the event layer); every change it finds that events missed counts in `rt_reconcile_repairs`. |
 | `devswarm_rt.restart_grace_ms` | `120000` |  | ms | Changes found by the start-up diff (flagged while_down) are not notified before this long after start, and only if the condition still holds then. |
-| `devswarm_rt.set_line_enabled` | `6 entries` |  |  | Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle). |
+| `devswarm_rt.set_line_enabled` | `6 entries` |  |  | Show the DevSwarm statusline segment. |
 | `devswarm_rt.set_line_format` | `6 entries` |  |  | The segment text. `{parts}` is replaced by the non-empty counts (see devswarm_rt.line_parts), in the order of devswarm_rt.line_order. |
 | `devswarm_rt.set_line_max_chars` | `8 entries` |  |  | The segment is cut to this many characters (an ellipsis marks the cut). |
 | `devswarm_rt.set_line_stale_ms` | `8 entries` |  |  | Data older than this shows as `?`, not a guess. |
@@ -12758,6 +12776,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.line_sweep_failed` | `sweep {step} failed (the install goes on): {why}` |  |  | A sweep step failed; the install goes on. {step}, {why}. |
 | `routine.line_units` | `units: {text}` |  |  | The service units of an older install were retired by `units heal`. {text}. |
 | `routine.line_validated` | `validated: one daemon (pid {pid}) on the new binary, client round trip and gu...` |  |  | Validation passed. {pid}. |
+| `routine.live_hook_command_key` | `command` |  |  | The key of a hook registration entry that holds its shell command. |
+| `routine.live_hook_depth` | `2` |  |  | How many levels of nested command string (sh -c '...') are searched for the plugin root. |
+| `routine.live_hook_files` | `{home}/.codex/hooks.json, .codex/hooks.json` |  |  | Hook registrations whose commands name the plugin root the host really runs hooks from (the deploy check validates that root, not an assumed path). Token {home}; a path without it is read relative to the working directory (the project-local file `codex-install` writes by default). |
+| `routine.live_hook_home_vars` | `${HOME}, $HOME` |  |  | Spellings of the home directory expanded in a live hook command (longest first). |
+| `routine.live_hook_marker` | `/hooks/install.sh` |  |  | Text that marks a hook command as running the plugin hook wrapper; a command that holds it but cannot be parsed is reported as unresolved. |
+| `routine.live_hook_root_rx` | `^(.+)/hooks/install\.sh$` |  |  | Matched against each shell word of a live hook command (after quote decoding and $HOME expansion); group 1 is the plugin root (the directory above hooks/install.sh). |
+| `routine.live_hook_tilde` | `~` |  |  | A leading tilde in a live hook path stands for the home directory. |
 | `routine.manifest_file` | `manifest.json` |  |  | File name of an install's manifest inside its saved-copy directory. |
 | `routine.msg_backup_missing` | `update: the saved copy {path} is missing` |  |  | The saved copy of a file is gone. {path}. |
 | `routine.msg_bad_arg` | `update: unknown argument {arg}\nusage: update --from-local <dir> [--engine-bi...` |  |  | Unknown argument. {arg}. |
@@ -12792,6 +12817,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.problem_daemons` | `{n} engine daemon(s) run; exactly 1 must` |  |  | More or fewer than one daemon runs. {n}. |
 | `routine.problem_defaults_error` | `defaults.error written since the start: {text} {writer}` |  |  | The defaults error file was written since the start. {text}, {writer} (pid, ppid, argv, cwd when recorded). |
 | `routine.problem_event` | `engine log since the start: {kind} {code} {detail}` |  |  | A bad row in the engine log since the start. {kind}, {code}, {detail}. |
+| `routine.problem_live_root` | `a live hook runs from {root}, which cannot be validated (unresolved path, mis...` |  |  | A live hook runs from a plugin directory the check cannot validate. {root}. |
 | `routine.problem_new_binary` | `the new engine {path} does not answer `version` (got: {got})` |  |  | The new engine binary does not run. {path}, {got}. |
 | `routine.problem_new_hook` | `the new client {path} does not report its version (got: {got})` |  |  | The new thin client does not run. {path}, {got}. |
 | `routine.problem_new_web` | `the new dashboard binary {path} does not report a version (got: {got})` |  |  | The new dashboard binary does not report a version. {path}, {got}. |
@@ -14577,9 +14603,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
+| `protocol_delivery` | counter | starts | hook, kind | SessionStart protocol texts sent, by hook (the delivery record prefix: verify_first.delivery_prefix for the protocol, the orchestration rules' own prefix) and kind (verify_first.metric_kind): full (a fresh start, or a compaction or resume while verify_first.setting_full_after_compact is on), digest (the short text after a compaction or resume), repeat (the one line). |
 | `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
+| `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
 | `claim_evidence_suppressor_rejected` | counter | candidates | reason | Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427). |
@@ -14590,11 +14618,14 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_overlong_turns` | counter | events | action | Overlong AFK replies, by action (nudge, block, capped). |
 | `afk_question_denied` | counter | events | tool | AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap). |
 | `afk_question_parked` | counter | events | action | AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook). |
+| `afk_stale_injection_suppressed` | counter | events | event | Hook calls that found an idle AFK flag still ON although the owner presence was newer than its start (GH #509): the flag was ended and nothing AFK was injected or enforced, by event. |
 | `afk_turns` | counter | turns |  | Main-session turns that ended (Stop) while AFK. |
 | `afk_turns_measured` | counter | turns | mode | Main-session turns whose output tokens were measured, by mode (afk, present). |
 | `digest_entries` | counter | entries |  | Digest bullets printed by back / progress (CLI counts are added by the next hook). |
 | `idle_trips` | counter | events |  | AFK periods started by idle detection. |
 | `runtime_escalation_stop_unrecorded` | counter | stops |  | Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap). |
+| `silent_agent_nudge_acked` | counter | stops |  | Stop nudges of silent-agent-nudge withheld because this exact set of agents was acked for the session (silent_nudge.ack_*). |
+| `silent_agent_nudge_fired` | counter | stops |  | Stop nudges said by silent-agent-nudge for a background agent or heartbeat quiet for guards.silentAgentNudgeMin minutes (#519). |
 | `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided). |
 | `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |

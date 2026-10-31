@@ -57,6 +57,10 @@ value = { section = "afk", key = "conciseCodex", kind = "bool", env = "", aliase
 doc = "The afk.noQuestions setting: while AFK, deny the harness question tool (afk.question_tools) every time with the question ladder, and hold (at most afk.question_max_holds times) a turn that ends on a plain-text question. Off = questions pass as usual."
 value = { section = "afk", key = "noQuestions", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
 
+[afk.set_answer_presence]
+doc = "The afk.answerPresence setting: an answered question-tool call (PostToolUse of afk.question_tools) counts as owner presence, so idle detection does not start AFK while the owner is answering, and an idle AFK whose recorded presence is newer than its start ends instead of injecting (afk_stale_injection_suppressed)."
+value = { section = "afk", key = "answerPresence", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
 [afk.guard_name]
 doc = "The guard id this check answers to in skip.json and in its messages."
 value = "afk-mode"
@@ -459,6 +463,10 @@ value = { kind = "counter", unit = "events", labels = [] }
 [metric.afk_idle_revoked]
 doc = "Idle AFK entries discarded while their fenced commit was pending because the owner presence or the flag's `ended` watermark (a `back`) moved past the value the idle decision used: found by the host re-check right before the rename, or after a lost lock (counted here, not afk_lock_lost, when the watched value moved). Nothing of that hook landed."
 value = { kind = "counter", unit = "events", labels = [] }
+
+[metric.afk_stale_injection_suppressed]
+doc = "Hook calls that found an idle AFK flag still ON although the owner presence was newer than its start (GH #509): the flag was ended and nothing AFK was injected or enforced, by event."
+value = { kind = "counter", unit = "events", labels = ["event"] }
 
 [metric.afk_question_denied]
 doc = "AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap)."

@@ -865,15 +865,18 @@ pub fn told_in_session(session: &str, tag: &str) -> bool {
 /// A few words, once per session, when the engine is running below full strength (a self-restart in the window, a tripped
 /// breaker) and no failure advisory applies, so the owner learns of a degraded engine without digging through logs.
 fn degraded_notice(session: &str) -> Option<String> {
-    let s = summary();
+    degraded_notice_in(session, &summary(), &state_file("advised_dir"))
+}
+
+/// [`degraded_notice`] for a given health summary `s` and once-per-session stamp directory `dir`.
+fn degraded_notice_in(session: &str, s: &Value, dir: &std::path::Path) -> Option<String> {
     if s["degraded"] != true {
         return None;
     }
-    let dir = state_file("advised_dir");
-    crate::discard::harmless(std::fs::create_dir_all(&dir)); // keep: the write that follows reports a failure
+    crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write that follows reports a failure
     let stamp = dir.join(format!("{:016x}", fnv(&format!("{session}|degraded"))));
     std::fs::OpenOptions::new().write(true).create_new(true).open(&stamp).ok()?; // already told => None
-    prune_advised(&dir);
+    prune_advised(dir);
     let mut text = defaults::render(
         "msg.advisory_degraded",
         &[
@@ -1006,6 +1009,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #201: a `missing_key` fallback logged AFTER the daemon start (plugin defaults lag the engine) is a live problem: the engine is
+    /// degraded, with that reason, its count and first-seen time. Before the start it is answered and does not degrade.
+    #[test]
+    fn a_missing_key_fallback_after_the_start_marks_the_engine_degraded() {
+        let detail = "defaults routine.toml routine.x rejected (missing_key): using the pristine copy";
+        let before = vec![ev(5_000, "defaults_fallback", "missing_key", detail), ev(9_000, "start", "-", "v0.1.0 pid 1")];
+        let s = summary_from(&before, 10_000, None, None);
+        assert_eq!((s["degraded"].clone(), s["defaults"]["total"].clone()), (serde_json::json!(false), serde_json::json!(0)), "{s}");
+        let mut after = before.clone();
+        after.push(ev(9_500, "defaults_fallback", "missing_key", detail));
+        after.push(ev(9_700, "defaults_fallback", "missing_key", detail));
+        let s = summary_from(&after, 10_000, None, None);
+        assert_eq!(s["degraded"], true, "a missing_key after the start must degrade: {s}");
+        assert_eq!(s["defaults"]["by_reason"]["defaults_fallback:missing_key"], 2, "{s}");
+        let row = s["reasons"].as_array().unwrap().iter().find(|r| r["code"] == "missing_key").expect("a missing_key reason");
+        assert_eq!((row["count"].as_u64(), row["first_ts"].as_u64()), (Some(2), Some(9_500)), "{s}");
+        assert!(s["degraded_reason"].as_str().unwrap().contains("defaults_fallback:missing_key"), "{s}");
+    }
+
+    /// #201: a degraded engine tells each session exactly once (rendered from `msg.advisory_degraded`, naming the defaults
+    /// fallback); a new session hears it again; a healthy engine says nothing.
+    #[test]
+    fn a_degraded_engine_gives_exactly_one_notice_per_session() {
+        let dir = std::env::temp_dir().join(format!("ah-degraded-notice-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let log = vec![
+            ev(9_000, "start", "-", "v0.1.0 pid 1"),
+            ev(9_500, "defaults_fallback", "missing_key", "defaults routine.toml routine.x rejected (missing_key): using the pristine copy"),
+        ];
+        let sick = summary_from(&log, 10_000, None, None);
+        let well = summary_from(&[], 10_000, None, None);
+        assert_eq!(degraded_notice_in("sess-A", &well, &dir), None, "a healthy engine is silent");
+        let first = degraded_notice_in("sess-A", &sick, &dir).expect("the first call of a session carries the notice");
+        assert!(first.contains("missing_key"), "the notice names the defaults problem: {first}");
+        assert_eq!(degraded_notice_in("sess-A", &sick, &dir), None, "no repeat inside the session");
+        assert!(degraded_notice_in("sess-B", &sick, &dir).is_some(), "a new session hears it again");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

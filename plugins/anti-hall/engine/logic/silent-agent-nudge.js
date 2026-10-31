@@ -301,7 +301,7 @@ function snDecide(p, opts) {
     }
   }
   ah.state.op(home, 'after_reply', stateRel, stateText);
-  if (acked) return 'allow';
+  if (acked) { ah.metric('silent_agent_nudge_acked', []); return 'allow'; }
   var named = ah.cfgNum('silent_nudge.max_named');
   var items = shown.slice(0, named).map(function (c, n) { return text.render(ah.cfg('silent_nudge.msg_item'), { label: (c.shell ? ah.cfg('silent_nudge.shell_label_prefix') : '') + labels[n], mins: String(Math.floor(c.age / 60000)) }); });
   var more = shown.length > named ? text.render(ah.cfg('silent_nudge.msg_more'), { n: shown.length - named }) : '';
@@ -311,5 +311,6 @@ function snDecide(p, opts) {
   var instead = text.render(ah.cfg('silent_nudge.msg_instead'), { them: ah.cfg(shown.length === 1 ? 'silent_nudge.pronoun_one' : 'silent_nudge.pronoun_many') });
   var hint = session ? text.render(ah.cfg('silent_nudge.ack_hint'), { key: ackKey, now: String(ah.clock.now()), path: snAckPath(home, session) }) : '';
   var reason = text.message('block', guard, { what: what, why: ah.cfg('silent_nudge.msg_why'), instead: instead, allowed: ah.cfg('silent_nudge.msg_allowed'), extra: [hint] });
+  ah.metric('silent_agent_nudge_fired', []); // #519: every Stop nudge said is counted
   return { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } };
 }

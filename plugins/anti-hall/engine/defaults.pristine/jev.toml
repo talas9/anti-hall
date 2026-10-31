@@ -61,8 +61,47 @@ doc = "TypeSafe's own direct API endpoint (Node: TYPESAFE.endpoint)."
 value = "https://api.typesafe.ai/v1/systemone"
 
 [jev.model_typesafe]
-doc = "Model name sent to the direct TypeSafe transport (Node: TYPESAFE.model)."
+doc = "The moving alias sent to the direct TypeSafe transport only when the shipped jev.model_pin is emptied; the doctor warns while it is in use (Node: TYPESAFE.model)."
 value = "jev-latest"
+
+[jev.model_pin]
+doc = "The versioned model id sent to the direct TypeSafe API, so a provider alias move (jev-latest) cannot change the model under tuned thresholds; the provider advises pinning a versioned id. Override with the jev.modelPin setting (set it to jev-latest to follow the moving alias; the doctor warns). An empty shipped value falls back to jev.model_typesafe. Not applied to the Vercel gateway id (jev.model_vercel): the gateway docs do not document a versioned id there."
+value = "jev-1.14.0"
+
+[jev.state_max_tokens]
+doc = "Per-question input cap in estimated tokens: the state text is cut to this many tokens (jev.chars_per_token characters each) before it is sent, because the provider rejects a question over its default 32k-token limit (the long-context header is not used). Override with the jev.stateMaxTokens setting."
+value = 30000
+min = 1
+unit = "tokens"
+
+[jev.chars_per_token]
+doc = "Characters per token in the state-size estimate (a rough heuristic, not a tokenizer)."
+value = 4
+min = 1
+
+[jev.telemetry_backend]
+doc = "The backend label of Jev's model-call telemetry events (counted per model id sent)."
+value = "jev"
+
+[jev.telemetry_purpose_call]
+doc = "The purpose label of the telemetry event recorded for each request, per model id sent."
+value = "call"
+
+[jev.telemetry_purpose_truncated]
+doc = "The purpose label of the telemetry event recorded when a state was cut to jev.state_max_tokens (tokens_in = the estimated tokens removed)."
+value = "state_truncated"
+
+[jev.skip_nothing_to_relax]
+doc = "The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: a relax-block guard whose baseline is not blocking."
+value = "nothing-to-relax"
+
+[jev.skip_shed]
+doc = "The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the engine is past its hard CPU limit."
+value = "shed"
+
+[jev.skip_deferred]
+doc = "The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the caller could not wait; the question went out asynchronously."
+value = "deferred"
 
 [jev.timeout_ms]
 doc = "HARD limit (the per-call time budget) for one Jev call, request, headers and body together; the SOFT limit is jev.soft_ms (Node: DEFAULT_TIMEOUT_MS)."

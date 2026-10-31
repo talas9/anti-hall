@@ -3453,6 +3453,75 @@ mod afk_mode {
         drained();
     }
 
+    /// GH #509: the owner answers through the question tool (no prompt typed) for longer than afk.idleMinutes. The answered call is
+    /// owner presence: idle detection must not start AFK (and inject "the owner is away") on its PostToolUse.
+    #[test]
+    fn an_answered_question_is_owner_presence_and_does_not_trip_idle_afk() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-509-answer");
+        drained();
+        let old = crate::checks::taskkit::time::now_ms() - 25 * 60_000;
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": old}).to_string()).unwrap();
+        let ask = json!({"tool_name": "AskUserQuestion", "tool_input": {}});
+        let o = out(&run(&h, "PostToolUse", ask.clone(), &[]));
+        assert!(!o.contains("AFK MODE") && !o.contains("away"), "{o}");
+        assert_ne!(flag(&h)["on"], json!(true), "answering is presence: no idle entry");
+        let pres: Value = serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/afk-presence.json")).unwrap()).unwrap();
+        assert!(pres["last"].as_u64().unwrap() > old as u64, "presence moved forward");
+        // the owner then sits another 25 minutes without typing and an ordinary tool call trips idle: the control, unchanged
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": old}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"answerPresence": false}}).to_string()).unwrap();
+        let o = out(&run(&h, "PostToolUse", ask, &[]));
+        assert!(o.contains("AFK MODE"), "the switch off restores the old behaviour: {o}");
+        drained();
+    }
+
+    /// GH #509: an idle AFK flag left ON although the owner presence is newer than its start (the ending write was lost) injects and
+    /// enforces nothing on any event; the first hook ends it (a cleared flag, not a deletion) and counts it.
+    #[test]
+    fn a_stale_idle_flag_with_newer_owner_presence_injects_nothing_and_is_ended_once() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-509-stale");
+        drained();
+        let now = crate::checks::taskkit::time::now_ms();
+        let since = now - 3 * 60_000;
+        std::fs::write(
+            format!("{h}/.anti-hall/afk.json"),
+            json!({"on": true, "how": "idle", "since": since, "epoch": since.to_string(), "counted": true}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": since + 1000}).to_string()).unwrap();
+        let ask = json!({"tool_name": "AskUserQuestion", "tool_input": {}});
+        let long = "x\n".repeat(30);
+        assert!(out(&run(&h, "PreToolUse", ask, &[])).is_empty(), "the question is not denied for a present owner");
+        assert_eq!(flag(&h)["on"], json!(false));
+        assert!(flag(&h)["ended"].as_u64().is_some(), "ended watermark written");
+        assert!(out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[])).is_empty());
+        assert!(out(&run(&h, "Stop", json!({"last_assistant_message": long}), &[])).is_empty());
+        assert_eq!(drained().counter("afk_stale_injection_suppressed", &[("event", "PreToolUse")]), 1);
+    }
+
+    /// GH #509: AFK on, then `back`: the next question-tool and Stop hooks inject and hold nothing.
+    #[test]
+    fn after_back_no_hook_injects_afk_text_or_holds_a_stop() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-509-back");
+        drained();
+        let ask = json!({"tool_name": "AskUserQuestion", "tool_input": {}});
+        let long = "x\n".repeat(30);
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        assert!(out(&run(&h, "PreToolUse", ask.clone(), &[])).contains("deny"), "AFK on: the question is denied");
+        assert!(out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[])).contains("AFK MODE"), "AFK on: the rule is injected");
+        run(&h, "UserPromptSubmit", json!({"prompt": "back"}), &[]);
+        assert_eq!(flag(&h)["on"], json!(false));
+        for ev in ["PreToolUse", "PostToolUse"] {
+            assert!(out(&run(&h, ev, ask.clone(), &[])).is_empty(), "{ev} after back");
+        }
+        assert!(out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[])).is_empty());
+        assert!(out(&run(&h, "Stop", json!({"last_assistant_message": long}), &[])).is_empty(), "Stop after back");
+        drained();
+    }
+
     #[test]
     fn a_subagent_never_consumes_the_parents_afk_rule_and_its_question_is_still_denied() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
