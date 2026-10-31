@@ -421,3 +421,60 @@ fn t15_codex_reviewers_are_outside_the_cap() {
     let (code, out) = spawn_input(&h, "toolu_c3", json!({"subagent_type":"codex:codex-rescue","prompt":"x","run_in_background":true}));
     assert_eq!(code, 0, "a Codex reviewer is outside the cap: {out}");
 }
+
+// ---- PR #494 round 3: one launch counted once, tracker-only children keep their agent type ----
+
+/// One retained, live tracker child `id` of session `s` (a fresh subagent transcript), with the host meta file `meta` when given and
+/// the tracker's Codex-rescue mark `rescue`; the rows already in the tracker state are kept.
+fn tracked_child(home: &Path, id: &str, meta: Option<serde_json::Value>, rescue: bool) {
+    let path = home.join(".anti-hall/agent-tracker/state.json");
+    let mut st: ah_engine::agents::State =
+        std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let rel = format!(".claude/projects/p/s/subagents/agent-{id}.jsonl");
+    put(home, &rel, &format!("{}\n", json!({"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}})));
+    if let Some(m) = meta {
+        put(home, &format!(".claude/projects/p/s/subagents/agent-{id}.meta.json"), &m.to_string());
+    }
+    let a = ah_engine::agents::Agent {
+        id: id.into(),
+        kind: "subagent".into(),
+        parent: "s".into(),
+        name: format!("child {id}"),
+        cwd: home.to_string_lossy().into_owned(),
+        path: home.join(rel).to_string_lossy().into_owned(),
+        codex_rescue: rescue,
+        ..Default::default()
+    };
+    st.agents.insert(id.into(), a);
+    put(home, ".anti-hall/agent-tracker/state.json", &serde_json::to_string(&st).unwrap());
+}
+
+/// P2-A: cap 2, launch A reserved; the tracker finds child A (its meta names A's call) before A's launch result shows in the
+/// transcript. A is one agent, not a running child plus an open reservation, so launch B is allowed.
+#[test]
+fn t16_a_child_seen_before_its_launch_result_counts_once() {
+    let h = scratch("dedupe");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":2}}"#);
+    put(&h, "t.jsonl", &quiet());
+    assert_eq!(spawn_input(&h, "toolu_A", json!({"subagent_type":"Explore","prompt":"x","run_in_background":true})).0, 0, "A fits");
+    tracked_child(&h, "a00000000000000a", Some(json!({"agentType":"Explore","toolUseId":"toolu_A"})), false);
+    let (code, out) = spawn_input(&h, "toolu_B", json!({"subagent_type":"Explore","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 0, "A counted once (1 of 2): {out}");
+    let (code, out) = spawn_input(&h, "toolu_C", json!({"subagent_type":"Explore","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 2, "A running + B reserved fill the cap: {out}");
+}
+
+/// P2-B: cap 4, three executors running and an older Codex rescue whose launch left the transcript window (tracker-only, known as a
+/// rescue to the tracker): the rescue is outside the cap, so a 4th executor is allowed.
+#[test]
+fn t17_a_tracker_only_codex_rescue_is_outside_the_cap() {
+    let h = scratch("rescue-tracked");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":4}}"#);
+    put(&h, "t.jsonl", &launches(&["executor", "executor", "executor"]));
+    tracked(&h, 3);
+    tracked_child(&h, "a00000000000000r", None, true);
+    let (code, out) = spawn_input(&h, "toolu_e4", json!({"subagent_type":"executor","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 0, "3 executors + a Codex rescue at cap 4: {out}");
+    let (code, out) = spawn_input(&h, "toolu_e5", json!({"subagent_type":"executor","prompt":"x","run_in_background":true}));
+    assert_eq!(code, 2, "3 executors + the 4th reserved fill the cap: {out}");
+}
