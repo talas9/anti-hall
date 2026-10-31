@@ -244,6 +244,10 @@ pub fn section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
     if active {
         doc.infol(defaults::render("doctor_msg.ds_runtime_deferred", &[("n", &n_desc)]));
         let dir = devswarm_dir(Path::new(&ctx.home));
+        let dead = crate::migrate::sweeps::dead_rows(&dir).len();
+        if dead > 0 {
+            doc.infol(defaults::render("doctor_msg.ds_dead_rows", &[("n", &dead)]));
+        }
         for (file, trigger, key) in [
             ("doctor.ds_log_cron_found", None, "doctor_msg.ds_cron_found"),
             ("doctor.ds_log_not_draining", None, "doctor_msg.ds_not_draining"),

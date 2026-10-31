@@ -707,3 +707,15 @@ value = "orphans-seen"
 [metric.devswarm_orphans_warning_suppressed]
 doc = "Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session)."
 value = { kind = "counter", unit = "warnings", labels = ["reason"] }
+
+[devswarm_parent.set_notice_ignore_dead]
+doc = "Switch devswarm.nudgeIgnoreDeadRows (default on): the parent-inbox, urgent-inbox and stale-workspaces notices leave out rows that anti-hall's own archive marker calls archived, whose worktree is gone, or whose oldest unread is older than devswarm.nudgeMaxAgeDays; they are counted (devswarm_notice_rows_ignored) instead of repeated every turn (GH #508). Off restores the old nudges."
+value = { section = "devswarm", key = "nudgeIgnoreDeadRows", type = "boolean", env = "ANTIHALL_DEVSWARM_NOTICE_IGNORE_DEAD_ROWS", option = "", default = true }
+
+[devswarm_parent.set_notice_max_age_days]
+doc = "Setting devswarm.nudgeMaxAgeDays: days after which a row's oldest unread is too old to nag about (0 = no age limit). Only used while devswarm.nudgeIgnoreDeadRows is on."
+value = { section = "devswarm", key = "nudgeMaxAgeDays", env = "ANTIHALL_DEVSWARM_NOTICE_MAX_AGE_DAYS", option = "", default = 14 }
+
+[metric.devswarm_notice_rows_ignored]
+doc = "Workspace rows left out of a parent-inbox, urgent-inbox or stale-workspaces notice because they are archived, their worktree is gone, or their oldest unread is too old, by reason (archived, worktree_gone, too_old) (GH #508)."
+value = { kind = "counter", unit = "rows", labels = ["reason"] }

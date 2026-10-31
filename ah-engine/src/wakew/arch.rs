@@ -7,7 +7,7 @@
 //! The supervisor's active-list cache (`hivecontrol-active.json`, `isAppArchived` of `companion/lib/devswarm-archived-cache.js`) is
 //! read for a worktree under the DevSwarm repos root that the app database has no opinion on: a fresh snapshot of the project that
 //! lists neither the child's id nor its worktree, and is at least the grace newer than the child's descriptor, calls it archived.
-use super::who::{Proc, read_descriptors, str_member};
+use super::who::{Proc, read_checkout_rows, read_descriptors, str_member};
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::json::J;
 use crate::defaults;
@@ -201,7 +201,27 @@ fn absent_from_active_list(p: &Proc, repo_key: &str, id: &str, worktree: &str) -
 
 /// `liveChildState` with `excludeHeldIgnored`, answered as the idle-skip needs it.
 fn live_children(p: &Proc) -> R<Live> {
-    let descriptors = read_descriptors(&p.home);
+    let mut descriptors = read_descriptors(&p.home);
+    // GH #507: a child registered a moment ago has a descriptor but no session yet; it is live for the spawn grace
+    let grace_ms = crate::checks::guardkit::settings::get_num(&p.st, defaults::raw("wake_watch.set_spawn_grace_sec")) * 1000.0;
+    if grace_ms.is_finite() && grace_ms > 0.0 {
+        let dir = devswarm_root(&p.home).join(text("mesh_write.dir_workspaces"));
+        for d in read_checkout_rows(&p.home) {
+            let Some(id) = str_member(&d, "id") else { continue };
+            if str_member(&d, "sessionId").is_some() {
+                continue;
+            }
+            let age = std::fs::metadata(dir.join(format!("{id}{}", text("mesh_write.json_suffix"))))
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+                .map(|a| a.as_secs_f64() * 1000.0);
+            if age.is_some_and(|a| a <= grace_ms) {
+                crate::metrics::bump("wake_watch_spawn_grace_live", &[]);
+                descriptors.push(d);
+            }
+        }
+    }
     if descriptors.is_empty() {
         return Ok(Live::No);
     }
@@ -310,5 +330,38 @@ mod tests {
         assert!(!absent_from_active_list(&p, KEY, "child-1", "/w/child"), "a child the snapshot barely predates is not archived by its absence");
         seed(&p, 10.0 * 3600.0 * 1000.0, &[("x", "/w/other")], 20 * hour);
         assert!(!absent_from_active_list(&p, KEY, "child-1", "/w/child"), "a stale snapshot is ignored");
+    }
+
+    #[test]
+    fn just_spawned_child_without_session_is_live_within_grace_only() {
+        let mut p = proc_in("spawn-grace");
+        let git = |dir: &Path, args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args(args)
+                .current_dir(dir)
+                .env("HOME", &p.home)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        let main = p.home.join("primary");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        let kid = p.home.join("kid");
+        git(&main, &["worktree", "add", "-q", kid.to_str().unwrap(), "-b", "kid"]);
+        p.cwd = main.to_string_lossy().into_owned();
+        let dir = p.home.join(".anti-hall/devswarm/workspaces");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("kid-1.json"), format!(r#"{{"id":"kid-1","worktreePath":"{}","sessionId":null}}"#, kid.display())).unwrap();
+        // inside the grace the session-less descriptor is a live child: keep the watcher armed
+        assert_eq!(idle_skip(&p).ok(), Some(IdleSkip::NotApplicable), "a just-registered child must keep the watcher armed");
+        // grace off: the descriptor is ignored as before
+        p.st.env.insert("ANTIHALL_DEVSWARM_WAKE_WATCH_SPAWN_GRACE_SEC".into(), "0".into());
+        assert_eq!(idle_skip(&p).ok(), Some(IdleSkip::Applies));
     }
 }

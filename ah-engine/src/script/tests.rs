@@ -4002,3 +4002,81 @@ fn the_session_summary_speaks_at_the_end_and_off_is_silent() {
     assert_eq!(run_event("session-summary", "SessionEnd", &[("ANTIHALL_UI_SESSION_SUMMARY", "off")], &h), Some(Some(Verdict::Allow)));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
+
+// ---- GH #508: which workspace rows the parent-inbox notice leaves out ----
+
+fn notice_text(rows: impl Fn(f64) -> serde_json::Value, setup: impl Fn(&std::path::Path, &str, f64)) -> String {
+    let case = json!({"env": {"HOME": "{HOME}"}, "event": "UserPromptSubmit",
+        "files": {".anti-hall/settings.json": "{\"devswarm\":{\"supervisorMode\":\"on\"}}"}, "payload": {"hook_event_name": "UserPromptSubmit", "prompt": "hi"}});
+    let mut l = golden::lay(&case);
+    let home = std::path::PathBuf::from(&l.home);
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .current_dir(dir)
+            .env("HOME", &home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+    };
+    let proj = home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    git(&proj, &["init", "-q"]);
+    git(&proj, &["commit", "-q", "--allow-empty", "-m", "i"]);
+    let key = crate::meshw::ident::repo_key_for_worktree(proj.to_str().unwrap()).unwrap().expect("a repo key");
+    let dev = home.join(".anti-hall/devswarm");
+    std::fs::create_dir_all(dev.join("summaries")).unwrap();
+    let now = crate::checks::replykit::io::now_ms();
+    setup(&home, &key, now);
+    let rows = rows(now);
+    let mut ws = serde_json::Map::new();
+    for (id, mut e) in rows.as_object().unwrap().clone() {
+        if e["worktreePath"] == "@LIVE" {
+            let wt = home.join(format!("wt-{id}"));
+            git(&proj, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", &format!("b-{id}")]);
+            e["worktreePath"] = json!(wt.to_string_lossy());
+        }
+        e["id"] = json!(id);
+        ws.insert(id, e);
+    }
+    std::fs::write(dev.join(format!("summaries/{key}.json")), json!({"generatedAt": now, "requiredGates": [], "workspaces": ws}).to_string()).unwrap();
+    l.payload["cwd"] = json!(proj.to_string_lossy());
+    l.payload["session_id"] = json!("s-508");
+    let got = golden::run_case("devswarm-parent-inbox", &l, 1);
+    golden::verdict_json(&got.expect("shipped script"), &l).to_string()
+}
+
+const DAY_MS: f64 = 86_400_000.0;
+
+#[test]
+fn notice_keeps_an_urgent_new_message_beside_an_old_one_on_a_live_workspace() {
+    let rows = |now: f64| {
+        json!({"w-live": {"worktreePath": "@LIVE", "sessionId": "sess-1", "directUnread": 2, "unread": 2, "total": 2, "cursor": 0,
+        "urgencyMax": "urgent", "oldestDirectUnreadTs": now - 15.0 * DAY_MS}})
+    };
+    let out = notice_text(rows, |home, _, now| {
+        let hb = home.join(".anti-hall/devswarm/heartbeats");
+        std::fs::create_dir_all(&hb).unwrap();
+        std::fs::write(hb.join("w-live.json"), json!({"ts": now - 1000.0}).to_string()).unwrap();
+    });
+    assert!(out.contains("urgent-inbox"), "the urgent live row must still be reported: {out} {:?}", crate::discard::captured());
+}
+
+#[test]
+fn notice_ignores_a_genuinely_stale_archived_row() {
+    let rows = |now: f64| {
+        json!({"w-old": {"worktreePath": "/nonexistent/gone", "sessionId": "sess-2", "directUnread": 3, "unread": 3, "total": 3, "cursor": 0,
+        "urgencyMax": "normal", "oldestDirectUnreadTs": now - 40.0 * DAY_MS}})
+    };
+    let out = notice_text(rows, |home, _, _| {
+        let a = home.join(".anti-hall/devswarm/archived");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("w-old.json"), json!({"id": "w-old", "worktreePath": "/nonexistent/gone", "sessionId": "sess-2"}).to_string()).unwrap();
+    });
+    assert!(
+        !out.contains("urgent-inbox") && !out.contains("parent-inbox:") && !out.contains("need attention"),
+        "a long-archived, worktree-gone row stays out of the notice: {out}"
+    );
+}

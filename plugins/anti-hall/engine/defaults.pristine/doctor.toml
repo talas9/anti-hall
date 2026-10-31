@@ -2512,3 +2512,7 @@ value = ["config", "--file", ".gitmodules", "--get-regexp", '^submodule\..*\.pat
 [doctor_msg.stray_submodule_history]
 doc = "Existing history inside a submodule; diagnostic only, never moved or removed."
 value = "stray submodule history: {path} (left unchanged; history belongs at the superproject root)"
+
+[doctor_msg.ds_dead_rows]
+doc = "Workspace rows left out of the parent-inbox, urgent-inbox and stale-workspaces notices because their worktree is gone. Placeholder: {n}."
+value = "{n} archived rows ignored by the notices (worktree gone; `doctor --repair` marks them archived, nothing is deleted)"
