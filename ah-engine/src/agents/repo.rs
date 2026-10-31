@@ -89,10 +89,15 @@ pub(crate) fn ignored(top: &str, paths: &[String]) -> Vec<String> {
     }
     let mut args = list("ignored");
     args.extend(paths.iter().map(String::as_str));
-    let exits: Vec<i32> = cfg().get("ignored_exits").and_then(V::as_array).map_or_else(Vec::new, |a| a.iter().filter_map(V::as_integer).map(|n| n as i32).collect());
+    let exits: Vec<i32> =
+        cfg().get("ignored_exits").and_then(V::as_array).map_or_else(Vec::new, |a| a.iter().filter_map(V::as_integer).map(|n| n as i32).collect());
     let Some((_, out)) = git(Path::new(top), &args, &exits) else { return Vec::new() };
     let hit: Vec<PathBuf> = out.split(|b| *b == 0).filter(|r| !r.is_empty()).map(|r| Path::new(top).join(String::from_utf8_lossy(r).as_ref())).collect();
-    paths.iter().filter(|p| hit.iter().any(|h| h == Path::new(p.as_str()) || std::fs::canonicalize(h).is_ok_and(|c| c == Path::new(p.as_str())))).cloned().collect()
+    paths
+        .iter()
+        .filter(|p| hit.iter().any(|h| h == Path::new(p.as_str()) || std::fs::canonicalize(h).is_ok_and(|c| c == Path::new(p.as_str()))))
+        .cloned()
+        .collect()
 }
 
 /// Whether `path` (canonical) is under a temp directory (tmp_prefixes, or the directory a tmp_env variable names) and outside `dir`

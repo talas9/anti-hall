@@ -734,7 +734,9 @@ fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64, dir: 
     if fresh.is_empty() && !check {
         return false;
     }
-    if !repo_changed(a, st) {
+    // outside a repository a fresh verified write is itself the change; a check needs one since the last HARD credit
+    let fallback_write = st.is_none() && !fresh.is_empty();
+    if !fallback_write && !repo_changed(a, st) {
         return false;
     }
     if fresh.is_empty() {

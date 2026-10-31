@@ -2883,10 +2883,9 @@ fn ok_bash_out(p: &Path, t: u64, k: &str, tin: u64, c: &str, out: &str) {
 /// changes earns HARD at most once and is paused.
 #[test]
 fn r5a_an_unchanged_test_or_cached_build_repeated_pauses_pr472r5() {
-    for (tag, cmd, out) in [
-        ("r5a-test", "cargo test", "test result: ok. 3 passed"),
-        ("r5a-build", "cargo build", "    Finished `dev` profile [unoptimized] target(s) in 0.31s"),
-    ] {
+    for (tag, cmd, out) in
+        [("r5a-test", "cargo test", "test result: ok. 3 passed"), ("r5a-build", "cargo build", "    Finished `dev` profile [unoptimized] target(s) in 0.31s")]
+    {
         let (h, p, marker, mut st, n) = fresh_in_repo(tag);
         let mut first = 0;
         let mut paused_at = None;
@@ -3003,7 +3002,6 @@ fn r5f_git_unavailable_or_timing_out_falls_back_to_the_verified_write_rule_pr472
     let hang = std::env::temp_dir().join("ah-test-agents").join(format!("r5f-hang-git-{}.sh", std::process::id()));
     std::fs::create_dir_all(hang.parent().unwrap()).unwrap();
     std::fs::write(&hang, "#!/bin/sh\nsleep 5\n").unwrap();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut std::fs::metadata(&hang).unwrap().permissions(), 0o755);
     std::fs::set_permissions(&hang, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     for (tag, git, ms) in [("r5f-missing", "/nonexistent/ah-no-git".to_string(), 2000), ("r5f-hang", hang.to_string_lossy().into_owned(), 200)] {
         let (h, p, marker, mut st, n) = fresh_in_repo(tag);
@@ -3023,7 +3021,13 @@ fn r5f_git_unavailable_or_timing_out_falls_back_to_the_verified_write_rule_pr472
         for k in 0..3u64 {
             let tk = t + (6 * k + 4) * MIN;
             let f = w.join("tracked.txt").to_string_lossy().into_owned();
-            append(&p, &[tool(tk, &format!("me{k}"), 10, &format!("e{k}"), "Edit", json!({"file_path": f, "old_string": "v", "new_string": "v"})), result(tk, &format!("e{k}"), "ok", false)]);
+            append(
+                &p,
+                &[
+                    tool(tk, &format!("me{k}"), 10, &format!("e{k}"), "Edit", json!({"file_path": f, "old_string": "v", "new_string": "v"})),
+                    result(tk, &format!("e{k}"), "ok", false),
+                ],
+            );
             ticks(&h, &mut st, &[tk + 10_000]);
             let before = agent(&st, "s1").progress;
             ok_bash_out(&p, tk + 20_000, &format!("t{k}"), 10, "cargo test", "test result: ok. 3 passed");
