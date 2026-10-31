@@ -77,6 +77,7 @@ function gitBuildTables() {
   t.sameCallNoEditSubs = set(c('push_same_call_no_edit_subs'));
   t.sameCallNoEditOpt = c('push_same_call_no_edit_opt');
   t.scriptRunVerbs = set(c('script_run_verbs'));
+  t.scriptInertLine = new RegExp(c('script_inert_line_re'));
   t.sameCallHeredoc = new RegExp(c('push_same_call_quoted_heredoc'));
   t.sameCallHereString = new RegExp(c('push_same_call_here_string'));
   t.trailerKeys = c('self_credit_trailer_keys');
@@ -2246,7 +2247,8 @@ function scriptFileVerdict(tok, cdDir, byPath) {
   if (!tok) return null;
   const raw = tok.raw !== undefined ? tok.raw : tok.text;
   if (/[$`*?[]/.test(raw) || !tok.text) { S.scriptUnchecked = tok.text || raw; return null; }
-  const path = normalizeGuardPath(tok.text, cdDir || S.procCwd);
+  const path = scriptRealPath(tok.text, cdDir || S.procCwd);
+  if (path === null) { S.scriptUnchecked = tok.text; return null; }
   const size = ah.fs.size(path);
   // the host reads at most script.read_max_bytes: a larger cap would scan a cut-off script
   const cap = Math.min(ah.cfgNum('git.script_scan_max_bytes'), ah.cfgNum('script.read_max_bytes'));
@@ -2257,26 +2259,40 @@ function scriptFileVerdict(tok, cdDir, byPath) {
     if (head === '#!') S.scriptUnchecked = tok.text;
     return null;
   }
-  if (hasSelfCredit(body)) {
-    const lines = body.split('\n');
-    let line = lines.findIndex((l) => hasSelfCredit(l));
-    return gmKey('msg_script_credit', { file: tok.text, line: line < 0 ? 1 : line + 1 });
-  }
-  if (!gitSettingOn('git.setting_push_credit')) return null;
-  let pushes = 0;
+  // comment lines and greps of a pattern cannot reach a message; blanked, so line numbers stay
+  const live = body.split('\n').map((l) => (TB.scriptInertLine.test(l) ? '' : l));
+  const liveBody = live.join('\n');
+  let reaches = false, pushes = 0;
   const unread = [];
   try {
     forEachGitCommand(body, cdDir || S.procCwd, 0, (ev, sub, rest, dir, seg) => {
       if (sub === null) return;
-      if (sub === 'push') { pushes++; return; }
+      if (sub === 'push') { pushes++; reaches = true; return; }
+      if (TB.sameCallSubs.has(sub)) reaches = true;
       const u = unreadCommitMessage(ev, sub, rest, dir, seg);
       if (u) unread.push(u);
     });
   } catch (e) {
     if (gitFatal(e)) throw e;
-    return null;
+    reaches = true; // unparsed: keep the credit scan, as before
   }
+  // a script that never commits, merges, tags or pushes cannot publish a credit line it mentions
+  if (reaches && hasSelfCredit(liveBody)) {
+    const line = live.findIndex((l) => hasSelfCredit(l));
+    return gmKey('msg_script_credit', { file: tok.text, line: line < 0 ? 1 : line + 1 });
+  }
+  if (!gitSettingOn('git.setting_push_credit')) return null;
   return pushes && unread.length ? gmKey('msg_push_same_call', { sub: unread[0] }) : null;
+}
+
+// The file a script path runs: the kernel resolves symlinks before `..` (link/../x.sh is the link target's parent), so a lexical
+// normalisation can name another file. realpath follows the links; a path that does not resolve and holds `..` is unverifiable.
+function scriptRealPath(text, cwd) {
+  let abs = expandTilde(text.replace(/\\/g, '/'), S.home);
+  if (!abs.startsWith('/')) abs = expandTilde(String(cwd).replace(/\\/g, '/'), S.home).replace(/\/+$/, '') + '/' + abs;
+  const real = ah.fs.realpath(abs);
+  if (real) return real;
+  return /(^|\/)\.\.(\/|$)/.test(abs) ? null : normalizeGuardPath(text, cwd);
 }
 
 function handoverCommitVerdict(ev, lastCdDir) {
