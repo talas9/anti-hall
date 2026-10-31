@@ -1187,7 +1187,7 @@ fn an_earlier_part_of_the_same_call_that_changes_what_the_push_publishes_keeps_t
     assert!(m.contains("git_push_narrow_unproven"), "the wide reads are counted: {m}");
 }
 
-/// GH #506 / PR #524 review: the SkyCrew case still narrows. The repository holds 60 unpushed commits on other branches (more than
+/// GH #506 / PR #524 review: the common case still narrows. The repository holds 60 unpushed commits on other branches (more than
 /// the cap); a plain push of `main`, alone or after `cd <path> &&`, is judged only on the commits it sends.
 #[test]
 fn a_plain_push_alone_or_after_a_cd_still_narrows_with_sixty_unpushed_commits_elsewhere() {
