@@ -4080,3 +4080,88 @@ fn notice_ignores_a_genuinely_stale_archived_row() {
         "a long-archived, worktree-gone row stays out of the notice: {out}"
     );
 }
+
+fn notice_shown(out: &str) -> bool {
+    out.contains("urgent-inbox") || out.contains("parent-inbox:") || out.contains("need attention")
+}
+
+fn write_hint(home: &std::path::Path, id: &str, body: &str) {
+    let d = home.join(".anti-hall/devswarm/dead-row-hints");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(format!("{id}.json")), body).unwrap();
+}
+
+fn beat(home: &std::path::Path, id: &str, ts: f64) {
+    let hb = home.join(".anti-hall/devswarm/heartbeats");
+    std::fs::create_dir_all(&hb).unwrap();
+    std::fs::write(hb.join(format!("{id}.json")), json!({ "ts": ts }).to_string()).unwrap();
+}
+
+#[test]
+fn notice_shows_a_workspace_whose_worktree_came_back_after_the_heal_sweep_saw_it_gone() {
+    // Codex P1: the sweep saw the worktree missing (enough sweeps to set its hint); it comes back with the same path and session,
+    // a current heartbeat and urgent unread mail: the notice must show it, and no archive marker was ever written
+    let rows = |now: f64| {
+        json!({"w-back": {"worktreePath": "@LIVE", "sessionId": "sess-b", "directUnread": 1, "unread": 1, "total": 4, "cursor": 3,
+        "urgencyMax": "urgent", "oldestDirectUnreadTs": now - DAY_MS}})
+    };
+    let out = notice_text(rows, |home, _, now| {
+        let ws = home.join(".anti-hall/devswarm/workspaces");
+        std::fs::create_dir_all(&ws).unwrap();
+        let wt = home.join("wt-w-back");
+        std::fs::write(ws.join("w-back.json"), json!({"id": "w-back", "worktreePath": wt.to_string_lossy(), "sessionId": "sess-b"}).to_string()).unwrap();
+        let ctx = crate::migrate::Ctx::new(home.display().to_string(), home.display().to_string(), Default::default(), false, None, None);
+        for _ in 0..3 {
+            crate::migrate::sweeps::dead_row_sweep(&ctx, 0.0);
+        }
+        let h: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join(".anti-hall/devswarm/dead-row-hints/w-back.json")).unwrap()).unwrap();
+        assert!(h["setAt"].is_number(), "the hint is set before the worktree returns: {h}");
+        assert!(!home.join(".anti-hall/devswarm/archived/w-back.json").exists(), "the heal never writes an archive marker");
+        beat(home, "w-back", now - 1000.0);
+    });
+    assert!(out.contains("urgent-inbox"), "the returned workspace's urgent mail is shown: {out} {:?}", crate::discard::captured());
+}
+
+#[test]
+fn notice_counts_a_row_live_when_its_heartbeat_is_newer_than_the_hint() {
+    let rows = |now: f64| {
+        json!({"w-hb": {"sessionId": "sess-h", "directUnread": 2, "unread": 2, "total": 2, "cursor": 0, "urgencyMax": "normal",
+        "oldestDirectUnreadTs": now - DAY_MS}})
+    };
+    let hidden = notice_text(rows, |home, _, now| write_hint(home, "w-hb", &json!({"id": "w-hb", "setAt": now - 2.0 * DAY_MS, "totalAtSet": 2}).to_string()));
+    assert!(!notice_shown(&hidden), "control: a set hint without live evidence hides the row: {hidden}");
+    let out = notice_text(rows, |home, _, now| {
+        write_hint(home, "w-hb", &json!({"id": "w-hb", "setAt": now - 2.0 * DAY_MS, "totalAtSet": 2}).to_string());
+        beat(home, "w-hb", now - 1000.0);
+    });
+    assert!(notice_shown(&out), "a heartbeat newer than the hint makes the row live: {out}");
+}
+
+#[test]
+fn notice_ignores_a_row_gone_for_over_thirty_days_without_new_mail_and_the_doctor_counts_it() {
+    let rows = |now: f64| {
+        json!({"w-dead": {"worktreePath": "/nonexistent/gone-30", "sessionId": "sess-d", "directUnread": 3, "unread": 3, "total": 3, "cursor": 0,
+        "urgencyMax": "normal", "oldestDirectUnreadTs": now - 40.0 * DAY_MS}})
+    };
+    let out = notice_text(rows, |home, _, now| {
+        let ws = home.join(".anti-hall/devswarm/workspaces");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("w-dead.json"), json!({"id": "w-dead", "worktreePath": "/nonexistent/gone-30", "sessionId": "sess-d"}).to_string()).unwrap();
+        write_hint(home, "w-dead", &json!({"id": "w-dead", "setAt": now - 31.0 * DAY_MS, "totalAtSet": 3}).to_string());
+        let n = crate::migrate::sweeps::dead_rows(&home.join(".anti-hall/devswarm")).len();
+        assert_eq!(n, 1, "the doctor's ignored-rows count includes it");
+        assert!(crate::defaults::render("doctor_msg.ds_dead_rows", &[("n", &n)]).starts_with("1 archived rows ignored"));
+    });
+    assert!(!notice_shown(&out), "a long-dead row with no new mail stays out of the notice: {out}");
+}
+
+#[test]
+fn notice_shows_the_row_when_its_hint_cannot_be_read() {
+    let rows = |now: f64| {
+        json!({"w-bad": {"sessionId": "sess-x", "directUnread": 2, "unread": 2, "total": 2, "cursor": 0, "urgencyMax": "normal",
+        "oldestDirectUnreadTs": now - DAY_MS}})
+    };
+    let out = notice_text(rows, |home, _, _| write_hint(home, "w-bad", "{not json"));
+    assert!(notice_shown(&out), "an unreadable hint is no hint (fail visible): {out}");
+}

@@ -513,13 +513,21 @@ doc = "A file call's error as Node prints it. Placeholders: {code}, {text}, {sys
 value = "{code}: {text}, {syscall} '{path}'"
 
 [migrate.dead_rows_id]
-doc = "The id of the sweep that marks workspace rows whose worktree is gone as archived (GH #508)."
+doc = "The id of the sweep that keeps the reversible dead-row hints for workspace rows whose worktree is gone (GH #508)."
 value = "migrate-dead-notice-rows"
 
 [migrate_msg.dead_rows_would]
-doc = "A workspace row whose worktree is gone and that has no archive marker yet (preview). Placeholders: {id}, {worktree}."
-value = "workspace {id}: worktree {worktree} is gone; would mark it archived (nothing is deleted)"
+doc = "A workspace row whose worktree is gone (preview: nothing is written). Placeholders: {id}, {worktree}."
+value = "workspace {id}: worktree {worktree} is gone; a repair would record it (a reversible hint, nothing is archived or deleted)"
+
+[migrate_msg.dead_rows_watching]
+doc = "A workspace row seen gone again, the hint not set yet. Placeholders: {id}, {worktree}, {n} (consecutive sweeps), {need}."
+value = "workspace {id}: worktree {worktree} gone on {n} of {need} consecutive sweeps; no hint yet"
 
 [migrate_msg.dead_rows_marked]
-doc = "A workspace row marked archived because its worktree is gone. Placeholders: {id}, {worktree}."
-value = "workspace {id}: worktree {worktree} is gone; marked archived (descriptor kept)"
+doc = "A workspace row whose dead-row hint was set. Placeholders: {id}, {worktree}."
+value = "workspace {id}: worktree {worktree} is gone; dead-row hint set (reversible; descriptor kept, nothing archived)"
+
+[migrate_msg.dead_rows_cleared]
+doc = "A dead-row hint cleared by live evidence (rewritten, never deleted). Placeholders: {id}, {why}."
+value = "workspace {id}: dead-row hint cleared ({why})"

@@ -493,9 +493,16 @@ fn watermarks(ctx: &Ctx) -> Outcome {
     Outcome::Deferred
 }
 
-// -- dead notice rows (GH #508)
+// -- dead notice rows (GH #508): a reversible hint, never an archive marker
+//
+// The DevSwarm app DB and anti-hall's own archive marker (`mesh_write.dir_archived`, written by an archive) stay the authorities.
+// This sweep runs from `doctor --repair`, the update install's legacy sweep and `devswarm migrate`, so one "worktree missing"
+// observation must never put a row away: it keeps evidence in its own directory (`devswarm_parent.dead_hint_dir`), sets the hint
+// only after `dead_hint_sweeps` consecutive sweeps spanning `dead_hint_min_hours`, and clears it (rewrites, never deletes) as soon
+// as the worktree is back or a heartbeat newer than the hint is seen. The notices treat a set hint as a hint: live evidence wins.
 
-/// Workspace rows whose worktree is gone and that anti-hall has no archive marker for: `(id, worktree, descriptor text)`.
+/// Workspace rows whose worktree is gone and that no archive marker puts away: `(id, worktree, session)`. The notices leave them out
+/// (worktree gone, or a set hint without live evidence); the doctor counts them.
 pub(crate) fn dead_rows(devswarm: &Path) -> Vec<(String, String, String)> {
     let dir = devswarm.join(defaults::text("mesh_write.dir_workspaces"));
     let marks = devswarm.join(defaults::text("mesh_write.dir_archived"));
@@ -507,25 +514,115 @@ pub(crate) fn dead_rows(devswarm: &Path) -> Vec<(String, String, String)> {
         if wt.is_empty() || !is_safe_id(id) || Path::new(wt).exists() || marks.join(&name).exists() {
             continue;
         }
-        out.push((id.clone(), wt.clone(), raw));
+        let sid = match d.get("sessionId") {
+            Some(J::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        out.push((id.clone(), wt.clone(), sid));
     }
     out
 }
 
+fn obj_num(v: &serde_json::Value, k: &str) -> Option<f64> {
+    v.get(k).and_then(serde_json::Value::as_f64).filter(|n| n.is_finite())
+}
+
+fn read_obj(p: &Path) -> Option<serde_json::Value> {
+    std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).filter(serde_json::Value::is_object)
+}
+
+/// A row's message total as the newest summary that lists it records it (the notices compare it to see mail newer than the hint).
+fn summary_total(devswarm: &Path, id: &str) -> Option<f64> {
+    let dir = devswarm.join(defaults::text("mesh_write.dir_summaries"));
+    read_dir_sorted(&dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|n| read_obj(&dir.join(n)))
+        .filter_map(|s| s.get("workspaces").and_then(|w| w.get(id)).and_then(|e| obj_num(e, "total")))
+        .reduce(f64::max)
+}
+
+/// One repairing pass of the dead-row sweep (tests that drive it end to end).
+#[cfg(test)]
+pub(crate) fn dead_row_sweep(ctx: &Ctx, min_hours: f64) {
+    let _ = dead_hints(ctx, true, defaults::num("devswarm_parent.dead_hint_sweeps") as f64, min_hours * 3_600_000.0);
+}
+
 fn dead_notice_rows(ctx: &Ctx, repair: bool) -> Outcome {
+    let st = crate::checks::git::util::Settings { home: ctx.home.clone(), env: ctx.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect() };
+    if !crate::checks::guardkit::settings::get_bool(&st, defaults::raw("devswarm_parent.set_notice_ignore_dead")) {
+        return Outcome::Items(Vec::new()); // off
+    }
+    dead_hints(ctx, repair, defaults::num("devswarm_parent.dead_hint_sweeps") as f64, defaults::num("devswarm_parent.dead_hint_min_hours") as f64 * 3_600_000.0)
+}
+
+fn dead_hints(ctx: &Ctx, repair: bool, need: f64, min_ms: f64) -> Outcome {
     let dev = ctx.devswarm();
+    let hints = dev.join(defaults::text("devswarm_parent.dead_hint_dir"));
     let marks = dev.join(defaults::text("mesh_write.dir_archived"));
+    let beats = dev.join(defaults::text("mesh_write.dir_heartbeats"));
+    let now = crate::health::now_ms() as f64;
     let mut items = Vec::new();
-    for (id, wt, raw) in dead_rows(&dev) {
+    let write = |file: &Path, v: serde_json::Value, ok: Item, items: &mut Vec<Item>| match std::fs::create_dir_all(&hints)
+        .and_then(|()| crate::atomic::write(file, v.to_string()))
+    {
+        Ok(()) => items.push(ok),
+        Err(e) => items.push(item("failed", format!("{}: {e}", file.display()))),
+    };
+    let dir = dev.join(defaults::text("mesh_write.dir_workspaces"));
+    for name in read_dir_sorted(&dir).unwrap_or_default().into_iter().filter(|n| n.ends_with(super::json_ext())) {
+        let Some(d) = read_obj(&dir.join(&name)) else { continue };
+        let (Some(id), Some(wt)) = (d.get("id").and_then(serde_json::Value::as_str), d.get("worktreePath").and_then(serde_json::Value::as_str)) else {
+            continue;
+        };
+        if wt.is_empty() || !is_safe_id(id) || marks.join(&name).exists() {
+            continue; // an archive marker is the authority; nothing to hint
+        }
+        let file = hints.join(&name);
+        let prev = read_obj(&file).filter(|h| h.get("clearedAt").is_none_or(serde_json::Value::is_null));
+        let since = prev.as_ref().and_then(|h| obj_num(h, "setAt").or_else(|| obj_num(h, "lastGoneAt")));
+        let beat = read_obj(&beats.join(&name)).and_then(|b| obj_num(&b, "ts"));
+        let why = if Path::new(wt).exists() {
+            Some(defaults::text("devswarm_parent.dead_hint_why_worktree"))
+        } else if let (Some(s), Some(b)) = (since, beat)
+            && b > s
+        {
+            Some(defaults::text("devswarm_parent.dead_hint_why_heartbeat"))
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            let Some(prev) = prev else { continue }; // live, nothing recorded: nothing to do
+            if !repair {
+                items.push(item("pending", defaults::render("migrate_msg.dead_rows_cleared", &[("id", &id), ("why", &why)])));
+                continue;
+            }
+            let v = serde_json::json!({"id": id, "worktreePath": wt, "clearedAt": now, "clearedWhy": why, "before": prev});
+            write(&file, v, item("fixed", defaults::render("migrate_msg.dead_rows_cleared", &[("id", &id), ("why", &why)])), &mut items);
+            crate::metrics::bump("devswarm_dead_row_hint", &[("event", "cleared_by_live_evidence")]);
+            continue;
+        }
         if !repair {
             items.push(item("pending", defaults::render("migrate_msg.dead_rows_would", &[("id", &id), ("worktree", &wt)])));
             continue;
         }
-        let file = marks.join(format!("{id}{}", super::json_ext()));
-        match std::fs::create_dir_all(&marks).and_then(|()| crate::atomic::write(&file, raw)) {
-            Ok(()) => items.push(item("fixed", defaults::render("migrate_msg.dead_rows_marked", &[("id", &id), ("worktree", &wt)]))),
-            Err(e) => items.push(item("failed", format!("{}: {e}", file.display()))),
-        }
+        let seen = prev.as_ref().and_then(|h| obj_num(h, "goneSweeps")).unwrap_or(0.0) + 1.0;
+        let first = prev.as_ref().and_then(|h| obj_num(h, "firstGoneAt")).unwrap_or(now);
+        let was_set = prev.as_ref().and_then(|h| obj_num(h, "setAt"));
+        let set_at = was_set.or_else(|| (seen >= need && now - first >= min_ms).then_some(now));
+        let total = match (was_set, prev.as_ref().and_then(|h| obj_num(h, "totalAtSet"))) {
+            (Some(_), t) => t,
+            (None, _) => set_at.and_then(|_| summary_total(&dev, id)),
+        };
+        let v = serde_json::json!({"id": id, "worktreePath": wt, "sessionId": d.get("sessionId"), "reason": defaults::text("devswarm_parent.dead_hint_reason"),
+            "firstGoneAt": first, "lastGoneAt": now, "goneSweeps": seen, "setAt": set_at, "totalAtSet": total});
+        let ok = if was_set.is_none() && set_at.is_some() {
+            crate::metrics::bump("devswarm_dead_row_hint", &[("event", "marked")]);
+            item("fixed", defaults::render("migrate_msg.dead_rows_marked", &[("id", &id), ("worktree", &wt)]))
+        } else {
+            item("pending", defaults::render("migrate_msg.dead_rows_watching", &[("id", &id), ("worktree", &wt), ("n", &seen), ("need", &need)]))
+        };
+        write(&file, v, ok, &mut items);
     }
     Outcome::Items(items)
 }
@@ -606,25 +703,73 @@ mod tests {
 mod dead_notice_rows_tests {
     use super::*;
 
+    fn scratch(tag: &str) -> PathBuf {
+        let h = std::env::temp_dir().join(format!("ah-dead-rows-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: scratch dir of this test only
+        std::fs::create_dir_all(h.join(".anti-hall/devswarm/workspaces")).unwrap();
+        h
+    }
+
+    fn sweep(home: &Path, min_hours: f64) -> Vec<Item> {
+        let ctx = Ctx::new(home.display().to_string(), home.display().to_string(), Default::default(), false, None, None);
+        match dead_hints(&ctx, true, defaults::num("devswarm_parent.dead_hint_sweeps") as f64, min_hours * 3_600_000.0) {
+            Outcome::Items(i) => i,
+            _ => panic!("items"),
+        }
+    }
+
+    fn hint(home: &Path, id: &str) -> serde_json::Value {
+        read_obj(&home.join(format!(".anti-hall/devswarm/dead-row-hints/{id}.json"))).expect("a hint file")
+    }
+
     #[test]
-    fn dead_notice_rows_are_marked_archived_once_and_nothing_is_deleted() {
-        let dev = std::env::temp_dir().join(format!("ah-dead-rows-{}", std::process::id()));
-        crate::discard::harmless(std::fs::remove_dir_all(&dev)); // keep: scratch dir of this test only
-        std::fs::create_dir_all(dev.join("workspaces")).unwrap();
-        let live = dev.join("live-wt");
-        std::fs::create_dir_all(&live).unwrap();
-        let gone = format!(r#"{{"id":"gone-1","worktreePath":"{}/missing","sessionId":"s1"}}"#, dev.display());
-        std::fs::write(dev.join("workspaces/gone-1.json"), &gone).unwrap();
-        std::fs::write(dev.join("workspaces/live-1.json"), format!(r#"{{"id":"live-1","worktreePath":"{}","sessionId":"s2"}}"#, live.display())).unwrap();
-        let rows = dead_rows(&dev);
-        assert!(defaults::render("doctor_msg.ds_dead_rows", &[("n", &rows.len())]).starts_with("1 archived rows ignored"), "the doctor line");
-        assert_eq!(rows.len(), 1, "only the row with a missing worktree is dead");
-        assert_eq!(rows[0].0, "gone-1");
-        // the heal writes the marker the notices already honour, and keeps the descriptor
-        std::fs::create_dir_all(dev.join("archived")).unwrap();
-        std::fs::write(dev.join("archived/gone-1.json"), &rows[0].2).unwrap();
-        assert!(dead_rows(&dev).is_empty(), "idempotent: a marked row is not listed again");
-        assert!(dev.join("workspaces/gone-1.json").exists(), "the descriptor is never deleted");
-        crate::discard::harmless(std::fs::remove_dir_all(&dev)); // keep: scratch dir of this test only
+    fn one_missing_sighting_writes_no_marker_and_a_returning_worktree_clears_the_hint() {
+        let h = scratch("once");
+        let wt = h.join("wt-1");
+        std::fs::write(h.join(".anti-hall/devswarm/workspaces/w-1.json"), format!(r#"{{"id":"w-1","worktreePath":"{}","sessionId":"s1"}}"#, wt.display()))
+            .unwrap();
+        sweep(&h, 0.0);
+        assert!(!h.join(".anti-hall/devswarm/archived/w-1.json").exists(), "the sweep never writes an archive marker");
+        assert!(hint(&h, "w-1")["setAt"].is_null(), "one sighting sets no hint");
+        assert_eq!(dead_rows(&h.join(".anti-hall/devswarm")).len(), 1, "the doctor counts the gone row");
+        std::fs::create_dir_all(&wt).unwrap();
+        sweep(&h, 0.0);
+        let c = hint(&h, "w-1");
+        assert!(c["clearedAt"].is_number() && c["setAt"].is_null(), "back: cleared by rewrite, never deleted: {c}");
+        assert!(dead_rows(&h.join(".anti-hall/devswarm")).is_empty());
+        assert!(h.join(".anti-hall/devswarm/workspaces/w-1.json").exists(), "the descriptor is never deleted");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: scratch dir of this test only
+    }
+
+    #[test]
+    fn the_hint_needs_consecutive_sweeps_and_hours_and_a_newer_heartbeat_clears_it() {
+        let h = scratch("gates");
+        std::fs::write(h.join(".anti-hall/devswarm/workspaces/w-2.json"), format!(r#"{{"id":"w-2","worktreePath":"{}/gone","sessionId":"s2"}}"#, h.display()))
+            .unwrap();
+        for _ in 0..3 {
+            sweep(&h, 24.0);
+        }
+        assert!(hint(&h, "w-2")["setAt"].is_null(), "three quick repairs inside the hours gate set no hint");
+        assert_eq!(hint(&h, "w-2")["goneSweeps"], 3.0);
+        sweep(&h, 0.0);
+        let set = hint(&h, "w-2");
+        let at = set["setAt"].as_f64().expect("set after both gates");
+        assert!(!h.join(".anti-hall/devswarm/archived/w-2.json").exists());
+        std::fs::create_dir_all(h.join(".anti-hall/devswarm/heartbeats")).unwrap();
+        std::fs::write(h.join(".anti-hall/devswarm/heartbeats/w-2.json"), format!(r#"{{"ts":{}}}"#, at + 1.0)).unwrap();
+        sweep(&h, 0.0);
+        assert_eq!(hint(&h, "w-2")["clearedWhy"], defaults::text("devswarm_parent.dead_hint_why_heartbeat"), "a heartbeat newer than the hint wins");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: scratch dir of this test only
+    }
+
+    #[test]
+    fn the_switch_off_writes_no_hints() {
+        let h = scratch("off");
+        std::fs::write(h.join(".anti-hall/devswarm/workspaces/w-3.json"), format!(r#"{{"id":"w-3","worktreePath":"{}/gone"}}"#, h.display())).unwrap();
+        let env = [("ANTIHALL_DEVSWARM_NOTICE_IGNORE_DEAD_ROWS".to_string(), "false".to_string())].into_iter().collect();
+        let ctx = Ctx::new(h.display().to_string(), h.display().to_string(), env, false, None, None);
+        assert!(matches!(dead_notice_rows(&ctx, true), Outcome::Items(i) if i.is_empty()));
+        assert!(!h.join(".anti-hall/devswarm/dead-row-hints").exists(), "off writes nothing");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: scratch dir of this test only
     }
 }

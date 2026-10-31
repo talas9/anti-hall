@@ -273,6 +273,21 @@ function piTrend(home, id, curr) {
 function piStuck(status) { return !!status && ah.cfg('devswarm_parent.stuck_statuses').indexOf(status) >= 0; }
 function piHigh(u) { return ah.cfg('devswarm_parent.high_urgencies').indexOf(u) >= 0; }
 
+// The heal sweep's dead-row hint for a row (GH #508): true when the hint is set and no live evidence beats it. The hint is a guess from
+// repeated "worktree missing" sightings, never an archive: the worktree back, a heartbeat newer than the hint, mail newer than it (the
+// row's total grew) or high/urgent mail each win, and are counted (shown_despite_hint). An unreadable hint is no hint (fail visible).
+function piDeadHint(home, id, wtPath, total, urgencyMax) {
+  if (!piSafeId(id)) return false;
+  var dir = piDevswarmDir(home) + '/';
+  var h = piJson(dir + ah.cfg('devswarm_parent.dead_hint_dir') + '/' + id + '.json');
+  if (!jx.isObj(h) || !piFinite(h.setAt) || (h.clearedAt !== undefined && h.clearedAt !== null)) return false;
+  var hb = piJson(dir + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
+  var live = (wtPath && piPresent(wtPath)) || (jx.isObj(hb) && piFinite(hb.ts) && hb.ts > h.setAt)
+    || (piFinite(total) && piFinite(h.totalAtSet) && total > h.totalAtSet) || (urgencyMax !== null && piHigh(urgencyMax));
+  if (live) { ah.metric('devswarm_dead_row_hint', ['event', 'shown_despite_hint']); return false; }
+  return true;
+}
+
 // `tierOf(w)`.
 function piTier(w) {
   if (!(w.unread > 0)) return 'normal';
@@ -555,15 +570,18 @@ function piRoster(ctx, summary) {
     // (GH #508): it is left out of the nudges and counted once instead (devswarm.nudgeIgnoreDeadRows)
     var deadWhy = null;
     if (noticeIgnoreDead) {
-      if (archivedRow) deadWhy = 'archived';
-      else if (wtPath && !piPresent(wtPath)) deadWhy = 'worktree_gone';
-      else if (noticeMaxAgeMs > 0 && !piHigh(urgencyMax)) {
-        // inactive, not merely holding an old message: judged by the workspace's latest activity (an old unread beside newer mail or a live
-        // child never ages the row out, and an urgent backlog is never aged out); with no activity on record, by the oldest unread
-        var hbRow = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
-        var lastAct = Math.max(verdict && piFinite(verdict.lastOutboundTs) ? verdict.lastOutboundTs : 0, hbRow && typeof hbRow === 'object' && piFinite(hbRow.ts) ? hbRow.ts : 0);
-        if (lastAct > 0 ? now - lastAct > noticeMaxAgeMs : (piFinite(oldestForGate) && now - oldestForGate > noticeMaxAgeMs)) deadWhy = 'too_old';
-      }
+      try {
+        if (archivedRow) deadWhy = 'archived';
+        else if (wtPath && !piPresent(wtPath)) deadWhy = 'worktree_gone';
+        else if (piDeadHint(home, id, wtPath, total, urgencyMax)) deadWhy = 'dead_hint';
+        else if (noticeMaxAgeMs > 0 && !piHigh(urgencyMax)) {
+          // inactive, not merely holding an old message: judged by the workspace's latest activity (an old unread beside newer mail or a live
+          // child never ages the row out, and an urgent backlog is never aged out); with no activity on record, by the oldest unread
+          var hbRow = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
+          var lastAct = Math.max(verdict && piFinite(verdict.lastOutboundTs) ? verdict.lastOutboundTs : 0, hbRow && typeof hbRow === 'object' && piFinite(hbRow.ts) ? hbRow.ts : 0);
+          if (lastAct > 0 ? now - lastAct > noticeMaxAgeMs : (piFinite(oldestForGate) && now - oldestForGate > noticeMaxAgeMs)) deadWhy = 'too_old';
+        }
+      } catch (e) { ah.unable('devswarm-parent-inbox:dead_row_decide'); deadWhy = null; } // any doubt shows the row (fail visible)
     }
     var wouldNag = ((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused;
     if (deadWhy !== null && wouldNag) { out.ignoredDead++; ah.metric('devswarm_notice_rows_ignored', ['reason', deadWhy]); }
@@ -1346,9 +1364,13 @@ function piDecide(p, opts) {
           if (!row || row.id == null) return true;
           var a = JSON.parse(ahHost.piApp(String(row.id), piStrField(row.worktreePath), key, now));
           if (a.unsure) { ah.unable('devswarm-parent-inbox:stale_reg_app'); return true; } // not provably archived: still listed
-          if (!a.archived && ah.settings.bool('devswarm_parent.set_notice_ignore_dead') === true && piSafeId(String(row.id)) && piPresent(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_archived') + '/' + row.id + '.json')) {
-            ah.metric('devswarm_notice_rows_ignored', ['reason', 'archived']); // anti-hall's own archive marker: put away, not actionable (GH #508)
-            return false;
+          if (!a.archived && ah.settings.bool('devswarm_parent.set_notice_ignore_dead') === true && piSafeId(String(row.id))) {
+            var why = null;
+            try {
+              if (piPresent(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_archived') + '/' + row.id + '.json')) why = 'archived'; // anti-hall's own archive marker
+              else if (piDeadHint(home, String(row.id), piStrField(row.worktreePath), null, null)) why = 'dead_hint'; // a hint no live evidence beats
+            } catch (e) { ah.unable('devswarm-parent-inbox:dead_row_decide'); why = null; }
+            if (why !== null) { ah.metric('devswarm_notice_rows_ignored', ['reason', why]); return false; } // put away, not actionable (GH #508)
           }
           return !a.archived;
         });

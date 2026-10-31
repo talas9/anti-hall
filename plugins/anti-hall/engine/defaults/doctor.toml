@@ -2515,4 +2515,4 @@ value = "stray submodule history: {path} (left unchanged; history belongs at the
 
 [doctor_msg.ds_dead_rows]
 doc = "Workspace rows left out of the parent-inbox, urgent-inbox and stale-workspaces notices because their worktree is gone. Placeholder: {n}."
-value = "{n} archived rows ignored by the notices (worktree gone; `doctor --repair` marks them archived, nothing is deleted)"
+value = "{n} archived rows ignored by the notices (worktree gone; `doctor --repair` keeps a reversible hint, nothing is archived or deleted)"

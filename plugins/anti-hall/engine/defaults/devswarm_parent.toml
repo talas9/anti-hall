@@ -709,7 +709,7 @@ doc = "Orphaned-mesh warnings not shown again, by reason (seen_this_session: the
 value = { kind = "counter", unit = "warnings", labels = ["reason"] }
 
 [devswarm_parent.set_notice_ignore_dead]
-doc = "Switch devswarm.nudgeIgnoreDeadRows (default on): the parent-inbox, urgent-inbox and stale-workspaces notices leave out rows that anti-hall's own archive marker calls archived, whose worktree is gone, or whose oldest unread is older than devswarm.nudgeMaxAgeDays; they are counted (devswarm_notice_rows_ignored) instead of repeated every turn (GH #508). Off restores the old nudges."
+doc = "Switch devswarm.nudgeIgnoreDeadRows (default on): the parent-inbox, urgent-inbox and stale-workspaces notices leave out rows that anti-hall's own archive marker calls archived, whose worktree is gone, or whose oldest unread is older than devswarm.nudgeMaxAgeDays; they are counted (devswarm_notice_rows_ignored) instead of repeated every turn (GH #508). It also switches the heal sweep's reversible dead-row hints (devswarm_parent.dead_hint_dir). Off restores the old nudges and writes no hints."
 value = { section = "devswarm", key = "nudgeIgnoreDeadRows", type = "boolean", env = "ANTIHALL_DEVSWARM_NOTICE_IGNORE_DEAD_ROWS", option = "", default = true }
 
 [devswarm_parent.set_notice_max_age_days]
@@ -717,5 +717,33 @@ doc = "Setting devswarm.nudgeMaxAgeDays: days after which a row's oldest unread 
 value = { section = "devswarm", key = "nudgeMaxAgeDays", env = "ANTIHALL_DEVSWARM_NOTICE_MAX_AGE_DAYS", option = "", default = 14 }
 
 [metric.devswarm_notice_rows_ignored]
-doc = "Workspace rows left out of a parent-inbox, urgent-inbox or stale-workspaces notice because they are archived, their worktree is gone, or their oldest unread is too old, by reason (archived, worktree_gone, too_old) (GH #508)."
+doc = "Workspace rows left out of a parent-inbox, urgent-inbox or stale-workspaces notice because they are archived, their worktree is gone, a heal-sweep hint calls them dead and no live evidence beats it, or their oldest unread is too old, by reason (archived, worktree_gone, dead_hint, too_old) (GH #508)."
 value = { kind = "counter", unit = "rows", labels = ["reason"] }
+
+[devswarm_parent.dead_hint_dir]
+doc = "Directory under the DevSwarm state dir where the heal sweep (`doctor --repair`, the update install's sweep, `devswarm migrate`) keeps its reversible hint per workspace row whose worktree is gone: when the row was first and last seen gone, on how many consecutive sweeps, when the hint was set and the row's message total then. A hint is never an archive marker: live evidence (the worktree back, a newer heartbeat, new or high/urgent mail) beats it, and the next sweep clears it (GH #508)."
+value = "dead-row-hints"
+
+[devswarm_parent.dead_hint_reason]
+doc = "The reason the heal sweep records in a dead-row hint (GH #508)."
+value = "worktree_gone"
+
+[devswarm_parent.dead_hint_why_worktree]
+doc = "Why a dead-row hint was cleared: the worktree path exists again (GH #508)."
+value = "worktree present again"
+
+[devswarm_parent.dead_hint_why_heartbeat]
+doc = "Why a dead-row hint was cleared: a heartbeat newer than the hint was seen (GH #508)."
+value = "heartbeat newer than the hint"
+
+[devswarm_parent.dead_hint_sweeps]
+doc = "Consecutive heal sweeps that must see a workspace's worktree gone before its dead-row hint is set (with devswarm_parent.dead_hint_min_hours also passed). The sweep's off switch is devswarm.nudgeIgnoreDeadRows (GH #508)."
+value = 3
+
+[devswarm_parent.dead_hint_min_hours]
+doc = "Hours a workspace's worktree must have been gone (first to latest sweep that saw it gone) before its dead-row hint is set, so a burst of repairs cannot set it (GH #508)."
+value = 24
+
+[metric.devswarm_dead_row_hint]
+doc = "The heal sweep's reversible dead-row hint, by event (marked: set after the consecutive-sweeps and hours gates; cleared_by_live_evidence: the worktree came back or a newer heartbeat was seen, so the hint was cleared, never deleted; shown_despite_hint: a notice row shown because live evidence beat its hint) (GH #508)."
+value = { kind = "counter", unit = "events", labels = ["event"] }
