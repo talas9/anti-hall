@@ -1569,6 +1569,46 @@ mod sibling {
         assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
     }
 
+    /// Codex review of PR #455 (P2s, round 3): a contraction is one token, so "I've said" is the agent's own speech, and an
+    /// apostrophe (contraction, singular or plural possessive) never closes a quotation early. One apostrophe classifier,
+    /// by neighbouring characters and balanced pairing per line, serves both.
+    #[test]
+    fn apostrophes_are_word_tokens_for_reported_speech_and_quotation_pairing() {
+        let verdict = |tag: &str, text: &str| {
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            go(&d, &stop(&d, &p, text))
+        };
+        let mut wrong = Vec::new();
+        for (tag, text) in [
+            ("t1", "As I've said, I fixed a typo in the loader."),
+            ("t2", "As I\u{2019}ve said, I fixed a typo in the loader."),
+            ("t3", "As I'd told Bob, I fixed a typo in the loader."),
+            ("t4", "As I have said, I fixed a typo in the loader."),
+            ("t5", "I fixed a typo in the files' names."),
+            ("t6", "I renamed 'doc' and fixed my mistake in the users' table."),
+            ("t7", "Don't panic: I've fixed a typo, it's in the user's config."),
+            ("t8", "The user wrote 'see below.\nI fixed a typo in the loader."),
+        ] {
+            if !is_adv(&verdict(tag, text)) {
+                wrong.push(format!("reminder expected: {text}"));
+            }
+        }
+        for (tag, text) in [
+            ("u1", "The user wrote 'the files' names were wrong, I fixed a typo' in the ticket."),
+            ("u2", "Alice's reviewer said: I fixed a typo in the loader."),
+            ("u3", "Bob wrote \"she said 'I fixed a typo' then left\" in the ticket."),
+            ("u4", "Bob wrote \u{201c}she said \u{2018}I fixed a typo\u{2019} then\u{201d} today."),
+            ("u5", "The user wrote 'Alice's fix: I fixed a typo' in the ticket."),
+            ("u6", "The user wrote 'I fixed a typo in the ticket."),
+        ] {
+            if verdict(tag, text) != Verdict::Allow {
+                wrong.push(format!("silent expected: {text}"));
+            }
+        }
+        assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
+    }
+
     #[test]
     fn the_self_correction_family_follows_through_and_the_cue_list_is_a_settings_edit() {
         let d = h("self-ft");

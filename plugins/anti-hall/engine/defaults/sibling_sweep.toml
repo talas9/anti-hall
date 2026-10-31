@@ -195,7 +195,7 @@ doc = "The label of the self-correction cue family (the agent reports fixing its
 value = "self_correction"
 
 [sibling_sweep.self_correction_cues]
-doc = "Regex sources, any of which is the agent reporting a correction of its own typo or mistake. Each cue binds the agent as the actor of the mistake or its fix, not a first-person word anywhere in the sentence: 'I/I've/I'd fixed (found, made ...) a typo', 'found a mistake I made' or 'in my earlier edit', 'my (own) mistake', 'I used (typed, set ...) X, which should have been Y' or 'my edit ... should have been'; 'I reviewed Alice's fix: X should have been Y' is no statement. Matched like cause_cues (same hedge, negation, operational and attributed filters, same once-per-cause key, search evidence and per-scope cap) after fenced code and quoted lines are removed, on the whole reply with code spans and then inline_quote_re quotations blanked before it is split into sentences."
+doc = "Regex sources, any of which is the agent reporting a correction of its own typo or mistake. Each cue binds the agent as the actor of the mistake or its fix, not a first-person word anywhere in the sentence: 'I/I've/I'd fixed (found, made ...) a typo', 'found a mistake I made' or 'in my earlier edit', 'my (own) mistake', 'I used (typed, set ...) X, which should have been Y' or 'my edit ... should have been'; 'I reviewed Alice's fix: X should have been Y' is no statement. Matched like cause_cues (same hedge, negation, operational and attributed filters, same once-per-cause key, search evidence and per-scope cap) after fenced code and quoted lines are removed, on the whole reply with code spans and then the inline quotations (sibling_sweep.quote_chars_re) blanked before it is split into sentences."
 value = [
   '''\bi(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:just\s+|now\s+|also\s+|then\s+)?(?:fix(?:ed)?|correct(?:ed)?|repair(?:ed)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e)|made|introduced|left)\s+(?:a|an|the|my|one|this|that)\s+(?:own\s+)?(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)s?\b''',
   '''\b(?:fix(?:ed|ing)?|correct(?:ed|ing)?|repair(?:ed|ing)?|found|spotted|caught|noticed|discovered|realis(?:ed|e)|realiz(?:ed|e))\s+(?:a|an|the|one)\s+(?:\w+\s+){0,2}(?:typo|mistake|slip(?:-?up)?|misspelling|oversight)s?\s+(?:(?:that|which)\s+)?(?:i(?:['’](?:ve|d)|\s+ha(?:ve|d))?\s+(?:made|introduced|wrote|added|left)|(?:in|from)\s+my\s+(?:own\s+)?(?:\w+\s+){0,2}(?:edit|change|commit|patch|fix|code|diff|update)s?)\b''',
@@ -222,8 +222,16 @@ doc = "Regex source of a cause that is quoted from someone else's report (an age
 value = '\b(?:(?:sub)?agents?|workers?|lanes?|reviewers?|auditors?|critics?|codex|explorers?|builders?|the\s+report|reports?)(?:.s)?\s+(?:report(?:s|ed)?|says?|said|found|finds|claims?|claimed|states?|stated|notes?|noted|identified|diagnosed|blames?|blamed|attributes?|attributed|summary|result|finding)\b|\b(?:agent|lane|worker|subagent|codex|reviewer)\s+(?:report|summary|result|finding)s?\b|\baccording\s+to\b|\bper\s+the\s+(?:agent|report|lane|worker)\b'
 
 [sibling_sweep.reported_speech_re]
-doc = "Regex source of reported speech by another party ('Alice said: ...', 'Bob told me that ...', 'the reviewer wrote, ...'): a self-correction cue inside such a sentence is someone else's claim, not the agent's own correction. The speaker must be a word other than the bare 'I', so the agent's own 'I said, ...' still counts. Applies to the self-correction family only."
-value = '''\b(?:[a-hj-z]\w*|i\w+)\s+(?:(?:said|says|wrote|writes|replied|replies|commented|claimed|claims|answered)|(?:told|tells|asked|asks)\s+\w+)(?:\s*[:,]|\s+that\b)'''
+doc = "Regex source of a speech verb with the word before it ('Alice said: ...', 'Bob told me that ...', 'the reviewer wrote, ...'): a self-correction cue inside such a sentence is someone else's claim, not the agent's own correction. The speaker is the whole word token the match starts in (a contraction is one token: I've, I'd, Alice's), with sibling_sweep.speech_aux_words skipped leftwards; when its base (the part before an apostrophe) is one of sibling_sweep.self_speakers the speech is the agent's own ('I said, ...', 'As I've said, ...', 'I have said, ...') and still counts. Applies to the self-correction family only."
+value = '''\b\w+\s+(?:(?:said|says|wrote|writes|replied|replies|commented|claimed|claims|answered)|(?:told|tells|asked|asks)\s+\w+)(?:\s*[:,]|\s+that\b)'''
+
+[sibling_sweep.speech_aux_words]
+doc = "Lower-case words skipped leftwards between the speaker and the speech verb of sibling_sweep.reported_speech_re ('I have said', 'Bob just wrote'), so the speaker is the word before them."
+value = ["have", "has", "had", "just", "also", "already", "then", "earlier", "once", "previously", "now"]
+
+[sibling_sweep.self_speakers]
+doc = "Lower-case speaker bases that are the agent itself: speech by one of them is the agent's own words, not reported speech (the base of I've and I'd is i)."
+value = ["i"]
 
 [sibling_sweep.prefilter_re]
 doc = "Regex source of one cheap whole-text scan that every cue needs: text (or a sentence) with none of these words cannot hold a cause or self-correction statement, so the per-sentence guard and cue patterns are skipped and neutral text costs one regex pass. It must match a word of every shipped cause_cues and self_correction_cues entry (a test checks the shipped corpora); when either cue list is edited away from the shipped one the prefilter is not used, and an empty value turns it off."
@@ -245,9 +253,25 @@ value = '``.*?``'
 doc = "Regex source of a single-backtick inline code span (one line at most), blanked over the whole reply after code_span_double_re and before it is split into sentences, so a phrase inside one is no statement."
 value = '`[^`\n]*`'
 
-[sibling_sweep.inline_quote_re]
-doc = "Regex source of an inline quotation (straight or curly double quotes) that is blanked before the self_correction_cues are matched: someone else's words quoted in the reply are not the agent's own correction. It is found over the whole reply after the code spans are blanked (a quote character inside a code span is inert) and before the reply is split into sentences, so a quotation that holds a terminator is masked as one piece. Single-quoted spans (straight or curly) are masked too: a straight opening quote must not follow a word character and a closing one must not precede one, so an apostrophe inside a word (it's, don't, users') never opens or closes a span."
-value = '''"[^"\n]{0,400}"|\u201c[^\u201d\n]{0,400}\u201d|\B'(?:[^'\n]|\b'\b){0,400}'\B|\u2018(?:[^\u2019\n]|\b\u2019\b){0,400}\u2019'''
+[sibling_sweep.quote_chars_re]
+doc = "Regex source of the characters that may open or close an inline quotation or be an apostrophe (straight and curly quotes). One scan of the code-masked reply finds them; each is then classified by its neighbours and paired per line (sibling_sweep.quote_pairs, sibling_sweep.apostrophes): the quotations found are blanked before the self_correction_cues are matched, because someone else's words quoted in the reply are not the agent's own correction. The scan runs over the whole reply after the code spans are blanked (a quote character inside a code span is inert) and before it is split into sentences, so a quotation that holds a terminator is masked as one piece."
+value = "[\"'\u201c\u201d\u2018\u2019]"
+
+[sibling_sweep.quote_pairs]
+doc = "The quotation delimiters, each an opener and a closer (two characters; the same character twice for a straight quote). A character opens when no word character precedes it and no space follows it, and closes when no word character follows it and no space precedes it; quotations pair per line, nest, and one left open at the end of its line masks the rest of that line (fail open) but never the next."
+value = ['""', "''", "\u201c\u201d", "\u2018\u2019"]
+
+[sibling_sweep.apostrophes]
+doc = "The characters that are also apostrophes. Between two word characters one is part of the word (don't, I've, Alice's) and never a delimiter; the reported-speech speaker token includes it."
+value = ["'", "\u2019"]
+
+[sibling_sweep.plural_possessive_end]
+doc = "Word endings (lower-case characters) after which an apostrophe closer may be a plural possessive (the files' names): it closes its quotation only when no later closer of the same quotation comes on the line before the next opener of that kind. After any other word character it closes."
+value = ["s"]
+
+[sibling_sweep.word_char_class]
+doc = "A JavaScript (u-flag) character class of the word characters the quotation tokenizer sees as a quote character's neighbours."
+value = '[\p{L}\p{N}\p{M}_]'
 
 [sibling_sweep.quote_line_re]
 doc = "Regex source of a quoted line (a Markdown quote), removed before matching."

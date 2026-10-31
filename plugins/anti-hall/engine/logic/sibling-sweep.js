@@ -130,12 +130,145 @@ function swBlankAll(spec, t) {
   return parts.join('');
 }
 
+// `t` with the [start, end) ranges blanked to spaces (one per UTF-16 unit); ranges may overlap or nest.
+function swBlankRanges(t, rs) {
+  if (rs.length === 0) return t;
+  rs.sort(function (x, y) { return x[0] - y[0]; });
+  var parts = [], at = 0;
+  for (var i = 0; i < rs.length; i++) {
+    var a = Math.max(rs[i][0], at), b = rs[i][1];
+    if (b <= a) continue;
+    parts.push(t.slice(at, a), ' '.repeat(b - a));
+    at = b;
+  }
+  parts.push(t.slice(at));
+  return parts.join('');
+}
+
+// ---- the apostrophe / quotation tokenizer -----------------------------------------------------------------------
+// One classifier of quote characters by their neighbours, shared by the quotation masking and the reported-speech speaker:
+// a character of sibling_sweep.apostrophes between two word characters is part of the word (don't, I've, Alice's) and never a
+// delimiter. Otherwise a character opens a quotation when no word character precedes it and no space follows it, and closes
+// one when no word character follows it and no space precedes it (the pairs of sibling_sweep.quote_pairs). An apostrophe
+// closer right after a word character is weak: after one of sibling_sweep.plural_possessive_end ("files' names") it may be
+// a possessive, so it closes its quotation only when no later closer of the same quotation comes on the line before the next
+// opener of that kind ('the files' names were wrong' is one quotation, 'a' and 'b' are two).
+function swTok() {
+  var id = 'quote-tok';
+  if (Object.prototype.hasOwnProperty.call(sws.memo, id)) return sws.memo[id];
+  var open = {}, close = {}, apos = {}, poss = {}, word;
+  swCfg('sibling_sweep.quote_pairs').forEach(function (p, k) {
+    var cs = swChars(p);
+    if (cs.length !== 2) return;
+    (open[cs[0]] = open[cs[0]] || []).push(k);
+    (close[cs[1]] = close[cs[1]] || []).push(k);
+  });
+  swCfg('sibling_sweep.apostrophes').forEach(function (c) { apos[c] = true; });
+  swCfg('sibling_sweep.plural_possessive_end').forEach(function (c) { poss[c.toLowerCase()] = true; });
+  try { word = new RegExp('^' + swCfg('sibling_sweep.word_char_class') + '$', 'u'); } catch (e) {
+    swBad('sibling_sweep.word_char_class');
+    word = new RegExp('^' + ah.cfg('sibling_sweep.word_char_class') + '$', 'u');
+  }
+  var tok = { open: open, close: close, apos: apos, poss: poss, word: word, chars: swSpec('sibling_sweep.quote_chars_re', '') };
+  sws.memo[id] = tok;
+  return tok;
+}
+function swIsWord(tok, c) { return c !== '' && tok.word.test(c); }
+// The character before / after UTF-16 offset i (a whole code point), or '' at the text's edge.
+function swCharBefore(t, i) {
+  if (i <= 0) return '';
+  var lo = t.charCodeAt(i - 1);
+  return lo >= 0xdc00 && lo <= 0xdfff && i >= 2 ? t.slice(i - 2, i) : t.charAt(i - 1);
+}
+function swCharAfter(t, i) { return i >= t.length ? '' : String.fromCodePoint(t.codePointAt(i)); }
+// An apostrophe inside a word: one of sibling_sweep.apostrophes between two word characters.
+function swInWord(tok, t, i) { return tok.apos[t.charAt(i)] === true && swIsWord(tok, swCharBefore(t, i)) && swIsWord(tok, swCharAfter(t, i + 1)); }
+
+// The [start, end) ranges of the inline quotations of `t`, outermost first, paired per line. A quotation left open at the end
+// of its line fails open: the rest of that line is masked (never the next line).
+function swQuoteSpans(t) {
+  var tok = swTok(), ms = ah.re.findAll(tok.chars.src, tok.chars.flags, t);
+  var out = [], stack = [], lineEnd = -1;
+  var flush = function (end) {
+    for (var s = stack.length - 1; s >= 0; s--) out.push([stack[s].at, stack[s].tent >= 0 ? stack[s].tent + 1 : end]);
+    stack = [];
+  };
+  for (var j = 0; j < ms.length; j++) {
+    var i = ms[j][0], c = t.slice(i, ms[j][1]);
+    if (i > lineEnd) {
+      flush(lineEnd < 0 ? i : lineEnd);
+      lineEnd = t.indexOf('\n', i);
+      if (lineEnd < 0) lineEnd = t.length;
+    }
+    if (swInWord(tok, t, i)) continue;
+    var prev = swCharBefore(t, i), next = swCharAfter(t, i + c.length);
+    var wl = swIsWord(tok, prev), wr = swIsWord(tok, next);
+    var canOpen = tok.open[c] !== undefined && !wl && next !== '' && !swIsSpace(next);
+    var canClose = tok.close[c] !== undefined && !wr && prev !== '' && !swIsSpace(prev);
+    if (canClose) {
+      var f = -1;
+      for (var s = stack.length - 1; s >= 0 && f < 0; s--) if (tok.close[c].indexOf(stack[s].kind) >= 0) f = s;
+      if (f >= 0) {
+        // an apostrophe right after a word is weak; it is a definite closer unless that word may be a plural possessive
+        var weak = tok.apos[c] === true && wl && tok.poss[prev.toLowerCase()] === true;
+        if (weak && f === stack.length - 1) { stack[f].tent = i; continue; }
+        if (!weak) {
+          out.push([stack[f].at, i + c.length]);
+          stack.length = f;
+          continue;
+        }
+      }
+    }
+    if (canOpen) {
+      var kind = tok.open[c][0], top = stack.length - 1;
+      // a new opener of the same kind ends a quotation that holds a weak closer: 'a' and 'b' are two quotations
+      if (top >= 0 && stack[top].kind === kind && stack[top].tent >= 0) { out.push([stack[top].at, stack[top].tent + 1]); stack.length = top; }
+      stack.push({ at: i, kind: kind, tent: -1 });
+    }
+  }
+  flush(lineEnd < 0 ? t.length : lineEnd);
+  return out;
+}
+
+// The whole word token that holds UTF-16 offset i (word characters joined by in-word apostrophes): [start, end).
+function swTokenAt(tok, t, i) {
+  var a = i, b = i;
+  while (a > 0 && (swIsWord(tok, t.charAt(a - 1)) || swInWord(tok, t, a - 1))) a--;
+  while (b < t.length && (swIsWord(tok, t.charAt(b)) || swInWord(tok, t, b))) b++;
+  return [a, b];
+}
+// The base of a token: the part before its first apostrophe, lower-cased (I've -> i).
+function swBase(tok, w) {
+  for (var i = 0; i < w.length; i++) if (tok.apos[w.charAt(i)] === true) return w.slice(0, i).toLowerCase();
+  return w.toLowerCase();
+}
+
+// A sentence that reports another party's speech: a match of sibling_sweep.reported_speech_re whose speaker (the whole token
+// before the speech verb, a contraction being one token, sibling_sweep.speech_aux_words skipped leftwards) is not one of
+// sibling_sweep.self_speakers. "Alice said: ..." is reported; "I said, ...", "As I've said, ..." and "I have said, ..." are not.
+function swReported(spec, s) {
+  var tok = swTok(), aux = swCfg('sibling_sweep.speech_aux_words'), self = swCfg('sibling_sweep.self_speakers');
+  var ms = ah.re.findAll(spec.src, spec.flags, s);
+  for (var j = 0; j < ms.length; j++) {
+    var r = swTokenAt(tok, s, ms[j][0]), base = swBase(tok, s.slice(r[0], r[1]));
+    while (aux.indexOf(base) >= 0) {
+      var e = r[0];
+      while (e > 0 && swIsSpace(s.charAt(e - 1))) e--;
+      if (e === 0 || e === r[0] || !swIsWord(tok, s.charAt(e - 1))) { base = ''; break; }
+      r = swTokenAt(tok, s, e - 1);
+      base = swBase(tok, s.slice(r[0], r[1]));
+    }
+    if (base !== '' && self.indexOf(base) < 0) return true;
+  }
+  return false;
+}
+
 // The masked views of the whole prepared reply, made BEFORE it is split into sentences, so a span or a quotation that holds
 // a terminator is masked as one piece: `code` has the double-backtick and then the single-backtick code spans blanked; `quote`
 // is `code` with the inline quotations blanked too (found in `code`, so a quote character inside a code span is inert).
 function swMasks(prepared) {
   var code = swBlankAll(swSpec('sibling_sweep.code_span_single_re', ''), swBlankAll(swSpec('sibling_sweep.code_span_double_re', ''), prepared));
-  return { code: code, quote: swBlankAll(swSpec('sibling_sweep.inline_quote_re', ''), code) };
+  return { code: code, quote: swBlankRanges(code, swQuoteSpans(code)) };
 }
 
 function swNamePattern(sentence, cueStart) {
@@ -171,7 +304,7 @@ function swFirst(prepared, code, view, list, family, limit, pre, reported) {
     // an environment fact (lock file, load, disk) or a cause quoted from an agent's report is not the assistant's own code-bug finding
     if (swTest(operational, masked) || swTest(attributed, masked)) continue;
     // a correction another party reports ("Alice said: I fixed a typo") is theirs, not the agent's
-    if (reported !== null && swTest(reported, masked)) continue;
+    if (reported !== null && swReported(reported, masked)) continue;
     for (var k = 0; k < list.length; k++) {
       var m = ah.re.find(list[k].src, list[k].flags, subject);
       if (m === null || m === undefined) continue;
