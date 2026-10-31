@@ -497,21 +497,60 @@ fn answered() {
 }
 
 /// The once-per-session notice of a call passed while the slow-reply recovery is tripped ([`slow_degraded`]), counted each time
-/// at `client.slow_degraded_counter`; empty when this session already heard it (the same pattern as [`unreachable_notice`]).
+/// at `client.slow_degraded_counter`; empty when this session already heard it. The session's stamp is created exclusively
+/// ([`first_notice_in`]), so alternating sessions and concurrent calls tell each session once.
 pub(crate) fn slow_degraded_notice(raw: &str, event: &str) -> String {
     crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_passed"));
     let sid = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|p| p.get("session_id").and_then(|v| v.as_str().map(str::to_owned)))
         .unwrap_or_else(|| "none".into());
-    let file = state_file("slow_degraded_notice");
-    if std::fs::read_to_string(&file).is_ok_and(|t| t.trim_end() == sid) {
+    if !first_notice_in(&state_file("slow_degraded_notice_dir"), &sid, defaults::num("client.slow_degraded_notice_max_stamps") as usize) {
         return String::new();
     }
-    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the notice is still shown when the marker cannot be written
-    crate::discard::logged("slow_degraded_notice_write", crate::atomic::write(&file, format!("{sid}\n")));
     let n = std::fs::read_to_string(state_file("slow_degraded")).unwrap_or_default();
     defaults::render("msg.engine_slow_degraded_notice", &[("event", &event), ("n", &n.trim())])
+}
+
+/// True for exactly one caller per session id: the one that creates the session's stamp file in `dir` (named by the SHA-256 of the id,
+/// so any id is a safe file name). An existing stamp, or any failure to create one, answers false: a stamp that cannot be written
+/// is counted (`client.slow_degraded_stamp_failed`) and the notice stays silent rather than repeating. After a new stamp, the
+/// oldest ones past `max` are removed.
+fn first_notice_in(dir: &Path, sid: &str, max: usize) -> bool {
+    let failed = |code: &'static str, e: &dyn std::fmt::Display| {
+        crate::discard::logged::<(), _>(code, Err(e));
+        crate::obs::counters::advisory(defaults::text("client.slow_degraded_counter"), defaults::text("client.slow_degraded_stamp_failed"));
+        false
+    };
+    if let Err(e) = crate::limits::ensure_private_dir(dir) {
+        return failed("slow_degraded_stamp_dir", &e);
+    }
+    let name: String = ring::digest::digest(&ring::digest::SHA256, sid.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&name)) {
+        Ok(_) => {
+            prune_stamps(dir, &name, max);
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(e) => failed("slow_degraded_stamp_create", &e),
+    }
+}
+
+/// Keep at most `max` stamps in `dir`, removing the oldest by modification time; `keep` (the stamp just made) is never removed.
+fn prune_stamps(dir: &Path, keep: &str, max: usize) {
+    let Some(rd) = crate::discard::logged_ok("slow_degraded_stamp_list", std::fs::read_dir(dir)) else { return };
+    let mut stamps: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name() != keep)
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if stamps.len() < max {
+        return;
+    }
+    stamps.sort();
+    for (_, p) in stamps.iter().take(stamps.len() + 1 - max) {
+        crate::discard::logged("slow_degraded_stamp_prune", std::fs::remove_file(p));
+    }
 }
 
 fn clear_daemon_down_marker() {
@@ -1224,6 +1263,32 @@ mod tests {
 
     use super::*;
     use crate::checks::Exact;
+
+    #[test]
+    fn a_notice_stamp_is_created_once_per_session_and_the_oldest_are_pruned() {
+        let dir = std::env::temp_dir().join(format!("ah-client-stamps-{}", std::process::id())).join("stamps");
+        assert!(first_notice_in(&dir, "a", 3));
+        assert!(first_notice_in(&dir, "b", 3));
+        assert!(!first_notice_in(&dir, "a", 3), "A again is not told twice");
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(first_notice_in(&dir, "c", 3));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(first_notice_in(&dir, "d", 3));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3, "bounded by the maximum");
+        assert!(!first_notice_in(&dir, "d", 3), "the newest stamp survives the prune");
+        crate::discard::harmless(std::fs::remove_dir_all(dir.parent().unwrap())); // keep: cleanup that raced; an absent file is the goal state
+    }
+
+    #[test]
+    fn an_unwritable_notice_stamp_dir_is_silent() {
+        let base = std::env::temp_dir().join(format!("ah-client-stamps-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+        assert!(!first_notice_in(&file.join("stamps"), "a", 3), "no stamp, no notice");
+        assert!(!first_notice_in(&file, "a", 3), "a file where the directory goes: no notice, never a repeat");
+        crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
+    }
 
     #[test]
     fn the_wait_marker_is_one_plain_empty_file_with_no_temp_file_left() {

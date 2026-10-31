@@ -326,13 +326,16 @@ fn the_built_in_check_blocks_in_process_and_through_the_daemon() {
     assert_eq!(code, 2, "in-process: the git check blocks although git-guard's Node command says nothing");
     assert!(out.is_empty() && err.contains("force push"), "{out:?} {err:?}");
     // the first daemon call starts the daemon and answers through Node (D5); later calls are answered by the daemon
+    // Poll until the daemon answers with the native guard message itself. Any exit 2 is not readiness: under load a call that
+    // hits the client deadline is denied by the timeout policy (exit 2, another message) before the daemon is warm.
     let mut last = (0, String::new(), String::new());
-    for _ in 0..50 {
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    while Instant::now() < until {
         last = e.run(&args, false, &p, true);
-        if last.0 == 2 {
+        if last.0 == 2 && last.2 == err {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
     }
     let metrics = e.run(&["metrics", "--json"], false, "", true).1;
     e.stop();
