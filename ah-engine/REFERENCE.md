@@ -8087,15 +8087,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_hygiene.deploy_prefix` | `deploy-` |  |  | A directory directly under a work root whose name starts with this is a deploy copy. |
 | `disk_hygiene.flag_clean` | `--clean` |  |  | The clean flag: explicit invocation only. |
 | `disk_hygiene.flag_report` | `--report` |  |  | The report flag (the default when no flag is given). |
+| `disk_hygiene.git_check_ignore` | `check-ignore, -q, --` |  |  | git arguments (followed by a build directory) that succeed only when it is ignored: only an ignored, untracked build directory is regenerable. |
 | `disk_hygiene.git_env_name` | `GIT_OPTIONAL_LOCKS` |  |  | Environment variable set on every git call so a status never rewrites the index (an index write would reset the idle age). |
 | `disk_hygiene.git_env_value` | `0` |  |  | Its value. |
+| `disk_hygiene.git_gitlinks` | `ls-files, --stage, -z` |  |  | git arguments that list the index entries (NUL separated), so the submodules (disk_hygiene.gitlink_prefix) are found and each is checked as a repository of its own. |
 | `disk_hygiene.git_ignored_prefix` | `!! ` |  |  | The porcelain prefix of an ignored file. |
 | `disk_hygiene.git_marker` | `.git` |  |  | The entry that makes a directory a clone: a directory is a clone; a file (a linked worktree or submodule) is KEEP. |
 | `disk_hygiene.git_program` | `git` |  |  | The git program. |
 | `disk_hygiene.git_stash` | `stash, list` |  |  | git arguments that list stashes. |
-| `disk_hygiene.git_status` | `status, --porcelain, --ignored, --untracked-files=all` |  |  | git arguments that list changed, untracked and ignored files (porcelain). |
+| `disk_hygiene.git_status` | `7 items` |  |  | git arguments that list changed, untracked and ignored files (porcelain), submodule changes included whatever a submodule ignore setting says. |
+| `disk_hygiene.git_tracked` | `ls-files, --` |  |  | git arguments (followed by a build directory) that list tracked files under it: any makes the directory not regenerable. |
 | `disk_hygiene.git_unpushed` | `rev-list, HEAD, --branches, --not, --remotes` |  |  | git arguments that list commits of HEAD and of every local branch that no remote-tracking ref holds (local refs only, no network). |
 | `disk_hygiene.git_worktrees` | `worktree, list, --porcelain` |  |  | git arguments that list the worktrees of a clone (porcelain). |
+| `disk_hygiene.gitlink_prefix` | `160000 ` |  |  | The start of an index entry that is a submodule (gitlink mode). |
 | `disk_hygiene.health_kind` | `disk_hygiene` |  |  | Engine health-log kind of the low-disk notice and of a refused clean step. |
 | `disk_hygiene.health_low` | `low_disk` |  |  | Health-log code of the low-disk notice (a watched volume is below the disk_watch warn floor). |
 | `disk_hygiene.health_refused` | `clean_refused` |  |  | Health-log code of a clean step that was refused (the item changed, the move failed). |
@@ -8115,15 +8119,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_hygiene.msg_vol` | `{path}: {free} free` |  |  | One volume of the notice; {path}, {free}. |
 | `disk_hygiene.open_files_argv` | `lsof, -n, -P, -w, -Fn` |  |  | Command that lists every open file of every process, one `n<path>` line each (field output). Not installed: only working directories are probed. |
 | `disk_hygiene.open_files_prefix` | `n` |  |  | The line prefix of a path in the open-files listing. |
-| `disk_hygiene.reasons` | `13 entries` |  |  | Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty, unpushed, stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. |
+| `disk_hygiene.reasons` | `15 entries` |  |  | Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty, unpushed, stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. outside (not proved inside a work root), spill_only (a spill file: report only). |
 | `disk_hygiene.regenerable_ignored` | `target, node_modules, .DS_Store` |  |  | Top-level names an ignored file may sit under and still count as clean (anything else ignored makes the clone KEEP: it may be the only copy of local data). |
 | `disk_hygiene.report_file` | `hygiene-report.json` |  |  | The last report, in the engine state directory. |
 | `disk_hygiene.reusable_clone` | `6 entries` |  |  | The one designated reusable clone, a path relative to a work root (diskHygiene.reusableClone); always KEEP. Empty = none. |
 | `disk_hygiene.secs_per_day` | `86400` |  |  | Seconds in a day. |
 | `disk_hygiene.secs_per_hour` | `3600` |  |  | Seconds in an hour. |
 | `disk_hygiene.size_max_entries` | `5000000` |  |  | A size walk stops after this many entries per item (the size is then a floor). |
-| `disk_hygiene.spill_days` | `7 entries` |  |  | A spill file (disk_hygiene.spill_dirs) older than this many days is listed as removable (diskHygiene.spillDays). |
+| `disk_hygiene.spill_days` | `7 entries` |  |  | A spill file (disk_hygiene.spill_dirs) older than this many days is listed, report only: spill dirs lie outside the work roots and --clean never touches them (diskHygiene.spillDays). |
 | `disk_hygiene.spill_dirs` | `.anti-hall/context-spill, .anti-hall/block-details` |  |  | Directories, relative to HOME, whose old files are spill output (over-cap hook context, block details); files directly inside them are listed. |
+| `disk_hygiene.submodule_depth` | `8` |  |  | How deep nested submodules are checked; a deeper one makes the clone KEEP (unprovable). |
 | `disk_hygiene.sw_enabled` | `6 entries` |  |  | Where the disk hygiene on/off switch is read from (diskHygiene.enabled, default on). Off: the report and the clean do nothing. |
 | `disk_hygiene.tel_cmd` | `hygiene` |  |  | Telemetry command label of the hygiene counters: one cmd event per counter, its name in the event field and its value in items. |
 | `disk_hygiene.tel_counters` | `4 entries` |  |  | Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused). |

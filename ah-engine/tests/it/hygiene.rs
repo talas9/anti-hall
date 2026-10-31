@@ -34,9 +34,10 @@ fn path_env() -> String {
 }
 
 impl World {
-    fn new() -> World {
-        let dir = std::env::temp_dir().join(format!("ah-hyg-{}", std::process::id())).canonicalize().unwrap_or_else(|_| {
-            let d = std::env::temp_dir().join(format!("ah-hyg-{}", std::process::id()));
+    fn new(tag: &str) -> World {
+        let name = format!("ah-hyg-{tag}-{}", std::process::id());
+        let dir = std::env::temp_dir().join(&name).canonicalize().unwrap_or_else(|_| {
+            let d = std::env::temp_dir().join(&name);
             std::fs::create_dir_all(&d).unwrap();
             d.canonicalize().unwrap()
         });
@@ -123,7 +124,7 @@ fn snapshot(dir: &Path) -> Vec<(PathBuf, u64)> {
 
 #[test]
 fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsafe_clones() {
-    let mut w = World::new();
+    let mut w = World::new("a");
     // a bare remote with one commit on main
     w.git(&w.dir, &["init", "-q", "--bare", "remote.git"]);
     let seed = w.dir.join("seed");
@@ -147,6 +148,28 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     std::fs::write(stale.join("notes.txt"), "dirty\n").unwrap();
     std::fs::create_dir_all(stale.join("target/debug")).unwrap();
     std::fs::write(stale.join("target/debug/big"), vec![7u8; 256 * 1024]).unwrap();
+    // a tracked file under target/: the build dir is not regenerable, so nothing of it may go
+    let tracked = w.clone("tracked");
+    std::fs::create_dir_all(tracked.join("target")).unwrap();
+    std::fs::write(tracked.join("target/only-copy.txt"), "v1\n").unwrap();
+    w.git(&tracked, &["add", "-f", "target/only-copy.txt"]);
+    w.git(&tracked, &["commit", "-q", "-m", "tracked build file"]);
+    std::fs::write(tracked.join("target/only-copy.txt"), "v2, the only copy\n").unwrap();
+    // a dirty submodule hidden by submodule.<name>.ignore=all (pushed, so only the submodule's change protects it)
+    w.git(&w.dir, &["init", "-q", "--bare", "child.git"]);
+    let cseed = w.dir.join("cseed");
+    std::fs::create_dir_all(&cseed).unwrap();
+    w.git(&cseed, &["init", "-q"]);
+    std::fs::write(cseed.join("README"), "child\n").unwrap();
+    w.git(&cseed, &["add", "."]);
+    w.git(&cseed, &["commit", "-q", "-m", "child"]);
+    w.git(&cseed, &["push", "-q", w.dir.join("child.git").to_str().unwrap(), "HEAD:main"]);
+    let subdirty = w.clone("subdirty");
+    w.git(&subdirty, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", w.dir.join("child.git").to_str().unwrap(), "child"]);
+    w.git(&subdirty, &["commit", "-q", "-m", "add child"]);
+    w.git(&subdirty, &["push", "-q", "origin", "HEAD:main"]);
+    w.git(&subdirty, &["config", "submodule.child.ignore", "all"]);
+    std::fs::write(subdirty.join("child/README"), "uncommitted submodule work\n").unwrap();
     let cache = w.work().join("sccache");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("blob"), "cache").unwrap();
@@ -163,7 +186,7 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     std::fs::write(spill.join("old.txt"), "old").unwrap();
     std::fs::write(spill.join("new.txt"), "new").unwrap();
     backdate("202001010000", &[spill.join("old.txt")]);
-    for c in [&dirty, &unpushed, &live, &merged, &stale] {
+    for c in [&dirty, &unpushed, &live, &merged, &stale, &tracked, &subdirty] {
         age_clone(c);
     }
     w.kids.push(Command::new("sleep").arg("600").current_dir(&live).spawn().unwrap());
@@ -177,24 +200,27 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     assert_eq!(class_of(&r, &merged), ("REMOVE-SAFE".into(), "clean_pushed_idle".into()));
     assert_eq!(class_of(&r, &stale), ("REMOVE-TARGET-ONLY".into(), "dirty".into()));
     assert_eq!(class_of(&r, &cache), (keep.into(), "reusable".into()));
+    assert_eq!(class_of(&r, &tracked).0, keep, "a build dir with a tracked file is not regenerable");
+    assert_eq!(class_of(&r, &subdirty), (keep.into(), "dirty".into()), "a submodule change hidden by ignore=all still counts");
     for d in &deploys[2..] {
         assert_eq!(class_of(&r, d), (keep.into(), "deploy_newest".into()));
     }
     for d in &deploys[..2] {
         assert_eq!(class_of(&r, d).0, "REMOVE-SAFE");
     }
-    assert_eq!(class_of(&r, &spill.join("old.txt")).0, "REMOVE-SAFE");
+    assert_eq!(class_of(&r, &spill.join("old.txt")), (keep.into(), "spill_report_only".into()), "spill files lie outside the work roots: report only");
     assert!(r["items"].as_array().unwrap().iter().all(|i| i["path"] != *spill.join("new.txt").to_string_lossy()), "a fresh spill file is not listed");
     assert!(r["bytes_reclaimable"].as_u64().unwrap() > 256 * 1024);
+    assert!(r["items_skipped"]["dirty"].as_u64() == Some(3), "dirty, tracked and subdirty: {r}");
     assert_eq!(r["bytes_reclaimed"], 0);
-    assert!(r["items_skipped"]["dirty"].as_u64() == Some(1) && r["items_skipped"]["fresh"].as_u64() == Some(1), "{r}");
+    assert!(r["items_skipped"]["fresh"].as_u64() == Some(1), "{r}");
     // the report changed nothing, and the idle age survived the git probes
     assert!(merged.exists() && stale.join("target").exists());
 
-    let before: Vec<_> = [&dirty, &unpushed, &live].iter().map(|c| snapshot(c)).collect();
+    let before: Vec<_> = [&dirty, &unpushed, &live, &tracked, &subdirty].iter().map(|c| snapshot(c)).collect();
     let c1 = w.run(&["hygiene", "--clean"], &[]);
     assert!(c1["bytes_reclaimed"].as_u64().unwrap() > 256 * 1024, "{c1}");
-    let after: Vec<_> = [&dirty, &unpushed, &live].iter().map(|c| snapshot(c)).collect();
+    let after: Vec<_> = [&dirty, &unpushed, &live, &tracked, &subdirty].iter().map(|c| snapshot(c)).collect();
     assert_eq!(before, after, "--clean touched a dirty, unpushed or live clone");
     assert!(
         !merged.exists() && (w.home().join(".Trash/merged/.git").exists() || w.home().join(".local/share/Trash/files/merged/.git").exists()),
@@ -202,14 +228,14 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     );
     assert!(!stale.join("target").exists() && stale.join("notes.txt").exists() && stale.join(".git").exists(), "only target/ goes");
     assert!(!deploys[0].exists() && !deploys[1].exists() && deploys[2..].iter().all(|d| d.exists()));
-    assert!(!spill.join("old.txt").exists() && spill.join("new.txt").exists());
+    assert!(spill.join("old.txt").exists() && spill.join("new.txt").exists(), "--clean never touches a path outside the work roots");
     assert!(cache.join("blob").exists());
 
     // idempotent: nothing is left to remove and nothing more changes
     let c2 = w.run(&["hygiene", "--clean"], &[]);
     assert_eq!(c2["bytes_reclaimed"], 0, "{c2}");
     assert!(c2["items"].as_array().unwrap().iter().all(|i| i["class"] == keep), "{c2}");
-    assert_eq!(before, [&dirty, &unpushed, &live].iter().map(|c| snapshot(c)).collect::<Vec<_>>());
+    assert_eq!(before, [&dirty, &unpushed, &live, &tracked, &subdirty].iter().map(|c| snapshot(c)).collect::<Vec<_>>());
 
     // counters reached the telemetry inbox; a low-disk floor raises the notice; the off switch does nothing
     ah_engine::defaults::init().unwrap();
@@ -221,4 +247,109 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
     assert!(low["notice"].as_str().is_some_and(|n| n.contains("hygiene --clean")), "{low}");
     let off = w.run(&["hygiene", "--clean"], &[("ANTIHALL_DISK_HYGIENE", "0")]);
     assert_eq!(off["enabled"], false);
+}
+
+fn seeded(tag: &str) -> World {
+    let w = World::new(tag);
+    w.git(&w.dir, &["init", "-q", "--bare", "remote.git"]);
+    let seed = w.dir.join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    w.git(&seed, &["init", "-q"]);
+    std::fs::write(seed.join(".gitignore"), "target/\n").unwrap();
+    std::fs::write(seed.join("README"), "seed\n").unwrap();
+    w.git(&seed, &["add", "."]);
+    w.git(&seed, &["commit", "-q", "-m", "seed"]);
+    w.git(&seed, &["push", "-q", w.dir.join("remote.git").to_str().unwrap(), "HEAD:main"]);
+    w
+}
+
+/// The shapes that must stay whatever their age: no remote any more, a detached HEAD with a local commit, a linked
+/// worktree (both sides), a symlinked entry, a dirty path with spaces, a stash, a corrupt repository, a symlinked work
+/// root. A probe that cannot run (no git on PATH) makes every clone KEEP, and the report mode and the schedule's command
+/// line never remove anything. A clone that is only behind its remote has nothing local and stays removable.
+#[test]
+fn hygiene_keeps_every_unsafe_or_unprovable_shape_and_fails_safe() {
+    let w = seeded("b");
+    let nremote = w.clone("no remote");
+    w.git(&nremote, &["remote", "remove", "origin"]);
+    let detached = w.clone("detached");
+    w.git(&detached, &["checkout", "-q", "--detach"]);
+    std::fs::write(detached.join("d.txt"), "d\n").unwrap();
+    w.git(&detached, &["add", "."]);
+    w.git(&detached, &["commit", "-q", "-m", "local on detached HEAD"]);
+    let wtmain = w.clone("wtmain");
+    let wt = w.work().join("scratch").join("wt");
+    w.git(&wtmain, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+    let spaced = w.clone("with space");
+    std::fs::write(spaced.join("wip.txt"), "wip\n").unwrap();
+    let stashed = w.clone("stashed");
+    std::fs::write(stashed.join("README"), "stashed change\n").unwrap();
+    w.git(&stashed, &["stash", "-q"]);
+    let corrupt = w.clone("corrupt");
+    std::fs::write(corrupt.join(".git/HEAD"), "not a ref\n").unwrap();
+    let behind = w.clone("behind");
+    let seed = w.dir.join("seed");
+    std::fs::write(seed.join("more"), "more\n").unwrap();
+    w.git(&seed, &["add", "."]);
+    w.git(&seed, &["commit", "-q", "-m", "more"]);
+    w.git(&seed, &["push", "-q", w.dir.join("remote.git").to_str().unwrap(), "HEAD:main"]);
+    w.git(&behind, &["fetch", "-q"]);
+    let outside = w.dir.join("outside-clone");
+    w.git(&w.dir, &["clone", "-q", w.dir.join("remote.git").to_str().unwrap(), outside.to_str().unwrap()]);
+    let link = w.work().join("scratch").join("link");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let all = [&nremote, &detached, &wtmain, &wt, &spaced, &stashed, &corrupt, &behind, &outside];
+    for c in all {
+        if c.join(".git").is_dir() {
+            age_clone(c);
+        } else {
+            backdate("202001010000", std::slice::from_ref(c));
+        }
+    }
+    let keepers = [&nremote, &detached, &wtmain, &wt, &spaced, &stashed, &corrupt, &outside];
+    let before: Vec<_> = keepers.iter().map(|c| snapshot(c)).collect();
+
+    // no git on PATH: nothing is provable, so every clone is KEEP and --clean removes nothing (not even the behind clone)
+    let nogit = w.run(&["hygiene", "--clean"], &[("PATH", "/nonexistent")]);
+    assert_eq!(nogit["bytes_reclaimed"], 0, "{nogit}");
+    assert!(nogit["items"].as_array().unwrap().iter().all(|i| i["class"] == "KEEP"), "{nogit}");
+    assert!(behind.join(".git").exists());
+
+    let r = w.run(&["hygiene", "--report"], &[]);
+    assert_eq!(class_of(&r, &nremote), ("KEEP".into(), "unpushed".into()));
+    assert_eq!(class_of(&r, &detached), ("KEEP".into(), "unpushed".into()));
+    assert_eq!(class_of(&r, &wtmain), ("KEEP".into(), "worktrees".into()));
+    assert_eq!(class_of(&r, &spaced), ("KEEP".into(), "dirty".into()));
+    assert_eq!(class_of(&r, &stashed), ("KEEP".into(), "stash".into()));
+    assert_eq!(class_of(&r, &corrupt), ("KEEP".into(), "unprovable".into()));
+    assert_eq!(class_of(&r, &behind), ("REMOVE-SAFE".into(), "clean_pushed_idle".into()));
+    let listed = |p: &Path| r["items"].as_array().unwrap().iter().find(|i| i["path"] == *p.to_string_lossy()).map(|i| i["class"].clone());
+    assert!(listed(&wt).is_none_or(|c| c == "KEEP") && listed(&link).is_none_or(|c| c == "KEEP"), "{r}");
+    // the report changed nothing
+    assert!(behind.join(".git").exists());
+    assert_eq!(before, keepers.iter().map(|c| snapshot(c)).collect::<Vec<_>>());
+
+    let c = w.run(&["hygiene", "--clean"], &[]);
+    assert!(!behind.exists(), "{c}");
+    assert_eq!(before, keepers.iter().map(|c| snapshot(c)).collect::<Vec<_>>(), "--clean touched a KEEP shape");
+    assert!(link.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()));
+
+    // the scheduled job runs the report mode only
+    ah_engine::defaults::init().unwrap();
+    let job = ah_engine::defaults::raw("schedule.action_args").get("disk_hygiene").map(|v| v.strings()).unwrap_or_default();
+    assert_eq!(job, vec!["hygiene", "--report"]);
+
+    // a symlinked work root: nothing under it is proved inside the work root, so nothing is removable
+    let w2 = seeded("c");
+    let real = w2.dir.join("real-work");
+    std::fs::create_dir_all(real.join("scratch")).unwrap();
+    std::fs::remove_dir_all(w2.work()).unwrap();
+    std::os::unix::fs::symlink(&real, w2.work()).unwrap();
+    let m = real.join("scratch").join("m");
+    w2.git(&w2.dir, &["clone", "-q", w2.dir.join("remote.git").to_str().unwrap(), m.to_str().unwrap()]);
+    age_clone(&m);
+    let r2 = w2.run(&["hygiene", "--clean"], &[]);
+    assert_eq!(r2["bytes_reclaimed"], 0, "{r2}");
+    assert!(r2["items"].as_array().unwrap().iter().all(|i| i["class"] == "KEEP"), "{r2}");
+    assert!(m.join(".git").exists());
 }

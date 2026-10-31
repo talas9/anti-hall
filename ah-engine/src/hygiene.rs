@@ -1,8 +1,9 @@
 //! Disk hygiene: `ah-engine hygiene [--report|--clean]` and the scheduled job `disk_hygiene` (a `hygiene --report`
 //! subprocess). The report classifies what lies under the configured work roots: scratch clones (KEEP, REMOVE-TARGET-ONLY,
 //! REMOVE-SAFE), deploy copies beyond the newest few and old spill files. It fails closed: a clone is REMOVE-SAFE only when it
-//! is proved idle, clean, fully pushed, without stash or linked worktree, and no live process works inside it; whatever a probe
-//! cannot answer is KEEP. The job only reports (and logs a notice below the disk_watch warn floor). Only an explicit `--clean`
+//! is proved idle, clean, fully pushed, without stash or linked worktree (every checked-out submodule too, whatever its ignore
+//! setting), inside a work root without a symlink on the way, and no live process works inside it; whatever a probe cannot
+//! answer is KEEP. A build directory goes only when git tracks nothing in it and ignores it. Spill files are report only. The job only reports (and logs a notice below the disk_watch warn floor). Only an explicit `--clean`
 //! acts: it re-checks each item, moves REMOVE-SAFE items to the Trash by rename (never a recursive delete, never across
 //! volumes) and deletes only the build directories of REMOVE-TARGET-ONLY clones. Every value lives in `disk_hygiene.toml`.
 use crate::checks::git::util::Settings;
@@ -148,9 +149,10 @@ pub fn size_of(p: &Path) -> u64 {
     total
 }
 
-fn git(key: &str, dir: &Path) -> Option<String> {
+fn git(key: &str, dir: &Path, extra: &[&str]) -> Option<String> {
     let out = Command::new(t("git_program"))
         .args(defaults::list(&format!("disk_hygiene.{key}")))
+        .args(extra)
         .current_dir(dir)
         .env(t("git_env_name"), t("git_env_value"))
         .stdin(Stdio::null())
@@ -176,9 +178,27 @@ fn build_dirs(clone: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// What git says against removal: None (clean and fully pushed), Some(reason), or Err (unprovable).
-fn git_objection(clone: &Path) -> Result<Option<&'static str>, ()> {
-    let status = git("git_status", clone).ok_or(())?;
+/// Whether `p` is proved to lie strictly inside a work root: it resolves to itself (no symlink anywhere on the way) and
+/// under a root that resolves to itself. Anything else is never removed.
+fn contained(cfg: &Cfg, p: &Path) -> bool {
+    let Ok(c) = std::fs::canonicalize(p) else { return false };
+    c == p && cfg.roots().iter().any(|r| std::fs::canonicalize(r).is_ok_and(|cr| cr == *r) && c.starts_with(r) && c != *r)
+}
+
+/// A build directory is regenerable only when git tracks nothing under it and ignores it (so nothing in it is unique).
+fn regenerable(clone: &Path, dir: &Path) -> bool {
+    let Some(rel) = dir.strip_prefix(clone).ok().and_then(Path::to_str) else { return false };
+    let rel = format!("{rel}/");
+    git("git_tracked", clone, &[&rel]).is_some_and(|o| o.trim().is_empty()) && git("git_check_ignore", clone, &[&rel]).is_some()
+}
+
+/// What git says against removal: None (clean and fully pushed, every checked-out submodule too), Some(reason), or Err
+/// (unprovable).
+fn git_objection(clone: &Path, depth: u64) -> Result<Option<&'static str>, ()> {
+    if depth == 0 {
+        return Err(());
+    }
+    let status = git("git_status", clone, &[]).ok_or(())?;
     let ignored = t("git_ignored_prefix");
     let regen = defaults::list("disk_hygiene.regenerable_ignored");
     let dirty = status.lines().filter(|l| !l.is_empty()).any(|l| match l.strip_prefix(ignored) {
@@ -188,15 +208,34 @@ fn git_objection(clone: &Path) -> Result<Option<&'static str>, ()> {
     if dirty {
         return Ok(Some(reason("dirty")));
     }
-    if !git("git_unpushed", clone).ok_or(())?.trim().is_empty() {
+    if !git("git_unpushed", clone, &[]).ok_or(())?.trim().is_empty() {
         return Ok(Some(reason("unpushed")));
     }
-    if !git("git_stash", clone).ok_or(())?.trim().is_empty() {
+    if !git("git_stash", clone, &[]).ok_or(())?.trim().is_empty() {
         return Ok(Some(reason("stash")));
     }
     let wt = t("worktree_prefix");
-    if git("git_worktrees", clone).ok_or(())?.lines().filter(|l| l.starts_with(wt)).count() > 1 {
+    if git("git_worktrees", clone, &[]).ok_or(())?.lines().filter(|l| l.starts_with(wt)).count() > 1 {
         return Ok(Some(reason("worktrees")));
+    }
+    // each submodule is a repository of its own: its changes, commits and stashes count as the clone's
+    let link = t("gitlink_prefix");
+    for rec in git("git_gitlinks", clone, &[]).ok_or(())?.split('\0').filter(|r| r.starts_with(link)) {
+        let sub = clone.join(rec.split_once('\t').ok_or(())?.1);
+        if sub.join(t("git_marker")).symlink_metadata().is_err() {
+            // not checked out: nothing local, unless the directory holds files
+            let holds_files = match std::fs::read_dir(&sub) {
+                Ok(mut rd) => rd.next().is_some(),
+                Err(_) => sub.exists(),
+            };
+            if holds_files {
+                return Err(());
+            }
+            continue;
+        }
+        if let Some(why) = git_objection(&sub, depth - 1)? {
+            return Ok(Some(why));
+        }
     }
     Ok(None)
 }
@@ -213,6 +252,9 @@ fn classify_clone(kind: &'static str, path: &Path, reusable: bool, cfg: &Cfg, bu
     if reusable {
         return keep(kind, path, reason("reusable"));
     }
+    if !contained(cfg, path) {
+        return keep(kind, path, reason("outside"));
+    }
     if !real_dir(&path.join(t("git_marker"))) {
         return keep(kind, path, reason("linked"));
     }
@@ -225,11 +267,11 @@ fn classify_clone(kind: &'static str, path: &Path, reusable: bool, cfg: &Cfg, bu
     if idle_for(path) < cfg.idle_s {
         return keep(kind, path, reason("recent"));
     }
-    match git_objection(path) {
+    match git_objection(path, defaults::num("disk_hygiene.submodule_depth")) {
         Err(()) => keep(kind, path, reason("unprovable")),
         Ok(None) => Item { kind, class: t("class_safe"), reason: reason("safe"), path: path.to_path_buf(), bytes: size_of(path), targets: Vec::new() },
         Ok(Some(why)) => {
-            let targets = build_dirs(path);
+            let targets: Vec<PathBuf> = build_dirs(path).into_iter().filter(|d| contained(cfg, d) && regenerable(path, d)).collect();
             let bytes: u64 = targets.iter().map(|d| size_of(d)).sum();
             if bytes == 0 {
                 return keep(kind, path, why);
@@ -244,6 +286,9 @@ fn classify_deploy(path: &Path, cfg: &Cfg, busy: &Busy) -> Item {
     let kind = t("kind_deploy");
     if path.join(t("git_marker")).symlink_metadata().is_ok() {
         return classify_clone(kind, path, false, cfg, busy);
+    }
+    if !contained(cfg, path) {
+        return keep(kind, path, reason("outside"));
     }
     if !busy.ok {
         return keep(kind, path, reason("unprovable"));
@@ -314,7 +359,8 @@ pub fn classify(st: &Settings, busy: &Busy) -> (Vec<Item>, BTreeMap<String, u64>
         files.sort();
         for f in files {
             if now.saturating_sub(mtime_s(&f).unwrap_or(now)) >= cfg.spill_s {
-                items.push(Item { kind: t("kind_spill"), class: t("class_safe"), reason: reason("safe"), bytes: size_of(&f), path: f, targets: Vec::new() });
+                // outside the work roots: listed for the owner, never removed
+                items.push(keep(t("kind_spill"), &f, reason("spill_only")));
             } else {
                 *unlisted.entry(reason("fresh").to_string()).or_insert(0) += 1;
             }
@@ -349,20 +395,17 @@ fn clean(st: &Settings, items: &[Item], busy: &Busy) -> (u64, BTreeMap<String, u
     let mut freed = 0u64;
     let mut skipped: BTreeMap<String, u64> = BTreeMap::new();
     for it in items.iter().filter(|i| i.class != t("class_keep")) {
-        let again = if it.kind == t("kind_spill") {
-            it.clone()
-        } else if it.kind == t("kind_deploy") {
-            classify_deploy(&it.path, &cfg, busy)
-        } else {
-            classify_clone(it.kind, &it.path, false, &cfg, busy)
-        };
+        if it.kind == t("kind_spill") {
+            continue; // report only
+        }
+        let again = if it.kind == t("kind_deploy") { classify_deploy(&it.path, &cfg, busy) } else { classify_clone(it.kind, &it.path, false, &cfg, busy) };
         if again.class != it.class {
             refused(&it.path, t("why_changed"));
             *skipped.entry(again.reason.to_string()).or_insert(0) += 1;
             continue;
         }
         if again.class == t("class_safe") {
-            if to_trash(&cfg.home, &again.path) {
+            if contained(&cfg, &again.path) && to_trash(&cfg.home, &again.path) {
                 freed += again.bytes;
             } else {
                 refused(&again.path, t("why_no_trash"));
@@ -372,7 +415,7 @@ fn clean(st: &Settings, items: &[Item], busy: &Busy) -> (u64, BTreeMap<String, u
         }
         for d in &again.targets {
             let size = size_of(d);
-            if real_dir(d) && std::fs::remove_dir_all(d).is_ok() {
+            if contained(&cfg, d) && real_dir(d) && regenerable(&again.path, d) && std::fs::remove_dir_all(d).is_ok() {
                 freed += size;
             }
         }

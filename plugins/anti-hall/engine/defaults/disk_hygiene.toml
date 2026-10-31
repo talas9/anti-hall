@@ -19,7 +19,7 @@ doc = "A clone or deploy copy is idle when its newest activity stamp (disk_hygie
 value = { section = "diskHygiene", key = "idleHours", env = "ANTIHALL_DISK_HYGIENE_IDLE_HOURS", aliases = [], option = "", default = 24, min = 0 }
 
 [disk_hygiene.spill_days]
-doc = "A spill file (disk_hygiene.spill_dirs) older than this many days is listed as removable (diskHygiene.spillDays)."
+doc = "A spill file (disk_hygiene.spill_dirs) older than this many days is listed, report only: spill dirs lie outside the work roots and --clean never touches them (diskHygiene.spillDays)."
 value = { section = "diskHygiene", key = "spillDays", env = "ANTIHALL_DISK_HYGIENE_SPILL_DAYS", aliases = [], option = "", default = 7, min = 0 }
 
 [disk_hygiene.deploy_keep]
@@ -75,8 +75,28 @@ doc = "Its value."
 value = "0"
 
 [disk_hygiene.git_status]
-doc = "git arguments that list changed, untracked and ignored files (porcelain)."
-value = ["status", "--porcelain", "--ignored", "--untracked-files=all"]
+doc = "git arguments that list changed, untracked and ignored files (porcelain), submodule changes included whatever a submodule ignore setting says."
+value = ["-c", "diff.ignoreSubmodules=none", "status", "--porcelain", "--ignored", "--untracked-files=all", "--ignore-submodules=none"]
+
+[disk_hygiene.git_gitlinks]
+doc = "git arguments that list the index entries (NUL separated), so the submodules (disk_hygiene.gitlink_prefix) are found and each is checked as a repository of its own."
+value = ["ls-files", "--stage", "-z"]
+
+[disk_hygiene.gitlink_prefix]
+doc = "The start of an index entry that is a submodule (gitlink mode)."
+value = "160000 "
+
+[disk_hygiene.submodule_depth]
+doc = "How deep nested submodules are checked; a deeper one makes the clone KEEP (unprovable)."
+value = 8
+
+[disk_hygiene.git_tracked]
+doc = "git arguments (followed by a build directory) that list tracked files under it: any makes the directory not regenerable."
+value = ["ls-files", "--"]
+
+[disk_hygiene.git_check_ignore]
+doc = "git arguments (followed by a build directory) that succeed only when it is ignored: only an ignored, untracked build directory is regenerable."
+value = ["check-ignore", "-q", "--"]
 
 [disk_hygiene.git_ignored_prefix]
 doc = "The porcelain prefix of an ignored file."
@@ -163,8 +183,8 @@ doc = "Item kind: a deploy copy."
 value = "deploy"
 
 [disk_hygiene.reasons]
-doc = "Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty, unpushed, stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe."
-value = { reusable = "reusable", symlink = "symlink", linked = "linked", unprovable = "unprovable", live = "live_process", recent = "recent", dirty = "dirty", unpushed = "unpushed", stash = "stash", worktrees = "worktrees", newest = "deploy_newest", fresh = "fresh", safe = "clean_pushed_idle" }
+doc = "Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty, unpushed, stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. outside (not proved inside a work root), spill_only (a spill file: report only)."
+value = { reusable = "reusable", symlink = "symlink", linked = "linked", unprovable = "unprovable", live = "live_process", recent = "recent", dirty = "dirty", unpushed = "unpushed", stash = "stash", worktrees = "worktrees", newest = "deploy_newest", fresh = "fresh", safe = "clean_pushed_idle", outside = "outside_root", spill_only = "spill_report_only" }
 
 [disk_hygiene.flag_report]
 doc = "The report flag (the default when no flag is given)."
