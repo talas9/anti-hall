@@ -58,7 +58,7 @@ doc = "Event-log detail after contexts were replaced by summaries. Placeholders:
 value = "{hooks} hook context(s) shrunk: {before} characters became {after} inline, the full text is in {path}"
 
 [context_size.sw_keep_pinned]
-doc = "Pinned contexts stay inline switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519)."
+doc = "Pinned inline. Switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519)."
 value = { section = "context", key = "inlinePinned", env = "ANTIHALL_CONTEXT_INLINE_PINNED", option = "", default = true }
 
 [context_size.label_pinned]

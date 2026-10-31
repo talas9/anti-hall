@@ -57,7 +57,7 @@ What the automatic guards check and how to read a block.
 - `guards.modelRouting` = "strict": Model-routing mode
 - `guards.allowAnthropicEnvKey` = false: Home-only switch that lets ANTHROPIC_API_KEY count as a key
 - `guards.failOpenNonSafety` = true: Non-safety guards pass when unanswered
-- `context.protocolFullAfterCompact` = true: Full protocol after compaction switch
+- `context.protocolFullAfterCompact` = true: Full rules on compaction
 - `context.protocolOnce` = true: Once-per-session protocol text switch
 - `context.promptDigestLines` = 3: Max lines of the prompt digest
 - `context.promptDigestMin` = 3: Min advisories before the digest applies
@@ -65,9 +65,9 @@ What the automatic guards check and how to read a block.
 - `context.inlineEventChars` = 6000: Characters all hooks of one event may inline together (0 = no total)
 - `context.inlineHookChars` = 1500: Inline character cap of one hook
 - `context.shrinkInline` = true: Master switch of the inline caps
-- `context.inlinePinned` = true: Pinned contexts stay inline switch (context.inlinePinned, default on): a hook whose...
+- `context.inlinePinned` = true: Pinned inline
 - `guards.pushedNotDone` = true: Pushed work is not done switch
-- `guards.allowNestedSpawns` = false: On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them
+- `guards.allowNestedSpawns` = false: On lets subagents and teammates start agents
 - `guards.maxConcurrentAgents` = 6: Cap on agents running at once (default 6, 0 = no cap)
 - `guards.spawnCeiling` = true: On by default; off makes the fan-out ceiling a no-op
 - `guards.usageAwareDispatch` = true: On by default; off makes usage-aware dispatch a no-op
@@ -80,7 +80,7 @@ What the automatic guards check and how to read a block.
 - `guards.allowTestSuites` = false: Lets a subagent run test suites
 - `guards.testPolicy` = "targeted": Test policy for subagents
 - `guards.testPolicyMainThread` = false: On makes testPolicy none apply to the main session too (default off)
-- `guards.queuedWaitGuard` = true: Default on; off lets a subagent run heavy commands in the background and poll with sleep loops
+- `guards.queuedWaitGuard` = true: Off lets a subagent poll background work with sleep loops
 - `guards.allowWideSearch` = false: On lets every agent run whole-disk searches (default off)
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
 - `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once
@@ -89,7 +89,7 @@ What the automatic guards check and how to read a block.
 - `guards.advisorThinking` = true: Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call...
 - `guards.broadKill` = true: Switch for the broad-kill guard
 - `guards.uncommittedWork` = true: Off lets a subagent leave work uncommitted (default on)
-- `statusline.devswarm.enabled` = true: Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle)
+- `statusline.devswarm.enabled` = true: Show the DevSwarm statusline segment
 - `statusline.devswarm.format` = "ws {parts}": The segment text
 - `statusline.devswarm.max_chars` = 40: The segment is cut to this many characters (an ellipsis marks the cut)
 - `statusline.devswarm.stale_ms` = 180000: Data older than this shows as `?`, not a guess

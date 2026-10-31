@@ -86,7 +86,7 @@ doc = "Once-per-session protocol text switch. Where the once-per-session switch 
 value = { section = "context", key = "protocolOnce", env = "ANTIHALL_PROTOCOL_ONCE", aliases = [], option = "", default = true }
 
 [verify_first.setting_full_after_compact]
-doc = "Full protocol after compaction switch. Where the switch is read from (context.protocolFullAfterCompact, default on): a SessionStart whose source is in verify_first.resend_sources (a compaction or resume) gets the whole compact text again, once per such start, instead of the short digest, which drops the RULES, SCOPE, AUTONOMY, SKIP and WORKER sections (#519). false = the short digest (verify_first.resend_session)."
+doc = "Full rules on compaction. Where the switch is read from (context.protocolFullAfterCompact, default on): a SessionStart whose source is in verify_first.resend_sources (a compaction or resume) gets the whole compact text again, once per such start, instead of the short digest, which drops the RULES, SCOPE, AUTONOMY, SKIP and WORKER sections (#519). false = the short digest (verify_first.resend_session)."
 value = { section = "context", key = "protocolFullAfterCompact", env = "ANTIHALL_PROTOCOL_FULL_AFTER_COMPACT", aliases = [], option = "", default = true }
 
 [verify_first.metric_kind]

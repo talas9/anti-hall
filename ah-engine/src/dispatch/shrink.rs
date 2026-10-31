@@ -91,7 +91,7 @@ pub fn apply(event: &str, env: &RequestEnv, results: &mut [HookResult]) {
         let mut total: usize = cands.iter().zip(&shrink).map(|(c, s)| size_after(c, *s)).sum();
         let mut order: Vec<usize> = (0..cands.len()).filter(|i| !shrink[*i] && cands[*i].cap.is_some()).collect();
         if keep_pinned {
-            order.sort_by_key(|i| (cands[*i].pri, std::cmp::Reverse(cands[*i].chars)));
+            order.sort_by_key(|i| cands.get(*i).map(|c| (c.pri, std::cmp::Reverse(c.chars))));
         } else {
             order.sort_by_key(|i| std::cmp::Reverse(cands[*i].chars));
         }

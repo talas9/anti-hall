@@ -3086,7 +3086,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.resend_session` | `ANTI-HALL VERIFY-FIRST (re-sent after compaction or resume; the full text was...` |  |  | The short protocol digest sent after a compaction or resume; each <abs> is replaced by the plugin root directory. |
 | `verify_first.resend_sources` | `compact, resume` |  |  | SessionStart sources after which the earlier text is gone or buried (the session was compacted or resumed): the short digest is sent. Any other source of an already-served session gets the one-line repeat. |
 | `verify_first.root_probe` | `hooks/install.sh` |  |  | File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file. |
-| `verify_first.setting_full_after_compact` | `6 entries` |  |  | Full protocol after compaction switch. Where the switch is read from (context.protocolFullAfterCompact, default on): a SessionStart whose source is in verify_first.resend_sources (a compaction or resume) gets the whole compact text again, once per such start, instead of the short digest, which drops the RULES, SCOPE, AUTONOMY, SKIP and WORKER sections (#519). false = the short digest (verify_first.resend_session). |
+| `verify_first.setting_full_after_compact` | `6 entries` |  |  | Full rules on compaction. Where the switch is read from (context.protocolFullAfterCompact, default on): a SessionStart whose source is in verify_first.resend_sources (a compaction or resume) gets the whole compact text again, once per such start, instead of the short digest, which drops the RULES, SCOPE, AUTONOMY, SKIP and WORKER sections (#519). false = the short digest (verify_first.resend_session). |
 | `verify_first.setting_level` | `5 entries` |  |  | Where the protocol size is read from (context.protocolLevel: compact or full, default compact). |
 | `verify_first.setting_once` | `6 entries` |  |  | Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume the whole text again while verify_first.setting_full_after_compact is on (else a short digest), and a repeated start in the same session one line. false = the whole text at every start. |
 | `verify_first.setting_orchestration` | `6 entries` |  |  | Orchestration rules switch. Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself. |
@@ -3544,7 +3544,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.section_head` | `== {id} ==\n` |  |  | Heading before each hook's full text in that file. Placeholder: {id}. |
 | `context_size.summary_chars` | `280` |  |  | Longest summary line a shrunk context keeps inline: its first line, cut at a word end. |
 | `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the inline caps. Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
-| `context_size.sw_keep_pinned` | `5 entries` |  |  | Pinned contexts stay inline switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519). |
+| `context_size.sw_keep_pinned` | `5 entries` |  |  | Pinned inline. Switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519). |
 
 ### session.toml / session
 
@@ -4203,7 +4203,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nested_spawn.msg_instead` | `report back to the coordinator if more agents are needed.` |  |  | What to do instead of a nested spawn. |
 | `nested_spawn.msg_what` | `this agent is a worker and can't start agents of its own.` |  |  | What the block says. |
 | `nested_spawn.msg_why` | `Nested agents hide their cost from the coordinator (one burned about 2.5M tok...` |  |  | Why nested spawns are blocked. |
-| `nested_spawn.setting` | `6 entries` |  |  | On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them. |
+| `nested_spawn.setting` | `6 entries` |  |  | On lets subagents and teammates start agents. |
 | `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): b...` |  |  | One-line description of the nested-spawn check in the generated reference. |
 
 ### spawn_guards.toml / spawn_ceiling
@@ -5418,7 +5418,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
 | `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
 | `queued_wait.summary` | `PreToolUse on Bash, subagents only: blocks a build or test command started wi...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
-| `queued_wait.sw` | `6 entries` |  |  | Default on; off lets a subagent run heavy commands in the background and poll with sleep loops. |
+| `queued_wait.sw` | `6 entries` |  |  | Off lets a subagent poll background work with sleep loops. |
 
 ### lane_waste.toml / wide_search
 
@@ -8120,7 +8120,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_rt.probe_cache_racy_ms` | `2000` |  | ms | A heartbeat, plan or descriptor file modified more recently than this when it is read is read again by the next reconcile, even if its size and modification time look unchanged (a rewrite inside the clock's granularity could otherwise be missed). Older files are parsed once and kept until their inode, modification time or size changes. |
 | `devswarm_rt.reconcile_ms` | `60000` |  | ms | How often the whole state is re-read from its sources and diffed (the safety net under the event layer); every change it finds that events missed counts in `rt_reconcile_repairs`. |
 | `devswarm_rt.restart_grace_ms` | `120000` |  | ms | Changes found by the start-up diff (flagged while_down) are not notified before this long after start, and only if the condition still holds then. |
-| `devswarm_rt.set_line_enabled` | `6 entries` |  |  | Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle). |
+| `devswarm_rt.set_line_enabled` | `6 entries` |  |  | Show the DevSwarm statusline segment. |
 | `devswarm_rt.set_line_format` | `6 entries` |  |  | The segment text. `{parts}` is replaced by the non-empty counts (see devswarm_rt.line_parts), in the order of devswarm_rt.line_order. |
 | `devswarm_rt.set_line_max_chars` | `8 entries` |  |  | The segment is cut to this many characters (an ellipsis marks the cut). |
 | `devswarm_rt.set_line_stale_ms` | `8 entries` |  |  | Data older than this shows as `?`, not a guess. |
