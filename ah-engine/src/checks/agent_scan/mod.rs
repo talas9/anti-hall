@@ -417,6 +417,10 @@ impl Tail {
     /// `None` for an unreadable or empty file (`readTail` returns null). The window is read from `file` itself (a duplicate of
     /// the handle), never from a second open of its path, so the bytes read and the length the window is cut from are one file's.
     fn of(file: &std::fs::File, max: u64) -> Option<Tail> {
+        #[cfg(test)]
+        if test_seam::clone_fails_at(max) {
+            return None;
+        }
         let mut f = file.try_clone().ok()?;
         let size = f.metadata().ok()?.len();
         if size == 0 {
@@ -1830,7 +1834,9 @@ pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
     if !wrows.is_empty() {
         return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes, complete: size <= wide_window });
     }
-    if size <= wide_bytes {
+    // an empty result proves "no agent" only for the bytes actually scanned: when the widening handle could not be obtained
+    // `wide_window` is the default tail, and a file longer than that is unknown, never complete
+    if size <= wide_window {
         return Ok(Proof { rows: Some(Vec::new()), seen, window_bytes: wide_bytes, complete: true });
     }
     Ok(none(seen, wide_bytes))
@@ -1847,6 +1853,14 @@ pub fn running_agents_or_null(path: &str, opts: &Opts) -> Res<Option<Vec<Row>>> 
 pub(crate) mod test_seam {
     use std::cell::RefCell;
     thread_local! { static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) }; }
+    thread_local! { static CLONE_FAILS_AT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) }; }
+    /// Makes the handle duplication of a window read of exactly `max` bytes fail, as descriptor exhaustion (EMFILE) would.
+    pub(crate) fn fail_clone_at(max: Option<u64>) {
+        CLONE_FAILS_AT.with(|c| c.set(max));
+    }
+    pub(super) fn clone_fails_at(max: u64) -> bool {
+        CLONE_FAILS_AT.with(|c| c.get() == Some(max))
+    }
     pub(crate) fn set(f: Box<dyn FnOnce()>) {
         HOOK.with(|h| *h.borrow_mut() = Some(f));
     }

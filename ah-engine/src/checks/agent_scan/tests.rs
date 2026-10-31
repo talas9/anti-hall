@@ -269,3 +269,24 @@ fn an_unchanged_small_file_is_complete() {
     assert!(proof.rows.as_ref().is_some_and(|r| !r.is_empty()), "the agent is seen");
     assert!(proof.complete, "an unchanged file that fits the window is complete");
 }
+
+/// #480 review (P2): when the widening handle cannot be duplicated (EMFILE) the wide scan falls back to the default tail; an empty
+/// result over a file longer than that tail (but within the wide window) proves nothing about the bytes before it: unknown.
+#[test]
+fn a_failed_widening_handle_never_proves_an_empty_count_complete() {
+    use std::io::Write;
+    let (dir, tp) = swap_fixture("noclone", 0);
+    let filler = format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(900));
+    let mut f = std::fs::OpenOptions::new().append(true).open(&tp).unwrap();
+    for _ in 0..(3 * 1024 * 1024 / filler.len()) {
+        writeln!(f, "{filler}").unwrap();
+    }
+    drop(f);
+    let wide = defaults::num("agent_scan.wide_tail_bytes");
+    test_seam::fail_clone_at(Some(wide));
+    let proof = proof_with_seam(&tp, Box::new(|| {}));
+    test_seam::fail_clone_at(None);
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(proof.rows.is_none(), "an empty scan of a tail that missed the launch must be unknown, not complete: {:?}", proof.complete);
+    assert!(!proof.complete);
+}
