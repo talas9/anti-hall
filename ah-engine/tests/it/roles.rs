@@ -481,14 +481,21 @@ fn digest_path(host: &str) -> PathBuf {
 fn digest_essentials(host: &str) -> Vec<String> {
     let raw = std::fs::read_to_string(digest_path(host)).unwrap_or_default();
     let sep = format!("\n{}\n", ah_engine::defaults::text("guard_rules.digest_sep"));
-    raw.split(&sep).next().unwrap_or("").lines().filter(|l| !l.is_empty()).map(str::to_string).collect()
+    raw.split(&sep)
+        .next()
+        .unwrap_or("")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split_once(ah_engine::defaults::text("guard_rules.digest_gate_sep")).map_or(l, |(_, t)| t).to_string())
+        .collect()
 }
 
 #[test]
 fn every_essential_rule_has_a_short_digest_field_for_each_host() {
     for r in skillgen::rules().into_iter().filter(|r| r.tier == "essential") {
-        for h in DIGEST_HOSTS {
-            let d = digest_field(r.source, h).unwrap_or_else(|| panic!("{}: essential rule without a digest field for {h}", r.id));
+        for h in DIGEST_HOSTS.into_iter().filter(|h| r.applies(h)) {
+            assert!(digest_field(r.source, h).is_some(), "{}: essential rule without a digest field for {h}", r.id);
+            let d = skillgen::digest_field(r.source, h); // {cfg:<key>} expanded at generation
             assert!(!d.trim().is_empty() && !d.contains('{'), "{}: digest for {h} is empty or has a placeholder: {d}", r.id);
         }
     }
@@ -501,8 +508,8 @@ fn each_host_digest_line_says_what_to_do_has_no_placeholder_and_the_whole_fits_t
         "never", "ask", "push", "unstage", "remove", "write", "verify", "delegate", "hand", "track", "confirm", "wait", "assign", "report", "use", "label",
         "stop", "keep", "fix", "spawn", "route", "do ",
     ];
-    let n = skillgen::rules().iter().filter(|r| r.tier == "essential").count();
     for h in DIGEST_HOSTS {
+        let n = skillgen::rules().iter().filter(|r| r.tier == "essential" && r.applies(h)).count();
         let lines = digest_essentials(h);
         assert_eq!(lines.len(), n, "{h}: one digest line per essential rule");
         for l in &lines {
