@@ -428,8 +428,7 @@ fn t15_codex_reviewers_are_outside_the_cap() {
 /// the tracker's Codex-rescue mark `rescue`; the rows already in the tracker state are kept.
 fn tracked_child(home: &Path, id: &str, meta: Option<serde_json::Value>, rescue: bool) {
     let path = home.join(".anti-hall/agent-tracker/state.json");
-    let mut st: ah_engine::agents::State =
-        std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut st: ah_engine::agents::State = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let rel = format!(".claude/projects/p/s/subagents/agent-{id}.jsonl");
     put(home, &rel, &format!("{}\n", json!({"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}})));
     if let Some(m) = meta {
