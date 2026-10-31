@@ -563,8 +563,7 @@ mod tests {
             let mut j = json!({"transport": "typesafe"});
             j.as_object_mut().unwrap().extend(jev.as_object().unwrap().clone());
             client(&f).decide(&settings(&KEYS, j), &q(), "x", None);
-            let b = f.seen.lock().unwrap()[0].2.clone().unwrap();
-            b
+            f.seen.lock().unwrap()[0].2.clone().unwrap()
         };
         assert!(direct(json!({})).contains(r#""model":"jev-1.14.0""#), "the shipped pin, not the alias");
         assert!(direct(json!({"modelPin": "jev-1.13.0"})).contains(r#""model":"jev-1.13.0""#));
@@ -576,7 +575,7 @@ mod tests {
         let _ = crate::telemetry::emit::take_queued();
         let f = Arc::new(Fake::new(vec![ok(200, r#"{"answers":{"decision":{"noul":1}}}"#)]));
         let s = settings(&KEYS, json!({"stateMaxTokens": 10}));
-        let (a, b) = ("ab ".repeat(40), "ab ".repeat(13));
+        let (a, short) = ("ab ".repeat(40), "ab ".repeat(13));
         client(&f).decide(&s, &q(), &a, None);
         let b = f.seen.lock().unwrap()[0].2.clone().unwrap();
         assert!(b.contains(&format!("\"state\":\"{}\"", &a[..40])), "40 chars = 10 tokens at 4 chars each: {b}");
@@ -585,8 +584,9 @@ mod tests {
         assert!(evs.iter().any(|e| e.to_json().to_string().contains(truncated)), "the cut is counted");
         // under the cap: untouched
         let f = Arc::new(Fake::new(vec![ok(200, r#"{"answers":{"decision":{"noul":1}}}"#)]));
-        client(&f).decide(&s, &q(), &b, None);
-        assert!(f.seen.lock().unwrap()[0].2.clone().unwrap().contains(b.trim_end()));
+        client(&f).decide(&s, &q(), &short, None);
+        let body = f.seen.lock().unwrap()[0].2.clone().unwrap();
+        assert!(body.contains(short.trim_end()), "{body}");
     }
 
     #[test]

@@ -36,7 +36,9 @@ fn check(doc: &mut Doc, s: &JevSettings, transport: Arc<dyn Transport>) {
     let chain: Vec<crate::jev::settings::Vendor> = std::iter::once(s.transport).chain(s.fallback).collect();
     let models: Vec<String> = chain.iter().map(|v| format!("{}={}", v.as_str(), JevClient::model_for(s, *v))).collect();
     doc.ok(defaults::render("doctor_msg.jev_model", &[("models", &models.join(", "))]));
-    if chain.contains(&crate::jev::settings::Vendor::Typesafe) && JevClient::model_for(s, crate::jev::settings::Vendor::Typesafe) == defaults::text("jev.model_typesafe") {
+    if chain.contains(&crate::jev::settings::Vendor::Typesafe)
+        && JevClient::model_for(s, crate::jev::settings::Vendor::Typesafe) == defaults::text("jev.model_typesafe")
+    {
         doc.warnl(defaults::render("doctor_msg.jev_model_alias", &[("model", &defaults::text("jev.model_typesafe"))]));
     }
     let fail_ms = defaults::num("doctor.jev_fail_ms");
