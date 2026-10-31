@@ -1739,8 +1739,8 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows
-/// launched (all finished when `rows` is `None`), and how many bytes of transcript the proof covers (0: the agents were found
-/// in the default window; the whole file size when it fits a window).
+/// launched (all finished when `rows` is `None`), how many bytes of transcript the proof covers (0: the agents were found
+/// in the default window; the whole file size when it fits a window), and whether the scanned window was the whole transcript.
 pub struct Proof {
     /// The running agents, or `None` when the count cannot be trusted.
     pub rows: Option<Vec<Row>>,
@@ -1748,21 +1748,27 @@ pub struct Proof {
     pub seen: Vec<String>,
     /// Bytes of transcript the proof covers.
     pub window_bytes: u64,
+    /// The window that produced `rows` held the whole transcript. `false`: it was a tail of a longer file, so an agent launched
+    /// before it is invisible and the rows prove only that the agents they list run, never that some other agent does not.
+    pub complete: bool,
 }
 
 /// `agentCountProof(path)`: [`running_agents_or_null`] with what it saw, so a caller can say why a count is unknown.
 pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
-    let none = |seen: Vec<String>, window_bytes: u64| Proof { rows: None, seen, window_bytes };
+    let none = |seen: Vec<String>, window_bytes: u64| Proof { rows: None, seen, window_bytes, complete: false };
     let seen_of = |s: &Scan| s.launched.iter().map(|(id, _)| id.clone()).collect::<Vec<String>>();
     let tail = defaults::num("agent_scan.tail_bytes");
     let Some(scan) = scan_transcript(path, tail, opts)? else { return Ok(none(Vec::new(), 0)) };
     let rows = scan.rows();
+    let size = std::fs::metadata(path).map(|m| m.len()).ok();
     if !rows.is_empty() {
-        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: 0 });
+        // agents seen in the default window answer at once; the answer is complete only when that window was the whole file
+        let complete = size.is_some_and(|n| n <= tail);
+        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: 0, complete });
     }
-    let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return Ok(none(Vec::new(), 0)) };
+    let Some(size) = size else { return Ok(none(Vec::new(), 0)) };
     if size <= tail {
-        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: size });
+        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: size, complete: true });
     }
     let wide_bytes = defaults::num("agent_scan.wide_tail_bytes");
     // `scanTranscript(path, readTail(path, WIDE) )`: an unreadable wide read falls back to the default tail read.
@@ -1771,10 +1777,10 @@ pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
     let wrows = wide.rows();
     let seen = seen_of(&wide);
     if !wrows.is_empty() {
-        return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes });
+        return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes, complete: size <= wide_window });
     }
     if size <= wide_bytes {
-        return Ok(Proof { rows: Some(Vec::new()), seen, window_bytes: wide_bytes });
+        return Ok(Proof { rows: Some(Vec::new()), seen, window_bytes: wide_bytes, complete: true });
     }
     Ok(none(seen, wide_bytes))
 }

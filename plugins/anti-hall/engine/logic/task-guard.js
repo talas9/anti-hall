@@ -409,7 +409,8 @@ function tgDecideCore(p) {
   if (open.some(function (t) { return t.owner && !tgCoordinator(t.owner); })) {
     var own = tgAgents();
     if (own !== null && own.unsure) { ah.unable('task-guard:owner_agents_unsure'); own = null; }
-    var scanUnknown = own === null;
+    // a scan of a truncated tail lists the agents it saw, never all of them: an owner launched before the window may still run
+    var scanUnknown = own === null || own.truncated === true;
     var tracked = ah.transcript.trackedAgents(p);
     rows = (own === null ? [] : own.rows).map(function (r) {
       r.live = ah.transcript.trackedLiveness(r.id, tracked);
