@@ -1484,7 +1484,7 @@ value = "this step was stopped after repeated main-thread edits."
 
 [coordinator_work.block_digest]
 doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
-value = "Main thread: stop repeated edits; hand the remaining steps to a subagent."
+value = "Main thread: delegate heavy commands (builds, tests) from the first call; after {cfg:coordinator_work.block_setting} edits, hand the rest to a subagent."
 
 [coordinator_work.block_why]
 doc = "Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed."

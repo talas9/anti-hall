@@ -961,7 +961,7 @@ value = "{n} files changed but no tasks tracked."
 
 [tasklist_guard.digest_no_tasks]
 doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
-value = "Track work in the task list: file changes with no tasks block the stop."
+value = "Track work in the task list and a fresh progress file: changes with no tasks or a missing/stale progress file block the stop."
 
 [tasklist_guard.why_no_tasks]
 doc = "Block reason when no task was tracked."

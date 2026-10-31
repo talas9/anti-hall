@@ -169,6 +169,63 @@ pub struct Rule {
     pub tier: &'static str,
     /// The defaults key of the rule's `what` text.
     pub source: &'static str,
+    /// The hosts that run the rule; empty: every digest host.
+    pub hosts: Vec<&'static str>,
+    /// The rule is enforced while its switch is off (an allow-style switch).
+    pub inverted: bool,
+}
+
+impl Rule {
+    /// Whether `host` runs this rule (no `hosts` listed: every host).
+    pub fn applies(&self, host: &str) -> bool {
+        self.hosts.is_empty() || self.hosts.contains(&host)
+    }
+
+    /// The `section.key` settings keys of the rule's switches (`guard_rules.setting_sep` joined), empty when it has none.
+    pub fn settings(&self) -> Vec<&'static str> {
+        self.setting.split(defaults::text("guard_rules.setting_sep")).map(str::trim).filter(|s| !s.is_empty()).collect()
+    }
+
+    /// The digest gate of the rule: the defaults keys of its switches, comma-joined, each with `guard_rules.digest_gate_not` in
+    /// front for an inverted row. Empty when the rule has no switch.
+    pub fn gate(&self) -> String {
+        let not = if self.inverted { defaults::text("guard_rules.digest_gate_not") } else { "" };
+        self.settings().into_iter().filter_map(setting_entry).map(|k| format!("{not}{k}")).collect::<Vec<_>>().join(",")
+    }
+}
+
+/// The defaults key of the settings entry for `section.key` (an entry whose value names that section and key; the first in file
+/// order), or None.
+pub fn setting_entry(setting: &str) -> Option<&'static str> {
+    let (sec, key) = setting.split_once('.')?;
+    defaults::all()
+        .iter()
+        .find(|e| e.value.get("section").and_then(V::as_str) == Some(sec) && e.value.get("key").and_then(V::as_str) == Some(key))
+        .map(|e| e.key)
+}
+
+/// `{cfg:<key>}` placeholders of a digest field (`guard_rules.digest_cfg_ref`) replaced by that entry's value, or a settings entry's
+/// default, at generation time. An unknown key stays a placeholder (a registry problem).
+fn expand_cfg(t: &str) -> String {
+    let open = format!("{{{}", defaults::text("guard_rules.digest_cfg_ref"));
+    let mut out = String::new();
+    let mut rest = t;
+    while let Some(i) = rest.find(&open) {
+        let after = &rest[i + open.len()..];
+        let Some(j) = after.find('}') else { break };
+        let key = &after[..j];
+        let v = if defaults::has(key) { Some(defaults::raw(key)) } else { None };
+        let v = v.map(|v| v.get("default").unwrap_or(v));
+        let txt = v.and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_integer().map(|n| n.to_string())));
+        out.push_str(&rest[..i]);
+        match txt {
+            Some(x) => out.push_str(&x),
+            None => out.push_str(&rest[i..i + open.len() + j + 1]),
+        }
+        rest = &after[j + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Every row of the rule registry, in file order.
@@ -177,7 +234,14 @@ pub fn rules() -> Vec<Rule> {
         .as_array()
         .map(|a| {
             a.iter()
-                .map(|r| Rule { id: r.str_field("id"), setting: r.str_field("setting"), tier: r.str_field("tier"), source: r.str_field("source") })
+                .map(|r| Rule {
+                    id: r.str_field("id"),
+                    setting: r.str_field("setting"),
+                    tier: r.str_field("tier"),
+                    source: r.str_field("source"),
+                    hosts: r.get("hosts").map(V::strings).unwrap_or_default(),
+                    inverted: r.get("inverted").and_then(V::as_bool).unwrap_or(false),
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -249,7 +313,7 @@ pub fn digest_field(source: &str, host: &str) -> String {
         let k = format!("{sec}.{}", key.replacen("what", "digest", 1));
         if defaults::has(&k) { Some(defaults::raw(&k)) } else { None }
     };
-    d.and_then(|d| d.as_str().or_else(|| d.get(host).and_then(V::as_str))).map(plain).unwrap_or_default()
+    d.and_then(|d| d.as_str().or_else(|| d.get(host).and_then(V::as_str))).map(|t| plain(&expand_cfg(t))).unwrap_or_default()
 }
 
 /// The digest text of an essential rule for `host`: its own short `digest` field (one line: the rule and what to do), rendered by
@@ -282,31 +346,35 @@ pub fn digest_file() -> String {
     digest_file_for(defaults::text("dispatch.default_host"))
 }
 
-/// The generated digest file of `host`: the essential lines (the injected part), the separator, one extra line per other listed
-/// rule (tier skill) except those `guard_rules.digest_host_skip` names for the host, the separator, then (default host only) each
+/// The generated digest file of `host`, from the rules the host runs (a row's `hosts`): the essential lines (the injected part), the
+/// separator, one extra line per other listed rule (tier skill), the separator, then (default host only) each
 /// essential rule's full enforced text, which the session never reads but which makes the committed digest stale when an enforced
-/// message changes, so its digest line is reviewed with it.
+/// message changes, so its digest line is reviewed with it. Each essential and extra line starts with the rule's gate (its switches,
+/// [`Rule::gate`]) and `guard_rules.digest_gate_sep`; the session script leaves out a line whose switch is off and strips the gate.
 pub fn digest_file_for(host: &str) -> String {
     let mut ess = Vec::new();
     let mut extra = Vec::new();
     let mut src = Vec::new();
     let default_host = host == defaults::text("dispatch.default_host");
-    let skip = defaults::raw("guard_rules.digest_host_skip").get(host).map(|v| v.strings()).unwrap_or_default();
+    let gsep = defaults::text("guard_rules.digest_gate_sep");
     for r in rules() {
+        if !r.applies(host) {
+            continue;
+        }
         if r.tier == "essential" {
             let line = digest_entry(r.source, host);
             if !line.is_empty() {
-                ess.push(defaults::render("guard_rules.digest_line", &[("line", &line)]));
+                ess.push(format!("{}{gsep}{}", r.gate(), defaults::render("guard_rules.digest_line", &[("line", &line)])));
             }
             let (what, why, instead) = rule_parts(r.source);
             let full = defaults::render("guard_rules.source_line", &[("id", &r.id), ("what", &what), ("why", &why), ("instead", &instead)]);
             if default_host {
                 src.push(full.split_whitespace().collect::<Vec<_>>().join(" "));
             }
-        } else if r.tier != "off" && !skip.iter().any(|p| r.id.starts_with(p)) {
+        } else if r.tier != "off" {
             let (what, _, _) = rule_parts(r.source);
             if !what.is_empty() {
-                extra.push(defaults::render("guard_rules.extra_line", &[("id", &r.id), ("what", &what)]));
+                extra.push(format!("{}{gsep}{}", r.gate(), defaults::render("guard_rules.extra_line", &[("id", &r.id), ("what", &what)])));
             }
         }
     }
@@ -318,6 +386,8 @@ pub fn digest_file_for(host: &str) -> String {
 pub fn digest_text() -> String {
     let f = digest_file();
     let ess = f.split(&format!("\n{}\n", defaults::text("guard_rules.digest_sep"))).next().unwrap_or("");
+    let gsep = defaults::text("guard_rules.digest_gate_sep");
+    let ess = ess.lines().map(|l| l.split_once(gsep).map_or(l, |(_, t)| t)).collect::<Vec<_>>().join("\n");
     format!("{}\n{}\n{}", defaults::text("guard_rules.digest_head"), ess, defaults::text("guard_rules.digest_foot"))
 }
 
@@ -341,7 +411,12 @@ pub fn rule_problems() -> Vec<String> {
         if !defaults::has(r.source) {
             p.push(defaults::render("guard_rules.problem_source", &[("id", &r.id), ("source", &r.source)]));
         }
-        for (h, digest) in digests.iter().filter(|_| r.tier == "essential") {
+        for s in r.settings() {
+            if setting_entry(s).is_none() {
+                p.push(defaults::render("guard_rules.problem_setting", &[("id", &r.id), ("setting", &s)]));
+            }
+        }
+        for (h, digest) in digests.iter().filter(|(h, _)| r.tier == "essential" && r.applies(h)) {
             let line = digest_entry(r.source, h);
             if line.is_empty() || line.contains(filler) {
                 p.push(defaults::render("guard_rules.problem_line", &[("id", &r.id), ("host", h)]));

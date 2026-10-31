@@ -56,7 +56,7 @@ debates reference the living docs for evidence; the *current* state and the
 > `repair-on-reload.js` (SessionStart + UserPromptSubmit); unreleased on top of that
 > (post-0.108.5): `silent-agent-nudge.js` (Stop). Claude skills: **32** directories under
 > `plugins/anti-hall/skills/` (+ `MODEL-POLICY.md`, not itself a skill; new: `settings`, `afk`); Codex
-> skills: **34** directories under `plugins/anti-hall/codex/skills/` (new: `anti-hall-settings`, `anti-hall-afk`).
+> skills: **35** directories under `plugins/anti-hall/codex/skills/` (new: `anti-hall-settings`, `anti-hall-afk`).
 > `PostToolUse` wired: 3 Bash-matcher handlers (`output-verify-guard.js`,
 > `devswarm-parent-reply-tracker.js`, `devswarm-child-drain.js`).
 > `PostToolUseFailure` wired: 1 Bash-matcher handler (`failure-root-cause-nudge.js`).

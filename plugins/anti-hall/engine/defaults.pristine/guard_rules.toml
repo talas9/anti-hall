@@ -1,11 +1,11 @@
 [guard_rules.rules]
-doc = "Every rule the engine enforces, one row each: id, setting (the switch that turns the rule off, or empty), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test."
+doc = "Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test."
 value = [
-  { id = "advisor.review", setting = "guards.advisorReview", tier = "skill", source = "advisor.msg_review_what" },
-  { id = "advisor.plan", setting = "guards.advisorReview", tier = "skill", source = "advisor.msg_plan_what" },
-  { id = "advisor.retry", setting = "guards.advisorReview", tier = "skill", source = "advisor.msg_retry_what" },
-  { id = "ask_guard.advise", setting = "", tier = "skill", source = "ask_guard.advise_what" },
-  { id = "ask_guard.block", setting = "", tier = "skill", source = "ask_guard.block_what" },
+  { id = "advisor.review", setting = "guards.advisorReview", hosts = ["claude"], tier = "skill", source = "advisor.msg_review_what" },
+  { id = "advisor.plan", setting = "guards.advisorReview", hosts = ["claude"], tier = "skill", source = "advisor.msg_plan_what" },
+  { id = "advisor.retry", setting = "guards.advisorReview", hosts = ["claude"], tier = "skill", source = "advisor.msg_retry_what" },
+  { id = "ask_guard.advise", setting = "", hosts = ["claude"], tier = "skill", source = "ask_guard.advise_what" },
+  { id = "ask_guard.block", setting = "", hosts = ["claude"], tier = "skill", source = "ask_guard.block_what" },
   { id = "silent_nudge.msg", setting = "", tier = "skill", source = "silent_nudge.msg_what" },
   { id = "broad_kill.pattern", setting = "", tier = "skill", source = "broad_kill.msg_what_pattern" },
   { id = "broad_kill.everyone", setting = "", tier = "skill", source = "broad_kill.msg_what_everyone" },
@@ -48,24 +48,24 @@ value = [
   { id = "git.runner_no_subcommand", setting = "", tier = "skill", source = "git.msg_runner_no_subcommand" },
   { id = "git.runner_push", setting = "", tier = "skill", source = "git.msg_runner_push" },
   { id = "git.find_push", setting = "", tier = "skill", source = "git.msg_find_push" },
-  { id = "git.handover", setting = "", tier = "essential", source = "git.msg_handover" },
-  { id = "git.force_push", setting = "", tier = "essential", source = "git.msg_force_push" },
+  { id = "git.handover", setting = "safety.gitGuard, guards.handoverCommitGuard", tier = "essential", source = "git.msg_handover" },
+  { id = "git.force_push", setting = "safety.gitGuard", tier = "essential", source = "git.msg_force_push" },
   { id = "git.delete_ref", setting = "", tier = "skill", source = "git.msg_delete_ref" },
   { id = "git.push_cmdsubst", setting = "", tier = "skill", source = "git.msg_push_cmdsubst" },
   { id = "git.trailer_remap", setting = "", tier = "skill", source = "git.msg_trailer_remap" },
-  { id = "git.commit_credit", setting = "", tier = "essential", source = "git.msg_commit_credit" },
+  { id = "git.commit_credit", setting = "safety.gitGuard", tier = "essential", source = "git.msg_commit_credit" },
   { id = "git.commit_file_credit", setting = "", tier = "skill", source = "git.msg_commit_file_credit" },
   { id = "git.gh_jev", setting = "", tier = "skill", source = "git.msg_gh_jev" },
   { id = "git.commit_jev", setting = "", tier = "skill", source = "git.msg_commit_jev" },
   { id = "git.commit_file_jev", setting = "", tier = "skill", source = "git.msg_commit_file_jev" },
   { id = "git.creating_credit", setting = "", tier = "skill", source = "git.msg_creating_credit" },
   { id = "git.creating_credit_elsewhere", setting = "", tier = "skill", source = "git.msg_creating_credit_elsewhere" },
-  { id = "edit_guard.msg", setting = "", tier = "essential", source = "edit_guard.msg_what" },
+  { id = "edit_guard.msg", setting = "safety.editGuard", tier = "essential", source = "edit_guard.msg_what" },
   { id = "edit_guard.self_edit", setting = "", tier = "skill", source = "edit_guard.msg_self_edit_what" },
   { id = "edit_guard.outside", setting = "", tier = "skill", source = "edit_guard.msg_outside_what" },
   { id = "edit_guard.new", setting = "", tier = "skill", source = "edit_guard.msg_new_what" },
   { id = "edit_guard.patch", setting = "", tier = "skill", source = "edit_guard.msg_patch_what" },
-  { id = "api_guard_v1.msg", setting = "", tier = "essential", source = "api_guard_v1.msg_what" },
+  { id = "api_guard_v1.msg", setting = "guards.apiGuard", tier = "essential", source = "api_guard_v1.msg_what" },
   { id = "compact_decl_v1.msg", setting = "", tier = "skill", source = "compact_decl_v1.msg_what" },
   { id = "inbox_read_v1.store", setting = "", tier = "skill", source = "inbox_read_v1.msg_store_what" },
   { id = "handovers.advisory", setting = "", tier = "skill", source = "handovers.msg_advisory_what" },
@@ -82,7 +82,7 @@ value = [
   { id = "idle_sweep.", setting = "guards.idleAgentSweep", tier = "skill", source = "idle_sweep.what" },
   { id = "resource_watch.proc", setting = "resourceWatch.enabled", tier = "skill", source = "resource_watch.msg_proc_what" },
   { id = "resource_watch.msg", setting = "resourceWatch.enabled", tier = "skill", source = "resource_watch.msg_what" },
-  { id = "speculation_guard.msg", setting = "", tier = "essential", source = "speculation_guard.msg_what" },
+  { id = "speculation_guard.msg", setting = "guards.speculationGuard", tier = "essential", source = "speculation_guard.msg_what" },
   { id = "speculation_guard.jev", setting = "", tier = "skill", source = "speculation_guard.msg_what_jev" },
   { id = "output_verify.msg", setting = "", tier = "skill", source = "output_verify.msg_what" },
   { id = "jev_weekly.notice", setting = "", tier = "skill", source = "jev_weekly.notice_what" },
@@ -93,21 +93,21 @@ value = [
   { id = "scan_throttle.group", setting = "", tier = "skill", source = "scan_throttle.msg_group_what" },
   { id = "scan_throttle.first", setting = "", tier = "skill", source = "scan_throttle.msg_first_what" },
   { id = "coordinator_work.nudge", setting = "", tier = "skill", source = "coordinator_work.nudge_what" },
-  { id = "coordinator_work.block", setting = "", tier = "essential", source = "coordinator_work.block_what" },
-  { id = "model_routing.update", setting = "", tier = "skill", source = "model_routing.msg_update_what" },
-  { id = "model_routing.handover", setting = "", tier = "skill", source = "model_routing.msg_handover_what" },
-  { id = "model_routing.deploy_omitted", setting = "", tier = "skill", source = "model_routing.msg_deploy_omitted_what" },
-  { id = "model_routing.deploy_low", setting = "", tier = "skill", source = "model_routing.msg_deploy_low_what" },
-  { id = "model_routing.row1", setting = "", tier = "essential", source = "model_routing.msg_row1_what" },
-  { id = "model_routing.row1_role", setting = "", tier = "skill", source = "model_routing.msg_row1_role_what" },
-  { id = "model_routing.row1_research", setting = "", tier = "skill", source = "model_routing.msg_row1_research_what" },
-  { id = "model_routing.row2_block", setting = "", tier = "skill", source = "model_routing.msg_row2_block_what" },
-  { id = "model_routing.row2_adv", setting = "", tier = "skill", source = "model_routing.msg_row2_adv_what" },
-  { id = "model_routing.row1_jev", setting = "", tier = "skill", source = "model_routing.msg_row1_jev_what" },
-  { id = "model_routing.row2_jev", setting = "", tier = "skill", source = "model_routing.msg_row2_jev_what" },
-  { id = "model_routing.row3", setting = "", tier = "skill", source = "model_routing.msg_row3_what" },
-  { id = "model_routing.row4", setting = "", tier = "skill", source = "model_routing.msg_row4_what" },
-  { id = "model_routing.row6", setting = "", tier = "skill", source = "model_routing.msg_row6_what" },
+  { id = "coordinator_work.block", setting = "safety.commandGuard", hosts = ["claude"], tier = "essential", source = "coordinator_work.block_what" },
+  { id = "model_routing.update", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_update_what" },
+  { id = "model_routing.handover", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_handover_what" },
+  { id = "model_routing.deploy_omitted", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_deploy_omitted_what" },
+  { id = "model_routing.deploy_low", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_deploy_low_what" },
+  { id = "model_routing.row1", setting = "guards.modelRouting", hosts = ["claude"], tier = "essential", source = "model_routing.msg_row1_what" },
+  { id = "model_routing.row1_role", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row1_role_what" },
+  { id = "model_routing.row1_research", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row1_research_what" },
+  { id = "model_routing.row2_block", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row2_block_what" },
+  { id = "model_routing.row2_adv", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row2_adv_what" },
+  { id = "model_routing.row1_jev", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row1_jev_what" },
+  { id = "model_routing.row2_jev", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row2_jev_what" },
+  { id = "model_routing.row3", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row3_what" },
+  { id = "model_routing.row4", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row4_what" },
+  { id = "model_routing.row6", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row6_what" },
   { id = "failure_nudge.msg", setting = "", tier = "skill", source = "failure_nudge.msg_what" },
   { id = "merge_gate.msg", setting = "", tier = "skill", source = "merge_gate.msg_what" },
   { id = "edit_guard.launcher", setting = "", tier = "skill", source = "edit_guard.msg_launcher_what" },
@@ -118,15 +118,15 @@ value = [
   { id = "swarm_guard.rate", setting = "", tier = "skill", source = "swarm_guard.msg_rate_what" },
   { id = "swarm_guard.shared", setting = "", tier = "skill", source = "swarm_guard.msg_shared_what" },
   { id = "spawn_ceiling.msg", setting = "", tier = "skill", source = "spawn_ceiling.msg_what" },
-  { id = "spawn_usage.block", setting = "", tier = "essential", source = "spawn_usage.msg_block_what" },
+  { id = "spawn_usage.block", setting = "guards.usageAwareDispatch", hosts = ["claude"], tier = "essential", source = "spawn_usage.msg_block_what" },
   { id = "spawn_usage.soft", setting = "", tier = "skill", source = "spawn_usage.msg_soft_what" },
-  { id = "nested_spawn.msg", setting = "", tier = "essential", source = "nested_spawn.msg_what" },
-  { id = "task_guard.idle", setting = "", tier = "essential", source = "task_guard.idle_what" },
+  { id = "nested_spawn.msg", setting = "guards.allowNestedSpawns", inverted = true, tier = "essential", source = "nested_spawn.msg_what" },
+  { id = "task_guard.idle", setting = "guards.taskGuard", tier = "essential", source = "task_guard.idle_what" },
   { id = "task_guard.generic", setting = "", tier = "skill", source = "task_guard.generic_what" },
   { id = "tasklist_guard.reset", setting = "", tier = "skill", source = "tasklist_guard.what_reset" },
   { id = "rules_json.rm_rf_root", setting = "", tier = "essential", source = "guard_rules.msg_rm_rf_root" },
   { id = "write.no_heredoc", setting = "", tier = "essential", source = "guard_rules.msg_no_heredoc" },
-  { id = "tasklist_guard.no_tasks", setting = "", tier = "essential", source = "tasklist_guard.what_no_tasks" },
+  { id = "tasklist_guard.no_tasks", setting = "guards.tasklistGuard", tier = "essential", source = "tasklist_guard.what_no_tasks" },
   { id = "tasklist_guard.stalled", setting = "", tier = "skill", source = "tasklist_guard.what_stalled" },
   { id = "tasklist_guard.progress", setting = "", tier = "skill", source = "tasklist_guard.what_progress" },
   { id = "tasklist_guard.reduced", setting = "", tier = "skill", source = "tasklist_guard.what_reduced" },
@@ -134,7 +134,7 @@ value = [
   { id = "task_tracker.short", setting = "", tier = "skill", source = "task_tracker.what_short" },
   { id = "task_tracker.primary", setting = "", tier = "skill", source = "task_tracker.primary_what" },
   { id = "uncommitted.msg", setting = "", tier = "skill", source = "uncommitted.msg_what" },
-  { id = "fable_availability.msg", setting = "", tier = "skill", source = "fable_availability.msg_what" },
+  { id = "fable_availability.msg", setting = "", hosts = ["claude"], tier = "skill", source = "fable_availability.msg_what" },
 ]
 
 [guard_rules.exempt]
@@ -313,9 +313,29 @@ value = "engine/rule-digest.codex.txt"
 doc = "The hosts a digest is generated for, each from the host's own digest text (a `digest` table by host, or one string for all)."
 value = ["claude", "codex"]
 
-[guard_rules.digest_host_skip]
-doc = "Rule id prefixes left out of a host's extra digest lines (tier skill) because the host does not run them: the model-routing guard stands down on Codex (logic/lib/81-standdown.js), and fable-availability reads the Claude config; their texts name Claude models."
-value = { codex = ["model_routing.", "fable_availability."] }
+[guard_rules.setting_sep]
+doc = "Separator of several settings keys in one rule row's setting (each must be on for the rule to be enforced)."
+value = ", "
+
+[guard_rules.digest_off_values]
+doc = "The effective setting values that mean a rule's switch is off (a boolean switch false, an enum switch off); the session script leaves out the digest line of a rule whose switch has one of them (the opposite for an inverted row)."
+value = [false, "off"]
+
+[guard_rules.digest_gate_sep]
+doc = "In the generated digest file, the separator between a line's gate (the defaults keys of the rule's switches, comma-joined) and its text; the session script reads the gate and strips it."
+value = "\t"
+
+[guard_rules.digest_gate_not]
+doc = "Prefix of a gate key whose rule is enforced while the switch is off (an inverted row)."
+value = "!"
+
+[guard_rules.digest_cfg_ref]
+doc = "Placeholder prefix in a digest field: {cfg:<defaults key>} becomes that entry's value (a settings entry's default) when the digest is generated, so a threshold or role name has one source."
+value = "cfg:"
+
+[guard_rules.problem_setting]
+doc = "Registry problem: a rule row's setting names no settings entry (section and key). Placeholders: {id}, {setting}."
+value = "{id}: setting {setting} matches no settings entry"
 
 [guard_rules.source_line]
 doc = "One line of the generated digest file's third section (after the second separator): an essential rule's full enforced text. The session script never reads it; it is there so an edit of the enforced message makes the committed digest stale (`ah-regen --check`) and the digest line is reviewed with it. Placeholders: {id}, {what}, {why}, {instead}."
