@@ -291,6 +291,13 @@ pub fn no_node_path(path: &str, event: &str, outcome: Outcome) -> Event {
     base(Kind::Hook, &format!("dispatcher-{path}"), event, outcome, 0, 0, Extras::None)
 }
 
+/// One step of the nudge escalation ladder (GH #516): hook `nudges.telemetry_prefix` + `kind`, event the step word (fired,
+/// repeated, escalated, blocked, acted, ignored); a step that blocked has outcome block, every other one advise.
+pub fn nudge_step(kind: &str, step: &str, blocked: bool) -> Event {
+    let o = if blocked { Outcome::Block } else { Outcome::Advise };
+    base(Kind::Check, &format!("{}{kind}", defaults::text("nudges.telemetry_prefix")), step, o, 0, 0, Extras::None)
+}
+
 /// The event for a daemon health snapshot: `readings` are the numbers the `daemon` schema lists.
 pub fn daemon_snapshot(degraded: bool, readings: &[(&str, u64)]) -> Event {
     let mut f = Fields::new().num("degraded", u64::from(degraded));

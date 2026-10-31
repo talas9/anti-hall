@@ -311,6 +311,27 @@ fn set(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) {
     }
 }
 
+/// The advisories of the hooks that did not block, as one reason part the model reads (`dispatch.msg_stop_advisories`), cut to
+/// `dispatch.stop_advisory_chars`; `None` when they say nothing.
+fn folded(advisories: &[&HookResult]) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for r in advisories {
+        let Some(o) = parse_object(&r.out) else { continue };
+        if let Some(m) = o.get(TOP_MSG).and_then(Ordered::as_str).filter(|m| !m.trim().is_empty()) {
+            parts.push(m.to_string());
+        }
+        if let Some(c) = o.get(HSO_KEY).and_then(|h| h.get(HSO_CTX)).and_then(Ordered::as_str).filter(|c| !c.trim().is_empty()) {
+            parts.push(c.to_string());
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let max = defaults::num("dispatch.stop_advisory_chars") as usize;
+    let text: String = parts.join(defaults::text("dispatch.message_joiner")).chars().take(max).collect();
+    Some(defaults::render("dispatch.msg_stop_advisories", &[("text", &text)]))
+}
+
 /// The answer for several blocking results (rule 1 of the module docs). The host runs the hooks separately and gives the
 /// model every block's reason (each Stop or SubagentStop block is its own message), so one process must carry them all, in
 /// table order, joined with `dispatch.reason_joiner`. A reason is what the host reads: a JSON block's reason (taken over
@@ -331,7 +352,12 @@ fn blocked(blockers: &[&HookResult], advisories: &[&HookResult], notes: &str) ->
     if let ([one], [], "") = (blockers, advisories, notes) {
         return verbatim(one);
     }
-    let reasons: Vec<String> = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect();
+    let mut reasons: Vec<String> = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect();
+    // #516: on a Stop the model reads only the block reason (exit 2: stderr; exit 0: the reason field), never a systemMessage or a
+    // context, so the advisories that ride along are also folded into the reason, bounded by dispatch.stop_advisory_chars
+    if let Some(f) = folded(advisories) {
+        reasons.push(f);
+    }
     let joined = reasons.join(defaults::text("dispatch.reason_joiner"));
     let line = |s: &str| if s.ends_with('\n') { s.to_string() } else { format!("{s}\n") };
     let reasons_err = if joined.is_empty() { String::new() } else { line(&joined) };
@@ -532,6 +558,17 @@ fn merge(active: &[&HookResult], lenient: bool) -> Combined {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_stop_block_carries_the_other_hooks_advisories_in_its_reason() {
+        let block = r("a", 2, "", "stop: open tasks");
+        let adv = r("b", 0, r#"{"systemMessage":"finish agent x"}"#, "");
+        let Combined::Answer(o) = combine_for(&[block.clone(), adv], true) else { panic!("an answer") };
+        assert_eq!(o.code, 2);
+        assert!(o.err.contains("stop: open tasks") && o.err.contains("finish agent x"), "{}", o.err);
+        let Combined::Answer(lone) = combine_for(&[block], true) else { panic!("an answer") };
+        assert_eq!(lone.err, "stop: open tasks", "a lone block stays byte for byte");
+    }
+
     fn r(id: &str, code: i32, out: &str, err: &str) -> HookResult {
         HookResult { id: id.into(), code: Some(code), out: out.into(), err: err.into() }
     }
@@ -607,9 +644,11 @@ mod tests {
     fn a_stop_advisory_rides_along_with_a_block_and_a_note_never_reaches_the_reason() {
         let block = "{\"decision\":\"block\",\"reason\":\"B\"}\n";
         let adv = "{\"systemMessage\":\"adv\"}\n";
-        // exit 0 JSON block: the advisory's message is kept next to the block
+        // exit 0 JSON block: the advisory's message is kept next to the block, and (#516) folded into the reason the model reads
         let o = ans(combine_for(&[r("a", 0, adv, ""), r("b", 0, block, "")], true));
-        assert_eq!(o, Outcome { code: 0, out: "{\"decision\":\"block\",\"reason\":\"B\",\"systemMessage\":\"adv\"}\n".into(), err: String::new() });
+        let folded = defaults::render("dispatch.msg_stop_advisories", &[("text", &"adv")]).replace('\n', "\\n");
+        let want = format!("{{\"decision\":\"block\",\"reason\":\"B\\n\\n{folded}\",\"systemMessage\":\"adv\"}}\n");
+        assert_eq!(o, Outcome { code: 0, out: want, err: String::new() });
         // exit 2 JSON block (the host reads stderr as the reason): a plain note must not land on stderr, it joins the message
         let note = "[x] note\n";
         let o = ans(combine(&[r("a", 0, note, ""), r("b", 2, block, "B\n")]));

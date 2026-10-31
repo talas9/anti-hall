@@ -1369,6 +1369,7 @@ Files:
 | `realtime.toml` | the realtime watch facility: backend, poll interval, debounce and ceiling, queue and directory caps, the filesystem types that are polled, SQLite side-file suffixes, the mount-table path, and the latency and CPU targets |
 | `judge.toml` | the judge calls the engine makes itself: the local Claude CLI client, the speculation-judge prompts and evidence limits, the mesh-triage worker's prompts and budgets, and the Jev-first cascade (thresholds, prompts, telemetry words) |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
+| `nudges.toml` | the nudge escalation ladder (#516): the severity class table (`nudges.kinds`), thresholds, the master switch (`nudges.enabled`, `ANTIHALL_NUDGES`), state path, block texts and telemetry step words |
 | `inject_gate.toml` | the injection gate: its settings (`context.injectGate*`), what it recognises in the hooks' output, its state bounds and wire words |
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
 | `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
@@ -1718,6 +1719,18 @@ fails open (exit 0, a note on stderr, `dispatch_stop_open` in the log), and so d
 when the guards run fine again). For an over-cap payload the engine does not decide from a capped prefix: Node's Stop
 hooks receive the full bytes first, and the cap applies only if they cannot run or make no decision. A hook's own block is
 never affected.
+
+**Nudges escalate (#516).** Advisories that repeat with no change stop being advisory. `nudges.toml` holds a severity class
+table: per kind the hook ids it watches, a class (`advisory` counted only, `escalate` blocks after `after` fires then every
+`every`, `block` = P0, blocks at the first fire) and the one required next action. The dispatcher (`dispatch/ladder.rs`) reads
+each call's hook results before the token cuts, counts at most one fire per kind per turn and session, and resets a kind when
+its hooks run quiet `quiet_reset` times in a row (the condition cleared). A due kind adds one `decision: block` to the next
+main-session `Stop`: two lines, one emoji, the required action and the consequence. A Stop with `stop_hook_active` never gets
+a ladder block, and any internal failure (corrupt state, a write that fails, a panic) adds nothing. Settings: `nudges.enabled`
+(master switch) and `nudges.kinds` in settings.json (per-kind class override, `off` to stop watching one). Telemetry: one `check`
+event per step, hook `nudge-<kind>`, event `fired`, `repeated`, `escalated`, `blocked`, `acted` or `ignored`: the compliance
+metric. On a Stop block, the advisories of the other hooks are folded into the block reason (`dispatch.msg_stop_advisories`,
+cut at `dispatch.stop_advisory_chars`), because the model reads only the reason there.
 
 **Guards fail closed (D74).** The guard events (`dispatch.guard_events`: `PreToolUse`, `PermissionRequest`, `Stop`,
 `SubagentStop`) never turn a failure into a silent allow. The call answers exit 2 with `dispatch.msg_fail_closed` on stderr
