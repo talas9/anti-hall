@@ -57,6 +57,7 @@ What the automatic guards check and how to read a block.
 - `guards.modelRouting` = "strict": Model-routing mode
 - `guards.allowAnthropicEnvKey` = false: Home-only switch that lets ANTHROPIC_API_KEY count as a key
 - `guards.failOpenNonSafety` = true: Non-safety guards pass when unanswered
+- `context.protocolFullAfterCompact` = true: Full protocol after compaction switch
 - `context.protocolOnce` = true: Once-per-session protocol text switch
 - `context.promptDigestLines` = 3: Max lines of the prompt digest
 - `context.promptDigestMin` = 3: Min advisories before the digest applies
@@ -64,6 +65,7 @@ What the automatic guards check and how to read a block.
 - `context.inlineEventChars` = 6000: Characters all hooks of one event may inline together (0 = no total)
 - `context.inlineHookChars` = 1500: Inline character cap of one hook
 - `context.shrinkInline` = true: Master switch of the inline caps
+- `context.inlinePinned` = true: Pinned contexts stay inline switch (context.inlinePinned, default on): a hook whose...
 - `guards.pushedNotDone` = true: Pushed work is not done switch
 - `guards.allowNestedSpawns` = false: On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them
 - `guards.maxConcurrentAgents` = 6: Cap on agents running at once (default 6, 0 = no cap)

@@ -22,13 +22,25 @@ fn base(id: &str) -> &str {
     id.split([':', '#']).next().unwrap_or(id)
 }
 
-/// The inline cap of the hook entry `id`: `None` = never shrunk, `Some(0)` = no per-hook cap (only the event total applies).
-fn cap_of(id: &str, default_cap: usize) -> Option<usize> {
+/// Whether the hook entry `id` is pinned: its `dispatch.context_priority` is at or above `dispatch.context_pin_priority`.
+fn pinned(id: &str) -> bool {
+    super::spill::priority(id) >= defaults::num("dispatch.context_pin_priority") as i64
+}
+
+/// The inline cap of the hook entry `id`: `None` = never shrunk, `Some(0)` = no per-hook cap (only the event total applies). With
+/// `keep_pinned` (`context_size.sw_keep_pinned`) a pinned entry without its own `context_size.hook_caps` row is never shrunk (#519).
+fn cap_of(id: &str, default_cap: usize, keep_pinned: bool) -> Option<usize> {
     if defaults::list("context_size.never").iter().any(|n| *n == id || *n == base(id)) {
         return None;
     }
     let table = defaults::raw("context_size.hook_caps");
-    Some([id, base(id)].iter().find_map(|k| table.get(k).and_then(|v| v.as_integer())).map_or(default_cap, |c| c.max(0) as usize))
+    if let Some(c) = [id, base(id)].iter().find_map(|k| table.get(k).and_then(|v| v.as_integer())) {
+        return Some(c.max(0) as usize);
+    }
+    if keep_pinned && pinned(id) {
+        return None;
+    }
+    Some(default_cap)
 }
 
 /// The first line of `ctx`, at most `max` characters, cut at a word end with the ellipsis when it was longer.
@@ -47,6 +59,7 @@ struct Cand {
     ctx: String,
     chars: usize,
     cap: Option<usize>,
+    pri: i64,
 }
 
 /// Replace the over-cap contexts of `results` (an event in `context_size.events`) with summary plus file pointer, in place.
@@ -61,22 +74,27 @@ pub fn apply(event: &str, env: &RequestEnv, results: &mut [HookResult]) {
     let default_cap = get_number(&st, defaults::raw("context_size.num_hook_cap")).max(0.0) as usize;
     let total_cap = get_number(&st, defaults::raw("context_size.num_event_cap")).max(0.0) as usize;
     let sum_max = defaults::num("context_size.summary_chars") as usize;
+    let keep_pinned = get_bool(&st, defaults::raw("context_size.sw_keep_pinned"));
     let mut cands: Vec<Cand> = Vec::new();
     for (idx, r) in results.iter().enumerate() {
         if r.code != Some(0) {
             continue;
         }
         let Some(ctx) = combine::context_of(&r.out).filter(|c| !c.is_empty()) else { continue };
-        cands.push(Cand { idx, chars: ctx.chars().count(), cap: cap_of(&r.id, default_cap), ctx });
+        cands.push(Cand { idx, chars: ctx.chars().count(), cap: cap_of(&r.id, default_cap, keep_pinned), pri: super::spill::priority(&r.id), ctx });
     }
-    // per-hook step, then the event total (largest shrinkable first)
+    // per-hook step, then the event total (lowest priority first, the largest first among equals; size only with keep_pinned off)
     let mut shrink: Vec<bool> = cands.iter().map(|c| matches!(c.cap, Some(cap) if cap > 0 && c.chars > cap)).collect();
     let pointer_chars = defaults::text("context_size.msg_ref").chars().count() + defaults::num("context_size.path_reserve") as usize;
     let size_after = |c: &Cand, s: bool| if s { sum_max.min(c.chars) + pointer_chars } else { c.chars };
     if total_cap > 0 {
         let mut total: usize = cands.iter().zip(&shrink).map(|(c, s)| size_after(c, *s)).sum();
         let mut order: Vec<usize> = (0..cands.len()).filter(|i| !shrink[*i] && cands[*i].cap.is_some()).collect();
-        order.sort_by_key(|i| std::cmp::Reverse(cands[*i].chars));
+        if keep_pinned {
+            order.sort_by_key(|i| (cands[*i].pri, std::cmp::Reverse(cands[*i].chars)));
+        } else {
+            order.sort_by_key(|i| std::cmp::Reverse(cands[*i].chars));
+        }
         for i in order {
             if total <= total_cap {
                 break;
@@ -133,6 +151,8 @@ pub fn apply(event: &str, env: &RequestEnv, results: &mut [HookResult]) {
         if let Some(out) = combine::with_context(&results[c.idx].out, &inline) {
             after += inline.chars().count();
             hooks += 1;
+            let pin = c.pri >= defaults::num("dispatch.context_pin_priority") as i64;
+            crate::metrics::bump("context_shrunk", &[("class", defaults::text(if pin { "context_size.label_pinned" } else { "context_size.label_low" }))]);
             results[c.idx].out = out;
         }
     }
@@ -167,10 +187,12 @@ mod tests {
 
     #[test]
     fn a_hook_cap_resolves_by_entry_id_then_base_name_and_never_wins() {
-        assert_eq!(cap_of("verify-first-orch:host=claude", 1500), None);
-        assert_eq!(cap_of("handover-resume", 1500), None);
-        assert_eq!(cap_of("jev-weekly-scorecard", 1500), Some(1500));
-        assert_eq!(cap_of("devswarm-child-role", 1500), Some(1200), "the per-hook table overrides the default");
+        assert_eq!(cap_of("verify-first-orch:host=claude", 1500, true), None);
+        assert_eq!(cap_of("handover-resume", 1500, true), None);
+        assert_eq!(cap_of("jev-weekly-scorecard", 1500, true), Some(1500));
+        assert_eq!(cap_of("devswarm-child-role", 1500, true), Some(1200), "the per-hook table overrides the default and the pin");
+        assert_eq!(cap_of("rule-digest", 1500, true), None, "a pinned entry without its own row is never shrunk");
+        assert_eq!(cap_of("rule-digest", 1500, false), Some(1500), "the switch off: the default cap again");
     }
 
     fn env_with(settings: &str) -> RequestEnv {
@@ -211,5 +233,34 @@ mod tests {
         let mut other = vec![r("a-hook", &"a".repeat(2000))];
         apply("UserPromptSubmit", &on, &mut other);
         assert_eq!(ctx(&other[0]).chars().count(), 2000, "only the configured events");
+    }
+
+    /// #519: the SessionStart of a DevSwarm session after a compaction (the shipped defaults: event total 6000, per-hook cap 1500). The
+    /// size-only event step shrank the 1,259-character rule digest (pinned, priority 93) to a file pointer once the DevSwarm comms notice
+    /// had been shrunk; the rules must stay inline whole and only a low-priority notice may go to the file.
+    #[test]
+    fn the_pinned_rule_digest_stays_inline_and_the_switch_off_restores_the_size_order() {
+        let rules = format!("anti-hall rules (same config the engine enforces):\n{}", "- a rule line of the digest\n".repeat(44));
+        let comms = format!("devswarm-comms: the mesh is the only channel.\n{}", "mesh detail ".repeat(370));
+        let low = format!("Version notice: a newer build exists.\n{}", "v".repeat(900));
+        let set = || {
+            vec![
+                r("verify-first-full", &"p".repeat(3000)),
+                r("verify-first-orch", &"o".repeat(1500)),
+                r("rule-digest", &rules),
+                r("devswarm-child-role", &comms),
+                r("version-alert", &low),
+            ]
+        };
+        let on = env_with("{}");
+        let mut rs = set();
+        apply("SessionStart", &on, &mut rs);
+        assert_eq!(ctx(&rs[2]), rules, "the pinned rule digest is inline whole");
+        assert!(ctx(&rs[3]).chars().count() < 600, "its explicit hook cap still shrinks the comms notice");
+        assert!(ctx(&rs[4]).chars().count() < 600, "the low-priority notice goes to the file first");
+        let off = env_with(r#"{"context":{"inlinePinned":false}}"#);
+        let mut rs2 = set();
+        apply("SessionStart", &off, &mut rs2);
+        assert!(ctx(&rs2[2]).chars().count() < 600, "switch off: the size-only order shrinks the rule digest again");
     }
 }

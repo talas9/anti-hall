@@ -82,8 +82,20 @@ doc = "Where the on/off switch of verify-first-full is read from (context.verify
 value = { section = "context", key = "verifyFirstSession", env = "", aliases = [], option = "context_verify_first_session", default = true }
 
 [verify_first.setting_once]
-doc = "Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start."
+doc = "Once-per-session protocol text switch. Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume the whole text again while verify_first.setting_full_after_compact is on (else a short digest), and a repeated start in the same session one line. false = the whole text at every start."
 value = { section = "context", key = "protocolOnce", env = "ANTIHALL_PROTOCOL_ONCE", aliases = [], option = "", default = true }
+
+[verify_first.setting_full_after_compact]
+doc = "Full protocol after compaction switch. Where the switch is read from (context.protocolFullAfterCompact, default on): a SessionStart whose source is in verify_first.resend_sources (a compaction or resume) gets the whole compact text again, once per such start, instead of the short digest, which drops the RULES, SCOPE, AUTONOMY, SKIP and WORKER sections (#519). false = the short digest (verify_first.resend_session)."
+value = { section = "context", key = "protocolFullAfterCompact", env = "ANTIHALL_PROTOCOL_FULL_AFTER_COMPACT", aliases = [], option = "", default = true }
+
+[verify_first.metric_kind]
+doc = "The kind label of metric.protocol_delivery per delivery decision: first (the whole text), resend (the short digest), repeat (the one line)."
+value = { first = "full", resend = "digest", repeat = "repeat" }
+
+[metric.protocol_delivery]
+doc = "SessionStart protocol texts sent, by hook (the delivery record prefix: verify_first.delivery_prefix for the protocol, the orchestration rules' own prefix) and kind (verify_first.metric_kind): full (a fresh start, or a compaction or resume while verify_first.setting_full_after_compact is on), digest (the short text after a compaction or resume), repeat (the one line)."
+value = { kind = "counter", unit = "starts", labels = ["hook", "kind"] }
 
 [verify_first.delivery_dir]
 doc = "Directory of the per-session protocol delivery records, under script.write_root."
