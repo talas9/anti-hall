@@ -13,8 +13,12 @@ fn stop_blocks(tag: &str, pad_bytes: usize) -> (bool, String) {
 /// A background agent launch (tool call + async-launched result) named `desc`, id `id`.
 fn launch(id: &str, desc: &str) -> [String; 2] {
     [
-        format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"l{id}","name":"Agent","input":{{"description":"{desc}","name":"{desc}","run_in_background":true,"prompt":"work"}}}}]}}}}"#),
-        format!(r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"l{id}","content":"Async agent launched successfully.\nagentId: {id}\noutput_file: /nonexistent/tasks/{id}.output"}}]}}}}"#),
+        format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"l{id}","name":"Agent","input":{{"description":"{desc}","name":"{desc}","run_in_background":true,"prompt":"work"}}}}]}}}}"#
+        ),
+        format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"l{id}","content":"Async agent launched successfully.\nagentId: {id}\noutput_file: /nonexistent/tasks/{id}.output"}}]}}}}"#
+        ),
     ]
 }
 
