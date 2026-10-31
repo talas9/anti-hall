@@ -2747,7 +2747,13 @@ fn d2_check_edit_check_keeps_earning_hard_pr472() {
     let f = h.join("w/out/a.txt").to_string_lossy().into_owned();
     for k in 0..5u64 {
         let t = n + (21 + 2 * k) * MIN;
-        append(&p, &[tool(t, &format!("me{k}"), 10, &format!("e{k}"), "Edit", json!({"file_path": f, "old_string": "a", "new_string": "b"})), result(t, &format!("e{k}"), "ok", false)]);
+        append(
+            &p,
+            &[
+                tool(t, &format!("me{k}"), 10, &format!("e{k}"), "Edit", json!({"file_path": f, "old_string": "a", "new_string": "b"})),
+                result(t, &format!("e{k}"), "ok", false),
+            ],
+        );
         ticks(&h, &mut st, &[t + 10_000]);
         let before = agent(&st, "s1").progress;
         ok_bash(&p, t + 20_000, &format!("c{k}"), 10, "git diff --check");
@@ -2802,7 +2808,7 @@ fn q1_quoted_git_commit_text_earns_no_commit_credit_pr472() {
 #[test]
 fn l1_low_spend_polling_spends_the_episode_and_pauses_at_the_burn_line_pr472() {
     let hard = crate::defaults::num("burn.hard_tokens_no_outcome");
-    let polls = crate::agents::facts::lim_n("waste_window_ms") / (6 * MIN);
+    let polls = lim("waste_window_ms") / (6 * MIN);
     for (tag, per, pauses) in [("l1lo-472", hard / polls / 2, false), ("l1hi-472", hard / polls + hard / 50, true)] {
         let h = home(tag);
         let n = now0();

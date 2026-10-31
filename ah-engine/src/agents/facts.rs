@@ -338,11 +338,12 @@ fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
             a.exited.push((id.to_string(), ts));
             // PR #472: a background check or shell write earns its HARD outcome only now, when it ended with success
             let call = a.bg_starts.remove(id);
+            let key = a.bg_check_keys.remove(id).unwrap_or_default();
             if let Some((check, writes)) = a.bg_outcomes.remove(id)
-                && let Some((start, cwd)) = call
+                && let Some((start, _)) = call
                 && defaults::raw("agent_tracker.bg_success_statuses").strings().iter().any(|w| w.eq_ignore_ascii_case(st))
             {
-                hard_outcome(a, check, &writes, start, &cwd);
+                hard_outcome(a, check.then_some(key.as_str()), &writes, start);
             }
         }
     }
@@ -385,6 +386,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let mut writes = Vec::new();
     let mut push = false;
     let mut amp = false;
+    let mut check_key = String::new();
     if is_edit {
         a.edits += 1;
         let path = str_of(&input, tr("file_path"));
@@ -415,8 +417,12 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         amp = delims.iter().any(|d| bgd.iter().any(|b| b == d));
         let code = segs.join("\n");
         let arg = code.as_str();
-        push = pat("push").is_some_and(|r| r.is_match(arg));
-        if pat("commit").is_some_and(|r| r.is_match(arg)) {
+        // PR #472 round 4: commit, push, check and probe are matched per top-level segment with its quoted strings blanked, anchored at
+        // the program the segment runs: quoted argument text (`rg 'git commit' src`, `echo "git push"`) is never the command.
+        let unq: Vec<String> = segs.iter().map(|s| unquoted(s)).collect();
+        let seg_hit = |k: &str| pat(k).is_some_and(|r| unq.iter().any(|s| r.is_match(s)));
+        push = seg_hit("push");
+        if seg_hit("commit") {
             class = "commit".into();
         } else if pat("merge").is_some_and(|r| r.is_match(arg)) {
             class = "merge".into();
@@ -426,17 +432,61 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
             class = "test".into();
         } else if pat("build").is_some_and(|r| r.is_match(arg)) {
             class = "build".into();
-        } else if pat("check").is_some_and(|r| r.is_match(&unquoted(arg))) {
+        } else if seg_hit("check") {
             class = "check".into();
-        } else if pat("probe").is_some_and(|r| r.is_match(&unquoted(arg))) {
+        } else if seg_hit("probe") {
             class = "probe".into();
         }
-        for s in &segs {
+        // the directory each segment runs in: a `cd`/`pushd` to one literal directory, chained by a delimiter that runs the next segment
+        // only after it (agent_tracker.cd_follow), is followed; any other directory change makes the later relative writes unresolvable
+        // (at most SOFT). Each write is resolved here to an absolute path; one left relative names no file (PR #472 round 4).
+        let cf = defaults::raw("agent_tracker.cd_follow");
+        let (cds, lost, dls) = (
+            cf.get("commands").map(V::strings).unwrap_or_default(),
+            cf.get("unfollowed").map(V::strings).unwrap_or_default(),
+            cf.get("delims").map(V::strings).unwrap_or_default(),
+        );
+        let deny = cf.str_field("non_literal");
+        let base = if cwd.is_empty() { a.cwd.as_str() } else { cwd };
+        let mut dir = (!base.is_empty()).then(|| std::path::PathBuf::from(base));
+        for (i, s) in segs.iter().enumerate() {
+            let toks = crate::script::host_shell::tokenize(s);
+            let head = toks.first().map_or("", String::as_str);
+            if cds.iter().any(|c| *c == head) {
+                let d = delims.get(i).copied().unwrap_or("");
+                let lit = toks.get(1).filter(|t| toks.len() == 2 && !t.is_empty() && !t.starts_with('-') && !t.chars().any(|c| deny.contains(c)));
+                dir = match lit {
+                    Some(t) if dls.iter().any(|x| *x == d) => {
+                        if std::path::Path::new(t).is_absolute() {
+                            Some(std::path::PathBuf::from(t))
+                        } else {
+                            dir.map(|b| b.join(t))
+                        }
+                    }
+                    _ => None,
+                };
+                continue;
+            }
+            if lost.iter().any(|c| *c == head) {
+                dir = None;
+            }
             for w in shell_writes(s) {
+                let p = std::path::Path::new(&w);
+                let w = if p.is_absolute() { w.clone() } else { dir.as_ref().map_or(w.clone(), |d| d.join(p).to_string_lossy().into_owned()) };
                 if !writes.contains(&w) {
                     writes.push(w);
                 }
             }
+        }
+        if class == "check" {
+            let re = pat("check");
+            let hit: Vec<String> = segs
+                .iter()
+                .zip(&unq)
+                .filter(|(_, u)| re.as_ref().is_some_and(|r| r.is_match(u)))
+                .map(|(s, _)| s.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect();
+            check_key = format!("{}\n{}", dir.as_ref().map_or(String::new(), |d| d.to_string_lossy().into_owned()), hit.join("\n"));
         }
         // a build launch is one event of the burn episode: an endless chain of builds with no outcome spends the episode's cap (PR #472)
         if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == class) {
@@ -482,7 +532,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
         let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: cwd.to_string() });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: cwd.to_string(), check_key });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -578,6 +628,7 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         // a task backgrounded inside the task as well (a top-level `&`) ends when its launching shell does: no outcome waits for it
         if !p.amp && (p.class == "check" || !p.writes.is_empty()) {
             a.bg_outcomes.insert(id.clone(), (p.class == "check", p.writes.clone()));
+            a.bg_check_keys.insert(id.clone(), p.check_key.clone());
             a.bg_starts.insert(id.clone(), (p.ts, p.cwd.clone()));
         }
         a.bg_ids.insert(id, ts);
@@ -588,6 +639,7 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         let live = &a.bg_ids;
         a.bg_outcomes.retain(|k, _| live.contains_key(k));
         a.bg_starts.retain(|k, _| live.contains_key(k));
+        a.bg_check_keys.retain(|k, _| live.contains_key(k));
     }
     if failed {
         a.errors += 1;
@@ -601,8 +653,12 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     // A BACKGROUND launch's result is only its acknowledgment: the check has not run, so the launch is at most SOFT and the HARD outcome
     // waits for its completion notice (task_ends). A command backgrounded with a top-level `&` (p.amp) has no completion notice at all:
     // it is never more than SOFT.
+    // a successful edit is a real change: a check after it may earn HARD again (PR #472 round 4)
+    if tools("edit").contains(&p.name.as_str()) {
+        a.changes += 1;
+    }
     let om = defaults::raw("agent_tracker.outcome_metric");
-    let hard = !p.bg && !p.amp && hard_outcome(a, p.class == "check", &p.writes, p.ts, &p.cwd);
+    let hard = !p.bg && !p.amp && hard_outcome(a, (p.class == "check").then_some(p.check_key.as_str()), &p.writes, p.ts);
     if !hard && (p.class == "probe" || p.class == "check" || !p.writes.is_empty()) {
         push_ring(&mut a.soft_ts, ts, lim("loop_window"));
         episode_event(a, ts);
@@ -627,6 +683,7 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     }
     if p.class == "commit" {
         a.commits += 1;
+        a.changes += 1;
         a.progress += weight("commit");
         a.waste.reset_at = ts; // a commit in any repo the command ran git in starts the waste window afresh
     } else if p.class == "build" {
@@ -660,19 +717,29 @@ pub(crate) fn episode_sync(a: &mut Agent, ts: u64) {
 }
 
 /// A HARD outcome of a shell command that began at `start` and ended with success (PR #472): a file it created or appended for the
-/// first time (the shell_file weight), else a passing check (the check weight); `cwd` is the call's working directory (the transcript
-/// line's, else the agent's; a `cd` inside the call itself is not followed, so a relative write after it is at most SOFT). False when it earned neither. A claimed write counts
-/// only when the file is there: `written_since` finds it on disk, modified at or after `start`; the command text alone earns nothing.
-fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64, cwd: &str) -> bool {
-    let dir = if cwd.is_empty() { a.cwd.clone() } else { cwd.to_string() };
-    let fresh: Vec<String> = writes.iter().filter_map(|w| written_since(&dir, w, start)).filter(|w| !a.files.contains(w)).collect();
+/// first time (the shell_file weight), else a passing check (the check weight) whose key (`check`: its normalized segments and
+/// directory) has not passed HARD since the last real change (`changes`: an edit, a fresh shell write, a commit; PR #472 round 4), so a
+/// repeated check with nothing changed in between is SOFT. `writes` were resolved at the call (a `cd` in it followed, agent_tracker.cd_follow);
+/// one left relative is unresolvable and names no file. False when it earned neither. A claimed write counts only when the file is there:
+/// `written_since` finds it on disk, modified at or after `start`; the command text alone earns nothing.
+fn hard_outcome(a: &mut Agent, check: Option<&str>, writes: &[String], start: u64) -> bool {
+    let fresh: Vec<String> = writes.iter().filter_map(|w| written_since(w, start)).filter(|w| !a.files.contains(w)).collect();
     if !fresh.is_empty() {
         for w in fresh {
             push_ring(&mut a.files, w, lim("files_max"));
         }
+        a.changes += 1;
         a.progress += weight("shell_file");
         count_outcome(defaults::raw("agent_tracker.outcome_metric").str_field("shell_file"));
-    } else if check {
+    } else if let Some(key) = check {
+        if a.check_passes.get(key) == Some(&a.changes) {
+            return false;
+        }
+        a.check_passes.insert(key.to_string(), a.changes);
+        while a.check_passes.len() > lim("loop_window") as usize {
+            let Some(k) = a.check_passes.iter().min_by_key(|(_, g)| **g).map(|(k, _)| k.clone()) else { break };
+            a.check_passes.remove(&k);
+        }
         a.progress += weight("check");
         count_outcome("check");
     } else {
@@ -682,18 +749,14 @@ fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64, cwd: 
 }
 
 /// The real path of a file the shell claims to have written, when it is a regular file (never a device, a pipe or a directory) that
-/// exists now and was modified at or after `start` (milliseconds since the epoch); a relative path is taken from the agent's `cwd`.
-/// None for anything else, and for a resolved path patterns.shell_write_skip names.
-fn written_since(cwd: &str, path: &str, start: u64) -> Option<String> {
+/// exists now and was modified at or after `start` (milliseconds since the epoch). A relative path (one the call's directory could not
+/// resolve) is None, as is anything else and a resolved path patterns.shell_write_skip names.
+fn written_since(path: &str, start: u64) -> Option<String> {
     let p = std::path::Path::new(path);
-    let p = if p.is_absolute() {
-        p.to_path_buf()
-    } else if cwd.is_empty() {
+    if !p.is_absolute() {
         return None;
-    } else {
-        std::path::Path::new(cwd).join(p)
-    };
-    let real = std::fs::canonicalize(&p).ok()?;
+    }
+    let real = std::fs::canonicalize(p).ok()?;
     let s = real.to_string_lossy().into_owned();
     if pat("shell_write_skip").is_some_and(|r| r.is_match(&s)) {
         return None;

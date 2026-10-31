@@ -216,6 +216,9 @@ pub struct Pending {
     /// The working directory of the transcript line that made the call (a relative written path is taken from it).
     #[serde(default)]
     pub cwd: String,
+    /// A check call's dedup key: its normalized check segments and directory (PR #472 round 4).
+    #[serde(default)]
+    pub check_key: String,
 }
 
 /// A raised signal on one agent.
@@ -398,6 +401,16 @@ pub struct Agent {
     /// starts a new episode; burn.soft_hold caps the events and the length of an episode (PR #472).
     #[serde(default)]
     pub soft_episode: (u64, u64, u64),
+    /// Real changes seen (PR #472 round 4): a successful edit, a fresh shell write, a commit. A passing check repeated with no change since
+    /// its last HARD pass is SOFT.
+    #[serde(default)]
+    pub changes: u64,
+    /// The `changes` count at each check's last HARD pass, by normalized check command and directory (bounded by limits.loop_window).
+    #[serde(default)]
+    pub check_passes: BTreeMap<String, u64>,
+    /// The check key of each background task in `bg_outcomes` (PR #472 round 4).
+    #[serde(default)]
+    pub bg_check_keys: BTreeMap<String, String>,
     /// The declared step.
     pub step: String,
     /// The task whose subject is the declared step (empty when the step came from elsewhere).
