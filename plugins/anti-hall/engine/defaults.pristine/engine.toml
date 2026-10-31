@@ -667,7 +667,7 @@ value = "notice_stamp_failed"
 doc = "How many per-session notice stamps (files.slow_degraded_notice_dir) are kept; past it the oldest are removed after a new one is created. A session whose stamp was removed may be told once more."
 value = 256
 min = 1
-unit = "stamps"
+unit = "count"
 
 [client.slow_degraded_restored]
 doc = "Metric of client.slow_degraded_counter counted when the daemon answers again and the safety guards are restored."
