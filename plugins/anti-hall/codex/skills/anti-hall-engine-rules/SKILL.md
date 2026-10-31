@@ -20,6 +20,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `ask_guard.advise` (skill): do not hold work on a question. Instead: continue with the recommended reversible option.
 - `ask_guard.block` (skill): this question would pause authorized work. Why: Work should not wait on a question. Instead: continue with the recommended reversible option.
 - `silent_nudge.msg` (skill): ... of your own ... have gone silent past the ...m threshold: ....... Why: Advisory only; nothing was auto-killed. Instead: check the silent agents for progress.
+- `silent_nudge.runtime` (skill): ...... still running after repeated runtime nudges, not finished and not stopped. Instead: check its output now, then stop it or re-task it with a tighter scope; this block is shown once per session.
 - `broad_kill.pattern` (skill): `...` is blocked: it kills every process that matches a name or pattern, not one process you started.
 - `broad_kill.everyone` (skill): `...` is blocked: it signals every process you own, or your whole process group.
 - `broad_kill.lookup` (skill): `...` is blocked: it kills whatever a name or port lookup returns, not a process you started.
@@ -140,6 +141,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `swarm_guard.rate` (skill): spawn limit reached (... in 60s, cap ...). Why: A runaway swarm can make the OS unusable. Instead: wait for running agents to finish before spawning more.
 - `swarm_guard.shared` (skill): another agent is already writing in this working tree. Why: Two such agents can stage and commit each other's uncommitted changes. Instead: give the new agent its own worktree.
 - `spawn_ceiling.msg` (skill): ... agents are running (limit ...). Why: More agents rarely add results, and each one costs tokens whether or not it finishes. Instead: wait for a running agent to finish.
+- `spawn_ceiling.cap` (skill): ... agents are running (limit ..., your guards.maxConcurrentAgents cap): ....... Instead: wait for one of them to finish or stop one you no longer need, then spawn. The cap is guards.maxConcurrentAgents (0 turns it off); to lift it now, tell the agent "skip spawn-ceiling".
 - `spawn_usage.block` (essential, switch `guards.usageAwareDispatch`): new agents can't start: the ... usage limit is at ...% (stop at ...%, ...). Why: Another spawn could use up the limit and stop all work, including agents already running. Instead: wait for the usage limit to reset.
 - `spawn_usage.soft` (skill): the ... usage limit is at ...% (...). Why: Headroom is getting short; avoid spending tokens that produce no commit, finished step or passing check. Instead: use cheaper models for routine work.
 - `nested_spawn.msg` (essential, switch `guards.allowNestedSpawns`): this agent is a worker and can't start agents of its own. Why: Nested agents hide their cost from the coordinator (one burned about 2.5M tokens in 30 minutes). Instead: report back to the coordinator if more agents are needed.

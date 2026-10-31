@@ -11,6 +11,7 @@ task_guard.setting	- Never stop with open tasks idle: assign each to an agent or
 tasklist_guard.setting	- Track work in the task list and a fresh progress file: changes with no tasks or a missing/stale progress file block the stop.
 --
 	- silent_nudge.msg: ... of your own ... have gone silent past the ...m threshold: .......
+	- silent_nudge.runtime: ...... still running after repeated runtime nudges, not finished and not stopped.
 	- broad_kill.pattern: `...` is blocked: it kills every process that matches a name or pattern, not one process you started.
 	- broad_kill.everyone: `...` is blocked: it signals every process you own, or your whole process group.
 	- broad_kill.lookup: `...` is blocked: it kills whatever a name or port lookup returns, not a process you started.
@@ -110,6 +111,7 @@ resource_watch.sw_enabled	- resource_watch.msg: Resource use is high: ....
 	- swarm_guard.rate: spawn limit reached (... in 60s, cap ...).
 	- swarm_guard.shared: another agent is already writing in this working tree.
 	- spawn_ceiling.msg: ... agents are running (limit ...).
+	- spawn_ceiling.cap: ... agents are running (limit ..., your guards.maxConcurrentAgents cap): .......
 	- spawn_usage.soft: the ... usage limit is at ...% (...).
 	- task_guard.generic: open tasks remain unfinished.
 	- tasklist_guard.reset: the task list was lost during session restore.
