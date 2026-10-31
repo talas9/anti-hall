@@ -849,6 +849,38 @@ mod swarm {
         }
     }
 
+    /// GH #484: each spawn denied over `guards.maxConcurrentAgents` bumps `spawns_denied_over_cap`; an allowed spawn does not.
+    #[test]
+    fn a_spawn_denied_over_the_cap_is_counted_and_an_allowed_one_is_not() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = || {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("spawns_denied_over_cap", &[])
+        };
+        let h = swarm_home("sw-cap484");
+        let running = |n: usize| {
+            let mut out = String::new();
+            for i in 0..n {
+                let (tu, id) = (format!("toolu_{i}"), format!("a{i:015x}"));
+                let call = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tu, "name": "Agent", "input": {"description": format!("lane {i}"), "subagent_type": "Explore"}}]}});
+                let res = json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tu,
+                    "content": format!("Async agent launched successfully.\nagentId: {id} (internal ID - do not mention to user)\noutput_file: /tmp/x/{id}.output")}]}});
+                out.push_str(&format!("{call}\n{res}\n"));
+            }
+            std::fs::write(format!("{h}/t.jsonl"), out).unwrap();
+        };
+        let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "Explore", "prompt": "x"}, "session_id": "s", "transcript_path": format!("{h}/t.jsonl"), "cwd": h});
+        running(5);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        assert_eq!(call(&h, &p, T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "5 running is under the cap of 6");
+        assert_eq!(count(), 0, "an allowed spawn is not a denial");
+        running(6);
+        let v = call(&h, &p, T0 + 1, Some(8.0 * GB), 16.0 * GB);
+        assert!(matches!(&v, Some(Some(Verdict::Exact(x))) if x.code == 2), "{v:?}");
+        assert_eq!(count(), 1, "the denial is counted once");
+    }
+
     #[test]
     fn a_write_capable_spawn_beside_a_running_writer_gets_the_advisory_and_is_recorded() {
         let h = swarm_home("sw-adv");
@@ -865,6 +897,8 @@ mod swarm {
     #[test]
     fn the_advisory_is_silent_whenever_node_is_silent() {
         let h = swarm_home("sw-quiet");
+        // many allowed spawns whose launches never reach the transcript: the concurrent-agent cap (GH #494) is not what this tests
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0}}"#).unwrap();
         let busy = transcript(&h, json!({"subagent_type": "general-purpose"}));
         let mut n = 0u64;
         let mut silent = |input: Value, t: &str| {
@@ -904,6 +938,8 @@ mod swarm {
     #[test]
     fn a_brief_naming_another_clone_shares_no_tree() {
         let h = swarm_home("sw-named");
+        // many allowed spawns whose launches never reach the transcript: the concurrent-agent cap (GH #494) is not what this tests
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0}}"#).unwrap();
         let proj = format!("{h}/proj");
         std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
         std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -3567,4 +3603,195 @@ mod afk_mode {
         assert_eq!(flag(&h), Value::Null);
         drained();
     }
+}
+
+fn plugin_root() -> Value {
+    json!({"plugin_root": concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall")})
+}
+
+fn run_event(name: &str, event: &str, pairs: &[(&str, &str)], h: &str) -> Option<Option<Verdict>> {
+    run_as(name, event, "s-462", "claude", pairs, h)
+}
+
+fn run_as(name: &str, event: &str, sid: &str, host: &str, pairs: &[(&str, &str)], h: &str) -> Option<Option<Verdict>> {
+    let mut all = vec![("HOME", h)];
+    all.extend_from_slice(pairs);
+    let mut opts = plugin_root();
+    opts["host"] = json!(host);
+    super::run_forced(name, &json!({"session_id": sid, "hook_event_name": event}), &opts, event, &RequestEnv::from_pairs(all))
+}
+
+/// The digest field of an essential rule's message entry for `host` (#462): a string, or a table by host.
+fn digest_of(source: &str, host: &str) -> String {
+    let d = crate::skillgen::digest_field(source, host);
+    assert!(!d.is_empty(), "{source} has no digest field for {host}");
+    d
+}
+
+#[test]
+fn the_codex_digest_carries_codex_lines_within_the_budget_and_no_claude_model_name() {
+    let h = home("digest-codex");
+    let got = run_as("rule-digest", "SessionStart", "s-462c", "codex", &[], &h);
+    let Some(Some(Verdict::Advisory(a))) = got else { panic!("codex digest must answer with context, got {got:?}") };
+    let ctx = serde_json::from_str::<Value>(&a).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
+    assert!(ctx.contains(&digest_of("git.msg_force_push", "codex")), "{ctx}");
+    assert!(
+        !ctx.contains(&crate::skillgen::digest_field("model_routing.msg_row1_what", "codex"))
+            || crate::skillgen::digest_field("model_routing.msg_row1_what", "codex").is_empty(),
+        "the model-routing guard is Claude-only: {ctx}"
+    );
+    for m in ["haiku", "sonnet", "opus", "fable"] {
+        assert!(!ctx.to_lowercase().contains(m), "codex digest names the Claude model {m}: {ctx}");
+    }
+    assert!(ctx.len() as u64 <= defaults::num("roles.digest_budget"), "codex digest {} bytes is over roles.digest_budget", ctx.len());
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+#[test]
+fn a_session_started_with_the_banner_off_is_still_recorded_so_the_next_banner_counts_it_as_the_last_session() {
+    // Codex round 2: banner on for A, off for B, on for C: C's previous session is B, not A
+    let h = home("banner-cycle");
+    assert!(matches!(run_as("session-banner", "SessionStart", "sess-a", "claude", &[], &h), Some(Some(Verdict::Advisory(_)))));
+    assert_eq!(run_as("session-banner", "SessionStart", "sess-b", "claude", &[("ANTIHALL_UI_BANNER", "false")], &h), Some(Some(Verdict::Allow)));
+    assert!(matches!(run_as("session-banner", "SessionStart", "sess-c", "claude", &[], &h), Some(Some(Verdict::Advisory(_)))));
+    let st = crate::checks::guardkit::state::FileState::new(&h).unwrap();
+    use crate::checks::guardkit::state::SessionState;
+    let raw = st.get(defaults::text("guard_rules.sessions_ns"), defaults::text("guard_rules.sessions_key")).unwrap_or_default();
+    let list: Vec<(String, u64)> = serde_json::from_str(&raw).unwrap_or_default();
+    let ids: Vec<&str> = list.iter().map(|(s, _)| s.as_str()).collect();
+    assert_eq!(ids, ["sess-a", "sess-b", "sess-c"], "every session start is recorded whatever the banner switch says");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+#[test]
+fn the_rule_digest_is_injected_within_its_budget_and_its_switch_turns_it_off() {
+    let h = home("digest");
+    let got = run_event("rule-digest", "SessionStart", &[], &h);
+    let Some(Some(Verdict::Advisory(a))) = got else { panic!("digest on must answer with context, got {got:?}") };
+    assert!(a.contains(defaults::text("guard_rules.digest_head")) && a.contains(&digest_of("git.msg_force_push", "claude")), "{a}");
+    let ctx = serde_json::from_str::<Value>(&a).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().len();
+    assert!(ctx as u64 <= defaults::num("roles.digest_budget"), "digest {ctx} bytes is over roles.digest_budget");
+    assert_eq!(run_event("rule-digest", "SessionStart", &[("ANTIHALL_RULE_DIGEST", "false")], &h), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// The rule-digest context a session of `host` gets with `settings` (a settings.json body) in its home, or None when it says nothing.
+fn digest_with(tag: &str, host: &str, settings: &Value) -> Option<String> {
+    let h = home(tag);
+    std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+    std::fs::write(format!("{h}/.anti-hall/settings.json"), settings.to_string()).unwrap();
+    let got = run_as("rule-digest", "SessionStart", "s-462s", host, &[], &h);
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    let Some(Some(Verdict::Advisory(a))) = got else { return None };
+    Some(serde_json::from_str::<Value>(&a).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string())
+}
+
+/// The rows of the rule registry (guard_rules.rules) as raw tables.
+fn rule_rows() -> Vec<Value> {
+    defaults::raw("guard_rules.rules").to_json().as_array().cloned().unwrap_or_default()
+}
+
+/// The settings.json body that turns off one `section.key` switch of a rule row: false for a boolean switch (true when the row is
+/// enforced while its switch is off), the first off value the entry accepts for an enum.
+fn switch_off(setting: &str, inverted: bool) -> Value {
+    let (sec, key) = setting.split_once('.').unwrap();
+    let entries = defaults::all();
+    let spec = entries
+        .iter()
+        .find(|e| e.value.get("section").and_then(|v| v.as_str()) == Some(sec) && e.value.get("key").and_then(|v| v.as_str()) == Some(key))
+        .unwrap_or_else(|| panic!("no settings entry for {setting}"));
+    let offs = defaults::raw("guard_rules.digest_off_values").strings();
+    let v = match spec.value.get("values").map(|v| v.strings()) {
+        Some(vals) => json!(vals.iter().find(|x| offs.contains(x)).unwrap_or_else(|| panic!("{setting} has no off value"))),
+        None => json!(inverted),
+    };
+    json!({ sec: { key: v } })
+}
+
+#[test]
+fn a_digest_line_whose_rule_switch_is_off_is_left_out_and_all_on_keeps_every_line_within_the_budget() {
+    // Codex round 3 P2-1: a rule that is off must not be announced as enforced
+    let budget = defaults::num("roles.digest_budget");
+    let all = digest_with("digest-all-on", "claude", &json!({})).expect("digest on");
+    assert!(all.len() as u64 <= budget, "all-on digest {} bytes over budget", all.len());
+    let rows = rule_rows();
+    let row = |id: &str| rows.iter().find(|r| r["id"] == id).cloned().unwrap_or_else(|| panic!("no row {id}"));
+    assert_eq!(row("tasklist_guard.no_tasks")["setting"], "guards.tasklistGuard", "tasklist rule names its switch");
+    assert_eq!(row("model_routing.row1")["setting"], "guards.modelRouting", "model-routing rule names its switch");
+    let mut checked = 0;
+    for r in rows.iter().filter(|r| r["tier"] == "essential") {
+        let src = r["source"].as_str().unwrap();
+        let line = digest_of(src, "claude");
+        let hosts = r.get("hosts").and_then(|v| v.as_array()).map(|a| a.iter().any(|h| h == "claude")).unwrap_or(true);
+        if hosts {
+            assert!(all.contains(&line), "all on: {} missing", r["id"]);
+        }
+        let setting = r["setting"].as_str().unwrap_or_default();
+        if setting.is_empty() || !hosts {
+            continue;
+        }
+        for one in setting.split(defaults::text("guard_rules.setting_sep")) {
+            let inv = r.get("inverted").and_then(|v| v.as_bool()).unwrap_or(false);
+            let ctx = digest_with("digest-one-off", "claude", &switch_off(one, inv)).expect("digest still on");
+            assert!(!ctx.contains(&line), "{} still in the digest with {one} off: {ctx}", r["id"]);
+            assert!(ctx.contains(&digest_of("guard_rules.msg_no_heredoc", "claude")), "a line with no switch dropped with {one} off");
+            assert!(ctx.len() as u64 <= budget, "digest over budget with {one} off");
+            checked += 1;
+        }
+    }
+    assert!(checked >= 2, "only {checked} switches checked");
+}
+
+#[test]
+fn the_codex_digest_has_no_claude_only_rule_and_the_advisor_rules_are_claude_only() {
+    // Codex round 3 P2-3: per-rule host applicability; the advisor exists only on Claude
+    let rows = rule_rows();
+    for id in ["advisor.review", "advisor.plan", "advisor.retry", "model_routing.row1", "coordinator_work.block", "spawn_usage.block"] {
+        let r = rows.iter().find(|r| r["id"] == id).unwrap_or_else(|| panic!("no row {id}"));
+        assert_eq!(r.get("hosts"), Some(&json!(["claude"])), "{id} must be Claude-only");
+    }
+    let plugin = plugin_root()["plugin_root"].as_str().map(str::to_string).unwrap_or_default();
+    let file = std::fs::read_to_string(format!("{plugin}/{}", defaults::text("guard_rules.digest_file_codex"))).unwrap();
+    let ctx = digest_with("digest-codex-skill", "codex", &json!({"context": {"ruleDigestTier": "skill"}})).expect("codex digest");
+    for r in rows.iter().filter(|r| r.get("hosts").and_then(|v| v.as_array()).is_some_and(|a| !a.iter().any(|h| h == "codex"))) {
+        let id = r["id"].as_str().unwrap();
+        assert!(!file.contains(&format!("{id}:")), "codex digest file lists Claude-only {id}");
+        let (what, _, _) = crate::skillgen::rule_parts(r["source"].as_str().unwrap());
+        assert!(what.is_empty() || !ctx.contains(&what), "codex digest names Claude-only {id}: {ctx}");
+        if r["tier"] == "essential" {
+            let d = crate::skillgen::digest_field(r["source"].as_str().unwrap(), "codex");
+            assert!(d.is_empty() || !ctx.contains(&d), "codex digest carries Claude-only {id}");
+        }
+    }
+}
+
+#[test]
+fn the_digest_states_the_edit_roles_and_the_repeated_edit_threshold_from_their_config() {
+    // Codex round 3 P2-2: which roles may not edit, and after how many edits the step is stopped
+    let ctx = digest_with("digest-p22", "claude", &json!({})).expect("digest on");
+    for k in ["command.msg_edit_who_coord", "command.msg_edit_who_orch"] {
+        assert!(ctx.contains(defaults::text(k)), "digest does not name the {k} role: {ctx}");
+    }
+    let at = defaults::raw("coordinator_work.block_setting").get("default").and_then(|v| v.as_integer()).unwrap();
+    assert!(ctx.contains(&format!(" {at} ")), "digest does not state the repeated-edit threshold {at}: {ctx}");
+}
+
+#[test]
+fn the_banner_is_one_user_visible_line_and_its_switch_turns_it_off() {
+    let h = home("banner");
+    let Some(Some(Verdict::Advisory(a))) = run_event("session-banner", "SessionStart", &[], &h) else { panic!("banner on must speak") };
+    let m = serde_json::from_str::<Value>(&a).unwrap()["systemMessage"].as_str().unwrap().to_string();
+    assert!(m.starts_with("anti-hall ") && m.contains("active") && !m.contains('\n'), "{m}");
+    assert_eq!(run_event("session-banner", "SessionStart", &[("ANTIHALL_UI_BANNER", "false")], &h), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+#[test]
+fn the_session_summary_speaks_at_the_end_and_off_is_silent() {
+    let h = home("summary");
+    let Some(Some(Verdict::Advisory(a))) = run_event("session-summary", "SessionEnd", &[], &h) else { panic!("summary on must speak") };
+    let m = serde_json::from_str::<Value>(&a).unwrap()["systemMessage"].as_str().unwrap().to_string();
+    assert!(m.starts_with("anti-hall this session"), "{m}");
+    assert_eq!(run_event("session-summary", "SessionEnd", &[("ANTIHALL_UI_SESSION_SUMMARY", "off")], &h), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }

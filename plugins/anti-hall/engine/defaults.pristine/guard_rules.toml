@@ -1,0 +1,454 @@
+[guard_rules.rules]
+doc = "Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test."
+value = [
+  { id = "advisor.review", setting = "guards.advisorReview", hosts = ["claude"], tier = "skill", source = "advisor.msg_review_what" },
+  { id = "advisor.plan", setting = "guards.advisorPlan", hosts = ["claude"], tier = "skill", source = "advisor.msg_plan_what" },
+  { id = "advisor.retry", setting = "guards.advisorRetry", hosts = ["claude"], tier = "skill", source = "advisor.msg_retry_what" },
+  { id = "advisor.thinking", setting = "guards.advisorThinking", hosts = ["claude"], tier = "skill", source = "advisor.msg_thinking_what" },
+  { id = "advisor.say_do", setting = "guards.advisorSayDo", hosts = ["claude"], tier = "skill", source = "advisor.msg_say_do_what" },
+  { id = "advisor.second", setting = "guards.advisorRetry", hosts = ["claude"], tier = "skill", source = "advisor.msg_second_what" },
+  { id = "ask_guard.advise", setting = "", hosts = ["claude"], tier = "skill", source = "ask_guard.advise_what" },
+  { id = "ask_guard.block", setting = "", hosts = ["claude"], tier = "skill", source = "ask_guard.block_what" },
+  { id = "silent_nudge.msg", setting = "", tier = "skill", source = "silent_nudge.msg_what" },
+  { id = "silent_nudge.runtime", setting = "", tier = "skill", source = "silent_nudge.msg_rt_what" },
+  { id = "broad_kill.pattern", setting = "", tier = "skill", source = "broad_kill.msg_what_pattern" },
+  { id = "broad_kill.everyone", setting = "", tier = "skill", source = "broad_kill.msg_what_everyone" },
+  { id = "broad_kill.lookup", setting = "", tier = "skill", source = "broad_kill.msg_what_lookup" },
+  { id = "burn.msg", setting = "", tier = "skill", source = "burn.msg_what" },
+  { id = "burn.waste", setting = "", tier = "skill", source = "burn.msg_what_waste" },
+  { id = "claim_evidence.claim", setting = "guards.claimEvidence", tier = "skill", source = "claim_evidence.msg_claim_what" },
+  { id = "claim_evidence.pushed", setting = "guards.claimEvidence", tier = "skill", source = "claim_evidence.msg_pushed_what" },
+  { id = "codex_handover.avail_note", setting = "", tier = "skill", source = "codex_handover.avail_note_what" },
+  { id = "codex_handover.avail", setting = "", tier = "skill", source = "codex_handover.avail_what" },
+  { id = "codex_handover.neg", setting = "", tier = "skill", source = "codex_handover.neg_what" },
+  { id = "codex_handover.nudge", setting = "", tier = "skill", source = "codex_handover.nudge_what" },
+  { id = "codex_handover.quota", setting = "", tier = "skill", source = "codex_handover.quota_what" },
+  { id = "codex_handover.snaponly", setting = "", tier = "skill", source = "codex_handover.snaponly_what" },
+  { id = "command.heavy", setting = "", tier = "skill", source = "command.msg_heavy_what" },
+  { id = "command.edit", setting = "", tier = "skill", source = "command.msg_edit_what" },
+  { id = "command.send", setting = "", tier = "skill", source = "command.msg_send_what" },
+  { id = "command.mailbox", setting = "", tier = "skill", source = "command.msg_mailbox_what" },
+  { id = "command.stash", setting = "", tier = "skill", source = "command.msg_stash_what" },
+  { id = "command.rawread_inbox", setting = "", tier = "skill", source = "command.msg_rawread_inbox_what" },
+  { id = "command.dsread_monitor", setting = "", tier = "skill", source = "command.msg_dsread_monitor_what" },
+  { id = "command.dsread_rm", setting = "", tier = "skill", source = "command.msg_dsread_rm_what" },
+  { id = "ctxbudget.lc", setting = "", tier = "skill", source = "ctxbudget.lc_what" },
+  { id = "ctxbudget.ah_tokens", setting = "", tier = "skill", source = "ctxbudget.ah_what_tokens" },
+  { id = "ctxbudget.ah_pct", setting = "", tier = "skill", source = "ctxbudget.ah_what_pct" },
+  { id = "ctxbudget.ah_nag", setting = "", tier = "skill", source = "ctxbudget.ah_nag_what" },
+  { id = "ctxbudget.ah_soft", setting = "", tier = "skill", source = "ctxbudget.ah_soft_what" },
+  { id = "ctxbudget.ah_pause", setting = "", tier = "skill", source = "ctxbudget.ah_pause_what" },
+  { id = "ctxbudget.ah_gate", setting = "", tier = "skill", source = "ctxbudget.ah_gate_what" },
+  { id = "ctxbudget.ah_backstop", setting = "", tier = "skill", source = "ctxbudget.ah_backstop_what" },
+  { id = "ctxbudget.ca", setting = "", tier = "skill", source = "ctxbudget.ca_what" },
+  { id = "ctxbudget.hb", setting = "", tier = "skill", source = "ctxbudget.hb_what" },
+  { id = "devswarm_role.pg_warning", setting = "devswarm.childRole", tier = "skill", source = "devswarm_role.pg_warning_what" },
+  { id = "disk_watch.msg", setting = "diskWatch.enabled", tier = "skill", source = "disk_watch.msg_what" },
+  { id = "git.launcher", setting = "", tier = "skill", source = "git.msg_launcher" },
+  { id = "git.reused_message", setting = "", tier = "skill", source = "git.msg_reused_message" },
+  { id = "git.gh_credit", setting = "", tier = "skill", source = "git.msg_gh_credit" },
+  { id = "git.gh_credit_elsewhere", setting = "", tier = "skill", source = "git.msg_gh_credit_elsewhere" },
+  { id = "git.runner_placeholder", setting = "", tier = "skill", source = "git.msg_runner_placeholder" },
+  { id = "git.runner_no_subcommand", setting = "", tier = "skill", source = "git.msg_runner_no_subcommand" },
+  { id = "git.runner_push", setting = "", tier = "skill", source = "git.msg_runner_push" },
+  { id = "git.find_push", setting = "", tier = "skill", source = "git.msg_find_push" },
+  { id = "git.handover", setting = "safety.gitGuard, guards.handoverCommitGuard", tier = "essential", source = "git.msg_handover" },
+  { id = "git.force_push", setting = "safety.gitGuard", tier = "essential", source = "git.msg_force_push" },
+  { id = "git.delete_ref", setting = "", tier = "skill", source = "git.msg_delete_ref" },
+  { id = "git.push_cmdsubst", setting = "", tier = "skill", source = "git.msg_push_cmdsubst" },
+  { id = "git.trailer_remap", setting = "", tier = "skill", source = "git.msg_trailer_remap" },
+  { id = "git.commit_credit", setting = "safety.gitGuard", tier = "essential", source = "git.msg_commit_credit" },
+  { id = "git.commit_file_credit", setting = "", tier = "skill", source = "git.msg_commit_file_credit" },
+  { id = "git.gh_jev", setting = "", tier = "skill", source = "git.msg_gh_jev" },
+  { id = "git.commit_jev", setting = "", tier = "skill", source = "git.msg_commit_jev" },
+  { id = "git.commit_file_jev", setting = "", tier = "skill", source = "git.msg_commit_file_jev" },
+  { id = "git.creating_credit", setting = "", tier = "skill", source = "git.msg_creating_credit" },
+  { id = "git.creating_credit_elsewhere", setting = "", tier = "skill", source = "git.msg_creating_credit_elsewhere" },
+  { id = "git.commit_expansion", setting = "", tier = "skill", source = "git.msg_commit_expansion" },
+  { id = "git.push_credit", setting = "", tier = "skill", source = "git.msg_push_credit" },
+  { id = "git.push_dynamic_repo", setting = "", tier = "skill", source = "git.msg_push_dynamic_repo" },
+  { id = "git.push_over_cap", setting = "", tier = "skill", source = "git.msg_push_over_cap" },
+  { id = "git.push_same_call", setting = "", tier = "skill", source = "git.msg_push_same_call" },
+  { id = "git.push_tag_credit", setting = "", tier = "skill", source = "git.msg_push_tag_credit" },
+  { id = "git.script_credit", setting = "", tier = "skill", source = "git.msg_script_credit" },
+  { id = "git_audit.credit", setting = "", tier = "skill", source = "git_audit.msg" },
+  { id = "git_audit.published", setting = "", tier = "skill", source = "git_audit.msg_published" },
+  { id = "edit_guard.msg", setting = "safety.editGuard", tier = "essential", source = "edit_guard.msg_what" },
+  { id = "edit_guard.self_edit", setting = "", tier = "skill", source = "edit_guard.msg_self_edit_what" },
+  { id = "edit_guard.outside", setting = "", tier = "skill", source = "edit_guard.msg_outside_what" },
+  { id = "edit_guard.new", setting = "", tier = "skill", source = "edit_guard.msg_new_what" },
+  { id = "edit_guard.patch", setting = "", tier = "skill", source = "edit_guard.msg_patch_what" },
+  { id = "api_guard_v1.msg", setting = "guards.apiGuard", tier = "essential", source = "api_guard_v1.msg_what" },
+  { id = "compact_decl_v1.msg", setting = "", tier = "skill", source = "compact_decl_v1.msg_what" },
+  { id = "inbox_read_v1.store", setting = "", tier = "skill", source = "inbox_read_v1.msg_store_what" },
+  { id = "handovers.advisory", setting = "", tier = "skill", source = "handovers.msg_advisory_what" },
+  { id = "inference.msg", setting = "", tier = "skill", source = "inference.msg_what" },
+  { id = "speculation_judge.msg", setting = "", tier = "skill", source = "speculation_judge.msg_what" },
+  { id = "lane_test.policy", setting = "guards.allowTestSuites", tier = "skill", source = "lane_test.msg_policy_what" },
+  { id = "lane_test.msg", setting = "guards.allowTestSuites", tier = "skill", source = "lane_test.msg_what" },
+  { id = "queued_wait.bg", setting = "", tier = "skill", source = "queued_wait.msg_what_bg" },
+  { id = "queued_wait.sleep", setting = "", tier = "skill", source = "queued_wait.msg_what_sleep" },
+  { id = "queued_wait.loop", setting = "", tier = "skill", source = "queued_wait.msg_what_loop" },
+  { id = "wide_search.msg", setting = "guards.allowWideSearch", tier = "skill", source = "wide_search.msg_what" },
+  { id = "procwatch.orphans", setting = "procwatch.enabled", tier = "skill", source = "procwatch.msg_orphans_what" },
+  { id = "procwatch.stuck", setting = "procwatch.enabled", tier = "skill", source = "procwatch.msg_stuck_what" },
+  { id = "idle_sweep.", setting = "guards.idleAgentSweep", tier = "skill", source = "idle_sweep.what" },
+  { id = "resource_watch.proc", setting = "resourceWatch.enabled", tier = "skill", source = "resource_watch.msg_proc_what" },
+  { id = "resource_watch.msg", setting = "resourceWatch.enabled", tier = "skill", source = "resource_watch.msg_what" },
+  { id = "speculation_guard.msg", setting = "guards.speculationGuard", tier = "essential", source = "speculation_guard.msg_what" },
+  { id = "speculation_guard.jev", setting = "", tier = "skill", source = "speculation_guard.msg_what_jev" },
+  { id = "output_verify.msg", setting = "", tier = "skill", source = "output_verify.msg_what" },
+  { id = "jev_weekly.notice", setting = "", tier = "skill", source = "jev_weekly.notice_what" },
+  { id = "standdown.msg", setting = "", tier = "skill", source = "standdown.msg_what" },
+  { id = "merge_side_pick.msg", setting = "", tier = "skill", source = "merge_side_pick.msg_what" },
+  { id = "ship_it.block", setting = "", tier = "skill", source = "ship_it.msg_block_what" },
+  { id = "ship_it.adv", setting = "", tier = "skill", source = "ship_it.msg_adv_what" },
+  { id = "scan_throttle.group", setting = "", tier = "skill", source = "scan_throttle.msg_group_what" },
+  { id = "scan_throttle.first", setting = "", tier = "skill", source = "scan_throttle.msg_first_what" },
+  { id = "coordinator_work.nudge", setting = "", tier = "skill", source = "coordinator_work.nudge_what" },
+  { id = "coordinator_work.block", setting = "safety.commandGuard", hosts = ["claude"], tier = "essential", source = "coordinator_work.block_what" },
+  { id = "model_routing.update", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_update_what" },
+  { id = "model_routing.handover", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_handover_what" },
+  { id = "model_routing.deploy_omitted", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_deploy_omitted_what" },
+  { id = "model_routing.deploy_low", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_deploy_low_what" },
+  { id = "model_routing.row1", setting = "guards.modelRouting", hosts = ["claude"], tier = "essential", source = "model_routing.msg_row1_what" },
+  { id = "model_routing.row1_role", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row1_role_what" },
+  { id = "model_routing.row1_research", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row1_research_what" },
+  { id = "model_routing.row2_block", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row2_block_what" },
+  { id = "model_routing.row2_adv", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row2_adv_what" },
+  { id = "model_routing.row1_jev", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row1_jev_what" },
+  { id = "model_routing.row2_jev", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row2_jev_what" },
+  { id = "model_routing.row3", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row3_what" },
+  { id = "model_routing.row4", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row4_what" },
+  { id = "model_routing.row6", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_row6_what" },
+  { id = "failure_nudge.msg", setting = "", tier = "skill", source = "failure_nudge.msg_what" },
+  { id = "merge_gate.msg", setting = "", tier = "skill", source = "merge_gate.msg_what" },
+  { id = "edit_guard.launcher", setting = "", tier = "skill", source = "edit_guard.msg_launcher_what" },
+  { id = "inbox_read.inbox", setting = "", tier = "skill", source = "inbox_read.msg_inbox_what" },
+  { id = "devswarm_comms.main", setting = "", tier = "skill", source = "devswarm_comms.msg_main_what" },
+  { id = "devswarm_comms.block", setting = "", tier = "skill", source = "devswarm_comms.msg_block_what" },
+  { id = "devswarm_comms.ok", setting = "", tier = "skill", source = "devswarm_comms.msg_ok_what" },
+  { id = "swarm_guard.rate", setting = "", tier = "skill", source = "swarm_guard.msg_rate_what" },
+  { id = "swarm_guard.shared", setting = "", tier = "skill", source = "swarm_guard.msg_shared_what" },
+  { id = "spawn_ceiling.msg", setting = "", tier = "skill", source = "spawn_ceiling.msg_what" },
+  { id = "spawn_ceiling.cap", setting = "", tier = "skill", source = "spawn_ceiling.msg_cap_what" },
+  { id = "spawn_usage.block", setting = "guards.usageAwareDispatch", hosts = ["claude"], tier = "essential", source = "spawn_usage.msg_block_what" },
+  { id = "spawn_usage.soft", setting = "", tier = "skill", source = "spawn_usage.msg_soft_what" },
+  { id = "nested_spawn.msg", setting = "guards.allowNestedSpawns", inverted = true, tier = "essential", source = "nested_spawn.msg_what" },
+  { id = "task_guard.idle", setting = "guards.taskGuard", tier = "essential", source = "task_guard.idle_what" },
+  { id = "task_guard.generic", setting = "", tier = "skill", source = "task_guard.generic_what" },
+  { id = "tasklist_guard.reset", setting = "", tier = "skill", source = "tasklist_guard.what_reset" },
+  { id = "rules_json.rm_rf_root", setting = "", tier = "essential", source = "guard_rules.msg_rm_rf_root" },
+  { id = "write.no_heredoc", setting = "", tier = "essential", source = "guard_rules.msg_no_heredoc" },
+  { id = "tasklist_guard.no_tasks", setting = "guards.tasklistGuard", tier = "essential", source = "tasklist_guard.what_no_tasks" },
+  { id = "tasklist_guard.stalled", setting = "", tier = "skill", source = "tasklist_guard.what_stalled" },
+  { id = "tasklist_guard.progress", setting = "", tier = "skill", source = "tasklist_guard.what_progress" },
+  { id = "tasklist_guard.reduced", setting = "", tier = "skill", source = "tasklist_guard.what_reduced" },
+  { id = "task_tracker.full", setting = "", tier = "skill", source = "task_tracker.what_full" },
+  { id = "task_tracker.short", setting = "", tier = "skill", source = "task_tracker.what_short" },
+  { id = "task_tracker.primary", setting = "", tier = "skill", source = "task_tracker.primary_what" },
+  { id = "uncommitted.msg", setting = "", tier = "skill", source = "uncommitted.msg_what" },
+  { id = "fable_availability.msg", setting = "", hosts = ["claude"], tier = "skill", source = "fable_availability.msg_what" },
+]
+
+[guard_rules.exempt]
+doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording."
+value = [
+  "msg.client_what_timeout",
+  "jev.what_read_requests",
+  "jev.what_read_texts",
+  "jev.what_create_dir",
+  "mesh_write.what_store_dir",
+  "mesh_write.what_store",
+  "mesh_write.what_registry",
+  "mesh_write.what_append",
+  "mesh_write.what_messages",
+  "msg.client_what_stat",
+  "msg.updater_unverifiable_what",
+  "ops.trust_what_command",
+  "ops.trust_what_edit",
+  "session.reload_what",
+  "session.unregistered_what",
+  "session.update_what",
+  "session.devswarm_what",
+  "session.claude_cli_what",
+  "session.defect_maintainer_what",
+  "session.defect_reporter_what",
+  "session.gitignore_what",
+  "session_gates.key_what_jev",
+  "session_gates.key_what_anthropic",
+  "setup.what_write_stdout",
+  "setup.what_cwd",
+  "setup.what_read",
+  "setup.what_list",
+  "setup.what_resolve",
+  "setup.what_stat",
+  "setup.what_git",
+  "setup.what_crontab",
+  "setup.what_set_aside",
+  "setup.what_create_dir",
+  "setup.what_remove",
+  "setup.what_write",
+  "setup.what_read_stdin",
+  "setup.fmt_what",
+  "sibling_sweep.msg_what",
+  "sibling_sweep.what_log",
+  "sibling_sweep.what_transcript",
+  "sibling_sweep.what_state",
+  "units.cmd_what",
+]
+# ---- the digest, the skill section, the visibility texts (all read by skillgen and the session scripts) ----
+
+[guard_rules.tiers]
+doc = "The tiers, lowest detail last. A rule is shown to agents when its tier is listed; `off` rules are enforced but not described."
+value = ["essential", "skill", "off"]
+
+[guard_rules.digest_head]
+doc = "First line of the session-start digest."
+value = "anti-hall rules (same config the engine enforces):"
+
+[guard_rules.digest_line]
+doc = "One essential digest line. Placeholder: {line}, the enforced rule's own text (what, instead) composed by `guard_rules.digest_entry`; no separate copy."
+value = "- {line}"
+
+[guard_rules.digest_entry]
+doc = "How an essential rule's digest text is built: from the rule's own `digest` field, which sits beside its enforced message entry (a `digest` key inside an inline what/why/instead table, or the sibling key with `what` replaced by `digest`; a string, or a table by host). One short line naming the rule and what to do; the enforced message is too long for the budget. Placeholders: {digest}, {what}, {instead}."
+value = "{digest}"
+
+[guard_rules.skill_use_when]
+doc = "The description of a generated sub-skill: the sentence that makes the host load it. Placeholder: {use_when}, the area's `use_when` in `roles.areas`."
+value = "Use when {use_when}."
+
+[guard_rules.digest_foot]
+doc = "Last line of the digest."
+value = "More: skill engine-rules. After a block fix the cause, retry once."
+
+[guard_rules.placeholder]
+doc = "What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known."
+value = "..."
+
+[guard_rules.skill_head]
+doc = "Heading of the rules section in the engine-guards skill."
+value = "Rules the engine enforces"
+
+[guard_rules.skill_intro]
+doc = "Lead-in of the rules section in the engine-guards skill."
+value = "Generated from the same config the engine reads. Tier: essential rules are also in the session-start digest."
+
+[guard_rules.skill_rule]
+doc = "One rule in the skill. Placeholders: {id}, {tier}, {setting}, {what}, {why}, {instead}."
+value = "- `{id}` ({tier}{setting}): {what} {why} {instead}"
+
+[guard_rules.skill_setting]
+doc = "Appended to the tier of a rule that has a setting. Placeholder: {setting}."
+value = ", switch `{setting}`"
+
+[guard_rules.skill_why]
+doc = "Label in front of a rule's why. Placeholder: {why}."
+value = "Why: {why}"
+
+[guard_rules.skill_instead]
+doc = "Label in front of a rule's instead. Placeholder: {instead}."
+value = "Instead: {instead}"
+
+[guard_rules.sw_digest]
+doc = "Where the rule-digest on/off switch is read from (context.ruleDigest, default on): off keeps the digest out of the session-start and post-compact context."
+value = { section = "context", key = "ruleDigest", kind = "bool", env = "ANTIHALL_RULE_DIGEST", aliases = [], option = "", manifest_default = "", default = true }
+
+[guard_rules.enum_digest_tier]
+doc = "Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget."
+value = { section = "context", key = "ruleDigestTier", env = "ANTIHALL_RULE_DIGEST_TIER", aliases = [], option = "", default = "essential", values = ["essential", "skill"] }
+
+[guard_rules.sw_banner]
+doc = "Where the session banner on/off switch is read from (ui.banner, default on): a one-line message to the user at session start."
+value = { section = "ui", key = "banner", kind = "bool", env = "ANTIHALL_UI_BANNER", aliases = [], option = "", manifest_default = "", default = true }
+
+[guard_rules.enum_summary]
+doc = "When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends."
+value = { section = "ui", key = "sessionSummary", env = "ANTIHALL_UI_SESSION_SUMMARY", aliases = [], option = "", default = "end", values = ["off", "end"] }
+
+[guard_rules.banner_text]
+doc = "The session banner. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause."
+value = "anti-hall {version} active: {rules} rules enforced{last}."
+
+[guard_rules.banner_last]
+doc = "The last-session clause of the banner when blocks were recorded. Placeholders: {blocks}."
+value = "; last session {blocks} blocks"
+
+[guard_rules.summary_text]
+doc = "The session summary. Placeholders: {blocks} blocks in this session, {top} the most frequent rules."
+value = "anti-hall this session: {blocks} blocks{top}."
+
+[guard_rules.summary_top]
+doc = "The most-frequent clause of the summary. Placeholders: {top}."
+value = " (most: {top})"
+
+[guard_rules.summary_none]
+doc = "The summary when the session had no block."
+value = "anti-hall this session: no blocks."
+
+[guard_rules.summary_top_n]
+doc = "How many rules the summary names."
+value = 3
+min = 1
+
+[guard_rules.sessions_ns]
+doc = "State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block."
+value = "guard-rules"
+
+[guard_rules.sessions_key]
+doc = "State key of the session list (a JSON array of [session, start_ms])."
+value = "sessions"
+
+[guard_rules.sessions_keep]
+doc = "How many sessions the session list keeps (the newest by start time)."
+value = 50
+min = 1
+
+[guard_rules.blocks_window_days]
+doc = "How many days of recorded blocks the banner and summary look back over to find a session."
+value = 14
+min = 1
+unit = "days"
+
+[guard_rules.digest_state_file]
+doc = "State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off."
+value = ".anti-hall/logs/rule-digest-sessions.log"
+
+[guard_rules.digest_file]
+doc = "The generated digest of the default host (dispatch.default_host), relative to the plugin root. The session script reads it; `ah-regen` writes it from the rules above. Another host's digest is `guard_rules.digest_file_<host>`."
+value = "engine/rule-digest.txt"
+
+[guard_rules.digest_file_codex]
+doc = "The generated digest of the Codex host (its own model guidance), relative to the plugin root; the session script picks it on a Codex request (standdown.codex_host)."
+value = "engine/rule-digest.codex.txt"
+
+[guard_rules.digest_hosts]
+doc = "The hosts a digest is generated for, each from the host's own digest text (a `digest` table by host, or one string for all)."
+value = ["claude", "codex"]
+
+[guard_rules.setting_sep]
+doc = "Separator of several settings keys in one rule row's setting (each must be on for the rule to be enforced)."
+value = ", "
+
+[guard_rules.digest_off_values]
+doc = "The effective setting values that mean a rule's switch is off (a boolean switch false, an enum switch off); the session script leaves out the digest line of a rule whose switch has one of them (the opposite for an inverted row)."
+value = [false, "off"]
+
+[guard_rules.digest_gate_sep]
+doc = "In the generated digest file, the separator between a line's gate (the defaults keys of the rule's switches, comma-joined) and its text; the session script reads the gate and strips it."
+value = "\t"
+
+[guard_rules.digest_gate_not]
+doc = "Prefix of a gate key whose rule is enforced while the switch is off (an inverted row)."
+value = "!"
+
+[guard_rules.digest_cfg_ref]
+doc = "Placeholder prefix in a digest field: {cfg:<defaults key>} becomes that entry's value (a settings entry's default) when the digest is generated, so a threshold or role name has one source."
+value = "cfg:"
+
+[guard_rules.problem_setting]
+doc = "Registry problem: a rule row's setting names no settings entry (section and key). Placeholders: {id}, {setting}."
+value = "{id}: setting {setting} matches no settings entry"
+
+[guard_rules.source_line]
+doc = "One line of the generated digest file's third section (after the second separator): an essential rule's full enforced text. The session script never reads it; it is there so an edit of the enforced message makes the committed digest stale (`ah-regen --check`) and the digest line is reviewed with it. Placeholders: {id}, {what}, {why}, {instead}."
+value = "- {id}: {what} {why} {instead}"
+
+[guard_rules.digest_check]
+doc = "The check whose answer marks a session's digest state for the cohort counters: an advisory (the digest was injected) is on, anything else off."
+value = "rule-digest"
+
+[guard_rules.cohort_labels]
+doc = "Label values of the #462 counters: the digest state of a session (on, off) in rule_digest_calls, and the result of the next call of a check after it blocked (compliant: not blocked again; repeat: blocked again) in rule_retry_compliant."
+value = { on = "on", off = "off", compliant = "compliant", repeat = "repeat" }
+
+[guard_rules.cohort_track_max]
+doc = "How many sessions (digest state) and session-check pairs (a block waiting for its retry) the daemon tracks in memory for the cohort counters; past it new ones are not tracked until the daemon restarts."
+value = 4096
+min = 16
+
+[guard_rules.msg_compose]
+doc = "How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}."
+value = { deny = "anti-hall: BLOCKED. {what} {why} {instead}", warn = "anti-hall: WARNING. {what} {why} {instead}", context = "anti-hall: {what} {why} {instead}" }
+
+[guard_rules.msg_rm_rf_root]
+doc = "Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref."
+value = { what = "`rm -rf` on / or the home directory.", why = "Deleting data cannot be undone and needs the owner's explicit confirmation.", instead = "confirm with the owner before deleting data, and delete only the exact paths you created.", digest = "Never delete data without the owner's explicit OK; delete only paths you created." }
+
+[guard_rules.msg_no_heredoc]
+doc = "Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread."
+value = { what = "a file written through a Bash heredoc.", why = "The git and command guards scan the heredoc body as shell, so file content gets blocked or misread.", instead = "write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.", digest = "Write files with the edit tools, never a Bash heredoc." }
+
+[guard_rules.problem_id]
+doc = "Registry problem: a rule id that is empty or repeated. Placeholder: {id}."
+value = "rule id empty or duplicate: {id}"
+
+[guard_rules.problem_tier]
+doc = "Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}."
+value = "{id}: tier {tier} is not one of {tiers}"
+
+[guard_rules.problem_source]
+doc = "Registry problem: the source key of a rule does not exist. Placeholders: {id}, {source}."
+value = "{id}: source {source} does not exist"
+
+[guard_rules.problem_line]
+doc = "Registry problem: an essential rule with no digest field for a host, or a digest line with a placeholder left in it. Placeholders: {id}, {host}."
+value = "{id}: essential rule without a usable digest field for {host}"
+
+[guard_rules.problem_skill]
+doc = "Registry problem: a rule is missing from the generated rules skill. Placeholder: {id}."
+value = "{id}: missing from the generated skill"
+
+[guard_rules.problem_digest]
+doc = "Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}."
+value = "{id}: missing from the generated digest"
+
+[guard_rules.problem_unregistered]
+doc = "Registry problem: a block text has no rule row. Placeholder: {key}."
+value = "{key}: a block text with no rule row (add it to guard_rules.rules with a tier, or to guard_rules.exempt)"
+
+[metric.rule_digest_calls]
+doc = "Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted."
+value = { kind = "counter", unit = "calls", labels = ["state", "outcome"] }
+
+[metric.rule_retry_compliant]
+doc = "The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant)."
+value = { kind = "counter", unit = "retries", labels = ["check", "result"] }
+
+[metric.rule_digest]
+doc = "Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off."
+value = { kind = "counter", unit = "sessions", labels = ["state"] }
+
+[guard_rules.digest_sep]
+doc = "The line that splits the essential lines from the extra lines (tier skill) in the generated digest file."
+value = "--"
+
+[guard_rules.extra_line]
+doc = "One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}."
+value = "- {id}: {what}"
+
+[guard_rules.area]
+doc = "The key of the feature area (roles.groups) whose skill lists the rules."
+value = "rules"
+
+[guard_rules.blocks_limit]
+doc = "How many recorded blocks the banner and summary read at most."
+value = 2000
+min = 1
+
+[guard_rules.manifest_files]
+doc = "The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it)."
+value = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]
+
+[guard_rules.summary]
+doc = "One-line description of the rule-digest check in the generated reference."
+value = "SessionStart: puts the essential rules the engine enforces (one source with the engine-rules skill) into the session context; context.ruleDigest turns it off."
+
+[guard_rules.summary_banner]
+doc = "One-line description of the session-banner check in the generated reference."
+value = "SessionStart: one user-visible line with the plugin version, the rules enforced and last session's blocks; ui.banner turns it off."
+
+[guard_rules.summary_session]
+doc = "One-line description of the session-summary check in the generated reference."
+value = "SessionEnd: one user-visible line with this session's blocks and the rules that fired most; ui.sessionSummary = off turns it off."

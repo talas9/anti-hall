@@ -535,6 +535,20 @@ pub(crate) fn load_state(env: &Env) -> State {
     }
 }
 
+/// A child's launch identity for the guards: (the tool call id that launched it, its agent type), each "" when unknown. Both come
+/// from the host's meta file (`agent_tracker.meta` tool_use_id, `agent_tracker.no_work` agent_type_fields); a child the tracker
+/// knows as a Codex rescue wrapper has the rescue type even when its meta names none (hosts that keep the type in the launch input).
+fn launch_of(a: &Agent) -> (String, String) {
+    let meta = if is_child(a) { sources::json_of(std::path::Path::new(&facts::meta_path(&a.path))) } else { None };
+    let field = |k: &str| meta.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
+    let nw = defaults::raw("agent_tracker.no_work");
+    let tool_use_id = field(defaults::raw("agent_tracker.meta").str_field("tool_use_id"));
+    let named = nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().map(|k| field(k)).find(|t| !t.is_empty()).unwrap_or_default();
+    // an explicit type in the meta wins (a general-purpose child that merely runs Codex stays general-purpose); the rescue type is inferred only when none is named
+    let agent_type = if named.is_empty() && a.codex_rescue { nw.str_field("rescue_type").to_string() } else { named };
+    (tool_use_id, agent_type)
+}
+
 /// A read-only, request-local reconciliation of retained tracker rows for guards.
 /// Reuse the tracker's ingestion and state rules; never tick, save, probe a CLI,
 /// deliver reminders or rewrite the user's history from a hook decision.
@@ -573,8 +587,9 @@ pub(crate) fn guard_rows(env: &Env, session: &str, transcript: &str, cwd: &str) 
     for a in st.agents.values() {
         let state = signals::state_of(a);
         let known = readable.contains(&a.id) && a.last_output_ms > 0 && env.now_ms.saturating_sub(a.last_output_ms) <= lim("active_window_ms");
+        let (tool_use_id, agent_type) = launch_of(a);
         out.push(serde_json::json!({"id": a.id, "name": a.name, "parent": a.parent, "kind": a.kind,
-            "state": state, "known": known, "lastSeenMs": a.last_output_ms}));
+            "state": state, "known": known, "lastSeenMs": a.last_output_ms, "toolUseId": tool_use_id, "agentType": agent_type}));
         for (id, started) in &a.bg_ids {
             out.push(serde_json::json!({"id": id, "name": id, "parent": a.id,
                 "kind": defaults::text("agent_tracker.guard_job_kind"), "state": if a.dead || a.gone || a.finished { state } else { state_name("running") },

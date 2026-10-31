@@ -835,6 +835,10 @@ value = "Auth/secret edge cases get mishandled by a cheap model."
 doc = "Row-1 block headline."
 value = "routine execution was assigned to a flagship model."
 
+[model_routing.msg_row1_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). A table by host: each host names only its own models."
+value = { claude = "Route routine work to haiku (sonnet if it writes code); keep opus for design.", codex = "Route routine work to a cheaper model tier; keep the flagship tier for design." }
+
 [model_routing.msg_row1_why]
 doc = "Row-1 block reason."
 value = "This hook cannot see the parent model; execution-only work needs an explicit cheap model."
@@ -1477,6 +1481,10 @@ value = "hand the rest to a subagent now; step {block_at} in this window will be
 [coordinator_work.block_what]
 doc = "Block headline; {count} is the number of work calls in the window and {minutes} the window length."
 value = "this step was stopped after repeated main-thread edits."
+
+[coordinator_work.block_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "Main thread: delegate heavy commands (builds, tests) from the first call; after {cfg:coordinator_work.block_setting} edits, hand the rest to a subagent."
 
 [coordinator_work.block_why]
 doc = "Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed."
