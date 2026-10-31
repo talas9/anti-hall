@@ -908,7 +908,7 @@ doc = "Commands whose first argument is a script file run in the current shell (
 value = ["source", "."]
 
 [git.script_scan_max_bytes]
-doc = "Largest script (in bytes) a Bash call runs by literal path (bash x.sh, sh x.sh, ./x.sh, source x) that is read and scanned for AI credit lines and a same-call commit and push; a larger, missing or non-literal one is let through with script_unchecked_advisory."
+doc = "Largest script (in bytes) a Bash call runs by literal path (through a shell, directly, or with source) that is read and scanned for AI credit lines and a same-call commit and push; a larger, missing or non-literal one is let through with script_unchecked_advisory."
 value = 262144
 min = 1024
 max = 16777216
