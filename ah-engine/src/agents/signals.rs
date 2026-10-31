@@ -367,6 +367,220 @@ fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised>
     })
 }
 
+// ---- nudge signals (GH #515, #517, #518): every threshold, list and text is in nudges.toml / agent_tracker.toml ----------------
+
+fn num(t: &V, k: &str) -> u64 {
+    t.get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
+}
+
+fn metric(step: &str) {
+    let m = defaults::raw("nudges.metric");
+    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(step))]);
+}
+
+/// The stall sample: the observable fingerprint and since when it holds (only while the agent runs).
+fn stall_sample(env: &Env, a: &mut Agent, now: u64) {
+    if !env.switch("agent_tracker.stall_sw") || !running(a) {
+        a.stall_since = 0;
+        return;
+    }
+    let obs = vec![a.offset, a.tools, a.commits, a.changes, a.progress, a.edits, a.said_since];
+    if a.stall_obs != obs || a.stall_since == 0 {
+        a.stall_obs = obs;
+        a.stall_since = now;
+    }
+    if env.act {
+        metric("sampled");
+    }
+}
+
+/// A running child agent with no call in flight and not hung, whose observable state did not change for `quiet_ms`, or whose
+/// progress line repeated with no outcome for `repeat_ms`. Evidence: the seconds; text: the nudges.stall_words key.
+fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
+    if !(super::is_child(a) || a.kind == kind_name("workspace")) || !env.switch("agent_tracker.stall_sw") || !running(a) || !a.pending.is_empty() {
+        return None;
+    }
+    if a.stall_since == 0 || hung(a, now).is_some() {
+        return None;
+    }
+    let c = defaults::raw("nudges.stall");
+    let quiet = now.saturating_sub(a.stall_since);
+    let rep = if a.said_since > 0 && a.progress == a.said_progress { now.saturating_sub(a.said_since) } else { 0 };
+    let (what, idle) = if num(c, "quiet_ms") > 0 && quiet >= num(c, "quiet_ms") {
+        ("quiet", quiet)
+    } else if num(c, "repeat_ms") > 0 && rep >= num(c, "repeat_ms") {
+        ("repeat", rep)
+    } else {
+        return None;
+    };
+    if env.act {
+        metric("stalled");
+    }
+    Some((idle / fmtn("ms_per_s"), what.to_string()))
+}
+
+/// One task of the session's task list.
+struct Task {
+    id: String,
+    subject: String,
+    status: String,
+    owner: String,
+    blocked: Vec<String>,
+}
+
+/// The session's task list (`nudges.idle_wake.tasks_dir`); unreadable files are skipped (no task list is no nudge).
+fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
+    let c = defaults::raw("nudges.idle_wake");
+    let dir = env.home.join(c.str_field("tasks_dir")).join(sinks::key_of(sid));
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        if !e.file_name().to_string_lossy().ends_with(c.str_field("task_ext")) {
+            continue;
+        }
+        let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
+        let s = |k: &str| v.get(c.str_field(k)).map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).unwrap_or_default();
+        let blocked = v
+            .get(c.str_field("f_blocked"))
+            .and_then(serde_json::Value::as_array)
+            .map(|b| b.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect())
+            .unwrap_or_default();
+        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked });
+    }
+    out.sort_by(|x, y| x.id.cmp(&y.id));
+    out
+}
+
+/// Open (an open status), unassigned (no owner) tasks whose blockers are all closed (or gone).
+fn dispatchable(tasks: &[Task]) -> Vec<&Task> {
+    let c = defaults::raw("nudges.idle_wake");
+    let (open, closed) = (c.get("open_statuses").map(V::strings).unwrap_or_default(), c.get("closed_statuses").map(V::strings).unwrap_or_default());
+    let shut = |id: &String| tasks.iter().find(|t| t.id == *id).is_none_or(|t| closed.contains(&t.status.as_str()));
+    tasks.iter().filter(|t| open.contains(&t.status.as_str()) && t.owner.is_empty() && t.blocked.iter().all(shut)).collect()
+}
+
+fn running_children(st: &State, a: &Agent) -> u64 {
+    st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && running(s)).count() as u64
+}
+
+/// A main session idle for `idle_ms` past its turn: the idle time, or None.
+fn main_idle(a: &Agent, now: u64, idle_ms: u64) -> Option<u64> {
+    if a.kind != kind_name("main") || a.gone || a.running || a.last_output_ms == 0 {
+        return None;
+    }
+    let idle = now.saturating_sub(a.last_output_ms);
+    (idle >= idle_ms && idle <= lim("active_window_ms")).then_some(idle)
+}
+
+fn joined(items: &[String], shown: u64, joiner: &str) -> String {
+    items.iter().take(shown as usize).cloned().collect::<Vec<_>>().join(joiner)
+}
+
+/// GH #515: open unblocked unassigned tasks and no agent running for `idle_ms`. Evidence: the task count; text: their subjects.
+fn idle_no_agents(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
+    let c = defaults::raw("nudges.idle_wake");
+    if !env.switch("agent_tracker.idle_wake_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() || running_children(st, a) > 0 {
+        return None;
+    }
+    let tasks = session_tasks(env, &a.id);
+    let open: Vec<String> = dispatchable(&tasks).iter().map(|t| t.subject.clone()).collect();
+    if open.is_empty() {
+        return None;
+    }
+    if env.act {
+        metric("idle_wake");
+    }
+    Some((open.len() as u64, joined(&open, num(c, "tasks_shown"), c.str_field("joiner"))))
+}
+
+/// GH #515: an idle child whose last line claims running or background work, with no call in flight, no build or background shell
+/// and no output for `claim_ms`. Evidence: the idle seconds; text: the line.
+fn false_claim(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
+    if !super::is_child(a) || !env.switch("agent_tracker.idle_wake_sw") || a.running || a.gone || a.last_output_ms == 0 {
+        return None;
+    }
+    let line = a.said.last()?;
+    let low = line.to_lowercase();
+    if !defaults::list("nudges.idle_wake_claims").iter().any(|p| low.contains(&p.to_lowercase())) {
+        return None;
+    }
+    if env.act {
+        metric("claim_checked");
+    }
+    let idle = now.saturating_sub(a.last_output_ms);
+    let shell = a.bg_bash.iter().any(|t| *t >= a.last_output_ms && now.saturating_sub(*t) <= lim("bg_bash_ms"));
+    if idle < num(defaults::raw("nudges.idle_wake"), "claim_ms") || idle > lim("active_window_ms") || !a.pending.is_empty() || building(a, now) || shell {
+        return None;
+    }
+    if env.act {
+        metric("claim_flagged");
+    }
+    Some((idle / fmtn("ms_per_s"), line.clone()))
+}
+
+/// The bullet lines that follow a line holding a gap phrase in `reply` (at most `gap_lines_max`).
+fn gap_items(reply: &str) -> Vec<String> {
+    let c = defaults::raw("nudges.parallel");
+    let phrases = defaults::list("nudges.parallel_gap_phrases");
+    let marks = c.get("number_marks").map(V::strings).unwrap_or_default();
+    let bullet = |t: &str| -> Option<String> {
+        let first = t.chars().next()?;
+        if c.str_field("bullet_chars").contains(first) {
+            return Some(t.get(first.len_utf8()..).unwrap_or("").trim().to_string());
+        }
+        let digits = t.chars().take_while(char::is_ascii_digit).count();
+        (digits > 0).then(|| marks.iter().find_map(|m| t.get(digits..).and_then(|r| r.strip_prefix(*m))).map(|r| r.trim().to_string())).flatten()
+    };
+    let (mut out, mut on) = (Vec::new(), false);
+    for l in reply.lines().map(str::trim) {
+        if phrases.iter().any(|p| l.to_lowercase().contains(&p.to_lowercase())) {
+            on = true;
+            continue;
+        }
+        if !on || l.is_empty() {
+            continue;
+        }
+        match bullet(l) {
+            Some(i) if !i.is_empty() && (out.len() as u64) < num(c, "gap_lines_max") => out.push(i.chars().take(num(c, "item_chars") as usize).collect()),
+            Some(_) => {}
+            None => on = false,
+        }
+    }
+    out
+}
+
+/// GH #517: an idle main session with fewer running agents than the cap and open items: unassigned tasks while an agent runs
+/// (none running is idle_no_agents), or gap lines of its last reply no task subject covers. Text: running, cap and items, tab-joined.
+fn underparallel(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
+    let c = defaults::raw("nudges.parallel");
+    if !env.switch("agent_tracker.parallel_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() {
+        return None;
+    }
+    let cap = crate::checks::guardkit::settings::get_num(&env.settings, defaults::raw("spawn_ceiling.max_concurrent_setting")).max(0.0) as u64;
+    let run = running_children(st, a);
+    if cap > 0 && run >= cap {
+        return None;
+    }
+    let tasks = session_tasks(env, &a.id);
+    let mut items: Vec<String> = if run > 0 { dispatchable(&tasks).iter().map(|t| t.subject.clone()).collect() } else { Vec::new() };
+    let covered = |g: &str| {
+        let g = g.to_lowercase();
+        tasks.iter().any(|t| {
+            let s = t.subject.to_lowercase();
+            !s.is_empty() && (s.contains(&g) || g.contains(&s))
+        })
+    };
+    items.extend(gap_items(&a.last_reply).into_iter().filter(|g| !covered(g)));
+    if items.is_empty() {
+        return None;
+    }
+    if env.act {
+        metric("parallel");
+    }
+    let cap_text = if cap == 0 { c.str_field("no_cap").to_string() } else { cap.to_string() };
+    Some((items.len() as u64, format!("{run}\t{cap_text}\t{}", joined(&items, num(c, "items_shown"), c.str_field("joiner")))))
+}
+
 fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, Raised> {
     let mut out = BTreeMap::new();
     for s in defaults_signals() {
@@ -383,6 +597,10 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
             "idle_open_task" => idle_open_task(a, now),
             "watched_exit" => watched_exit(a, now),
             "no_work" => no_work(a),
+            "stalled" => stalled(env, a, now),
+            "idle_no_agents" => idle_no_agents(env, a, st, now),
+            "false_claim" => false_claim(env, a, now),
+            "underparallel" => underparallel(env, a, st, now),
             _ => None,
         };
         if let Some(r) = r {
@@ -482,6 +700,35 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
         }
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
         "no_work" => defaults::render("msg.agent_no_work", &[("agent", &who), ("kind", &kind), ("tools", &f.evidence)]),
+        "stalled" => {
+            let c = defaults::raw("nudges.stall");
+            let shown: Vec<String> =
+                a.said.iter().rev().take(num(c, "lines_shown") as usize).rev().map(|l| c.str_field("quote").replace("{line}", l)).collect();
+            let lines = if shown.is_empty() { c.str_field("none").to_string() } else { shown.join(c.str_field("joiner")) };
+            defaults::render(
+                "msg.agent_stalled",
+                &[
+                    ("agent", &who),
+                    ("kind", &kind),
+                    ("what", &defaults::raw("nudges.stall_words").str_field(&f.text)),
+                    ("idle", &age(f.evidence * fmtn("ms_per_s"))),
+                    ("age", &age(a.seen.saturating_sub(a.first_seen))),
+                    ("lines", &lines),
+                ],
+            )
+        }
+        "idle_no_agents" => {
+            defaults::render("msg.agent_idle_no_agents", &[("n", &f.evidence), ("idle", &age(f.since.saturating_sub(a.last_output_ms))), ("tasks", &f.text)])
+        }
+        "false_claim" => {
+            let line = defaults::raw("nudges.stall").str_field("quote").replace("{line}", &f.text);
+            defaults::render("msg.agent_false_claim", &[("agent", &who), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("line", &line)])
+        }
+        "underparallel" => {
+            let mut parts = f.text.splitn(3, '\t');
+            let (run, cap, items) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            defaults::render("msg.agent_underparallel", &[("n", &f.evidence), ("items", &items), ("running", &run), ("cap", &cap)])
+        }
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
             defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
         }
@@ -758,6 +1005,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
         super::waste::note_head(env, &mut a);
         sample(&mut a, now);
+        stall_sample(env, &mut a, now);
         super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
         mark_breaker(env, &a, raised.get("burn_hard"));

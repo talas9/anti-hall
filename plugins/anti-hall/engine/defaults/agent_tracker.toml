@@ -106,7 +106,7 @@ value = { commit = 10, step = 5, test = 2, file = 1, push = 3, build = 3, merge 
 
 [agent_tracker.cooldowns]
 doc = "Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent)."
-value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, agent_waste = { cooldown_ms = 1800000, max_per_day = 4 }, burn_soft = { cooldown_ms = 1800000, max_per_day = 4, confirm_ticks = 1 }, burn_hard = { cooldown_ms = 900000, max_per_day = 6, confirm_ticks = 1 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 900000, max_per_day = 12 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 }, no_work = { cooldown_ms = 3600000, max_per_day = 20, once = true, confirm_ticks = 1 } }
+value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, agent_waste = { cooldown_ms = 1800000, max_per_day = 4 }, burn_soft = { cooldown_ms = 1800000, max_per_day = 4, confirm_ticks = 1 }, burn_hard = { cooldown_ms = 900000, max_per_day = 6, confirm_ticks = 1 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 900000, max_per_day = 12 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 }, no_work = { cooldown_ms = 3600000, max_per_day = 20, once = true, confirm_ticks = 1 }, stalled = { cooldown_ms = 1800000, max_per_day = 8 }, idle_no_agents = { cooldown_ms = 1800000, max_per_day = 8 }, false_claim = { cooldown_ms = 1800000, max_per_day = 8 }, underparallel = { cooldown_ms = 1800000, max_per_day = 8 } }
 
 [agent_tracker.spam]
 doc = "Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder)."
@@ -118,11 +118,11 @@ value = { self = { to = "self", via = "queue" }, coordinator = { to = "coordinat
 
 [agent_tracker.routes]
 doc = "Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on)."
-value = { hung = ["coordinator", "wake", "owner"], looping = ["coordinator", "wake", "owner"], token_waste = ["coordinator", "wake", "owner"], agent_waste = ["coordinator", "wake", "owner"], burn_soft = ["self", "coordinator", "wake"], burn_hard = ["self", "coordinator", "wake"], drift = ["self"], heartbeat_stale = ["coordinator", "wake"], monitor_unarmed = ["self"], idle_open_task = ["coordinator", "wake"], watched_exit = ["coordinator", "wake"], no_work = ["coordinator", "wake"] }
+value = { hung = ["coordinator", "wake", "owner"], looping = ["coordinator", "wake", "owner"], token_waste = ["coordinator", "wake", "owner"], agent_waste = ["coordinator", "wake", "owner"], burn_soft = ["self", "coordinator", "wake"], burn_hard = ["self", "coordinator", "wake"], drift = ["self"], heartbeat_stale = ["coordinator", "wake"], monitor_unarmed = ["self"], idle_open_task = ["coordinator", "wake"], watched_exit = ["coordinator", "wake"], no_work = ["coordinator", "wake"], stalled = ["coordinator", "wake"], idle_no_agents = ["self", "self_wake"], false_claim = ["coordinator", "wake"], underparallel = ["self", "self_wake"] }
 
 [agent_tracker.signals]
 doc = "The signals the tick evaluates, in order. A name not listed here is never raised."
-value = ["hung", "looping", "token_waste", "agent_waste", "burn_soft", "burn_hard", "drift", "heartbeat_stale", "monitor_unarmed", "idle_open_task", "watched_exit", "no_work"]
+value = ["hung", "looping", "token_waste", "agent_waste", "burn_soft", "burn_hard", "drift", "heartbeat_stale", "monitor_unarmed", "idle_open_task", "watched_exit", "no_work", "stalled", "idle_no_agents", "false_claim", "underparallel"]
 
 [agent_tracker.kinds]
 doc = "The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), teammate (an in-process teammate of an agent team: a subagent transcript whose meta names it one), codex (a Codex CLI session, from its rollout file), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file)."
@@ -239,6 +239,34 @@ value = "agent tracker: no Monitor wake-watch covers this workspace (its lock is
 [msg.agent_idle_open_task]
 doc = "Wake advisory: an agent finished its turn with a task open and went quiet. Placeholders: {agent}, {kind}, {idle}, {task}."
 value = "agent tracker: {kind} {agent} has been idle for {idle} with its task still open ({task}). Re-task it (SendMessage) or stop it; the tracker never does either."
+
+[agent_tracker.stall_sw]
+doc = "Stall nudge on/off (#518)."
+value = { section = "nudges", key = "stall", env = "ANTIHALL_NUDGES_STALL", aliases = [], option = "", default = true }
+
+[agent_tracker.idle_wake_sw]
+doc = "Idle wake on/off (#515)."
+value = { section = "nudges", key = "idleWake", env = "ANTIHALL_NUDGES_IDLE_WAKE", aliases = [], option = "", default = true }
+
+[agent_tracker.parallel_sw]
+doc = "Parallel nudge on/off (#517)."
+value = { section = "nudges", key = "parallel", env = "ANTIHALL_NUDGES_PARALLEL", aliases = [], option = "", default = true }
+
+[msg.agent_stalled]
+doc = "Reminder of the stalled signal (GH #518): a running agent with no observable change, or the same progress line and no outcome, for nudges.stall. Placeholders: {kind}, {agent}, {what} (nudges.stall_words), {idle}, {age} (since first seen), {lines} (its last distinct progress lines)."
+value = "agent tracker: {kind} {agent} is STALLED: {what} for {idle} (running {age}). Last progress: {lines}. Message it, stop it, or re-dispatch it with a narrower brief."
+
+[msg.agent_idle_no_agents]
+doc = "Wake row of the idle_no_agents signal (GH #515): open unblocked unassigned tasks and no agent running for nudges.idle_wake.idle_ms. Placeholders: {n}, {idle}, {tasks}."
+value = "agent tracker: {n} open unblocked task(s) and no agent running for {idle}: {tasks}. Dispatch them now, or close the ones that are done."
+
+[msg.agent_false_claim]
+doc = "Wake row of the false_claim signal (GH #515): an idle teammate's last message claims running work (nudges.idle_wake_claims) but no tool call, background task or output followed for nudges.idle_wake.claim_ms. Placeholders: {agent}, {idle}, {line}."
+value = "agent tracker: teammate {agent} claims running work but nothing is running (no call in flight, no background task, no output for {idle}). Its last line: {line}. Ask it for proof or re-dispatch the work."
+
+[msg.agent_underparallel]
+doc = "Reminder of the underparallel signal (GH #517): open items (unassigned tasks, gap lines of the last reply not in the task list) while fewer agents than the cap run. Placeholders: {n}, {items}, {running}, {cap}."
+value = "agent tracker: {n} dispatchable item(s) ({items}) and only {running} agent(s) running (cap {cap}). Dispatch them in parallel."
 
 [agent_tracker.no_work]
 doc = "The no_work signal requires a valid transcript scanned from its start through its current end. Partial, truncated or unread scans are unknown and never notify. Rescue wrappers (agent type or Codex job id in a result) are excluded because their work happens elsewhere. max_tools controls the threshold."

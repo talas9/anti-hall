@@ -468,6 +468,24 @@ pub struct Agent {
     pub waste: waste::Mark,
     /// Signals up now.
     pub flags: BTreeMap<String, Flag>,
+    /// Its last distinct progress lines (the first line of each reply text), newest last (GH #518, `nudges.stall.lines_kept`).
+    #[serde(default)]
+    pub said: Vec<String>,
+    /// When the newest of `said` first appeared, and its progress units then.
+    #[serde(default)]
+    pub said_since: u64,
+    /// Progress units when the newest line of `said` first appeared.
+    #[serde(default)]
+    pub said_progress: u64,
+    /// Its last reply text, cut at `nudges.parallel.reply_chars` (GH #517: the gap lines).
+    #[serde(default)]
+    pub last_reply: String,
+    /// The observable stall fingerprint of the last sample (transcript offset, tool calls, commits, changes, progress, edits, line).
+    #[serde(default)]
+    pub stall_obs: Vec<u64>,
+    /// Since when `stall_obs` holds.
+    #[serde(default)]
+    pub stall_since: u64,
     /// When each signal was last reminded.
     pub last_sent: BTreeMap<String, u64>,
     /// Reminders queued (signal, time), for the daily cap.

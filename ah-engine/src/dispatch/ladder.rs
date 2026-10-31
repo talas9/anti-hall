@@ -63,6 +63,8 @@ pub struct Kind {
     pub quiet_reset: u64,
     /// The required next action.
     pub action: String,
+    /// Its hooks' blocks count as fires too (a guard whose condition is a deny or a Stop block, not an advisory).
+    pub count_blocks: bool,
 }
 
 fn strings(v: Option<&V>) -> Vec<String> {
@@ -90,6 +92,7 @@ pub fn kinds(overrides: &serde_json::Map<String, Value>) -> Vec<Kind> {
                 every: int(row.get("every"), every).max(1),
                 quiet_reset: int(row.get("quiet_reset"), quiet),
                 action: row.str_field("action").to_string(),
+                count_blocks: row.get("count_blocks").and_then(V::as_bool).unwrap_or(false),
             })
         })
         .collect()
@@ -125,6 +128,20 @@ fn advisory_text(r: &HookResult) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// The reason text of a block result: the JSON reason (or the deny reason), else stderr, else stdout.
+fn block_text(r: &HookResult) -> Option<String> {
+    if !combine::blocks(r) {
+        return None;
+    }
+    let v: Value = serde_json::from_str(r.out.trim()).unwrap_or(Value::Null); // keep: a non-JSON block carries its reason on stderr
+    let f = defaults::raw("nudges.block_reason_fields");
+    let json = [f.str_field("reason"), f.str_field("deny")]
+        .into_iter()
+        .find_map(|k| v.get(k).or_else(|| v.get(f.str_field("specific")).and_then(|h| h.get(k))).and_then(Value::as_str));
+    let t = json.map(str::to_string).unwrap_or_else(|| if r.err.trim().is_empty() { r.out.clone() } else { r.err.clone() });
+    (!t.trim().is_empty()).then_some(t)
+}
+
 /// What `results` showed of `k`.
 pub fn observe(k: &Kind, results: &[HookResult]) -> Seen {
     let mine: Vec<&HookResult> = results.iter().filter(|r| k.hooks.contains(&r.id)).collect();
@@ -132,7 +149,8 @@ pub fn observe(k: &Kind, results: &[HookResult]) -> Seen {
         return Seen::Absent;
     }
     for r in mine {
-        if let Some(t) = advisory_text(r).filter(|t| k.matches.is_empty() || k.matches.iter().any(|m| t.contains(m.as_str()))) {
+        let text = advisory_text(r).or_else(|| if k.count_blocks { block_text(r) } else { None });
+        if let Some(t) = text.filter(|t| k.matches.is_empty() || k.matches.iter().any(|m| t.contains(m.as_str()))) {
             let max = defaults::num("nudges.headline_chars") as usize;
             let first = t.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
             let ascii: String = first.chars().filter(char::is_ascii).collect::<String>().trim().chars().take(max).collect();
@@ -290,7 +308,9 @@ pub fn run_in(dir: &Path, event: &str, p: &Value, kinds: &[Kind], results: &[Hoo
     let mut reason = None;
     if defaults::list("nudges.block_events").contains(&event) {
         let active = p.get("stop_hook_active").and_then(Value::as_bool) == Some(true);
-        let (r, s) = at_stop(&mut st, kinds, !active);
+        // a Stop another hook already blocks carries that block; the ladder's waits for the next Stop (no stacked blocks)
+        let blocked = results.iter().any(combine::blocks);
+        let (r, s) = at_stop(&mut st, kinds, !active && !blocked);
         reason = r;
         steps.extend(s);
     }
@@ -332,7 +352,17 @@ mod tests {
     use serde_json::json;
 
     fn kind(class: Class, quiet_reset: u64) -> Kind {
-        Kind { name: "k".into(), class, hooks: vec!["h".into()], matches: vec![], after: 3, every: 2, quiet_reset, action: "do the thing".into() }
+        Kind {
+            name: "k".into(),
+            class,
+            hooks: vec!["h".into()],
+            matches: vec![],
+            after: 3,
+            every: 2,
+            quiet_reset,
+            action: "do the thing".into(),
+            count_blocks: false,
+        }
     }
     fn adv(text: &str) -> Vec<HookResult> {
         vec![HookResult { id: "h".into(), code: Some(0), out: json!({"systemMessage": text}).to_string(), err: String::new() }]
@@ -442,5 +472,19 @@ mod tests {
         k.matches = vec!["needle".into()];
         assert_eq!(observe(&k, &adv("hay")), Seen::Quiet);
         assert_eq!(observe(&k, &adv("a needle")), Seen::Fired("a needle".into()));
+        k.count_blocks = true;
+        let deny = vec![HookResult { id: "h".into(), code: Some(2), out: String::new(), err: "a needle denied\n".into() }];
+        assert_eq!(observe(&k, &deny), Seen::Fired("a needle denied".into()), "a counted block is a fire");
+    }
+
+    #[test]
+    fn a_stop_another_hook_blocks_holds_the_ladder_block_for_the_next_stop() {
+        let d = tmp("held");
+        let mut k = kind(Class::Block, 2);
+        k.count_blocks = true;
+        let b = vec![HookResult { id: "h".into(), code: Some(0), out: json!({"decision": "block", "reason": "r"}).to_string(), err: String::new() }];
+        assert!(stop(&d, &k, &b).is_none(), "no second block on a Stop that is already blocked");
+        assert!(load(&d, "s1").kinds["k"].pending, "held");
+        assert!(stop(&d, &k, &[]).is_some(), "shown at the next Stop");
     }
 }

@@ -47,8 +47,8 @@ doc = "Default consecutive quiet runs of a kind's hooks that count as the condit
 value = 2
 
 [nudges.kinds]
-doc = "The severity class table: per kind, its class word, the hook ids (dispatch table ids) whose advisories it counts, optional `match` substrings (any one in the advisory text; empty = any advisory of those hooks), optional `after`, `every`, `quiet_reset`, and `action`: the single required next action the block states. P0 kinds (block at first fire): agent cap and spawn ceiling, model routing on non-trivial work, main-thread heavy work inline. The idle-with-open-tasks P0 is already a Stop block of task-guard (idle-neglect); its advisories are counted here too."
-value = { agent_cap = { class = "block", hooks = ["swarm-guard", "swarm-guard#2"], match = [], action = "stop the finished agents and keep running agents under the cap before spawning again" }, model_routing = { class = "block", hooks = ["model-routing-guard", "model-routing-guard#2"], match = [], action = "re-spawn the agent with the model the routing note names" }, orchestration_inline = { class = "block", hooks = ["coordinator-work-guard", "coordinator-work-guard:post"], match = [], quiet_reset = 0, action = "hand the heavy commands to a background agent instead of running them on the main thread" }, idle_open_tasks = { class = "block", hooks = ["task-guard"], match = [], action = "dispatch the unassigned pending tasks to agents" }, finished_agents = { class = "escalate", hooks = ["idle-agent-sweep"], match = [], action = "stop the finished agents the sweep names" }, completed_tasks = { class = "escalate", hooks = ["tasklist-hygiene:post"], match = [], quiet_reset = 1, action = "delete the completed tasks after writing the ledger entry" }, stuck_agents = { class = "escalate", hooks = ["agent-reminders"], match = [], action = "answer the agent nudge: stop, message or snooze the agent it names" } }
+doc = "The severity class table: per kind, its class word, the hook ids (dispatch table ids) whose advisories it counts, optional `match` substrings (any one in the advisory text; empty = any advisory of those hooks), optional `after`, `every`, `quiet_reset`, `count_blocks` (the hooks' blocks count as fires too: the cap and routing denies, the idle-tasks Stop block; a Stop another hook already blocks holds the ladder block to the next Stop) and `action`: the single required next action the block states. A hook that shows one state once (emit-dedupe: idle-agent-sweep; one reminder per row: agent-reminders) is quiet while the state holds, so its kind takes quiet_reset = 0 (its fires are distinct states). P0 kinds (block at first fire): agent cap and spawn ceiling, model routing on non-trivial work, main-thread heavy work inline. The idle-with-open-tasks P0 is already a Stop block of task-guard (idle-neglect); its advisories are counted here too."
+value = { agent_cap = { class = "block", hooks = ["swarm-guard", "swarm-guard#2"], count_blocks = true, match = ["agents are running (limit"], quiet_reset = 1, action = "stop the finished agents and keep running agents under the cap before spawning again" }, model_routing = { class = "block", hooks = ["model-routing-guard", "model-routing-guard#2"], count_blocks = true, match = ["routine execution was assigned to a flagship model", "execution-shaped spawn with no explicit model", "deploy/migration/secret-shaped spawn"], quiet_reset = 1, action = "re-spawn the agent with the model the routing note names" }, orchestration_inline = { class = "block", hooks = ["coordinator-work-guard", "coordinator-work-guard:post"], match = ["coordinator workload"], quiet_reset = 0, action = "hand the heavy commands to a background agent instead of running them on the main thread" }, idle_open_tasks = { class = "block", hooks = ["task-guard", "agent-reminders"], count_blocks = true, match = ["open tasks have no agent working on them", "with its task still open", "and no agent running for"], quiet_reset = 0, action = "dispatch the unassigned pending tasks to agents" }, finished_agents = { class = "escalate", hooks = ["idle-agent-sweep"], match = ["finished agent"], quiet_reset = 0, action = "stop the finished agents the sweep names" }, completed_tasks = { class = "escalate", hooks = ["tasklist-hygiene:post"], match = [" done: delegate its "], quiet_reset = 1, action = "delete the completed tasks after writing the ledger entry" }, stuck_agents = { class = "escalate", hooks = ["agent-reminders"], match = ["has produced no output for", "has repeated the same step", "has not updated its heartbeat", "claims running work but nothing is running"], quiet_reset = 0, action = "answer the agent nudge: stop, message or snooze the agent it names" }, stalled_agents = { class = "escalate", hooks = ["agent-reminders"], match = ["is STALLED:"], after = 2, quiet_reset = 0, action = "message the stalled agent, stop it, or re-dispatch it with a narrower brief" }, parallel_dispatch = { class = "escalate", hooks = ["agent-reminders"], match = ["Dispatch them in parallel"], after = 2, quiet_reset = 0, action = "dispatch the open items to agents in parallel, up to the cap" } }
 
 [nudges.hook_id]
 doc = "The id the ladder's own block carries among the hook results of a call."
@@ -102,3 +102,39 @@ value = { fired = "fired", repeated = "repeated", escalated = "escalated", block
 [nudges.msg_fail_open]
 doc = "Event-log detail when the ladder failed internally and added nothing (fail open)."
 value = "nudge ladder failed open: {why}"
+
+[nudges.block_reason_fields]
+doc = "Where a counted block's text is read: the top-level or hookSpecificOutput `reason` / deny reason field; stderr otherwise."
+value = { reason = "reason", deny = "permissionDecisionReason", specific = "hookSpecificOutput" }
+
+[nudges.metric]
+doc = "The counter of the tracker-side nudge signals (GH #515/#517/#518): its name, its label, and the label values (sampled: a stall sample taken; stalled; claim_checked; claim_flagged; idle_wake; parallel)."
+value = { name = "nudge_signal", label = "step", sampled = "sampled", stalled = "stalled", claim_checked = "claim_checked", claim_flagged = "claim_flagged", idle_wake = "idle_wake", parallel = "parallel" }
+
+[metric.nudge_signal]
+doc = "Tracker-side nudge signal steps, by step."
+value = { kind = "counter", unit = "steps", labels = ["step"] }
+
+[nudges.stall]
+doc = "Stalled-agent detection: a running agent (no call in flight, not hung) whose transcript, tool calls, commits, files and progress did not change for quiet_ms, or whose progress line repeated with no outcome for repeat_ms, is STALLED. lines_kept: distinct progress lines kept per agent; lines_shown: how many the reminder names; line_chars: most characters of one line."
+value = { quiet_ms = 900000, repeat_ms = 2700000, lines_kept = 4, lines_shown = 2, line_chars = 120, joiner = " / ", quote = "\"{line}\"", none = "none" }
+
+[nudges.stall_words]
+doc = "The {what} of the stalled reminder: quiet (nothing observable changed) and repeat (the same progress line, no outcome)."
+value = { quiet = "no observable change (transcript, tool calls, commits, files)", repeat = "the same progress line and no outcome" }
+
+[nudges.idle_wake]
+doc = "Idle wake: idle_ms of a main session with open unblocked unassigned tasks and no agent running before the wake row; claim_ms of an idle teammate whose last line claims running work with no call in flight, background task or output. The task list: tasks_dir/<session>/*task_ext, a task open when its status is in open_statuses, assigned with an owner, blocked while a blocker is not in closed_statuses. tasks_shown: most task subjects named."
+value = { idle_ms = 600000, claim_ms = 300000, tasks_dir = ".claude/tasks", task_ext = ".json", open_statuses = ["pending"], closed_statuses = ["completed", "deleted"], f_subject = "subject", f_status = "status", f_owner = "owner", f_blocked = "blockedBy", f_id = "id", tasks_shown = 5, joiner = ", " }
+
+[nudges.idle_wake_claims]
+doc = "Phrases (case-insensitive) that make a teammate's last line a claim of running or background work."
+value = ["running in the background", "still running", "in the background", "is running now", "are running now", "kicked off", "waiting for the build", "waiting on the gate", "waiting for the tests"]
+
+[nudges.parallel]
+doc = "Parallelism check: a main session idle for idle_ms, with fewer running agents than the cap (spawn_ceiling.max_concurrent_setting; 0 = no cap) and open items: unassigned unblocked tasks while an agent runs, or gap lines of its last reply (bullet lines after a line holding a gap phrase, at most gap_lines_max) that no task subject covers. reply_chars: most characters of the last reply kept; items_shown: most items named."
+value = { idle_ms = 120000, reply_chars = 4000, gap_lines_max = 8, items_shown = 4, item_chars = 80, joiner = "; ", no_cap = "none", bullet_chars = "-*", number_marks = [". ", ") "] }
+
+[nudges.parallel_gap_phrases]
+doc = "Phrases (case-insensitive) of a reply line that opens a list of open gaps or next items."
+value = ["known gaps", "still open", "next items", "next steps", "remaining work", "not done", "left over"]
