@@ -2098,6 +2098,28 @@ function fillPushArgv(tpl, dir, repo, n, revs) {
 // GH #506: the revisions a push sends, read from its command line: its refspec sources, or HEAD for a bare push or a push naming
 // only a remote. null = the commits cannot be read from the command line (every branch, a mirror, a glob, a bare `:`, a changed
 // configuration), so the push is judged on every unpushed commit of the repository.
+// The push option table (git.push_value_opts + git.push_flag_opts): every name with its negated `--no-` form (which takes no
+// value), as { name (the positive form), spelled, value, negated }.
+function pushLongOptTable(valueOpts, flagOpts) {
+  const out = [];
+  for (const [list, value] of [[valueOpts, true], [flagOpts, false]]) {
+    for (const n of list) {
+      out.push({ name: n, spelled: n, value: value, negated: false });
+      if (n.startsWith('--') && !n.startsWith('--no-') && !list.includes('--no-' + n.slice(2))) out.push({ name: n, spelled: '--no-' + n.slice(2), value: false, negated: true });
+    }
+  }
+  return out;
+}
+
+// git's long-option lookup: an exact spelling wins, else the one entry the word is a prefix of; none or several = null.
+function resolvePushLongOpt(table, word) {
+  const exact = table.find((o) => o.spelled === word);
+  if (exact) return exact;
+  if (word.length <= 2) return null;
+  const hits = table.filter((o) => o.spelled.startsWith('--') && o.spelled.startsWith(word));
+  return hits.length === 1 ? hits[0] : null;
+}
+
 function pushScope(ev) {
   const globals = ah.cfg('git.push_unscoped_globals');
   for (const a of ev.args) {
@@ -2106,6 +2128,7 @@ function pushScope(ev) {
   const envPrefixes = ah.cfg('git.push_unscoped_env_prefixes');
   if (ev.env && Object.keys(ev.env).some((n) => envPrefixes.some((pre) => n.startsWith(pre)))) return null;
   const unscoped = ah.cfg('git.push_unscoped_opts'), valueOpts = ah.cfg('git.push_value_opts');
+  const longOpts = pushLongOptTable(valueOpts, ah.cfg('git.push_flag_opts'));
   const refRe = new RegExp(ah.cfg('git.push_refspec_unscoped_re'));
   const pos = [];
   const rest = gitSubcommand(ev.args).rest;
@@ -2113,12 +2136,23 @@ function pushScope(ev) {
     const t = rest[i].text;
     if (t === '--') { for (let j = i + 1; j < rest.length; j++) pos.push(rest[j].text); break; }
     if (t.startsWith('--')) {
-      const name = t.split('=')[0];
-      if (name.length > 2 && unscoped.some((u) => u.startsWith(name))) return null;
-      if (valueOpts.includes(name) && t.indexOf('=') < 0) i++;
+      // resolved the way git does: an exact name, else a unique prefix; none or several = not understood, read whole
+      const eq = t.indexOf('=');
+      const o = resolvePushLongOpt(longOpts, eq < 0 ? t : t.slice(0, eq));
+      if (o === null) return null;
+      if (!o.negated && unscoped.includes(o.name)) return null;
+      if (o.value && eq < 0) i++;
       continue;
     }
-    if (t.startsWith('-') && t.length > 1) { if (valueOpts.includes(t)) i++; continue; }
+    if (t.startsWith('-') && t.length > 1) {
+      // a short cluster (-fu, -oX, -qo X): a value option takes the rest of the cluster, else the next word
+      for (let c = 1; c < t.length; c++) {
+        const s = '-' + t[c];
+        if (valueOpts.includes(s)) { if (c === t.length - 1) i++; break; }
+        if (!longOpts.some((x) => x.name === s)) return null;
+      }
+      continue;
+    }
     pos.push(t);
   }
   if (pos.length <= 1) return [ah.cfg('git.push_bare_rev')];

@@ -876,8 +876,12 @@ doc = "git push options after which the commits sent cannot be read from the com
 value = ["--all", "--branches", "--mirror", "--tags", "--follow-tags", "--prune"]
 
 [git.push_value_opts]
-doc = "git push options that take their value as the next word, skipped when the command's refspecs are read (an option whose value is optional, such as --signed, takes it only after `=` and is not listed)."
-value = ["-o", "--push-option", "--repo", "--receive-pack", "--exec"]
+doc = "git push options that take a value: a long one as the next word unless written `--opt=value`, a short one as the rest of its cluster or else the next word; a negated `--no-` form takes none. Skipped when the command's refspecs are read. An option whose value is optional (--signed, --force-with-lease) takes it only after `=` and is listed in push_flag_opts."
+value = ["-o", "--push-option", "--repo", "--receive-pack", "--exec", "--recurse-submodules"]
+
+[git.push_flag_opts]
+doc = "git push options that take no separate value (GH #506). With push_value_opts this is the whole option table a command-line option is resolved against the way git resolves it: an exact name, else a unique prefix of a long name, the `--no-` forms included. An option that resolves to no entry or to more than one is not understood, and the push is not narrowed to its own commits (every unpushed commit is read)."
+value = ["-v", "--verbose", "-q", "--quiet", "--all", "--branches", "--mirror", "-d", "--delete", "--tags", "-n", "--dry-run", "--porcelain", "-f", "--force", "--force-with-lease", "--force-if-includes", "--thin", "-u", "--set-upstream", "--progress", "--prune", "--no-verify", "--verify", "--follow-tags", "--signed", "--atomic", "-4", "--ipv4", "-6", "--ipv6"]
 
 [git.push_unscoped_globals]
 doc = "git options before the subcommand that change the configuration or the environment a push runs with: the push is not narrowed to its own commits."

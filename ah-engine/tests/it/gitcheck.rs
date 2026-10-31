@@ -313,11 +313,51 @@ fn a_push_of_four_commits_is_allowed_while_the_repository_holds_sixty_unpushed_e
     let (work, wt) = big_repo_with_worktree(&e, 4, false);
     let _ = e.hook("echo warm");
     let w = wt.to_str().unwrap();
-    for cmd in ["git push origin feat".to_string(), "git push origin HEAD:refs/heads/feat".to_string(), "git push".to_string()] {
+    for cmd in [
+        "git push origin feat".to_string(),
+        "git push origin HEAD:refs/heads/feat".to_string(),
+        "git push".to_string(),
+        format!("git {P} --recei git-receive-pack origin feat"),
+        format!("git {P} --recu=check -qu origin feat"),
+        format!("git {P} -o ci.skip origin feat"),
+    ] {
         assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "{cmd}");
     }
     let cmd = format!("git -C {w} push origin feat");
     assert_eq!(e.hook_in(&cmd, work.to_str().unwrap()), (String::new(), String::new(), 0), "{cmd}");
+}
+
+/// GH #506 review: a push option is resolved against the whole option table the way git does it (exact, else a unique prefix),
+/// so an abbreviated value option cannot turn the remote name into a revision; an ambiguous or unknown one reads every commit.
+#[test]
+fn an_abbreviated_or_ambiguous_push_option_never_narrows_the_scan_past_a_credited_head() {
+    let e = Env::new("abbrev");
+    let (work, _) = pushed_repo(&e);
+    // origin/HEAD resolves (as in a clone), so a misread `origin` would be a valid, empty revision range
+    git_ok(&work, &["remote", "set-head", "origin", "main"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let shapes = [
+        format!("git {P} --recei git-receive-pack origin"),
+        format!("git {P} --recei=git-receive-pack origin"),
+        format!("git {P} --re git-receive-pack origin"),
+        format!("git {P} --recurse-submodules check origin"),
+        format!("git {P} --rec check origin"),
+        format!("git {P} --no-ver origin"),
+        format!("git {P} --bogus-opt origin"),
+        format!("git {P} -qo opt origin"),
+        format!("git {P} -o opt origin"),
+        format!("git {P} -x origin"),
+    ];
+    let mut missed = Vec::new();
+    for cmd in &shapes {
+        let (out, err, code) = e.hook_in(cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
 }
 
 #[test]
