@@ -50,6 +50,7 @@ pub mod health;
 pub mod hookcfg;
 pub mod hookio;
 pub mod hooksgen;
+pub mod hygiene;
 pub mod impact;
 pub mod install;
 pub mod jev;

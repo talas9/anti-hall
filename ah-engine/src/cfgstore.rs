@@ -1119,6 +1119,7 @@ mod tests {
             "realtime.",                    // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
             "script.",                      // the interpreter switch and deadline are process-wide, not per request
             "mcp_reaper.job_every_ms",      // the interval of the scheduled reaper job: the daemon's scheduler reads it, not a request
+            "disk_hygiene.job_every_ms",    // the interval of the scheduled hygiene report job: the daemon's scheduler reads it, not a request
             "engine_update.every_ms",       // the interval of the scheduled engine-update job: the daemon's scheduler reads it, not a request
             "rollback.", // the binary roll-back and install lock: read by the integrity check and the install paths once per run, not per request
             "refresh.every_ms", // the interval of the scheduled refresh job: the daemon's scheduler reads it, not a request

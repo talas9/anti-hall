@@ -1,0 +1,245 @@
+# ah-engine shipped defaults for disk hygiene: `ah-engine hygiene [--report|--clean]` and the scheduled job `disk_hygiene`
+# (docs/AH-ENGINE.md, "Disk hygiene"). Format: see the header of engine.toml.
+#
+# The report lists, under the configured work roots, every scratch clone with a class: KEEP, REMOVE-TARGET-ONLY (only its
+# build output may go) or REMOVE-SAFE (the whole clone may go to the Trash). A clone is REMOVE-SAFE only when it is proved
+# idle, clean (no change, no untracked or ignored file outside the regenerable names), every commit is on a remote-tracking
+# ref, it has no stash and no linked worktree, and no live process has its working directory or an open file inside it.
+# Anything it cannot prove is KEEP. Reusable caches and the designated reusable clone are always KEEP. The report also lists
+# old spill files and deploy copies beyond the newest few. The scheduled job only reports; it never removes anything. Only an
+# explicit `--clean` acts: it moves REMOVE-SAFE items to the Trash by rename (never a recursive delete; a move across volumes
+# is refused) and deletes only the build directories of REMOVE-TARGET-ONLY clones, re-checking each item just before.
+
+[disk_hygiene.sw_enabled]
+doc = "Where the disk hygiene on/off switch is read from (diskHygiene.enabled, default on). Off: the report and the clean do nothing."
+value = { section = "diskHygiene", key = "enabled", env = "ANTIHALL_DISK_HYGIENE", aliases = [], option = "", default = true }
+
+[disk_hygiene.idle_hours]
+doc = "A clone or deploy copy is idle when its newest activity stamp (disk_hygiene.idle_files, the directory itself) is older than this many hours (diskHygiene.idleHours)."
+value = { section = "diskHygiene", key = "idleHours", env = "ANTIHALL_DISK_HYGIENE_IDLE_HOURS", aliases = [], option = "", default = 24, min = 0 }
+
+[disk_hygiene.spill_days]
+doc = "A spill file (disk_hygiene.spill_dirs) older than this many days is listed as removable (diskHygiene.spillDays)."
+value = { section = "diskHygiene", key = "spillDays", env = "ANTIHALL_DISK_HYGIENE_SPILL_DAYS", aliases = [], option = "", default = 7, min = 0 }
+
+[disk_hygiene.deploy_keep]
+doc = "How many deploy copies (disk_hygiene.deploy_prefix) are always kept, newest first (diskHygiene.deployKeep)."
+value = { section = "diskHygiene", key = "deployKeep", env = "ANTIHALL_DISK_HYGIENE_DEPLOY_KEEP", aliases = [], option = "", default = 3, min = 0 }
+
+[disk_hygiene.reusable_clone]
+doc = "The one designated reusable clone, a path relative to a work root (diskHygiene.reusableClone); always KEEP. Empty = none."
+value = { section = "diskHygiene", key = "reusableClone", env = "ANTIHALL_DISK_HYGIENE_REUSABLE", aliases = [], option = "", default = "" }
+
+[disk_hygiene.work_roots]
+doc = "The work roots scanned for scratch clones and deploy copies, relative to HOME."
+value = [".anti-hall/work"]
+
+[disk_hygiene.clone_depth]
+doc = "How many directory levels under a work root are searched for clones (a directory holding disk_hygiene.git_marker is a clone and is not searched further)."
+value = 2
+
+[disk_hygiene.keep_names]
+doc = "Directory names that are reusable caches or tools and always KEEP, wherever they sit under a work root."
+value = ["sccache", "cargo", "registry", "toolchains", "rustup", "deploy-dev", "deploy-backups"]
+
+[disk_hygiene.deploy_prefix]
+doc = "A directory directly under a work root whose name starts with this is a deploy copy."
+value = "deploy-"
+
+[disk_hygiene.spill_dirs]
+doc = "Directories, relative to HOME, whose old files are spill output (over-cap hook context, block details); files directly inside them are listed."
+value = [".anti-hall/context-spill", ".anti-hall/block-details"]
+
+[disk_hygiene.build_dirs]
+doc = "Build output directory names at the top of a clone or under its first level: regenerable, so REMOVE-TARGET-ONLY may delete them."
+value = ["target"]
+
+[disk_hygiene.regenerable_ignored]
+doc = "Top-level names an ignored file may sit under and still count as clean (anything else ignored makes the clone KEEP: it may be the only copy of local data)."
+value = ["target", "node_modules", ".DS_Store"]
+
+[disk_hygiene.git_marker]
+doc = "The entry that makes a directory a clone: a directory is a clone; a file (a linked worktree or submodule) is KEEP."
+value = ".git"
+
+[disk_hygiene.git_program]
+doc = "The git program."
+value = "git"
+
+[disk_hygiene.git_env_name]
+doc = "Environment variable set on every git call so a status never rewrites the index (an index write would reset the idle age)."
+value = "GIT_OPTIONAL_LOCKS"
+
+[disk_hygiene.git_env_value]
+doc = "Its value."
+value = "0"
+
+[disk_hygiene.git_status]
+doc = "git arguments that list changed, untracked and ignored files (porcelain)."
+value = ["status", "--porcelain", "--ignored", "--untracked-files=all"]
+
+[disk_hygiene.git_ignored_prefix]
+doc = "The porcelain prefix of an ignored file."
+value = "!! "
+
+[disk_hygiene.git_unpushed]
+doc = "git arguments that list commits of HEAD and of every local branch that no remote-tracking ref holds (local refs only, no network)."
+value = ["rev-list", "HEAD", "--branches", "--not", "--remotes"]
+
+[disk_hygiene.git_stash]
+doc = "git arguments that list stashes."
+value = ["stash", "list"]
+
+[disk_hygiene.git_worktrees]
+doc = "git arguments that list the worktrees of a clone (porcelain)."
+value = ["worktree", "list", "--porcelain"]
+
+[disk_hygiene.worktree_prefix]
+doc = "The porcelain line that starts one worktree entry; more than one entry is KEEP."
+value = "worktree "
+
+[disk_hygiene.idle_files]
+doc = "Activity stamps inside a clone, relative to it; with the clone directory itself, the newest decides the idle age."
+value = [".git/index", ".git/HEAD", ".git/logs/HEAD", ".git/FETCH_HEAD"]
+
+[disk_hygiene.open_files_argv]
+doc = "Command that lists every open file of every process, one `n<path>` line each (field output). Not installed: only working directories are probed."
+value = ["lsof", "-n", "-P", "-w", "-Fn"]
+
+[disk_hygiene.open_files_prefix]
+doc = "The line prefix of a path in the open-files listing."
+value = "n"
+
+[disk_hygiene.trash_dirs]
+doc = "The Trash directory per operating system, relative to HOME. An operating system not listed has no Trash: nothing is moved."
+value = { macos = ".Trash", linux = ".local/share/Trash/files" }
+
+[disk_hygiene.trash_name]
+doc = "Name of an item in the Trash; {name} its own name, {ts} seconds since the epoch (set only when the plain name is taken)."
+value = "{name}.{ts}"
+
+[disk_hygiene.size_max_entries]
+doc = "A size walk stops after this many entries per item (the size is then a floor)."
+value = 5000000
+
+[disk_hygiene.secs_per_hour]
+doc = "Seconds in an hour."
+value = 3600
+
+[disk_hygiene.secs_per_day]
+doc = "Seconds in a day."
+value = 86400
+
+[disk_hygiene.block_bytes]
+doc = "Bytes in one allocated block of a file's st_blocks."
+value = 512
+
+[disk_hygiene.report_file]
+doc = "The last report, in the engine state directory."
+value = "hygiene-report.json"
+
+[disk_hygiene.class_keep]
+doc = "Class of an item that must stay."
+value = "KEEP"
+
+[disk_hygiene.class_target]
+doc = "Class of a clone of which only the build directories may go."
+value = "REMOVE-TARGET-ONLY"
+
+[disk_hygiene.class_safe]
+doc = "Class of an item that may go to the Trash whole."
+value = "REMOVE-SAFE"
+
+[disk_hygiene.kind_clone]
+doc = "Item kind: a scratch clone."
+value = "clone"
+
+[disk_hygiene.kind_spill]
+doc = "Item kind: a spill file."
+value = "spill"
+
+[disk_hygiene.kind_deploy]
+doc = "Item kind: a deploy copy."
+value = "deploy"
+
+[disk_hygiene.reasons]
+doc = "Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty, unpushed, stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe."
+value = { reusable = "reusable", symlink = "symlink", linked = "linked", unprovable = "unprovable", live = "live_process", recent = "recent", dirty = "dirty", unpushed = "unpushed", stash = "stash", worktrees = "worktrees", newest = "deploy_newest", fresh = "fresh", safe = "clean_pushed_idle" }
+
+[disk_hygiene.flag_report]
+doc = "The report flag (the default when no flag is given)."
+value = "--report"
+
+[disk_hygiene.flag_clean]
+doc = "The clean flag: explicit invocation only."
+value = "--clean"
+
+[disk_hygiene.tel_cmd]
+doc = "Telemetry command label of the hygiene counters: one cmd event per counter, its name in the event field and its value in items."
+value = "hygiene"
+
+[disk_hygiene.tel_counters]
+doc = "Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused)."
+value = { reclaimable = "bytes_reclaimable", reclaimed = "bytes_reclaimed", listed = "items_listed", skipped = "items_skipped_" }
+
+[disk_hygiene.health_kind]
+doc = "Engine health-log kind of the low-disk notice and of a refused clean step."
+value = "disk_hygiene"
+
+[disk_hygiene.health_low]
+doc = "Health-log code of the low-disk notice (a watched volume is below the disk_watch warn floor)."
+value = "low_disk"
+
+[disk_hygiene.health_refused]
+doc = "Health-log code of a clean step that was refused (the item changed, the move failed)."
+value = "clean_refused"
+
+[disk_hygiene.msg_usage]
+doc = "Usage line."
+value = "usage: ah-engine hygiene [--report|--clean] [--json]"
+
+[disk_hygiene.msg_off]
+doc = "Answer when diskHygiene.enabled is off."
+value = "disk hygiene is off (diskHygiene.enabled)"
+
+[disk_hygiene.msg_line]
+doc = "One report line; {class}, {kind}, {size}, {reason}, {path}."
+value = "{class} {kind} {size} {reason} {path}"
+
+[disk_hygiene.msg_total]
+doc = "Report footer; {n} items, {reclaimable} size reclaimable, {reclaimed} size reclaimed by this run."
+value = "{n} items, reclaimable {reclaimable}, reclaimed {reclaimed}"
+
+[disk_hygiene.msg_low]
+doc = "Low-disk notice; {list} the volume lines, {reclaimable} what a clean would free."
+value = "Low disk space ({list}); disk hygiene finds {reclaimable} reclaimable. Run `ah-engine hygiene --clean` to move it to the Trash; nothing was removed."
+
+[disk_hygiene.msg_vol]
+doc = "One volume of the notice; {path}, {free}."
+value = "{path}: {free} free"
+
+[disk_hygiene.msg_refused]
+doc = "Health-log detail of a refused clean step; {path}, {why}."
+value = "{path}: {why}"
+
+[disk_hygiene.why_changed]
+doc = "Why a clean step was refused: the item no longer classifies as it did."
+value = "no longer removable on re-check"
+
+[disk_hygiene.why_no_trash]
+doc = "Why a clean step was refused: no Trash on this operating system, or the move failed (another volume)."
+value = "move to the Trash failed"
+
+[cmd.hygiene]
+doc = "Disk hygiene. `--report` (the default) lists scratch clones under the work roots as KEEP, REMOVE-TARGET-ONLY or REMOVE-SAFE with the reason, plus old spill files and deploy copies beyond the newest few, and writes the report to the state directory; dirty, unpushed, busy or unprovable clones are never removable. `--clean` (explicit only) re-checks each item, moves REMOVE-SAFE items to the Trash and deletes only the build directories of REMOVE-TARGET-ONLY clones; idempotent. The job `disk_hygiene` only reports, and logs a notice when disk is below the disk_watch warn floor."
+value = { args = "[--report|--clean]", read_only = false, status = "implemented" }
+
+[job.disk_hygiene]
+doc = "The disk hygiene report (`hygiene --report`, a subprocess): lists what is reclaimable and logs a low-disk notice; never removes anything."
+value = { kind = "engine", action = "disk_hygiene", every_key = "disk_hygiene.job_every_ms", jitter_ms = 0, timeout_ms = 600000, retries = 0, backoff_ms = 60000, backoff_max_ms = 600000, cooldown_ms = 600000, catch_up = "skip", persist = false }
+
+[disk_hygiene.job_every_ms]
+doc = "Interval of the disk hygiene report job; 0 turns it off."
+value = 21600000
+env = "AH_ENGINE_DISK_HYGIENE_MS"
+unit = "ms"

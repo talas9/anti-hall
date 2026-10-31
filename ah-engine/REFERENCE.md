@@ -67,6 +67,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `afk` | `on\|off\|status` | no | implemented | AFK mode, machine-wide: `on` starts it (agents work silently and log milestone bullets to their progress files), `off` ends it, `status` shows it. Lasts until `back` / `off`. Settings: afk.*. |
 | `back` | `` | no | implemented | End AFK mode and print each session's digest: the checklist bullets after the AFK marker in its progress file, with the percentage of [x] bullets. |
 | `mcp-reaper` | `run [--dry-run]` | no | implemented | The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line. |
+| `hygiene` | `[--report\|--clean]` | no | implemented | Disk hygiene. `--report` (the default) lists scratch clones under the work roots as KEEP, REMOVE-TARGET-ONLY or REMOVE-SAFE with the reason, plus old spill files and deploy copies beyond the newest few, and writes the report to the state directory; dirty, unpushed, busy or unprovable clones are never removable. `--clean` (explicit only) re-checks each item, moves REMOVE-SAFE items to the Trash and deletes only the build directories of REMOVE-TARGET-ONLY clones; idempotent. The job `disk_hygiene` only reports, and logs a notice when disk is below the disk_watch warn floor. |
 | `refresh` | `[--force] [--home <dir>]` | no | implemented | Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert), the Claude Code and DevSwarm CLI versions (the drift probes) and the reload repair (repair-on-reload), each as a bounded subprocess; `--force` runs every probe whether requested or not (never the repair unless requested). Prints one result per probe. The scheduler runs it every refresh.every_ms. |
 | `engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` | no | implemented | Update the engine binary: runs the thin client's updater (ah-engine update) with the given arguments (--from FILE [--sha256 X] [--yes] \| --channel stable\|dev \| --rollback \| --auto \| --dry-run). The engine itself does no network access. |
 | `post-update-check` | `[--dry-run] [--expect-sha <sha256>]` | no | implemented | The step every update ends with: verify exactly one live engine runs the installed binary (sha, path, answers status and a ping inside its budget), stop stale and scratch daemons and duplicate watchers by verified pid (never pkill), let watchers on a replaced binary re-execute themselves, report servers on an old binary, and clean old binary copies, dead pid files, a dead socket and dead temp files. --dry-run reports and changes nothing. Exit 0 verified, 1 not. |
@@ -90,6 +91,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--by` | `jev-report` | Group the report by `project` or `session` (`jev-report`). |
 | `--channel` | `engine-update` | Update channel to install from: `stable` or `dev` (`engine-update`). |
 | `--check` | `config`, `doctor`, `metrics`, `shadow-compare`, `update` | Name of one check to limit the output to (`metrics`), a read-only check without repairs (`doctor`, `update`), or validation only without writing (`config set`). |
+| `--clean` | `hygiene` | undocumented |
 | `--clear` | `devswarm` | Comma-separated gates to clear (`devswarm gate`). |
 | `--confirm-ids` | `devswarm` | Comma-separated workspace ids the owner confirmed for pruning (`devswarm prune`). |
 | `--confirmed` | `config`, `proc`, `settings` | Confirm a change to a safety-relevant setting, after the one-line warning (`settings set`, `settings reset`). |
@@ -160,6 +162,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--repair-ingest-orphans` | `doctor` | Add the report section that previews retiring orphaned ingest entries; with `--apply` it does so (`doctor`). |
 | `--repair-resurrected` | `doctor` | Add the report section that previews retiring resurrected entries (`doctor`). |
 | `--repair-test-stores` | `doctor` | Add the report section that previews moving test stores out of the live state; with `--apply` it does so (`doctor`). |
+| `--report` | `hygiene` | undocumented |
 | `--request` | `devswarm` | Request id that makes a repeated owner action idempotent (`devswarm`). |
 | `--role` | `jev-setup` | Which key to set; only `fallback` (`jev-setup`). |
 | `--rollback` | `update`, `engine-update` | Restore the previous engine binary; run twice to toggle (`engine-update`). |
@@ -223,6 +226,7 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 | `AH_ENGINE_DEADLINE_MS` | `client.deadline_ms` | Overall hook-client deadline for one engine exchange (connect, write, read); a hard watchdog thread enforces it so a hung daemon fails open quickly. |
 | `AH_ENGINE_DEBUG` |  | When set to anything but 0 or empty, turns debug mode (diagnostics.debug_mode) on for that process. |
 | `AH_ENGINE_DIR` |  | Overrides the state directory (default: base_dir/state_dir under the home directory). |
+| `AH_ENGINE_DISK_HYGIENE_MS` | `disk_hygiene.job_every_ms` | Interval of the disk hygiene report job; 0 turns it off. |
 | `AH_ENGINE_DISPATCH_IN_PROCESS` | `dispatch.in_process` | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `AH_ENGINE_DISPATCH_MAX_TIMEOUT_S` | `dispatch.max_timeout_s` | An upper bound on any Node hook's timeout, whatever its hooks.json entry says (the default is above every real timeout, so it changes nothing; tests lower it to exercise a hook that never exits). |
 | `AH_ENGINE_DONE_FILE` |  | A file the dispatcher creates once it has dispatched an event and decided its exit code (D87). The thin client sets it, so that an engine exit code of a hook's own (1, say) is told from an engine failure and is not answered by running every hook a second time. |
@@ -1835,8 +1839,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `schedule.action_args` | `4 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `17 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.action_args` | `5 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
+| `schedule.actions` | `18 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.cpu_backoff_ms` | `60000` |  | ms | How long scheduled jobs pause after the daemon sustained-CPU self-check warns; 0 logs only. |
@@ -1849,7 +1853,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
 | `schedule.shadow_report_ms` | `86400000` | `AH_ENGINE_SHADOW_REPORT_MS` | ms | Interval of the daily Node-shadow agreement report job; 0 turns it off. |
 | `schedule.skip_without_work` | `gh_poll, refresh, jev_arrival` |  |  | Subprocess actions the scheduler skips when they have no recent session or pending-request work. The command itself still reports the skip reason for manual runs. |
-| `schedule.subprocess_actions` | `10 items` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.subprocess_actions` | `11 items` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
 | `schedule.telemetry_rollup_ms` | `86400000` | `AH_ENGINE_TELEMETRY_ROLLUP_MS` | ms | Interval of the telemetry rollup job (D78); 0 turns it off. |
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
@@ -5325,7 +5329,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
 | `roles.line_max` | `100` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
 | `roles.main_skill` | `3 entries` |  |  | The main skill: its name, its description (when to load it) and its intro line. |
-| `roles.matrix` | `65 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
+| `roles.matrix` | `66 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
 | `roles.msg_none` | `none` |  |  | The verb list in the note when the role may run none. |
 | `roles.msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}. |
 | `roles.msg_note_more` | ` (+{n} more, see the guide)` |  |  | Added to the note when the verb list was shortened. Placeholder: {n}. |
@@ -8069,6 +8073,73 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mcp_reaper.token_re` | `(^\|[\s/])(mcp[-_]server\|server-sequential-thinking)` |  |  | JavaScript regex source (case-insensitive) of a boundary-anchored mcp-server or server-sequential-thinking token. |
 | `mcp_reaper.unsure_log_kind` | `mcp_reaper_unsure` |  |  | Engine log kind of a session-end-mcp-reaper case the engine cannot reproduce exactly, so it defers (logged, before anything is written or signalled): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or HOME unset with the passwd home being the real one under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), pid_range (a process id at or past hostproc.max_exact_id), ages (process ages only an ambiguous local time gives), managed (service-manager ownership the probe cannot read). |
 
+### disk_hygiene.toml / disk_hygiene
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `disk_hygiene.block_bytes` | `512` |  |  | Bytes in one allocated block of a file's st_blocks. |
+| `disk_hygiene.build_dirs` | `target` |  |  | Build output directory names at the top of a clone or under its first level: regenerable, so REMOVE-TARGET-ONLY may delete them. |
+| `disk_hygiene.class_keep` | `KEEP` |  |  | Class of an item that must stay. |
+| `disk_hygiene.class_safe` | `REMOVE-SAFE` |  |  | Class of an item that may go to the Trash whole. |
+| `disk_hygiene.class_target` | `REMOVE-TARGET-ONLY` |  |  | Class of a clone of which only the build directories may go. |
+| `disk_hygiene.clone_depth` | `2` |  |  | How many directory levels under a work root are searched for clones (a directory holding disk_hygiene.git_marker is a clone and is not searched further). |
+| `disk_hygiene.deploy_keep` | `7 entries` |  |  | How many deploy copies (disk_hygiene.deploy_prefix) are always kept, newest first (diskHygiene.deployKeep). |
+| `disk_hygiene.deploy_prefix` | `deploy-` |  |  | A directory directly under a work root whose name starts with this is a deploy copy. |
+| `disk_hygiene.flag_clean` | `--clean` |  |  | The clean flag: explicit invocation only. |
+| `disk_hygiene.flag_report` | `--report` |  |  | The report flag (the default when no flag is given). |
+| `disk_hygiene.git_env_name` | `GIT_OPTIONAL_LOCKS` |  |  | Environment variable set on every git call so a status never rewrites the index (an index write would reset the idle age). |
+| `disk_hygiene.git_env_value` | `0` |  |  | Its value. |
+| `disk_hygiene.git_ignored_prefix` | `!! ` |  |  | The porcelain prefix of an ignored file. |
+| `disk_hygiene.git_marker` | `.git` |  |  | The entry that makes a directory a clone: a directory is a clone; a file (a linked worktree or submodule) is KEEP. |
+| `disk_hygiene.git_program` | `git` |  |  | The git program. |
+| `disk_hygiene.git_stash` | `stash, list` |  |  | git arguments that list stashes. |
+| `disk_hygiene.git_status` | `status, --porcelain, --ignored, --untracked-files=all` |  |  | git arguments that list changed, untracked and ignored files (porcelain). |
+| `disk_hygiene.git_unpushed` | `rev-list, HEAD, --branches, --not, --remotes` |  |  | git arguments that list commits of HEAD and of every local branch that no remote-tracking ref holds (local refs only, no network). |
+| `disk_hygiene.git_worktrees` | `worktree, list, --porcelain` |  |  | git arguments that list the worktrees of a clone (porcelain). |
+| `disk_hygiene.health_kind` | `disk_hygiene` |  |  | Engine health-log kind of the low-disk notice and of a refused clean step. |
+| `disk_hygiene.health_low` | `low_disk` |  |  | Health-log code of the low-disk notice (a watched volume is below the disk_watch warn floor). |
+| `disk_hygiene.health_refused` | `clean_refused` |  |  | Health-log code of a clean step that was refused (the item changed, the move failed). |
+| `disk_hygiene.idle_files` | `.git/index, .git/HEAD, .git/logs/HEAD, .git/FETCH_HEAD` |  |  | Activity stamps inside a clone, relative to it; with the clone directory itself, the newest decides the idle age. |
+| `disk_hygiene.idle_hours` | `7 entries` |  |  | A clone or deploy copy is idle when its newest activity stamp (disk_hygiene.idle_files, the directory itself) is older than this many hours (diskHygiene.idleHours). |
+| `disk_hygiene.job_every_ms` | `21600000` | `AH_ENGINE_DISK_HYGIENE_MS` | ms | Interval of the disk hygiene report job; 0 turns it off. |
+| `disk_hygiene.keep_names` | `7 items` |  |  | Directory names that are reusable caches or tools and always KEEP, wherever they sit under a work root. |
+| `disk_hygiene.kind_clone` | `clone` |  |  | Item kind: a scratch clone. |
+| `disk_hygiene.kind_deploy` | `deploy` |  |  | Item kind: a deploy copy. |
+| `disk_hygiene.kind_spill` | `spill` |  |  | Item kind: a spill file. |
+| `disk_hygiene.msg_line` | `{class} {kind} {size} {reason} {path}` |  |  | One report line; {class}, {kind}, {size}, {reason}, {path}. |
+| `disk_hygiene.msg_low` | `Low disk space ({list}); disk hygiene finds {reclaimable} reclaimable. Run `a...` |  |  | Low-disk notice; {list} the volume lines, {reclaimable} what a clean would free. |
+| `disk_hygiene.msg_off` | `disk hygiene is off (diskHygiene.enabled)` |  |  | Answer when diskHygiene.enabled is off. |
+| `disk_hygiene.msg_refused` | `{path}: {why}` |  |  | Health-log detail of a refused clean step; {path}, {why}. |
+| `disk_hygiene.msg_total` | `{n} items, reclaimable {reclaimable}, reclaimed {reclaimed}` |  |  | Report footer; {n} items, {reclaimable} size reclaimable, {reclaimed} size reclaimed by this run. |
+| `disk_hygiene.msg_usage` | `usage: ah-engine hygiene [--report\|--clean] [--json]` |  |  | Usage line. |
+| `disk_hygiene.msg_vol` | `{path}: {free} free` |  |  | One volume of the notice; {path}, {free}. |
+| `disk_hygiene.open_files_argv` | `lsof, -n, -P, -w, -Fn` |  |  | Command that lists every open file of every process, one `n<path>` line each (field output). Not installed: only working directories are probed. |
+| `disk_hygiene.open_files_prefix` | `n` |  |  | The line prefix of a path in the open-files listing. |
+| `disk_hygiene.reasons` | `13 entries` |  |  | Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty, unpushed, stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. |
+| `disk_hygiene.regenerable_ignored` | `target, node_modules, .DS_Store` |  |  | Top-level names an ignored file may sit under and still count as clean (anything else ignored makes the clone KEEP: it may be the only copy of local data). |
+| `disk_hygiene.report_file` | `hygiene-report.json` |  |  | The last report, in the engine state directory. |
+| `disk_hygiene.reusable_clone` | `6 entries` |  |  | The one designated reusable clone, a path relative to a work root (diskHygiene.reusableClone); always KEEP. Empty = none. |
+| `disk_hygiene.secs_per_day` | `86400` |  |  | Seconds in a day. |
+| `disk_hygiene.secs_per_hour` | `3600` |  |  | Seconds in an hour. |
+| `disk_hygiene.size_max_entries` | `5000000` |  |  | A size walk stops after this many entries per item (the size is then a floor). |
+| `disk_hygiene.spill_days` | `7 entries` |  |  | A spill file (disk_hygiene.spill_dirs) older than this many days is listed as removable (diskHygiene.spillDays). |
+| `disk_hygiene.spill_dirs` | `.anti-hall/context-spill, .anti-hall/block-details` |  |  | Directories, relative to HOME, whose old files are spill output (over-cap hook context, block details); files directly inside them are listed. |
+| `disk_hygiene.sw_enabled` | `6 entries` |  |  | Where the disk hygiene on/off switch is read from (diskHygiene.enabled, default on). Off: the report and the clean do nothing. |
+| `disk_hygiene.tel_cmd` | `hygiene` |  |  | Telemetry command label of the hygiene counters: one cmd event per counter, its name in the event field and its value in items. |
+| `disk_hygiene.tel_counters` | `4 entries` |  |  | Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused). |
+| `disk_hygiene.trash_dirs` | `2 entries` |  |  | The Trash directory per operating system, relative to HOME. An operating system not listed has no Trash: nothing is moved. |
+| `disk_hygiene.trash_name` | `{name}.{ts}` |  |  | Name of an item in the Trash; {name} its own name, {ts} seconds since the epoch (set only when the plain name is taken). |
+| `disk_hygiene.why_changed` | `no longer removable on re-check` |  |  | Why a clean step was refused: the item no longer classifies as it did. |
+| `disk_hygiene.why_no_trash` | `move to the Trash failed` |  |  | Why a clean step was refused: no Trash on this operating system, or the move failed (another volume). |
+| `disk_hygiene.work_roots` | `.anti-hall/work` |  |  | The work roots scanned for scratch clones and deploy copies, relative to HOME. |
+| `disk_hygiene.worktree_prefix` | `worktree ` |  |  | The porcelain line that starts one worktree entry; more than one entry is KEEP. |
+
+### disk_hygiene.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.disk_hygiene` | `11 entries` |  |  | The disk hygiene report (`hygiene --report`, a subprocess): lists what is reclaimable and logs a low-disk notice; never removes anything. |
+
 ### devswarm_rt.toml / devswarm_rt
 
 | Key | Default | Env override | Unit | What it is |
@@ -8285,9 +8356,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `395 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `400 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
-| `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
+| `settings_cli.sections` | `21 items` |  |  | The settings sections in display order: key, label, description. |
 
 ### webapi.toml / webapi
 
