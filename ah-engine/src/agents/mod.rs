@@ -24,6 +24,7 @@ mod lockwatch;
 pub(crate) mod native_wake;
 pub mod nudge;
 mod procs;
+mod repo;
 mod signals;
 mod sinks;
 mod sources;
@@ -213,12 +214,10 @@ pub struct Pending {
     /// its success is only the launching shell's, so it earns no HARD outcome (PR #472).
     #[serde(default)]
     pub amp: bool,
-    /// The working directory of the transcript line that made the call (a relative written path is taken from it).
+    /// The directory the call ran in: the transcript line's working directory, its literal `cd`s followed (PR #472 round 5: its
+    /// repository's state decides HARD credit).
     #[serde(default)]
     pub cwd: String,
-    /// A check call's dedup key: its normalized check segments and directory (PR #472 round 4).
-    #[serde(default)]
-    pub check_key: String,
 }
 
 /// A raised signal on one agent.
@@ -401,16 +400,17 @@ pub struct Agent {
     /// starts a new episode; burn.soft_hold caps the events and the length of an episode (PR #472).
     #[serde(default)]
     pub soft_episode: (u64, u64, u64),
-    /// Real changes seen (PR #472 round 4): a successful edit, a fresh shell write, a commit. A passing check repeated with no change since
-    /// its last HARD pass is SOFT.
+    /// Real changes seen (PR #472 round 4): a successful edit, a fresh shell write, a commit. Outside a repository (or with git
+    /// unavailable) a passing check, build or test with no change since the last HARD credit is no HARD credit (PR #472 round 5).
     #[serde(default)]
     pub changes: u64,
-    /// The `changes` count at each check's last HARD pass, by normalized check command and directory (bounded by limits.loop_window).
+    /// The repo state (agents::repo::state) at the last HARD credit in each repository, by its top-level directory (PR #472 round 5):
+    /// a passing check, build or test, or a verified write, earns HARD only when its repository's state differs.
     #[serde(default)]
-    pub check_passes: BTreeMap<String, u64>,
-    /// The check key of each background task in `bg_outcomes` (PR #472 round 4).
+    pub repo_states: BTreeMap<String, String>,
+    /// `changes` at the last HARD credit (PR #472 round 5): outside a repository a check, build or test earns HARD only after a change.
     #[serde(default)]
-    pub bg_check_keys: BTreeMap<String, String>,
+    pub hard_changes: Option<u64>,
     /// The declared step.
     pub step: String,
     /// The task whose subject is the declared step (empty when the step came from elsewhere).

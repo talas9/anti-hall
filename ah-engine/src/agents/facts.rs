@@ -338,12 +338,11 @@ fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
             a.exited.push((id.to_string(), ts));
             // PR #472: a background check or shell write earns its HARD outcome only now, when it ended with success
             let call = a.bg_starts.remove(id);
-            let key = a.bg_check_keys.remove(id).unwrap_or_default();
             if let Some((check, writes)) = a.bg_outcomes.remove(id)
-                && let Some((start, _)) = call
+                && let Some((start, dir)) = call
                 && defaults::raw("agent_tracker.bg_success_statuses").strings().iter().any(|w| w.eq_ignore_ascii_case(st))
             {
-                hard_outcome(a, check.then_some(key.as_str()), &writes, start);
+                hard_outcome(a, check, &writes, start, &dir);
             }
         }
     }
@@ -386,7 +385,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let mut writes = Vec::new();
     let mut push = false;
     let mut amp = false;
-    let mut check_key = String::new();
+    let mut call_dir = if cwd.is_empty() { a.cwd.clone() } else { cwd.to_string() };
     if is_edit {
         a.edits += 1;
         let path = str_of(&input, tr("file_path"));
@@ -478,16 +477,8 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
                 }
             }
         }
-        if class == "check" {
-            let re = pat("check");
-            let hit: Vec<String> = segs
-                .iter()
-                .zip(&unq)
-                .filter(|(_, u)| re.as_ref().is_some_and(|r| r.is_match(u)))
-                .map(|(s, _)| s.split_whitespace().collect::<Vec<_>>().join(" "))
-                .collect();
-            check_key = format!("{}\n{}", dir.as_ref().map_or(String::new(), |d| d.to_string_lossy().into_owned()), hit.join("\n"));
-        }
+        // the directory the call ran in once its `cd`s are followed (else the transcript's): its repository's state decides HARD credit
+        call_dir = dir.as_ref().map_or_else(|| base.to_string(), |d| d.to_string_lossy().into_owned());
         // a build launch is one event of the burn episode: an endless chain of builds with no outcome spends the episode's cap (PR #472)
         if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == class) {
             episode_event(a, ts);
@@ -532,7 +523,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
         let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: cwd.to_string(), check_key });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: call_dir });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -628,7 +619,6 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         // a task backgrounded inside the task as well (a top-level `&`) ends when its launching shell does: no outcome waits for it
         if !p.amp && (p.class == "check" || !p.writes.is_empty()) {
             a.bg_outcomes.insert(id.clone(), (p.class == "check", p.writes.clone()));
-            a.bg_check_keys.insert(id.clone(), p.check_key.clone());
             a.bg_starts.insert(id.clone(), (p.ts, p.cwd.clone()));
         }
         a.bg_ids.insert(id, ts);
@@ -639,7 +629,6 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         let live = &a.bg_ids;
         a.bg_outcomes.retain(|k, _| live.contains_key(k));
         a.bg_starts.retain(|k, _| live.contains_key(k));
-        a.bg_check_keys.retain(|k, _| live.contains_key(k));
     }
     if failed {
         a.errors += 1;
@@ -658,7 +647,7 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         a.changes += 1;
     }
     let om = defaults::raw("agent_tracker.outcome_metric");
-    let hard = !p.bg && !p.amp && hard_outcome(a, (p.class == "check").then_some(p.check_key.as_str()), &p.writes, p.ts);
+    let hard = !p.bg && !p.amp && hard_outcome(a, p.class == "check", &p.writes, p.ts, &p.cwd);
     if !hard && (p.class == "probe" || p.class == "check" || !p.writes.is_empty()) {
         push_ring(&mut a.soft_ts, ts, lim("loop_window"));
         episode_event(a, ts);
@@ -689,14 +678,19 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     } else if p.class == "build" {
         if pat("build_pass").is_some_and(|r| r.is_match(&text)) && !pat("build_fail").is_some_and(|r| r.is_match(&text)) {
             a.builds_ok += 1;
-            a.progress += weight("build");
-            a.waste.reset_at = ts;
+            // PR #472 round 5: a passing build is full credit only when the repo state changed since the last HARD credit
+            if repo_changed(a, super::repo::state(&p.cwd)) {
+                a.progress += weight("build");
+                a.waste.reset_at = ts;
+            }
         }
     } else if p.class == "test" {
         let ok = pat("test_pass").is_some_and(|r| r.is_match(&text)) && !pat("test_fail").is_some_and(|r| r.is_match(&text));
         if ok {
             a.tests_pass += 1;
-            a.progress += weight("test");
+            if repo_changed(a, super::repo::state(&p.cwd)) {
+                a.progress += weight("test");
+            }
         }
     }
 }
@@ -716,35 +710,69 @@ pub(crate) fn episode_sync(a: &mut Agent, ts: u64) {
     }
 }
 
-/// A HARD outcome of a shell command that began at `start` and ended with success (PR #472): a file it created or appended for the
-/// first time (the shell_file weight), else a passing check (the check weight) whose key (`check`: its normalized segments and
-/// directory) has not passed HARD since the last real change (`changes`: an edit, a fresh shell write, a commit; PR #472 round 4), so a
-/// repeated check with nothing changed in between is SOFT. `writes` were resolved at the call (a `cd` in it followed, agent_tracker.cd_follow);
-/// one left relative is unresolvable and names no file. False when it earned neither. A claimed write counts only when the file is there:
-/// `written_since` finds it on disk, modified at or after `start`; the command text alone earns nothing.
-fn hard_outcome(a: &mut Agent, check: Option<&str>, writes: &[String], start: u64) -> bool {
-    let fresh: Vec<String> = writes.iter().filter_map(|w| written_since(w, start)).filter(|w| !a.files.contains(w)).collect();
-    if !fresh.is_empty() {
-        for w in fresh {
-            push_ring(&mut a.files, w, lim("files_max"));
-        }
-        a.changes += 1;
-        a.progress += weight("shell_file");
-        count_outcome(defaults::raw("agent_tracker.outcome_metric").str_field("shell_file"));
-    } else if let Some(key) = check {
-        if a.check_passes.get(key) == Some(&a.changes) {
-            return false;
-        }
-        a.check_passes.insert(key.to_string(), a.changes);
-        while a.check_passes.len() > lim("loop_window") as usize {
-            let Some(k) = a.check_passes.iter().min_by_key(|(_, g)| **g).map(|(k, _)| k.clone()) else { break };
-            a.check_passes.remove(&k);
-        }
-        a.progress += weight("check");
-        count_outcome("check");
-    } else {
+/// A HARD outcome of a shell command that began at `start` in `dir` and ended with success (PR #472 round 5): full credit comes from a
+/// change in repo state, never from the command text. A verified write (`written_since`: the file is there, modified at or after
+/// `start`) or a passing check (`check`) earns HARD only when the state of the call's repository (agent::repo::state) changed since the
+/// last HARD credit of any kind there; a write must also be inside that repository and not ignored by git (a temp file or a gitignored
+/// one never changes the state). Outside a repository, or with git missing, failing or timing out, the verified-write rule applies: a
+/// write of a file not written before and not a temp-dir scratch file outside `dir`, or a check after a real change (`changes`: an
+/// edit, a fresh shell write, a commit) since the last HARD credit. False when it earned neither.
+fn hard_outcome(a: &mut Agent, check: bool, writes: &[String], start: u64, dir: &str) -> bool {
+    let verified: Vec<String> = writes.iter().filter_map(|w| written_since(w, start)).collect();
+    if verified.is_empty() && !check {
         return false;
     }
+    let st = super::repo::state(dir);
+    let fresh: Vec<String> = match &st {
+        Some((top, _)) => {
+            let inside: Vec<String> = verified.into_iter().filter(|w| std::path::Path::new(w).starts_with(top)).collect();
+            let ign = super::repo::ignored(top, &inside);
+            inside.into_iter().filter(|w| !ign.contains(w)).collect()
+        }
+        None => verified.into_iter().filter(|w| !a.files.contains(w) && !super::repo::scratch(w, dir)).collect(),
+    };
+    if fresh.is_empty() && !check {
+        return false;
+    }
+    if !repo_changed(a, st) {
+        return false;
+    }
+    if fresh.is_empty() {
+        a.progress += weight("check");
+        count_outcome("check");
+        return true;
+    }
+    for w in fresh {
+        if !a.files.contains(&w) {
+            push_ring(&mut a.files, w, lim("files_max"));
+        }
+    }
+    a.changes += 1;
+    a.hard_changes = Some(a.changes);
+    a.progress += weight("shell_file");
+    count_outcome(defaults::raw("agent_tracker.outcome_metric").str_field("shell_file"));
+    true
+}
+
+/// Whether the repo state `st` (agent::repo::state of the call's directory) changed since the last HARD credit there, recording it
+/// as the new baseline when it did (PR #472 round 5). `st` None (no repository, git missing, failed or timed out): whether a real
+/// change (`changes`) came since the last HARD credit. Called only for a call that would otherwise earn HARD.
+fn repo_changed(a: &mut Agent, st: Option<(String, String)>) -> bool {
+    match st {
+        Some((top, state)) => {
+            if a.repo_states.get(&top) == Some(&state) {
+                return false;
+            }
+            a.repo_states.insert(top, state);
+            while a.repo_states.len() > lim("loop_window") as usize {
+                let Some(k) = a.repo_states.keys().next().cloned() else { break };
+                a.repo_states.remove(&k);
+            }
+        }
+        None if a.hard_changes == Some(a.changes) => return false,
+        None => {}
+    }
+    a.hard_changes = Some(a.changes);
     true
 }
 

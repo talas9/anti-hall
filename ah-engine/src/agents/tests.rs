@@ -2884,7 +2884,7 @@ fn ok_bash_out(p: &Path, t: u64, k: &str, tin: u64, c: &str, out: &str) {
 #[test]
 fn r5a_an_unchanged_test_or_cached_build_repeated_pauses_pr472r5() {
     for (tag, cmd, out) in [
-        ("r5a-test", "cargo test", "test result: ok. 3 passed; 0 failed"),
+        ("r5a-test", "cargo test", "test result: ok. 3 passed"),
         ("r5a-build", "cargo build", "    Finished `dev` profile [unoptimized] target(s) in 0.31s"),
     ] {
         let (h, p, marker, mut st, n) = fresh_in_repo(tag);
@@ -2966,7 +2966,7 @@ fn r5d_edit_then_test_keeps_earning_hard_pr472r5() {
         );
         ticks(&h, &mut st, &[t + 10_000]);
         let before = agent(&st, "s1").progress;
-        ok_bash_out(&p, t + 20_000, &format!("t{k}"), 350_000, "cargo test", "test result: ok. 3 passed; 0 failed");
+        ok_bash_out(&p, t + 20_000, &format!("t{k}"), 350_000, "cargo test", "test result: ok. 3 passed");
         ticks(&h, &mut st, &[t + MIN]);
         assert!(agent(&st, "s1").progress > before, "test {k} after an edit earns HARD");
         assert!(!marker.exists(), "edit/test work is never paused (round {k})");
@@ -2994,4 +2994,45 @@ fn r5e_a_shell_write_earns_hard_only_when_it_changes_the_repo_pr472r5() {
     assert!(step("out/new.txt", "n1\n", "w4") > 0, "an untracked non-ignored new file is HARD");
     assert_eq!(step("out/new.txt", "n1\n", "w5"), 0, "the identical untracked write again is none");
     assert_eq!(step("ignored/x.txt", "i1\n", "w6"), 0, "a gitignored write is none");
+}
+
+/// Spec (f): git missing, or git hanging past agent_tracker.repo_state.timeout_ms, falls back to the verified-write rule: a fresh write
+/// still earns HARD once, an edit re-arms a passing test, an unchanged repeat earns none, every call stays bounded (no wedge).
+#[test]
+fn r5f_git_unavailable_or_timing_out_falls_back_to_the_verified_write_rule_pr472r5() {
+    let hang = std::env::temp_dir().join("ah-test-agents").join(format!("r5f-hang-git-{}.sh", std::process::id()));
+    std::fs::create_dir_all(hang.parent().unwrap()).unwrap();
+    std::fs::write(&hang, "#!/bin/sh\nsleep 5\n").unwrap();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut std::fs::metadata(&hang).unwrap().permissions(), 0o755);
+    std::fs::set_permissions(&hang, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    for (tag, git, ms) in [("r5f-missing", "/nonexistent/ah-no-git".to_string(), 2000), ("r5f-hang", hang.to_string_lossy().into_owned(), 200)] {
+        let (h, p, marker, mut st, n) = fresh_in_repo(tag);
+        repo::GIT_OVERRIDE.with(|g| *g.borrow_mut() = Some((git, ms)));
+        let began = std::time::Instant::now();
+        let w = h.join("w");
+        let t = n + MIN;
+        put(&w.join("out/f.txt"), "x", t + 500);
+        ok_bash_out(&p, t, "w1", 10, "printf x > out/f.txt", "");
+        ticks(&h, &mut st, &[t + MIN]);
+        let p1 = agent(&st, "s1").progress;
+        assert!(p1 > 0, "{tag}: a verified write earns HARD without git");
+        put(&w.join("out/f.txt"), "x", t + 2 * MIN);
+        ok_bash_out(&p, t + 2 * MIN - 500, "w2", 10, "printf x > out/f.txt", "");
+        ticks(&h, &mut st, &[t + 3 * MIN]);
+        assert_eq!(agent(&st, "s1").progress, p1, "{tag}: the same file written again earns none");
+        for k in 0..3u64 {
+            let tk = t + (6 * k + 4) * MIN;
+            let f = w.join("tracked.txt").to_string_lossy().into_owned();
+            append(&p, &[tool(tk, &format!("me{k}"), 10, &format!("e{k}"), "Edit", json!({"file_path": f, "old_string": "v", "new_string": "v"})), result(tk, &format!("e{k}"), "ok", false)]);
+            ticks(&h, &mut st, &[tk + 10_000]);
+            let before = agent(&st, "s1").progress;
+            ok_bash_out(&p, tk + 20_000, &format!("t{k}"), 10, "cargo test", "test result: ok. 3 passed");
+            ok_bash_out(&p, tk + 30_000, &format!("u{k}"), 10, "cargo test", "test result: ok. 3 passed");
+            ticks(&h, &mut st, &[tk + MIN]);
+            assert_eq!(agent(&st, "s1").progress, before + weight("test"), "{tag}: an edit re-arms one test credit, the repeat earns none ({k})");
+        }
+        assert!(!marker.exists(), "{tag}: legit work is not paused without git");
+        assert!(began.elapsed() < std::time::Duration::from_secs(30), "{tag}: every git read is bounded by the timeout");
+        repo::GIT_OVERRIDE.with(|g| *g.borrow_mut() = None);
+    }
 }
