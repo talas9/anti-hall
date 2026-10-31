@@ -231,6 +231,23 @@ function afkIdleDue(f, now) {
   return base !== null && now - base >= ah.settings.num('afk.set_idle_minutes') * 60000;
 }
 
+// GH #509: the flag read at hook time is the only AFK state. An idle-entered AFK whose recorded owner presence is NEWER than its start is
+// stale (the owner is back; the ending write was lost, or the owner answered through the question tool, which is not a prompt): it ends
+// here under the lock (a cleared flag, nothing deleted), is counted, and the call goes on as OFF, so no AFK text is injected for it.
+// An answered question-tool call (PostToolUse of afk.question_tools, not a subagent) is owner presence (afk.set_answer_presence).
+function afkOwnerBack(p, f, now, ev) {
+  if (ev === 'PostToolUse' && !afkIsAgent(p) && ah.settings.bool('afk.set_answer_presence') && ah.cfg('afk.question_tools').indexOf(typeof p.tool_name === 'string' ? p.tool_name : '') >= 0) afkPresent(now);
+  if (!afkOn(f) || f.how !== ah.cfg('afk.how_idle')) return f;
+  var pr = afkReadJson(afkRel(ah.cfg('afk.presence_file')));
+  if (pr === null || typeof pr.last !== 'number' || pr.last <= Number(f.since)) return f;
+  var r = afkEnd(f, now, true);
+  afkMetric('afk_stale_injection_suppressed', { event: ev });
+  if (r !== null) return r.flag;
+  var off = JSON.parse(JSON.stringify(f));
+  off.on = false;
+  return off;
+}
+
 function afkIdleTrip(f, now) {
   if (afkOn(f) || !ah.settings.bool('afk.set_idle') || !afkIdleDue(f, now)) return f;
   return afkStart(ah.cfg('afk.how_idle'), now) || f;
@@ -412,7 +429,7 @@ function decide(p) {
     f = afkFlag();
     return afkOn(f) ? afkInject(p, f, now, ev) : 'allow';
   }
-  f = afkFlush(afkIdleTrip(f, now));
+  f = afkFlush(afkIdleTrip(afkOwnerBack(p, f, now, ev), now));
   if (ev === 'Stop') return afkStop(p, f, now);
   if (ev === 'PreToolUse') return afkPre(p, f);
   if (ev === 'PostToolUse' && !afkIsAgent(p) && afkOn(f)) return afkInject(p, f, now, ev); // a subagent never gets the rule nor consumes the parent's once-per-session state
