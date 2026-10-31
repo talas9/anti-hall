@@ -1609,6 +1609,69 @@ mod sibling {
         assert!(wrong.is_empty(), "misjudged: {wrong:#?}");
     }
 
+    /// The self-correction corpus (tests/fixtures/sibling_sweep_corpus.ndjson): every row {text, expect: remind|silent, source}
+    /// gets its verdict from the real script in QuickJS, each in its own home (so no cap or duplicate hash carries over). A new
+    /// misjudged phrasing is a new row here, not a new heuristic in the script.
+    #[test]
+    fn every_row_of_the_self_correction_corpus_gets_its_expected_verdict() {
+        let corpus = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sibling_sweep_corpus.ndjson"))
+            .expect("the corpus file is readable");
+        let mut wrong: Vec<String> = Vec::new();
+        let mut n = 0;
+        for (i, line) in corpus.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let (text, expect) = (row["text"].as_str().unwrap(), row["expect"].as_str().unwrap());
+            assert!(matches!(expect, "remind" | "silent"), "row {i}: expect must be remind or silent");
+            let d = h(&format!("corpus{i}"));
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(text)]);
+            let v = go(&d, &stop(&d, &p, text));
+            let got = if is_adv(&v) {
+                "remind"
+            } else if v == Verdict::Allow {
+                "silent"
+            } else {
+                "other"
+            };
+            if got != expect {
+                wrong.push(format!("{expect} <- {got} ({}): {text}", row["source"]));
+            }
+            n += 1;
+        }
+        assert!(n >= 40, "the corpus is read ({n} rows)");
+        assert!(wrong.is_empty(), "corpus rows with the wrong verdict: {wrong:#?}");
+    }
+
+    /// A 5000-character line dense with apostrophes and quote characters is tokenized in one linear pass: the claim before it
+    /// still reminds (a CPU-limit kill would fail open to Allow) and the call stays far under the check's limit.
+    #[test]
+    fn a_long_line_of_apostrophes_is_tokenized_in_linear_time() {
+        // one untimed call first: the first call of a test binary compiles the shared regex programs (seconds in a debug build)
+        let w = h("long0");
+        let wp = write(&w, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say("I fixed a typo in the loader.")]);
+        assert!(is_adv(&go(&w, &stop(&w, &wp, "I fixed a typo in the loader."))));
+        let mut wrong = Vec::new();
+        for (tag, filler) in [("long1", "the users' 'names' don't "), ("long2", "'a "), ("long3", "x' "), ("long4", "\u{2018}a\u{2019}s' \"b ")] {
+            let mut text = String::from("I fixed a typo in the loader. ");
+            while text.chars().count() < 5000 {
+                text.push_str(filler);
+            }
+            let d = h(tag);
+            let p = write(&d, "t.jsonl", &[user("fix"), tool("Edit", json!({})), result(), say(&text)]);
+            let t0 = std::time::Instant::now();
+            let v = go(&d, &stop(&d, &p, &text));
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            eprintln!("sibling-sweep long line {tag}: {} chars, {ms:.1} ms", text.chars().count());
+            if !is_adv(&v) {
+                wrong.push(format!("{tag}: reminder expected, got {v:?}"));
+            }
+            // a debug build on a loaded machine: a quadratic pass over 5000 characters would take far longer
+            if ms > 3000.0 {
+                wrong.push(format!("{tag}: {ms:.1} ms"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
     #[test]
     fn the_self_correction_family_follows_through_and_the_cue_list_is_a_settings_edit() {
         let d = h("self-ft");
