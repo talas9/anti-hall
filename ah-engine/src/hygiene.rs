@@ -3,8 +3,8 @@
 //! newest few and old spill files. The class contract of a clone:
 //!
 //! - KEEP: a live process has its working directory (or an open file) inside it, or it was active within the idle window;
-//!   also the structural guards (symlink, reusable, outside a work root, `.git` a file, linked worktrees, a failed process
-//!   probe). `--clean` does nothing.
+//!   also the structural guards (symlink, reusable, outside a work root, `.git` a file, linked worktrees, a process or
+//!   open-files probe that failed or exited with a status outside `open_files_ok_codes`: `probe_failed`). `--clean` does nothing.
 //! - TARGET-ONLY: a dirty tree, untracked files, a stash, unpushed commits (HEAD included), or a remote that cannot be
 //!   verified. `--clean` removes only ignored, untracked build directories (`target/`) inside the clone.
 //! - REMOVE-SAFE: clean, no stash or untracked file, HEAD and every branch tip reachable from a tip the remote serves right
@@ -103,6 +103,11 @@ impl Busy {
         if let Some((prog, args)) = argv.split_first() {
             let out = Command::new(prog).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output();
             match out {
+                // only the lister's own "matches" / "no matches" statuses prove anything; any other status (an error, a
+                // signal) leaves the listing incomplete, so nothing is provable
+                Ok(o) if !o.status.code().is_some_and(|c| defaults::words("disk_hygiene.open_files_ok_codes").iter().any(|ok| ok.parse::<i32>() == Ok(c))) => {
+                    return Busy { paths, ok: false };
+                }
                 Ok(o) => {
                     let pre = t("open_files_prefix");
                     paths.extend(
@@ -345,7 +350,7 @@ fn classify_clone(kind: &'static str, path: &Path, reusable: bool, cfg: &Cfg, bu
         return keep(kind, path, reason("linked"));
     }
     if !busy.ok {
-        return keep(kind, path, reason("unprovable"));
+        return keep(kind, path, reason("probe_failed"));
     }
     if busy.inside(path) {
         return keep(kind, path, reason("live"));
@@ -375,7 +380,7 @@ fn classify_deploy(path: &Path, cfg: &Cfg, busy: &Busy) -> Item {
         return keep(kind, path, reason("outside"));
     }
     if !busy.ok {
-        return keep(kind, path, reason("unprovable"));
+        return keep(kind, path, reason("probe_failed"));
     }
     if busy.inside(path) {
         return keep(kind, path, reason("live"));
@@ -597,6 +602,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     };
     let micros = started.elapsed().as_micros() as u64;
     let c = defaults::raw("disk_hygiene.tel_counters");
+    count(c.str_field("probe_failed"), u64::from(!busy.ok), micros, code);
     count(c.str_field("reclaimable"), reclaimable, micros, code);
     count(c.str_field("reclaimed"), reclaimed, micros, code);
     count(c.str_field("listed"), items.len() as u64, micros, code);

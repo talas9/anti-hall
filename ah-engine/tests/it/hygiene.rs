@@ -586,3 +586,81 @@ fn a_failed_report_write_exits_nonzero_counts_and_unlinks_nothing_it_did_not_cre
     assert_eq!(code, 0, "{err}");
     assert!(eng.join("hygiene-report.json").is_file());
 }
+
+/// A directory with a fake `lsof` that prints `stdout`, prints a warning to stderr and exits `code`; returns a PATH that
+/// finds it first.
+fn fake_lsof(w: &World, tag: &str, stdout: &str, code: i32) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let d = w.dir.join(format!("fakebin-{tag}"));
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("lsof");
+    std::fs::write(&f, format!("#!/bin/sh\nprintf '{stdout}'\necho 'lsof: WARNING: probe broke' >&2\nexit {code}\n")).unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+    format!("{}:{}", d.display(), path_env())
+}
+
+/// P1 of PR 522: the open-files probe's exit status was ignored, so a failed probe counted as proof of idleness. A clean,
+/// pushed, idle clone with a file held open by a process whose cwd is elsewhere, and an `lsof` that errors (exit 2): KEEP
+/// `probe_failed`, `--clean` leaves it, and the counter reaches the telemetry inbox. Exit 1 with no output (the lister's
+/// "no matches") proves idleness and stays REMOVE-SAFE.
+#[test]
+fn a_failed_open_files_probe_keeps_every_clone_and_counts_while_no_matches_stays_removable() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut w = seeded("probe");
+    let held = w.clone("held-open");
+    age_clone(&held);
+    let file = std::fs::File::open(held.join("README")).unwrap();
+    w.kids.push(Command::new("sleep").arg("600").current_dir("/").stdin(file).spawn().unwrap());
+    let run = |w: &World, args: &[&str], path: &str| w.run(args, &[("ANTIHALL_DISK_HYGIENE_IDLE_HOURS", "0"), ("PATH", path)]);
+
+    // exit 2 plus a stderr message: the listing is incomplete, so nothing is provable
+    let bad = fake_lsof(&w, "bad", "", 2);
+    let r = run(&w, &["hygiene", "--report"], &bad);
+    assert_eq!(class_of(&r, &held), ("KEEP".into(), "probe_failed".into()), "{r}");
+    assert_eq!(r["items_skipped"]["probe_failed"].as_u64(), Some(1), "{r}");
+    let c = run(&w, &["hygiene", "--clean"], &bad);
+    assert!(held.join(".git").exists() && c["bytes_reclaimed"] == 0, "--clean removed a clone whose probe failed: {c}");
+    ah_engine::defaults::init().unwrap();
+    let inbox = std::fs::read_to_string(w.dir.join("eng").join(ah_engine::defaults::text("files.telemetry_inbox"))).unwrap();
+    assert!(inbox.lines().any(|l| l.contains("\"probe_failed\"") && l.contains("\"items\":1")), "probe_failed counter missing: {inbox}");
+
+    // a lister killed by a signal is no better than a failing one
+    let sig = w.dir.join("fakebin-sig");
+    std::fs::create_dir_all(&sig).unwrap();
+    std::fs::write(sig.join("lsof"), "#!/bin/sh\nkill -9 $$\n").unwrap();
+    std::fs::set_permissions(sig.join("lsof"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let r = run(&w, &["hygiene", "--report"], &format!("{}:{}", sig.display(), path_env()));
+    assert_eq!(class_of(&r, &held), ("KEEP".into(), "probe_failed".into()), "{r}");
+
+    // exit 1, no output: "no matches" is a complete listing, so the clone is idle and removable
+    let none = fake_lsof(&w, "none", "", 1);
+    let r = run(&w, &["hygiene", "--report"], &none);
+    assert_eq!(class_of(&r, &held), ("REMOVE-SAFE".into(), "clean_pushed_idle".into()), "{r}");
+
+    // exit 0 listing a file inside the clone: held open, KEEP live_process
+    let hit = fake_lsof(&w, "hit", &format!("p1\\nn{}/README\\n", held.display()), 0);
+    let r = run(&w, &["hygiene", "--report"], &hit);
+    assert_eq!(class_of(&r, &held), ("KEEP".into(), "live_process".into()), "{r}");
+}
+
+/// The real `lsof` shape: a real process holds a file of the clone open with its cwd elsewhere; the real lister reports it
+/// and the clone is KEEP live_process (or, where the lister cannot run at all, KEEP probe_failed), never REMOVE-SAFE.
+#[test]
+fn the_real_lsof_sees_a_file_held_open_by_a_process_working_elsewhere() {
+    if Command::new("lsof").arg("-v").output().is_err() {
+        return; // no lister installed here: the fake-lister test covers the contract
+    }
+    let mut w = seeded("reallsof");
+    let held = w.clone("held-real");
+    age_clone(&held);
+    let file = std::fs::File::open(held.join("README")).unwrap();
+    w.kids.push(Command::new("sleep").arg("600").current_dir("/").stdin(file).spawn().unwrap());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let env = [("ANTIHALL_DISK_HYGIENE_IDLE_HOURS", "0")];
+    let r = w.run(&["hygiene", "--report"], &env);
+    let (class, why) = class_of(&r, &held);
+    assert_eq!(class, "KEEP", "{r}");
+    assert!(why == "live_process" || why == "probe_failed", "{why}: {r}");
+    let c = w.run(&["hygiene", "--clean"], &env);
+    assert!(held.join(".git").exists(), "--clean removed a held-open clone: {c}");
+}

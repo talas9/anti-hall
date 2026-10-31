@@ -170,6 +170,10 @@ value = [".git/index", ".git/HEAD", ".git/logs/HEAD", ".git/FETCH_HEAD"]
 doc = "Command that lists every open file of every process, one `n<path>` line each (field output). Not installed: only working directories are probed."
 value = ["lsof", "-n", "-P", "-w", "-Fn"]
 
+[disk_hygiene.open_files_ok_codes]
+doc = "Exit statuses of the open-files command that mean its listing is complete (space separated): 0 matches, 1 no matches. Any other status, or death by a signal, makes the probe failed: every clone is KEEP (probe_failed), never REMOVE-SAFE. Spawn failures other than not installed fail the probe too."
+value = "0 1"
+
 [disk_hygiene.open_files_prefix]
 doc = "The line prefix of a path in the open-files listing."
 value = "n"
@@ -227,8 +231,8 @@ doc = "Item kind: a deploy copy."
 value = "deploy"
 
 [disk_hygiene.reasons]
-doc = "Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a probe failed), live (a process works inside), recent (not idle), dirty (a tracked change), untracked (an untracked file, or an ignored one outside the regenerable names), unpushed (a commit no remote tip holds), remote_unverified (no remote, or ls-remote failed or timed out), stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. outside (not proved inside a work root), spill_only (a spill file: report only)."
-value = { reusable = "reusable", symlink = "symlink", linked = "linked", unprovable = "unprovable", untracked = "untracked", remote_unverified = "remote_unverified", live = "live_process", recent = "recent", dirty = "dirty", unpushed = "unpushed", stash = "stash", worktrees = "worktrees", newest = "deploy_newest", fresh = "fresh", safe = "clean_pushed_idle", outside = "outside_root", spill_only = "spill_report_only" }
+doc = "Reason words of a classification: reusable, symlink, linked (.git is a file), unprovable (a git check failed), probe_failed (the process or open-files probe could not run or exited with a status outside open_files_ok_codes: nothing is provable, KEEP), live (a process works inside), recent (not idle), dirty (a tracked change), untracked (an untracked file, or an ignored one outside the regenerable names), unpushed (a commit no remote tip holds), remote_unverified (no remote, or ls-remote failed or timed out), stash, worktrees, newest (a kept deploy copy), fresh (a young spill file), safe. outside (not proved inside a work root), spill_only (a spill file: report only)."
+value = { reusable = "reusable", symlink = "symlink", linked = "linked", unprovable = "unprovable", probe_failed = "probe_failed", untracked = "untracked", remote_unverified = "remote_unverified", live = "live_process", recent = "recent", dirty = "dirty", unpushed = "unpushed", stash = "stash", worktrees = "worktrees", newest = "deploy_newest", fresh = "fresh", safe = "clean_pushed_idle", outside = "outside_root", spill_only = "spill_report_only" }
 
 [disk_hygiene.flag_report]
 doc = "The report flag (the default when no flag is given)."
@@ -243,8 +247,8 @@ doc = "Telemetry command label of the hygiene counters: one cmd event per counte
 value = "hygiene"
 
 [disk_hygiene.tel_counters]
-doc = "Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, report writes that failed (1 per failed run), the prefix of the per-class item counts, and the prefix of the per-reason skipped counts (every item not moved whole: KEEP and TARGET-ONLY items, and items a clean refused)."
-value = { reclaimable = "bytes_reclaimable", reclaimed = "bytes_reclaimed", listed = "items_listed", report_failed = "report_write_failed", class = "items_class_", skipped = "items_skipped_" }
+doc = "Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, report writes that failed (1 per failed run), process or open-files probes that failed (probe_failed, 1 per failed run), the prefix of the per-class item counts, and the prefix of the per-reason skipped counts (every item not moved whole: KEEP and TARGET-ONLY items, and items a clean refused)."
+value = { reclaimable = "bytes_reclaimable", reclaimed = "bytes_reclaimed", listed = "items_listed", report_failed = "report_write_failed", probe_failed = "probe_failed", class = "items_class_", skipped = "items_skipped_" }
 
 [disk_hygiene.health_kind]
 doc = "Engine health-log kind of the low-disk notice and of a refused clean step."
