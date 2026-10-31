@@ -59,6 +59,13 @@ pub fn decided(t: &Telemetry, session: &str, check: &str, ctx: &Ctx) {
     DECIDED.with(|d| d.borrow_mut().push((session.to_string(), check.to_string(), ctx.clone())));
 }
 
+/// A check answered with a message or a block that the client's hook configuration never emits (a shadowed entry: it ran, its
+/// answer is dropped). It counts as decided and as suppressed, never as delivered, in a channel or armed for a reaction.
+pub fn suppressed(t: &Telemetry, check: &str, ctx: &Ctx) {
+    stage(t, check, "delivery.stage_decided", "delivery.stage_decided", ctx);
+    stage(t, check, "delivery.stage_suppressed", "delivery.stage_suppressed", ctx);
+}
+
 /// The request ended: the answers it produced are delivered when `delivered` (the reply was written and the client still
 /// waited), else lost for the reason `delivery.reason_undelivered`. Delivered answers of checks with a `delivery.react` row are armed.
 pub fn settle(t: &Telemetry, delivered: bool) {
@@ -167,6 +174,7 @@ struct Row {
     ignored: u64,
     shed: u64,
     lost: u64,
+    suppressed: u64,
 }
 
 /// The ledger as `status` shows it: per check the counts of every stage (a stage never reached is 0; `complied` and `ignored` are
@@ -181,6 +189,7 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
         defaults::text("delivery.stage_ignored"),
     );
     let shed = defaults::text("delivery.reason_shed");
+    let suppressed = defaults::text("delivery.stage_suppressed");
     let mut checks: std::collections::BTreeMap<String, Row> = std::collections::BTreeMap::new();
     let mut spills = Map::new();
     let mut pinned_spills = 0u64;
@@ -198,6 +207,7 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
                     Some(1) => row.delivered += n,
                     Some(2) => row.complied += n,
                     Some(3) => row.ignored += n,
+                    _ if s == suppressed => row.suppressed += n,
                     _ => {}
                 }
             }
@@ -233,7 +243,7 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
                 "complied": if measured { json!(com) } else { Value::Null },
                 "acted_on": if measured { json!(com) } else { Value::Null },
                 "ignored": if measured { json!(ign) } else { Value::Null },
-                "shed": shd, "lost": lost,
+                "shed": shd, "lost": lost, "suppressed": r.suppressed,
             });
             (check, row)
         })
@@ -286,6 +296,25 @@ mod tests {
         assert_eq!(count(&t, "task-tracker", "delivery.stage_delivered"), 1, "only the first delivery counts");
         let lost = t.with_metrics(|m| m.counter("delivery_lost", &[("check", "task-tracker"), ("reason", defaults::text("delivery.reason_undelivered"))]));
         assert_eq!(lost, 1);
+    }
+
+    #[test]
+    fn a_suppressed_answer_is_decided_and_suppressed_never_delivered_or_armed() {
+        let t = Telemetry::new();
+        suppressed(&t, "task-tracker", &ctx());
+        settle(&t, true);
+        assert_eq!(
+            (
+                count(&t, "task-tracker", "delivery.stage_decided"),
+                count(&t, "task-tracker", "delivery.stage_suppressed"),
+                count(&t, "task-tracker", "delivery.stage_delivered")
+            ),
+            (1, 1, 0)
+        );
+        observe_tool(&t, "s-sup", "TaskUpdate");
+        assert_eq!(count(&t, "task-tracker", "delivery.stage_complied") + count(&t, "task-tracker", "delivery.stage_ignored"), 0, "nothing was armed");
+        let s = status(&t);
+        assert_eq!((s["per_check"]["task-tracker"]["decided"].as_u64(), s["per_check"]["task-tracker"]["suppressed"].as_u64()), (Some(1), Some(1)));
     }
 
     #[test]

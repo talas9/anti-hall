@@ -1163,8 +1163,14 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         {
             // #312: it said something (a message or a block): delivery is counted at the end of the request. B1: with the session's model and project
             let who = crate::funnel::ctx(session, &p, &phash);
-            crate::delivery::decided(&sh.telemetry, session, check, &who);
-            crate::funnel::channels(&sh.telemetry, check, &meta.event, r, &who);
+            // a shadowed entry ran but the client drops its answer: decided and suppressed, never delivered or in a channel
+            let shadowed = meta.plan.iter().any(|(id, o)| *id == e.id && o == crate::dispatch::plan::Outcome::Shadowed.word());
+            if shadowed {
+                crate::delivery::suppressed(&sh.telemetry, check, &who);
+            } else {
+                crate::delivery::decided(&sh.telemetry, session, check, &who);
+                crate::funnel::channels(&sh.telemetry, check, &meta.event, r, &who);
+            }
         }
         let answer = if v == Verdict::Defer { "defer" } else { "decided" };
         sh.telemetry.with_metrics(|m| m.inc("dispatch_checks", &[("event", meta.event.as_str()), ("check", check), ("answer", answer)]));

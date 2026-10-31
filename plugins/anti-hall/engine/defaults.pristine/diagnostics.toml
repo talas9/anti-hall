@@ -534,7 +534,7 @@ doc = "Outcome word of a deadline cut that allowed (the session was already told
 value = "allow"
 
 [delivery.funnel_enabled]
-doc = "Per-rule funnel (B1, plan v2 section 6): 1 splits the delivery stages (decided, delivered, acted_on, ignored, lost, shed) and the output channels of every check by the session's model family and the project, in the metrics delivery_funnel and delivery_channel (`telemetry funnel`). It only counts: no answer changes. 0 stops the split (what was recorded stays); the unsplit delivery_stage and delivery_lost counters are unaffected. On by default because it changes no behaviour and the baseline window needs its data."
+doc = "Per-rule funnel (B1, plan v2 section 6): 1 splits the delivery stages (decided, delivered, acted_on, ignored, lost, shed, suppressed) and the output channels of every check by the session's model family and the project, in the metrics delivery_funnel and delivery_channel (`telemetry funnel`). It only counts: no answer changes. 0 stops the split (what was recorded stays); the unsplit delivery_stage and delivery_lost counters are unaffected. On by default because it changes no behaviour and the baseline window needs its data."
 value = 1
 min = 0
 max = 1
@@ -546,6 +546,10 @@ value = "acted_on"
 [delivery.stage_lost]
 doc = "Funnel stage label for an answer that did not reach the agent for a reason other than shedding (hard_deadline, cpu_budget, client_gone, check_deferred, undelivered)."
 value = "lost"
+
+[delivery.stage_suppressed]
+doc = "Stage label for an answer a check made that the client's hook configuration never emits (the entry's mode is shadow: it runs and is measured, its answer is dropped). Counted as decided and as suppressed, never as delivered, in an output channel, or armed for a reaction."
+value = "suppressed"
 
 [delivery.stage_shed]
 doc = "Funnel stage label for an answer shed by the CPU hard limit (the reason named in delivery.reason_shed)."
@@ -599,7 +603,15 @@ value = ["model", "project"]
 
 [delivery.report_stages]
 doc = "The funnel stages the report lists, in order; each names a `delivery.stage_<name>` label."
-value = ["decided", "delivered", "acted_on", "ignored", "lost", "shed"]
+value = ["decided", "delivered", "acted_on", "ignored", "lost", "shed", "suppressed"]
+
+[delivery.report_note_overflow]
+doc = "Printed in the funnel report's window.overflow when some counts sit in the overflow bucket (a series past telemetry.max_series_by_metric kept its check and stage and folded its model and project into the overflow label), and on each row that is such a bucket. Placeholders: {counts}."
+value = "{counts} counts sit in the overflow bucket (model and project folded into `other`); their check and stage are exact, so the totals are complete."
+
+[delivery.report_overflow_stage]
+doc = "Report key for answers counted under a stage label the report does not list (an older series whose stage label was folded into the overflow label): they stay in the row and the totals under this key instead of being dropped."
+value = "unlisted"
 
 [delivery.report_bad_dim]
 doc = "Printed by `telemetry funnel` for a --by word it does not know. Placeholders: {dim}, {dims}."

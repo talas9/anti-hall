@@ -50,7 +50,7 @@ fn the_pristine_copy_preserves_the_released_defaults() {
             "flags.toml" => Some("9abf4808365204cfb9987d5650ad61af92d1c8391627bace7fc9f846261029c4"),
             "roles.toml" => Some("33c0f96414e5e87ffe0a63194fba41f6ffbf8aab301117b69061ab7ed88ddb33"),
             "script.toml" => Some("0c97707f572f7da75f082467195a40ffe4e2d597fd36aa47bf26e5f69f884e0b"),
-            "telemetry.toml" => Some("65636d6f012ea0d5438eb62519bda87030a85ae617f154e9ac425dbfacd8b2d9"),
+            "telemetry.toml" => Some("346ad4448f8a310d69b9939ece9b368f780f0a7cf51da86999a7543dc51e0ec1"),
             _ => None,
         };
         if let Some(expected) = released_sha256 {

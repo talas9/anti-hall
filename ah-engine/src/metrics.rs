@@ -130,7 +130,9 @@ pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
     #[cfg(test)]
     THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += by);
     let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    if !g.contains_key(&key) && g.len() >= defaults::num("telemetry.max_series") as usize {
+    // a metric with its own series cap may fill the pending map up to it (its counts are not dropped at the global cap)
+    let room = defaults::raw("telemetry.max_series_by_metric").get(name).and_then(defaults::V::as_integer).map_or(0, |c| c.max(0) as usize);
+    if !g.contains_key(&key) && g.len() >= (defaults::num("telemetry.max_series") as usize).max(room) {
         return;
     }
     g.entry(key).or_insert_with(|| (name.to_string(), labels.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect(), 0)).2 += by;
@@ -164,6 +166,12 @@ impl Metrics {
         let n = self.series_per_metric.entry(name.to_string()).or_insert(0);
         if *n >= cap {
             let over = defaults::text("telemetry.overflow_label");
+            // a metric with its own keep list (`telemetry.overflow_keep_by_metric`) folds only the labels outside it, whatever the count of
+            // series that keep a value: those are bounded by checks x stage words, and no count of the metric may be lost
+            if let Some(own) = defaults::raw("telemetry.overflow_keep_by_metric").get(name).map(defaults::V::strings) {
+                let partial: Vec<(&str, &str)> = labels.iter().map(|(l, v)| (*l, if own.contains(l) { *v } else { over })).collect();
+                return series(name, &partial);
+            }
             // past the cap the labels that name WHO (`telemetry.overflow_keep_labels`, e.g. the check) stay and the others collapse, so
             // a per-check cost stays visible; those series are bounded in turn by `telemetry.max_series_kept`
             let keep = defaults::list("telemetry.overflow_keep_labels");

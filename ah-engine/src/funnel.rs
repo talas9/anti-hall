@@ -233,6 +233,10 @@ pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: 
             base.insert((n, l), v);
         }
     }
+    let (over, other) = (defaults::text("telemetry.overflow_label"), defaults::text("delivery.project_other"));
+    // a series whose model or project is the overflow bucket's: past the series cap those labels fold, the check and stage stay
+    let folded = |labels: &BTreeMap<String, String>| ["model", "project"].iter().any(|d| labels.get(*d).is_some_and(|v| v == over || v == other));
+    let mut overflow_counts = 0u64;
     let mut rows: BTreeMap<Vec<String>, Counts> = BTreeMap::new();
     for (name, labels, v) in counters(live) {
         let cur = v.saturating_sub(base.get(&(name.clone(), labels.clone())).copied().unwrap_or(0));
@@ -244,6 +248,9 @@ pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: 
             "delivery_channel" => (labels.get("channel").cloned().unwrap_or_default(), false),
             _ => continue,
         };
+        if is_stage && folded(&labels) {
+            overflow_counts += cur;
+        }
         let row = rows.entry(key_of(&labels)).or_default();
         *(if is_stage { &mut row.0 } else { &mut row.1 }).entry(stage).or_insert(0) += cur;
     }
@@ -260,10 +267,24 @@ pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: 
             *totals.entry((*k).to_string()).or_insert(0) += n;
             row.insert((*k).to_string(), json!(n));
         }
+        // counts under a stage the report does not list stay visible, never dropped
+        let unlisted_key = defaults::text("delivery.report_overflow_stage");
+        let unlisted: u64 = st.iter().filter(|(l, _)| !stage_names.iter().any(|(_, n)| n == l)).map(|(_, n)| *n).sum();
+        if unlisted > 0 {
+            *totals.entry(unlisted_key.to_string()).or_insert(0) += unlisted;
+            row.insert(unlisted_key.to_string(), json!(unlisted));
+        }
+        if by.iter().enumerate().any(|(i, _)| key.get(i + 1).is_some_and(|v| v == over || v == other)) {
+            row.insert("overflow".into(), json!(true));
+        }
         let (a, i) =
             (st.get(defaults::text("delivery.stage_acted_on")).copied().unwrap_or(0), st.get(defaults::text("delivery.stage_ignored")).copied().unwrap_or(0));
         row.insert("acted_on_rate".into(), if a + i == 0 { Value::Null } else { json!(((a as f64 / (a + i) as f64) * 1000.0).round() / 1000.0) });
-        let channels: Map<String, Value> = channel_names.iter().filter_map(|(_, label)| ch.get(*label).map(|n| ((*label).to_string(), json!(n)))).collect();
+        let mut channels: Map<String, Value> = channel_names.iter().filter_map(|(_, label)| ch.get(*label).map(|n| ((*label).to_string(), json!(n)))).collect();
+        let unlisted_ch: u64 = ch.iter().filter(|(l, _)| !channel_names.iter().any(|(_, n)| n == l)).map(|(_, n)| *n).sum();
+        if unlisted_ch > 0 {
+            channels.insert(unlisted_key.to_string(), json!(unlisted_ch));
+        }
         row.insert("channels".into(), Value::Object(channels));
         out_rows.push(Value::Object(row));
     }
@@ -273,6 +294,10 @@ pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: 
         "complete": complete,
         "note": if days.is_none() { defaults::text("delivery.report_note_lifetime") } else if complete { "" } else { defaults::text("delivery.report_note_partial") },
     });
+    let mut window = window;
+    if overflow_counts > 0 {
+        window["overflow"] = json!({ "counts": overflow_counts, "note": defaults::render("delivery.report_note_overflow", &[("counts", &overflow_counts)]) });
+    }
     json!({ "funnel": { "by": by, "window": window, "rows": out_rows, "totals": totals } })
 }
 
@@ -389,6 +414,64 @@ mod tests {
         let other = defaults::text("telemetry.overflow_label");
         assert_eq!(m.counter("delivery_funnel", &[("check", other), ("model", other), ("project", other), ("stage", other)]), 0, "nothing collapsed");
         assert_eq!(m.counter("delivery_lost", &[("check", "c"), ("reason", other)]), 100, "control: a metric on the global cap collapses its extra series");
+    }
+
+    #[test]
+    fn past_the_series_cap_no_count_is_lost_and_the_overflow_bucket_is_reported_and_flagged() {
+        use crate::delivery;
+        let t = Telemetry::new();
+        let (checks, models, projects) = (["cap-a", "cap-b"], ["opus", "sonnet", "haiku", "fable", "gpt", "codex"], 150usize);
+        let funnel_cap = defaults::raw("telemetry.max_series_by_metric").get("delivery_funnel").and_then(defaults::V::as_integer).unwrap() as usize;
+        assert!(projects * models.len() * checks.len() * 2 > funnel_cap, "the run exceeds the funnel's series cap");
+        for i in 0..projects {
+            for m in models {
+                for c in checks {
+                    delivery::decided(&t, &format!("s-cap-{i}-{m}-{c}"), c, &Ctx { model: m.into(), project: format!("p{i}") });
+                    delivery::settle(&t, true);
+                }
+            }
+        }
+        let each = (projects * models.len()) as u64;
+        let status = delivery::status(&t);
+        let flat = t.funnel_json("", "");
+        for c in checks {
+            let row = flat["funnel"]["rows"].as_array().unwrap().iter().find(|r| r["check"] == c).unwrap();
+            assert_eq!(
+                (status["per_check"][c]["decided"].as_u64(), status["per_check"][c]["delivered"].as_u64()),
+                (Some(each), Some(each)),
+                "{c}: unsplit ledger"
+            );
+            assert_eq!((row["decided"].as_u64(), row["delivered"].as_u64()), (Some(each), Some(each)), "{c}: the funnel equals the per-check ledger: {row}");
+            assert_eq!(row["channels"].as_object().map(|o| o.len()), Some(0), "no channel was used");
+        }
+        assert_eq!(flat["funnel"]["totals"]["decided"], 2 * each);
+        assert_eq!(flat["funnel"]["totals"]["delivered"], 2 * each);
+        assert!(flat["funnel"]["totals"].get(defaults::text("delivery.report_overflow_stage")).is_none(), "no count sits under an unlisted stage");
+        // by model and project: the bucket is a row of its own, flagged, and the window says how much sits in it
+        let split = t.funnel_json("model,project", "");
+        let rows = split["funnel"]["rows"].as_array().unwrap();
+        let over = defaults::text("telemetry.overflow_label");
+        let flagged: Vec<_> = rows.iter().filter(|r| r["overflow"] == true).collect();
+        assert!(!flagged.is_empty() && flagged.iter().all(|r| r["model"] == over || r["project"] == over), "{split}");
+        assert!(rows.iter().filter(|r| r["overflow"] != true).all(|r| r["model"] != over && r["project"] != over));
+        assert_eq!(rows.iter().map(|r| r["decided"].as_u64().unwrap()).sum::<u64>(), 2 * each, "the rows add up to the total");
+        assert!(split["funnel"]["window"]["overflow"]["counts"].as_u64() > Some(0), "{split}");
+        assert!(flat["funnel"]["window"]["overflow"]["note"].as_str().is_some_and(|n| n.contains("overflow bucket")));
+    }
+
+    #[test]
+    fn a_stage_or_channel_label_the_report_does_not_list_stays_in_the_row_and_the_totals() {
+        let live = snap(&[
+            ("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", 3),
+            ("delivery_funnel|check=c1|model=other|project=other|stage=other", 2),
+            ("delivery_channel|check=c1|channel=other|model=opus|project=pa", 1),
+        ]);
+        let r = report(&live, None, true, &[], None);
+        let unlisted = defaults::text("delivery.report_overflow_stage");
+        assert_eq!(r["funnel"]["rows"][0]["decided"], 3);
+        assert_eq!(r["funnel"]["rows"][0][unlisted], 2);
+        assert_eq!(r["funnel"]["totals"][unlisted], 2);
+        assert_eq!(r["funnel"]["rows"][0]["channels"][unlisted], 1);
     }
 
     #[test]
