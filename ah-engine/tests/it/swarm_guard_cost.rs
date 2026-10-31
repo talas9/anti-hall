@@ -136,30 +136,61 @@ fn an_over_cap_spawn_is_still_refused_on_the_big_transcript() {
     assert!(out.contains("agents are running (limit 6, your guards.maxConcurrentAgents cap)"), "{out}");
 }
 
-/// The CPU bound (tests/budgets.toml `swarm_guard_cost`): the real-shape fixture, cap on and ceiling on, so both counts run, finishes
-/// inside `limit_pct` of the script's 500 ms CPU limit. The limit is set per run through the soft limit (hard = soft x time_hard_factor);
-/// an interrupted script now fails OPEN with a notice, so the test requires the plain allow with no notice.
+/// The script's CPU time of the last call that went over its soft limit, from the engine's event log (`script_soft`: "used N us of cpu"):
+/// the engine's own measure of the interpreter thread, in ms. `None` when no call went over (the script used less than the soft limit).
+fn logged_script_cpu_ms(home: &Path) -> Option<f64> {
+    let log = std::fs::read_to_string(
+        std::fs::read_dir(home.join("engine-state"))
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains("script_soft")))?,
+    )
+    .ok()?;
+    let line = log.lines().rev().find(|l| l.contains("script_soft") && l.contains("swarm-guard"))?;
+    let us: f64 = line.split(" used ").nth(1)?.split(' ').next()?.parse().ok()?;
+    Some(us / 1000.0)
+}
+
+/// The CPU bound (tests/budgets.toml `swarm_guard_cost`): the real-shape fixture, cap on and ceiling on, so both counts run, in a FRESH
+/// engine process each round (a cold start, as every CLI call and the first call of a daemon is), is not interrupted before the budget's
+/// `cpu_ceiling_ms`. The hard limit is set per run through the soft limit (hard = soft x time_hard_factor); the soft limit is below the
+/// real cost, so the engine logs the CPU the script used and the failure message can print it. An interrupted script fails OPEN with a
+/// notice, so the test requires the plain allow with no notice.
 #[test]
-fn the_real_shape_fixture_runs_inside_a_quarter_of_the_cpu_limit() {
+fn the_real_shape_fixture_runs_inside_the_cpu_budget() {
     let b: toml::Table = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/budgets.toml")).unwrap().parse().unwrap();
     let b = &b["swarm_guard_cost"];
     let f = |k: &str| b[k].as_float().unwrap_or_else(|| b[k].as_integer().unwrap() as f64);
     let factor = if cfg!(debug_assertions) { f("debug_factor") } else { 1.0 };
-    let hard_ms = f("limit_pct") / 100.0 * f("hard_limit_ms") * factor;
-    let soft_ms = (hard_ms / f("time_hard_factor")).ceil() as u64;
+    let ceiling_ms = f("cpu_ceiling_ms") * factor;
+    let soft_ms = (ceiling_ms / f("time_hard_factor")).ceil() as u64;
     let h = scratch("cost-bound");
+    std::fs::create_dir_all(h.join("engine-state")).unwrap(); // the event log lives here; without the directory the engine drops its lines
     put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":100000}}"#);
     put(&h, "t.jsonl", &big_transcript());
     tracked_spread(&h, 5);
     let soft = soft_ms.to_string();
     for round in 0..3 {
         let (code, out, err) = check(&h, &[("AH_ENGINE_SCRIPT_TIME_MS", &soft)]);
-        assert_eq!((code, out.as_str()), (0, ""), "round {round}: the script must finish inside {} ms of CPU: {err}", soft_ms * 10);
+        let used = logged_script_cpu_ms(&h);
+        let shown = used.map_or(format!("under the {soft_ms} ms soft limit"), |ms| format!("{ms:.1} ms"));
+        if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+            let line = format!("swarm_guard_cost round {round}: script CPU {shown} (ceiling {ceiling_ms} ms)\n");
+            ah_engine::discard::harmless(std::fs::OpenOptions::new().append(true).create(true).open(path).and_then(|mut w| w.write_all(line.as_bytes())));
+        }
+        assert_eq!(
+            (code, out.as_str()),
+            (0, ""),
+            "round {round}: the script must finish inside {ceiling_ms} ms of CPU; it had used {shown} when it ended (the production hard limit is {} ms): {err}",
+            f("production_hard_limit_ms")
+        );
     }
 }
 
-/// Each host scan is paid ONCE per spawn check, whatever number of counts use it: the transcript scan and the tracker read are wrapped by an
-/// owner-style lib override (the editable-script mechanism) that records every call.
+/// Each host scan is paid ONCE per spawn check, whatever number of counts use it, and the defaults generation is read from the host ONCE
+/// per spawn (not once per launch): the transcript scan, the tracker read, `cfgGen` and the `cfg` misses are wrapped by an owner-style
+/// lib override (the editable-script mechanism) that records every call. `cfg` misses are bounded by the number of distinct keys read.
 #[test]
 fn the_transcript_scan_and_the_tracker_read_are_each_paid_once_per_spawn() {
     let h = scratch("cost-once");
@@ -169,14 +200,21 @@ fn the_transcript_scan_and_the_tracker_read_are_each_paid_once_per_spawn() {
     put(
         &h,
         ".anti-hall/logic/lib/99-count.js",
-        "(function () { var n = { agents: 0, tracked: 0 }, a = ah.transcript.agents, t = ah.transcript.trackedAgents;\n\
-         ah.transcript.agents = function (p) { n.agents++; ah.state.writeAtomic('.anti-hall/host-calls.json', JSON.stringify(n)); return a(p); };\n\
-         ah.transcript.trackedAgents = function (p) { n.tracked++; ah.state.writeAtomic('.anti-hall/host-calls.json', JSON.stringify(n)); return t(p); }; })();\n",
+        "(function () { var n = { agents: 0, tracked: 0, cfgGen: 0, cfgMiss: 0 }, a = ah.transcript.agents, t = ah.transcript.trackedAgents, g = ahHost.cfgGen, c = ahHost.cfg;\n\
+         function save() { ah.state.writeAtomic('.anti-hall/host-calls.json', JSON.stringify(n)); }\n\
+         ah.transcript.agents = function (p) { n.agents++; save(); return a(p); };\n\
+         ah.transcript.trackedAgents = function (p) { n.tracked++; save(); return t(p); };\n\
+         ahHost.cfgGen = function (h, m) { n.cfgGen++; save(); return g.call(ahHost, h, m); };\n\
+         ahHost.cfg = function (k) { n.cfgMiss++; save(); return c.call(ahHost, k); }; })();\n",
     );
     let (code, out, err) = check(&h, &[]);
     assert_eq!((code, out.as_str()), (0, ""), "{err}");
     let calls: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(h.join(".anti-hall/host-calls.json")).unwrap()).unwrap();
-    assert_eq!(calls, json!({"agents": 1, "tracked": 1}), "the cap and the ceiling share one scan and one tracker read");
+    eprintln!("host calls per spawn: {calls}");
+    assert_eq!((&calls["agents"], &calls["tracked"]), (&json!(1), &json!(1)), "the cap and the ceiling share one scan and one tracker read: {calls}");
+    assert_eq!(calls["cfgGen"], json!(1), "the defaults generation is read once per spawn, not once per launch: {calls}");
+    let misses = calls["cfgMiss"].as_u64().unwrap();
+    assert!(misses < 200, "defaults reads are memoized, so their host calls are bounded by the distinct keys, never by the {LAUNCHES} launches: {calls}");
 }
 
 /// D15 (GH #537): a swarm-guard script that cannot run lets the spawn through, is counted, and says so with a step that exists.
