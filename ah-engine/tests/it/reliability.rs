@@ -2305,7 +2305,10 @@ fn a_client_that_is_gone_before_the_ack_is_not_judged() {
     let mut s = UnixStream::connect(&sock).unwrap();
     s.write_all(&ah_engine::wire::tag_request(body.as_bytes()).unwrap()).unwrap();
     drop(s); // closed with the request still unread
-    assert!(wait_for(|| wire_ctl_status(&e)["wire"]["abandoned"].as_u64() == Some(1)), "{}", wire_ctl_status(&e)["wire"]);
+    // not judged either way: where the peer's hang-up is visible when a worker pops the connection (Linux) the worker skips it before
+    // reading (gone_skipped); where it is not (macOS) the ACK(req) write is refused (wire.abandoned)
+    let dropped = |st: &serde_json::Value| st["wire"]["abandoned"].as_u64().unwrap_or(0) + st["gone_skipped"].as_u64().unwrap_or(0);
+    assert!(wait_for(|| dropped(&wire_ctl_status(&e)) == 1), "{}", wire_ctl_status(&e)["wire"]);
     // the status call itself is a request; the abandoned one added none
     assert_eq!(wire_ctl_status(&e)["requests"].as_u64().unwrap(), before + 2, "only the two status calls were counted");
 }
