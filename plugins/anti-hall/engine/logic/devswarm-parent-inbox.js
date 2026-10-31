@@ -442,7 +442,7 @@ function piRoster(ctx, summary) {
   if (Array.isArray(ws)) { ah.unable('devswarm-parent-inbox:workspaces_array'); ws = null; }
   var summaryWorkspaces = ws !== null && typeof ws === 'object' ? ws : {};
   var ids = Object.keys(summaryWorkspaces);
-  var out = { rows: [], attention: [], archiveList: [], ownExtra: 0, ownExtraUrgency: null, deferral: null, snapUnreadable: false };
+  var out = { rows: [], attention: [], archiveList: [], ignoredDead: 0, ownExtra: 0, ownExtraUrgency: null, deferral: null, snapUnreadable: false };
   // the DevSwarm app's database, read once
   var focusEnv = ah.env.get(ah.cfg('devswarm_parent.env_focus_ms'));
   var focusRaw = Number(focusEnv === null ? undefined : focusEnv); // Number(undefined) is NaN, Number(null) would be 0
@@ -462,6 +462,8 @@ function piRoster(ctx, summary) {
   var ignoreV = piJson(piDevswarmDir(home) + '/' + ah.cfg('devswarm_role.pg_ignore_file'));
   var ignoreIds = {};
   if (jx.isObj(ignoreV) && Array.isArray(ignoreV.ids)) ignoreV.ids.forEach(function (x) { if (typeof x === 'string' && x !== '') ignoreIds[x] = true; });
+  var noticeIgnoreDead = ah.settings.bool('devswarm_parent.set_notice_ignore_dead') === true;
+  var noticeMaxAgeMs = ah.settings.num('devswarm_parent.set_notice_max_age_days') * 24 * 3600 * 1000;
   var present = ids.filter(function (i) { return true; });
   // the ghost rows: a `primary-<hash>` label whose canonical row is also in the summary is that workspace, shown once under it
   var ghostFoldTo = {}, foldedUnread = {};
@@ -549,7 +551,17 @@ function piRoster(ctx, summary) {
     var appArchivedRow = st.app;
     var rowWs = appWs(id, wtPath);
     var ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
-    if (((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused) {
+    // a row anti-hall's own marker calls archived, whose worktree is gone, or whose oldest unread is past the age limit cannot be acted on
+    // (GH #508): it is left out of the nudges and counted once instead (devswarm.noticeIgnoreDeadRows)
+    var deadWhy = null;
+    if (noticeIgnoreDead) {
+      if (archivedRow) deadWhy = 'archived';
+      else if (wtPath && !piPresent(wtPath)) deadWhy = 'worktree_gone';
+      else if (noticeMaxAgeMs > 0 && piFinite(oldestForGate) && now - oldestForGate > noticeMaxAgeMs) deadWhy = 'too_old';
+    }
+    var wouldNag = ((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused;
+    if (deadWhy !== null && wouldNag) { out.ignoredDead++; ah.metric('devswarm_notice_rows_ignored', ['reason', deadWhy]); }
+    if (wouldNag && deadWhy === null) {
       var wsName = (rowWs && rowWs.label) || piReadName(home, id);
       var reportUnread = graced ? 0 : unread;
       out.attention.push({
@@ -1328,6 +1340,10 @@ function piDecide(p, opts) {
           if (!row || row.id == null) return true;
           var a = JSON.parse(ahHost.piApp(String(row.id), piStrField(row.worktreePath), key, now));
           if (a.unsure) { ah.unable('devswarm-parent-inbox:stale_reg_app'); return true; } // not provably archived: still listed
+          if (!a.archived && ah.settings.bool('devswarm_parent.set_notice_ignore_dead') === true && piSafeId(String(row.id)) && piPresent(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_archived') + '/' + row.id + '.json')) {
+            ah.metric('devswarm_notice_rows_ignored', ['reason', 'archived']); // anti-hall's own archive marker: put away, not actionable (GH #508)
+            return false;
+          }
           return !a.archived;
         });
         if (visible.length) staleRegSeg = piIssueSegment(visible, 'devswarm_parent.stale_registry_head');
