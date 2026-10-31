@@ -48,6 +48,7 @@ files = [
     "devswarm_role.toml",
     "roles.toml",
     "lane_waste.toml",
+    "channel_ratchet.toml",
     "advisor.toml",
     "broad_kill.toml",
     "burn.toml",
