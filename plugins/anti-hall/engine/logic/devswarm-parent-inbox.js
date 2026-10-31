@@ -552,7 +552,7 @@ function piRoster(ctx, summary) {
     var rowWs = appWs(id, wtPath);
     var ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
     // a row anti-hall's own marker calls archived, whose worktree is gone, or whose oldest unread is past the age limit cannot be acted on
-    // (GH #508): it is left out of the nudges and counted once instead (devswarm.noticeIgnoreDeadRows)
+    // (GH #508): it is left out of the nudges and counted once instead (devswarm.nudgeIgnoreDeadRows)
     var deadWhy = null;
     if (noticeIgnoreDead) {
       if (archivedRow) deadWhy = 'archived';

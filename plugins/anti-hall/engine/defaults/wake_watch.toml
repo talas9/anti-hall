@@ -423,8 +423,8 @@ doc = "Environment variable a watcher sets (to the time, seconds since the epoch
 value = "AH_WAKE_WATCH_REBIN"
 
 [wake_watch.set_spawn_grace_sec]
-doc = "Setting devswarm.wakeWatchSpawnGraceSec: seconds after its descriptor was written during which a child workspace that has no session yet still counts as live for the idle-skip, so a watcher armed right after a spawn is not told there is no child (GH #507). 0 = off."
-value = { section = "devswarm", key = "wakeWatchSpawnGraceSec", env = "ANTIHALL_DEVSWARM_WAKE_WATCH_SPAWN_GRACE_SEC", option = "", default = 600 }
+doc = "Setting devswarm.nudgeWakeSpawnGraceSec: seconds after its descriptor was written during which a child workspace that has no session yet still counts as live for the idle-skip, so a watcher armed right after a spawn is not told there is no child (GH #507). 0 = off."
+value = { section = "devswarm", key = "nudgeWakeSpawnGraceSec", env = "ANTIHALL_DEVSWARM_WAKE_WATCH_SPAWN_GRACE_SEC", option = "", default = 600 }
 
 [metric.wake_watch_spawn_grace_live]
 doc = "Idle-skip decisions that found a live child only because a session-less descriptor was inside the spawn grace (GH #507)."

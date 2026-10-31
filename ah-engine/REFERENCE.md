@@ -5753,6 +5753,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `migrate.corrupt_infix` | `.corrupt-` |  |  | Appended (with a millisecond stamp) to the name a corrupt settings file is renamed to. |
 | `migrate.cursors` | `5 entries` |  |  | The cursor sweeps: the cursor and inbox directories under the DevSwarm directory, the separator of a sibling watermark name, and the pattern of a per-instance cursor file name. |
 | `migrate.day_ms` | `86400000` |  | ms | Milliseconds in a retention day. |
+| `migrate.dead_rows_id` | `migrate-dead-notice-rows` |  |  | The id of the sweep that marks workspace rows whose worktree is gone as archived (GH #508). |
 | `migrate.devswarm_dir` | `devswarm` |  |  | The DevSwarm state directory under the anti-hall directory. |
 | `migrate.devswarm_section` | `devswarm` |  |  | The settings section the DevSwarm retention windows and the drain marker time to live are read from. |
 | `migrate.devswarm_state_dirs` | `workspaces, store, archived, archived-retired, recovery-intent` |  |  | The DevSwarm directories whose contents the engine does not migrate (workspace descriptors, per-project stores, archive markers, recovery intents): while any holds an entry, the store-backed migrations are left to the Node doctor. |
@@ -5818,6 +5819,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `migrate_msg.could_not_list` | `could not list {dir}: {error}` |  |  | A sweep that could not list a directory. Placeholders: {dir}, {error}. |
 | `migrate_msg.could_not_raise` | `could not raise {path}: {error}` |  |  | A cursor file that could not be raised. Placeholders: {path}, {error}. |
 | `migrate_msg.could_not_remove` | `could not remove {path}: {error}` |  |  | A file a retention sweep could not remove. Placeholders: {path}, {error}. |
+| `migrate_msg.dead_rows_marked` | `workspace {id}: worktree {worktree} is gone; marked archived (descriptor kept)` |  |  | A workspace row marked archived because its worktree is gone. Placeholders: {id}, {worktree}. |
+| `migrate_msg.dead_rows_would` | `workspace {id}: worktree {worktree} is gone; would mark it archived (nothing ...` |  |  | A workspace row whose worktree is gone and that has no archive marker yet (preview). Placeholders: {id}, {worktree}. |
 | `migrate_msg.deferred` | `left to the Node doctor: DevSwarm store state is present and the engine does ...` |  |  | A step that needs the DevSwarm stores, which the engine does not migrate yet, while DevSwarm state is present. |
 | `migrate_msg.deferred_git` | `left to the Node doctor: the git location of the working directory cannot be ...` |  |  | The legacy copy when the git location of the working directory cannot be confirmed without Node. |
 | `migrate_msg.dir_too_large` | `directory has more than {cap} entries` |  |  | A directory with more entries than a step lists at once. Placeholder: {cap}. |
@@ -6263,6 +6266,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.ds_cgate_ok` | `devswarm-child-gate forces a child to self-report to its parent before stopping` |  |  | The child-gate hook still works. |
 | `doctor_msg.ds_cron_found` | `cron ticks that found mail while a watcher was armed: {n} (cron-found-mail.js...` |  |  | Cron ticks that found mail while a watcher was armed. Placeholder: {n}. |
 | `doctor_msg.ds_cron_missing` | `mailbox-cron-missing warnings shown: {n} (cron-missing-warned.jsonl — a cron ...` |  |  | "Mailbox cron missing" warnings shown. Placeholder: {n}. |
+| `doctor_msg.ds_dead_rows` | `{n} archived rows ignored by the notices (worktree gone; `doctor --repair` ma...` |  |  | Workspace rows left out of the parent-inbox, urgent-inbox and stale-workspaces notices because their worktree is gone. Placeholder: {n}. |
 | `doctor_msg.ds_idle_skips` | `wake-watch idle-skips: {n} (rearm-cues.jsonl, trigger idle-skip — a Primary w...` |  |  | Idle skips of the wake watch. Placeholder: {n}. |
 | `doctor_msg.ds_inbox_bad` | `devswarm-parent-inbox did NOT surface unread backlog to the Primary` |  |  | The parent-inbox hook failed. |
 | `doctor_msg.ds_inbox_ok` | `devswarm-parent-inbox surfaces a workspace unread backlog to the Primary` |  |  | The parent-inbox hook still works. |
@@ -8285,7 +8289,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `395 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `398 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -12506,6 +12510,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.set_enabled` | `5 entries` |  |  | The setting devswarm.wakeWatch: off refuses to arm (the cron wake fallback is unaffected). |
 | `wake_watch.set_idle_skip` | `6 entries` |  |  | The setting devswarm.wakeWatchIdleSkip: a Primary with no live child workspace need not arm (Node prints its one idle line). |
 | `wake_watch.set_poll_ms` | `7 entries` |  |  | The setting devswarm.wakeWatchPollMs: the tick of the watcher in milliseconds (lock heartbeat, parent check, stale-build check, reads). A change of a watched file wakes the tick early. |
+| `wake_watch.set_spawn_grace_sec` | `5 entries` |  |  | Setting devswarm.nudgeWakeSpawnGraceSec: seconds after its descriptor was written during which a child workspace that has no session yet still counts as live for the idle-skip, so a watcher armed right after a spawn is not told there is no child (GH #507). 0 = off. |
 | `wake_watch.sweep_fallback_ms` | `900000` |  |  | The reconcile-sweep interval the cache age bound uses when the setting is no positive number: 15 minutes. |
 | `wake_watch.tmp_suffix` | `.tmp` |  |  | End of the temporary file a cursor is written to before the rename. |
 | `wake_watch.user_settings_rel` | `.claude/settings.json` |  |  | The user's harness settings file, relative to the home: it says which installs are enabled. |
@@ -13548,6 +13553,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.set_cron_warn` | `5 entries` |  |  | Setting devswarm.cronMissingWarnMin: minutes without a fresh inbox-tick marker before the cron counts as missing. The engine answers only while it is unset, with this default. |
 | `devswarm_parent.set_grace` | `5 entries` |  |  | Setting devswarm.inboxGraceSec: seconds a fresh unread message to a live child is not yet neglect. The engine answers only while it is unset, with this default. |
 | `devswarm_parent.set_held` | `5 entries` |  |  | Setting devswarm.heldPartitions: owner-held partition ids. The engine answers only while it is unset (an empty set). |
+| `devswarm_parent.set_notice_ignore_dead` | `6 entries` |  |  | Switch devswarm.nudgeIgnoreDeadRows (default on): the parent-inbox, urgent-inbox and stale-workspaces notices leave out rows that anti-hall's own archive marker calls archived, whose worktree is gone, or whose oldest unread is older than devswarm.nudgeMaxAgeDays; they are counted (devswarm_notice_rows_ignored) instead of repeated every turn (GH #508). Off restores the old nudges. |
+| `devswarm_parent.set_notice_max_age_days` | `5 entries` |  |  | Setting devswarm.nudgeMaxAgeDays: days after which a row's oldest unread is too old to nag about (0 = no age limit). Only used while devswarm.nudgeIgnoreDeadRows is on. |
 | `devswarm_parent.set_notice_show` | `5 entries` |  |  | Setting devswarm.maintainerNotice.show: whether unseen maintainer notices are shown. The engine answers only while it is unset, with this default. |
 | `devswarm_parent.set_renag` | `5 entries` |  |  | Setting devswarm.archiveRequestRenagHours: hours a pending archive-request suppresses the nag before it repeats. The engine answers only while it is unset, with this default. |
 | `devswarm_parent.shown_joiner` | `; ` |  |  | Between the listed workspaces. |
@@ -14640,6 +14647,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 | `dssup_appdb_date_unread` | counter | dates |  | Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full). |
 | `ingest_drops` | counter | paths | reason | Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason. |
+| `wake_watch_spawn_grace_live` | counter | decisions |  | Idle-skip decisions that found a live child only because a session-less descriptor was inside the spawn grace (GH #507). |
+| `devswarm_notice_rows_ignored` | counter | rows | reason | Workspace rows left out of a parent-inbox, urgent-inbox or stale-workspaces notice because they are archived, their worktree is gone, or their oldest unread is too old, by reason (archived, worktree_gone, too_old) (GH #508). |
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds

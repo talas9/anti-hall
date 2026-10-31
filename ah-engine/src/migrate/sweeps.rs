@@ -493,6 +493,43 @@ fn watermarks(ctx: &Ctx) -> Outcome {
     Outcome::Deferred
 }
 
+// -- dead notice rows (GH #508)
+
+/// Workspace rows whose worktree is gone and that anti-hall has no archive marker for: `(id, worktree, descriptor text)`.
+pub(crate) fn dead_rows(devswarm: &Path) -> Vec<(String, String, String)> {
+    let dir = devswarm.join(defaults::text("mesh_write.dir_workspaces"));
+    let marks = devswarm.join(defaults::text("mesh_write.dir_archived"));
+    let mut out = Vec::new();
+    for name in read_dir_sorted(&dir).unwrap_or_default().into_iter().filter(|n| n.ends_with(super::json_ext())) {
+        let Ok(raw) = std::fs::read_to_string(dir.join(&name)) else { continue };
+        let Some(d) = parse_json(&raw) else { continue };
+        let (Some(J::Str(id)), Some(J::Str(wt))) = (d.get("id"), d.get("worktreePath")) else { continue };
+        if wt.is_empty() || !is_safe_id(id) || Path::new(wt).exists() || marks.join(&name).exists() {
+            continue;
+        }
+        out.push((id.clone(), wt.clone(), raw));
+    }
+    out
+}
+
+fn dead_notice_rows(ctx: &Ctx, repair: bool) -> Outcome {
+    let dev = ctx.devswarm();
+    let marks = dev.join(defaults::text("mesh_write.dir_archived"));
+    let mut items = Vec::new();
+    for (id, wt, raw) in dead_rows(&dev) {
+        if !repair {
+            items.push(item("pending", defaults::render("migrate_msg.dead_rows_would", &[("id", &id), ("worktree", &wt)])));
+            continue;
+        }
+        let file = marks.join(format!("{id}{}", super::json_ext()));
+        match std::fs::create_dir_all(&marks).and_then(|()| crate::atomic::write(&file, raw)) {
+            Ok(()) => items.push(item("fixed", defaults::render("migrate_msg.dead_rows_marked", &[("id", &id), ("worktree", &wt)]))),
+            Err(e) => items.push(item("failed", format!("{}: {e}", file.display()))),
+        }
+    }
+    Outcome::Items(items)
+}
+
 // ---- the pass ----------------------------------------------------------------------------------------------------------------
 
 /// The `sweeps` loop of `runRepairs`: one row per sweep. A preview (`dry_run`) is "check" mode and lists; otherwise "repair".
@@ -501,6 +538,7 @@ pub(super) fn all(ctx: &Ctx, rows: &mut Vec<Row>) {
     let mut sweeps: Vec<(String, Outcome)> = Vec::new();
     sweeps.push((super::step("drain").into(), drain_markers(ctx, repair)));
     sweeps.push((super::step("promote").into(), unclaimed(ctx, repair)));
+    sweeps.push((defaults::text("migrate.dead_rows_id").to_string(), dead_notice_rows(ctx, repair)));
     let base = ctx.base();
     for spec in defaults::raw("migrate.retention_sweeps").as_array().unwrap_or_default() {
         let dir = if spec.get("devswarm").and_then(defaults::V::as_bool).unwrap_or(false) { ctx.devswarm() } else { base.clone() };
@@ -561,5 +599,31 @@ mod tests {
         for bad in ["", ".", "..", "a/b", "a..b", "a b", "../x"] {
             assert!(!is_safe_id(bad), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod dead_notice_rows_tests {
+    use super::*;
+
+    #[test]
+    fn dead_notice_rows_are_marked_archived_once_and_nothing_is_deleted() {
+        let dev = std::env::temp_dir().join(format!("ah-dead-rows-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dev)); // keep: scratch dir of this test only
+        std::fs::create_dir_all(dev.join("workspaces")).unwrap();
+        let live = dev.join("live-wt");
+        std::fs::create_dir_all(&live).unwrap();
+        let gone = format!(r#"{{"id":"gone-1","worktreePath":"{}/missing","sessionId":"s1"}}"#, dev.display());
+        std::fs::write(dev.join("workspaces/gone-1.json"), &gone).unwrap();
+        std::fs::write(dev.join("workspaces/live-1.json"), format!(r#"{{"id":"live-1","worktreePath":"{}","sessionId":"s2"}}"#, live.display())).unwrap();
+        let rows = dead_rows(&dev);
+        assert_eq!(rows.len(), 1, "only the row with a missing worktree is dead");
+        assert_eq!(rows[0].0, "gone-1");
+        // the heal writes the marker the notices already honour, and keeps the descriptor
+        std::fs::create_dir_all(dev.join("archived")).unwrap();
+        std::fs::write(dev.join("archived/gone-1.json"), &rows[0].2).unwrap();
+        assert!(dead_rows(&dev).is_empty(), "idempotent: a marked row is not listed again");
+        assert!(dev.join("workspaces/gone-1.json").exists(), "the descriptor is never deleted");
+        crate::discard::harmless(std::fs::remove_dir_all(&dev)); // keep: scratch dir of this test only
     }
 }

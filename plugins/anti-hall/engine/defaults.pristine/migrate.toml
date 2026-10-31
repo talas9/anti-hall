@@ -511,3 +511,15 @@ value = { code = "EIO", text = "i/o error" }
 [migrate_msg.node_error]
 doc = "A file call's error as Node prints it. Placeholders: {code}, {text}, {syscall}, {path}."
 value = "{code}: {text}, {syscall} '{path}'"
+
+[migrate.dead_rows_id]
+doc = "The id of the sweep that marks workspace rows whose worktree is gone as archived (GH #508)."
+value = "migrate-dead-notice-rows"
+
+[migrate_msg.dead_rows_would]
+doc = "A workspace row whose worktree is gone and that has no archive marker yet (preview). Placeholders: {id}, {worktree}."
+value = "workspace {id}: worktree {worktree} is gone; would mark it archived (nothing is deleted)"
+
+[migrate_msg.dead_rows_marked]
+doc = "A workspace row marked archived because its worktree is gone. Placeholders: {id}, {worktree}."
+value = "workspace {id}: worktree {worktree} is gone; marked archived (descriptor kept)"
