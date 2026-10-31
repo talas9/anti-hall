@@ -227,12 +227,69 @@ fn roots_of_installed(home: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// `w` with each home-variable spelling (`routine.live_hook_home_vars`) replaced by `home`, whole words only: `$HOME_OLD` is
+/// another variable and stays as written (it then fails to resolve and is reported).
+fn expand_home(w: &str, home: &str) -> String {
+    let vars = defaults::list("routine.live_hook_home_vars");
+    let (mut out, mut i) = (String::new(), 0);
+    while i < w.len() {
+        let rest = &w[i..];
+        let hit =
+            vars.iter().find(|v| rest.starts_with(**v) && (v.ends_with('}') || !rest[v.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')));
+        match hit {
+            Some(v) => {
+                out.push_str(home);
+                i += v.len();
+            }
+            None => {
+                let c = rest.chars().next().unwrap_or_default();
+                out.push(c);
+                i += c.len_utf8().max(1);
+            }
+        }
+    }
+    out
+}
+
+/// Split a command into shell words: whitespace separates, single and double quotes group, a backslash escapes the next
+/// character outside single quotes. `None` for an unclosed quote or a trailing backslash. Not a shell: no expansion.
+fn split_words(cmd: &str) -> Option<Vec<String>> {
+    let (mut words, mut cur, mut open) = (Vec::new(), String::new(), false);
+    let (mut quote, mut chars) = (None::<char>, cmd.chars());
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some('\''), _) => cur.push(c),
+            (_, '\\') => cur.push(chars.next()?),
+            (Some(_), _) => cur.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                open = true;
+            }
+            (None, _) if c.is_whitespace() => {
+                if open || !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                    open = false;
+                }
+            }
+            (None, _) => cur.push(c),
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if open || !cur.is_empty() {
+        words.push(cur);
+    }
+    Some(words)
+}
+
 /// The plugin directory a hook command runs from: the command is split into shell words (quotes and escapes decoded), `$HOME` /
 /// `${HOME}` / `~` expanded (`routine.live_hook_home_vars`, `routine.live_hook_tilde`), and the word that matches
 /// `routine.live_hook_root_rx` gives the root (group 1). A word that holds a whole nested command (`sh -c '...'`) is searched too.
 /// A candidate that cannot become an absolute path (an unknown variable, a relative path, broken quoting) goes to `unresolved`.
 fn live_candidates(cmd: &str, home: &str, re: &regex::Regex, depth: u8, roots: &mut Vec<PathBuf>, unresolved: &mut Vec<String>) {
-    let Some(words) = shlex::split(cmd) else {
+    let Some(words) = split_words(cmd) else {
         if cmd.contains(t("routine.live_hook_marker")) {
             unresolved.push(cmd.to_string());
         }
@@ -240,7 +297,7 @@ fn live_candidates(cmd: &str, home: &str, re: &regex::Regex, depth: u8, roots: &
     };
     let tilde = t("routine.live_hook_tilde");
     for w in words {
-        let mut w = defaults::list("routine.live_hook_home_vars").iter().fold(w, |acc, v| acc.replace(v, home));
+        let mut w = expand_home(&w, home);
         if w == tilde || w.starts_with(&format!("{tilde}/")) {
             w = format!("{home}{}", &w[tilde.len()..]);
         }
@@ -1297,4 +1354,33 @@ pub fn engine_facts() -> Value {
         "build_version": cur.version, "sha": cur.sha, "source": cur.source, "release_newer": release_newer,
         "installed_at": rec["time"], "previous": rec["previous"], "latest_release": latest,
     })
+}
+
+#[cfg(test)]
+mod live_hook_tests {
+    use super::*;
+
+    fn run(cmd: &str) -> (Vec<PathBuf>, Vec<String>) {
+        let re = regex::Regex::new(t("routine.live_hook_root_rx")).unwrap();
+        let (mut roots, mut bad) = (Vec::new(), Vec::new());
+        live_candidates(cmd, "/h", &re, 2, &mut roots, &mut bad);
+        (roots, bad)
+    }
+
+    /// #481 review: `$HOME` is a whole word; `$HOME_OLD` is another variable and must not become `/h_OLD`.
+    #[test]
+    fn home_is_expanded_as_a_whole_word_only() {
+        let (roots, bad) = run("sh \"$HOME_OLD/p/hooks/install.sh\" Stop");
+        assert!(roots.is_empty(), "a longer variable name must not be expanded: {roots:?}");
+        assert_eq!(bad, vec!["$HOME_OLD/p".to_string()]);
+        let (roots, bad) = run("sh \"$HOME/p/hooks/install.sh\" a; sh \"${HOME}/q/hooks/install.sh\" b");
+        assert_eq!((roots, bad), (vec![PathBuf::from("/h/p"), PathBuf::from("/h/q")], vec![]));
+    }
+
+    /// #481 review: the word splitter decodes quotes and escapes without an extra dependency.
+    #[test]
+    fn words_are_split_with_quotes_and_escapes() {
+        assert_eq!(split_words(r#"a "b c" 'd e' f\ g"#), Some(vec!["a".into(), "b c".into(), "d e".into(), "f g".into()]));
+        assert_eq!(split_words("a \"b"), None);
+    }
 }
