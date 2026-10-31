@@ -4091,7 +4091,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_ceiling.ignore_unknown_liveness` | `true` |  |  | Do not count a transcript row toward the spawn ceiling unless the agent tracker proves it live; missing, unreadable or stale evidence fails open. False retains the legacy count for unknown rows. |
 | `spawn_ceiling.join` | `; ` |  |  | The separator between the listed agent names. |
 | `spawn_ceiling.list_max` | `8` |  |  | How many running agents the block message names. |
-| `spawn_ceiling.max_concurrent_setting` | `9 entries` |  |  | The owner's cap on agents running at once (guards.maxConcurrentAgents, default 6, 0 = no cap): a spawn is denied when this many agents already run. Unlike the usage-scaled ceiling below, an agent of unknown liveness counts as running until the session proves it ended (GH #484). |
+| `spawn_ceiling.max_concurrent_setting` | `9 entries` |  |  | Cap on agents running at once (default 6, 0 = no cap). A spawn over it is denied. Unlike the usage-scaled ceiling below, an agent of unknown liveness counts as running until the session proves it ended (GH #484). |
 | `spawn_ceiling.msg_cap_instead` | `wait for one of them to finish or stop one you no longer need, then spawn. Th...` |  |  | What to do instead of spawning past the owner's cap. |
 | `spawn_ceiling.msg_cap_what` | `{n} agents are running (limit {cap}, your guards.maxConcurrentAgents cap): {n...` |  |  | What the concurrency-cap block says; {n} running, {cap} the owner's cap, {names} the listed agents, {more} the remainder clause. |
 | `spawn_ceiling.msg_instead` | `wait for a running agent to finish.` |  |  | What to do instead of spawning past the ceiling. |

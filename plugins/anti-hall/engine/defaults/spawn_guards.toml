@@ -441,7 +441,7 @@ doc = "Background task types that do not consume an agent spawn slot; their owne
 value = ["local_bash"]
 
 [spawn_ceiling.max_concurrent_setting]
-doc = "The owner's cap on agents running at once (guards.maxConcurrentAgents, default 6, 0 = no cap): a spawn is denied when this many agents already run. Unlike the usage-scaled ceiling below, an agent of unknown liveness counts as running until the session proves it ended (GH #484)."
+doc = "Cap on agents running at once (default 6, 0 = no cap). A spawn over it is denied. Unlike the usage-scaled ceiling below, an agent of unknown liveness counts as running until the session proves it ended (GH #484)."
 value = { section = "guards", key = "maxConcurrentAgents", kind = "num", env = "ANTIHALL_MAX_CONCURRENT_AGENTS", aliases = [], option = "", manifest_default = "6", default = 6, min = 0 }
 
 [spawn_ceiling.msg_cap_what]
