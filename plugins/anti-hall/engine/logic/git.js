@@ -63,6 +63,23 @@ function gitBuildTables() {
   t.generated = new RegExp('^[ \\t]*[^A-Za-z0-9 \\t]{0,2}[ \\t]*' + gitEsc(c('self_credit_generated_prefix')) + '\\[?(' +
     c('credit_generated_alts').map(gitEsc).join('|') + ')\\b', 'im');
   t.ghBody = new RegExp(c('gh_body_markers').map(gitEsc).join('|'), 'i');
+  // GH #457: a session trailer key (any value) and a session link on a line of its own or behind a trailer key
+  t.sessionKey = new RegExp('^[ \\t]*(?:' + c('credit_session_keys').map(gitEsc).join('|') + ')[ \\t]*[:=]', 'im');
+  t.sessionUrl = new RegExp('^[ \\t]*(?:[A-Za-z][A-Za-z -]*[ \\t]*[:=][ \\t]*)?(?:https?://)?(?:' + c('credit_url_markers').map(gitEsc).join('|') + ')', 'im');
+  t.expansionPatterns = c('commit_expansion_patterns').map((p) => new RegExp('^(?:' + p + ')'));
+  t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
+  t.pushSkipOpts = set(c('push_skip_opts'));
+  t.sameCallSubs = set(c('push_same_call_subs'));
+  t.sameCallAlways = set(c('push_same_call_always'));
+  t.sameCallNeedMsg = set(c('push_same_call_need_message'));
+  t.sameCallOpts = c('push_same_call_opts').map((p) => new RegExp(p));
+  t.sameCallNoCommitOpts = c('push_same_call_no_commit_opts').map((p) => new RegExp(p));
+  t.sameCallNoEditSubs = set(c('push_same_call_no_edit_subs'));
+  t.sameCallNoEditOpt = c('push_same_call_no_edit_opt');
+  t.scriptRunVerbs = set(c('script_run_verbs'));
+  t.scriptInertLine = new RegExp(c('script_inert_line_re'));
+  t.sameCallHeredoc = new RegExp(c('push_same_call_quoted_heredoc'));
+  t.sameCallHereString = new RegExp(c('push_same_call_here_string'));
   t.trailerKeys = c('self_credit_trailer_keys');
   t.forwardEnvRe = new RegExp('^(?:GIT_CONFIG_(?:' + c('forward_config_names').concat(c('forward_config_indexed').map((p) => gitEsc(p) + '\\d+')).join('|') + ')|' +
     c('forward_env_names').map(gitEsc).join('|') + ')$');
@@ -94,7 +111,7 @@ function gitFreshState(raw, cwd, session) {
     launcherFsBudget: ah.cfg('git.budget_launcher_fs'), launcherCmdText: '',
     handoverQueryBudget: ah.cfg('git.budget_handover_queries'), handoverSkipped: 0, handoverEvalBudget: ah.cfg('git.budget_handover_evals'),
     handoverQueryCache: new Map(), handoverAdds: [], handoverOn: null,
-    creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
+    keyOf: new Map(), pushChecks: new Map(), pushUnchecked: false, scriptUnchecked: null, creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
     quotedLiteralsCache: null, stdinCandidateCache: null, hdOn: null, aliasOn: null, reuseOn: null,
     gitCache: new Map(), aliasCache: new Map(), shellDefsCache: new Map(), depthGuard: 0,
   };
@@ -110,7 +127,9 @@ function gm(o) {
 // a configured message table ({what, why, instead, override}) rendered with {name} arguments
 function gmKey(key, args) {
   const m = ah.cfg('git.' + key), r = (s) => (s === undefined ? '' : text.render(s, args || {}));
-  return gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
+  const out = gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
+  if (S) S.keyOf.set(out, key);
+  return out;
 }
 function skipCmd(k) {
   return text.render(ah.cfg('git.skip_command'), { key: k });
@@ -371,7 +390,7 @@ function effectiveVerb(tokens) {
   if (idx >= tokens.length) return null;
   const verbTok = tokens[idx];
   if (verbTok.quotedOnly) return null; // a fully-quoted token is data, not a verb
-  return { verb: shellScan.basename(verbTok.text), args: tokens.slice(idx + 1) };
+  return { verb: shellScan.basename(verbTok.text), args: tokens.slice(idx + 1), verbTok: verbTok };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -486,7 +505,7 @@ function hasCmdSubstArg(rest) {
 // ---------------------------------------------------------------------------------------------------------------------
 // self-credit
 
-function creditRegexes(t) { return TB.coauthor.test(t) || TB.generated.test(t); }
+function creditRegexes(t) { return TB.coauthor.test(t) || TB.generated.test(t) || TB.sessionKey.test(t) || TB.sessionUrl.test(t); }
 
 function normEscapes(s) { return s.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t'); }
 
@@ -556,6 +575,138 @@ function inlineCommitMessages(rest) {
     }
   }
   return msgs;
+}
+
+// the argument tokens that carry an inline commit message (or trailer), with their source text
+function inlineCommitMessageToks(rest) {
+  const toks = [];
+  for (let i = 0; i < rest.length; i++) {
+    const w = rest[i].text;
+    if (w === '--message' || w === '--trailer' || /^-[A-Za-z]*m$/.test(w)) {
+      if (i + 1 < rest.length) { toks.push(rest[i + 1]); i++; }
+    } else if (w.startsWith('--message=') || w.startsWith('--trailer=')) {
+      toks.push({ raw: rest[i].raw.slice(rest[i].raw.indexOf('=') + 1) });
+    } else if (/^-[A-Za-z]*m./.test(w)) {
+      toks.push({ raw: rest[i].raw.replace(/^-[A-Za-z]*?m/, '') });
+    }
+  }
+  return toks;
+}
+
+// GH #457: the first shell expansion still live in the source text of an argument ('...' is literal, "..." and bare text expand,
+// a backslash protects the next character), or null. An expansion the guard already reads (config) ends the scan of the argument.
+// Every expansion in the argument is read (P1 of PR #469): an allowed form is skipped and the scan goes on after it.
+function unresolvedExpansion(raw0) {
+  // the segment splitter swapped a substitution opener inside double quotes for the sentinel: put an opener back
+  const raw = raw0.split(' ' + CMDSUBST_SENTINEL + ' ').join('$(').split(CMDSUBST_SENTINEL).join('$(');
+  const r = scanExpansionWord(raw, 0, 0, false);
+  // the splitter cut the argument where a heredoc substitution's own lines start: it is read on in the whole command
+  return r.cut ? heredocSubstsInCommand() : r.shown;
+}
+
+function expansionShown(tail) { return tail.split(/\s/)[0].slice(0, ah.cfg('git.expansion_shown_chars')); }
+
+// the allowed form `tail` starts with (the matched text), or null
+function expansionAllowMatch(tail) {
+  for (const re of TB.expansionAllow) { const m = re.exec(tail); if (m) return m[0]; }
+  return null;
+}
+
+// One shell word of `s` read from `i` in quote mode `mode` (0 bare, 1 single-quoted, 2 double-quoted): { shown } for the first live
+// expansion, { cut } when an allowed heredoc substitution cannot be followed inside `s`, and `end` where the word stops.
+// `whole` is true when `s` is the whole command (a heredoc substitution is then followed to its closing parenthesis).
+function scanExpansionWord(s, i, mode, whole) {
+  let first = null; // in the whole command the word is read to its end, so the caller knows where the next one starts
+  const hit = (shown, at) => { if (!whole) return { shown: shown, end: at }; if (first === null) first = shown; return null; };
+  for (; i < s.length; i++) {
+    const ch = s.charAt(i);
+    if (mode === 1) { if (ch === "'") mode = 0; continue; }
+    if (mode === 0 && whole && /[ \t\r\n;&|()<>]/.test(ch)) return { shown: first, end: i };
+    if (ch === '\\') { i++; continue; }
+    if (ch === "'" && mode === 0) { mode = 1; continue; }
+    if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
+    const tail = s.slice(i);
+    if (!TB.expansionPatterns.some((re) => re.test(tail))) continue;
+    const m = expansionAllowMatch(tail);
+    if (m === null) {
+      if (!whole && /^\$\([ \t]*$/.test(tail)) return { cut: true, end: s.length };
+      const r = hit(expansionShown(tail), i);
+      if (r) return r;
+      continue;
+    }
+    if (m.indexOf('<<') < 0) { i += m.length - 1; continue; }
+    const close = heredocSubstClose(s, i, m);
+    if (close.at < 0 && !whole) return { cut: true, end: s.length };
+    if (close.shown !== null || close.at < 0) {
+      const r = hit(close.shown !== null ? close.shown : expansionShown(tail), i);
+      if (r) return r;
+    }
+    if (close.at < 0) return { shown: first, end: s.length };
+    i = close.at;
+  }
+  return { shown: first, end: s.length };
+}
+
+// The allowed heredoc substitution at `at` in `s` (matched text `m`): { at } of its closing parenthesis, -1 when it does not close
+// inside `s`, and `shown` (or null) for a live expansion in an unquoted heredoc body (that body expands, so it is part of the message).
+function heredocSubstClose(s, at, m) {
+  const h = shellScan.parseHeredocAt(s, at + m.lastIndexOf('<<'));
+  if (!h || !h.terminated) return { at: -1, shown: null };
+  let shown = null;
+  if (!h.quoted) {
+    const body = h.body;
+    for (let k = 0; k < body.length && shown === null; k++) {
+      if (body.charAt(k) === '\\') { k++; continue; }
+      const tail = body.slice(k);
+      if (TB.expansionPatterns.some((re) => re.test(tail))) shown = expansionShown(tail);
+    }
+  }
+  let k = h.end;
+  while (k < s.length && /[ \t\r\n]/.test(s.charAt(k))) k++;
+  return { at: s.charAt(k) === ')' ? k : -1, shown: shown };
+}
+
+// the quote mode at `pos` of the whole command (heredoc bodies skipped)
+function quoteModeAt(s, pos) {
+  let mode = 0;
+  for (let i = 0; i < pos; i++) {
+    const ch = s.charAt(i);
+    if (mode === 1) { if (ch === "'") mode = 0; continue; }
+    if (ch === '\\') { i++; continue; }
+    if (ch === "'" && mode === 0) { mode = 1; continue; }
+    if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
+    if (ch === '<' && s.charAt(i + 1) === '<') {
+      const h = shellScan.parseHeredocAt(s, i);
+      if (h && h.terminated && h.end <= pos) { i = h.end - 1; continue; }
+    }
+  }
+  return mode;
+}
+
+// Each allowed heredoc substitution of the whole command is followed past its closing parenthesis: the rest of its word and every
+// later message argument of the same command are read. The first live expansion, or the substitution itself when it cannot be followed.
+function heredocSubstsInCommand() {
+  const s = S.raw;
+  let found = false;
+  for (let at = s.indexOf('$('); at >= 0; at = s.indexOf('$(', at + 1)) {
+    const m = expansionAllowMatch(s.slice(at));
+    if (m === null || m.indexOf('<<') < 0) continue;
+    found = true;
+    const r = scanExpansionWord(s, at, quoteModeAt(s, at), true);
+    if (r.shown) return r.shown;
+    let i = r.end, msgNext = false;
+    while (i < s.length) {
+      while (i < s.length && /[ \t]/.test(s.charAt(i))) i++;
+      if (i >= s.length || /[;&|()<>\r\n]/.test(s.charAt(i))) break;
+      const w = scanExpansionWord(s, i, 0, true);
+      const word = s.slice(i, Math.max(w.end, i + 1));
+      // a word that is a message option's value, or carries one (--message=..., -m...), holds message text
+      if (w.shown && (msgNext || /^(?:--message=|--trailer=|-[A-Za-z]*m.)/.test(word))) return w.shown;
+      msgNext = word === '--message' || word === '--trailer' || /^-[A-Za-z]*m$/.test(word);
+      i = Math.max(w.end, i + 1);
+    }
+  }
+  return found ? null : expansionShown('$(');
 }
 
 function fileCommitMessages(rest) {
@@ -649,7 +800,7 @@ function ghSelfCreditMessage(args) {
   if (hasSelfCredit(S.raw)) vals.push(S.raw);
   for (const v of vals) {
     for (const t of [v, normEscapes(v)]) {
-      if (TB.coauthor.test(t) || TB.generated.test(t) || TB.ghBody.test(t)) {
+      if (creditRegexes(t) || TB.ghBody.test(t)) {
         const elsewhere = v === S.raw ? creditElsewhereLabel('gh') : null;
         if (elsewhere) return gmKey('msg_gh_credit_elsewhere', { elsewhere: elsewhere });
         return gmKey('msg_gh_credit');
@@ -1418,7 +1569,7 @@ function stdinCandidateTextCached(cmd, heredocBodies) {
   if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
   candidates.push(...extractQuotedLiteralsCached(cmd));
   const text = candidates.length ? candidates.join('\n') : null;
-  const credit = text !== null && (TB.coauthor.test(text) || TB.generated.test(text));
+  const credit = text !== null && creditRegexes(text);
   S.stdinCandidateCache = { cmd: cmd, heredocBodies: heredocBodies, text: text, hasSelfCredit: credit };
   return S.stdinCandidateCache;
 }
@@ -1809,6 +1960,357 @@ function committedHandovers(ev, lastCdDir) {
   return hits;
 }
 
+// GH #457 / PR #469: a push is refused while any local commit that no remote has carries an AI credit. What the push itself
+// would publish (refspecs, config, mirror, insteadOf) is never resolved: every unpushed commit counts, so no form of the push
+// routes around the check. One scan per repository and call (S.pushChecks: commits, annotated tags, submodules); a git query that
+// cannot run, fails or times out lets the push go with an advisory (S.pushUnchecked). Names the hashes and the fix; never rewrites anything.
+function pushCreditVerdict(ev, lastCdDir) {
+  try {
+    if (!gitSettingOn('git.setting_push_credit')) return null;
+    if (gitSubcommand(ev.args).rest.some((t) => TB.pushSkipOpts.has(t.text))) return null;
+    let dir = lastCdDir || S.procCwd;
+    const repo = [];
+    const repoOpts = ah.cfg('git.push_repo_opts');
+    if (ev.dynEnv && ev.dynEnv.length) return gmKey('msg_push_dynamic_repo', { arg: ev.dynEnv[0] });
+    for (let k = 0; k < ev.args.length; k++) {
+      const t = ev.args[k].text;
+      const eq = t.indexOf('=');
+      const opt = repoOpts.includes(t) ? t : (t.startsWith('--') && eq > 0 && repoOpts.includes(t.slice(0, eq)) ? t.slice(0, eq) : null);
+      if (opt !== null) {
+        const sep = opt === t;
+        if (sep && k + 1 >= ev.args.length) break;
+        const tok = sep ? ev.args[k + 1] : ev.args[k];
+        const raw = String(tok.raw === undefined ? tok.text : tok.raw);
+        const rawVal = sep ? raw : raw.slice(raw.indexOf('=') + 1);
+        if (dynamicRepoPath(rawVal) || /[$`]/.test(tok.text) || tok.text.indexOf(CMDSUBST_SENTINEL) !== -1) return gmKey('msg_push_dynamic_repo', { arg: opt + ' ' + rawVal });
+        const val = homePath(sep ? tok.text : t.slice(eq + 1));
+        if (opt === '-C') dir = posix.resolveIn(S.procCwd, [dir, val]);
+        else repo.push(opt + '=' + val);
+        if (sep) k++;
+        continue;
+      }
+      if (t === '-c' || t === '--namespace' || t === '--config-env') { k++; continue; }
+      if (t.startsWith('-')) continue;
+      break;
+    }
+    const key = [dir].concat(repo).join('\n');
+    if (!S.pushChecks.has(key)) S.pushChecks.set(key, unpushedCredit(dir, repo, ev.env));
+    const r = S.pushChecks.get(key);
+    if (r.tags.length) return gmKey('msg_push_tag_credit', { tags: r.tags.slice(0, TB.shown).join(', ') + (r.tags.length > TB.shown ? ah.cfg('git.more_marker') : '') });
+    const left = r.hits.length ? pushAck(key, r.hits) : r.hits;
+    if (left.length) return gmKey('msg_push_credit', { shown: hitList(left) });
+    // more unpushed commits than the cap: a credit past it cannot be ruled out, so the push is refused, never allowed unread
+    if (r.over) return gmKey('msg_push_over_cap', { cap: ah.cfg('git.push_max_commits') });
+    if (r.unchecked) S.pushUnchecked = true;
+    return null;
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    S.pushUnchecked = true;
+    return null; // fail open, with the advisory
+  }
+}
+
+function hitList(hits) {
+  return hits.slice(0, TB.shown).map(hitText).join(', ') + (hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
+}
+
+// PR #469 round 6: a public commit whose remote-tracking ref was pruned looks unpushed, and offline nothing tells it from a new
+// one. A push blocked on credited commits records them (with the command text and directory) in a per-session stamp; the
+// identical push retried unchanged acknowledges them, and an acknowledged commit gets git.push_ack_advisory instead of a block
+// for the rest of the session. A commit not yet blocked once still blocks. Bounded by git.push_ack_max_shas (0: off, the default); no session
+// id: never acknowledged; a stamp that cannot be written lets the commits through with the advisory. Returns the hits to block.
+function pushAck(key, hits) {
+  const max = ah.cfg('git.push_ack_max_shas');
+  if (!max || !S.session) return hits;
+  if (!S.pushAck) S.pushAck = new Map();
+  if (S.pushAck.has(key)) return S.pushAck.get(key);
+  const name = ah.cfg('git.push_ack_state_prefix') + S.session.replace(/[^A-Za-z0-9_.-]/g, '_') + ah.cfg('replykit.json_ext');
+  const rel = ah.cfg('replykit.state_dir') + '/' + name;
+  let st = null;
+  try { st = JSON.parse(ah.state.readText(rel) || 'null'); } catch (e) { st = null; }
+  if (!st || typeof st !== 'object' || !Array.isArray(st.acked)) st = { acked: [], last: null };
+  const push = ah.sha1(S.raw + '\n' + key);
+  const lastIds = st.last && st.last.push === push && Array.isArray(st.last.ids) ? st.last.ids : [];
+  const acked = st.acked.filter((x) => typeof x === 'string');
+  const idOf = (h) => (h.sub || '') + ':' + h.sha;
+  let left = [];
+  const passed = [];
+  for (const h of hits) {
+    const id = idOf(h);
+    if (acked.includes(id)) passed.push(h);
+    else if (lastIds.includes(id)) { acked.push(id); passed.push(h); }
+    else left.push(h);
+  }
+  let ok = false;
+  try { ok = ah.state.writeAtomic(rel, JSON.stringify({ acked: acked.slice(-max), last: left.length ? { push: push, ids: left.map(idOf) } : null })) === true; } catch (e) { ok = false; }
+  if (ok) { try { ah.state.prune(ah.cfg('git.push_ack_state_prefix'), name); } catch (e) { /* retention only */ } }
+  else { passed.push(...left); left = []; } // fails toward the advisory
+  if (passed.length) { try { ah.metric('git_push_ack_downgraded', []); } catch (e) { /* counting never fails a hook */ } }
+  if (passed.length) S.pushAckNote = text.render(ah.cfg('git.push_ack_advisory'), { shown: hitList(passed) });
+  S.pushAck.set(key, left);
+  return left;
+}
+
+// `~` and `~/x` are the agent's own home; anything else is used as written
+function homePath(p) {
+  if (S.home && (p === '~' || p.startsWith('~/'))) return posix.join(S.home, p.slice(1));
+  return p;
+}
+
+// true when a repository path as written (raw shell text) expands at run time: a live $ or backtick, or git.push_dynamic_path_res
+function dynamicRepoPath(raw) {
+  if (unresolvedExpansion(raw)) return true;
+  if (!S.pushDynRes) S.pushDynRes = ah.cfg('git.push_dynamic_path_res').map((x) => new RegExp(x));
+  return S.pushDynRes.some((re) => re.test(raw));
+}
+
+// "sha on branch, branch" for the block (git.push_hit_format); the lookup is bounded by push_timeout_ms and never decides the verdict
+function hitText(h) {
+  const where = h.sub ? ah.cfg('git.push_hit_where_format').split('{path}').join(h.sub) : '';
+  const argv = fillPushArgv(ah.cfg('git.push_argv_branch_contains'), h.dir, h.repo, 0).map((a) => a.split('{sha}').join(h.sha));
+  const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: h.env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  const br = r !== null && r.status === 0 ? String(r.stdout || '').split('\n').map((x) => x.trim()).filter(Boolean) : [];
+  if (!br.length) return ah.cfg('git.push_hit_no_branch_format').split('{sha}').join(h.sha).split('{where}').join(where);
+  const list = br.slice(0, TB.shown).join(', ') + (br.length > TB.shown ? ah.cfg('git.more_marker') : '');
+  return ah.cfg('git.push_hit_format').split('{sha}').join(h.sha).split('{branches}').join(list).split('{where}').join(where);
+}
+
+function fillPushArgv(tpl, dir, repo, n) {
+  const argv = [];
+  for (const a of tpl) {
+    if (a === '{repo}') argv.push(...repo);
+    else argv.push(a.split('{dir}').join(dir).split('{n}').join(String(n)));
+  }
+  return argv;
+}
+
+// The unpushed commits of one repository and of each checked-out submodule (git.push_argv_log), plus the newest local annotated
+// tags (git.push_argv_tags): { hits } ({ sha, dir, repo, sub }), { tags } (names with a credit), { over } (past the cap or output
+// cut short), { unchecked } (a git query could not run, failed or timed out: the push goes on with the advisory).
+function unpushedCredit(dir, repo, env) {
+  const cap = ah.cfg('git.push_max_commits');
+  const out = { unchecked: false, hits: [], tags: [], over: false };
+  const unpushed = new Set(); // full hashes of the repository's own unpushed commits: the tags in scope point at one
+  const execEnv = env && Object.keys(env).length ? env : undefined;
+  const run = (argv, e) => {
+    const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: e, timeoutMs: ah.cfg('git.push_timeout_ms') });
+    if (r === null || r.status !== 0) { out.unchecked = true; return null; }
+    if (r.truncated === true) out.over = true;
+    return String(r.stdout || '');
+  };
+  const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
+  let count = 0;
+  const scan = (d, rp, e, sub) => {
+    const txt = run(fillPushArgv(ah.cfg('git.push_argv_log'), d, rp, cap + 1 - count), e);
+    if (txt === null) return;
+    for (const rec of txt.split(rs)) {
+      const f = rec.replace(/^\n/, '').split(us);
+      const sha = (f[0] || '').trim();
+      if (!sha) continue;
+      count++;
+      if (sub === null) unpushed.add(sha);
+      if (count <= cap && f[1] && hasSelfCredit(f[1])) out.hits.push({ sha: sha.slice(0, TB.commitHashShort), dir: d, repo: rp, env: e, sub: sub });
+    }
+  };
+  scan(dir, repo, execEnv, null);
+  out.over = out.over || count > cap;
+  if (out.unchecked || out.over) return out;
+  // annotated tags: the newest {n}, and only those on an unpushed commit (one on a commit a remote has is public, a fetched tag
+  // included); lightweight tags are commits (scanned above)
+  const tagTxt = unpushed.size ? run(fillPushArgv(ah.cfg('git.push_argv_tags'), dir, repo, cap + 1), execEnv) : null;
+  if (tagTxt !== null) {
+    for (const rec of tagTxt.split(rs)) {
+      const f = rec.replace(/^\n/, '').split(us);
+      if ((f[0] || '').trim() === ah.cfg('git.push_tag_object_type') && unpushed.has((f[2] || '').trim()) && f[3] && hasSelfCredit(f[3])) out.tags.push(f[1]);
+    }
+  }
+  // submodules: each checked-out one is scanned the same way, inside the same commit cap
+  const cdup = run(fillPushArgv(ah.cfg('git.push_argv_cdup'), dir, repo, 0), execEnv);
+  if (cdup === null) return out;
+  const top = posix.resolveIn(S.procCwd, [dir, cdup.trim() || '.']);
+  if (ah.fs.realpath(posix.join(top, ah.cfg('git.push_gitmodules_file'))) === null) return out;
+  const subs = run(fillPushArgv(ah.cfg('git.push_argv_submodules'), dir, repo, 0), execEnv);
+  if (subs === null) return out;
+  let subEnv;
+  if (execEnv) {
+    subEnv = Object.assign({}, execEnv);
+    for (const n of ah.cfg('git.push_repo_env_names')) delete subEnv[n];
+  }
+  for (const p of subs.split('\n').map((x) => x.trim()).filter(Boolean)) {
+    if (count > cap || out.unchecked) break;
+    const rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : p;
+    scan(p, [], subEnv && Object.keys(subEnv).length ? subEnv : undefined, rel);
+  }
+  out.over = out.over || count > cap;
+  return out;
+}
+
+// Every git command of a Bash call with the directory it runs in: `cd` is followed, eval and `sh -c` payloads are read (up to
+// git_audit.max_depth). visit(ev, sub, rest, dir, seg) for each; ev.env is the git environment the command sets.
+function forEachGitCommand(cmd, base, depth, visit) {
+  let cdDir = base;
+  const persist = {};
+  const persistDyn = {};
+  for (const seg of splitSegments(cmd)) {
+    const tokens = tokenize(seg);
+    if (!tokens.length) continue;
+    const se = segmentEnv(tokens);
+    const env = Object.assign({}, persist, se.inline);
+    Object.assign(persist, se.persist);
+    for (const n of Object.keys(se.persist)) delete persistDyn[n];
+    for (const d of se.persistDyn || []) persistDyn[d.name] = d.raw;
+    const ev = effectiveVerb(tokens);
+    if (!ev) continue;
+    ev.env = env;
+    ev.dynEnv = Object.keys(persistDyn).filter((n) => !(n in se.inline)).map((n) => persistDyn[n]).concat((se.inlineDyn || []).map((d) => d.raw));
+    if (ev.verb === ah.cfg('git_audit.cd_verb')) {
+      const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
+      if (dirTok) cdDir = posix.resolveIn(S.procCwd, [cdDir, dirTok.text]);
+      continue;
+    }
+    const isEval = ev.verb === ah.cfg('git_audit.eval_verb');
+    if (depth < ah.cfg('git_audit.max_depth') && (isEval || TB.shellVerbs.has(ev.verb.toLowerCase()))) {
+      const payload = isEval ? extractEvalPayload(seg) : extractShellCPayload(seg);
+      if (payload) forEachGitCommand(payload, cdDir, depth + 1, visit);
+      continue;
+    }
+    if (ev.verb !== ah.cfg('git_audit.git_verb')) continue;
+    const { sub, rest } = gitSubcommand(ev.args);
+    visit(ev, sub, rest, cdDir, seg);
+  }
+}
+
+// PR #469: the subcommand of a commit this call creates whose message layer 1 cannot read (a file, stdin that no quoted heredoc
+// feeds, a reused or edited message, an expansion, a commit with no literal message, an alias), or null. Allowlist: only a
+// literal -m/--message, or -F - fed by a quoted heredoc, counts as read.
+function unreadCommitMessage(ev, sub, rest, dir, seg) {
+  if (TB.sameCallAlways.has(sub)) return sub;
+  if (!TB.sameCallSubs.has(sub)) {
+    const ex = expandAlias(ev.args, sub, rest, dir, undefined);
+    if (ex === null) return null;
+    return ex.verb === '!' || ex.verb.startsWith('-') || TB.sameCallSubs.has(ex.verb) || TB.sameCallAlways.has(ex.verb) ? sub : null;
+  }
+  let msg = false;
+  for (let i = 0; i < rest.length; i++) {
+    const w = rest[i].text;
+    if (w === '--' ) break;
+    if (TB.sameCallNoCommitOpts.some((re) => re.test(w))) return null;
+    if (w === TB.sameCallNoEditOpt && TB.sameCallNoEditSubs.has(sub)) { msg = true; continue; }
+    const mc = /^-([A-Za-z]*)m/.exec(w);
+    if (mc && mc[1] && TB.sameCallOpts.some((re) => re.test('-' + mc[1]))) return sub;
+    if (w === '--message' || /^-[A-Za-z]*m$/.test(w)) { msg = true; i++; continue; }
+    if (w.startsWith('--message=') || /^-[A-Za-z]*m./.test(w)) { msg = true; continue; }
+    if (TB.sameCallOpts.some((re) => re.test(w))) return sub;
+  }
+  for (const spec of fileCommitMessages(rest)) {
+    if ((spec === '-' || spec === '/dev/stdin') && TB.sameCallHeredoc.test(seg) && !TB.sameCallHereString.test(seg)) { msg = true; continue; }
+    return sub;
+  }
+  for (const tk of inlineCommitMessageToks(rest)) if (unresolvedExpansion(tk.raw)) return sub;
+  return TB.sameCallNeedMsg.has(sub) && !msg ? sub : null;
+}
+
+// PR #469: before the scan spends the call's git-query budget, every push of the call is checked (cached for the scan), and a
+// commit whose message layer 1 cannot read is refused together with a push in the same call: it would be published first, and a
+// published commit cannot be reworded without a force push.
+function pushPrepass(cmd, cwd) {
+  const pushes = [], unread = [];
+  try {
+    forEachGitCommand(cmd, cwd, 0, (ev, sub, rest, dir, seg) => {
+      if (sub === null) return;
+      if (sub === 'push') { pushes.push({ ev: ev, dir: dir }); return; }
+      const u = unreadCommitMessage(ev, sub, rest, dir, seg);
+      if (u) unread.push(u);
+    });
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    return null;
+  }
+  if (gitSettingOn('git.setting_push_credit')) {
+    // an unquoted substitution in the repository path cuts the segment before the push: matched on the whole command
+    const dm = new RegExp(ah.cfg('git.push_dynamic_repo_cmd_re')).exec(cmd);
+    if (dm) return gmKey('msg_push_dynamic_repo', { arg: dm[0].slice(0, ah.cfg('git.expansion_shown_chars')) });
+  }
+  if (!pushes.length || !gitSettingOn('git.setting_push_credit')) return null;
+  for (const p of pushes) {
+    const v = pushCreditVerdict(p.ev, p.dir);
+    if (v) return v;
+  }
+  if (unread.length) return gmKey('msg_push_same_call', { sub: unread[0] });
+  return null;
+}
+
+// PR #469: a script a call runs by literal path (bash x.sh, ./x.sh, source x) is read and scanned like a commit message: a
+// credit line on any line is refused (naming the file and line), and so is a commit whose message layer 1 cannot read together
+// with a push in it, as in one call. A missing, oversized or non-literal path is let through with an advisory.
+function scriptFileVerdict(tok, cdDir, byPath) {
+  if (!tok) return null;
+  const raw = tok.raw !== undefined ? tok.raw : tok.text;
+  if (/[$`*?[]/.test(raw) || !tok.text) { S.scriptUnchecked = tok.text || raw; return null; }
+  const path = scriptRealPath(tok.text, cdDir || S.procCwd);
+  if (path === null) { S.scriptUnchecked = tok.text; return null; }
+  const size = ah.fs.size(path);
+  // the host reads at most script.read_max_bytes: a larger cap would scan a cut-off script
+  const cap = Math.min(ah.cfgNum('git.script_scan_max_bytes'), ah.cfgNum('script.read_max_bytes'));
+  const body = size === null || size > cap ? null : ah.fs.readText(path, cap);
+  if (body === null) {
+    // a program run by path that is no script (a binary over the cap) is not reported
+    const head = size !== null && byPath ? ah.fs.readText(path, 2) : '#!';
+    if (head === '#!') S.scriptUnchecked = tok.text;
+    return null;
+  }
+  // comment lines and greps of a pattern cannot reach a message; blanked, so line numbers stay
+  const live = body.split('\n').map((l) => (TB.scriptInertLine.test(l) ? '' : l));
+  const liveBody = live.join('\n');
+  let reaches = false, pushes = 0;
+  const unread = [];
+  try {
+    forEachGitCommand(body, cdDir || S.procCwd, 0, (ev, sub, rest, dir, seg) => {
+      if (sub === null) return;
+      if (sub === 'push') { pushes++; reaches = true; return; }
+      if (TB.sameCallSubs.has(sub)) reaches = true;
+      const u = unreadCommitMessage(ev, sub, rest, dir, seg);
+      if (u) unread.push(u);
+    });
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    reaches = true; // unparsed: keep the credit scan, as before
+  }
+  // PR #469 round 10: a gh pr/issue/release command (gh_subs x gh_actions) publishes its body text like a commit does; its body
+  // and --body-file / --notes-file text are checked as the direct command is
+  let ghHit = null;
+  try {
+    for (const seg of splitSegments(liveBody)) {
+      const gev = effectiveVerb(tokenize(seg));
+      if (gev && gev.verb === 'gh' && ghSelfCreditMessage(gev.args)) { ghHit = seg; break; }
+    }
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+  }
+  if (ghHit !== null) {
+    const first = ghHit.trim().split(/\s+/)[0] || '';
+    const gl = live.findIndex((l) => l.includes(first) && /\bgh\b/.test(l));
+    return gmKey('msg_script_credit', { file: tok.text, line: gl < 0 ? 1 : gl + 1 });
+  }
+  // a script that never commits, merges, tags or pushes cannot publish a credit line it mentions
+  if (reaches && hasSelfCredit(liveBody)) {
+    const line = live.findIndex((l) => hasSelfCredit(l));
+    return gmKey('msg_script_credit', { file: tok.text, line: line < 0 ? 1 : line + 1 });
+  }
+  if (!gitSettingOn('git.setting_push_credit')) return null;
+  return pushes && unread.length ? gmKey('msg_push_same_call', { sub: unread[0] }) : null;
+}
+
+// The file a script path runs: the kernel resolves symlinks before `..` (link/../x.sh is the link target's parent), so a lexical
+// normalisation can name another file. realpath follows the links; a path that does not resolve and holds `..` is unverifiable.
+function scriptRealPath(text, cwd) {
+  let abs = expandTilde(text.replace(/\\/g, '/'), S.home);
+  if (!abs.startsWith('/')) abs = expandTilde(String(cwd).replace(/\\/g, '/'), S.home).replace(/\/+$/, '') + '/' + abs;
+  const real = ah.fs.realpath(abs);
+  if (real) return real;
+  return /(^|\/)\.\.(\/|$)/.test(abs) ? null : normalizeGuardPath(text, cwd);
+}
+
 function handoverCommitVerdict(ev, lastCdDir) {
   if (!ev.args.some((t) => t.text === 'commit')) return null;
   if (S.handoverEvalBudget-- <= 0) { S.handoverSkipped++; return null; }
@@ -1857,13 +2359,27 @@ function forwardable(tokens) {
   return out;
 }
 
+// { name, raw } of each git.push_repo_env_names assignment whose value the shell expands at run time (dynamicRepoPath)
+function dynamicRepoEnv(tokens) {
+  const names = ah.cfg('git.push_repo_env_names');
+  const out = [];
+  for (const t of tokens) {
+    if (t.quotedOnly) continue;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(t.text);
+    if (!m || !names.includes(m[1])) continue;
+    const raw = String(t.raw === undefined ? t.text : t.raw);
+    if (dynamicRepoPath(raw.slice(raw.indexOf('=') + 1))) out.push({ name: m[1], raw: raw });
+  }
+  return out;
+}
+
 function segmentEnv(tokens) {
   try {
     const gi = tokens.findIndex((t) => !t.quotedOnly && t.text === 'git');
-    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {} };
+    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {}, inlineDyn: dynamicRepoEnv(tokens.slice(0, gi)) };
     const first = tokens[0] && !tokens[0].quotedOnly ? tokens[0].text : '';
     const allAssign = tokens.every((t) => !t.quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text));
-    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens) };
+    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens), persistDyn: dynamicRepoEnv(tokens) };
   } catch (e) { if (gitFatal(e)) throw e; }
   return { inline: {}, persist: {} };
 }
@@ -2265,8 +2781,17 @@ function scanCommand(cmd, depth, baseCwd) {
         } else if (shellScriptIsInput(tokens, [])) {
           const sv = stdinScriptVerdict(cmd, d, lastCdDir);
           if (sv) return sv;
+        } else {
+          const fv = scriptFileVerdict(ev.args.find((t) => !t.text.startsWith('-')), lastCdDir, false);
+          if (fv) return fv;
         }
       }
+      continue;
+    }
+
+    if (TB.scriptRunVerbs.has(ev.verb)) {
+      const fv = scriptFileVerdict(ev.args.find((t) => !t.text.startsWith('-')), lastCdDir, false);
+      if (fv) return fv;
       continue;
     }
 
@@ -2292,7 +2817,13 @@ function scanCommand(cmd, depth, baseCwd) {
       continue;
     }
 
-    if (ev.verb !== 'git') continue;
+    if (ev.verb !== 'git') {
+      if (ev.verbTok && ev.verbTok.text.indexOf('/') !== -1) {
+        const fv = scriptFileVerdict(ev.verbTok, lastCdDir, true);
+        if (fv) return fv;
+      }
+      continue;
+    }
 
     const gv = gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
     if (gv) return gv;
@@ -2377,6 +2908,8 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
       const note = /<<-?[ \t]*['"\\]?[A-Za-z_]/.test(S.raw) ? ah.cfg('git.push_cmdsubst_heredoc_note') : '';
       return gm({ what: m.what, why: m.why, instead: m.instead + note });
     }
+    const pv = pushCreditVerdict(ev, lastCdDir);
+    if (pv) return pv;
   }
 
   if (TB.backstopCommitSubs.has(sub)) {
@@ -2384,6 +2917,12 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
     const msgs = inlineCommitMessages(rest);
     for (const m of msgs) {
       if (creditRegexes(m) || creditRegexes(normEscapes(m))) return gmKey('msg_commit_credit');
+    }
+    if (gitSettingOn('git.setting_commit_expansion')) {
+      for (const tk of inlineCommitMessageToks(rest)) {
+        const x = unresolvedExpansion(tk.raw);
+        if (x) return gmKey('msg_commit_expansion', { shown: x });
+      }
     }
     for (const m of msgs) if (m && useJev && consultJev(m)) return gmKey('msg_commit_jev');
 
@@ -2617,6 +3156,16 @@ function looksLikeFileWriteShape(cmd) {
   return new RegExp(TB.fileWriteEcho).test(cmd) && redirects;
 }
 
+// GH #457: every block is counted by reason (its message key); a blocked push also by its own counter
+function countBlock(hit) {
+  try {
+    const key = S.keyOf.get(hit);
+    const reason = key ? key.replace(ah.cfg('git.block_key_prefix'), '') : ah.cfg('git.block_reason_other');
+    ah.metric('git_blocked', ['reason', reason]);
+    if (key === 'msg_push_credit') ah.metric('git_push_blocked', []);
+  } catch (e) { /* counting never fails a hook */ }
+}
+
 function decide(p, opts, event) {
   try { return decideScan(p, opts, event); } finally { TOK_MEMO.clear(); SEG_MEMO.clear(); }
 }
@@ -2641,11 +3190,16 @@ function decideScan(p, opts, event) {
   S.abs = (q) => (q.charAt(0) === '/' ? q : posix.resolveIn(cwdIn, [q]));
   S.pluginRoot = (opts && typeof opts.plugin_root === 'string' && opts.plugin_root) || ah.env.get(ah.cfg('env.plugin_root')) || '';
   shellScan.reset();
-  const hit = scanCommand(cmd, 0, cwdIn);
+  const hit = pushPrepass(cmd, cwdIn) || scanCommand(cmd, 0, cwdIn);
+  if (hit) countBlock(hit);
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
-  if (S.handoverSkipped > 0) {
-    const t = text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped });
-    return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: t } }) };
+  const notes = [];
+  if (S.pushUnchecked) notes.push(ah.cfg('git.push_unchecked_advisory'));
+  if (S.scriptUnchecked !== null) notes.push(text.render(ah.cfg('git.script_unchecked_advisory'), { file: S.scriptUnchecked }));
+  if (S.pushAckNote) notes.push(S.pushAckNote);
+  if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
+  if (notes.length) {
+    return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.join('\n') } }) };
   }
   return 'allow';
 }

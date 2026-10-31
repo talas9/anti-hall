@@ -350,7 +350,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `command` | command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook. |
 | `model-routing` | Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches. |
 | `failure-root-cause-nudge` | Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals, a shell glob/echo artefact beside output that printed fine, and repeats within a turn. |
-| `git-audit` | Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer. |
+| `git-audit` | Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) carries an AI self-credit; one HEAD reaches and no remote has is blocked until reworded, one a remote already has (committed and pushed in one call) is blocked once and reported as published. |
 | `verify-first-subagent` | SubagentStart context: injects the verify-first protocol (compact, or full when context.protocolLevel is full) into every spawned subagent. |
 | `verify-first-full` | SessionStart context: injects the verify-first protocol and discipline index for the session, Claude or Codex text. |
 | `fable-availability` | SessionStart: records whether a Fable model is available (from the host's model cache) in ~/.anti-hall/fable-availability.json and tells the session when it is. |
@@ -1113,7 +1113,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.argv_log_message` | `log, -1, --format=%B, {rev}, --` |  |  | git arguments that print one commit message; {rev} is the revision. |
 | `git.backstop_commit_subs` | `commit, merge, commit-tree, interpret-trailers, tag` |  |  | Subcommands whose messages the backstop scan checks for AI self-credit. |
 | `git.block_emoji` | `⛔` |  |  | Leading symbol of a block message. |
+| `git.block_key_prefix` | `msg_` |  |  | The prefix of a message key that is removed to make the reason label of the git_blocked counter. |
 | `git.block_mark` | ` anti-hall · git safety: ` |  |  | Product and guard label after the symbol; also the marker alias notes are inserted after. |
+| `git.block_reason_other` | `other` |  |  | The reason label of the git_blocked counter for a block that has no message key. |
 | `git.budget_handover_evals` | `50` |  |  | Commit evaluations the handover check may do per command. |
 | `git.budget_handover_queries` | `8` |  |  | Distinct git queries the handover check may run per command. |
 | `git.budget_launcher_fs` | `64` |  |  | Filesystem probes the launcher check may spend per command. |
@@ -1123,6 +1125,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.check_summary` | `Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self...` |  |  | One-line description of the check for the generated reference. |
 | `git.commit_cluster_value_flags` | `mFCct` |  |  | Short commit flags that take a value inside a cluster (-m, -F, -C, -c, -t). |
 | `git.commit_creating` | `9 items` |  |  | Subcommands that create a commit, where self-credit and handover checks apply. |
+| `git.commit_expansion_allow` | `^\$\([ \t]*cat[ \t]*<<, ^\$\([ \t]*:[ \t]*\)` |  |  | Regular expressions tested against the text that starts at an expansion; a match means the expansion is a form the guard already reads (a heredoc substitution, or the `$(:)` stand-in the guard puts where it already scanned a heredoc body), so it is not refused. |
+| `git.commit_expansion_patterns` | `\$[A-Za-z_{], \$\(, `` |  |  | Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it. |
 | `git.commit_hash_len` | `40` |  |  | Length of a full commit hash, used to shorten it in messages. |
 | `git.commit_hash_short` | `12` |  |  | Length a commit hash is shortened to in messages. |
 | `git.commit_long` | `48 items` |  |  | Long options of the commit subcommand, for resolving abbreviations in reused-message checks. |
@@ -1132,13 +1136,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.credit_generated_alts` | `claude code, claude, chatgpt, codex, copilot` |  |  | Names after a "Generated with" footer that count as an AI tool. |
 | `git.credit_gpt` | `2 entries` |  |  | A gpt- model name in a trailer: the prefix and the version digits that count. |
 | `git.credit_label_gh_words` | `2` |  |  | How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`). |
+| `git.credit_session_keys` | `claude-session` |  |  | Trailer keys (lowercase) whose line credits an AI tool whatever its value is, e.g. a session trailer a coding assistant appends (GH #457). Checked in commit messages, reused messages, gh bodies and the audit. |
+| `git.credit_url_markers` | `claude.ai/code/session` |  |  | URL fragments of an AI tool's session link (GH #457). In a commit message a line that is only the link, or a trailer key and the link, counts as a credit; in a gh body the link anywhere does (see gh_body_markers). |
+| `git.expansion_shown_chars` | `12` |  | chars | How many characters of the expansion the refusal shows. |
 | `git.file_write_tip` | `\nTip: this file's content was scanned as shell. Write the file with the Writ...` |  |  | Added to a block when the command writes a file with shell text: the file was scanned as shell. |
 | `git.find_exec_flags` | `-exec, -execdir, -ok, -okdir` |  |  | find actions that run a command. |
 | `git.forward_config_indexed` | `KEY_, VALUE_` |  |  | GIT_CONFIG_<prefix><n> variable families that are forwarded. |
 | `git.forward_config_names` | `GLOBAL, SYSTEM, NOSYSTEM, COUNT, PARAMETERS` |  |  | GIT_CONFIG_<name> variables that are forwarded. |
 | `git.forward_env_names` | `GIT_DIR, GIT_WORK_TREE, HOME, XDG_CONFIG_HOME` |  |  | Environment names a wrapper forwards to git (config and repo location). |
 | `git.gh_actions` | `create, edit, comment, merge` |  |  | gh actions whose bodies are checked. |
-| `git.gh_body_markers` | `claude.com/claude-code, chatgpt.com/codex, <noreply@anthropic.com>` |  |  | Markers in a gh pr, issue or release body or title that credit an AI tool. |
+| `git.gh_body_markers` | `claude.com/claude-code, chatgpt.com/codex, <noreply@anthropic.com>, claude.ai...` |  |  | Markers in a gh pr, issue or release body or title that credit an AI tool. |
 | `git.gh_file_opts` | `--body-file, -F, --notes-file` |  |  | gh options that name a file holding body text as the next word. |
 | `git.gh_file_prefixes` | `--body-file=, --notes-file=` |  |  | gh options that name a file holding body text after an equals sign. |
 | `git.gh_subs` | `pr, issue, release` |  |  | gh subcommands whose bodies are checked. |
@@ -1204,16 +1211,53 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.origin_commit` | `commit `{ref}`` |  |  | Where a reused message came from: a named commit. Placeholder: {ref}. |
 | `git.origin_template` | `the commit template` |  |  | Where a reused message came from: the commit template. |
 | `git.parallel_separators` | `:::, ::::, :::+, ::::+` |  |  | GNU parallel argument-source separators. |
+| `git.push_ack_advisory` | `anti-hall: this push was let through although it may publish commits with AI ...` |  |  | Advisory when a push is let through because its credited commits were acknowledged in this session (push_ack_max_shas). Placeholder: {shown} (as in msg_push_credit). |
+| `git.push_ack_max_shas` | `0` |  |  | OFF by default (0): a credited commit never reaches a push, and an identical retry of a blocked push is blocked again. When set above 0 (PR #469 round 6), after msg_push_credit blocked a push once, the identical push retried unchanged (same command text and directory) downgrades the commits it named to push_ack_advisory for the rest of the session; a new credited commit still blocks first, and past this many the oldest acknowledgement is dropped. Trade-off: a commit that is already public but whose remote-tracking ref was pruned looks unpushed offline and blocks every push until it is acknowledged, so the owner may enable this knowingly; it also lets ANY credited commit through on an identical retry, which agents do after a block. A stamp that cannot be written lets the blocked commits through with the advisory at once (fails toward advisory). |
+| `git.push_ack_state_prefix` | `git-push-ack-` |  |  | File name prefix of the per-session push acknowledgement stamp (push_ack_max_shas), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it. |
+| `git.push_argv_branch_contains` | `7 items` |  |  | git arguments listing the local branches that contain one credited commit, for the block message ({dir}, {repo} as in push_argv_log; {sha} the commit). At most git.shown hits are looked up, each bounded by push_timeout_ms. |
+| `git.push_argv_cdup` | `-C, {dir}, {repo}, rev-parse, --show-cdup` |  |  | git arguments printing the path from the push directory to the top of its work tree (empty at the top and in a bare repository); .gitmodules there means submodules are scanned. |
+| `git.push_argv_log` | `12 items` |  |  | git arguments listing every local commit no remote has (the pre-push credit check reads all of them, whatever the push would publish): {dir} is the repository directory, {repo} expands to the command's --git-dir/--work-tree, {n} the most commits read (the cap plus one, to see an overflow). Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep). |
+| `git.push_argv_submodules` | `8 items` |  |  | git arguments printing the absolute path of each checked-out submodule, nested ones included; each is scanned with push_argv_log, and all of them share push_max_commits. |
+| `git.push_argv_tags` | `8 items` |  |  | git arguments listing the newest local tags ({n} of them, the commit cap plus one) as object type, name, tagged object and message. An annotated tag (push_tag_object_type) is in scope only when the commit it tags is itself unpushed (in the push_argv_log result): a tag on a commit a remote already has is taken as public, so a fetched credited tag never blocks, and a tag made locally on an already-pushed commit (or a tag of a tag) is not scanned. One in scope whose message carries an AI credit refuses the push. Fields end with US and records with RS. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
+| `git.push_dynamic_path_res` | `^~[^/], ^[^'"]*[*?\[]` |  |  | Regular expressions (JavaScript syntax) for a repository path, as written, that the guard cannot expand (a ~user home, an unquoted glob); a $ or backtick expansion is always one. |
+| `git.push_dynamic_repo_cmd_re` | `(?:^\|[;&\|\n(]\s*)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&\|'"]*\s+)*git\s+(?:[^\s;&\|'"...` |  |  | Regular expression (JavaScript syntax) over the whole command for a git push at command position whose -C, --git-dir or --work-tree value holds an unquoted command substitution (a quoted one is read on the token): the segment splitter cuts the command there, so the push is matched on the raw text (msg_push_dynamic_repo). |
+| `git.push_gitmodules_file` | `.gitmodules` |  |  | The file at the top of a work tree whose presence makes the pre-push credit check scan each checked-out submodule too. |
+| `git.push_hit_format` | `{sha} on {branches}{where}` |  |  | One credited commit in msg_push_credit. Placeholders: {sha} (short hash), {branches} (the local branches that contain it, from push_argv_branch_contains), {where} (push_hit_where_format for a submodule, else empty). |
+| `git.push_hit_no_branch_format` | `{sha} (on no local branch){where}` |  |  | One credited commit in msg_push_credit that no local branch contains (a tag, a custom ref, a detached HEAD), or whose branches could not be read. Placeholders: {sha}, {where}. |
+| `git.push_hit_where_format` | ` in submodule {path}` |  |  | Appended to a credited commit found inside a submodule. Placeholder: {path} (the submodule directory). |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
+| `git.push_max_commits` | `50` |  |  | Most unpushed local commits (on any ref, pushed or not by this push) the pre-push credit check reads; more is refused (msg_push_over_cap), never allowed unread. |
+| `git.push_repo_env_names` | `GIT_DIR, GIT_WORK_TREE` |  |  | Environment names that move the repository a push runs in: a value the shell expands at run time refuses the push (msg_push_dynamic_repo), and submodule scans run without them. |
+| `git.push_repo_opts` | `-C, --git-dir, --work-tree` |  |  | git options before the subcommand whose value is the repository a push runs in; a value the shell expands at run time refuses the push (msg_push_dynamic_repo). |
+| `git.push_same_call_always` | `am, cherry-pick` |  |  | Subcommands that write a commit message layer 1 never reads (a patch, a copied commit); with a push in the same Bash call they are refused. |
+| `git.push_same_call_here_string` | `<<<` |  |  | Regular expression (JavaScript syntax) for a here-string on the commit's command; it expands, so -F - fed by one is unread. |
+| `git.push_same_call_need_message` | `commit, merge, revert` |  |  | Subcommands of push_same_call_subs that open an editor or reuse a message without a literal -m (or -F - fed by a quoted heredoc): with none, the message counts as unread. |
+| `git.push_same_call_no_commit_opts` | `^--(?:abort\\|quit\\|skip\\|ff-only\\|squash\\|no-commit)$` |  |  | Regular expressions (JavaScript syntax) for options with which a subcommand of push_same_call_subs writes no commit of its own (an aborted, skipped or fast-forward-only merge, rebase or revert): the same-call check lets it through. |
+| `git.push_same_call_no_edit_opt` | `--no-edit` |  |  | The option that makes git write the message of a push_same_call_no_edit_subs subcommand itself, with no editor and no prepared message. |
+| `git.push_same_call_no_edit_subs` | `revert` |  |  | Subcommands of push_same_call_need_message whose message git writes itself when push_same_call_no_edit_opt is given (a revert's own subject line): that option counts as a read message. |
+| `git.push_same_call_opts` | `^-[A-Za-z]*[Ccte], ^--(?:reuse-message\\|reedit-message\\|template\\|edit\\|conti...` |  |  | Regular expressions (JavaScript syntax) for options that take the message from somewhere layer 1 does not read (a reused or edited commit, a template, an editor: -e or --edit); any one makes the message unread. A short-flag cluster ending in m (-em) is matched on its flags before the m. |
+| `git.push_same_call_quoted_heredoc` | `<<-?[ \t]*(?:'[^']+'\|"[^"]+"\|\\\S)` |  |  | Regular expression (JavaScript syntax) for a quoted heredoc on the commit's own command: -F - fed by one is read by layer 1 (its body never expands). |
+| `git.push_same_call_subs` | `commit, commit-tree, tag, merge, revert, rebase` |  |  | Subcommands whose message the same-call check reads: with a push in the same Bash call, one whose message layer 1 cannot read is refused (msg_push_same_call). |
+| `git.push_skip_opts` | `--dry-run, -n, --delete, -d` |  |  | git push options after which nothing is published, so the pre-push credit backstop is skipped. |
+| `git.push_tag_object_type` | `tag` |  |  | The object type for-each-ref prints for an annotated tag (a lightweight tag prints its commit's type and is covered by the commit scan). |
+| `git.push_timeout_ms` | `4000` |  | ms | Timeout of each git query the pre-push credit backstop runs. |
+| `git.push_unchecked_advisory` | `anti-hall: this push was not checked for AI credit lines (git could not run, ...` |  |  | Advisory when a git query of the pre-push credit check could not run (unavailable), failed (non-zero exit, e.g. not a repository) or passed push_timeout_ms: the push is let through unchecked. |
 | `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
 | `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
 | `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
 | `git.re_file_write_tee` | `\btee\b\s+(?:-a\s+)?[^\s&;\|<>()-][^\s&;\|<>()]*` |  |  | JavaScript regex source: a tee into a file, which counts as a redirect for the file-write shape. |
+| `git.script_inert_line_re` | `^[ \t]*(?:#\|(?:(?:e\|f)?grep\|rg)\b[^\|<>;&`$]*$)` |  |  | A line of a script that cannot put text into a commit message: a pure comment line, or a plain grep, egrep, fgrep or rg of a pattern. A grep line with a pipe, a here-string or other input or output redirection, a process or command substitution, a variable expansion or a ; / & continuation is live (it can feed a command). The script credit scan ignores inert lines, and a script that never commits, merges, tags, pushes or publishes with gh (push_same_call_subs, push, and a gh command of gh_subs and gh_actions, whose body is checked like the direct command) is not scanned for credit text at all. |
+| `git.script_run_verbs` | `source, .` |  |  | Commands whose first argument is a script file run in the current shell (source, .); the file is scanned like a script run by path (msg_script_credit). |
+| `git.script_scan_max_bytes` | `262144` |  |  | Largest script (in bytes) a Bash call runs by literal path (bash x.sh, sh x.sh, ./x.sh, source x) that is read and scanned for AI credit lines and a same-call commit and push; a larger, missing or non-literal one is let through with script_unchecked_advisory. |
+| `git.script_unchecked_advisory` | `anti-hall: the script {file} was not checked for AI credit lines (missing, to...` |  |  | Advisory when a script a Bash call runs by path could not be read (missing, over script_scan_max_bytes, or not a literal path): it is let through unchecked. Placeholder: {file}. |
 | `git.setting_alias_resolve` | `6 entries` |  |  | Switch for git alias and shell definition resolution. |
+| `git.setting_commit_audit` | `6 entries` |  |  | Switch for the authoritative post-call commit check (PR #469): off lets a commit with an AI credit stand until the push check. |
+| `git.setting_commit_expansion` | `6 entries` |  |  | Switch for the unresolved-shell-expansion check on inline commit messages (GH #457): off lets a message built from $VAR, $(...) or backticks through (the credit check cannot read it). |
 | `git.setting_git_guard` | `6 entries` |  |  | Master switch of the check: settings.json section and key, environment variable and plugin-option name. |
 | `git.setting_handover_guard` | `6 entries` |  |  | Switch for the handover-commit guard. |
 | `git.setting_heredoc_data` | `6 entries` |  |  | Switch for data-heredoc masking. |
+| `git.setting_push_credit` | `6 entries` |  |  | Switch for the pre-push credit backstop (GH #457): off lets a push through although an unpushed commit carries an AI credit. |
 | `git.setting_reused_message` | `6 entries` |  |  | Switch for the reused-commit-message check. |
 | `git.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument is itself a script to scan. |
 | `git.skip_command` | `~/.anti-hall/ah-engine/bin/ah-engine mesh skip {key}` |  |  | Command that records a skip for a guard ({key} is the guard id): the native thin client. |
@@ -1231,20 +1275,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `git_audit.argv_log` | `7 items` |  |  | git arguments of the audit's log query; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e). |
+| `git_audit.argv_log` | `9 items` |  |  | git arguments of the audit's log query: the commits HEAD reaches that no remote has; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e). |
+| `git_audit.argv_published` | `-C, {dir}, log, --no-walk=unsorted, --format=%H%x1f%B%x1e, {shas}` |  |  | git arguments reading the stored messages of the commits the audit found written in its window that the unpushed log did not list (a remote already has them, or they were amended away). {dir} is the repository directory and {shas} expands to the hashes. Fields and records as in argv_log. |
+| `git_audit.argv_reflog` | `9 items` |  |  | git arguments reading HEAD's reflog (newest first): full hash, the entry's selector with its unix time, and git's own description of the step. {dir} and {n} as in argv_log. |
+| `git_audit.argv_remote_has` | `8 items` |  |  | git arguments naming one remote-tracking ref that contains a commit ({sha}); empty output means no remote has it (an amended-away commit, never reported). |
+| `git_audit.block_reason` | `audit_credit` |  |  | The reason label of git_blocked for an audit block. |
+| `git_audit.block_reason_published` | `audit_credit_published` |  |  | The reason label of git_blocked for an audit block on a credited commit a remote already has. |
 | `git_audit.cd_verb` | `cd` |  |  | The verb whose directory argument moves the audit's working directory. |
 | `git_audit.commits` | `20` |  |  | How many commits at HEAD the audit reads. |
 | `git_audit.dir_opt` | `-C` |  |  | The global git option that changes the repository directory. |
 | `git_audit.eval_verb` | `eval` |  |  | The verb whose payload is scanned as a command. |
-| `git_audit.event` | `PostToolUse` |  |  | The hook event name in the audit's output. |
 | `git_audit.field_sep` | `` |  |  | The character that separates the fields of one commit record (US). |
 | `git_audit.git_verb` | `git` |  |  | The verb of a git command. |
 | `git_audit.max_buffer` | `1048576` |  |  | Largest log output, in bytes, the audit accepts from one repository (Node's child-process buffer cap: a larger output is dropped). |
 | `git_audit.max_depth` | `3` |  |  | How deep eval and shell -c payloads are followed when looking for commit-creating git commands. |
-| `git_audit.msg` | `⚠️ git safety: recent commits contain AI credit.\nDo instead: remove the cred...` |  |  | Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes). |
+| `git_audit.msg` | `4 entries` |  |  | Block after a commit git stored with an AI credit. Placeholders: {hits} (short hashes), {first} (the oldest one). |
+| `git_audit.msg_published` | `4 entries` |  |  | Block after a commit git stored with an AI credit that a remote already has (committed and pushed in one call). Placeholders: {hits} (short hashes), {remotes} (the remote-tracking refs that have them). |
 | `git_audit.opts_with_value` | `-c, --git-dir, --work-tree, --namespace, --config-env` |  |  | Global git options that take a value in the next word (skipped when looking for the repository directory). |
+| `git_audit.published_file` | `git-audit-published.json` |  |  | State file, under replykit.state_dir, holding the hashes of published credited commits already reported, so each one blocks once: the agent cannot clear it itself. |
+| `git_audit.published_memory` | `500` |  |  | How many reported published commit hashes the audit remembers (oldest dropped first). |
 | `git_audit.record_sep` | `` |  |  | The character that ends one commit record of the audit's log output (RS). |
-| `git_audit.summary` | `Advisory after a commit-creating git command: a commit made in the last 15 mi...` |  |  | One-line description of the git-audit check in the generated reference. |
+| `git_audit.reflog_creating` | `commit, merge, cherry-pick, rebase, revert, am` |  |  | Lower-case starts of the reflog descriptions of steps that write a commit (a checkout, reset or pull only moves HEAD and is not read). |
+| `git_audit.reflog_skip` | `^[a-z -]*\((?:start\\|finish\\|abort)\), : fast-forward$` |  |  | Regular expressions (JavaScript syntax) for reflog descriptions of reflog_creating steps that write no commit (a fast-forward, the start, finish or abort of a rebase): HEAD then points at a commit that already existed, often public history (PR #469 P2). |
+| `git_audit.summary` | `Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) c...` |  |  | One-line description of the git-audit check in the generated reference. |
 | `git_audit.timeout_ms` | `4000` |  | ms | Timeout of the git log the audit runs in each repository. |
 | `git_audit.window_s` | `900` |  |  | How recent, in seconds, a commit must be for the audit to look at it. |
 
@@ -7651,7 +7704,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.path_arg_max_chars` | `4096` |  |  | Longest directory argument (in characters) the git check tracks through a `cd`; a longer one is left to Node. |
 | `git.self_credit_coauthor_key` | `co-authored-by` |  |  | The trailer key (lowercase) that credits a co-author; an AI tool named after it is a self-credit. |
 | `git.self_credit_generated_prefix` | `generated with ` |  |  | The footer prefix (lowercase, with its trailing space) after which an AI tool name is a self-credit. |
-| `git.self_credit_trailer_keys` | `co-authored-by, generated-with, generated with` |  |  | The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under. |
+| `git.self_credit_trailer_keys` | `co-authored-by, generated-with, generated with, claude-session` |  |  | The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under. |
 | `git.shown_hits` | `3` |  |  | How many commit hashes the handover message names before it adds the more-marker. |
 
 ### limits.toml / gitcache
@@ -14138,6 +14191,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.updater_verified_lock` | Said when the download also matches the plugin lock. |
 | `msg.window_bad` | Printed when a --window / --since value is not a whole number of days (the telemetry data is kept in per-day buckets, so hours and minutes cannot be honoured). Placeholder: {window}. |
 | `git.msg_commit_credit` | Block: an inline commit message with an AI self-credit. |
+| `git.msg_commit_expansion` | Block: an inline commit message holds an unresolved shell expansion. Placeholder: {shown} (the first expansion found). |
 | `git.msg_commit_file_credit` | Block: a commit message read from a file or heredoc with an AI self-credit. |
 | `git.msg_commit_file_jev` | Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased). |
 | `git.msg_commit_jev` | Block: Jev judged an inline commit message to credit an AI assistant (paraphrased). |
@@ -14152,10 +14206,16 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |
+| `git.msg_push_credit` | Block: a push would publish commits that carry an AI credit. Placeholder: {shown} (each short hash with the branches that hold it, push_hit_format). |
+| `git.msg_push_dynamic_repo` | Block: a push whose repository (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) is a path the shell expands at run time. Placeholder: {arg}. |
+| `git.msg_push_over_cap` | Block: more local commits are on no remote than the pre-push credit check reads, so a credit past the cap could not be ruled out. Placeholder: {cap}. |
+| `git.msg_push_same_call` | Block: one Bash call creates a commit whose message layer 1 cannot read and pushes. Placeholder: {sub} (the subcommand). |
+| `git.msg_push_tag_credit` | Block: a local annotated tag's message carries an AI credit. Placeholder: {tags} (the tag names). |
 | `git.msg_reused_message` | Block: a reused commit message carries an AI self-credit. Placeholder: {origin}. |
 | `git.msg_runner_no_subcommand` | Block: a runner with git and no subcommand beside a force or delete flag. Placeholder: {runner}. |
 | `git.msg_runner_placeholder` | Block: a runner placeholder stands for the command or subcommand beside a force or delete flag. |
 | `git.msg_runner_push` | Block: a push through xargs or parallel. Placeholder: {runner}. |
+| `git.msg_script_credit` | Block: a Bash call runs a script whose text carries an AI credit line. Placeholders: {file} (the script path), {line} (the first line with the credit). |
 | `git.msg_trailer_remap` | Block: a trailer remap to an AI self-credit key. |
 | `msg.cfg_err_hooks` | A hook configuration section ([events.*], [entries.*]) is invalid (D87). |
 | `msg.cfg_err_io` | A config file could not be read. |
@@ -14282,6 +14342,10 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `requests_served` | counter | requests |  | Requests the daemon ran checks for (not skipped because the client had already hung up: see client_gone_skipped). |
 | `sigint_drains` | counter | drains |  | Graceful drains started by SIGINT (the same drain as SIGTERM). |
 | `tail_newest_reads` | counter | reads | mode | Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap). |
+| `git_audit_blocked` | counter | blocks |  | Bash calls the post-call commit check blocked because a commit git just wrote carries an AI credit (PR #469). |
+| `git_blocked` | counter | commands | reason | Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push). |
+| `git_push_ack_downgraded` | counter | pushes |  | Pushes the credit backstop let through as an advisory because the identical push had been blocked once and git.push_ack_max_shas acknowledges it (off by default). |
+| `git_push_blocked` | counter | pushes |  | Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457). |
 | `command_heavy_segment_named` | counter | blocks | kind | Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own. |
 | `accept_errors` | counter | errors | code | Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms. |
 | `agent_scan_degraded` | counter | scans | reader | Agent scans that returned unknown (the callers' unsure path: the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) because the window held a line longer than agent_scan.max_line_bytes that was skipped unparsed, by reader: scan_window or scan_kept. Any oversize line degrades the scan, noise or not, since the skipped line may have carried a completion. |
