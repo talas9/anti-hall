@@ -87,6 +87,8 @@ pub struct Nudge {
     pub path: String,
     /// Nudges sent, the first included.
     pub reminders: u64,
+    /// The repeated nudges reached `agent_nudge.runtime_escalation.after_reminders` (counted once; GH #484).
+    pub runtime_escalated: bool,
     /// The answer as given: stop, msg, snooze, other or prose.
     pub answer: String,
     /// The class the current answer counts as (empty while none is pending).
@@ -394,7 +396,9 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     if !step.is_empty() && trigger_of(sig) != Some(defaults::raw("agent_nudge.triggers").str_field("agent_waste")) {
         parts.push(defaults::fill(ef.str_field("stuck"), &[("step", &step)]));
     }
-    if spent > 0 && a.progress == f.base_progress {
+    if super::signals::building(a, now) {
+        parts.push(ef.str_field("building").to_string());
+    } else if spent > 0 && a.progress == f.base_progress {
         parts.push(defaults::fill(ef.str_field("waste"), &[("tokens", &tokens(spent))]));
     }
     if super::signals::waiting_on_ci(a) {
@@ -660,8 +664,34 @@ fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
     }
 }
 
+/// Publish the open runtime escalations (nudges that repeated `after_reminders` times and are still open) for the coordinator's Stop
+/// check; a nudge that closed (the child finished or was stopped) is no longer in `st.nudges`, so its row leaves the file.
+fn publish_escalations(env: &Env, st: &State) {
+    let now = env.now_ms;
+    let rows: Vec<Value> = st
+        .nudges
+        .values()
+        .filter(|n| n.runtime_escalated)
+        .map(|n| json!({"session": n.parent, "child": n.child, "name": n.child_name, "dur_ms": n.ev_dur_ms + now.saturating_sub(n.sent_at), "reminders": n.reminders}))
+        .collect();
+    let path = env.dir().join(defaults::raw("agent_nudge.runtime_escalation").str_field("file"));
+    let body = json!({"rows": rows}).to_string();
+    if std::fs::read_to_string(&path).is_ok_and(|old| old == body) || (rows.is_empty() && !path.exists()) {
+        return;
+    }
+    crate::discard::harmless(std::fs::create_dir_all(env.dir())); // keep: a failed write below reports it
+    if let Err(e) = crate::atomic::write(&path, &body) {
+        crate::health::log_event("agents", "runtime_escalation_write", &e.to_string());
+    }
+}
+
 /// Follow every open nudge: verify, resolve, remind, escalate, act.
 fn follow(env: &Env, st: &mut State) {
+    follow_nudges(env, st);
+    publish_escalations(env, st);
+}
+
+fn follow_nudges(env: &Env, st: &mut State) {
     let now = env.now_ms;
     let ids: Vec<String> = st.nudges.keys().cloned().collect();
     for id in ids {
@@ -739,6 +769,11 @@ fn follow(env: &Env, st: &mut State) {
                 continue;
             }
             n.reminders += 1;
+            let after = defaults::raw("agent_nudge.runtime_escalation").get("after_reminders").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+            if after > 0 && n.reminders >= after && !n.runtime_escalated {
+                n.runtime_escalated = true;
+                crate::metrics::bump("runtime_escalations", &[]);
+            }
             n.last_sent = now;
             let text = defaults::render(
                 "msg.agent_nudge_repeat",

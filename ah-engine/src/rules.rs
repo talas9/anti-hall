@@ -46,6 +46,9 @@ struct RawRule {
     options: Value,
     #[serde(default)]
     message: String,
+    /// A defaults key whose what/why/instead texts make the message (one source with the skill and the digest).
+    #[serde(default)]
+    message_ref: Option<String>,
     #[serde(default)]
     paths: Vec<String>,
     #[serde(default = "enabled_by_default")]
@@ -158,7 +161,10 @@ impl RuleSet {
                 field: r.field,
                 re,
                 action,
-                message: r.message,
+                message: match r.message_ref.as_deref() {
+                    Some(k) if !k.is_empty() => crate::skillgen::compose(&r.action, k),
+                    _ => r.message,
+                },
                 paths: r.paths,
                 check: r.check,
                 options: r.options,
@@ -332,6 +338,8 @@ mod shipped_rules {
         }
         assert_eq!(hit(&rs, "git commit -m \"x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\""), ["git-no-ai-self-credit"]);
         assert!(hit(&rs, "git commit -m \"fix: thing\"").is_empty());
+        // a message that discusses the policy is prose, not a trailer: the session-trailer decision is the git script's alone (PR #469)
+        assert!(hit(&rs, "git commit -m 'docs: reject Claude-Session: trailers'").is_empty());
         assert_eq!(hit(&rs, "rm -rf ~/"), ["rm-rf-root-or-home"]);
         assert_eq!(hit(&rs, "rm -rf /"), ["rm-rf-root-or-home"]);
         assert!(hit(&rs, "rm -rf ./build").is_empty());

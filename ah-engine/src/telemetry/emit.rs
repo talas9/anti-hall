@@ -264,7 +264,9 @@ pub fn jev_call(c: &JevCall<'_>) -> Event {
         more = more.tok("error", e);
     }
     let jev = Jev { integration: Token::sanitize(c.integration), mode: Token::sanitize(c.mode), verdict: Token::sanitize(c.verdict), cost_uc: c.cost_uc, more };
-    base(Kind::Jev, c.integration, defaults::text("telemetry.no_event_label"), c.outcome, c.ms.saturating_mul(1000), 0, Extras::Jev(jev))
+    // a failed call is labelled with its failure kind, so the daily counts split errors by kind (#466)
+    let label = c.error.filter(|e| !e.is_empty()).unwrap_or(defaults::text("telemetry.no_event_label"));
+    base(Kind::Jev, c.integration, label, c.outcome, c.ms.saturating_mul(1000), 0, Extras::Jev(jev))
 }
 
 /// The event for one run of a state-writing engine command.
@@ -488,6 +490,30 @@ mod tests {
         let json = j.to_json().to_string();
         assert!(!json.contains(' '), "{json}");
         assert_eq!(Event::from_json(&j.to_json()).unwrap(), j);
+    }
+
+    /// #466: a failed Jev call carries its failure kind in the event label, so the daily counts (`tel_counts`, keyed by
+    /// k/h/e/o) split errors by kind (`no-key`, `timeout`, `http-529`, ...) instead of one `error` bucket; an answered call keeps
+    /// the shared no-event label.
+    #[test]
+    fn a_failed_jev_call_is_labelled_with_its_failure_kind() {
+        let call = |error| {
+            jev_call(&JevCall {
+                integration: "modelRouting",
+                mode: "on",
+                verdict: "no-answer",
+                outcome: Outcome::Error,
+                conf_pm: None,
+                ms: 0,
+                cost_uc: 0,
+                backend: "baseline-only",
+                breaker: "closed",
+                error,
+            })
+        };
+        assert_eq!(call(Some("no-key")).e.as_str(), "no-key");
+        assert_eq!(call(Some("http-529")).e.as_str(), "http-529");
+        assert_eq!(call(None).e.as_str(), defaults::text("telemetry.no_event_label"));
     }
 
     #[test]

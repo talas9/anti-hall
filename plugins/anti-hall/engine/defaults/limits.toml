@@ -67,7 +67,7 @@ value = "generated with "
 
 [git.self_credit_trailer_keys]
 doc = "The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under."
-value = ["co-authored-by", "generated-with", "generated with"]
+value = ["co-authored-by", "generated-with", "generated with", "claude-session"]
 
 [codex_handover.nudge_shown_files]
 doc = "How many edited file names the Codex handover nudge lists before it adds the more-marker."

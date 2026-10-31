@@ -168,8 +168,8 @@ doc = "Checks that are never shed past the HARD CPU limit, with the reason for e
 value = { "merge-side-pick" = "PostToolUse recorder: the merge guard reads what it recorded.", "git-audit" = "PostToolUse audit of git calls (git-guard:audit); later git guards read it.", "output-verify-guard" = "PostToolUse recorder of tool output the verify guard checks later.", "devswarm-parent-reply-tracker" = "Records parent replies; the parent gate decides from them.", "devswarm-child-drain" = "Drains a child's mail; skipping it strands messages.", "coordinator-work-guard" = "PostToolUse half records coordinator work the PreToolUse half judges.", "agent-reminders" = "Delivers the stale-agent nudges and reminders the tracker queued.", "task-tracker" = "Keeps the task state the Stop guards read.", "task-lifecycle-log" = "Task create/complete log other guards read.", "devswarm-parent-inbox" = "Delivers a parent's inbox.", "devswarm-child-turn" = "Per-turn child bookkeeping.", "devswarm-child-role" = "Seats a child in its role.", "auto-handover" = "Triggers the handover at the context threshold.", "handover-resume" = "Restores a session from its handover.", "codex-quota-detect" = "Records the quota state later routing reads.", "dispatch-tier" = "Records the dispatch tier later guards read.", "precompact-snapshot" = "Takes the pre-compaction snapshot.", "session-end-mcp-reaper" = "Cleans up the session's MCP processes.", "emit-dedupe-reset" = "Resets the emit dedupe state of a session.", "progress-prune" = "Prunes progress files; state upkeep.", "repair-on-reload" = "Repairs state after a reload.", "verify-first" = "Per-prompt verify-first reminder (#312: essential, shed 4x in the audit window).", "verify-first-full" = "Session-start verify-first protocol text.", "verify-first-orch" = "Session-start orchestration reminder.", "verify-first-orch-codex" = "Codex session-start orchestration reminder.", "verify-first-subagent" = "Verify-first text a subagent starts with.", "tasklist-guard" = "Task-list Stop guard (a guard event is never shed; listed so the audit counts it as essential).", "devswarm-child-gate" = "Workspace child gate (Stop guard; listed so the audit counts it as essential).", "devswarm-rt-advisory" = "Workspace runtime notice a Primary acts on.", "afk-mode" = "Enforcement: its prompt half handles the owner's typed afk/back and records owner presence, its post/start halves inject the AFK rule; shedding it leaves AFK on (questions denied) or the rule unsaid.", "advisor-guard" = "Enforcement: its PostToolUse/PostToolUseFailure halves arm and disarm the retry rule its PreToolUse half blocks on; shedding them skips or strands that block." }
 
 [diagnostics.deadline_grace_ms]
-doc = "Per check, how many milliseconds PAST the hard request deadline (daemon.request_hard_ms) the check may still start, so a slow request does not drop an essential reminder that is cheap to run (#312: 56 non-guard and 16 guard answers were dropped to shedding or the deadline in the audit window). A check without a row has no grace. Capped by diagnostics.deadline_grace_cap_ms. A scripted check already running is still interrupted at the deadline (script.cut_at_request_deadline)."
-value = { "verify-first" = 400, "task-tracker" = 400, "tasklist-guard" = 400, "devswarm-parent-inbox" = 400, "devswarm-child-gate" = 400, "devswarm-child-turn" = 400, "agent-reminders" = 400 }
+doc = "Per check, how many milliseconds PAST the hard request deadline (daemon.request_hard_ms) the check may still start, so a slow request does not drop an essential reminder that is cheap to run (#312: 56 non-guard and 16 guard answers were dropped to shedding or the deadline in the audit window). A check without a row has no grace. Capped by diagnostics.deadline_grace_cap_ms. The same grace delays the cut of a scripted check already running (script.cut_at_request_deadline); #463 added the Stop guards silent-agent-nudge and compact-advice-guard and auto-handover, cut 13 times each in the 2026-10-30 audit while they cost 1-15 ms."
+value = { "verify-first" = 400, "task-tracker" = 400, "tasklist-guard" = 400, "devswarm-parent-inbox" = 400, "devswarm-child-gate" = 400, "devswarm-child-turn" = 400, "agent-reminders" = 400, "silent-agent-nudge" = 400, "compact-advice-guard" = 400, "auto-handover" = 400 }
 
 [diagnostics.deadline_grace_cap_ms]
 doc = "Upper bound of any diagnostics.deadline_grace_ms row. The hard deadline plus this must stay inside what the client waits for a late reply (client.slow_fallback_max_ms less client.slow_wait_margin_ms), or the grace would only produce a reply nobody reads."
@@ -482,3 +482,53 @@ value = "not found"
 [diagnostics.msg_integrity_usage]
 doc = "Usage of `diag integrity`: {stores} is diagnostics.integrity_stores."
 value = "usage: ah-engine diag integrity <{stores}>"
+
+[diagnostics.shed_tier_by_check]
+doc = "Shed tier per check (#464). Past the HARD CPU limit only a check of tier diagnostics.shed_tier_optional is shed; every other tier (`reminder`, the default) keeps running, so the rule reminders the agent needs are never dropped. The reminders shed most in the 2026-10-30 audit cost almost nothing (switch-notice about 1 us, procwatch-advisory 0.4 ms, limit-conserve-inject 0.6 ms, gh-rt-advisory 1 ms, idle-agent-sweep 7.9 ms mean): shedding them saved no CPU. The optional tier is status and version notices whose loss costs the agent no rule. diagnostics.shed_never still wins."
+value = { claude-cli-version = "optional", codex-availability = "optional", devswarm-version = "optional", fable-availability = "optional", jev-weekly-scorecard = "optional", jev-review-reminder = "optional", repo-self-drift = "optional", defect-nudge = "optional" }
+
+[diagnostics.shed_tier_default]
+doc = "Shed tier of a check not listed in diagnostics.shed_tier_by_check (`reminder`: never shed)."
+value = "reminder"
+
+[diagnostics.shed_tier_optional]
+doc = "The diagnostics.shed_tier_by_check tier that may be shed past the HARD CPU limit."
+value = "optional"
+
+[diagnostics.shed_sessions_max]
+doc = "Sessions kept in the per-session shed report (status budget.shed_by_session: session -> check -> answers shed); the first-named session is evicted when full."
+value = 64
+min = 1
+max = 4096
+
+[diagnostics.shed_session_unknown]
+doc = "Session key of a shed answer whose request named no session, in status budget.shed_by_session."
+value = "-"
+
+[diagnostics.deadline_policy_by_check]
+doc = "Per check, what happens to a call still running (or not yet started) when its request's client deadline passes (#463): `cut` interrupts it there (after its diagnostics.deadline_grace_ms) and the check answers by its failure policy (script.failure_mode_by_check), counted at status advisory deadline_cut.<check>.<outcome>; `finish` never cuts it at the request deadline, it runs to its own script limits. sibling-sweep is `finish`: about 1.6 ms a call, yet it was the most-cut check (3,515 queued soft-deadline lines and 17 deadline cuts in the 2026-10-30 audit) because its SubagentStop/Stop requests waited in the queue, not because it is slow. A check not listed takes diagnostics.deadline_policy_default."
+value = { sibling-sweep = "finish" }
+
+[diagnostics.deadline_policy_default]
+doc = "Deadline policy of a check not listed in diagnostics.deadline_policy_by_check."
+value = "cut"
+
+[diagnostics.deadline_policy_finish]
+doc = "The diagnostics.deadline_policy_by_check value that is never cut at the request deadline (any other value is cut)."
+value = "finish"
+
+[diagnostics.deadline_cut_counter]
+doc = "Status advisory counter kind of a deadline cut, keyed <check>.<outcome> (outcome: diagnostics.deadline_cut_outcome_*). A cut answers by the check's failure policy; there is no Node hook to defer to (#463)."
+value = "deadline_cut"
+
+[diagnostics.deadline_cut_outcome_block]
+doc = "Outcome word of a deadline cut that blocked (a `closed` check on a guard event)."
+value = "block"
+
+[diagnostics.deadline_cut_outcome_notice]
+doc = "Outcome word of a deadline cut that allowed and told the user (the once-per-session guard-down notice)."
+value = "allow_notice"
+
+[diagnostics.deadline_cut_outcome_allow]
+doc = "Outcome word of a deadline cut that allowed (the session was already told, or there is no session)."
+value = "allow"

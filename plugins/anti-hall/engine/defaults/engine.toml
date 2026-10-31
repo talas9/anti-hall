@@ -633,6 +633,10 @@ value = 5
 env = "AH_ENGINE_SLOW_DOWN_N"
 min = 1
 
+[client.timeout_skip_name_key_by_check]
+doc = "Per check, the defaults key holding the name its script checks in the skip file (~/.anti-hall/skip.json). A check the daemon gave no answer for in a completed reply (a busy or unusable reply, a dropped answer) passes when that guard is skipped, as its script would; a check without a row is looked up by its own name. A skip of everything never covers guardkit.destructive_guards."
+value = { git = "git.guard_name", api-guard = "api_guard.guard_name", edit-guard = "edit_guard.guard_name", ship-it-guard = "ship_it.guard_name", command = "command.guard_name", merge-gate = "merge_gate.guard_name", swarm-guard = "swarm_guard.guard_name", compact-declaration-guard = "compact_decl.guard_name", inbox-read-guard = "inbox_read.skip_name", ask-guard = "ask_guard.guard_name" }
+
 [client.slow_window_ms]
 doc = "Window in which consecutive slow daemon replies are counted toward client.slow_down_n; a streak older than this starts over."
 value = 10000

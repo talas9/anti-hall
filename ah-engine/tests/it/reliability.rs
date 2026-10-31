@@ -1574,6 +1574,35 @@ fn shed_probe(sock: &Path, req: &[u8]) -> Result<bool, String> {
     Ok(k == ah_engine::frame::Kind::Busy)
 }
 
+/// A test-hook `sleep` request that holds the worker (or a queue slot) for 20 s, its connection kept open by the caller.
+fn sleep_holder(sock: &Path) -> std::os::unix::net::UnixStream {
+    let mut s = std::os::unix::net::UnixStream::connect(sock).expect("connect");
+    s.set_write_timeout(Some(crate::common::IO_CEILING)).unwrap();
+    s.write_all(b"CTL sleep 20000\n").expect("write");
+    s.shutdown(std::net::Shutdown::Write).expect("half-close");
+    s
+}
+
+/// Whether a BUSY frame is already buffered on `s` (non-blocking): the accept loop writes it before it takes the next connection.
+fn busy_buffered(s: &mut std::os::unix::net::UnixStream) -> bool {
+    s.set_nonblocking(true).unwrap();
+    let mut buf = [0u8; 64];
+    let got = match s.read(&mut buf) {
+        Ok(n) => Some(n),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+        Err(e) => panic!("holder read: {e}"),
+    };
+    s.set_nonblocking(false).unwrap();
+    match got {
+        None => false,
+        Some(n) => {
+            let (k, _) = ah_engine::frame::decode(&buf[..n]).expect("a whole frame");
+            assert_eq!(k, ah_engine::frame::Kind::Busy, "a holder is answered only when shed");
+            true
+        }
+    }
+}
+
 fn shed_requests_get_a_clean_busy(tag: &str, body_bytes: usize) {
     let mut req = b"V 0\n".to_vec(); // a hook request of a realistic size: the daemon never reads it on the shed path
     req.extend_from_slice(
@@ -1582,30 +1611,40 @@ fn shed_requests_get_a_clean_busy(tag: &str, body_bytes: usize) {
     );
     let e = Env::new(tag, &[("AH_ENGINE_WORKERS", "1"), ("AH_ENGINE_QUEUE", "1"), ("AH_ENGINE_STUCK_MS", "60000")]);
     e.warm();
-    // one request in the worker, one queued, a third already refused: the queue (cap 1) stays full while the sleeps last
     let sock = e.eng().join("e.sock");
-    let sleepers: Vec<_> = (0..3)
-        .map(|_| {
-            let mut c = e.cmd();
-            std::thread::spawn(move || {
-                ah_engine::discard::harmless(c.args(["ctl", "sleep 20000"]).output());
-            })
-        })
-        .collect();
-    std::thread::sleep(common::scaled(Duration::from_secs(3)));
-    // wait until the queue is saturated (the first clean BUSY), then count
-    let t = Instant::now();
+    // Saturate by construction: one sleep in the worker and one queued behind it, both held open by this test (a queued
+    // request whose client hung up is skipped, so the holders must stay connected). Three spawned `ctl` clients raced the
+    // worker: the accept loop sheds a request while the one before it still sits in the queue, before the worker popped it
+    // (seen in 9 of 10 local bursts), and when it took both the second and the third that way the queue stood empty for the
+    // whole sleep and no probe was ever shed (macOS CI). The accept loop answers in arrival order and writes BUSY before
+    // it takes the next connection, so once the newest holder has its BUSY every older holder is decided: one without a
+    // BUSY is in the worker or the queue. Two of those can only mean one was popped (the worker sleeps) and one is queued.
+    let mut held: Vec<std::os::unix::net::UnixStream> = Vec::new();
+    let (mut shed_early, t) = (0u32, Instant::now());
     let saturated = loop {
-        let r = shed_probe(&sock, &req);
-        eprintln!("saturate probe: {r:?} at {:?}", t.elapsed());
-        if !matches!(r, Ok(false)) {
-            break true; // shed: a clean BUSY, or (before the fix) the transport error the shed produced
+        let before = held.len();
+        let mut i = 0;
+        let mut newest_busy = false;
+        held.retain_mut(|s| {
+            i += 1;
+            let busy = busy_buffered(s);
+            newest_busy |= busy && i == before;
+            !busy // a shed holder carries nothing: drop it
+        });
+        shed_early += (before - held.len()) as u32;
+        if newest_busy && held.len() == 2 {
+            break true;
         }
         if t.elapsed() > common::scaled(Duration::from_secs(8)) {
             break false;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        // at most two holders are ever taken: a third one still without a BUSY is undecided, so wait for it
+        if held.len() < 3 {
+            held.push(sleep_holder(&sock));
+        }
+        std::thread::sleep(Duration::from_millis(5));
     };
+    eprintln!("saturated={saturated} with {} held after {:?} ({shed_early} holders shed on the way)", held.len(), t.elapsed());
     assert!(saturated, "the queue never saturated");
     let (mut busy, mut other, mut failed) = (0, 0, Vec::new());
     for _ in 0..200 {
@@ -1617,7 +1656,7 @@ fn shed_requests_get_a_clean_busy(tag: &str, body_bytes: usize) {
     }
     eprintln!("shed probe {} B: busy={busy} other={other} transport_failures={} sample={:?}", req.len(), failed.len(), failed.first());
     assert!(failed.is_empty() && other == 0, "busy={busy} other={other} transport failures={}: {:?}", failed.len(), failed.first());
-    drop(sleepers);
+    drop(held);
 }
 
 #[test]
@@ -2305,7 +2344,10 @@ fn a_client_that_is_gone_before_the_ack_is_not_judged() {
     let mut s = UnixStream::connect(&sock).unwrap();
     s.write_all(&ah_engine::wire::tag_request(body.as_bytes()).unwrap()).unwrap();
     drop(s); // closed with the request still unread
-    assert!(wait_for(|| wire_ctl_status(&e)["wire"]["abandoned"].as_u64() == Some(1)), "{}", wire_ctl_status(&e)["wire"]);
+    // not judged either way: where the peer's hang-up is visible when a worker pops the connection (Linux) the worker skips it before
+    // reading (gone_skipped); where it is not (macOS) the ACK(req) write is refused (wire.abandoned)
+    let dropped = |st: &serde_json::Value| st["wire"]["abandoned"].as_u64().unwrap_or(0) + st["gone_skipped"].as_u64().unwrap_or(0);
+    assert!(wait_for(|| dropped(&wire_ctl_status(&e)) == 1), "{}", wire_ctl_status(&e)["wire"]);
     // the status call itself is a request; the abandoned one added none
     assert_eq!(wire_ctl_status(&e)["requests"].as_u64().unwrap(), before + 2, "only the two status calls were counted");
 }

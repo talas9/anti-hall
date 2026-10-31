@@ -39,6 +39,9 @@ fn targets() -> Vec<Target> {
             v.push(Target { rel: format!("plugins/anti-hall/{}", s.path), text: s.text });
         }
     }
+    for h in skillgen::digest_hosts() {
+        v.push(Target { rel: format!("plugins/anti-hall/{}", skillgen::digest_rel(h)), text: skillgen::digest_file_for(h) });
+    }
     v
 }
 

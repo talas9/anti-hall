@@ -132,6 +132,12 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/load.rs", "static REQUEST", "a thread-local slot initialised empty: state, not a tunable"),
     ("src/client.rs", "static LAST_NON_OK_REPLY", "a thread-local boolean marker initialised false: state, not a tunable"),
     ("src/client.rs", "static LAST_UNAVAILABLE", "a thread-local boolean marker initialised false: state, not a tunable"),
+    ("src/dispatch/mod.rs", "static OWED_NOTICE", "a thread-local slot initialised empty (None): state, the notice text comes from defaults"),
+    (
+        "src/deadline.rs",
+        "static CUT_GRACE",
+        "a thread-local slot initialised to not armed (None): state, the grace itself comes from diagnostics.deadline_grace_ms",
+    ),
     ("src/client.rs", "static GUARD_CALL", "a thread-local boolean marker initialised false: state, not a tunable"),
     ("src/crash.rs", "static BREADCRUMB", "a thread-local breadcrumb slot initialised empty: state, not a tunable"),
     (

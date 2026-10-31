@@ -1,9 +1,9 @@
 name: ah-engine
 
 # The one CI workflow of the repository (the old test.yml stub and no-node.yml are folded in). Two tiers:
-# - the QUICK gate (a push to dev or engine-proto, a pull request into dev): `fmt`, `lint` (clippy) and `quick` (the `quick` nextest
+# - the QUICK gate (a push to engine-proto, a pull request into dev): `fmt`, `lint` (clippy) and `quick` (the `quick` nextest
 #   profile of ah-engine/.config/nextest.toml on one ubuntu job, built with the ci-test profile). Target: a few minutes, with a warm cache;
-# - the FULL pack (a pull request into main, a push to main or a version tag, the nightly schedule, a manual dispatch, or a pull
+# - the FULL pack (a pull request into main, a push to main or dev, or a version tag, the nightly schedule, a manual dispatch, or a pull
 #   request into dev carrying the label `full-ci`): fmt, the thin client on both OSes, the `ci` profile gate on ubuntu and macOS (the
 #   `nightly` profile on the schedule, a dispatch and a tag), the no-Node harness on both OSes, doc-check, and the supply-chain audit.
 # A pull request that changes only docs (`docs/**` and `*.md` outside ah-engine/, plugins/ and .github/, except docs/AH-ENGINE.md and
@@ -30,7 +30,7 @@ permissions:
 # nightly and the release gate must finish.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # the nightly-profile tier: the nightly schedule, a manual dispatch or a version tag
@@ -62,7 +62,7 @@ jobs:
           code=true; full=false; devdocs=false
           case "$EVENT" in
             schedule|workflow_dispatch) full=true ;;
-            push) case "$REF" in refs/heads/main|refs/tags/*) full=true ;; esac ;;
+            push) case "$REF" in refs/heads/main|refs/heads/dev|refs/tags/*) full=true ;; esac ;;
             pull_request)
               [ "$BASE" = main ] && full=true
               # current labels, not the event payload: a re-run after adding `full-ci` sees it
@@ -92,6 +92,8 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - run: cargo fmt --check
@@ -107,6 +109,8 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -132,6 +136,8 @@ jobs:
       AH_TEST_TIME_SCALE: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -184,6 +190,8 @@ jobs:
         working-directory: ah-launcher
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -217,6 +225,8 @@ jobs:
       AH_TEST_TIME_SCALE: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       # Install exactly the toolchain pinned in rust-toolchain.toml (channel, rustfmt and clippy), so CI never drifts from it.
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
@@ -297,6 +307,8 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -336,6 +348,8 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -362,6 +376,8 @@ jobs:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
@@ -387,6 +403,8 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-audit,cargo-deny
@@ -411,6 +429,8 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - run: rustup component add llvm-tools-preview
@@ -436,6 +456,8 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -473,6 +495,8 @@ jobs:
       CLAUDE_CODE_VERSION: '2.1.299'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch's file; build dev, not stale main
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
