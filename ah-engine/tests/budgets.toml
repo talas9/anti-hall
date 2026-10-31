@@ -46,3 +46,14 @@ debug_factor = 10
 # on, never above `max`. AH_TEST_TIME_SCALE=<n> overrides it (CI sets it).
 load_per_core = 0.5
 max = 8
+
+[swarm_guard_cost]
+# tests/it/swarm_guard_cost.rs: the real-shape session of GH #537 (2,881 agent launches, 64 tracker rows) must leave the swarm-guard
+# script inside this share of its hard CPU limit. Measured 2026-11-01 on the ci-test profile: about 41 ms of the 500 ms (8%) after the fix,
+# about 130 ms (26%) before. The brief's bound is a quarter; the test allows 24% (120 ms), about three times the measured cost.
+limit_pct = 24
+# The hard CPU limit of swarm-guard: script.time_limit_ms (50) x script.time_hard_factor (10).
+hard_limit_ms = 500
+time_hard_factor = 10
+# A build without optimisations runs the same work slower; the budget is set for the optimised build the gate builds.
+debug_factor = 10.0

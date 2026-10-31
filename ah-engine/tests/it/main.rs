@@ -74,6 +74,7 @@ mod sibling_sweep_reload;
 mod spawn_budget;
 mod spool;
 mod stop_scripts_guardrail;
+mod swarm_guard_cost;
 mod task_checks_e2e;
 mod task_readers_store;
 mod telemetry;
