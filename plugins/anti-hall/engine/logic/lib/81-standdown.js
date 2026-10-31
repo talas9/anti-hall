@@ -77,7 +77,8 @@ function swgCapExcluded(atype) {
 // The owner's cap count {n, names, toolUseIds} of the session, never null (a lower bound): the transcript's running agents (one of
 // unknown liveness counts as running) united with the tracker's live agent children, whose launches may lie outside the transcript
 // window (GH #494). Agent types of guards.cap_excluded_agent_types and tracker children of spawn_ceiling.cap_excluded_tracked_kinds
-// (background shell jobs) are not agents of the cap. toolUseIds: the launching tool call ids the transcript shows.
+// (background shell jobs) are not agents of the cap; a tracker child's agent type is the tracker's (its meta, or a known Codex
+// rescue). toolUseIds: the launching tool call ids the transcript or a tracker child's meta shows.
 function swgCapRunning(p) {
   var tp = p.transcript_path, session = typeof p.session_id === 'string' ? p.session_id : '';
   var found = typeof tp === 'string' && tp !== '' ? ah.transcript.agents(hookProc.open(p, tp)) : null;
@@ -94,7 +95,10 @@ function swgCapRunning(p) {
     rows.push(a.description);
   });
   tracked.forEach(function (t) {
-    if (!t || t.id === session || t.parent !== session || seen[t.id] || seen[t.name] || kinds.indexOf(t.kind) >= 0) return;
+    if (!t || t.id === session || t.parent !== session || kinds.indexOf(t.kind) >= 0) return;
+    // a child whose meta names its launch is that launch: its reservation is released and it counts once, as a child (P2-A)
+    if (typeof t.toolUseId === 'string' && t.toolUseId !== '') uses[t.toolUseId] = true;
+    if (seen[t.id] || seen[t.name] || swgCapExcluded(typeof t.agentType === 'string' ? t.agentType : '')) return;
     if (ah.transcript.trackedLiveness(t.id, [t]) !== true) return;
     seen[t.id] = true;
     rows.push(t.name);

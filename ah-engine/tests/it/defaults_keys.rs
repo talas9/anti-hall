@@ -133,14 +133,33 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             }
         }
     }
-    // a script that takes a lock names the defaults group holding its timings (`<group>.lock_*`); the host reads them by that name
-    let lock_re = regex::Regex::new(r"\.lock\(.*?,\s*'([a-z][a-z0-9_]*)'").unwrap();
+    // a script that takes a lock names the defaults group holding its timings (`<group>.lock_*`, nodelock::Params::from_group);
+    // the host reads them by that name. The group is a literal ('swarm_guard') or the value of a shipped text key
+    // (ah.cfg('spawn_ceiling.reservation_lock_group')), which must name a shipped group.
+    let lock_re = regex::Regex::new(r"\.lock\(.*?,\s*(?:'([a-z][a-z0-9_]*)'|ah\.cfg\('([a-z][a-z0-9_.]*)'\))").unwrap();
     for f in &js_files {
         for c in lock_re.captures_iter(&fs::read_to_string(f).unwrap()) {
-            for k in
-                ["lock_stale_ms", "lock_wait_ms", "lock_step_ms", "lock_reclaim_stale_ms", "lock_release_tries", "lock_release_step_ms", "lock_boot_slop_s"]
-            {
-                literals.insert(format!("{}.{k}", &c[1]));
+            let group = match (c.get(1), c.get(2)) {
+                (Some(g), _) => g.as_str().to_string(),
+                (None, Some(k)) => {
+                    let k = k.as_str();
+                    let v = ah_engine::defaults::all().iter().find(|e| e.key == k).and_then(|e| e.value.as_str().map(str::to_string));
+                    v.unwrap_or_else(|| panic!("{}: a lock group key {k} that is not a shipped text", f.display()))
+                }
+                _ => unreachable!(),
+            };
+            assert!(shipped.contains(&format!("{group}.lock_wait_ms")), "{}: lock group {group} is not shipped", f.display());
+            for k in [
+                "lock_stale_ms",
+                "lock_wait_ms",
+                "lock_step_ms",
+                "lock_reclaim_stale_ms",
+                "lock_release_tries",
+                "lock_release_step_ms",
+                "lock_boot_slop_s",
+                "lock_steal_dead", // optional: only a group that ships it takes over a dead holder at once
+            ] {
+                literals.insert(format!("{group}.{k}"));
             }
         }
     }
