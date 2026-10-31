@@ -26,6 +26,7 @@
 pub mod combine;
 pub mod digest;
 pub mod inject;
+pub mod ladder;
 pub mod native;
 pub mod node;
 pub mod plan;
@@ -958,6 +959,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     }
     crate::nodeback::shadow::note(&entries, &results, &shadow); // what the engine decided per check (a no-op unless the shadow follows this call)
     let mut results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    // #516: the ladder reads the advisories before the token cuts below blank the repeated ones; its block is added after them
+    let ladder_block = parsed.as_ref().and_then(|_| ladder::apply(&args.event, &p, &req_env, &results));
     if parsed.is_some() {
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
     }
@@ -965,6 +968,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         digest::apply(&args.event, &req_env, &mut results); // several advisories of one prompt become one short digest
     }
     shrink::apply(&args.event, &req_env, &mut results); // per-hook inline caps: a long context becomes a summary line and a file
+    results.extend(ladder_block);
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     let keep_advisories = defaults::list("dispatch.stop_events").iter().any(|e| *e == args.event);
     if !guard {

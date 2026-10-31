@@ -2960,6 +2960,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_spool_sweep` | `removed {n} stale dispatch stdin spool file(s)` |  |  | Event-log detail when stale named raw-payload spool files were removed. Placeholder: {n}. |
 | `dispatch.msg_stdin_over_cap` | `the hook payload is larger than {max} bytes; built-in checks are skipped and ...` |  |  | Event-log detail when the payload on stdin is longer than client.max_stdin and is sent to Node hooks through an anonymous open file. Placeholder: {max}. |
 | `dispatch.msg_stop_active` | `anti-hall: the engine could not run the guards for {event} ({why}), and a Sto...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the host says a Stop hook already blocked this turn (stop_hook_active). Placeholders: {event}, {why}. |
+| `dispatch.msg_stop_advisories` | `Also from other hooks:\n{text}` |  |  | The part of a Stop or SubagentStop block reason that carries the advisories of the hooks that did not block. Placeholders: {text}. |
 | `dispatch.msg_stop_capped` | `anti-hall: the engine could not run the guards for {event} ({why}) {cap} time...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed once more than dispatch.stop_block_cap times in a row. Placeholders: {event}, {cap}, {why}. |
 | `dispatch.msg_stop_uncounted` | `anti-hall: the engine could not run the guards for {event} ({why}) and cannot...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the consecutive-block count cannot be recorded, so the loop could not be bounded. Placeholders: {event}, {why}. |
 | `dispatch.msg_unanswered_why` | `{event}: the check gave no answer (cause in the event log: answer_dropped, gu...` |  |  | Reason text of an abandoned decision for an entry whose check gave no answer in this call. The daemon logs the cause (event-log kinds answer_dropped / guard_answer_dropped, status answers_dropped); a call that got no reply at all logs client_late / client_slow / client_fail_open. Placeholder: {event}. |
@@ -2985,6 +2986,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.spill_pinned_label` | `dispatcher-pinned` |  |  | Telemetry label of an over-cap spill whose file holds a context at or above dispatch.context_pin_priority (counted in status delivery.pinned_spills). |
 | `dispatch.spill_stale_s` | `604800` |  | s | Age at which a spilled context file is removed. A session reads its file soon after it starts, so a week is generous; the file only holds text the hooks print again at the next start. |
 | `dispatch.spool_stale_s` | `1800` |  | s | Age at which a named raw-payload stdin spool file from an older build or unlink failure is considered stale and removed. Keep this larger than the longest hook timeout. |
+| `dispatch.stop_advisory_chars` | `2000` |  |  | Most characters of the other hooks' advisories folded into a Stop or SubagentStop block reason (#516): the model reads only the reason there, never a systemMessage or context. |
 | `dispatch.stop_block_cap` | `2` |  |  | How many consecutive fail-closed blocks a Stop or SubagentStop may answer in one session before every later one fails open with a log (the count resets when the guards run fine again). |
 | `dispatch.stop_events` | `Stop, SubagentStop` |  |  | Guard events whose exit 2 keeps the agent running instead of denying one call (Stop, SubagentStop). A fail-closed block there must be bounded, or an agent whose hooks cannot run could never finish: the payload's stop_hook_active true fails open, and so do more than dispatch.stop_block_cap consecutive fail-closed blocks in one session (the Node Stop hooks make the same stop_hook_active check). |
 | `dispatch.stop_state_dir` | `stop-blocks` |  |  | The directory under the state dir holding one consecutive-block counter file per event and session. |
@@ -2994,6 +2996,34 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.thin_host_args` | `2 entries` |  |  | Per host, the extra arguments of the thin trigger's command: the thin client reads the host's table and fallback list from `--host` (Claude is its default). The command itself is hooks_form.template (engine.toml). |
 | `dispatch.thin_timeout_s` | `10` |  | s | The timeout of the thin trigger of an event the table has no entry for (an event with entries takes the longest timeout among them). |
 | `dispatch.tool_aliases` | `2 entries` |  |  | Per host, extra names a tool also answers to when matching (Codex: matcher values Edit and Write also match apply_patch). |
+
+### nudges.toml / nudges
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `nudges.after` | `3` |  |  | Default fires of an escalate kind before its first block (a kind's own `after` wins). |
+| `nudges.block_events` | `Stop` |  |  | Events whose answer may carry the ladder's block (a Stop of the main session only: a SubagentStop carries the parent's session id and would block the wrong agent). |
+| `nudges.class_words` | `4 entries` |  |  | The class words of the severity table and of the per-kind override: advisory (counted only), escalate (block after `after` fires, then every `every`), block (P0: block at the first fire, then every `every`), off (not watched). |
+| `nudges.events` | `PreToolUse, PostToolUse, UserPromptSubmit, Stop` |  |  | Events on which the ladder counts advisories. |
+| `nudges.every` | `2` |  |  | Default further fires between two blocks of one kind (a kind's own `every` wins). |
+| `nudges.headline_chars` | `120` |  |  | Most characters of the advisory's first line the block quotes as its detail (ASCII only, so the block keeps one emoji). |
+| `nudges.hook_id` | `nudge-ladder` |  |  | The id the ladder's own block carries among the hook results of a call. |
+| `nudges.kinds` | `7 entries` |  |  | The severity class table: per kind, its class word, the hook ids (dispatch table ids) whose advisories it counts, optional `match` substrings (any one in the advisory text; empty = any advisory of those hooks), optional `after`, `every`, `quiet_reset`, and `action`: the single required next action the block states. P0 kinds (block at first fire): agent cap and spawn ceiling, model routing on non-trivial work, main-thread heavy work inline. The idle-with-open-tasks P0 is already a Stop block of task-guard (idle-neglect); its advisories are counted here too. |
+| `nudges.max_chars` | `1200` |  |  | Most characters of the ladder's whole block reason (several due kinds are joined with dispatch.reason_joiner and cut here). |
+| `nudges.msg_detail` | ` (seen: {text})` |  |  | How the advisory's first line is quoted in a block reason (empty headline: nothing). Placeholders: {text}. |
+| `nudges.msg_escalated` | `⛔ Required next: {action}{detail}.\nShown {n}x with no change: every Stop sta...` |  |  | Block reason of an escalate kind that is due. Two lines, one emoji. Placeholders: {action}, {detail}, {n} (fires without action). |
+| `nudges.msg_fail_open` | `nudge ladder failed open: {why}` |  |  | Event-log detail when the ladder failed internally and added nothing (fail open). |
+| `nudges.msg_first_fire` | `⛔ Required next: {action}{detail}.\nP0 rule, blocked at first fire: the Stop ...` |  |  | Block reason of a block (P0) kind. Two lines, one emoji. Placeholders: {action}, {detail}, {n}. |
+| `nudges.override_key` | `kinds` |  |  | The key in the nudges section of settings.json that holds the per-kind class override: an object of kind name to class word (advisory, escalate, block, off), e.g. {"nudges": {"kinds": {"model_routing": "escalate"}}}. |
+| `nudges.quiet_reset` | `2` |  |  | Default consecutive quiet runs of a kind's hooks that count as the condition cleared and reset its count (0 = quiet never resets; a kind's own `quiet_reset` wins). |
+| `nudges.section` | `nudges` |  |  | The settings.json section the per-kind override is read from. |
+| `nudges.state_dir` | `nudge-ladder` |  |  | The directory under the state dir holding one ladder state file per session. |
+| `nudges.state_ext` | `.json` |  |  | The file name ending of a session's ladder state file. |
+| `nudges.state_max_age_days` | `7` |  |  | Ladder state files not touched for this many days are removed (sessions that ended). |
+| `nudges.step_words` | `6 entries` |  |  | Telemetry event words of the ladder steps: fired (first fire), repeated (a later fire), escalated (an escalate kind blocked), blocked (a P0 kind blocked), acted (the condition cleared), ignored (a fire after a block was shown). This is the compliance metric. |
+| `nudges.sw_enabled` | `6 entries` |  |  | Nudge ladder on/off. |
+| `nudges.system_message_field` | `systemMessage` |  |  | The hook output field whose text counts as an advisory next to additionalContext (Claude and Codex hook docs: systemMessage). |
+| `nudges.telemetry_prefix` | `nudge-` |  |  | Prefix of the telemetry hook name of a ladder step (the kind name follows). |
 
 ### hooks.toml / hooks
 
@@ -4198,7 +4228,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nested_spawn.msg_instead` | `report back to the coordinator if more agents are needed.` |  |  | What to do instead of a nested spawn. |
 | `nested_spawn.msg_what` | `this agent is a worker and can't start agents of its own.` |  |  | What the block says. |
 | `nested_spawn.msg_why` | `Nested agents hide their cost from the coordinator (one burned about 2.5M tok...` |  |  | Why nested spawns are blocked. |
-| `nested_spawn.setting` | `6 entries` |  |  | On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them. |
+| `nested_spawn.setting` | `6 entries` |  |  | On lets subagents and teammates start agents (default off). |
 | `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): b...` |  |  | One-line description of the nested-spawn check in the generated reference. |
 
 ### spawn_guards.toml / spawn_ceiling
