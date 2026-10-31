@@ -176,3 +176,117 @@ fn path_helpers_follow_node() {
     assert_eq!(base_without_jsonl("/a/b/c.txt"), "c.txt");
     assert_eq!(utf16_len("a\u{1F600}é"), 4);
 }
+
+fn launch_lines(id: &str) -> String {
+    format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"l{id}","name":"Agent","input":{{"description":"{id}","name":"{id}","run_in_background":true,"prompt":"w"}}}}]}}}}"#
+    ) + "\n"
+        + &format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"l{id}","content":"Async agent launched successfully.\nagentId: {id}\noutput_file: /nonexistent/tasks/{id}.output"}}]}}}}"#
+        )
+        + "\n"
+}
+
+/// A fresh directory for one completeness test, and a transcript in it holding one background launch after `filler_bytes` of filler.
+fn swap_fixture(tag: &str, filler_bytes: usize) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("ah-scan-{tag}-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    let tp = dir.join("t.jsonl");
+    let filler = format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(900));
+    let mut f = std::fs::File::create(&tp).unwrap();
+    for _ in 0..(filler_bytes / filler.len()) {
+        writeln!(f, "{filler}").unwrap();
+    }
+    write!(f, "{}", launch_lines("00000000000000b2")).unwrap();
+    drop(f);
+    (dir, tp)
+}
+
+fn proof_with_seam(tp: &std::path::Path, seam: Box<dyn FnOnce()>) -> Proof {
+    test_seam::set(seam);
+    let opts = Opts { now_ms: now_ms(), ignore_unanswered_stops: false };
+    agent_count_proof(tp.to_str().unwrap(), &opts).unwrap()
+}
+
+/// #480 review: completeness comes from the handle the scan read, not a pathname lookup after it. A compaction that swaps a
+/// shorter file in while the scan runs must leave the old, truncated tail incomplete (an owner outside it stays unknown).
+#[test]
+fn a_file_replaced_during_the_scan_is_never_complete() {
+    let (dir, tp) = swap_fixture("swap", 13 * 1024 * 1024);
+    let small = dir.join("small.jsonl");
+    std::fs::write(&small, launch_lines("00000000000000b2")).unwrap();
+    let (s, t) = (small.clone(), tp.clone());
+    let proof = proof_with_seam(&tp, Box::new(move || std::fs::rename(&s, &t).unwrap()));
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(proof.rows.as_ref().is_some_and(|r| !r.is_empty()), "the old tail still shows the agent");
+    assert!(!proof.complete, "a swapped-in shorter file must not mark the truncated scan complete");
+}
+
+/// The same file truncated in place while the scan runs (same inode, shorter length): what the scan read is unknown.
+#[test]
+fn a_file_truncated_during_the_scan_is_never_complete() {
+    let (dir, tp) = swap_fixture("trunc", 13 * 1024 * 1024);
+    let t = tp.clone();
+    let proof = proof_with_seam(
+        &tp,
+        Box::new(move || {
+            let f = std::fs::OpenOptions::new().write(true).open(&t).unwrap();
+            f.set_len(64).unwrap();
+        }),
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(proof.rows.as_ref().is_some_and(|r| !r.is_empty()), "the scanned tail still shows the agent");
+    assert!(!proof.complete, "a file truncated in place must not mark the scan complete");
+}
+
+/// A small transcript that only grows while the scan runs (an append) stays complete, as before the handle check.
+#[test]
+fn a_small_file_appended_during_the_scan_stays_complete() {
+    let (dir, tp) = swap_fixture("grow", 0);
+    let t = tp.clone();
+    let proof = proof_with_seam(
+        &tp,
+        Box::new(move || {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+            writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"more"}}]}}}}"#).unwrap();
+        }),
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(proof.rows.as_ref().is_some_and(|r| !r.is_empty()), "the agent is seen");
+    assert!(proof.complete, "an append to a file inside the window keeps the whole-file answer complete");
+}
+
+/// A small transcript left alone during the scan is complete.
+#[test]
+fn an_unchanged_small_file_is_complete() {
+    let (dir, tp) = swap_fixture("same", 0);
+    let proof = proof_with_seam(&tp, Box::new(|| {}));
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(proof.rows.as_ref().is_some_and(|r| !r.is_empty()), "the agent is seen");
+    assert!(proof.complete, "an unchanged file that fits the window is complete");
+}
+
+/// #480 review (P2): when the widening handle cannot be duplicated (EMFILE) the wide scan falls back to the default tail; an empty
+/// result over a file longer than that tail (but within the wide window) proves nothing about the bytes before it: unknown.
+#[test]
+fn a_failed_widening_handle_never_proves_an_empty_count_complete() {
+    use std::io::Write;
+    let (dir, tp) = swap_fixture("noclone", 0);
+    let filler = format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(900));
+    let mut f = std::fs::OpenOptions::new().append(true).open(&tp).unwrap();
+    for _ in 0..(3 * 1024 * 1024 / filler.len()) {
+        writeln!(f, "{filler}").unwrap();
+    }
+    drop(f);
+    let wide = defaults::num("agent_scan.wide_tail_bytes");
+    test_seam::fail_clone_at(Some(wide));
+    let proof = proof_with_seam(&tp, Box::new(|| {}));
+    test_seam::fail_clone_at(None);
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(proof.rows.is_none(), "an empty scan of a tail that missed the launch must be unknown, not complete: {:?}", proof.complete);
+    assert!(!proof.complete);
+}

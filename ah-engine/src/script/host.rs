@@ -515,17 +515,18 @@ pub fn memory() -> String {
 
 /// `agents(path)`: the agents a transcript shows as running, from the engine's streaming transcript scan (widened to a longer
 /// window when the default one shows none): `null` (unreadable, or the count cannot be trusted), `{"unsure":true}` (a line JavaScript might read differently, or a relative path), else
-/// `{"rows":[{"id","description","spawnInput"}]}` (`spawnInput`: the input of the launching tool call when it was in the
-/// window, else `null`).
+/// `{"rows":[{"id","description","spawnInput"}],"truncated":bool}` (`spawnInput`: the input of the launching tool call when it was
+/// in the window, else `null`; `truncated`: the rows came from a tail of a longer transcript, so an agent launched before that
+/// window is not in them and their absence proves nothing).
 pub fn agents(path: &str) -> String {
     use crate::checks::agent_scan;
     let opts = agent_scan::Opts { now_ms: crate::checks::replykit::io::now_ms(), ignore_unanswered_stops: false };
-    match agent_scan::running_agents_or_null(path, &opts) {
+    match agent_scan::agent_count_proof(path, &opts) {
         Err(_) => r#"{"unsure":true}"#.into(),
-        Ok(None) => "null".into(),
-        Ok(Some(rows)) => {
+        Ok(agent_scan::Proof { rows: None, .. }) => "null".into(),
+        Ok(agent_scan::Proof { rows: Some(rows), complete, .. }) => {
             let rows: Vec<serde_json::Value> = rows.iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
-            serde_json::json!({"rows": rows}).to_string()
+            serde_json::json!({"rows": rows, "truncated": !complete}).to_string()
         }
     }
 }

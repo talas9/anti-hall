@@ -71,9 +71,15 @@ function tgLiveAgentOwner(owner, rows) {
   return tgMatchingOwners(owner, rows).some(function (r) { return r.live === true; });
 }
 
+// An owner is unresolved when it names agent work this session can see (a launched or tracked agent) whose liveness no source can
+// tell: that is advised, not blocked (#317). An owner that names nothing the session can see, or only work known to have ended, is
+// not unresolved and blocks like any open task, unless task_guard.advise_unmatched_owners says to advise it too.
 function tgUnresolvedOwner(t, rows) {
   if (!t.owner || tgCoordinator(t.owner) || tgOwnerBlocked(t) || tgChildAttended(t.owner)) return false;
-  return !tgMatchingOwners(t.owner, rows).some(function (r) { return r.live !== null; });
+  var m = tgMatchingOwners(t.owner, rows);
+  // a scan that could not read the agents (rows.scanUnknown) proves nothing about this owner: advise, never block on missing evidence
+  if (m.length === 0) return rows.scanUnknown === true || ah.cfg('task_guard.advise_unmatched_owners') === true;
+  return !m.some(function (r) { return r.live !== null; });
 }
 
 // The open tasks the generic block lists: a task waiting (through any chain) on an open task that is itself free or waiting on the
@@ -403,6 +409,8 @@ function tgDecideCore(p) {
   if (open.some(function (t) { return t.owner && !tgCoordinator(t.owner); })) {
     var own = tgAgents();
     if (own !== null && own.unsure) { ah.unable('task-guard:owner_agents_unsure'); own = null; }
+    // a scan of a truncated tail lists the agents it saw, never all of them: an owner launched before the window may still run
+    var scanUnknown = own === null || own.truncated === true;
     var tracked = ah.transcript.trackedAgents(p);
     rows = (own === null ? [] : own.rows).map(function (r) {
       r.live = ah.transcript.trackedLiveness(r.id, tracked);
@@ -411,6 +419,7 @@ function tgDecideCore(p) {
     tracked.forEach(function (r) {
       rows.push({ id: r.id, description: r.name, live: ah.transcript.trackedLiveness(r.id, tracked) });
     });
+    rows.scanUnknown = scanUnknown;
   }
   var unresolved = ah.cfg('task_guard.advise_unresolved_owners') ? open.filter(function (t) { return tgUnresolvedOwner(t, rows); }) : [];
   if (unresolved.length > 0) out += text.render(ah.cfg('task_guard.unresolved_owner_advisory'), { list: tgRenderList(unresolved) });

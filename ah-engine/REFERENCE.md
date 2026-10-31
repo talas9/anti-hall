@@ -3694,7 +3694,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.framed_instructions` | `This hedge sits under a heading or line labelled as a plan/expectation (e.g. ...` |  |  | The Noul question of the framed-expectation ask (byte-identical to the Node hook's FRAMED_JEV_QUESTION). |
 | `speculation_guard.framed_true` | `Unverified claim presented as fact: despite the label, it asserts what IS tru...` |  |  | The label for a true answer of the framed-expectation question. |
 | `speculation_guard.guard_name` | `speculation-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
-| `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node. |
+| `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence (lib/80-inference.js) and, with the switch on, blocks once per reply a confident causal claim that no tool result supports. |
 | `speculation_guard.jev_false` | `Not speculative: it reports what a tool actually showed (command output such ...` |  |  | The label for a false answer of the speculation question. |
 | `speculation_guard.jev_framed_id` | `speculationFramed` |  |  | The Jev integration id of the framed-expectation question (relax-block trust). |
 | `speculation_guard.jev_gate` | `claim` |  |  | When the Stop waits for Jev on the speculation question: `claim` (default) when the hedge scan found a marker OR the reply makes an unhedged completion claim (speculation_guard.claim_markers) that neither acknowledges nor cites evidence, `hit` only on a hedge marker (acknowledged or not), `would_block` only when the rule layer would itself block, `always` on every Stop (every Stop then costs a Jev round trip: not for the Stop latency bar). Any other value is read as `claim`. The wait is bounded by jev.stop_soft_ms / jev.stop_hard_ms and fails open. Ignored while jev.gate_enabled is 0. |
@@ -4606,7 +4606,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `task_guard.advise_unresolved_owners` | `true` |  |  | Advise instead of blocking Stop when a non-coordinator task owner cannot be resolved to known live or finished tracker work. False restores blocking for unresolved owners. |
+| `task_guard.advise_unmatched_owners` | `false` |  |  | Advise instead of blocking Stop when a non-coordinator task owner names no agent, tracked agent or live DevSwarm workspace this session can see. False (the default) blocks such a task like any open task, as the Node task-guard did. |
+| `task_guard.advise_unresolved_owners` | `true` |  |  | Advise instead of blocking Stop when a non-coordinator task owner names agent work this session can see (a launched or tracked agent) whose liveness no source can tell. An owner whose agent is known to have ended is not unresolved and blocks. False restores blocking for unresolved owners. |
 | `task_guard.agent_max_age_default_min` | `30` |  |  | The agent age limit used when the setting does not resolve to a number, in minutes. |
 | `task_guard.agent_max_age_setting` | `6 entries` |  |  | Max age of an agent counted as cover. Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never). |
 | `task_guard.agents_dir` | `agents` |  |  | The directory of agent heartbeat files inside the anti-hall directory (the legacy liveness signal). |
