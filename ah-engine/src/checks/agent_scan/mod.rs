@@ -1753,14 +1753,52 @@ pub struct Proof {
     pub complete: bool,
 }
 
+/// The transcript file as opened before the scan: its handle and its length then.
+struct Probe(Option<(std::fs::File, u64)>);
+
+impl Probe {
+    fn open(path: &str) -> Probe {
+        Probe(std::fs::File::open(path).ok().and_then(|f| f.metadata().ok().map(|m| (f, m.len()))))
+    }
+
+    /// The length of the file this probe opened, read from the handle, or `None` when the file at `path` is no longer that file
+    /// (device or inode differs: it was replaced) or it shrank in place (it was rewritten): what a scan read is then unknown.
+    fn size_if_unchanged(&self, path: &str) -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+        let (f, before) = self.0.as_ref()?;
+        let held = f.metadata().ok()?;
+        let named = std::fs::metadata(path).ok()?;
+        { let _ = (before, held); Some(named.len()) }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_seam {
+    use std::cell::RefCell;
+    thread_local! { static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) }; }
+    pub(crate) fn set(f: Box<dyn FnOnce()>) {
+        HOOK.with(|h| *h.borrow_mut() = Some(f));
+    }
+    pub(super) fn fire() {
+        if let Some(f) = HOOK.with(|h| h.borrow_mut().take()) {
+            f();
+        }
+    }
+}
+
 /// `agentCountProof(path)`: [`running_agents_or_null`] with what it saw, so a caller can say why a count is unknown.
 pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
+    // One handle opened before any scan: the size that decides completeness comes from THIS handle (fstat), never from a second
+    // pathname lookup, so a compaction that swaps the file while the scan runs cannot make a replaced, shorter file read as the whole.
+    let probe = Probe::open(path);
     let none = |seen: Vec<String>, window_bytes: u64| Proof { rows: None, seen, window_bytes, complete: false };
     let seen_of = |s: &Scan| s.launched.iter().map(|(id, _)| id.clone()).collect::<Vec<String>>();
     let tail = defaults::num("agent_scan.tail_bytes");
     let Some(scan) = scan_transcript(path, tail, opts)? else { return Ok(none(Vec::new(), 0)) };
     let rows = scan.rows();
-    let size = std::fs::metadata(path).map(|m| m.len()).ok();
+    #[cfg(test)]
+    test_seam::fire();
+    let size = probe.size_if_unchanged(path);
     if !rows.is_empty() {
         // agents seen in the default window answer at once; the answer is complete only when that window was the whole file
         let complete = size.is_some_and(|n| n <= tail);
@@ -1776,6 +1814,9 @@ pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
     let Some(wide) = scan_transcript(path, wide_window, opts)? else { return Ok(none(seen_of(&scan), tail)) };
     let wrows = wide.rows();
     let seen = seen_of(&wide);
+    // the file may have been replaced or shrunk during the wide scan too: then nothing it read proves completeness
+    let size = probe.size_if_unchanged(path);
+    let Some(size) = size else { return Ok(none(seen, wide_bytes)) };
     if !wrows.is_empty() {
         return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes, complete: size <= wide_window });
     }
