@@ -24,15 +24,15 @@ value = "task-tracker"
 
 [task_tracker.what_full]
 doc = "The first line of the full directive."
-value = "requests need tracking before work starts."
+value = "each user request is tracked as a priority-sorted task before work starts, so none is lost."
 
 [task_tracker.instead_head]
 doc = "The start of the full directive's 'Do instead' line."
-value = "track each request as a priority-sorted task."
+value = "create the task before the work and keep its status current."
 
 [task_tracker.non_blocking]
 doc = "The clause the compact protocol level leaves out of the directive (the session core already carries it)."
-value = "keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; "
+value = " delegate heavy or long work to background subagents, so the main thread stays free."
 
 [task_tracker.instead_tail]
 doc = "The end of the full directive's 'Do instead' line."
@@ -40,7 +40,7 @@ value = ""
 
 [task_tracker.what_short]
 doc = "The short per-turn reminder."
-value = "capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
+value = "this prompt may hold a request that is not in the task list yet; add it as a task, so none is dropped."
 
 [task_tracker.codex_from]
 doc = "The words of the directive that name the Claude-only task tool; the Codex text swaps the first occurrence."
@@ -121,7 +121,7 @@ value = "open tasks: 0{blocked}."
 
 [task_tracker.open_some]
 doc = "The open-tasks line when tasks are open; `{n}` the count, `{blocked}` the blocked-tasks tail, `{tail}` the oldest in-progress subject."
-value = "open tasks: {n}{blocked}{tail} — update or close them."
+value = "open tasks: {n}{blocked}{tail}; close the finished ones, so the list stays accurate."
 
 [task_tracker.blocked_tail]
 doc = "The tail naming tasks that wait on someone else; `{n}` is how many and `{why}` who."
@@ -129,7 +129,7 @@ value = " (+{n} blocked: {why})"
 
 [task_tracker.subject_tail]
 doc = "The tail naming the oldest in-progress task; `{subject}` is its quoted subject."
-value = " (oldest in_progress subject: {subject})"
+value = " (oldest in progress: {subject})"
 
 [task_tracker.subject_unknown]
 doc = "What stands for a subject that was never learned."
@@ -449,6 +449,26 @@ value = { section = "guards", key = "dispatchQuietSpawnStop", env = "ANTIHALL_DI
 [task_tracker.change_setting]
 doc = "Short reminder speaks only on list change. Where the switch is read from that makes the short reminder speak only when the open-task list changed or the list stayed untouched for untracked_prompts prompts (context.taskTrackerChangeOnly, default on). The full directive keeps its window."
 value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
+
+[task_tracker.terse_setting]
+doc = "Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): off restores the earlier texts listed in legacy_texts."
+value = { section = "context", key = "taskTrackerTerse", env = "ANTIHALL_TASK_TRACKER_TERSE", aliases = [], option = "", default = true }
+
+[task_tracker.legacy_texts]
+doc = "The earlier wording of the texts that context.taskTrackerTerse rewords, by key; used while that switch is off."
+value = { what_full = "requests need tracking before work starts.", instead_head = "track each request as a priority-sorted task.", non_blocking = "keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; ", what_short = "capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.", open_some = "open tasks: {n}{blocked}{tail} — update or close them.", subject_tail = " (oldest in_progress subject: {subject})" }
+
+[task_tracker.event_full]
+doc = "Counter event: the full directive was sent."
+value = "full_emitted"
+
+[task_tracker.event_short]
+doc = "Counter event: the short reminder was sent."
+value = "short_emitted"
+
+[task_tracker.event_short_same]
+doc = "Counter event: the short reminder was withheld because the task list is in the state the agent was already told (unchanged list, or the dedupe store holds the text)."
+value = "short_suppressed_same_state"
 
 [task_tracker.untracked_prompts]
 doc = "Prompts before the short reminder repeats. Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts)."

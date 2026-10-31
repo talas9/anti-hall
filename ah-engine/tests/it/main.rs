@@ -68,6 +68,7 @@ mod prop_parsers;
 mod read_only_verbs;
 mod reference;
 mod reliability;
+mod reword_nudges;
 mod schedule;
 mod session_e2e;
 mod sibling_sweep_reload;

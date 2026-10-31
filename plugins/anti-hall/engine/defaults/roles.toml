@@ -20,6 +20,22 @@ value = { section = "context", key = "roleGuard", env = "ANTIHALL_ROLE_GUARD", o
 doc = "Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note."
 value = { section = "context", key = "roleNote", env = "ANTIHALL_ROLE_NOTE", option = "", default = true }
 
+[roles.sw_note_short]
+doc = "Switch context.roleNoteShort (default on): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list; off gives every role the full note."
+value = { section = "context", key = "roleNoteShort", env = "ANTIHALL_ROLE_NOTE_SHORT", option = "", default = true }
+
+[roles.describe_short]
+doc = "What a role is, in a few words, for the one-line role note. Only the roles listed here get the one-line note (the others keep the full note)."
+value = { subagent = "one assigned job, report back" }
+
+[roles.event_emitted_short]
+doc = "Counter event: the one-line role note was sent."
+value = "emitted_short"
+
+[roles.event_emitted_full]
+doc = "Counter event: the full role note (with the verb list) was sent."
+value = "emitted_full"
+
 [roles.summary_guard]
 doc = "One-line description of the engine-role-guard check in the generated reference."
 value = "PreToolUse on Bash: refuses an ah-engine command the caller's role may not run, per the roles.matrix (subagent from the payload, workspace child from the environment)."
@@ -125,6 +141,10 @@ value = "anti-hall engine: `{verb}` from a workspace child may only act on itsel
 [roles.msg_note]
 doc = "The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}."
 value = "anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {verbs}.{more} Full guide: {skill}"
+
+[roles.msg_note_short]
+doc = "The one-line role note for a role listed in roles.describe_short. Placeholders: {role}, {what}, {skill}."
+value = "anti-hall engine: role {role} ({what}). Verbs your role may run: {skill}."
 
 [roles.msg_note_more]
 doc = "Added to the note when the verb list was shortened. Placeholder: {n}."

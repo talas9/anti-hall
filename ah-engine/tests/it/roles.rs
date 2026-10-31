@@ -256,13 +256,13 @@ fn the_role_note_names_the_role_lists_only_what_it_may_use_and_points_at_the_mai
     let ws = note(json!({}), &[("DEVSWARM_SOURCE_BRANCH", "b")], "SessionStart");
     let sub = note(json!({"agent_id": "a1", "agent_type": "general-purpose"}), &[], "SubagentStart");
     let codex = note(json!({"turn_id": "t1", "model": "gpt"}), &[], "SessionStart");
-    for (n, role) in [(&main, "main"), (&ws, "workspace"), (&sub, "subagent"), (&codex, "codex")] {
+    assert!(sub.contains("role subagent") && !sub.contains("Engine verbs"), "a subagent gets the one-line note: {sub}");
+    for (n, role) in [(&main, "main"), (&ws, "workspace"), (&codex, "codex")] {
         assert!(n.contains(&format!("(role: {role})")), "{role}: {n}");
         assert!(n.chars().count() <= ah_engine::defaults::num("roles.note_max") as usize, "{role}: {} chars", n.chars().count());
         assert!(n.len() < 10_000, "inside the hook injection cap");
     }
     assert!(main.contains("restore") && main.contains("jev-setup"));
-    assert!(!sub.contains("restore") && !sub.contains("proj") && sub.contains("status"), "{sub}");
     assert!(!ws.contains("restore") && ws.contains("proj") && ws.contains("mesh"), "{ws}");
     assert!(
         main.contains("/anti-hall:engine") && !main.replace("engine-update", "").contains("engine-"),

@@ -15,7 +15,11 @@
 // task_tracker.toml (task_tracker.*), task_guards.toml (taskstate.*, dispatch_tier.*).
 'use strict';
 
-function ttT(k) { return ah.cfg('task_tracker.' + k); }
+// the earlier wording stays reachable behind context.taskTrackerTerse (off)
+function ttT(k) {
+  if (!ah.settings.bool('task_tracker.terse_setting')) { var old = ah.cfg('task_tracker.legacy_texts'); if (typeof old[k] === 'string') return old[k]; }
+  return ah.cfg('task_tracker.' + k);
+}
 function ttN(k) { return ah.cfgNum('task_tracker.' + k); }
 
 function ttShort() { return text.message('tip', ttT('guard_name'), { what: ttT('what_short') }); }
@@ -614,6 +618,15 @@ function decide(p) {
   if (emit && !ch.hold && t.indexOf(short) === 0) {
     var show = should({ sessionId: dsid, key: ttT('dedupe_short_key'), content: short, transcriptPath: tp, keepaliveTurns: keepalive });
     out = show ? [short, c.open].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner')) : c.open;
+  }
+  // per-message counters: each directive and reminder is counted when sent and when held back as a state already told
+  if (chosen.full && emit && t.indexOf(full) === 0) ah.advisory('task_tracker', ttT('event_full'));
+  else if (!chosen.full) {
+    if (ch.hold) ah.advisory('task_tracker', ttT('event_short_same'));
+    else if (t.indexOf(short) === 0) {
+      var sentShort = emit && out.indexOf(short) === 0;
+      ah.advisory('task_tracker', sentShort ? ttT('event_short') : ttT('event_short_same'));
+    }
   }
   var pruneShown = pruneOut !== '' && (ch.hold || emit) ? pruneOut : '';
   if (pruneShown !== '') ah.advisory(ah.cfg('metric.tasklist_hygiene').advisory_kind, ah.cfg('tasklist_hygiene.event_prune'));
