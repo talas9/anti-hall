@@ -6,7 +6,7 @@
 use crate::defaults::{self, V};
 use std::hash::{DefaultHasher, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn cfg() -> &'static V {
     defaults::raw("agent_tracker.repo_state")
@@ -32,8 +32,9 @@ fn git_and_timeout() -> (String, u64) {
 }
 
 /// Run git with `args` in `dir`; its stdout when it exited with one of `ok_exits` (the status), else None (missing, failed, timed out).
-fn git(dir: &Path, args: &[&str], ok_exits: &[i32]) -> Option<(i32, Vec<u8>)> {
-    let (bin, ms) = git_and_timeout();
+fn git(dir: &Path, args: &[&str], ok_exits: &[i32], until: Instant) -> Option<(i32, Vec<u8>)> {
+    let (bin, _) = git_and_timeout();
+    let left = until.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
     let mut cmd = std::process::Command::new(&bin);
     cmd.arg(cfg().str_field("dir_flag")).arg(dir).args(args);
     for a in list("env") {
@@ -44,7 +45,7 @@ fn git(dir: &Path, args: &[&str], ok_exits: &[i32]) -> Option<(i32, Vec<u8>)> {
     for k in list("env_remove") {
         cmd.env_remove(k);
     }
-    let timeout = crate::deadline::clamp(Duration::from_millis(ms));
+    let timeout = crate::deadline::clamp(left);
     let o = crate::proc::run(cmd, &bin, timeout, Duration::from_millis(num("poll_ms"))).ok()?;
     let code = o.status.code()?;
     ok_exits.contains(&code).then_some((code, o.stdout))
@@ -56,15 +57,20 @@ pub(crate) fn state(dir: &str) -> Option<(String, String)> {
         return None;
     }
     let ok = [0];
-    let (_, top) = git(Path::new(dir), &list("toplevel"), &ok)?;
+    // one bound for the whole read (every git run and the content hashing): past it the state is unknown (None)
+    let until = Instant::now() + Duration::from_millis(git_and_timeout().1);
+    let (_, top) = git(Path::new(dir), &list("toplevel"), &ok, until)?;
     let top = String::from_utf8_lossy(&top).trim_end_matches(['\n', '\r']).to_string();
     let top = std::fs::canonicalize(&top).ok()?;
-    let (_, status) = git(&top, &list("status"), &ok)?;
-    let (_, paths) = git(&top, &list("paths"), &ok)?;
+    let (_, status) = git(&top, &list("status"), &ok, until)?;
+    let (_, paths) = git(&top, &list("paths"), &ok, until)?;
     let mut h = DefaultHasher::new();
     h.write(&status);
     let (max_bytes, max_files) = (num("file_max_bytes"), num("files_max") as usize);
     for rel in paths.split(|b| *b == 0).filter(|r| !r.is_empty()).take(max_files) {
+        if Instant::now() > until {
+            return None;
+        }
         h.write(rel);
         let p = top.join(String::from_utf8_lossy(rel).as_ref());
         match std::fs::symlink_metadata(&p) {
@@ -88,7 +94,8 @@ pub(crate) fn ignored(top: &str, paths: &[String]) -> Vec<String> {
     args.extend(paths.iter().map(String::as_str));
     let exits: Vec<i32> =
         cfg().get("ignored_exits").and_then(V::as_array).map_or_else(Vec::new, |a| a.iter().filter_map(V::as_integer).map(|n| n as i32).collect());
-    let Some((_, out)) = git(Path::new(top), &args, &exits) else { return Vec::new() };
+    let until = Instant::now() + Duration::from_millis(git_and_timeout().1);
+    let Some((_, out)) = git(Path::new(top), &args, &exits, until) else { return Vec::new() };
     let hit: Vec<PathBuf> = out.split(|b| *b == 0).filter(|r| !r.is_empty()).map(|r| Path::new(top).join(String::from_utf8_lossy(r).as_ref())).collect();
     paths
         .iter()

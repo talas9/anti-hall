@@ -2883,9 +2883,10 @@ fn ok_bash_out(p: &Path, t: u64, k: &str, tin: u64, c: &str, out: &str) {
 /// changes earns HARD at most once and is paused.
 #[test]
 fn r5a_an_unchanged_test_or_cached_build_repeated_pauses_pr472r5() {
-    for (tag, cmd, out) in
-        [("r5a-test", "cargo test", "test result: ok. 3 passed"), ("r5a-build", "cargo build", "    Finished `dev` profile [unoptimized] target(s) in 0.31s")]
-    {
+    for (tag, cmd, out) in [
+        ("r5a-test", "cargo test", "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"),
+        ("r5a-build", "cargo build", "    Finished `dev` profile [unoptimized] target(s) in 0.31s"),
+    ] {
         let (h, p, marker, mut st, n) = fresh_in_repo(tag);
         let mut first = 0;
         let mut paused_at = None;
@@ -2965,7 +2966,14 @@ fn r5d_edit_then_test_keeps_earning_hard_pr472r5() {
         );
         ticks(&h, &mut st, &[t + 10_000]);
         let before = agent(&st, "s1").progress;
-        ok_bash_out(&p, t + 20_000, &format!("t{k}"), 350_000, "cargo test", "test result: ok. 3 passed");
+        ok_bash_out(
+            &p,
+            t + 20_000,
+            &format!("t{k}"),
+            350_000,
+            "cargo test",
+            "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        );
         ticks(&h, &mut st, &[t + MIN]);
         assert!(agent(&st, "s1").progress > before, "test {k} after an edit earns HARD");
         assert!(!marker.exists(), "edit/test work is never paused (round {k})");
@@ -3030,8 +3038,22 @@ fn r5f_git_unavailable_or_timing_out_falls_back_to_the_verified_write_rule_pr472
             );
             ticks(&h, &mut st, &[tk + 10_000]);
             let before = agent(&st, "s1").progress;
-            ok_bash_out(&p, tk + 20_000, &format!("t{k}"), 10, "cargo test", "test result: ok. 3 passed");
-            ok_bash_out(&p, tk + 30_000, &format!("u{k}"), 10, "cargo test", "test result: ok. 3 passed");
+            ok_bash_out(
+                &p,
+                tk + 20_000,
+                &format!("t{k}"),
+                10,
+                "cargo test",
+                "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+            );
+            ok_bash_out(
+                &p,
+                tk + 30_000,
+                &format!("u{k}"),
+                10,
+                "cargo test",
+                "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+            );
             ticks(&h, &mut st, &[tk + MIN]);
             assert_eq!(agent(&st, "s1").progress, before + weight("test"), "{tag}: an edit re-arms one test credit, the repeat earns none ({k})");
         }
