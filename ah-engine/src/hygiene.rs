@@ -559,7 +559,8 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     for i in &items {
         *classes.entry(i.class).or_insert(0) += 1;
     }
-    for i in items.iter().filter(|i| i.class == t("class_keep")) {
+    // every item a clean does not move whole counts its reason (KEEP and TARGET-ONLY alike)
+    for i in items.iter().filter(|i| i.class != t("class_safe")) {
         *skipped.entry(i.reason.to_string()).or_insert(0) += 1;
     }
     let reclaimable: u64 = items.iter().map(|i| i.bytes).sum();

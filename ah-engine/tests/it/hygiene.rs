@@ -275,6 +275,9 @@ fn hygiene_classifies_fail_closed_and_clean_is_idempotent_and_never_touches_unsa
         "items_class_TARGET-ONLY",
         "items_class_REMOVE-SAFE",
         "items_skipped_live_process",
+        "items_skipped_untracked",
+        "items_skipped_dirty",
+        "items_skipped_unpushed",
     ] {
         assert!(inbox.contains(k), "telemetry counter {k} missing");
     }
@@ -359,6 +362,7 @@ fn hygiene_keeps_every_unsafe_or_unprovable_shape_and_fails_safe() {
     assert_eq!(class_of(&r, &stashed), ("TARGET-ONLY".into(), "stash".into()));
     assert_eq!(class_of(&r, &corrupt), ("TARGET-ONLY".into(), "unprovable".into()));
     assert_eq!(class_of(&r, &behind), ("REMOVE-SAFE".into(), "clean_pushed_idle".into()));
+    assert_eq!(r["items_skipped"]["remote_unverified"].as_u64(), Some(1), "the no-remote clone counts its reason: {r}");
     let listed = |p: &Path| r["items"].as_array().unwrap().iter().find(|i| i["path"] == *p.to_string_lossy()).map(|i| i["class"].clone());
     assert!(listed(&wt).is_none_or(|c| c == "KEEP") && listed(&link).is_none_or(|c| c == "KEEP"), "{r}");
     // the report changed nothing

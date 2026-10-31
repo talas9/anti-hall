@@ -243,7 +243,7 @@ doc = "Telemetry command label of the hygiene counters: one cmd event per counte
 value = "hygiene"
 
 [disk_hygiene.tel_counters]
-doc = "Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, report writes that failed (1 per failed run), the prefix of the per-class item counts, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused)."
+doc = "Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, report writes that failed (1 per failed run), the prefix of the per-class item counts, and the prefix of the per-reason skipped counts (every item not moved whole: KEEP and TARGET-ONLY items, and items a clean refused)."
 value = { reclaimable = "bytes_reclaimable", reclaimed = "bytes_reclaimed", listed = "items_listed", report_failed = "report_write_failed", class = "items_class_", skipped = "items_skipped_" }
 
 [disk_hygiene.health_kind]

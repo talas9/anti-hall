@@ -8144,7 +8144,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_hygiene.submodule_depth` | `8` |  |  | How deep nested submodules are checked; a deeper one makes the clone KEEP (unprovable). |
 | `disk_hygiene.sw_enabled` | `6 entries` |  |  | Where the disk hygiene on/off switch is read from (diskHygiene.enabled, default on). Off: the report and the clean do nothing. |
 | `disk_hygiene.tel_cmd` | `hygiene` |  |  | Telemetry command label of the hygiene counters: one cmd event per counter, its name in the event field and its value in items. |
-| `disk_hygiene.tel_counters` | `6 entries` |  |  | Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, report writes that failed (1 per failed run), the prefix of the per-class item counts, and the prefix of the per-reason skipped counts (KEEP items and items a clean refused). |
+| `disk_hygiene.tel_counters` | `6 entries` |  |  | Telemetry counter names: bytes reclaimable now, bytes reclaimed by a clean, items listed, report writes that failed (1 per failed run), the prefix of the per-class item counts, and the prefix of the per-reason skipped counts (every item not moved whole: KEEP and TARGET-ONLY items, and items a clean refused). |
 | `disk_hygiene.trash_dirs` | `2 entries` |  |  | The Trash directory per operating system, relative to HOME. An operating system not listed has no Trash: nothing is moved. |
 | `disk_hygiene.trash_name` | `{name}.{ts}` |  |  | Name of an item in the Trash; {name} its own name, {ts} seconds since the epoch (set only when the plain name is taken). |
 | `disk_hygiene.why_changed` | `no longer removable on re-check` |  |  | Why a clean step was refused: the item no longer classifies as it did. |
