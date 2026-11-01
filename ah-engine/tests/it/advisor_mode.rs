@@ -1012,3 +1012,127 @@ fn rank_attachment_without_model_clears_the_advisor_model_across_incremental_rea
     assert_eq!(code, 2, "the newer model-less attachment replaces the haiku kept in the state: {out}");
     assert!(out.contains("or advisor unknown unranked."), "{out}");
 }
+
+// GH #500 third review: the main and advisor model of a decision come ONLY from entries positively read in the current window; any
+// discarded input (a gap, an oversized or unparsable line, a truncated tail) makes both unknown (guard on) until a fresh entry is read.
+// The limits are lowered through their config keys (env override), never by building multi-MB payloads.
+// via the state directory's config.toml (the engine's own settings file), never env or a hardcoded payload size.
+const WINDOW: (&str, u64) = ("window_bytes", 4096);
+const LINE_MAX: (&str, u64) = ("line_max_bytes", 1024);
+
+/// A plan Write through the real hook for `session` (its own cwd, with an `advisorModel` settings file when `settings`). Every call
+/// writes a plan file of its own: the block gate holds back an unchanged trigger (same tool and file).
+fn plan_at(session: &str, tp: &str, settings: Option<&str>, cfg: &[(&str, u64)]) -> (i32, String) {
+    let state = dir().join(format!("{session}-state"));
+    std::fs::create_dir_all(&state).unwrap();
+    let toml: String = cfg.iter().map(|(k, v)| format!("{k} = {v}\n")).collect();
+    std::fs::write(state.join("config.toml"), if toml.is_empty() { String::new() } else { format!("[advisor]\n{toml}") }).unwrap();
+    let cwd = dir().join(format!("{session}-cwd"));
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    if let Some(s) = settings {
+        std::fs::write(cwd.join(".claude/settings.json"), format!(r#"{{"advisorModel":"{s}"}}"#)).unwrap();
+    }
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let file = format!("/r/plans/p{}.md", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let p = json!({"session_id": session, "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": file, "content": "x"}, "transcript_path": tp});
+    run_in(&state, "advisor-guard", &p)
+}
+
+fn tool_result(n: usize) -> String {
+    format!(r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t","content":"{}"}}]}}}}"#, "z".repeat(n))
+}
+
+fn big_assistant(model: &str, n: usize) -> String {
+    format!(r#"{{"type":"assistant","message":{{"role":"assistant","model":"{model}","content":[{{"type":"text","text":"{}"}}]}}}}"#, "w".repeat(n))
+}
+
+#[test]
+fn rank_gap_resets_the_main_model_with_the_advisor_model() {
+    let att = attach_with(Some(OPUS_ATT));
+    let tp = transcript("rkg", &[&att, USER, &main_model("claude-opus-5-5")]);
+    assert_eq!(plan_at("rkg", &tp, Some("opus"), &[WINDOW]), (0, String::new()), "control: Opus main, Opus advisor, no discard");
+    append(&tp, USER);
+    append(&tp, &main_model("claude-haiku-5"));
+    for _ in 0..8 {
+        append(&tp, &tool_result(1000)); // pushes the haiku entry out of the 4 KB window: a gap
+    }
+    let (code, out) = plan_at("rkg", &tp, Some("opus"), &[WINDOW]);
+    assert_eq!(code, 2, "the unread gap holds the real latest model: unknown keeps the guard on: {out}");
+    assert!(out.contains("unranked"), "{out}");
+    // a fresh usable entry after the gap restores the rule
+    append(&tp, USER);
+    append(&tp, &main_model("claude-opus-5-5"));
+    assert_eq!(plan_at("rkg", &tp, Some("opus"), &[WINDOW]), (0, String::new()), "read again: Opus vs the settings Opus");
+}
+
+/// One discard case, one session (the advisory layer caps the blocks of a kind per session): Opus main + Opus advisor allowed; then
+/// `discard` is appended after a new owner message -> the guard is on with the models unknown; then a fresh Opus entry -> allowed.
+fn discard_case(session: &str, cfg: &[(&str, u64)], discard: &dyn Fn(&str)) {
+    let tp = transcript(session, &[&attach_with(Some(OPUS_ATT)), USER, &main_model("claude-opus-5-5")]);
+    // the settings advisorModel (opus) is what survives a discard: the attachment's own model is dropped with the rest
+    let at = || plan_at(session, &tp, Some("opus"), cfg);
+    assert_eq!(at(), (0, String::new()), "{session} control: Opus main, Opus advisor, no discard");
+    append(&tp, USER);
+    discard(&tp);
+    let (code, out) = at();
+    assert_eq!(code, 2, "{session}: the earlier Opus must not stay after a discard: {out}");
+    assert!(out.contains("unranked"), "{session}: {out}");
+    append(&tp, USER);
+    append(&tp, &main_model("claude-opus-5-5"));
+    assert_eq!(at(), (0, String::new()), "{session}: a fresh usable entry restores the rule");
+}
+
+#[test]
+fn rank_an_oversized_line_resets_the_models() {
+    // a sonnet entry over advisor.line_max_bytes is skipped unread
+    discard_case("rkh1", &[LINE_MAX], &|tp| append(tp, &big_assistant("claude-sonnet-5-5", 2000)));
+}
+
+#[test]
+fn rank_an_unparsable_line_resets_the_models() {
+    discard_case("rkh2", &[], &|tp| append(tp, r#"{"type":"assistant","message":{"model":"claude-sonnet-5-5","content":[ broken"#));
+}
+
+#[test]
+fn rank_a_truncated_tail_resets_the_models_until_it_completes() {
+    let tp = transcript("rkh3", &[&attach_with(Some(OPUS_ATT)), USER, &main_model("claude-opus-5-5")]);
+    let at = || plan_at("rkh3", &tp, Some("opus"), &[]);
+    assert_eq!(at(), (0, String::new()), "control");
+    append(&tp, USER);
+    let mut f = std::fs::OpenOptions::new().append(true).open(&tp).unwrap();
+    write!(f, "{}", main_model("claude-sonnet-5-5")).unwrap(); // no newline yet
+    let (code, out) = at();
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("unranked"), "{out}");
+    writeln!(f).unwrap();
+    append(&tp, USER);
+    let (code, out) = at();
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("main claude-sonnet-5-5 is below advisor opus."), "the completed line is read: {out}");
+}
+
+#[test]
+fn rank_name_matching_two_families_is_unknown_for_main_advisor_and_settings() {
+    let (code, out) = rank_plan("rki1", &[&attach_with(Some(r#""claude-haiku-5""#)), USER, &main_model("claude-opus-sonnet-5")], None);
+    assert_eq!(code, 2, "an ambiguous main is unknown (first-match would rank it sonnet >= haiku and skip): {out}");
+    assert!(out.contains("claude-opus-sonnet-5") && out.contains("unranked"), "{out}");
+    let (code, out) = rank_plan("rki2", &[&attach_with(Some(r#""claude-sonnet-opus""#)), USER, &main_model("claude-opus-5-5")], None);
+    assert_eq!(code, 2, "an ambiguous attachment advisor model is unknown: {out}");
+    let (code, out) = rank_plan("rki3", &[&attach_with(None), USER, &main_model("claude-fable-1")], Some("sonnet-opus"));
+    assert_eq!(code, 2, "an ambiguous settings advisorModel is unknown: {out}");
+    assert_eq!(rank_plan("rki4", &[&attach_with(Some(OPUS_ATT)), USER, &main_model("claude-opus-5-5")], None), (0, String::new()), "control");
+}
+
+#[test]
+fn rank_sidechain_entries_never_set_the_main_model() {
+    let att = attach_with(Some(OPUS_ATT));
+    let side = r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"sub"}]}}"#;
+    let (code, out) = rank_plan("rkj1", &[&att, USER, &main_model("claude-sonnet-5-5"), side], None);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("main claude-sonnet-5-5 is below advisor claude-opus-5-5."), "{out}");
+    assert_eq!(
+        rank_plan("rkj2", &[&att, USER, &main_model("claude-sonnet-5-5"), &side.replace("true", "false")], None),
+        (0, String::new()),
+        "not a sidechain: the Opus entry is the main model"
+    );
+}

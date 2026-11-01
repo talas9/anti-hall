@@ -83,11 +83,11 @@ What the automatic guards check and how to read a block.
 - `guards.queuedWaitGuard` = true: Off lets a subagent poll background work with sleep loops
 - `guards.allowWideSearch` = false: On lets every agent run whole-disk searches (default off)
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
-- `guards.advisorRank` = true: Skip when main ranks >= advisor
-- `guards.advisorRetry` = true: Blocks a re-edit after a failed run, with no advisor call
+- `guards.advisorRank` = true: Skip if main >= advisor; unknown = guard on
+- `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once
 - `guards.advisorReview` = true: Blocks a review agent on a non-flagship model once
-- `guards.advisorSayDo` = true: Blocks a Stop once per turn that announced an advisor call which did not follow
-- `guards.advisorThinking` = true: Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call...
+- `guards.advisorSayDo` = true: Blocks a Stop once per turn announcing an advisor call not made
+- `guards.advisorThinking` = true: Nudges, then blocks once, thinking work sent by a non-flagship main with no advisor call since...
 - `guards.broadKill` = true: Switch for the broad-kill guard
 - `guards.uncommittedWork` = true: Off lets a subagent leave work uncommitted (default on)
 - `statusline.devswarm.enabled` = true: Show the DevSwarm statusline segment

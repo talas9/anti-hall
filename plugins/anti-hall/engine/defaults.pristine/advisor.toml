@@ -27,11 +27,11 @@ doc = "Blocks a plan written with no advisor call once. Default on, advisor sess
 value = { section = "guards", key = "advisorPlan", type = "boolean", env = "ANTIHALL_ADVISOR_PLAN", option = "", default = true }
 
 [advisor.sw_rank]
-doc = "Skip when main ranks >= advisor."
+doc = "Skip if main >= advisor; unknown = guard on."
 value = { section = "guards", key = "advisorRank", type = "boolean", env = "ANTIHALL_ADVISOR_RANK", option = "", default = true }
 
 [advisor.model_ranks]
-doc = "Model family ranks, matched case-insensitively as a substring of the model id (so a version bump needs no edit); the highest rank is the strongest model. The advisor model comes from the advisor_tool attachment (advisor.attachment.model_key), else the settings key advisor.settings_key (an alias such as opus matches too). No match = unknown rank = the guard stays on."
+doc = "Model family ranks, matched case-insensitively as a substring of the model id (so a version bump needs no edit); the highest rank is the strongest model. The advisor model comes from the advisor_tool attachment (advisor.attachment.model_key), else the settings key advisor.settings_key (an alias such as opus matches too). No match, or a name that matches more than one family (sonnet-opus), = unknown rank = the guard stays on. The main and advisor model count only when read in the current read window: any discarded input (a gap, an oversized or unparsable line, a truncated tail) makes both unknown until a fresh entry is read; sidechain entries never set the main model."
 value = [
   { match = "haiku", rank = 1 },
   { match = "sonnet", rank = 2 },
@@ -68,7 +68,7 @@ doc = "Label for a model that is not known."
 value = "unknown"
 
 [advisor.sw_retry]
-doc = "Blocks a re-edit after a failed run, with no advisor call. Default on."
+doc = "Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorRetry", type = "boolean", env = "ANTIHALL_ADVISOR_RETRY", option = "", default = true }
 
 [advisor.tool_names]
@@ -94,6 +94,10 @@ doc = "A transcript line longer than this is skipped when looking for advisor ca
 value = 1048576
 min = 1024
 unit = "bytes"
+
+[advisor.sidechain_key]
+doc = "Transcript entry field that is true for a subagent (sidechain) entry; such an entry never sets the main model of the rank rule."
+value = "isSidechain"
 
 [advisor.max_lines]
 doc = "Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time)."
@@ -200,11 +204,11 @@ value = "the inherited {model} session tier"
 # not see). What was seen is folded into the per-agent state (offsets, "advisor seen"), so the rules do not depend on the tail window.
 
 [advisor.sw_thinking]
-doc = "Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only."
+doc = "Nudges, then blocks once, thinking work sent by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorThinking", type = "boolean", env = "ANTIHALL_ADVISOR_THINKING", option = "", default = true }
 
 [advisor.sw_say_do]
-doc = "Blocks a Stop once per turn that announced an advisor call which did not follow. Default on, advisor sessions only."
+doc = "Blocks a Stop once per turn announcing an advisor call not made. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorSayDo", type = "boolean", env = "ANTIHALL_ADVISOR_SAY_DO", option = "", default = true }
 
 [advisor.result_types]
@@ -387,8 +391,8 @@ doc = "Advisory kind (counters) of why the advisor rules stayed silent or how av
 value = "advisor_availability"
 
 [advisor.silence_metrics]
-doc = "Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides)."
-value = { unknown = "silent_unknown", off = "silent_off", settings_only = "source_settings", model_unknown = "silent_model_unknown", no_agent_transcript = "silent_no_agent_transcript", agent_mismatch = "silent_agent_mismatch", state_unwritable = "allow_state_unwritable", lock_busy = "allow_lock_busy", rotated = "transcript_rewritten", gap_skipped = "gap_skipped" }
+doc = "Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides), line_discarded (a transcript line was skipped as oversized, unparsable or still being written: the main and advisor model become unknown)."
+value = { unknown = "silent_unknown", off = "silent_off", settings_only = "source_settings", model_unknown = "silent_model_unknown", no_agent_transcript = "silent_no_agent_transcript", agent_mismatch = "silent_agent_mismatch", state_unwritable = "allow_state_unwritable", lock_busy = "allow_lock_busy", rotated = "transcript_rewritten", gap_skipped = "gap_skipped", line_discarded = "line_discarded" }
 
 [advisor.agent_subdirs]
 doc = "Subdirectories of a session's subagents directory that hold one more directory level of agent transcripts (Claude Code puts workflow agents in subagents/workflows/<run>/agent-<id>.jsonl)."
