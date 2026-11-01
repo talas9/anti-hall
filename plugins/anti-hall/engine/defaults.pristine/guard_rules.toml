@@ -107,6 +107,7 @@ value = [
   { id = "scan_throttle.first", setting = "", tier = "skill", source = "scan_throttle.msg_first_what" },
   { id = "coordinator_work.nudge", setting = "", tier = "skill", source = "coordinator_work.nudge_what" },
   { id = "coordinator_work.block", setting = "safety.commandGuard", hosts = ["claude"], tier = "essential", source = "coordinator_work.block_what" },
+  { id = "coordinator_work.inline_window", setting = "guards.inlineRule", hosts = ["claude"], tier = "off", source = "inline_rule.window_what" },
   { id = "model_routing.update", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_update_what" },
   { id = "model_routing.handover", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_handover_what" },
   { id = "model_routing.deploy_omitted", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_deploy_omitted_what" },

@@ -4885,7 +4885,7 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
 }
 
 function classifyBashWorkImpl(command, payload, opts = {}, depth = 0, shared = null) {
-  const res = { work: false, blockable: false, labels: new Set(), editBlocks: [] };
+  const res = { work: false, blockable: false, labels: new Set(), editBlocks: [], editHard: [] };
   if (typeof command !== 'string' || !command.trim() || command.length > T.maxLen) return res;
   const o = Object.assign({ sessionStartTs: ah.clock.now() - 21600000 }, opts || {});
   const p = payload || {};
@@ -4900,6 +4900,7 @@ function classifyBashWorkImpl(command, payload, opts = {}, depth = 0, shared = n
   // Session project roots (see projectRootResolver).
   const rootOf = projectRootResolver(p);
   const blocks = new Set();
+  const hard = new Set(); // blocked targets whose verdict is not the plain delegation block (the trusted allowlist, handover redirects)
 
   const masked = RX137.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
   // `(( n > 5 ))` / `$((3 > 2))`: the splitter cuts at `(`, so comparisons are
@@ -4938,7 +4939,11 @@ function classifyBashWorkImpl(command, payload, opts = {}, depth = 0, shared = n
           segWork = true;
           res.labels.add('repo-write');
         }
-        if (!isGit && eg.editVerdict(w.abs, w.base, egPayload) !== 'allow') blocks.add(w.abs);
+        if (!isGit) {
+          const ev = eg.editVerdict(w.abs, w.base, egPayload);
+          if (ev !== 'allow') blocks.add(w.abs);
+          if (ev !== 'allow' && ev !== 'block') hard.add(w.abs);
+        }
       }
     }
     if (segWork) {
@@ -4956,9 +4961,11 @@ function classifyBashWorkImpl(command, payload, opts = {}, depth = 0, shared = n
       res.blockable = res.blockable || r.blockable;
       for (const l of r.labels) res.labels.add(l);
       for (const b of r.editBlocks) blocks.add(b);
+      for (const b of r.editHard) hard.add(b);
     }
   }
   res.editBlocks = [...blocks];
+  res.editHard = [...hard];
   return res;
 }
 
@@ -5008,6 +5015,8 @@ function blockExact(reason) {
 function guarded(fn) {
   try { return fn(); } catch (e) { if (cmdFatal(e)) throw e; ah.log('command_swallowed', String((e && e.stack) || e)); return undefined; }
 }
+
+function irBlocked(kind) { ah.metric('inline_rule_blocked', ['guard', ah.cfg('inline_rule.guard_command'), 'kind', ah.cfg(kind)]); } // R-inline (guards.inlineRule)
 
 function mainFlow(payload) {
   const isSkipped = (name) => cmdSkipped(name);
@@ -5076,9 +5085,16 @@ function mainFlow(payload) {
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
       var scans = [command];
       if (command.length > T.maxLen) { var bp = cmdBigParts(command); scans = bp.rest ? [bp.head, bp.rest] : [bp.head]; }
-      if (scans.some(function (c) { return classifyBashWork(c, payload, { editOnly: true }).editBlocks.length; })) {
+      var egHard = false;
+      var egRes = scans.map(function (c) { var r = classifyBashWork(c, payload, { editOnly: true }); if (r.editHard.length) egHard = true; return r.editBlocks.length; }); // every part is read: a protected target in any part keeps the block
+      if (egRes.some(function (n) { return n > 0; })) {
         // a DevSwarm child workspace is a worker on its own branch (hooks/lib/devswarm-role.js isChildWorker): its edits are its job
         if (cmdChildWorker((payload && payload.cwd) || '')) return undefined;
+        if (ah.settings.bool('inline_rule.sw') && !egHard) { // R-inline: stands down while spawning is stopped (decide() counts it and tells the note); the allowlist and handover verdicts keep their block, as edit-guard keeps them
+          S.parityStop = sd.applies(payload, ah.cfg('command.edit_guard_name'));
+          if (S.parityStop) return undefined;
+          irBlocked('inline_rule.kind_write');
+        }
         return blockExact(LIB['./edit-guard.js'].delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload));
       }
     }
@@ -5150,6 +5166,7 @@ function mainFlow(payload) {
     allowed: allowedShapes,
     briefExtra: segNote,
   }, payload && payload.session_id);
+  if (ah.settings.bool('inline_rule.sw')) irBlocked(remote ? 'inline_rule.kind_remote' : cls && cls.kind === 'verb' ? 'inline_rule.kind_verb' : 'inline_rule.kind_category');
   return blockExact(reason);
 }
 
@@ -5174,6 +5191,13 @@ function decide(p, opts, event) {
   if (!ti || typeof ti !== 'object' || typeof ti.command !== 'string') return null;
   cmdBegin(opts);
   let v;
-  try { v = mainFlow(p); } finally { cmdEnd(); } // a fatal exception (stack, memory, time) reaches the engine's own failure policy
+  try {
+    v = mainFlow(p);
+    if (S.parityStop && (v === 'allow' || v == null || (v && v.advisory !== undefined))) { // R-inline: counted; the once-per-session note rides the allow
+      ah.metric('inline_rule_standdown', ['guard', ah.cfg('inline_rule.guard_parity')]);
+      const n = v && v.advisory !== undefined ? '' : guarded(() => sd.note(p, S.parityStop));
+      if (n) v = { advisory: text.advisoryJson(ah.cfg('standdown.pre_event'), n) };
+    }
+  } finally { cmdEnd(); } // a fatal exception (stack, memory, time) reaches the engine's own failure policy
   return v === null || v === undefined ? 'allow' : v;
 }

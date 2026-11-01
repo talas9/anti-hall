@@ -66,6 +66,7 @@ mod operator_parity;
 mod process_env_reads;
 mod prompt_emit_dispatch;
 mod prop_parsers;
+mod r_inline_e2e;
 mod read_only_verbs;
 mod reference;
 mod reliability;
