@@ -87,6 +87,9 @@ pub enum Kind {
     Act,
     /// A mistake signal: a later observation that an earlier action (`action_id`) should not have been taken.
     Mistake,
+    /// One use of the Stop channel (GH #540): h = the counter (`soft_block`, `system_message`, `cap_hit`, `deferred_pending_work`,
+    /// `deferred_delivered`), e = the check; the model and project it happened under ride as fields.
+    StopChan,
 }
 
 impl Kind {
@@ -107,6 +110,7 @@ impl Kind {
             Kind::Agent => "agent",
             Kind::Act => "act",
             Kind::Mistake => "mistake",
+            Kind::StopChan => "stopchan",
         }
     }
 
@@ -127,6 +131,7 @@ impl Kind {
             "agent" => Kind::Agent,
             "act" => Kind::Act,
             "mistake" => Kind::Mistake,
+            "stopchan" => Kind::StopChan,
             _ => return None,
         })
     }
@@ -494,7 +499,7 @@ fn extra_fields(kind: Kind) -> Vec<&'static str> {
         Kind::Jev => &["integration", "mode", "verdict", "cost_uc"],
         Kind::Spill => &["bytes"],
         Kind::Delegate => &["spawn_key", "requested_model", "selected_model", "task_class"],
-        Kind::Hook | Kind::Check | Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake => &[],
+        Kind::Hook | Kind::Check | Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake | Kind::StopChan => &[],
     };
     // the schema-driven kinds (and the detail of a Jev call) take their field names from the shipped `telemetry.fields`
     fixed.iter().copied().chain(schema(kind).into_iter().map(|(n, _)| n)).collect()
@@ -626,7 +631,9 @@ impl Event {
                 selected_model: tok("selected_model")?,
                 task_class: tok("task_class")?,
             }),
-            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake => Extras::Fields(Fields::read(kind, m)?),
+            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake | Kind::StopChan => {
+                Extras::Fields(Fields::read(kind, m)?)
+            }
             Kind::Hook | Kind::Check => Extras::None,
         };
         Ok(Event { ts_ms, kind, h: tok("h")?, e: tok("e")?, o, ms: num("ms")?.min(u32::MAX as u64) as u32, ib: num("ib")?, extras })

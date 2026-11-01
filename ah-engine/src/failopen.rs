@@ -188,14 +188,14 @@ pub fn sync_notice(just_noted: bool) {
 }
 
 /// Add the one-line degraded notice (once per session) to an answer the engine gave while it is failing open; no file, no change.
-pub fn with_notice(raw: &str, event: &str, mut o: crate::client::Outcome) -> crate::client::Outcome {
+pub fn with_notice(raw: &str, host: &str, event: &str, mut o: crate::client::Outcome) -> crate::client::Outcome {
     if o.code != 0 {
         return o;
     }
     let Ok(text) = std::fs::read_to_string(notice_path()) else { return o };
     let session = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| p["session_id"].as_str().map(str::to_string)).unwrap_or_else(|| "-".into());
     if crate::health::first_in_session(&session, defaults::text("fail_open.notice_tag"))
-        && let Some(merged) = crate::health::merge_advisory(event, &o.out, text.trim())
+        && let Some(merged) = crate::health::merge_advisory_for(host, event, &o.out, text.trim())
     {
         o.out = merged;
     }
@@ -236,14 +236,14 @@ mod tests {
         let plain = || crate::client::Outcome { out: String::new(), code: 0, err: String::new() };
         crate::discard::harmless(std::fs::create_dir_all(crate::paths::dir())); // keep: the scratch state dir of this test run
         crate::discard::harmless(std::fs::remove_file(notice_path())); // keep: a leftover of an earlier run
-        assert_eq!(with_notice(raw, "UserPromptSubmit", plain()).out, "", "no notice file, no change");
+        assert_eq!(with_notice(raw, "claude", "UserPromptSubmit", plain()).out, "", "no notice file, no change");
         std::fs::write(notice_path(), "NOTICE-LINE").unwrap();
-        let first = with_notice(raw, "UserPromptSubmit", plain());
+        let first = with_notice(raw, "claude", "UserPromptSubmit", plain());
         assert!(first.out.contains("NOTICE-LINE"), "{}", first.out);
-        assert_eq!(with_notice(raw, "UserPromptSubmit", plain()).out, "", "once per session");
+        assert_eq!(with_notice(raw, "claude", "UserPromptSubmit", plain()).out, "", "once per session");
         let mut blocked = plain();
         blocked.code = 2;
-        assert_eq!(with_notice(r#"{"session_id":"s-other"}"#, "PreToolUse", blocked).out, "", "a block is never decorated");
+        assert_eq!(with_notice(r#"{"session_id":"s-other"}"#, "claude", "PreToolUse", blocked).out, "", "a block is never decorated");
         crate::discard::harmless(std::fs::remove_file(notice_path())); // keep: cleanup of the scratch file
     }
 

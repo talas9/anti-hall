@@ -1,0 +1,113 @@
+# ah-engine shipped defaults for the Stop channel (src/dispatch/stopchan.rs, GH #540, plan v2 C1). A Stop note sent as
+# `systemMessage` is a warning for the user; the model does not act on it (lab: 0/10 followed, the same as silence). The same note
+# as Stop `additionalContext` continues the turn and is followed 10/10 (a soft block). Switching the channel on moves a check's
+# model-facing Stop note there, bounded by a continuation cap and a pending-work guard. OFF by default: with the switch off the Stop
+# answer is byte for byte what the checks printed. Format: see the header of engine.toml.
+
+# ---- settings (the `context` section of settings.json) ----
+
+[stop_channel.sw_main]
+doc = "Switch (context.stopAdditionalContext, default off): a check's model-facing Stop note is sent as Stop additionalContext (a soft block that continues the turn) instead of systemMessage. Per-check rows: stop_channel.check_on and stop_channel.check_off beat this switch."
+value = { section = "context", key = "stopAdditionalContext", env = "ANTIHALL_STOP_ADDITIONAL_CONTEXT", option = "", default = false }
+
+[stop_channel.num_cap]
+doc = "Most consecutive Stop soft blocks per session (context.stopContinuationCap, default 2). Past it a note stays on systemMessage until a new prompt or a tool call after the last soft block restarts the count. 0 = no soft block is ever sent."
+value = { section = "context", key = "stopContinuationCap", env = "ANTIHALL_STOP_CONTINUATION_CAP", option = "", default = 2, min = 0 }
+
+[stop_channel.sw_defer]
+doc = "Switch (context.stopDeferPending, default on, only used while the Stop channel is on): no soft block while the session has running background agents or background shell tasks; the note is held and delivered once as the next prompt's additionalContext. false = soft-block regardless."
+value = { section = "context", key = "stopDeferPending", env = "ANTIHALL_STOP_DEFER_PENDING", option = "", default = true }
+
+# ---- what moves ----
+
+[stop_channel.events]
+doc = "Hook events whose notes the Stop channel moves (SubagentStop is not listed: its additionalContext behaviour is not verified)."
+value = ["Stop"]
+
+[stop_channel.hosts]
+doc = "Hosts whose Stop hook honours additionalContext as a soft block (verified on Claude by the plan v2 lab). Codex is not listed: whether its Stop hook honours additionalContext is unconfirmed (parity issue), so it stays on systemMessage."
+value = ["claude"]
+
+[stop_channel.check_on]
+doc = "Check ids whose Stop note moves even while stop_channel.sw_main is off (a per-check switch-on). Variant ids (afk-mode:stop, swarm-guard#2) match their base check."
+value = []
+
+[stop_channel.check_off]
+doc = "Check ids whose Stop note never moves, whatever stop_channel.sw_main says (a per-check switch-off; it beats check_on)."
+value = []
+
+[stop_channel.user_only]
+doc = "Check ids whose Stop systemMessage is meant for the user only (a banner), so it stays there. A check whose text has no model/user split is model-facing and is not listed."
+value = []
+
+[stop_channel.stderr_checks]
+doc = "Check ids whose exit-0 stderr at Stop is an instruction the model can act on (the invisible-channel ratchet's Stop stderr offenders, channel_ratchet.offenders). With the Stop channel on, that text is also sent as additionalContext; stderr itself is left as it is, so the user still sees it. Only tasklist-guard is listed: its plan-mode note asks for the work to be tracked as tasks, which the model can do. task-guard's stderr says it deferred its own Stop block because live agents are active, and devswarm-child-gate's says its gate stopped blocking; a soft block on either would undo what the check decided, so they stay on stderr. Other checks' stderr is diagnostics and never moves."
+value = ["tasklist-guard"]
+
+[stop_channel.health_check]
+doc = "The check id the engine-health advisory counts and is switched under (stop_channel.check_on / check_off) when it is merged into a Stop answer."
+value = "health-advisory"
+
+[stop_channel.prompt_events]
+doc = "Hook events at which a new prompt restarts the soft-block count and delivers a note held while background work ran."
+value = ["UserPromptSubmit"]
+
+# ---- the pending-work guard ----
+
+[stop_channel.pending_kinds]
+doc = "Kinds of tracker rows (agent_tracker.kinds, agent_tracker.guard_job_kind) that count as work the turn may be waiting on: a running subagent, a running teammate, a running background shell task."
+value = ["subagent", "teammate", "shell"]
+
+[stop_channel.msg_held_prefix]
+doc = "Put before a note that was held at Stop while background work ran, when it is delivered with the next prompt."
+value = "Held from the end of your last turn (background work was running then): "
+
+[stop_channel.note_max_chars]
+doc = "Most characters of a held note (the end is cut)."
+value = 4000
+min = 200
+max = 20000
+
+[stop_channel.delivery_id]
+doc = "The hook id under which a delivered held note is combined and counted."
+value = "stop-channel"
+
+# ---- the continuation cap ----
+
+[stop_channel.tool_markers]
+doc = "Text in the transcript that shows a tool call (the count restarts when one follows the last soft block). Both spacings of the JSON key are listed."
+value = ['"type":"tool_use"', '"type": "tool_use"']
+
+[stop_channel.scan_max_bytes]
+doc = "Most bytes of the end of the transcript read for the tool-call test."
+value = 262144
+min = 4096
+max = 8388608
+unit = "bytes"
+
+# ---- state ----
+
+[stop_channel.state_dir]
+doc = "The directory under the state dir holding one soft-block count file and one held-note file per session."
+value = "stop-channel"
+
+[stop_channel.note_suffix]
+doc = "File name suffix of a held note."
+value = ".note"
+
+[stop_channel.state_max_age_days]
+doc = "Count and note files older than this many days are removed."
+value = 7
+unit = "days"
+min = 1
+max = 365
+
+[stop_channel.all_label]
+doc = "The check label of a counter that concerns no single check (cap_hit, deferred_delivered)."
+value = "all"
+
+# ---- counters ----
+
+[stop_channel.counters]
+doc = "The counters of the metric stop_channel, in the order the telemetry summary lists them (detail.stop_channel). soft_block: a check's Stop note sent as additionalContext. system_message: a note that stayed on its old channel (systemMessage, or stderr) while the channel was on (cap hit or user-only). cap_hit: a Stop where the continuation cap held the soft block back. deferred_pending_work: a note held because background work was running. deferred_delivered: a held note delivered with a prompt."
+value = ["soft_block", "system_message", "cap_hit", "deferred_pending_work", "deferred_delivered"]
