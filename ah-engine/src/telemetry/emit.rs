@@ -285,6 +285,12 @@ pub fn spill(h: &str, event: &str, bytes: u64) -> Event {
     base(Kind::Spill, h, event, Outcome::Advise, 0, bytes, Extras::Spill(bytes))
 }
 
+/// The event counting one use of the Stop channel (GH #540): `counter` is one of `stop_channel.counters`, `check` the check it
+/// concerns, `model` and `project` the funnel labels of the session.
+pub fn stop_channel(counter: &str, check: &str, model: &str, project: &str) -> Event {
+    base(Kind::StopChan, counter, check, Outcome::Advise, 0, 0, Extras::Fields(Fields::new().tok("model", model).tok("project", project)))
+}
+
 /// The event for a dispatcher path that would have handed the event to the Node hooks and answered without them
 /// (`path` is `budget`, `infra` or `panic`; `outcome` is Skip for an advisory event, Block or Allow for a guard event).
 pub fn no_node_path(path: &str, event: &str, outcome: Outcome) -> Event {

@@ -188,6 +188,12 @@ pub const ROLLUP_SAVE: &str = "INSERT INTO metrics_rollup (resolution, bucket_ms
 /// Rollups of one resolution from bucket ?2 on, oldest first.
 pub const ROLLUP_LIST: &str = "SELECT bucket_ms, ts_ms, body FROM metrics_rollup WHERE resolution = ?1 AND bucket_ms >= ?2 ORDER BY bucket_ms";
 
+/// The newest rollup of one resolution taken at or before time ?2 (the baseline of a windowed funnel report).
+pub const ROLLUP_AT: &str = "SELECT ts_ms, body FROM metrics_rollup WHERE resolution = ?1 AND ts_ms <= ?2 ORDER BY ts_ms DESC LIMIT 1";
+
+/// The oldest rollup of one resolution (the baseline when none is as old as the window).
+pub const ROLLUP_OLDEST: &str = "SELECT ts_ms, body FROM metrics_rollup WHERE resolution = ?1 ORDER BY ts_ms LIMIT 1";
+
 /// Forget rollups of one resolution older than bucket ?2 (derived data, D59).
 pub const ROLLUP_PRUNE: &str = "DELETE FROM metrics_rollup WHERE resolution = ?1 AND bucket_ms < ?2";
 

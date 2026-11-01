@@ -180,9 +180,18 @@ fn older_client_does_not_restart_newer_daemon() {
 fn rules_reload_on_file_change_and_bad_edit_keeps_old_rules() {
     let e = Env::new("reload");
     assert!(wait_for(|| !e.hook("0.1.0", DENY_IN).0.is_empty()));
+    let fingerprint = || -> String {
+        let st: serde_json::Value = serde_json::from_str(&e.ctl("status").expect("daemon status")).unwrap();
+        st["rules"]["fingerprint"].as_str().expect("the rules fingerprint").to_string()
+    };
+    let before = fingerprint();
     std::fs::write(e.dir.join("rules.json"), "{ this is not json").unwrap();
-    std::thread::sleep(Duration::from_millis(600));
-    assert!(e.hook("0.1.0", DENY_IN).0.contains("deny"), "bad edit must keep previous rules");
+    // `ctl reload` re-reads the file before it answers, so the bad edit has been judged when it returns; the watcher may have judged
+    // it first, which keeps the same rules. No sleep stands in for "the daemon has looked by now".
+    assert_eq!(e.ctl("reload").as_deref(), Some("ok"));
+    assert_eq!(fingerprint(), before, "bad edit must keep previous rules");
+    // and the kept rules still decide (a hook call on a loaded machine may be answered late, so it is awaited, not sampled once)
+    assert!(wait_for(|| e.hook("0.1.0", DENY_IN).0.contains("deny")), "bad edit must keep previous rules");
     std::fs::write(e.dir.join("rules.json"), r#"{"version":1,"rules":[]}"#).unwrap();
     assert!(wait_for(|| e.hook("0.1.0", DENY_IN).0.is_empty()), "new (empty) rules must take effect");
     // SIGHUP path

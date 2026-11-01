@@ -1,0 +1,98 @@
+# The invisible-channel ratchet (GH #530, plan v2 B3; test: ah-engine/tests/it/invisible_channel.rs). A model-facing advisory that leaves
+# on a channel the model cannot read is lost: the model never acts on it. The test replays every output path the dispatcher has
+# (the recorded answers of the golden corpus tests/golden/<check>.jsonl through the dispatcher's own combiner, the rule engine's
+# note for every event, and the health advisory merge) and fails when text lands on an invisible channel that is not listed below.
+# The list is a ratchet: it may only shrink. The test also fails when a listed offender no longer offends (remove its row) and
+# when a check/event pair that has no recorded advisory is not listed as unexercised (or is listed and now has one).
+#
+# Channels the model can read (docs/KB-claude-code-hooks.md): a block reason (exit 2 stderr, `decision: block`, a PreToolUse deny) on a
+# blocking event, `additionalContext` on an event that takes it, plain stdout (exit 0) on an event where it is context
+# (`dispatch.plain_context_events`). Channels it cannot read: `systemMessage` (a warning for the user), stderr on exit 0, stdout on
+# exit 0 anywhere else, `additionalContext` on an event that ignores it. Reaching the model through a Stop `additionalContext`
+# is the plan v2 F5 lab result (the KB marks the docs claim unresolved); C1 moves the Stop notes there.
+
+[channel_ratchet.context_events]
+doc = "Events whose hookSpecificOutput.additionalContext reaches the model (KB-claude-code-hooks.md table, additionalContext column; Stop per plan v2 F5)."
+value = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted", "Stop"]
+
+[channel_ratchet.block_events]
+doc = "Events where a block reason (exit 2 stderr, decision block, a PreToolUse deny) is shown to the model."
+value = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop", "SubagentStop", "TaskCreated", "TaskCompleted"]
+
+[channel_ratchet.offenders]
+doc = "Today's offenders: text a check emits on a channel the model cannot read. One row per check, event and channel. Only ever removed from (the fix is plan v2 C1/C2); a new offender fails the test, so does a row that no longer offends."
+value = [
+  { check = "devswarm-child-gate", event = "Stop", channel = "stderr" },
+  { check = "health-advisory", event = "PostToolUseFailure", channel = "systemMessage" },
+  { check = "health-advisory", event = "PreCompact", channel = "systemMessage" },
+  { check = "health-advisory", event = "SessionEnd", channel = "systemMessage" },
+  { check = "health-advisory", event = "Stop", channel = "systemMessage" },
+  { check = "health-advisory", event = "SubagentStop", channel = "systemMessage" },
+  { check = "health-advisory", event = "TaskCompleted", channel = "systemMessage" },
+  { check = "health-advisory", event = "TaskCreated", channel = "systemMessage" },
+  { check = "rule-engine", event = "Stop", channel = "systemMessage" },
+  { check = "task-guard", event = "Stop", channel = "stderr" },
+  { check = "tasklist-guard", event = "Stop", channel = "stderr" },
+]
+
+[channel_ratchet.user_only]
+doc = "Text a check says to the USER by design (a banner), not a model-facing advisory: it is not an offender, but the row must say why and the check must still speak on that channel (otherwise the row is removed)."
+value = [
+  { check = "session-banner", event = "SessionStart", channel = "systemMessage", why = "one line for the user at session start (ui.banner, session-banner.js header: shown to the user), nothing the model must act on" },
+]
+
+[channel_ratchet.unexercised]
+doc = "Check and event pairs of the dispatch table that have no recorded advisory in the golden corpus, so the test cannot see them. Only ever removed from, by adding a golden case or a fixture; a pair added here hides a check from the test."
+value = [
+  { check = "advisor-guard", event = "PostToolUse" },
+  { check = "advisor-guard", event = "PostToolUseFailure" },
+  { check = "advisor-guard", event = "PreToolUse" },
+  { check = "advisor-guard", event = "Stop" },
+  { check = "afk-mode", event = "PostToolUse" },
+  { check = "afk-mode", event = "PreToolUse" },
+  { check = "afk-mode", event = "Stop" },
+  { check = "afk-mode", event = "UserPromptSubmit" },
+  { check = "agent-reminders", event = "PostToolUse" },
+  { check = "agent-reminders", event = "UserPromptSubmit" },
+  { check = "api-guard", event = "PreToolUse" },
+  { check = "burn-breaker", event = "PreToolUse" },
+  { check = "claim-evidence-guard", event = "Stop" },
+  { check = "claim-ledger", event = "Stop" },
+  { check = "devswarm-child-drain", event = "PostToolUse" },
+  { check = "devswarm-child-turn", event = "UserPromptSubmit" },
+  { check = "devswarm-parent-gate", event = "Stop" },
+  { check = "devswarm-parent-reply-tracker", event = "PostToolUse" },
+  { check = "devswarm-rt-advisory", event = "UserPromptSubmit" },
+  { check = "dispatch-tier", event = "PostToolUse" },
+  { check = "emit-dedupe-reset", event = "SessionStart" },
+  { check = "engine-role-guard", event = "PreToolUse" },
+  { check = "engine-role-note", event = "SessionStart" },
+  { check = "engine-role-note", event = "SubagentStart" },
+  { check = "gh-rt-advisory", event = "UserPromptSubmit" },
+  { check = "git-audit", event = "PostToolUse" },
+  { check = "handover-hygiene", event = "SessionStart" },
+  { check = "jev-weekly-scorecard", event = "SessionStart" },
+  { check = "lane-test-guard", event = "PreToolUse" },
+  { check = "merge-side-pick", event = "PostToolUse" },
+  { check = "phase-tracker", event = "PreToolUse" },
+  { check = "precompact-snapshot", event = "PreCompact" },
+  { check = "procwatch-advisory", event = "PreToolUse" },
+  { check = "procwatch-advisory", event = "SessionStart" },
+  { check = "procwatch-advisory", event = "UserPromptSubmit" },
+  { check = "queued-wait-guard", event = "PreToolUse" },
+  { check = "repair-on-reload", event = "SessionStart" },
+  { check = "repair-on-reload", event = "UserPromptSubmit" },
+  { check = "rule-digest", event = "SessionStart" },
+  { check = "session-end-mcp-reaper", event = "SessionEnd" },
+  { check = "session-summary", event = "SessionEnd" },
+  { check = "speculation-judge", event = "Stop" },
+  { check = "swarm-guard", event = "PreToolUse" },
+  { check = "switch-notice", event = "PreToolUse" },
+  { check = "switch-notice", event = "UserPromptSubmit" },
+  { check = "task-lifecycle-log", event = "TaskCompleted" },
+  { check = "task-lifecycle-log", event = "TaskCreated" },
+  { check = "tasklist-hygiene", event = "PostToolUse" },
+  { check = "tasklist-hygiene", event = "PreToolUse" },
+  { check = "uncommitted-guard", event = "PreToolUse" },
+  { check = "wide-search-guard", event = "PreToolUse" },
+]

@@ -1,4 +1,4 @@
-//! `ah-engine telemetry [summary|events|rollup|actions]` (D78). `actions [feature]` reports what the acting features did and got wrong (`actlog`).
+//! `ah-engine telemetry [summary|events|rollup|actions|funnel]` (D78). `funnel [--by model,project] [--window 7d]` is the per-rule delivery funnel (`crate::funnel`). `actions [feature]` reports what the acting features did and got wrong (`actlog`).
 //!
 //! `summary` and `events` ask the running daemon (so they include what it has recorded but not flushed yet) and fall back to
 //! reading the databases. `rollup` works on the database files directly, like `maintain`: it is idempotent, and SQLite's locks keep them apart from the daemon's own writes.
@@ -85,6 +85,24 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             (v, 0)
         }
         "actions" => crate::actlog::run_cli(rest),
+        verb if verb == defaults::text("delivery.report_verb") => {
+            // the funnel counters live in the daemon's metrics (a window needs its stored snapshots): no daemon, no report
+            let (by, since) = (flag(rest, "by"), Some(flag(rest, "since")).filter(|s| !s.is_empty()).unwrap_or_else(|| window.clone()));
+            let mut ask = format!("telemetry {verb}");
+            if !by.is_empty() {
+                ask.push_str(&format!(" by={by}"));
+            }
+            if !since.is_empty() {
+                ask.push_str(&format!(" window={since}"));
+            }
+            match client::ctl_json(&ask) {
+                Some(v) => {
+                    let code = if v.get("error").is_some() { 64 } else { 0 };
+                    (v, code)
+                }
+                None => (json!({"error": defaults::text("delivery.report_no_daemon")}), 1),
+            }
+        }
         "rollup" => match open_for_write().and_then(|t| t.rollup(now_ms(), defaults::num("telemetry.retention_days")).map_err(|e| e.to_string())) {
             Ok(v) => (v, 0),
             Err(e) => (json!({"error": e}), 1),
