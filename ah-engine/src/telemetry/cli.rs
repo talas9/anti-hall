@@ -104,7 +104,7 @@ fn funnel_report(rest: &[String], weekly: bool, window: &str) -> (Value, i32) {
     if since.is_empty() {
         since = window.to_string();
     }
-    let (mut from, mut to) = (flag(rest, "from"), flag(rest, "to"));
+    let (from, to) = (flag(rest, "from"), flag(rest, "to"));
     if weekly {
         if by.is_empty() {
             by = defaults::text("delivery.report_weekly_by").to_string();
@@ -113,15 +113,12 @@ fn funnel_report(rest: &[String], weekly: bool, window: &str) -> (Value, i32) {
             since = defaults::text("delivery.report_weekly_window").to_string();
         }
     }
-    // absolute times go to the daemon as epoch ms (one word: its request line is split on spaces), and a bad one fails here
-    for (name, v) in [("--from", &mut from), ("--to", &mut to)] {
-        if !v.is_empty() {
-            match crate::freport::parse_time_ms(v) {
-                Some(ms) => *v = ms.to_string(),
-                None => return (json!({"error": defaults::render("delivery.report_bad_time", &[("flag", &name), ("value", &v.as_str())])}), 64),
-            }
-        }
+    // every input is checked here, once, before a daemon or a database is touched: a bad one exits 64 without a lookup. The daemon
+    // gets the words as typed (it parses them with the same function), so no value is converted twice.
+    if let Err(e) = crate::funnel::parse_by(&by).and_then(|_| crate::freport::resolve_span(&since, &from, &to, now_ms())) {
+        return (json!({"error": e}), 64);
     }
+    let (since, from, to) = (since.trim().to_string(), from.trim().to_string(), to.trim().to_string());
     let ask = crate::telemetry::ReportAsk { by, since, from, to, full: weekly, stored: false };
     let verb = defaults::text(if weekly { "delivery.report_weekly_verb" } else { "delivery.report_verb" });
     let mut line = format!("telemetry {verb}");
@@ -135,12 +132,17 @@ fn funnel_report(rest: &[String], weekly: bool, window: &str) -> (Value, i32) {
         v["from"] = json!("daemon");
         return (v.clone(), code_of(&v));
     }
-    // no daemon: the stored snapshots of the last run
-    let stored = open_existing().is_some().then(|| crate::db::Db::open(&paths::dir()).ok_logged("tel_db_open")).flatten().map(|db| {
-        let t = crate::telemetry::Telemetry::with_store(Box::new(crate::storage::SqliteStore::new(db)));
-        t.restore_metrics();
-        t.funnel_report(&crate::telemetry::ReportAsk { stored: true, ..ask })
-    });
+    // no daemon: the stored snapshots of the last run, read-only (nothing is created, migrated or written; an older or newer schema is
+    // reported, not upgraded)
+    let stored = match crate::storage::ReadOnlyStore::open(&paths::dir()) {
+        Ok(store) => {
+            let t = crate::telemetry::Telemetry::with_store(Box::new(store));
+            t.restore_metrics();
+            Some(t.funnel_report(&crate::telemetry::ReportAsk { stored: true, ..ask }))
+        }
+        Err(crate::storage::ReadOnlyError::Missing) => None,
+        Err(crate::storage::ReadOnlyError::Unreadable(why)) => return (json!({"error": why}), 1),
+    };
     match stored {
         Some(mut v) => {
             v["from"] = json!("files");

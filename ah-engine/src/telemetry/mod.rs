@@ -564,13 +564,21 @@ impl Telemetry {
             (Some(_), None) => (None, false),
             (None, _) => (None, true),
         };
-        let start = baseline.as_ref().map(|(_, b)| b.clone());
-        let mut v = crate::funnel::report(&end, baseline.clone(), complete, &by, span.from_ms.is_some());
-        let resets = freport::count_resets(&end, start.as_ref());
+        let start = baseline.as_ref().map(|(_, b)| b);
+        // one comparison of the two snapshots feeds every section, so a restarted series is flagged in all of them
+        let diff = freport::Diff::new(&end, start);
+        let mut v = crate::funnel::report(&diff, baseline.as_ref().map(|(ts, _)| *ts), complete, &by, span.from_ms.is_some());
         let base_ms = baseline.as_ref().map(|(ts, _)| *ts);
         let mut notes = Vec::new();
-        if resets > 0 {
-            notes.push(defaults::render("delivery.report_note_reset", &[("resets", &resets)]));
+        if diff.resets > 0 {
+            notes.push(defaults::render("delivery.report_note_reset", &[("resets", &diff.resets)]));
+        }
+        if diff.mismatched > 0 {
+            notes.push(defaults::render("delivery.report_note_mismatch", &[("n", &diff.mismatched)]));
+        }
+        if !diff.partial_checks.is_empty() {
+            let checks = diff.partial_checks.iter().map(String::as_str).collect::<Vec<_>>().join(", ");
+            notes.push(defaults::render("delivery.report_note_partial_checks", &[("checks", &checks)]));
         }
         if let (Some(f), Some(b), Some(r)) = (span.from_ms, base_ms, resolution)
             && complete
@@ -579,8 +587,21 @@ impl Telemetry {
         {
             notes.push(defaults::render("delivery.report_note_lag", &[("lag_ms", &(f - b)), ("resolution", &r)]));
         }
-        if base_ms.is_some_and(|b| b >= end_ms) {
+        let empty = base_ms.is_some_and(|b| b >= end_ms);
+        if empty {
             notes.push(defaults::text("delivery.report_note_empty").to_string());
+        }
+        if ask.full {
+            for section in defaults::list("delivery.report_sections") {
+                match section {
+                    "latency" => v["latency"] = freport::latency(&diff),
+                    "failures" => v["failures"] = freport::failures(&diff),
+                    _ => {}
+                }
+            }
+        }
+        if diff.saturated() {
+            notes.push(defaults::text("delivery.report_note_saturated").to_string());
         }
         {
             let w = &mut v["funnel"]["window"];
@@ -588,17 +609,11 @@ impl Telemetry {
             w["to_ms"] = json!(span.to_ms);
             w["end_ms"] = json!(end_ms);
             w["resolution"] = json!(resolution);
-            w["resets"] = json!(resets.max(w["resets"].as_u64().unwrap_or(0) as usize));
+            w["empty"] = json!(empty);
+            w["saturated"] = json!(diff.saturated());
+            // complete only when every figure is proven: an exact start, no restarted or uncomparable series, no capped sum, not empty
+            w["complete"] = json!(complete && diff.clean() && !empty);
             w["notes"] = json!(notes);
-        }
-        if ask.full {
-            for section in defaults::list("delivery.report_sections") {
-                match section {
-                    "latency" => v["latency"] = freport::latency(&end, start.as_ref()),
-                    "failures" => v["failures"] = freport::failures(&end, start.as_ref()),
-                    _ => {}
-                }
-            }
         }
         if let Some(o) = v.as_object_mut() {
             o.insert("running".into(), json!(!ask.stored));

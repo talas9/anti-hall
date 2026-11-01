@@ -723,8 +723,8 @@ doc = "The label-free metrics the failures section reports for the whole engine 
 value = ["requests", "errors", "panics", "busy_replies", "budget_trips", "deadline_soft", "slow_replies"]
 
 [delivery.report_table_titles]
-doc = "Headings of the text report (`telemetry report` without --json): the window line and one title per section."
-value = { window = "Window", funnel = "Delivery funnel", latency = "Check latency (ms)", failures = "Failures and fail-opens" }
+doc = "Headings of the text report (`telemetry report` without --json): the window line and one title per section (funnel, channels, latency, failures, reasons)."
+value = { window = "Window", funnel = "Delivery funnel", channels = "Output channels", latency = "Check latency (ms)", failures = "Failures and fail-opens", reasons = "Fail-open reasons" }
 
 [delivery.report_epoch_ms_digits]
 doc = "A number given to --from / --to with at least this many digits is epoch milliseconds; with fewer it is epoch seconds."
@@ -735,6 +735,64 @@ min = 1
 doc = "The year epoch seconds count from (the Unix epoch, 1 January 00:00 UTC); an RFC 3339 --from / --to before it is refused."
 value = 1970
 min = 1
+
+[delivery.report_max_year]
+doc = "The last year an RFC 3339 --from / --to may name; a later year is refused at once (the date arithmetic is bounded by it, so no input can make the report loop or overflow). An epoch number is bounded by the end of this year too."
+value = 9999
+min = 1
+
+[delivery.report_input_max_len]
+doc = "The longest --since / --window / --from / --to value in bytes; a longer one, or one with a non-ASCII byte, is refused as invalid input."
+value = 64
+min = 1
+
+[delivery.report_note_mismatch]
+doc = "Printed in the report's window block when some series could not be compared between the window start and its end (a histogram whose bucket layout differs, or a stored value that is not a count). Their checks are marked partial. Placeholders: {n}."
+value = "{n} series could not be compared between the window start and its end (a different bucket layout or a value that is not a count); the figures of their checks are partial"
+
+[delivery.report_note_partial_checks]
+doc = "Printed in the report's window block naming the checks whose figures are partial because a counter or histogram bucket of theirs went down inside the window or could not be compared. Placeholders: {checks}."
+value = "partial figures for: {checks} (a counter or histogram bucket of the check went down inside the window); read their numbers as lower bounds that may mix two runs of the engine"
+
+[delivery.report_note_saturated]
+doc = "Printed in the report's window block when a sum reached the largest count the report holds and stopped there."
+value = "a sum reached the largest count the report can hold and stopped there; the affected figures are lower bounds"
+
+[delivery.report_partial_mark]
+doc = "Appended to the check of a text-report row whose figures are partial (see delivery.report_partial_legend)."
+value = "*"
+
+[delivery.report_partial_legend]
+doc = "The last line of the text report when a row is partial. Placeholders: {mark}."
+value = "{mark} partial: a series behind this row restarted or could not be compared inside the window; see the window notes"
+
+[delivery.report_channels_line]
+doc = "One line of the text report's output-channels section: the funnel row (check, then the --by values) and its channel counts. Placeholders: {row}, {channels}."
+value = "{row}: {channels}"
+
+[delivery.report_reasons_line]
+doc = "One line of the text report's fail-open reasons section: a check and its fail-open counts by reason. Placeholders: {check}, {reasons}."
+value = "{check}: {reasons}"
+
+[delivery.report_engine_line]
+doc = "The text report's line of engine-wide counters (delivery.report_engine_counters). Placeholders: {counters}."
+value = "engine: {counters}"
+
+[delivery.report_dropped_line]
+doc = "The text report's line of answers dropped by reason. Placeholders: {counters}."
+value = "answers dropped: {counters}"
+
+[delivery.report_schema_old]
+doc = "Printed by the offline `telemetry report` when a metrics database has an older schema than this engine reads: the report never migrates. Placeholders: {db}, {found}, {known}."
+value = "{db} has schema version {found}, older than the {known} this engine reads; the report only reads and does not upgrade it. Start the engine once (any hook call, or `ah-engine status`) to migrate it, then run the report again"
+
+[delivery.report_schema_new]
+doc = "Printed by the offline `telemetry report` when a metrics database has a newer schema than this engine reads. Placeholders: {db}, {found}, {known}."
+value = "{db} has schema version {found}, newer than the {known} this engine reads; it was written by a newer engine, so update this one before reading it"
+
+[delivery.report_db_unreadable]
+doc = "Printed by the offline `telemetry report` when a metrics database cannot be opened for reading. Placeholders: {db}, {why}."
+value = "cannot read the metrics database {db}: {why}"
 
 [delivery.report_window_line]
 doc = "The first line of the text report. Placeholders: {title}, {start} and {end} (the real window, epoch ms), {from} and {to} (as asked, or -)."

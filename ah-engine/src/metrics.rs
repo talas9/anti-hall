@@ -33,15 +33,15 @@ impl Hist {
         self.max = self.max.max(v);
     }
 
-    /// Upper bound of the bucket holding rank `q` (0..1); values above the last bound report the observed maximum.
-    fn quantile(&self, bounds: &[u64], q: f64) -> u64 {
+    /// Upper bound of the bucket holding quantile `permille` / 1000; values above the last bound report the observed maximum.
+    fn quantile(&self, bounds: &[u64], permille: u64) -> u64 {
         if self.count == 0 {
             return 0;
         }
-        let rank = ((self.count as f64) * q).ceil().max(1.0) as u64;
-        let mut seen = 0;
+        let rank = quantile_rank(self.count, permille);
+        let mut seen = 0u64;
         for (i, c) in self.buckets.iter().enumerate() {
-            seen += c;
+            seen = seen.saturating_add(*c);
             if seen >= rank {
                 return bounds.get(i).copied().unwrap_or(self.max);
             }
@@ -87,6 +87,12 @@ fn byte_bounds() -> Vec<u64> {
 fn is_byte_metric(name: &str) -> bool {
     let key = format!("metric.{name}");
     defaults::has(&key) && defaults::raw(&key).str_field("unit") == defaults::text("telemetry.byte_unit")
+}
+
+/// The 1-based rank of quantile `permille` / 1000 among `total` observations (at least 1), in integer arithmetic: a float rounds the
+/// product of a count above 2^53 and picks a neighbouring bucket.
+pub fn quantile_rank(total: u64, permille: u64) -> u64 {
+    u64::try_from((u128::from(total) * u128::from(permille)).div_ceil(1000)).unwrap_or(u64::MAX).max(1)
 }
 
 /// The bucket bounds of the histogram `name`.
@@ -305,13 +311,13 @@ impl Metrics {
                 if is_byte_metric(&name) {
                     return json!({
                         "name": name, "labels": labels, "count": h.count, "mean_bytes": mean, "max_bytes": h.max,
-                        "p50_bytes": h.quantile(&bounds, 0.50), "p95_bytes": h.quantile(&bounds, 0.95), "p99_bytes": h.quantile(&bounds, 0.99),
+                        "p50_bytes": h.quantile(&bounds, 500), "p95_bytes": h.quantile(&bounds, 950), "p99_bytes": h.quantile(&bounds, 990),
                         "quantile_note": defaults::text("msg.metrics_quantile_note"),
                     });
                 }
                 json!({
                     "name": name, "labels": labels, "count": h.count, "mean_us": mean, "max_us": h.max,
-                    "p50_us": h.quantile(&bounds, 0.50), "p95_us": h.quantile(&bounds, 0.95), "p99_us": h.quantile(&bounds, 0.99),
+                    "p50_us": h.quantile(&bounds, 500), "p95_us": h.quantile(&bounds, 950), "p99_us": h.quantile(&bounds, 990),
                     "quantile_note": defaults::text("msg.metrics_quantile_note"),
                 })
             })

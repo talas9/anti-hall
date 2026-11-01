@@ -447,6 +447,207 @@ fn the_report_cli_reads_a_time_window_from_stored_snapshots_with_latency_and_fai
     assert!(code == 64 && out.contains("not both"), "{code} {out}");
 }
 
+/// Review fix lane (rules R1-R3) helpers: seed `snaps` (age before now in ms, metrics) as the stored snapshots of a fresh state directory.
+fn seed_snapshots(e: &Env, snaps: Vec<(u64, ah_engine::metrics::Metrics)>) -> u64 {
+    use ah_engine::storage::Store;
+    std::fs::create_dir_all(e.state()).unwrap();
+    let store = ah_engine::storage::SqliteStore::new(ah_engine::db::Db::open(&e.state()).unwrap());
+    let now = ah_engine::health::now_ms();
+    for (age, m) in snaps {
+        assert!(store.save_metrics(now - age, &m.export()));
+    }
+    now
+}
+
+fn report_json(e: &Env, args: &[&str]) -> (i32, serde_json::Value, String) {
+    let mut a = vec!["telemetry", "report"];
+    a.extend_from_slice(args);
+    a.push("--json");
+    let (code, out, err) = e.run(&a, false, "", true);
+    (code, serde_json::from_str(&out).unwrap_or(serde_json::Value::Null), format!("{out}{err}"))
+}
+
+fn series(check: &str, decided: u64, calls: u64, fast_obs: u64, slow_obs: u64) -> ah_engine::metrics::Metrics {
+    let mut m = ah_engine::metrics::Metrics::default();
+    m.add("delivery_funnel", &[("check", check), ("model", "opus"), ("project", "pa"), ("stage", "decided")], decided);
+    m.add("delivery_funnel", &[("check", check), ("model", "opus"), ("project", "pa"), ("stage", "delivered")], decided);
+    m.add("delivery_channel", &[("check", check), ("channel", "block"), ("model", "opus"), ("project", "pa")], decided);
+    m.add("fail_open", &[("check", check), ("reason", "deadline_cut")], calls / 5);
+    m.add("check_calls", &[("check", check)], calls);
+    for _ in 0..fast_obs {
+        m.observe("check_latency_us", &[("check", check)], 50); // the first bucket
+    }
+    for _ in 0..slow_obs {
+        m.observe("check_latency_us", &[("check", check)], 200); // the second bucket
+    }
+    m
+}
+
+/// P1: a histogram bucket that went down is a RESET even though the totals went up (start [10, 0, ..] count 10 and 10 runs, end [0, 11, ..]
+/// count 11 and 11 runs): the report discloses it and flags every figure of the check partial, never `complete`. Control: a normal window
+/// of the same shape is complete and its funnel, latency and failure counts add up to the per-check ledger.
+#[test]
+fn a_reset_histogram_bucket_is_disclosed_and_flags_the_check_partial_through_the_report_cli() {
+    const H: u64 = 3_600_000;
+    let e = Env::new("report-reset");
+    let mut end = series("swarm-guard", 6, 11, 0, 11);
+    end.add("fail_open", &[("check", "swarm-guard"), ("reason", "deadline_cut")], 1); // 3 against the start's 2: one fail-open in the window
+    seed_snapshots(&e, vec![(3 * H, series("swarm-guard", 5, 10, 10, 0)), (H, end)]);
+    let (code, v, raw) = report_json(&e, &["--since", "2h", "--by", "model"]);
+    assert_eq!(code, 0, "{raw}");
+    let w = &v["funnel"]["window"];
+    assert!(w["resets"].as_u64() >= Some(1), "the reset is counted: {w}");
+    assert_eq!(w["complete"], false, "{w}");
+    assert_eq!(w["partial_checks"], serde_json::json!(["swarm-guard"]), "{w}");
+    assert!(w["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("went down")), "{w}");
+    assert_eq!(v["funnel"]["rows"][0]["partial"], true, "{v}");
+    assert_eq!(v["latency"]["rows"][0]["partial"], true, "{v}");
+    assert_eq!(v["failures"]["rows"][0]["partial"], true, "{v}");
+    assert_eq!(v["failures"]["partial"], true);
+    let (_, text, _) = e.run(&["telemetry", "report", "--since", "2h"], false, "", true);
+    assert!(text.contains("swarm-guard*") && text.contains("* partial"), "the text marks the row and prints the legend:\n{text}");
+    // control: the counters only grew
+    let c = Env::new("report-grow");
+    seed_snapshots(&c, vec![(3 * H, series("swarm-guard", 5, 10, 10, 0)), (H, series("swarm-guard", 12, 30, 25, 5))]);
+    let (code, v, raw) = report_json(&c, &["--since", "2h", "--by", "model"]);
+    assert_eq!(code, 0, "{raw}");
+    assert_eq!((v["funnel"]["window"]["complete"].clone(), v["funnel"]["window"]["resets"].clone()), (true.into(), 0.into()), "{v}");
+    assert_eq!((v["funnel"]["rows"][0]["partial"].clone(), v["latency"]["rows"][0]["partial"].clone()), (false.into(), false.into()));
+    // the counts add up: 7 decided, 20 runs = 20 latency observations, 6 - 2 = 4 fail-opens
+    assert_eq!(v["funnel"]["rows"][0]["decided"], 7);
+    assert_eq!(v["funnel"]["rows"][0]["channels"]["block"], 7, "every decided answer went out on the block channel here");
+    assert_eq!((v["latency"]["rows"][0]["count"].clone(), v["failures"]["rows"][0]["runs"].clone()), (20.into(), 20.into()));
+    assert_eq!(v["failures"]["rows"][0]["fail_open"], v["failures"]["rows"][0]["fail_open_by_reason"]["deadline_cut"]);
+    assert_eq!(v["failures"]["fail_open_total"], 4);
+}
+
+/// P2: bad times exit with the validation code in milliseconds - no panic (UTF-8), no accepted `+99:99` offset or fraction garbage, no
+/// loop over every year - and a good early absolute time is converted once (1970-01-02 is 86400000 ms, not 86400000000).
+#[test]
+fn bad_times_exit_64_fast_and_an_early_absolute_time_is_converted_once() {
+    let e = Env::new("report-times");
+    seed_snapshots(&e, vec![(3_600_000, series("swarm-guard", 5, 10, 10, 0))]);
+    for bad in [
+        "2026-11-01T00:00:00.\u{e9}\u{e9}Z",
+        "2026-11-01T00:00:00+99:99",
+        "2026-11-01T00:00:00.123garbageZ",
+        "9223372036854775807-01-01",
+        "99999999999999999999999999",
+    ] {
+        let t = Instant::now();
+        let (code, out, err) = e.run(&["telemetry", "report", "--from", bad, "--json"], false, "", true);
+        assert_eq!(code, 64, "{bad}: {out}{err}");
+        assert!(out.contains("--from"), "{bad}: the error names the flag: {out}");
+        assert!(t.elapsed() < common::scaled(Duration::from_secs(5)), "{bad}: rejected in milliseconds, took {:?}", t.elapsed());
+    }
+    let (code, out, err) = e.run(&["telemetry", "report", "--to", "2026-11-01T00:00:00+99:99", "--json"], false, "", true);
+    assert_eq!(code, 64, "{out}{err}");
+    let (code, v, raw) = report_json(&e, &["--from", "1970-01-02"]);
+    assert_eq!(code, 0, "{raw}");
+    assert_eq!(v["funnel"]["window"]["from_ms"], 86_400_000, "converted once: {}", v["funnel"]["window"]);
+    let (code, v, raw) = report_json(&e, &["--from", "86400"]);
+    assert_eq!((code, v["funnel"]["window"]["from_ms"].clone()), (0, 86_400_000.into()), "epoch seconds still mean seconds: {raw}");
+}
+
+/// P2: counts past u64 neither panic (acted_on = u64::MAX with one ignored) nor pick the wrong median bucket (buckets [2^52, 2^52 + 1, 0, ..]
+/// has its p50 in the second bucket, 0.25 ms, not the first, 0.1 ms).
+#[test]
+fn huge_counts_neither_overflow_the_rate_nor_move_the_median_through_the_report_cli() {
+    const H: u64 = 3_600_000;
+    let e = Env::new("report-huge");
+    let mut m = ah_engine::metrics::Metrics::default();
+    m.add("delivery_funnel", &[("check", "c1"), ("model", "opus"), ("project", "pa"), ("stage", "acted_on")], u64::MAX);
+    m.add("delivery_funnel", &[("check", "c1"), ("model", "opus"), ("project", "pa"), ("stage", "ignored")], 1);
+    m.observe("check_latency_us", &[("check", "c1")], 50);
+    let mut body = m.export();
+    let key = "check_latency_us|check=c1";
+    let n = body["histograms"][key]["buckets"].as_array().unwrap().len();
+    let mut buckets = vec![0u64; n];
+    (buckets[0], buckets[1]) = (1u64 << 52, (1u64 << 52) + 1);
+    body["histograms"][key]["buckets"] = serde_json::json!(buckets);
+    body["histograms"][key]["count"] = serde_json::json!(buckets.iter().sum::<u64>());
+    std::fs::create_dir_all(e.state()).unwrap();
+    let store = ah_engine::storage::SqliteStore::new(ah_engine::db::Db::open(&e.state()).unwrap());
+    let now = ah_engine::health::now_ms();
+    use ah_engine::storage::Store;
+    assert!(store.save_metrics(now - 3 * H, &ah_engine::metrics::Metrics::default().export()));
+    assert!(store.save_metrics(now - H, &body));
+    drop(store);
+    let (code, v, raw) = report_json(&e, &["--since", "2h", "--by", "model"]);
+    assert_eq!(code, 0, "no panic, exit 0: {raw}");
+    assert_eq!(v["funnel"]["rows"][0]["acted_on_rate"], 1.0, "{v}");
+    assert_eq!(v["latency"]["rows"][0]["p50_ms"], 0.25, "{}", v["latency"]);
+}
+
+/// R1: the report is a pure read. A state directory with only hot.db gets no archive.db; a schema older than the engine's is reported with a
+/// message and left at its version (not migrated); hot.db is byte-for-byte the same after every run.
+#[test]
+fn the_offline_report_never_migrates_creates_archive_db_or_writes() {
+    let e = Env::new("report-readonly");
+    std::fs::create_dir_all(e.state()).unwrap();
+    let hot = e.state().join("hot.db");
+    let now = ah_engine::health::now_ms();
+    {
+        let db = ah_engine::db::Db::open(&e.state()).unwrap();
+        let body = series("swarm-guard", 5, 10, 10, 0).export().to_string();
+        db.write(ah_engine::db::Op::Metrics { ts_ms: now - 1000, body }).unwrap();
+    }
+    assert!(!e.state().join("archive.db").exists(), "the seed itself created no archive.db");
+    let digest = |p: &Path| {
+        let c = rusqlite::Connection::open_with_flags(p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        (v, std::fs::metadata(p).unwrap().len(), std::fs::metadata(p).unwrap().modified().unwrap())
+    };
+    let before = digest(&hot);
+    let (code, v, raw) = report_json(&e, &[]);
+    assert_eq!(code, 0, "{raw}");
+    assert_eq!(v["from"], "files");
+    assert_eq!(v["funnel"]["window"]["complete"], false, "no rollup exists, so the window start is unknown and says so: {v}");
+    assert!(!e.state().join("archive.db").exists(), "the report created archive.db");
+    assert_eq!(digest(&hot), before, "hot.db was not touched");
+    // an older schema: refused with a clear message, still that version afterwards, still no archive.db
+    {
+        let c = rusqlite::Connection::open(&hot).unwrap();
+        c.pragma_update(None, "user_version", 8).unwrap();
+    }
+    let before = digest(&hot);
+    assert_eq!(before.0, 8);
+    let (code, out, err) = e.run(&["telemetry", "report", "--json"], false, "", true);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(out.contains("hot.db") && out.contains("version 8") && out.contains("does not upgrade"), "{out}");
+    assert_eq!(digest(&hot), before, "still schema 8, same bytes: not migrated");
+    assert!(!e.state().join("archive.db").exists());
+    let (code, out, _) = e.run(&["telemetry", "report"], false, "", true);
+    assert!(code == 1 && out.contains("version 8"), "the text form says it too: {code} {out}");
+}
+
+/// P2: the text report prints what the JSON has: the output channels per row, the fail-open reasons per check, the engine counters and
+/// the answers dropped.
+#[test]
+fn the_text_report_carries_channels_and_fail_open_reasons() {
+    const H: u64 = 3_600_000;
+    let e = Env::new("report-text");
+    let mut end = series("swarm-guard", 12, 30, 25, 5);
+    end.add("fail_open", &[("check", "swarm-guard"), ("reason", "internal_error")], 2);
+    end.add("answers_dropped", &[("event", "PreToolUse"), ("kind", "guard"), ("reason", "hard_deadline")], 6);
+    end.add("requests", &[], 40);
+    seed_snapshots(&e, vec![(3 * H, series("swarm-guard", 5, 10, 10, 0)), (H, end)]);
+    let (code, text, err) = e.run(&["telemetry", "report", "--since", "2h"], false, "", true);
+    assert_eq!(code, 0, "{err}");
+    for want in [
+        "Output channels",
+        "swarm-guard/opus/pa: block=7",
+        "Fail-open reasons",
+        "swarm-guard: deadline_cut=4",
+        "internal_error=2",
+        "engine: requests=",
+        "answers dropped: hard_deadline=6",
+    ] {
+        assert!(text.contains(want), "{want} in:\n{text}");
+    }
+    assert!(!text.contains("* partial"), "control: nothing is partial:\n{text}");
+}
+
 /// B4: the same report through a running daemon, from a real hook call: the git check's force-push block lands in the funnel row,
 /// the latency section carries its run, and the failures section is there with the engine counters.
 #[test]

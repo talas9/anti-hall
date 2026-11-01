@@ -321,17 +321,7 @@ impl Store for SqliteStore {
     }
 
     fn rollup_at(&self, resolution: &str, cutoff_ms: u64) -> Option<(u64, serde_json::Value, bool)> {
-        let row = |sql: &'static str, args: &[&dyn rusqlite::ToSql]| {
-            self.db
-                .archive(|c| Ok(c.prepare_cached(sql)?.query_row(args, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).ok()))
-                .or_default_logged("db_read")
-        };
-        let cutoff = cutoff_ms as i64;
-        let (found, exact) = match row(sql::ROLLUP_AT, &[&resolution, &cutoff]) {
-            Some(r) => (r, true),
-            None => (row(sql::ROLLUP_OLDEST, &[&resolution])?, false),
-        };
-        Some((found.0.max(0) as u64, serde_json::from_str(&found.1).ok()?, exact))
+        self.db.archive(|c| Ok(rollup_at_in(c, resolution, cutoff_ms))).or_default_logged("db_read")
     }
 
     fn rollups(&self, resolution: &str, since_ms: u64) -> Vec<serde_json::Value> {
@@ -345,6 +335,105 @@ impl Store for SqliteStore {
                 Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
             })
             .or_default_logged("db_read")
+    }
+}
+
+/// The newest rollup of `resolution` at or before `cutoff_ms` (the snapshot a windowed report starts or ends at) as
+/// (time, snapshot, true), else the oldest one as (time, snapshot, false); `None` when there is none or its body is unreadable.
+/// Both lookups walk the (resolution, bucket) primary key: no scan, no temporary sort.
+fn rollup_at_in(c: &rusqlite::Connection, resolution: &str, cutoff_ms: u64) -> Option<(u64, serde_json::Value, bool)> {
+    let row = |sql: &'static str, args: &[&dyn rusqlite::ToSql]| -> Option<(i64, String)> {
+        c.prepare_cached(sql).ok_logged("db_read")?.query_row(args, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).ok()
+    };
+    let cutoff = i64::try_from(cutoff_ms).unwrap_or(i64::MAX);
+    let (found, exact) = match row(sql::ROLLUP_AT, &[&resolution, &cutoff]) {
+        Some(r) => (r, true),
+        None => (row(sql::ROLLUP_OLDEST, &[&resolution])?, false),
+    };
+    Some((u64::try_from(found.0).unwrap_or(0), serde_json::from_str(&found.1).ok()?, exact))
+}
+
+/// Why the metrics databases cannot be opened for reading.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReadOnlyError {
+    /// There is no hot.db in the state directory: nothing was ever stored.
+    Missing,
+    /// The database exists but cannot be read as it is (older or newer schema, or not a database): the message says so.
+    Unreadable(String),
+}
+
+/// The stored metrics snapshots, opened for reading only (`telemetry report` with no daemon). It never creates a file, never
+/// migrates, never writes: both databases are opened `SQLITE_OPEN_READ_ONLY` with `query_only` on, a schema older or newer than this
+/// engine's is refused with a message instead of being migrated, and an absent archive.db is simply no rollups (it is not created).
+pub struct ReadOnlyStore {
+    hot: Mutex<rusqlite::Connection>,
+    archive: Option<Mutex<rusqlite::Connection>>,
+}
+
+impl ReadOnlyStore {
+    fn open_file(path: &std::path::Path, migrations: &[&str]) -> Result<rusqlite::Connection, String> {
+        use rusqlite::OpenFlags;
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let unreadable = |why: String| crate::defaults::render("delivery.report_db_unreadable", &[("db", &name), ("why", &why)]);
+        let c = rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+            .map_err(|e| unreadable(e.to_string()))?;
+        c.busy_timeout(crate::defaults::millis("storage.busy_timeout_ms")).map_err(|e| unreadable(e.to_string()))?;
+        c.pragma_update(None, "query_only", true).map_err(|e| unreadable(e.to_string()))?;
+        let found: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(|e| unreadable(e.to_string()))?;
+        let known = migrations.len();
+        let key = match usize::try_from(found) {
+            Ok(f) if f == known => return Ok(c),
+            Ok(f) if f < known => "delivery.report_schema_old",
+            _ => "delivery.report_schema_new",
+        };
+        Err(crate::defaults::render(key, &[("db", &name), ("found", &found), ("known", &known)]))
+    }
+
+    /// Open the databases of the state directory `dir` for reading.
+    pub fn open(dir: &std::path::Path) -> Result<ReadOnlyStore, ReadOnlyError> {
+        let hot = dir.join(crate::defaults::text("storage.hot_file"));
+        if !hot.exists() {
+            return Err(ReadOnlyError::Missing);
+        }
+        let hot = Self::open_file(&hot, sql::HOT_MIGRATIONS).map_err(ReadOnlyError::Unreadable)?;
+        let arch = dir.join(crate::defaults::text("storage.archive_file"));
+        let archive = if arch.exists() { Some(Mutex::new(Self::open_file(&arch, sql::ARCHIVE_MIGRATIONS).map_err(ReadOnlyError::Unreadable)?)) } else { None };
+        Ok(ReadOnlyStore { hot: Mutex::new(hot), archive })
+    }
+}
+
+impl Store for ReadOnlyStore {
+    fn record_impact(&self, _: ImpactEvent) {}
+
+    fn impact_counts(&self, _: &ImpactFilter) -> Vec<ImpactCount> {
+        Vec::new()
+    }
+
+    fn recent_impact(&self, _: &ImpactFilter, _: usize) -> Vec<ImpactEvent> {
+        Vec::new()
+    }
+
+    fn held_events(&self) -> usize {
+        0
+    }
+
+    fn save_metrics(&self, _: u64, _: &serde_json::Value) -> bool {
+        false
+    }
+
+    fn load_metrics(&self) -> Option<(u64, serde_json::Value)> {
+        let c = self.hot.lock().unwrap_or_else(|e| e.into_inner());
+        let (ts, body): (i64, String) = c.query_row(sql::METRICS_LOAD, [], |r| Ok((r.get(0)?, r.get(1)?))).ok_logged("storage_metrics_load")?;
+        Some((u64::try_from(ts).unwrap_or(0), serde_json::from_str(&body).ok()?))
+    }
+
+    fn rollups(&self, _: &str, _: u64) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+
+    fn rollup_at(&self, resolution: &str, cutoff_ms: u64) -> Option<(u64, serde_json::Value, bool)> {
+        let c = self.archive.as_ref()?.lock().unwrap_or_else(|e| e.into_inner());
+        rollup_at_in(&c, resolution, cutoff_ms)
     }
 }
 
@@ -406,6 +495,84 @@ mod tests {
         let s = SqliteStore::new(db.clone());
         conformance(&s);
         assert!(s.persisted() && !MemStore::new(1, 1, "o").persisted());
+    }
+
+    #[test]
+    fn a_snapshot_lookup_walks_the_primary_key_and_returns_the_newest_at_or_before_the_cutoff() {
+        let d = crate::db::TempDir::new("rollup-at");
+        let db = Db::open(&d.0).unwrap();
+        let s = SqliteStore::new(db.clone());
+        let (name, bucket, _) = resolutions()[0];
+        let body = |n: u64| serde_json::json!({"counters": {"requests": n}, "histograms": {}});
+        let (t1, t2) = (9 * bucket + 10, 10 * bucket + bucket / 2);
+        assert!(s.save_metrics(t1, &body(1)) && s.save_metrics(t2, &body(2)));
+        // the bucket holding the cutoff keeps a LATER snapshot: the lookup steps back to the previous bucket
+        assert_eq!(s.rollup_at(name, 10 * bucket + 1).map(|r| (r.0, r.2)), Some((t1, true)));
+        assert_eq!(s.rollup_at(name, t2).map(|r| (r.0, r.2)), Some((t2, true)));
+        assert_eq!(s.rollup_at(name, u64::MAX).map(|r| (r.0, r.2)), Some((t2, true)), "a cutoff past i64 is clamped, not wrapped");
+        assert_eq!(s.rollup_at(name, 5).map(|r| (r.0, r.2)), Some((t1, false)), "none that old: the oldest, marked inexact");
+        for (q, args) in [(sql::ROLLUP_AT, 2usize), (sql::ROLLUP_OLDEST, 1usize)] {
+            let plan: Vec<String> = db
+                .archive(|c| {
+                    let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {q}"))?;
+                    let rows: Vec<String> = if args == 2 {
+                        st.query_map(rusqlite::params![name, 100_i64], |r| r.get::<_, String>(3))?.collect::<rusqlite::Result<_>>()?
+                    } else {
+                        st.query_map(rusqlite::params![name], |r| r.get::<_, String>(3))?.collect::<rusqlite::Result<_>>()?
+                    };
+                    Ok(rows)
+                })
+                .unwrap();
+            let plan = plan.join(" | ");
+            assert!(plan.contains("USING PRIMARY KEY") && !plan.contains("SCAN") && !plan.contains("TEMP B-TREE"), "{q}: {plan}");
+        }
+    }
+
+    #[test]
+    fn the_read_only_store_reads_snapshots_and_changes_nothing_and_refuses_a_schema_it_would_have_to_migrate() {
+        let snapshot = |dir: &std::path::Path| -> Vec<(String, u64, std::time::SystemTime)> {
+            let mut v: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap())
+                .map(|e| (e.file_name().to_string_lossy().to_string(), e.metadata().unwrap().len(), e.metadata().unwrap().modified().unwrap()))
+                .collect();
+            v.sort();
+            v
+        };
+        let d = crate::db::TempDir::new("ro-store");
+        assert_eq!(ReadOnlyStore::open(&d.0).err(), Some(ReadOnlyError::Missing), "no hot.db: nothing is created");
+        assert!(std::fs::read_dir(&d.0).unwrap().next().is_none());
+        {
+            let s = SqliteStore::new(Db::open(&d.0).unwrap());
+            assert!(s.save_metrics(120_000, &serde_json::json!({"counters": {"requests": 7}, "histograms": {}})));
+        }
+        let before = snapshot(&d.0);
+        {
+            let ro = ReadOnlyStore::open(&d.0).unwrap();
+            assert_eq!(ro.load_metrics().map(|(t, b)| (t, b["counters"]["requests"].as_u64())), Some((120_000, Some(7))));
+            assert_eq!(ro.rollup_at(resolutions()[0].0, 130_000).map(|r| (r.0, r.2)), Some((120_000, true)));
+            assert!(!ro.save_metrics(1, &serde_json::json!({})), "nothing is written");
+        }
+        // SQLite itself may leave empty -wal / -shm sidecars of a WAL database it opened; the database files are byte-for-byte as they were
+        let files = |v: &[(String, u64, std::time::SystemTime)]| v.iter().filter(|f| f.0.ends_with(".db")).cloned().collect::<Vec<_>>();
+        assert_eq!(files(&snapshot(&d.0)), files(&before), "hot.db and archive.db: same size and mtime");
+        // a schema older than this engine's is reported, never migrated; archive.db is not created when absent
+        let old = crate::db::TempDir::new("ro-old");
+        {
+            let c = rusqlite::Connection::open(old.0.join(crate::defaults::text("storage.hot_file"))).unwrap();
+            c.pragma_update(None, "user_version", 8).unwrap();
+        }
+        let err = match ReadOnlyStore::open(&old.0) {
+            Err(ReadOnlyError::Unreadable(m)) => m,
+            other => panic!("{:?}", other.err()),
+        };
+        assert!(err.contains("older") && err.contains("version 8"), "{err}");
+        let c = rusqlite::Connection::open(old.0.join(crate::defaults::text("storage.hot_file"))).unwrap();
+        assert_eq!(c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 8, "still 8: not migrated");
+        assert!(!old.0.join(crate::defaults::text("storage.archive_file")).exists(), "archive.db was not created");
+        c.pragma_update(None, "user_version", 99).unwrap();
+        drop(c);
+        assert!(matches!(ReadOnlyStore::open(&old.0).err(), Some(ReadOnlyError::Unreadable(m)) if m.contains("newer")));
     }
 
     #[test]

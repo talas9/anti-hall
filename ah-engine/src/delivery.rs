@@ -249,7 +249,11 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
         })
         .collect();
     let funnel = t.with_metrics(|m| m.export());
-    let totals = funnel::report(&funnel, None, true, &[], false).get("funnel").and_then(|f| f.get("totals")).cloned().unwrap_or_default();
+    let totals = funnel::report(&crate::freport::Diff::new(&funnel, None), None, true, &[], false)
+        .get("funnel")
+        .and_then(|f| f.get("totals"))
+        .cloned()
+        .unwrap_or_default();
     json!({
         "per_check": rows, "essential_shed": essential_shed, "spills_by_event": spills, "pinned_spills": pinned_spills,
         "funnel": { "enabled": funnel::enabled(), "totals": totals },

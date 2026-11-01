@@ -14,6 +14,7 @@
 
 use crate::defaults;
 use crate::dispatch::combine::HookResult;
+use crate::freport::Diff;
 use crate::telemetry::Telemetry;
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
@@ -180,19 +181,6 @@ pub fn channels(t: &Telemetry, check: &str, event: &str, r: &HookResult, c: &Ctx
 
 // ---- the report -------------------------------------------------------------------------------------------------------------
 
-/// The counters of an exported metrics snapshot (`Metrics::export`) as (name, labels, value).
-fn counters(snap: &Value) -> Vec<(String, BTreeMap<String, String>, u64)> {
-    let Some(map) = snap.get("counters").and_then(Value::as_object) else { return Vec::new() };
-    map.iter()
-        .filter_map(|(k, v)| {
-            let mut parts = k.split('|');
-            let name = parts.next()?.to_string();
-            let labels = parts.filter_map(|kv| kv.split_once('=')).map(|(l, v)| (l.to_string(), v.to_string())).collect();
-            Some((name, labels, v.as_u64()?))
-        })
-        .collect()
-}
-
 /// One report row's counts: by stage label, and by channel label.
 type Counts = (BTreeMap<String, u64>, BTreeMap<String, u64>);
 
@@ -211,92 +199,102 @@ pub fn parse_by(by: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// The funnel report: per check (and per model / project when asked) the stages and channels of `live`, less `baseline` when the
-/// report is for a window (`windowed`). `baseline` is the oldest snapshot at or before the window start; `complete` is false when no
-/// snapshot is that old (the figures then cover only what the snapshots hold, and say so).
-pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: &[String], windowed: bool) -> Value {
+/// The funnel report: per check (and per model / project when asked) the stages and channels of the window `d`. `baseline_ms` is the
+/// time of the start snapshot; `complete` is false when no snapshot is that old (the figures then cover only what the snapshots hold,
+/// and say so). A row is `partial` when a series of its check restarted inside the window or could not be compared (`d`), and the
+/// window is not complete then either.
+pub fn report(d: &Diff, baseline_ms: Option<u64>, complete: bool, by: &[String], windowed: bool) -> Value {
     let stage_names: Vec<(&str, &str)> =
         defaults::list("delivery.report_stages").into_iter().map(|k| (k, defaults::text(&format!("delivery.stage_{k}")))).collect();
     let channel_names: Vec<(&str, &str)> =
         defaults::raw("delivery.channel_label").as_table().unwrap_or_default().iter().map(|(k, v)| (*k, v.as_str().unwrap_or(""))).collect();
     let key_of = |labels: &BTreeMap<String, String>| -> Vec<String> {
         let mut k = vec![labels.get("check").cloned().unwrap_or_default()];
-        for d in by {
-            k.push(labels.get(d.as_str()).cloned().unwrap_or_default());
+        for dim in by {
+            k.push(labels.get(dim.as_str()).cloned().unwrap_or_default());
         }
         k
     };
-    // cumulative counters: the window is live less baseline, per series
-    let mut base: HashMap<(String, BTreeMap<String, String>), u64> = HashMap::new();
-    if let Some((_, b)) = &baseline {
-        for (n, l, v) in counters(b) {
-            base.insert((n, l), v);
-        }
-    }
     let (over, other) = (defaults::text("telemetry.overflow_label"), defaults::text("delivery.project_other"));
     // a series whose model or project is the overflow bucket's: past the series cap those labels fold, the check and stage stay
-    let folded = |labels: &BTreeMap<String, String>| ["model", "project"].iter().any(|d| labels.get(*d).is_some_and(|v| v == over || v == other));
+    let folded = |labels: &BTreeMap<String, String>| ["model", "project"].iter().any(|dim| labels.get(*dim).is_some_and(|v| v == over || v == other));
     let mut overflow_counts = 0u64;
-    let mut resets = 0usize;
     let mut rows: BTreeMap<Vec<String>, Counts> = BTreeMap::new();
-    for (name, labels, v) in counters(live) {
-        let (cur, reset) = crate::freport::delta(v, base.get(&(name.clone(), labels.clone())).copied().unwrap_or(0));
-        resets += usize::from(reset);
-        if cur == 0 {
+    for s in &d.series {
+        if s.value == 0 {
             continue;
         }
-        let (stage, is_stage) = match name.as_str() {
-            "delivery_funnel" => (labels.get("stage").cloned().unwrap_or_default(), true),
-            "delivery_channel" => (labels.get("channel").cloned().unwrap_or_default(), false),
+        let (stage, is_stage) = match s.name.as_str() {
+            "delivery_funnel" => (s.labels.get("stage").cloned().unwrap_or_default(), true),
+            "delivery_channel" => (s.labels.get("channel").cloned().unwrap_or_default(), false),
             _ => continue,
         };
-        if is_stage && folded(&labels) {
-            overflow_counts += cur;
+        if is_stage && folded(&s.labels) {
+            overflow_counts = d.add(overflow_counts, s.value);
         }
-        let row = rows.entry(key_of(&labels)).or_default();
-        *(if is_stage { &mut row.0 } else { &mut row.1 }).entry(stage).or_insert(0) += cur;
+        let row = rows.entry(key_of(&s.labels)).or_default();
+        let slot = (if is_stage { &mut row.0 } else { &mut row.1 }).entry(stage).or_insert(0);
+        *slot = d.add(*slot, s.value);
     }
     let mut out_rows = Vec::new();
     let mut totals: BTreeMap<String, u64> = BTreeMap::new();
+    let unlisted_key = defaults::text("delivery.report_overflow_stage");
+    let mut total_add = |k: &str, n: u64| {
+        let t = totals.entry(k.to_string()).or_insert(0);
+        *t = d.add(*t, n);
+    };
     for (key, (st, ch)) in &rows {
         let mut row = Map::new();
-        row.insert("check".into(), json!(key.first().cloned().unwrap_or_default()));
-        for (i, d) in by.iter().enumerate() {
-            row.insert(d.clone(), json!(key.get(i + 1).cloned().unwrap_or_default()));
+        let check = key.first().cloned().unwrap_or_default();
+        row.insert("partial".into(), json!(d.is_partial(&check)));
+        row.insert("check".into(), json!(check));
+        for (i, dim) in by.iter().enumerate() {
+            row.insert(dim.clone(), json!(key.get(i + 1).cloned().unwrap_or_default()));
         }
         for (k, label) in &stage_names {
             let n = st.get(*label).copied().unwrap_or(0);
-            *totals.entry((*k).to_string()).or_insert(0) += n;
+            total_add(k, n);
             row.insert((*k).to_string(), json!(n));
         }
         // counts under a stage the report does not list stay visible, never dropped
-        let unlisted_key = defaults::text("delivery.report_overflow_stage");
-        let unlisted: u64 = st.iter().filter(|(l, _)| !stage_names.iter().any(|(_, n)| n == l)).map(|(_, n)| *n).sum();
+        let unlisted = st.iter().filter(|(l, _)| !stage_names.iter().any(|(_, n)| n == l)).fold(0u64, |a, (_, n)| d.add(a, *n));
         if unlisted > 0 {
-            *totals.entry(unlisted_key.to_string()).or_insert(0) += unlisted;
+            total_add(unlisted_key, unlisted);
             row.insert(unlisted_key.to_string(), json!(unlisted));
         }
         if by.iter().enumerate().any(|(i, _)| key.get(i + 1).is_some_and(|v| v == over || v == other)) {
             row.insert("overflow".into(), json!(true));
         }
-        let (a, i) =
-            (st.get(defaults::text("delivery.stage_acted_on")).copied().unwrap_or(0), st.get(defaults::text("delivery.stage_ignored")).copied().unwrap_or(0));
-        row.insert("acted_on_rate".into(), if a + i == 0 { Value::Null } else { json!(((a as f64 / (a + i) as f64) * 1000.0).round() / 1000.0) });
+        let stage = |k: &str| st.get(defaults::text(k)).copied().unwrap_or(0);
+        // the rate in integer permille: a sum of two counts can pass u64, and the float of a large count is not exact
+        let (a, i) = (u128::from(stage("delivery.stage_acted_on")), u128::from(stage("delivery.stage_ignored")));
+        let den = a + i;
+        let rate = (a * 1000 + den / 2).checked_div(den).map_or(Value::Null, |permille| json!(permille as f64 / 1000.0));
+        row.insert("acted_on_rate".into(), rate);
         let mut channels: Map<String, Value> = channel_names.iter().filter_map(|(_, label)| ch.get(*label).map(|n| ((*label).to_string(), json!(n)))).collect();
-        let unlisted_ch: u64 = ch.iter().filter(|(l, _)| !channel_names.iter().any(|(_, n)| n == l)).map(|(_, n)| *n).sum();
+        let unlisted_ch = ch.iter().filter(|(l, _)| !channel_names.iter().any(|(_, n)| n == l)).fold(0u64, |a, (_, n)| d.add(a, *n));
         if unlisted_ch > 0 {
             channels.insert(unlisted_key.to_string(), json!(unlisted_ch));
         }
         row.insert("channels".into(), Value::Object(channels));
         out_rows.push(Value::Object(row));
     }
-    let window = json!({
-        "baseline_ms": baseline.as_ref().map(|(ts, _)| *ts),
-        "complete": complete,
-        "resets": resets,
-        "note": if !windowed { defaults::text("delivery.report_note_lifetime") } else if complete { "" } else { defaults::text("delivery.report_note_partial") },
+    let partial_checks: Vec<&String> = rows.keys().filter_map(|k| k.first()).filter(|c| d.is_partial(c)).collect();
+    let note = if !windowed {
+        defaults::text("delivery.report_note_lifetime")
+    } else if complete {
+        ""
+    } else {
+        defaults::text("delivery.report_note_partial")
+    };
+    let mut window = json!({
+        "baseline_ms": baseline_ms,
+        "complete": complete && d.clean(),
+        "resets": d.resets,
+        "mismatched": d.mismatched,
+        "partial_checks": partial_checks,
+        "note": note,
     });
-    let mut window = window;
     if overflow_counts > 0 {
         window["overflow"] = json!({ "counts": overflow_counts, "note": defaults::render("delivery.report_note_overflow", &[("counts", &overflow_counts)]) });
     }
@@ -310,6 +308,12 @@ mod tests {
     fn snap(pairs: &[(&str, u64)]) -> Value {
         let m: Map<String, Value> = pairs.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
         json!({ "counters": m })
+    }
+
+    /// The report of `live` less `base` (a snapshot taken at 123 ms).
+    fn rep(live: &Value, base: Option<Value>, complete: bool, by: &[String], windowed: bool) -> Value {
+        let d = Diff::new(live, base.as_ref());
+        report(&d, base.as_ref().map(|_| 123), complete, by, windowed)
     }
 
     #[test]
@@ -371,7 +375,7 @@ mod tests {
             ("delivery_channel|check=c1|channel=block|model=opus|project=pa", 3),
             ("delivery_stage|check=c1|stage=decided", 99),
         ]);
-        let by_model = report(&live, None, true, &["model".to_string()], false);
+        let by_model = rep(&live, None, true, &["model".to_string()], false);
         let rows = by_model["funnel"]["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
         let opus = rows.iter().find(|r| r["model"] == "opus").unwrap();
@@ -380,15 +384,34 @@ mod tests {
         assert_eq!(opus["channels"]["block"], 3);
         let sonnet = rows.iter().find(|r| r["model"] == "sonnet").unwrap();
         assert!(sonnet["acted_on_rate"].is_null(), "no acted_on or ignored answer: no rate");
-        let flat = report(&live, None, true, &[], false);
+        let flat = rep(&live, None, true, &[], false);
         assert_eq!(flat["funnel"]["rows"][0]["decided"], 14, "without --by the models are summed");
         let base =
             snap(&[("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", 4), ("delivery_funnel|check=c1|model=opus|project=pa|stage=acted_on", 6)]);
-        let win = report(&live, Some((123, base)), false, &["model".to_string()], true);
+        let win = rep(&live, Some(base), false, &["model".to_string()], true);
         let opus = win["funnel"]["rows"].as_array().unwrap().iter().find(|r| r["model"] == "opus").unwrap().clone();
         assert_eq!((opus["decided"].as_u64(), opus["acted_on"].as_u64()), (Some(6), Some(0)), "the window is live less the baseline");
         assert_eq!(win["funnel"]["window"]["baseline_ms"], 123);
         assert_eq!(win["funnel"]["window"]["complete"], false);
+    }
+
+    #[test]
+    fn a_rate_over_counts_past_u64_does_not_overflow_and_sums_stop_at_the_maximum_and_flag_the_window() {
+        let live = snap(&[
+            ("delivery_funnel|check=c1|model=opus|project=pa|stage=acted_on", u64::MAX),
+            ("delivery_funnel|check=c1|model=opus|project=pa|stage=ignored", 1),
+        ]);
+        let r = rep(&live, None, true, &[], false);
+        assert_eq!(r["funnel"]["rows"][0]["acted_on_rate"], json!(1.0), "{r}");
+        assert_eq!(r["funnel"]["window"]["complete"], true, "control: no sum passed u64");
+        // two models fold into one row without --by: the sum passes u64 and stops there, and the window says so
+        let big = snap(&[
+            ("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", u64::MAX),
+            ("delivery_funnel|check=c1|model=sonnet|project=pa|stage=decided", 5),
+        ]);
+        let r = rep(&big, None, true, &[], false);
+        assert_eq!(r["funnel"]["rows"][0]["decided"], u64::MAX);
+        assert_eq!(r["funnel"]["window"]["complete"], false, "{r}");
     }
 
     #[test]
@@ -468,7 +491,7 @@ mod tests {
             ("delivery_funnel|check=c1|model=other|project=other|stage=other", 2),
             ("delivery_channel|check=c1|channel=other|model=opus|project=pa", 1),
         ]);
-        let r = report(&live, None, true, &[], false);
+        let r = rep(&live, None, true, &[], false);
         let unlisted = defaults::text("delivery.report_overflow_stage");
         assert_eq!(r["funnel"]["rows"][0]["decided"], 3);
         assert_eq!(r["funnel"]["rows"][0][unlisted], 2);
@@ -598,7 +621,7 @@ mod tests {
     fn a_counter_that_restarted_inside_the_window_reports_its_end_value_and_the_report_flags_the_reset() {
         let live = snap(&[("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", 3)]);
         let base = snap(&[("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", 10)]);
-        let r = report(&live, Some((5, base)), true, &[], true);
+        let r = rep(&live, Some(base), true, &[], true);
         assert_eq!(r["funnel"]["rows"][0]["decided"], 3, "below the start: the counter restarted, the end value stands");
         assert_eq!(r["funnel"]["window"]["resets"], 1);
     }
