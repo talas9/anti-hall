@@ -1970,6 +1970,10 @@ function pushCreditVerdict(ev, lastCdDir) {
     if (!gitSettingOn('git.setting_push_credit')) return null;
     if (gitSubcommand(ev.args).rest.some((t) => TB.pushSkipOpts.has(t.text))) return null;
     let dir = lastCdDir || S.procCwd;
+    const scopeOn = gitSettingOn('git.setting_push_credit_scope');
+    const proven = scopeOn && pushNarrowProven(S.raw);
+    // a proven chain names its own directory, so the call-time pass and the backstop pass judge the same repository
+    if (proven) dir = pushNarrowDir(S.raw, S.procCwd) || dir;
     const repo = [];
     const repoOpts = ah.cfg('git.push_repo_opts');
     if (ev.dynEnv && ev.dynEnv.length) return gmKey('msg_push_dynamic_repo', { arg: ev.dynEnv[0] });
@@ -1994,14 +1998,18 @@ function pushCreditVerdict(ev, lastCdDir) {
       if (t.startsWith('-')) continue;
       break;
     }
+    // a cd or pushd whose target the shell expands at run time (cd -, cd '-', cd "$X", a bare cd) leaves the directory unknown
+    if (scopeOn) {
+      const dm = new RegExp(ah.cfg('git.push_dynamic_cd_re')).exec(S.raw);
+      if (dm) return gmKey('msg_push_dynamic_repo', { arg: dm[0].replace(/^[\s;&|(]+/, '') });
+    }
     const key = [dir].concat(repo).join('\n');
-    const proven = pushNarrowProven(S.raw);
     const scope = proven ? pushScope(ev) : null;
     const ckey = key + '\n' + (scope ? scope.join('\u0001') : '');
     if (!S.pushChecks.has(ckey)) {
       const fresh = unpushedCredit(dir, repo, ev.env, scope);
       if (fresh.scoped) ah.metric('git_push_scoped', []);
-      if (!proven) ah.metric('git_push_narrow_unproven', []);
+      if (scopeOn && !proven) ah.metric('git_push_narrow_unproven', []);
       S.pushChecks.set(ckey, fresh);
     }
     const r = S.pushChecks.get(ckey);
@@ -2137,6 +2145,23 @@ function pushNarrowProven(cmd) {
   if (!new RegExp(ah.cfg('git.push_narrow_push_re'), flags).test(last)) return false;
   const allow = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
   return segs.every((sg) => allow.some((re) => re.test(sg)));
+}
+
+// The directory a proven chain pushes from: each `cd` segment before the push (they all matched git.push_narrow_before_res, whose
+// capture group 1 is the target) applied in order from the call's directory (S.procCwd), the way scanCommand tracks it.
+function pushNarrowDir(cmd, dir) {
+  const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
+  segs.pop();
+  const flags = ah.cfg('git.push_narrow_re_flags');
+  const res = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
+  let at = dir;
+  for (const sg of segs) {
+    for (const re of res) {
+      const m = re.exec(sg);
+      if (m && m[1]) { at = normalizeGuardPath(m[1], at) || m[1]; break; }
+    }
+  }
+  return at;
 }
 
 function pushScope(ev) {

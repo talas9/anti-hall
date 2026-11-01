@@ -12,6 +12,7 @@ const P: &str = "pu\x73h";
 
 struct Env {
     dir: PathBuf,
+    scope: bool,
 }
 
 impl Env {
@@ -21,7 +22,14 @@ impl Env {
         std::fs::create_dir_all(dir.join("home")).unwrap();
         let rules = r#"{"version":1,"rules":[{"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny","options":{"plugin_root":"/plugin"}},{"id":"git-guard:audit","events":["PostToolUse"],"tools":["Bash"],"check":"git-audit","action":"deny"}]}"#;
         std::fs::write(dir.join("rules.json"), rules).unwrap();
-        Env { dir }
+        Env { dir, scope: false }
+    }
+
+    /// An env with the push credit scope switch on (guards.gitPushCreditScope, default off).
+    fn scoped(tag: &str) -> Env {
+        let mut e = Env::new(tag);
+        e.scope = true;
+        e
     }
 
     /// Runs against a copy of the plugin's engine files with `git.<key>` set to `value` in both default sets (the in-process
@@ -55,6 +63,9 @@ impl Env {
             .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
             .env("AH_ENGINE_VERSION", "0.1.0")
             .env_remove("AH_ENGINE_NOSPAWN");
+        if self.scope {
+            c.env("ANTIHALL_GIT_PUSH_CREDIT_SCOPE", "1");
+        }
         c
     }
 
@@ -289,131 +300,6 @@ fn a_push_over_the_commit_cap_is_refused_naming_the_cap() {
     assert!(err.contains("more than 50 local commits"), "{err}");
 }
 
-/// GH #506: a repository with a pushed `main`, 60 unpushed commits on a side branch (more than the cap) and a linked worktree on
-/// its own branch `feat` holding `n` unpushed commits (the last one credited when `credited`). Returns (work dir, worktree dir).
-fn big_repo_with_worktree(e: &Env, n: usize, credited: bool) -> (std::path::PathBuf, std::path::PathBuf) {
-    let (work, _) = pushed_repo(e);
-    git_ok(&work, &["checkout", "-q", "-b", "big"]);
-    for i in 0..60 {
-        git_ok(&work, &["commit", "-q", "--allow-empty", "-m", &format!("big {i}")]);
-    }
-    git_ok(&work, &["checkout", "-q", "main"]);
-    let wt = e.dir.join("wt");
-    git_ok(&work, &["worktree", "add", "-q", "-b", "feat", wt.to_str().unwrap(), "main"]);
-    for i in 0..n {
-        let msg = if credited && i + 1 == n { CREDITED.to_string() } else { format!("feat {i}") };
-        git_ok(&wt, &["commit", "-q", "--allow-empty", "-m", &msg]);
-    }
-    (work, wt)
-}
-
-#[test]
-fn a_push_of_four_commits_is_allowed_while_the_repository_holds_sixty_unpushed_elsewhere() {
-    let e = Env::new("scoped_ok");
-    let (work, wt) = big_repo_with_worktree(&e, 4, false);
-    let _ = e.hook("echo warm");
-    let w = wt.to_str().unwrap();
-    for cmd in [
-        "git push origin feat".to_string(),
-        "git push origin HEAD:refs/heads/feat".to_string(),
-        "git push".to_string(),
-        format!("git {P} --recei git-receive-pack origin feat"),
-        format!("git {P} --recu=check -qu origin feat"),
-        format!("git {P} -o ci.skip origin feat"),
-    ] {
-        assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "{cmd}");
-    }
-    let cmd = format!("git -C {w} push origin feat");
-    assert_eq!(e.hook_in(&cmd, work.to_str().unwrap()), (String::new(), String::new(), 0), "{cmd}");
-}
-
-/// GH #506 review: a push option is resolved against the whole option table the way git does it (exact, else a unique prefix),
-/// so an abbreviated value option cannot turn the remote name into a revision; an ambiguous or unknown one reads every commit.
-#[test]
-fn an_abbreviated_or_ambiguous_push_option_never_narrows_the_scan_past_a_credited_head() {
-    let e = Env::new("abbrev");
-    let (work, _) = pushed_repo(&e);
-    // origin/HEAD resolves (as in a clone), so a misread `origin` would be a valid, empty revision range
-    git_ok(&work, &["remote", "set-head", "origin", "main"]);
-    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
-    let w = work.to_str().unwrap();
-    let _ = e.hook("echo warm");
-    let shapes = [
-        format!("git {P} --recei git-receive-pack origin"),
-        format!("git {P} --recei=git-receive-pack origin"),
-        format!("git {P} --re git-receive-pack origin"),
-        format!("git {P} --recurse-submodules check origin"),
-        format!("git {P} --rec check origin"),
-        format!("git {P} --no-ver origin"),
-        format!("git {P} --bogus-opt origin"),
-        format!("git {P} -qo opt origin"),
-        format!("git {P} -o opt origin"),
-        format!("git {P} -x origin"),
-    ];
-    let mut missed = Vec::new();
-    for cmd in &shapes {
-        let (out, err, code) = e.hook_in(cmd, w);
-        if code != 2 || !err.contains("AI credit") {
-            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
-        }
-    }
-    assert!(missed.is_empty(), "{missed:#?}");
-}
-
-#[test]
-fn a_credited_commit_among_the_pushed_ones_still_blocks_when_the_repository_holds_sixty_elsewhere() {
-    let e = Env::new("scoped_credit");
-    let (_, wt) = big_repo_with_worktree(&e, 4, true);
-    let _ = e.hook("echo warm");
-    let (out, err, code) = e.hook_in("git push origin feat", wt.to_str().unwrap());
-    assert_eq!(code, 2, "stdout={out} stderr={err}");
-    assert!(err.contains("AI credit"), "{err}");
-    // a push shape whose commits the guard cannot narrow (every branch) stays refused over the cap
-    let e = Env::new("scoped_all");
-    let (_, wt) = big_repo_with_worktree(&e, 4, false);
-    let _ = e.hook("echo warm");
-    let (out, err, code) = e.hook_in("git push --all origin", wt.to_str().unwrap());
-    assert_eq!(code, 2, "stdout={out} stderr={err}");
-    assert!(err.contains("more than 50 local commits"), "{err}");
-}
-
-#[test]
-fn a_push_of_more_than_the_cap_is_refused_naming_the_repository_and_the_count() {
-    let e = Env::new("scoped_over");
-    let (_, wt) = big_repo_with_worktree(&e, 51, false);
-    let _ = e.hook("echo warm");
-    let w = wt.to_str().unwrap();
-    let (out, err, code) = e.hook_in("git push origin feat", w);
-    assert_eq!(code, 2, "stdout={out} stderr={err}");
-    assert!(err.contains("more than 50 local commits"), "{err}");
-    assert!(err.contains(w), "the refusal names the repository {w}: {err}");
-    assert!(err.contains("51"), "the refusal names the count: {err}");
-    let m = String::from_utf8_lossy(&e.cmd().args(["metrics", "--json"]).output().unwrap().stdout).to_string();
-    assert!(m.contains("push_over_cap"), "the refusal is counted by reason: {m}");
-}
-
-/// GH #506: the session directory (the hook payload's cwd) is the main checkout with 60 unpushed commits, the push runs in the
-/// linked worktree named by the command: its own HEAD and branch are read, so a credit there still blocks and a clean one passes.
-#[test]
-fn a_push_into_a_worktree_named_by_the_command_reads_that_worktrees_commits() {
-    let e = Env::new("scoped_wt");
-    let (work, wt) = big_repo_with_worktree(&e, 4, true);
-    let _ = e.hook("echo warm");
-    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
-    for cmd in [format!("cd {w} && git push"), format!("git -C {w} push origin feat"), format!("cd {w} && git push origin HEAD")] {
-        let (out, err, code) = e.hook_in(&cmd, m);
-        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
-        assert!(err.contains("AI credit"), "{cmd}: {err}");
-    }
-    let e = Env::new("scoped_wt_ok");
-    let (work, wt) = big_repo_with_worktree(&e, 4, false);
-    let _ = e.hook("echo warm");
-    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
-    for cmd in [format!("cd {w} && git push"), format!("git -C {w} push --signed=if-asked origin feat")] {
-        assert_eq!(e.hook_in(&cmd, m), (String::new(), String::new(), 0), "{cmd}");
-    }
-}
-
 /// Runs `script` with bash in `dir` (scratch HOME, fixed identity), the way the agent's Bash tool would.
 fn bash_in(e: &Env, dir: &std::path::Path, script: &str) {
     let o = Command::new("bash")
@@ -535,15 +421,10 @@ fn any_unpushed_credited_commit_refuses_every_push_shape() {
     let w = work.to_str().unwrap();
     let o = origin.to_str().unwrap();
     let _ = e.hook("echo warm");
-    // GH #506: a push narrowed to its own commits (`origin main`, a bare push from main) no longer counts the credited `other`;
-    // every shape that names `other` or that the guard cannot narrow still does
     let shapes = [
-        ("credited branch named", format!("git {P} origin other")),
-        ("credited branch onto another", format!("git {P} origin other:main")),
-        ("credited branch as a new upstream", format!("git {P} -u origin other:refs/heads/fresh")),
-        ("every branch", format!("git {P} --all origin")),
+        ("credited branch not at HEAD", format!("git {P} origin main")),
+        ("bare push", format!("git {P}")),
         ("matching refspec", format!("git {P} origin :")),
-        ("glob refspec", format!("git {P} origin 'refs/heads/*'")),
         ("mirror with an empty value", format!("git -c remote.origin.mirror= {P} origin")),
         ("pushInsteadOf", format!("git -c url.{o}.{P}InsteadOf=nowhere {P} nowhere main")),
         ("include.path via --config-env", format!("git --config-env=include.path=INC {P} origin")),
@@ -556,39 +437,14 @@ fn any_unpushed_credited_commit_refuses_every_push_shape() {
             missed.push(format!("{name}: {cmd}: code={code} stdout={out} stderr={err}"));
         }
     }
-    for cmd in [format!("git {P} origin main"), format!("git {P}"), format!("git {P} origin HEAD~0:main")] {
-        assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "narrowed push of main: {cmd}");
-    }
-    // a credited commit only a custom ref holds (published by a mirror or a refs/* refspec) counts for a push that may send it
+    // a credited commit only a custom ref holds (published by a mirror or a refs/* refspec) counts too
     git_ok(&work, &["branch", "-q", "-D", "other"]);
     let sha = git_ok(&work, &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", CREDITED]);
     git_ok(&work, &["update-ref", "refs/custom/x", &sha]);
-    for cmd in [format!("git {P} --mirror origin"), format!("git -c remote.origin.mirror=true {P} origin")] {
-        let (out, err, code) = e.hook_in(&cmd, w);
-        if code != 2 || !err.contains("AI credit") {
-            missed.push(format!("custom ref: {cmd}: code={code} stdout={out} stderr={err}"));
-        }
-    }
-    // a mirror or push refspec in the repository's own configuration widens a bare push: it is read whole
-    git_ok(&work, &["config", "remote.origin.mirror", "true"]);
-    let (out, err, code) = e.hook_in(&format!("git {P} origin"), w);
+    let (out, err, code) = e.hook_in(&format!("git {P} origin main"), w);
     if code != 2 || !err.contains("AI credit") {
-        missed.push(format!("configured mirror: code={code} stdout={out} stderr={err}"));
+        missed.push(format!("custom ref: code={code} stdout={out} stderr={err}"));
     }
-    git_ok(&work, &["config", "--unset", "remote.origin.mirror"]);
-    // the off switch guards.gitPushCreditScope reads every unpushed commit again
-    std::fs::create_dir_all(e.dir.join("home/.anti-hall")).unwrap();
-    std::fs::write(e.dir.join("home/.anti-hall/settings.json"), r#"{"guards":{"gitPushCreditScope":false}}"#).unwrap();
-    let t = Instant::now();
-    let mut off = e.hook_in(&format!("git {P} origin main"), w);
-    while off.2 != 2 && t.elapsed() < Duration::from_secs(5) {
-        std::thread::sleep(Duration::from_millis(200));
-        off = e.hook_in(&format!("git {P} origin main"), w);
-    }
-    if off.2 != 2 || !off.1.contains("AI credit") {
-        missed.push(format!("scope off: {off:?}"));
-    }
-    std::fs::remove_file(e.dir.join("home/.anti-hall/settings.json")).unwrap();
     assert!(missed.is_empty(), "{missed:#?}");
     // nothing credited left unpushed: every shape is allowed again
     git_ok(&work, &["update-ref", "-d", "refs/custom/x"]);
@@ -596,69 +452,6 @@ fn any_unpushed_credited_commit_refuses_every_push_shape() {
     for (name, cmd) in &shapes {
         assert_eq!(e.hook_in(cmd, w), (String::new(), String::new(), 0), "{name}: {cmd}");
     }
-}
-
-/// GH #506 review (P1): git itself reads the configuration, so every spelling it accepts of a mirror (or another setting that makes
-/// a bare push send more than HEAD) widens the push, and a clean `main` does not hide a credited branch.
-#[test]
-fn every_spelling_git_accepts_of_a_widening_push_config_refuses_a_bare_push() {
-    let e = Env::new("scope_cfg");
-    let (work, _) = pushed_repo(&e);
-    git_ok(&work, &["branch", "credited"]);
-    git_ok(&work, &["checkout", "-q", "credited"]);
-    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
-    git_ok(&work, &["checkout", "-q", "main"]);
-    let w = work.to_str().unwrap();
-    let cfg = work.join(".git/config");
-    let base = std::fs::read_to_string(&cfg).unwrap();
-    let inc = e.dir.join("extra.gitconfig");
-    std::fs::write(&inc, "[remote \"origin\"]\n\tmirror\n").unwrap();
-    let inc = inc.to_str().unwrap().to_string();
-    let _ = e.hook("echo warm");
-    let r = |s: &str| s.to_string();
-    let blocked: Vec<(&str, String, String)> = vec![
-        ("bare mirror", r("[remote \"origin\"]\n\tmirror\n"), r("git push origin")),
-        ("mirror = true", r("[remote \"origin\"]\n\tmirror = true\n"), r("git push origin")),
-        ("mirror = yes", r("[remote \"origin\"]\n\tmirror = yes\n"), r("git push origin")),
-        ("mirror = on", r("[remote \"origin\"]\n\tmirror = on\n"), r("git push origin")),
-        ("mirror = 1", r("[remote \"origin\"]\n\tmirror = 1\n"), r("git push origin")),
-        ("mirror = TRUE", r("[remote \"origin\"]\n\tmirror = TRUE\n"), r("git push origin")),
-        ("mixed-case names", r("[REMOTE \"origin\"]\n\tMiRrOr\n"), r("git push origin")),
-        ("bare mirror, bare push", r("[remote \"origin\"]\n\tmirror\n"), r("git push")),
-        ("included file", format!("[include]\n\tpath = {inc}\n"), r("git push origin")),
-        ("includeIf", format!("[includeIf \"onbranch:main\"]\n\tpath = {inc}\n"), r("git push origin")),
-        ("unreadable boolean", r("[remote \"origin\"]\n\tmirror = banana\n"), r("git push origin")),
-        ("glob push refspec", r("[remote \"origin\"]\n\tpush = +refs/*:refs/*\n"), r("git push origin")),
-        ("push.default matching", r("[push]\n\tdefault = matching\n"), r("git push origin")),
-        ("push.followTags bare", r("[push]\n\tfollowTags\n"), r("git push origin")),
-        ("-c bare mirror", String::new(), r("git -c remote.origin.mirror push origin")),
-        ("--mirror", String::new(), r("git push --mirror origin")),
-        ("--all", String::new(), r("git push --all origin")),
-        ("--tags", String::new(), r("git push --tags origin")),
-    ];
-    let mut missed = Vec::new();
-    for (name, add, cmd) in &blocked {
-        std::fs::write(&cfg, format!("{base}{add}")).unwrap();
-        let (out, err, code) = e.hook_in(cmd, w);
-        if code != 2 || !err.contains("AI credit") {
-            missed.push(format!("{name}: {cmd}: code={code} stdout={out} stderr={err}"));
-        }
-    }
-    // settings that leave a bare push on HEAD stay narrowed: the clean `main` is allowed
-    for (name, add) in [
-        ("no extra config", ""),
-        ("mirror = false", "[remote \"origin\"]\n\tmirror = false\n"),
-        ("push.default current", "[push]\n\tdefault = current\n"),
-        ("push.followTags = false", "[push]\n\tfollowTags = false\n"),
-    ] {
-        std::fs::write(&cfg, format!("{base}{add}")).unwrap();
-        let got = e.hook_in("git push origin", w);
-        if got != (String::new(), String::new(), 0) {
-            missed.push(format!("{name} must allow: {got:?}"));
-        }
-    }
-    std::fs::write(&cfg, &base).unwrap();
-    assert!(missed.is_empty(), "{missed:#?}");
 }
 
 /// Layer 1 cannot read a message built from a file or an expansion; a push in the same call is refused before anything runs.
@@ -863,7 +656,7 @@ fn a_credited_annotated_tag_message_refuses_the_push() {
     assert_eq!(e.hook_in(&format!("git {P} origin rel-clean-1"), w), (String::new(), String::new(), 0), "clean tag");
 }
 
-/// An old credited commit on a branch other than HEAD, pushed by name: the block names that branch and the sha, and never suggests a rebase or a force push.
+/// An old credited commit on another branch: the block names that branch and the sha, and never suggests a rebase or a force push.
 #[test]
 fn the_push_block_names_the_branch_and_never_suggests_a_rebase() {
     let e = Env::new("branchname");
@@ -874,7 +667,7 @@ fn the_push_block_names_the_branch_and_never_suggests_a_rebase() {
     git_ok(&work, &["checkout", "-q", "main"]);
     let w = work.to_str().unwrap();
     let _ = e.hook("echo warm");
-    let (out, err, code) = e.hook_in(&format!("git {P} origin feat-credit-x"), w);
+    let (out, err, code) = e.hook_in(&format!("git {P} origin main"), w);
     assert_eq!(code, 2, "stdout={out} stderr={err}");
     assert!(err.contains("feat-credit-x") && err.contains(&sha), "branch and sha named: {err}");
     assert!(err.contains("switch to it") && err.contains("amend") && err.contains("owner"), "the plain fix: {err}");
@@ -920,8 +713,7 @@ fn a_pruned_tracking_ref_blocks_once_then_advises_on_the_identical_retry() {
     git_ok(&work, &["checkout", "-q", "main"]);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "feat: clean"]);
     let w = work.to_str().unwrap();
-    // GH #506: the push names `old` (which would send the pruned commit again) and `main` (where the new credit lands)
-    let cmd = format!("git {P} origin old main");
+    let cmd = format!("git {P} origin main");
     let _ = e.hook("echo warm");
     let (out, err, code) = e.hook_in(&cmd, w);
     assert_eq!(code, 2, "stdout={out} stderr={err}");
@@ -1136,12 +928,202 @@ fn a_continued_or_prepared_merge_message_and_a_push_in_the_same_call_are_refused
     }
 }
 
+// ---- GH #506 / PR #524: guards.gitPushCreditScope on (ANTIHALL_GIT_PUSH_CREDIT_SCOPE=1); the switch-off answers are the tests above ----
+
+/// GH #506: a repository with a pushed `main`, 60 unpushed commits on a side branch (more than the cap) and a linked worktree on
+/// its own branch `feat` holding `n` unpushed commits (the last one credited when `credited`). Returns (work dir, worktree dir).
+fn big_repo_with_worktree(e: &Env, n: usize, credited: bool) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (work, _) = pushed_repo(e);
+    git_ok(&work, &["checkout", "-q", "-b", "big"]);
+    for i in 0..60 {
+        git_ok(&work, &["commit", "-q", "--allow-empty", "-m", &format!("big {i}")]);
+    }
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let wt = e.dir.join("wt");
+    git_ok(&work, &["worktree", "add", "-q", "-b", "feat", wt.to_str().unwrap(), "main"]);
+    for i in 0..n {
+        let msg = if credited && i + 1 == n { CREDITED.to_string() } else { format!("feat {i}") };
+        git_ok(&wt, &["commit", "-q", "--allow-empty", "-m", &msg]);
+    }
+    (work, wt)
+}
+
+#[test]
+fn a_push_of_four_commits_is_allowed_while_the_repository_holds_sixty_unpushed_elsewhere() {
+    let e = Env::scoped("scoped_ok");
+    let (work, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let w = wt.to_str().unwrap();
+    for cmd in [
+        "git push origin feat".to_string(),
+        "git push origin HEAD:refs/heads/feat".to_string(),
+        "git push".to_string(),
+        format!("git {P} --recei git-receive-pack origin feat"),
+        format!("git {P} --recu=check -qu origin feat"),
+        format!("git {P} -o ci.skip origin feat"),
+    ] {
+        assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "{cmd}");
+    }
+    let cmd = format!("git -C {w} push origin feat");
+    assert_eq!(e.hook_in(&cmd, work.to_str().unwrap()), (String::new(), String::new(), 0), "{cmd}");
+}
+
+/// GH #506 review: a push option is resolved against the whole option table the way git does it (exact, else a unique prefix),
+/// so an abbreviated value option cannot turn the remote name into a revision; an ambiguous or unknown one reads every commit.
+#[test]
+fn an_abbreviated_or_ambiguous_push_option_never_narrows_the_scan_past_a_credited_head() {
+    let e = Env::scoped("abbrev");
+    let (work, _) = pushed_repo(&e);
+    // origin/HEAD resolves (as in a clone), so a misread `origin` would be a valid, empty revision range
+    git_ok(&work, &["remote", "set-head", "origin", "main"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let shapes = [
+        format!("git {P} --recei git-receive-pack origin"),
+        format!("git {P} --recei=git-receive-pack origin"),
+        format!("git {P} --re git-receive-pack origin"),
+        format!("git {P} --recurse-submodules check origin"),
+        format!("git {P} --rec check origin"),
+        format!("git {P} --no-ver origin"),
+        format!("git {P} --bogus-opt origin"),
+        format!("git {P} -qo opt origin"),
+        format!("git {P} -o opt origin"),
+        format!("git {P} -x origin"),
+    ];
+    let mut missed = Vec::new();
+    for cmd in &shapes {
+        let (out, err, code) = e.hook_in(cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
+#[test]
+fn a_credited_commit_among_the_pushed_ones_still_blocks_when_the_repository_holds_sixty_elsewhere() {
+    let e = Env::scoped("scoped_credit");
+    let (_, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in("git push origin feat", wt.to_str().unwrap());
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("AI credit"), "{err}");
+    // a push shape whose commits the guard cannot narrow (every branch) stays refused over the cap
+    let e = Env::scoped("scoped_all");
+    let (_, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in("git push --all origin", wt.to_str().unwrap());
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("more than 50 local commits"), "{err}");
+}
+
+#[test]
+fn a_push_of_more_than_the_cap_is_refused_naming_the_repository_and_the_count() {
+    let e = Env::scoped("scoped_over");
+    let (_, wt) = big_repo_with_worktree(&e, 51, false);
+    let _ = e.hook("echo warm");
+    let w = wt.to_str().unwrap();
+    let (out, err, code) = e.hook_in("git push origin feat", w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("more than 50 local commits"), "{err}");
+    assert!(err.contains(w), "the refusal names the repository {w}: {err}");
+    assert!(err.contains("51"), "the refusal names the count: {err}");
+    let m = String::from_utf8_lossy(&e.cmd().args(["metrics", "--json"]).output().unwrap().stdout).to_string();
+    assert!(m.contains("push_over_cap"), "the refusal is counted by reason: {m}");
+}
+
+/// GH #506: the session directory (the hook payload's cwd) is the main checkout with 60 unpushed commits, the push runs in the
+/// linked worktree named by the command: its own HEAD and branch are read, so a credit there still blocks and a clean one passes.
+#[test]
+fn a_push_into_a_worktree_named_by_the_command_reads_that_worktrees_commits() {
+    let e = Env::scoped("scoped_wt");
+    let (work, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    for cmd in [format!("cd {w} && git push"), format!("git -C {w} push origin feat"), format!("cd {w} && git push origin HEAD")] {
+        let (out, err, code) = e.hook_in(&cmd, m);
+        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
+        assert!(err.contains("AI credit"), "{cmd}: {err}");
+    }
+    let e = Env::scoped("scoped_wt_ok");
+    let (work, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    for cmd in [format!("cd {w} && git push"), format!("git -C {w} push --signed=if-asked origin feat")] {
+        assert_eq!(e.hook_in(&cmd, m), (String::new(), String::new(), 0), "{cmd}");
+    }
+}
+
+/// GH #506 review (P1): git itself reads the configuration, so every spelling it accepts of a mirror (or another setting that makes
+/// a bare push send more than HEAD) widens the push, and a clean `main` does not hide a credited branch.
+#[test]
+fn every_spelling_git_accepts_of_a_widening_push_config_refuses_a_bare_push() {
+    let e = Env::scoped("scope_cfg");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["branch", "credited"]);
+    git_ok(&work, &["checkout", "-q", "credited"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let cfg = work.join(".git/config");
+    let base = std::fs::read_to_string(&cfg).unwrap();
+    let inc = e.dir.join("extra.gitconfig");
+    std::fs::write(&inc, "[remote \"origin\"]\n\tmirror\n").unwrap();
+    let inc = inc.to_str().unwrap().to_string();
+    let _ = e.hook("echo warm");
+    let r = |s: &str| s.to_string();
+    let blocked: Vec<(&str, String, String)> = vec![
+        ("bare mirror", r("[remote \"origin\"]\n\tmirror\n"), r("git push origin")),
+        ("mirror = true", r("[remote \"origin\"]\n\tmirror = true\n"), r("git push origin")),
+        ("mirror = yes", r("[remote \"origin\"]\n\tmirror = yes\n"), r("git push origin")),
+        ("mirror = on", r("[remote \"origin\"]\n\tmirror = on\n"), r("git push origin")),
+        ("mirror = 1", r("[remote \"origin\"]\n\tmirror = 1\n"), r("git push origin")),
+        ("mirror = TRUE", r("[remote \"origin\"]\n\tmirror = TRUE\n"), r("git push origin")),
+        ("mixed-case names", r("[REMOTE \"origin\"]\n\tMiRrOr\n"), r("git push origin")),
+        ("bare mirror, bare push", r("[remote \"origin\"]\n\tmirror\n"), r("git push")),
+        ("included file", format!("[include]\n\tpath = {inc}\n"), r("git push origin")),
+        ("includeIf", format!("[includeIf \"onbranch:main\"]\n\tpath = {inc}\n"), r("git push origin")),
+        ("unreadable boolean", r("[remote \"origin\"]\n\tmirror = banana\n"), r("git push origin")),
+        ("glob push refspec", r("[remote \"origin\"]\n\tpush = +refs/*:refs/*\n"), r("git push origin")),
+        ("push.default matching", r("[push]\n\tdefault = matching\n"), r("git push origin")),
+        ("push.followTags bare", r("[push]\n\tfollowTags\n"), r("git push origin")),
+        ("-c bare mirror", String::new(), r("git -c remote.origin.mirror push origin")),
+        ("--mirror", String::new(), r("git push --mirror origin")),
+        ("--all", String::new(), r("git push --all origin")),
+        ("--tags", String::new(), r("git push --tags origin")),
+    ];
+    let mut missed = Vec::new();
+    for (name, add, cmd) in &blocked {
+        std::fs::write(&cfg, format!("{base}{add}")).unwrap();
+        let (out, err, code) = e.hook_in(cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{name}: {cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    // settings that leave a bare push on HEAD stay narrowed: the clean `main` is allowed
+    for (name, add) in [
+        ("no extra config", ""),
+        ("mirror = false", "[remote \"origin\"]\n\tmirror = false\n"),
+        ("push.default current", "[push]\n\tdefault = current\n"),
+        ("push.followTags = false", "[push]\n\tfollowTags = false\n"),
+    ] {
+        std::fs::write(&cfg, format!("{base}{add}")).unwrap();
+        let got = e.hook_in("git push origin", w);
+        if got != (String::new(), String::new(), 0) {
+            missed.push(format!("{name} must allow: {got:?}"));
+        }
+    }
+    std::fs::write(&cfg, &base).unwrap();
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
 /// GH #506 / PR #524 review (P1): the narrowed scan reads git configuration and HEAD before the call has run anything, so an
 /// earlier part of the same Bash call that changes what the push publishes must keep the repository-wide scan. The repository is a
 /// clean `main` and another branch `credited`; every command below is judged on real hook input and must be refused with the credit.
 #[test]
 fn an_earlier_part_of_the_same_call_that_changes_what_the_push_publishes_keeps_the_wide_scan() {
-    let e = Env::new("scope_chain");
+    let e = Env::scoped("scope_chain");
     let (work, _) = pushed_repo(&e);
     git_ok(&work, &["branch", "credited"]);
     git_ok(&work, &["checkout", "-q", "credited"]);
@@ -1173,7 +1155,6 @@ fn an_earlier_part_of_the_same_call_that_changes_what_the_push_publishes_keeps_t
         format!("GIT_DIR={w}/.git git {P} origin HEAD:x"),
         format!("git -c remote.origin.{P}=credited {P} origin"),
         format!("cd {w} && git config remote.origin.mirror true && git {P} origin"),
-        format!("cd - && git {P} origin HEAD:x"),
     ]);
     let mut missed = Vec::new();
     for cmd in &cmds {
@@ -1191,7 +1172,7 @@ fn an_earlier_part_of_the_same_call_that_changes_what_the_push_publishes_keeps_t
 /// the cap); a plain push of `main`, alone or after `cd <path> &&`, is judged only on the commits it sends.
 #[test]
 fn a_plain_push_alone_or_after_a_cd_still_narrows_with_sixty_unpushed_commits_elsewhere() {
-    let e = Env::new("scope_plain");
+    let e = Env::scoped("scope_plain");
     let (work, origin) = pushed_repo(&e);
     git_ok(&work, &["checkout", "-q", "-b", "big"]);
     for i in 0..60 {
@@ -1212,4 +1193,239 @@ fn a_plain_push_alone_or_after_a_cd_still_narrows_with_sixty_unpushed_commits_el
     let (_, err, code) = e.hook_in(&format!("git status && git {P} origin main"), w);
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("more than 50 local commits"), "{err}");
+}
+
+/// A clean `main` (HEAD) next to a credited branch no remote has: every push shape is refused, however git would resolve it.
+#[test]
+fn any_unpushed_credited_commit_refuses_every_push_shape_scoped() {
+    let e = Env::scoped("anyunpushed_s");
+    let (work, origin) = pushed_repo(&e);
+    git_ok(&work, &["branch", "other"]);
+    git_ok(&work, &["checkout", "-q", "other"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let o = origin.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    // GH #506: a push narrowed to its own commits (`origin main`, a bare push from main) no longer counts the credited `other`;
+    // every shape that names `other` or that the guard cannot narrow still does
+    let shapes = [
+        ("credited branch named", format!("git {P} origin other")),
+        ("credited branch onto another", format!("git {P} origin other:main")),
+        ("credited branch as a new upstream", format!("git {P} -u origin other:refs/heads/fresh")),
+        ("every branch", format!("git {P} --all origin")),
+        ("matching refspec", format!("git {P} origin :")),
+        ("glob refspec", format!("git {P} origin 'refs/heads/*'")),
+        ("mirror with an empty value", format!("git -c remote.origin.mirror= {P} origin")),
+        ("pushInsteadOf", format!("git -c url.{o}.{P}InsteadOf=nowhere {P} nowhere main")),
+        ("include.path via --config-env", format!("git --config-env=include.path=INC {P} origin")),
+        ("configured refspec", format!("git -c remote.origin.{P}=refs/heads/other:refs/heads/other {P} origin")),
+    ];
+    let mut missed = Vec::new();
+    for (name, cmd) in &shapes {
+        let (out, err, code) = e.hook_in(cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{name}: {cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    for cmd in [format!("git {P} origin main"), format!("git {P}"), format!("git {P} origin HEAD^0:main")] {
+        assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "narrowed push of main: {cmd}");
+    }
+    // a credited commit only a custom ref holds (published by a mirror or a refs/* refspec) counts for a push that may send it
+    git_ok(&work, &["branch", "-q", "-D", "other"]);
+    let sha = git_ok(&work, &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", CREDITED]);
+    git_ok(&work, &["update-ref", "refs/custom/x", &sha]);
+    for cmd in [format!("git {P} --mirror origin"), format!("git -c remote.origin.mirror=true {P} origin")] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("custom ref: {cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    // a mirror or push refspec in the repository's own configuration widens a bare push: it is read whole
+    git_ok(&work, &["config", "remote.origin.mirror", "true"]);
+    let (out, err, code) = e.hook_in(&format!("git {P} origin"), w);
+    if code != 2 || !err.contains("AI credit") {
+        missed.push(format!("configured mirror: code={code} stdout={out} stderr={err}"));
+    }
+    git_ok(&work, &["config", "--unset", "remote.origin.mirror"]);
+    assert!(missed.is_empty(), "{missed:#?}");
+    // nothing credited left unpushed: every shape is allowed again
+    git_ok(&work, &["update-ref", "-d", "refs/custom/x"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "feat: ordinary"]);
+    for (name, cmd) in &shapes {
+        assert_eq!(e.hook_in(cmd, w), (String::new(), String::new(), 0), "{name}: {cmd}");
+    }
+}
+
+/// An old credited commit on a branch other than HEAD, pushed by name: the block names that branch and the sha, and never suggests a rebase or a force push.
+#[test]
+fn the_push_block_names_the_branch_and_never_suggests_a_rebase_scoped() {
+    let e = Env::scoped("branchname_s");
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["checkout", "-q", "-b", "feat-credit-x"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git {P} origin feat-credit-x"), w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("feat-credit-x") && err.contains(&sha), "branch and sha named: {err}");
+    assert!(err.contains("switch to it") && err.contains("amend") && err.contains("owner"), "the plain fix: {err}");
+    assert!(!err.contains("rebase -i") && !err.contains("rebase the"), "never a rebase: {err}");
+}
+
+/// A public credited commit whose remote-tracking ref was pruned looks unpushed: the push is blocked once (naming the sha and
+/// "already public"), the identical retry gets an advisory, and a new credited commit still blocks. The acknowledgement is OFF by
+/// default (git.push_ack_max_shas = 0), so this test turns it on explicitly.
+#[test]
+fn a_pruned_tracking_ref_blocks_once_then_advises_on_the_identical_retry_scoped() {
+    let e = Env::scoped("pruned_s");
+    e.set_git("push_ack_max_shas", 20);
+    let (work, _) = pushed_repo(&e);
+    git_ok(&work, &["checkout", "-q", "-b", "old"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &[P, "-q", "origin", "old"]);
+    let sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
+    git_ok(&work, &["update-ref", "-d", "refs/remotes/origin/old"]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "feat: clean"]);
+    let w = work.to_str().unwrap();
+    // GH #506: the push names `old` (which would send the pruned commit again) and `main` (where the new credit lands)
+    let cmd = format!("git {P} origin old main");
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&cmd, w);
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains(&sha) && err.contains("old") && err.contains("already public"), "first push blocks: {err}");
+    let (out, err, code) = e.hook_in(&cmd, w);
+    assert_eq!(code, 0, "the identical retry is let through: stdout={out} stderr={err}");
+    assert!(out.contains(&sha) && out.contains("AI credit"), "with an advisory naming the sha: {out}");
+    let m = String::from_utf8_lossy(&e.cmd().args(["metrics", "--json"]).output().unwrap().stdout).to_string();
+    assert!(m.contains("git_push_ack_downgraded"), "the downgrade is counted: {m}");
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    let new_sha = git_ok(&work, &["rev-parse", "--short", "HEAD"]);
+    let (out, err, code) = e.hook_in(&cmd, w);
+    assert_eq!(code, 2, "a new credited commit still blocks: stdout={out} stderr={err}");
+    assert!(err.contains(&new_sha) && !err.contains(&sha), "only the new sha: {err}");
+}
+
+/// A clean pushed `main` next to an unpushed credited branch `credited`: a narrowed push of `main` carries no credit, a read of
+/// the whole repository finds `credited`.
+fn clean_main_credited_branch(e: &Env) -> std::path::PathBuf {
+    let (work, _) = pushed_repo(e);
+    git_ok(&work, &["branch", "credited"]);
+    git_ok(&work, &["checkout", "-q", "credited"]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["checkout", "-q", "main"]);
+    work
+}
+
+/// GH #506 / PR #524 third review (P1a): a `cd` whose target the guard cannot read before it runs (`cd -`, a quoted `-`, an
+/// expansion, a bare `cd`) before a push leaves the directory unknown: refused with the literal-path text, never narrowed.
+#[test]
+fn cd_dash_quoted_dash_and_dollar_cd_before_push_block_with_dynamic_repo_text() {
+    let e = Env::scoped("dyn_cd");
+    let work = clean_main_credited_branch(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("cd '-' && git {P} origin main"),
+        format!("cd - && git {P} origin main"),
+        format!("cd \"-\" && git {P} origin main"),
+        format!("cd \"$X\" && git {P} origin main"),
+        format!("cd $X && git {P} origin main"),
+        format!("cd $(pwd) && git {P} origin main"),
+        format!("cd && git {P} origin main"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("write the repository path literally") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    // a literal cd target is not dynamic
+    assert_eq!(e.hook_in(&format!("cd {w} && git {P} origin main"), "/tmp"), (String::new(), String::new(), 0));
+}
+
+/// GH #506 / PR #524 third review (P1b): a push word the shell expands or splits is not proven to name one remote and one ref, so the
+/// push reads the whole repository and finds the credited branch the narrowed HEAD scan would miss.
+#[test]
+fn push_with_variable_remote_reads_whole_repo() {
+    let e = Env::scoped("var_remote");
+    let work = clean_main_credited_branch(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [format!("git {P} $REMOTE"), format!("git {P} \"$REMOTE\""), format!("git {P} 'origin credited'"), format!("git {P} origin $BRANCH")] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
+/// GH #506 / PR #524 third review (P2): `cd <literal clean target> && git push` run from a credited session repository is judged on
+/// the target in both passes, so it is not falsely blocked by the session directory's commits.
+#[test]
+fn cd_to_clean_absolute_target_from_credited_session_repo_is_allowed() {
+    let e = Env::scoped("cd_clean");
+    let (work, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    // the session directory is the credited worktree; the push runs in the clean main checkout
+    for cmd in [format!("cd {m} && git {P}"), format!("cd {m} && git {P} origin main"), format!("cd {m} && git {P} origin")] {
+        assert_eq!(e.hook_in(&cmd, w), (String::new(), String::new(), 0), "{cmd}");
+    }
+    // the same push without the cd still reads the credited session repository
+    let (_, err, code) = e.hook_in(&format!("git {P}"), w);
+    assert_eq!(code, 2, "{err}");
+}
+
+/// GH #506 / PR #524 third review: a cd target or push word the guard cannot prove literal (a bare relative name, a quoted path)
+/// takes the whole-repository scan and is counted.
+#[test]
+fn bare_relative_cd_and_tilde_user_and_quoted_c_path_take_the_wide_scan() {
+    let e = Env::scoped("unproven");
+    let work = clean_main_credited_branch(&e);
+    std::fs::create_dir_all(work.join("sub")).unwrap();
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [format!("cd sub && git {P}"), format!("git -C '{w}' {P}"), format!("git -C \"{w}\" {P} origin main")] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    let m = String::from_utf8_lossy(&e.cmd().args(["metrics", "--json"]).output().unwrap().stdout).to_string();
+    assert!(m.contains("git_push_narrow_unproven"), "the wide reads are counted: {m}");
+}
+
+/// GH #506: with guards.gitPushCreditScope off (the default) the inputs above behave as on dev: every push reads the whole
+/// repository, `cd -` is not refused for its target, a variable remote is read whole.
+#[test]
+fn switch_off_matches_dev_for_all_inputs() {
+    let e = Env::new("scope_off");
+    let work = clean_main_credited_branch(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("git {P} origin main"),
+        format!("git {P}"),
+        format!("cd {w} && git {P} origin main"),
+        format!("git {P} $REMOTE"),
+        format!("git {P} 'origin credited'"),
+        format!("cd - && git {P} origin main"),
+        format!("cd '-' && git {P} origin main"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("AI credit") || err.contains("write the repository path literally") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
 }
