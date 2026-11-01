@@ -921,7 +921,7 @@ pub fn merge_advisory(event: &str, existing: &str, text: &str) -> Option<String>
 pub fn merge_advisory_for(host: &str, event: &str, raw: &str, existing: &str, text: &str) -> Option<String> {
     let mut v: Value = if existing.trim().is_empty() { json!({}) } else { serde_json::from_str(existing).ok()? };
     let obj = v.as_object_mut()?;
-    if defaults::list("health.context_events").contains(&event) || crate::dispatch::stopchan::health_to_context(host, event, raw, existing) {
+    if defaults::list("health.context_events").contains(&event) || crate::dispatch::stopchan::health_to_context(host, event, raw, existing, text) {
         let hso = obj.entry("hookSpecificOutput").or_insert_with(|| json!({}));
         let h = hso.as_object_mut()?;
         h.entry("hookEventName").or_insert_with(|| json!(event));

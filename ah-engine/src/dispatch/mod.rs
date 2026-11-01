@@ -31,6 +31,7 @@ pub mod node;
 pub mod plan;
 pub mod shrink;
 pub mod spill;
+pub mod stopchan;
 pub mod stoploop;
 pub mod table;
 
@@ -965,6 +966,9 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         digest::apply(&args.event, &req_env, &mut results); // several advisories of one prompt become one short digest
     }
     shrink::apply(&args.event, &req_env, &mut results); // per-hook inline caps: a long context becomes a summary line and a file
+    if let Some(pl) = parsed.as_ref() {
+        stopchan::apply(&args.host, &args.event, pl, &req_env, &mut results); // GH #540: the Stop note's channel (stateless bounds)
+    }
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     let keep_advisories = defaults::list("dispatch.stop_events").iter().any(|e| *e == args.event);
     if !guard {
@@ -1087,7 +1091,8 @@ pub fn hook_main(args: &[String]) -> i32 {
         // Non-guard events cannot block; keep matching Node's replacement-character decode there.
         let raw = String::from_utf8_lossy(raw_bytes).to_string();
         let followed = crate::nodeback::shadow::begin(&a);
-        let o = crate::failopen::with_notice(&raw, &a.event, run_inner(&raw, &a, payload.file.as_ref(), !over_cap && utf8.is_ok()));
+        let o = crate::failopen::with_notice(&raw, &a.host, &a.event, run_inner(&raw, &a, payload.file.as_ref(), !over_cap && utf8.is_ok()));
+        crate::telemetry::emit::flush(); // the health notice's Stop-channel count (GH #540) is queued after the dispatch's own flush
         crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
         let mut so = std::io::stdout();
         crate::discard::harmless(so.write_all(o.out.as_bytes())); // keep: a closed pipe leaves nobody to tell

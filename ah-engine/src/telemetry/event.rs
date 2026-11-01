@@ -87,8 +87,7 @@ pub enum Kind {
     Act,
     /// A mistake signal: a later observation that an earlier action (`action_id`) should not have been taken.
     Mistake,
-    /// One use of the Stop channel (GH #540): h = the counter (`soft_block`, `system_message`, `cap_hit`, `deferred_pending_work`,
-    /// `deferred_delivered`), e = the check; the model and project it happened under ride as fields.
+    /// One use of the Stop channel (GH #540): h = the outcome (`stop_channel.counters`), e = the check; the model and project it happened under ride as fields.
     StopChan,
 }
 

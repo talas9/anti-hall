@@ -207,43 +207,43 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
       }
     },
     "stop_channel": {
-      "cap_hit": {
+      "background_pending": {
         "by_check": {},
         "by_model": {},
         "by_project": {},
         "total": 0
       },
-      "deferred_delivered": {
+      "blocked_kept": {
         "by_check": {},
         "by_model": {},
         "by_project": {},
         "total": 0
       },
-      "deferred_duplicate": {
+      "emitted": {
         "by_check": {},
         "by_model": {},
         "by_project": {},
         "total": 0
       },
-      "deferred_pending_work": {
+      "no_background_field": {
         "by_check": {},
         "by_model": {},
         "by_project": {},
         "total": 0
       },
-      "soft_block": {
+      "over_k": {
         "by_check": {},
         "by_model": {},
         "by_project": {},
         "total": 0
       },
-      "state_failed": {
+      "over_length": {
         "by_check": {},
         "by_model": {},
         "by_project": {},
         "total": 0
       },
-      "system_message": {
+      "transcript_unreadable": {
         "by_check": {},
         "by_model": {},
         "by_project": {},
