@@ -157,6 +157,31 @@ fn a_likely_cause_that_says_it_is_not_confirmed_is_not_held_only_with_the_switch
 }
 
 #[test]
+fn a_passive_guess_about_system_state_is_held_with_the_switch_on_and_off() {
+    for (i, r) in
+        ["The error must be caught by the retry wrapper.", "The value should be recorded in the DB by now.", "The bug should be reproduced by the stale cache."]
+            .iter()
+            .enumerate()
+    {
+        for focus in [false, true] {
+            // a fresh state per run: the same reply twice in one state is held once, then let through
+            let rig = Rig::new(&format!("passive{i}-{focus}"));
+            rig.transcript(&[human(), reply(r)]);
+            let (code, out, err) = rig.stop(r, focus);
+            assert_eq!(code, 0, "{out:?} {err:?}");
+            assert!(out.contains("\"decision\":\"block\"") && out.contains("unverified claim"), "focus={focus}: held: {r}: {out:?}");
+        }
+    }
+    // a duty to show evidence is still no guess with the switch on
+    let r = "Each fix must be shown failing before any change is made.";
+    let rig = Rig::new("duty");
+    rig.transcript(&[human(), reply(r)]);
+    let (code, out, err) = rig.stop(r, true);
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert!(!out.contains("\"decision\":\"block\""), "on: a requirement passes: {out:?}");
+}
+
+#[test]
 fn the_reply_after_a_hold_is_never_held_again_with_the_switch_on_or_off() {
     // the counting of this reply (`claim_after_block`) is asserted in script/tests.rs, where the in-process counters can be read;
     // here the real payload shows the count never changes the answer

@@ -2835,6 +2835,24 @@ mod speculation_focus {
     }
 
     #[test]
+    fn a_passive_guess_about_system_state_is_still_held_with_the_focus_switch_on() {
+        // "must/should be <past participle> by ..." reads as a claim about what the system does, not a duty: held on and off.
+        for (i, r) in [
+            "The error must be caught by the retry wrapper.",
+            "The value should be recorded in the DB by now.",
+            "The bug should be reproduced by the stale cache.",
+            "The line should be logged by the worker.",
+            "The id must be written by the loader.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(held(&stop(&format!("sf-pass-off{i}"), r, &[])).is_some(), "off: held: {r}");
+            assert!(held(&stop(&format!("sf-pass-on{i}"), r, &[FOCUS])).is_some(), "on: still held: {r}");
+        }
+    }
+
+    #[test]
     fn the_block_names_the_hedge_and_with_the_switch_on_the_step_that_clears_it() {
         let r = "The likely cause is the stale cache.";
         let off = held(&stop("sf-msg-off", r, &[])).expect("held");
