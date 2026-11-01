@@ -28,7 +28,7 @@ use crate::defaults;
 use crate::metrics::Metrics;
 use crate::rules::Action;
 use crate::storage::{ImpactEvent, ImpactFilter, MemStore, Store};
-use event::{Event, Kind, Outcome};
+use event::{Event, Extras, Kind, Outcome};
 use persist::{Flushed, TelDb};
 use recorder::Recorder;
 use serde_json::{Value, json};
@@ -218,6 +218,12 @@ impl Telemetry {
                 if pinned {
                     lk(&self.metrics).inc("context_spill_pinned", &[]);
                 }
+            }
+            if ev.kind == Kind::StopChan
+                && let Extras::Fields(f) = &ev.extras
+            {
+                let (model, project) = (f.get_tok("model").unwrap_or(""), f.get_tok("project").unwrap_or(""));
+                lk(&self.metrics).inc("stop_channel", &[("counter", ev.h.as_str()), ("check", ev.e.as_str()), ("model", model), ("project", project)]);
             }
             self.rec.event(ev)
         });
@@ -789,6 +795,36 @@ mod tests {
         assert_eq!(s["detail"]["cmd"]["migrate"]["items"], 4);
         let node = s["by_hook"].as_array().unwrap().iter().find(|h| h["k"] == "node").unwrap();
         assert_eq!((node["h"].as_str(), node["outcomes"]["block"].as_u64(), node["injected_bytes"].as_u64()), (Some("git-guard"), Some(1), Some(9)));
+    }
+
+    /// GH #540: the Stop channel's counters, queued by a dispatcher process, reach the daemon's metric and the summary's
+    /// `detail.stop_channel` split by check, model and project.
+    #[test]
+    fn stop_channel_counters_from_the_inbox_reach_the_metric_and_the_summary() {
+        let (d, _db, t) = durable("tel-stopchan");
+        let inbox = d.0.join("inbox.jsonl");
+        t.set_inbox(inbox.clone());
+        emit::append_to(
+            &inbox,
+            &[
+                emit::stop_channel("emitted", "tasklist-guard", "opus", "p1"),
+                emit::stop_channel("emitted", "tasklist-guard", "opus", "p1"),
+                emit::stop_channel("over_k", "tasklist-guard", "sonnet", "p2"),
+            ],
+        );
+        assert!(t.flush());
+        let m = t.with_metrics(|m| m.export());
+        let series = |counter: &str, check: &str, model: &str, project: &str| {
+            m["counters"][format!("stop_channel|counter={counter}|check={check}|model={model}|project={project}")].as_u64()
+        };
+        assert_eq!(series("emitted", "tasklist-guard", "opus", "p1"), Some(2), "{m}");
+        assert_eq!(series("over_k", "tasklist-guard", "sonnet", "p2"), Some(1), "{m}");
+        let s = t.telemetry_json("summary", "1d", "", 10);
+        let sc = &s["detail"]["stop_channel"];
+        assert_eq!(sc["emitted"]["total"], 2, "{s}");
+        assert_eq!(sc["emitted"]["by_check"]["tasklist-guard"], 2);
+        assert_eq!((sc["emitted"]["by_model"]["opus"].as_u64(), sc["over_k"]["by_project"]["p2"].as_u64()), (Some(2), Some(1)));
+        assert_eq!(sc["blocked_kept"]["total"], 0, "a counter nothing used shows 0");
     }
 
     #[test]

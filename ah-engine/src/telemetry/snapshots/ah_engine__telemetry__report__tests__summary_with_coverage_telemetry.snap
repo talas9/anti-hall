@@ -1,6 +1,5 @@
 ---
 source: src/telemetry/report.rs
-assertion_line: 468
 expression: "serde_json::to_string_pretty(&v).unwrap()"
 ---
 {
@@ -205,6 +204,50 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
         "ms_total": 2300,
         "tokens_in": 900,
         "tokens_out": 60
+      }
+    },
+    "stop_channel": {
+      "background_pending": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "blocked_kept": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "emitted": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "no_background_field": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "over_k": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "over_length": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "transcript_unreadable": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
       }
     }
   },
