@@ -67,6 +67,7 @@ Subagent, delegation and routing guards.
 - `guards.sharedTreeAgentNote` = true: Shared-tree spawn advisory switch
 - `guards.idleNeglectAgentMaxAgeMin` = 30: Max age of an agent counted as cover
 - `guards.stopNagBudgetPerPrompt` = 0: Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget)
+- `guards.idleRule` = false: Switch guards.idleRule (default off, plan v2 D14)
 - `guards.maxParallelDispatch` = 0: A fixed cap on running background agents (guards.maxParallelDispatch); 0 uses the CPU-based cap
 - `guards.idleNeglectMinPriority` = "p1": Priority floor of the idle-neglect block
 - `guards.idleNeglectProvenOnly` = true: Block idle neglect only when proven

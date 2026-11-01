@@ -533,3 +533,144 @@ fn a_free_text_priority_tag_blocks_the_stop_capped_and_p0_to_p3_pass() {
     let good = enforce_stop(&w, &[("T-3 [P1] Owner/blocked wait", "pending")], false);
     assert!(!good.contains("P0-P3"), "a P-tag with the label in the text is not flagged: {good}");
 }
+
+// ---- R-idle (guards.idleRule, plan v2 section 4): the open-task Stop blocks skip tasks that are not idle and name the exact ids ----
+
+/// One task of an R-idle transcript.
+struct IdleTask {
+    id: u32,
+    subject: &'static str,
+    description: &'static str,
+    status: &'static str,
+    owner: Option<&'static str>,
+    blocked_on: Option<&'static str>,
+}
+
+fn idle_task(id: u32, subject: &'static str, status: &'static str) -> IdleTask {
+    IdleTask { id, subject, description: "", status, owner: None, blocked_on: None }
+}
+
+/// A transcript holding `tasks` (created, then set to their status/owner/blockedOn) and one background `Agent` launch per
+/// `(description, name)` of `agents` that never finishes (so the scan shows it running).
+fn idle_transcript(tasks: &[IdleTask], agents: &[(&str, Option<&str>)]) -> String {
+    use serde_json::json;
+    let mut out = String::new();
+    let ts = "2999-01-01T00:00:00.000Z";
+    for t in tasks {
+        let n = t.id;
+        let create = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": t.subject, "description": t.description}}]}, "timestamp": ts});
+        let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: {}", t.subject)}]}, "timestamp": ts});
+        let mut input = json!({"taskId": n.to_string(), "status": t.status});
+        if let Some(o) = t.owner {
+            input["owner"] = json!(o);
+        }
+        if let Some(b) = t.blocked_on {
+            input["metadata"] = json!({"blockedOn": b});
+        }
+        let update = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": input}]}, "timestamp": ts});
+        out.push_str(&format!("{create}\n{result}\n{update}\n"));
+    }
+    for (i, (description, name)) in agents.iter().enumerate() {
+        let agent = format!("a{:015x}", i + 1);
+        let mut input = json!({"description": description, "prompt": "p", "run_in_background": true});
+        if let Some(n) = name {
+            input["name"] = json!(n);
+        }
+        let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_ag{i}"), "name": "Agent", "input": input}]}, "timestamp": ts});
+        let text = format!(
+            "Async agent launched successfully. (internal metadata)\nagentId: {agent} (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/{agent}.output\n"
+        );
+        let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": format!("toolu_ag{i}"), "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+        out.push_str(&format!("{launch}\n{res}\n"));
+    }
+    out
+}
+
+/// Stop through the dispatcher for `transcript`, with the R-idle switch `on` or off; returns the decoded block reason, or `None` when
+/// the Stop was not blocked.
+fn idle_stop(name: &str, transcript: &str, on: bool, mode: Option<&str>) -> Option<String> {
+    let w = World::new(name);
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    std::fs::write(w.path("t.jsonl"), transcript).unwrap();
+    let mut p = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")});
+    if let Some(m) = mode {
+        p["permission_mode"] = m.into();
+    }
+    let env: Vec<(&str, &str)> = if on { vec![("ANTIHALL_IDLE_RULE", "1")] } else { vec![] };
+    let (code, out, err) = stop_run_env(&w, "task-guard", &p.to_string(), &env);
+    assert_eq!(code, 0, "the engine answers; the Node hook must not run: {err}");
+    assert_stdout_is_json_or_empty(&out, name);
+    if out.trim().is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    (v["decision"] == "block").then(|| v["reason"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn idle_rule_off_keeps_the_earlier_block_text_and_on_names_the_ids_and_the_clearing_step() {
+    let t = idle_transcript(&[idle_task(7, "build the thing", "in_progress"), idle_task(9, "write the docs", "in_progress")], &[]);
+    let off = idle_stop("ir-off", &t, false, None).expect("today an unowned open task blocks");
+    assert!(off.contains("open tasks remain unfinished") && !off.contains("#7"), "off: the earlier text, no ids: {off}");
+    let on = idle_stop("ir-on", &t, true, None).expect("the same idle tasks still block with the switch on");
+    assert!(on.contains("#7") && on.contains("#9"), "on: the exact ids: {on}");
+    assert!(on.contains("blockedOn") && on.contains("description"), "on: the step that clears it (spawn an agent naming the id, or mark it blocked): {on}");
+    assert!(!on.contains("open tasks remain unfinished"), "on: the new text: {on}");
+}
+
+#[test]
+fn idle_rule_idle_block_names_the_dispatchable_ids_and_the_step() {
+    let t = idle_transcript(&[idle_task(21, "[P1] port the check", "pending"), idle_task(22, "[P1] port the other check", "pending")], &[]);
+    let on = idle_stop("ir-idle-on", &t, true, None).expect("two pending tasks and no agent: the idle block");
+    assert!(on.contains("#21") && on.contains("#22") && on.contains("no live agent"), "{on}");
+    assert!(on.contains("blockedOn"), "the clearing step: {on}");
+}
+
+/// The reported false positive: an open task whose agent is attached (the agent's description names it, or it is the task's owner) is not idle.
+#[test]
+fn idle_rule_skips_a_task_with_a_live_agent_attached() {
+    // an agent whose description names the task
+    let by_ref = idle_transcript(&[idle_task(361, "[P1] measure the baseline", "in_progress")], &[("#361 measure the baseline", None)]);
+    assert!(idle_stop("ir-ref-off", &by_ref, false, None).is_some(), "today the generic block fires on it (the reported false positive)");
+    assert!(idle_stop("ir-ref-on", &by_ref, true, None).is_none(), "on: an agent that names #361 attends it");
+    // the task's owner is a running named agent
+    let mut owned = idle_task(362, "[P1] port the wake", "in_progress");
+    owned.owner = Some("wake-worker");
+    let by_owner = idle_transcript(&[owned], &[("port the wake", Some("wake-worker"))]);
+    assert!(idle_stop("ir-owner-on", &by_owner, true, None).is_none(), "on: a live owner agent attends it");
+    // the twin: an agent that names ANOTHER task leaves #363 idle
+    let other = idle_transcript(&[idle_task(363, "[P1] unattended", "in_progress")], &[("#364 something else", None)]);
+    let still = idle_stop("ir-other-on", &other, true, None).expect("an agent naming another task does not attend #363");
+    assert!(still.contains("#363"), "{still}");
+}
+
+#[test]
+fn idle_rule_skips_tasks_that_are_parked_blocked_or_waiting_with_a_reason_and_names_only_the_idle_ones() {
+    let mut blocked_on = idle_task(31, "[P1] a", "in_progress");
+    blocked_on.blocked_on = Some("waiting on the CI run");
+    let mut parked = idle_task(32, "[P1] b", "in_progress");
+    parked.description = "PARKED: the owner has not decided the schema yet";
+    let mut waiting = idle_task(33, "[P1] c", "in_progress");
+    waiting.description = "Blocked on baseline run, waiting for load < 15";
+    let mut clock = idle_task(34, "[P1] d", "in_progress");
+    clock.description = "retry after 14:30 when the quota resets";
+    let all_parked = idle_transcript(&[blocked_on, parked, waiting, clock], &[]);
+    assert!(idle_stop("ir-parked-off", &all_parked, false, None).is_some(), "today every one of them blocks the Stop");
+    assert!(idle_stop("ir-parked-on", &all_parked, true, None).is_none(), "on: every remaining task is parked/blocked/waiting with a reason");
+    // a bare BLOCKED gives no reason: it stays idle; the parked one is left out of the list
+    let mut bare = idle_task(41, "[P1] bare", "in_progress");
+    bare.description = "BLOCKED";
+    let mut ok = idle_task(42, "[P1] parked", "in_progress");
+    ok.description = "blocked: waiting for the owner to approve";
+    let mixed = idle_transcript(&[bare, ok], &[]);
+    let r = idle_stop("ir-mixed-on", &mixed, true, None).expect("a bare BLOCKED still fires");
+    assert!(r.contains("#41") && !r.contains("#42"), "only the idle task is named: {r}");
+}
+
+#[test]
+fn idle_rule_is_quiet_in_plan_mode_and_blocks_the_same_tasks_outside_it() {
+    let t = idle_transcript(&[idle_task(51, "[P1] plan target", "in_progress")], &[]);
+    assert!(idle_stop("ir-plan-on", &t, true, Some("plan")).is_none(), "on: plan mode is quiet");
+    assert!(idle_stop("ir-plan-off", &t, false, Some("plan")).is_some(), "off: unchanged, plan mode blocks as before");
+    assert!(idle_stop("ir-default-on", &t, true, Some("default")).is_some(), "the twin: the same task outside plan mode blocks");
+}

@@ -97,6 +97,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"speculationGuard\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_speculation_guard\"}",
   "{\"section\":\"guards\",\"key\":\"inferenceCheck\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_INFERENCE_CHECK\"}",
   "{\"section\":\"guards\",\"key\":\"claimEvidence\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_CLAIM_EVIDENCE\"}",
+  "{\"section\":\"guards\",\"key\":\"idleRule\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_IDLE_RULE\"}",
   "{\"section\":\"guards\",\"key\":\"pushedNotDone\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PUSHED_NOT_DONE\"}",
   "{\"section\":\"guards\",\"key\":\"claimLedger\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_claim_ledger\"}",
   "{\"section\":\"guards\",\"key\":\"pruneStopBlock\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PRUNE_STOP_BLOCK\"}",

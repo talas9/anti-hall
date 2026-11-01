@@ -3150,7 +3150,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.problem_source` | `{id}: source {source} does not exist` |  |  | Registry problem: the source key of a rule does not exist. Placeholders: {id}, {source}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
-| `guard_rules.rules` | `148 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `150 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
 | `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
 | `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
@@ -4718,6 +4718,33 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch_tier.tier_workspace` | `a large multi-step feature, migration or release spanning several files or co...` |  |  | The description of the workspace tier in the question. |
 | `dispatch_tier.tools` | `TaskCreate, TaskUpdate` |  |  | The task tools whose text changes the hook classifies. |
 
+### task_guards.toml / idle_rule
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `idle_rule.blocked_on_min` | `3` |  |  | Fewest characters a task's blockedOn text needs to count as a stated reason (a bare or one-letter value does not). |
+| `idle_rule.clock_re` | `\b(?:waiting\|wait\|until\|till\|after\|retry\|retrying\|re-?check\|resumes?\|resuming...` |  |  | JavaScript regex source (case-insensitive) of a wait on a clock: a waiting word (wait, until, till, after, retry, recheck, resume) followed within 40 characters of a time of day, a duration, tomorrow, tonight, next week/month/day or an ISO date. |
+| `idle_rule.details_list` | `Idle tasks:\n{list}` |  |  | Saved-details block listing every idle task; `{list}` has one line per task: id, subject, status. |
+| `idle_rule.details_steps` | `To clear a task, do one of: (1) start an agent whose description contains its...` |  |  | Saved-details text with the three ways to clear a listed task; `{upd}` the task update tool, `{first}` the first listed id. |
+| `idle_rule.id_sep` | `, ` |  |  | Separator between the task ids of the visible block line. |
+| `idle_rule.ids_max` | `6` |  |  | Most task ids the visible block line names; the rest are counted ({more}) and listed in the saved details. |
+| `idle_rule.instead` | `spawn an agent with #{first} in its description, or {upd} it blockedOn=<reaso...` |  |  | The step that clears the block, in the instead line (kept under 115 units so it stays visible); `{upd}` the task update tool, `{first}` the first listed id. |
+| `idle_rule.kind_idle` | `idle` |  |  | Counter label: the sharp idle-neglect block (dispatchable tasks no agent covers). |
+| `idle_rule.kind_open` | `open` |  |  | Counter label: the generic open-tasks block. |
+| `idle_rule.minutes_cap` | `240` |  | min | Most minutes one block adds to idle_slot_minutes (the age of the oldest listed task is capped here). |
+| `idle_rule.more` | ` (+{n} more)` |  |  | Tail of the id list when more tasks than idle_rule.ids_max are idle; `{n}` is how many were left out. |
+| `idle_rule.parked_re` | `(?:^\|[\s\[(])(?:parked\|blocked\|waiting\|on hold\|deferred)\b\s*(?::\|-\|–\|—\|\(\|\b...` |  |  | JavaScript regex source (case-insensitive) of a parked/blocked/waiting marker that GIVES ITS REASON: the marker word, then a colon, dash, parenthesis or on/for/until/till/by/behind, then at least two characters of reason. A bare BLOCKED with no reason does not match, so it still counts as idle. |
+| `idle_rule.reason_agent_ref` | `agent_ref` |  |  | Suppression reason label: a running agent's description or launch name names the task (#<id>). |
+| `idle_rule.reason_blocked_on` | `blocked_on` |  |  | Suppression reason label: the task has a blockedOn reason. |
+| `idle_rule.reason_clock` | `clock` |  |  | Suppression reason label: the task waits on a clock. |
+| `idle_rule.reason_live_agent` | `live_agent` |  |  | Suppression reason label: the task's owner is a live agent or workspace. |
+| `idle_rule.reason_owner` | `owner` |  |  | Suppression reason label: the task waits on the owner. |
+| `idle_rule.reason_parked` | `parked` |  |  | Suppression reason label: the task says parked/blocked/waiting and gives the reason. |
+| `idle_rule.reason_plan_mode` | `plan_mode` |  |  | Suppression reason label: the session is in plan mode (counted once per open task). |
+| `idle_rule.text_max` | `600` |  |  | Most UTF-16 units of a task's subject plus description that the parked and clock markers are looked for in. |
+| `idle_rule.what_idle` | `{n} open tasks idle, no live agent, no blocked reason: {ids}{more}.` |  |  | First line of the R-idle idle block; `{n}` tasks, `{ids}` the ids (#<id>), `{more}` the tail. Kept short: the visible line is cut near 115 units. |
+| `idle_rule.what_open` | `{n} open tasks unfinished, none has a live agent or a blocked reason: {ids}{m...` |  |  | First line of the R-idle generic block; same placeholders as what_idle. |
+
 ### task_guards.toml / task_guard
 
 | Key | Default | Env override | Unit | What it is |
@@ -4765,6 +4792,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.idle_digest` | `Never stop with open tasks idle: assign each to an agent or report why.` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `task_guard.idle_hash_tags` | `idle, no-agents` |  |  | The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's. |
 | `task_guard.idle_instead` | `assign the pending tasks to agents.` |  |  | The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing). |
+| `task_guard.idle_rule_setting` | `6 entries` |  |  | Switch guards.idleRule (default off, plan v2 D14). On: the task-guard Stop blocks leave out tasks that are not idle (live owner agent, an agent that names the task, owner decision, blockedOn reason, parked/blocked/waiting marker with its reason, a wait on a clock), stay quiet in plan mode, and name the exact task ids and the step that clears them. Off: the Stop answers are unchanged. |
 | `task_guard.idle_what` | `{n} open tasks have no agent working on them.` |  |  | The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail. |
 | `task_guard.idle_why` | `Work that could run in parallel is sitting idle.` |  |  | The why line of the idle-neglect block. |
 | `task_guard.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of an in-progress status (tested unanchored, as Node does). |
@@ -5922,7 +5950,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `392 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `393 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8339,7 +8367,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `398 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `399 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14681,6 +14709,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `silent_agent_nudge_fired` | counter | stops |  | Stop nudges said by silent-agent-nudge for a background agent or heartbeat quiet for guards.silentAgentNudgeMin minutes (#519). |
 | `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided). |
 | `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
+| `idle_rule_age_unknown` | counter | blocks | kind | Delivered R-idle blocks whose listed tasks had no known start time (a task list read from the store carries none), so idle_slot_minutes got nothing from them. |
+| `idle_rule_fired` | counter | blocks | kind | R-idle Stop blocks delivered (guards.idleRule on), by kind (idle: the dispatch-demand block; open: the generic block). |
+| `idle_rule_listed` | counter | tasks | kind | Tasks named by delivered R-idle blocks, by kind. |
+| `idle_rule_suppressed` | counter | tasks | reason | Open tasks the R-idle filter kept out of a block's list, by reason (owner, blocked_on, parked, clock, live_agent, agent_ref; plan_mode counts the open tasks of a plan-mode Stop). Counted once per delivered block, plus once per plan-mode Stop. |
+| `idle_slot_minutes` | counter | min | kind | PROXY for plan v2's idle-slot minutes: at each delivered R-idle block, the age in minutes of the oldest listed task since it was created or last set pending/in progress, capped at idle_rule.minutes_cap. Not a time integral (that would need persistent state); blocks of one idle spell add up, so read it as a relative size, not as minutes. |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
