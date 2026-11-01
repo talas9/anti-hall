@@ -128,6 +128,62 @@ fn repair_for_serde(txt: &str) -> Option<String> {
     Some(out)
 }
 
+/// A SETTINGS file read the way JavaScript reads it for one class only: each number outside the f64 range (JavaScript's `Infinity`, which no
+/// setting accepts) becomes `null`, so only that key is invalid (every reader treats `null` as "not set" and falls to the next source, the
+/// default at the end) and the rest of the file still counts (#569). Returns the value and how many numbers were replaced. `None` when the text
+/// still does not parse for serde: a lone surrogate escape or nesting past serde's limit stays "readable only by JavaScript"
+/// ([`js_reads_differently_str`]), which the caller handles with the failure policy.
+pub fn parse_settings_as_js(txt: &str) -> Option<(Value, usize)> {
+    if let Ok(v) = serde_json::from_str::<Value>(txt) {
+        return Some((v, 0));
+    }
+    let (fixed, replaced) = null_out_of_range_numbers(txt);
+    if replaced == 0 {
+        return None;
+    }
+    serde_json::from_str::<Value>(&fixed).ok().map(|v| (v, replaced))
+}
+
+/// `txt` with every number token outside the f64 range (outside strings) written as `null`, and how many there were.
+fn null_out_of_range_numbers(txt: &str) -> (String, usize) {
+    let b = txt.as_bytes();
+    let (mut out, mut i, mut replaced, mut in_str) = (String::with_capacity(txt.len()), 0usize, 0usize, false);
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            // copy the escape pair or the character whole, so a multi-byte character is never split
+            let n = if c == b'\\' { 2 } else { txt[i..].chars().next().map_or(1, char::len_utf8) };
+            let end = (i + n).min(b.len());
+            out.push_str(txt.get(i..end).unwrap_or(""));
+            if c == b'"' {
+                in_str = false;
+            }
+            i = end;
+        } else if c == b'"' {
+            in_str = true;
+            out.push('"');
+            i += 1;
+        } else if matches!(c, b'-' | b'0'..=b'9') {
+            let start = i;
+            while i < b.len() && matches!(b[i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+                i += 1;
+            }
+            let tok = &txt[start..i];
+            if tok.parse::<f64>().is_ok_and(f64::is_infinite) {
+                replaced += 1;
+                out.push_str("null");
+            } else {
+                out.push_str(tok);
+            }
+        } else {
+            let ch = txt[i..].chars().next().unwrap_or(' ');
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    (out, replaced)
+}
+
 /// [`js_reads_differently_str`] on file bytes, decoded as Node decodes them (UTF-8, bad bytes replaced).
 pub fn js_reads_differently(bytes: &[u8]) -> bool {
     js_reads_differently_str(&String::from_utf8_lossy(bytes))
@@ -150,6 +206,22 @@ mod tests {
         ] {
             assert!(js_reads_differently(doc.as_bytes()), "{name}");
         }
+    }
+
+    #[test]
+    fn a_settings_file_with_an_overflowing_number_reads_with_only_that_key_null() {
+        let big_int = format!("1{}", "0".repeat(400));
+        for bad in ["1e400", "-1e400", big_int.as_str()] {
+            let (v, n) = parse_settings_as_js(&format!("{{\"a\":{{\"x\":{bad},\"y\":5}},\"s\":\"1e400 \\\" é\",\"flag\":true}}")).unwrap();
+            assert_eq!((n, &v["a"]["x"], &v["a"]["y"], &v["flag"]), (1, &Value::Null, &Value::from(5), &Value::Bool(true)), "{bad}");
+            assert_eq!(v["s"], "1e400 \" é", "a number-looking string is left alone");
+        }
+        assert_eq!(parse_settings_as_js("{\"x\":1e300}").unwrap().1, 0);
+        assert!(parse_settings_as_js("{not json").is_none());
+        // the other classes stay unreadable here (the caller applies the failure policy): a lone surrogate, nesting past serde's limit
+        assert!(parse_settings_as_js("{\"x\":1e400,\"s\":\"\\ud800\"}").is_none());
+        let deep = format!("{{\"x\":1e400,\"d\":{}1{}}}", "[".repeat(200), "]".repeat(200));
+        assert!(parse_settings_as_js(&deep).is_none());
     }
 
     #[test]

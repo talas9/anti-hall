@@ -7887,6 +7887,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `guardkit.settings_invalid_pending_max` | `256` |  |  | Most out-of-range settings numbers (such as 1e400) noted between two telemetry drains; the rest are dropped from the settings_value_invalid count, never from the settings file's other keys. |
 | `guardkit.settings_seen_max` | `256` |  |  | Most settings files the guard kit remembers the validity of before it starts over. |
 | `guardkit.tail_reader_buf_bytes` | `65536` |  | bytes | Capacity of the buffered reader the shared transcript tail reader (`guardkit::tail::tail_lines`) streams lines through. |
 
@@ -14626,6 +14627,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `schedule_missed` | counter | runs | job | Runs that caught up a missed window or skipped it, by job (D33). |
 | `schedule_runs` | counter | runs | job, status | Scheduled runs that finished, by job and status (ok, failed, timeout, planned, skipped) (D33). |
 | `script_soft` | counter | calls |  | Script calls that used more thread CPU than their SOFT limit (script.time_limit_ms); only warned about, the call was not cut. |
+| `settings_value_invalid` | counter | values | file | Settings numbers outside the f64 range (such as 1e400, which JavaScript reads as Infinity) found in a settings file (#569), by file (guardkit.settings_file, guardkit.claude_settings_file, guardkit.skip_file, guardkit.migration_markers_file, guardkit.jev_legacy_file). Each one invalidates only its own key (the next source, then the default, answers); the rest of the file still counts. Counted once per file change. Lifetime. |
 | `slow_replies` | counter | replies |  | Replies finished after their client's deadline had passed: slow but healthy (the client fell back to Node), counted apart from errors. |
 | `spool_applied` | counter | writes |  | Spooled writes the daemon applied (D24). |
 | `spool_quarantined` | counter | records |  | Spool records moved to quarantine: damaged, or refused for good by the store (D24). |

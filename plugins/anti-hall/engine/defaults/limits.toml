@@ -81,6 +81,12 @@ value = 256
 min = 1
 max = 100000
 
+[guardkit.settings_invalid_pending_max]
+doc = "Most out-of-range settings numbers (such as 1e400) noted between two telemetry drains; the rest are dropped from the settings_value_invalid count, never from the settings file's other keys."
+value = 256
+min = 1
+max = 100000
+
 [gitcache.content_cap_bytes]
 doc = "Bytes of a signed file read when the cache fingerprints a repository (a HEAD or a loose ref is a few dozen bytes)."
 value = 4096

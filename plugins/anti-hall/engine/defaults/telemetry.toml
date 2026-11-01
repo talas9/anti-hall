@@ -656,6 +656,10 @@ value = { kind = "counter", unit = "events", labels = ["name"] }
 doc = "Engine-level fail-opens by reason and check: the request was answered without the check's verdict (missing_key, deadline_cut, script_timeout, jev_breaker_open, busy, internal_error, undelivered_verdict)."
 value = { kind = "counter", unit = "events", labels = ["reason", "check"] }
 
+[metric.settings_value_invalid]
+doc = "Settings numbers outside the f64 range (such as 1e400, which JavaScript reads as Infinity) found in a settings file (#569), by file (guardkit.settings_file, guardkit.claude_settings_file, guardkit.skip_file, guardkit.migration_markers_file, guardkit.jev_legacy_file). Each one invalidates only its own key (the next source, then the default, answers); the rest of the file still counts. Counted once per file change. Lifetime."
+value = { kind = "counter", unit = "values", labels = ["file"] }
+
 [telemetry.spawn_tools]
 doc = "Launch tools observed for routing outcomes on Claude/OMC and Codex/OMX payloads."
 value = ["Agent", "Task"]
