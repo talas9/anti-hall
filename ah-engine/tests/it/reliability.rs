@@ -1576,9 +1576,14 @@ fn shed_probe(sock: &Path, req: &[u8]) -> Result<bool, String> {
 
 /// A test-hook `sleep` request that holds the worker (or a queue slot) for 20 s, its connection kept open by the caller.
 fn sleep_holder(sock: &Path) -> std::os::unix::net::UnixStream {
+    sleep_holder_for(sock, 20_000)
+}
+
+/// The same, holding the worker for `ms`.
+fn sleep_holder_for(sock: &Path, ms: u64) -> std::os::unix::net::UnixStream {
     let mut s = std::os::unix::net::UnixStream::connect(sock).expect("connect");
     s.set_write_timeout(Some(crate::common::IO_CEILING)).unwrap();
-    s.write_all(b"CTL sleep 20000\n").expect("write");
+    s.write_all(format!("CTL sleep {ms}\n").as_bytes()).expect("write");
     s.shutdown(std::net::Shutdown::Write).expect("half-close");
     s
 }
@@ -2336,10 +2341,15 @@ fn an_unconfirmed_verdict_is_an_undelivered_verdict_fail_open() {
 #[test]
 fn a_client_that_is_gone_before_the_ack_is_not_judged() {
     use std::os::unix::net::UnixStream;
-    let e = Env::new("ackgone", &[]);
+    // One worker, held by a test-hook sleep: the request below is read by a worker only after the sleep, by when its client has long
+    // hung up. Without the hold the daemon could read and ACK the request in the instants before the client's close (a race, seen on
+    // macOS CI: the request was acked and delivered, nothing was abandoned). The accept loop queues connections in arrival order and
+    // reads no request itself, so the single worker meets the holder first and the request second, and a status call third.
+    let e = Env::new("ackgone", &[("AH_ENGINE_WORKERS", "1"), ("AH_ENGINE_QUEUE", "8")]);
     e.warm();
     let before = wire_ctl_status(&e)["requests"].as_u64().unwrap();
     let sock = ah_engine::paths::socket_in(&e.eng());
+    let mut holder = sleep_holder_for(&sock, 2_000);
     let body = format!("V 0.1.0\n{}\n{DENY_IN}", ah_engine::reqenv::RequestEnv::from_pairs([("HOME", "/h")]).to_line());
     let mut s = UnixStream::connect(&sock).unwrap();
     s.write_all(&ah_engine::wire::tag_request(body.as_bytes()).unwrap()).unwrap();
@@ -2347,9 +2357,15 @@ fn a_client_that_is_gone_before_the_ack_is_not_judged() {
     // not judged either way: where the peer's hang-up is visible when a worker pops the connection (Linux) the worker skips it before
     // reading (gone_skipped); where it is not (macOS) the ACK(req) write is refused (wire.abandoned)
     let dropped = |st: &serde_json::Value| st["wire"]["abandoned"].as_u64().unwrap_or(0) + st["gone_skipped"].as_u64().unwrap_or(0);
-    assert!(wait_for(|| dropped(&wire_ctl_status(&e)) == 1), "{}", wire_ctl_status(&e)["wire"]);
-    // the status call itself is a request; the abandoned one added none
-    assert_eq!(wire_ctl_status(&e)["requests"].as_u64().unwrap(), before + 2, "only the two status calls were counted");
+    // the holder's reply is the worker's release; the abandoned request is next in the queue and the status call behind it, so the
+    // status is answered only once that request has been decided (no polling: every poll would be a request of its own)
+    holder.set_read_timeout(Some(common::scaled(Duration::from_secs(30)))).unwrap();
+    let mut released = [0u8; 64];
+    assert!(holder.read(&mut released).unwrap() > 0, "the sleep holder is answered when its sleep ends");
+    let st = wire_ctl_status(&e);
+    assert_eq!(dropped(&st), 1, "{}", st["wire"]);
+    // the sleep holder and this status call are the only requests counted; the abandoned one added none
+    assert_eq!(st["requests"].as_u64().unwrap(), before + 2, "only the holder and the status call were counted");
 }
 
 #[test]
