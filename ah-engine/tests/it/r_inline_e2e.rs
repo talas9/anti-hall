@@ -148,3 +148,20 @@ fn the_window_block_names_the_count_and_the_limit_only_with_the_switch_on() {
         assert_eq!(named, on, "on={on}: the headline names the count and the limit only with the switch on: {r:?}");
     }
 }
+
+#[test]
+fn a_bash_write_to_the_trusted_allowlist_stays_blocked_while_spawning_is_stopped() {
+    let rig = Rig::new("protected");
+    std::fs::create_dir_all(rig.dir.join("proj/.anti-hall")).unwrap();
+    std::fs::write(rig.dir.join("proj/.anti-hall/edit-allow.json"), r#"{"paths":[]}"#).unwrap();
+    rig.stop_spawning();
+    let cmd = "printf x > .anti-hall/edit-allow.json";
+    for on in [false, true] {
+        let r = rig.bash(&format!("prot-{on}"), cmd, on);
+        assert_eq!(r.0, 2, "on={on}: the trusted allowlist is not edited by the main agent, spawning stopped or not: {r:?}");
+        assert!(said(&r).contains("Hand the edit to a helper agent"), "on={on}: the block is the same answer as before: {r:?}");
+    }
+    // the ordinary write still stands down in the same session state
+    let r = rig.bash("prot-plain", WRITE, true);
+    assert_eq!(r.0, 0, "an ordinary write still stands down: {r:?}");
+}
