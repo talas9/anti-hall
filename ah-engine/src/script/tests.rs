@@ -4071,3 +4071,60 @@ fn the_session_summary_speaks_at_the_end_and_off_is_silent() {
     assert_eq!(run_event("session-summary", "SessionEnd", &[("ANTIHALL_UI_SESSION_SUMMARY", "off")], &h), Some(Some(Verdict::Allow)));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
+
+// ---- task-guard R-idle (guards.idleRule): its counters ----
+
+mod idle_rule_counters {
+    use super::*;
+
+    fn lines(tasks: &[(u32, &str, &str, &str)]) -> String {
+        let ts = "2026-11-01T00:00:00.000Z";
+        let mut out = String::new();
+        for (n, subject, description, status) in tasks {
+            let c = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": subject, "description": description}}]}, "timestamp": ts});
+            let r = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: {subject}")}]}, "timestamp": ts});
+            let u = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": status}}]}, "timestamp": ts});
+            out.push_str(&format!("{c}\n{r}\n{u}\n"));
+        }
+        out
+    }
+
+    fn stop(tag: &str, body: &str, on: bool) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), body).unwrap();
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        if on {
+            pairs.push(("ANTIHALL_IDLE_RULE".into(), "1".into()));
+        }
+        let p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": tag, "cwd": h});
+        super::super::run_forced("task-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs))
+    }
+
+    #[test]
+    fn a_delivered_block_counts_fired_listed_suppressed_and_the_idle_slot_proxy_and_off_counts_nothing() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let body = lines(&[
+            (1, "[P1] idle one", "", "in_progress"),
+            (2, "[P1] idle two", "", "in_progress"),
+            (3, "[P1] parked", "PARKED: waiting for the owner", "in_progress"),
+        ]);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let v = stop("ir-cnt-off", &body, false);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("\"decision\":\"block\"")), "{v:?}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        for name in ["idle_rule_fired", "idle_rule_listed", "idle_rule_suppressed", "idle_slot_minutes", "idle_rule_age_unknown"] {
+            assert_eq!(m.counter(name, &[("kind", "open")]) + m.counter(name, &[("reason", "parked")]), 0, "off: {name} is not counted");
+        }
+        let v = stop("ir-cnt-on", &body, true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("\"decision\":\"block\"")), "{v:?}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("idle_rule_fired", &[("kind", "open")]), 1, "one generic block delivered");
+        assert_eq!(m.counter("idle_rule_listed", &[("kind", "open")]), 2, "two idle tasks listed");
+        assert_eq!(m.counter("idle_rule_suppressed", &[("reason", "parked")]), 1, "the parked task was kept out");
+        // the tasks were created in 2026 (long ago): the proxy adds the cap, and no start time was missing
+        assert_eq!(m.counter("idle_slot_minutes", &[("kind", "open")]), defaults::num("idle_rule.minutes_cap"), "the proxy is capped");
+        assert_eq!(m.counter("idle_rule_age_unknown", &[("kind", "open")]), 0);
+    }
+}

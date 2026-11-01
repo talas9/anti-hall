@@ -1464,3 +1464,126 @@ value = { kind = "counter", unit = "stops", labels = ["kind"] }
 [metric.tasklist_progress_carried]
 doc = "Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight)."
 value = { kind = "counter", unit = "stops", labels = ["kind"] }
+
+# ---- R-idle (plan v2 section 4, GH #461 #516 #517 #262 #177): the idle-task rule behind guards.idleRule (off by default) ----
+# With the switch off nothing below is read and the Stop answers are the ones task-guard always gave. With it on, the Stop block skips a task
+# that has a live owner agent, that an agent's description or launch name names (#<id>), that waits on the owner, that carries a blockedOn
+# reason, that says it is parked/blocked/waiting and gives the reason, or that waits on a clock; plan mode is quiet; and the block names the
+# exact task ids and the one step that clears them. Acted-on / ignored come from the delivery funnel (delivery.act, row task-guard).
+
+[task_guard.idle_rule_setting]
+doc = "Switch guards.idleRule (default off, plan v2 D14). On: the task-guard Stop blocks leave out tasks that are not idle (live owner agent, an agent that names the task, owner decision, blockedOn reason, parked/blocked/waiting marker with its reason, a wait on a clock), stay quiet in plan mode, and name the exact task ids and the step that clears them. Off: the Stop answers are unchanged."
+value = { section = "guards", key = "idleRule", type = "boolean", env = "ANTIHALL_IDLE_RULE", option = "", default = false }
+
+[idle_rule.text_max]
+doc = "Most UTF-16 units of a task's subject plus description that the parked and clock markers are looked for in."
+value = 600
+min = 1
+
+[idle_rule.blocked_on_min]
+doc = "Fewest characters a task's blockedOn text needs to count as a stated reason (a bare or one-letter value does not)."
+value = 3
+min = 1
+
+[idle_rule.parked_re]
+doc = "JavaScript regex source (case-insensitive) of a parked/blocked/waiting marker that GIVES ITS REASON: the marker word, then a colon, dash, parenthesis or on/for/until/till/by/behind, then at least two characters of reason. A bare BLOCKED with no reason does not match, so it still counts as idle."
+value = '(?:^|[\s\[(])(?:parked|blocked|waiting|on hold|deferred)\b\s*(?::|-|–|—|\(|\bon\b|\bfor\b|\buntil\b|\btill\b|\bby\b|\bbehind\b)\s*[^\s.,;:)]{2,}'
+
+[idle_rule.clock_re]
+doc = "JavaScript regex source (case-insensitive) of a wait on a clock: a waiting word (wait, until, till, after, retry, recheck, resume) followed within 40 characters of a time of day, a duration, tomorrow, tonight, next week/month/day or an ISO date."
+value = '\b(?:waiting|wait|until|till|after|retry|retrying|re-?check|resumes?|resuming)\b[^.\n]{0,40}?(?:\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|weeks?)\b|\btomorrow\b|\btonight\b|\bnext (?:week|month|day)\b|\b\d{4}-\d{2}-\d{2}\b)'
+
+[idle_rule.reason_owner]
+doc = "Suppression reason label: the task waits on the owner."
+value = "owner"
+
+[idle_rule.reason_blocked_on]
+doc = "Suppression reason label: the task has a blockedOn reason."
+value = "blocked_on"
+
+[idle_rule.reason_parked]
+doc = "Suppression reason label: the task says parked/blocked/waiting and gives the reason."
+value = "parked"
+
+[idle_rule.reason_clock]
+doc = "Suppression reason label: the task waits on a clock."
+value = "clock"
+
+[idle_rule.reason_live_agent]
+doc = "Suppression reason label: the task's owner is a live agent or workspace."
+value = "live_agent"
+
+[idle_rule.reason_agent_ref]
+doc = "Suppression reason label: a running agent's description or launch name names the task (#<id>)."
+value = "agent_ref"
+
+[idle_rule.reason_plan_mode]
+doc = "Suppression reason label: the session is in plan mode (counted once per open task)."
+value = "plan_mode"
+
+[idle_rule.kind_idle]
+doc = "Counter label: the sharp idle-neglect block (dispatchable tasks no agent covers)."
+value = "idle"
+
+[idle_rule.kind_open]
+doc = "Counter label: the generic open-tasks block."
+value = "open"
+
+[idle_rule.minutes_cap]
+doc = "Most minutes one block adds to idle_slot_minutes (the age of the oldest listed task is capped here)."
+value = 240
+unit = "min"
+min = 1
+
+[idle_rule.ids_max]
+doc = "Most task ids the visible block line names; the rest are counted ({more}) and listed in the saved details."
+value = 6
+min = 1
+
+[idle_rule.id_sep]
+doc = "Separator between the task ids of the visible block line."
+value = ", "
+
+[idle_rule.more]
+doc = "Tail of the id list when more tasks than idle_rule.ids_max are idle; `{n}` is how many were left out."
+value = " (+{n} more)"
+
+[idle_rule.what_idle]
+doc = "First line of the R-idle idle block; `{n}` tasks, `{ids}` the ids (#<id>), `{more}` the tail. Kept short: the visible line is cut near 115 units."
+value = "{n} open tasks idle, no live agent, no blocked reason: {ids}{more}."
+
+[idle_rule.what_open]
+doc = "First line of the R-idle generic block; same placeholders as what_idle."
+value = "{n} open tasks unfinished, none has a live agent or a blocked reason: {ids}{more}."
+
+[idle_rule.instead]
+doc = "The step that clears the block, in the instead line (kept under 115 units so it stays visible); `{upd}` the task update tool, `{first}` the first listed id."
+value = "spawn an agent with #{first} in its description, or {upd} it blockedOn=<reason>, or finish it."
+
+[idle_rule.details_list]
+doc = "Saved-details block listing every idle task; `{list}` has one line per task: id, subject, status."
+value = "Idle tasks:\n{list}"
+
+[idle_rule.details_steps]
+doc = "Saved-details text with the three ways to clear a listed task; `{upd}` the task update tool, `{first}` the first listed id."
+value = "To clear a task, do one of: (1) start an agent whose description contains its id, for example description \"#{first} <what it does>\"; (2) {upd} taskId={first} with metadata blockedOn=<the reason>, or write a line \"BLOCKED: <reason>\" in its subject or description (a bare BLOCKED with no reason does not clear it); a wait on a clock: write \"waiting until <time>\"; (3) finish it and mark it completed."
+
+[metric.idle_rule_fired]
+doc = "R-idle Stop blocks delivered (guards.idleRule on), by kind (idle: the dispatch-demand block; open: the generic block)."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }
+
+[metric.idle_rule_listed]
+doc = "Tasks named by delivered R-idle blocks, by kind."
+value = { kind = "counter", unit = "tasks", labels = ["kind"] }
+
+[metric.idle_rule_suppressed]
+doc = "Open tasks the R-idle filter kept out of a block's list, by reason (owner, blocked_on, parked, clock, live_agent, agent_ref; plan_mode counts the open tasks of a plan-mode Stop). Counted once per delivered block, plus once per plan-mode Stop."
+value = { kind = "counter", unit = "tasks", labels = ["reason"] }
+
+[metric.idle_slot_minutes]
+doc = "PROXY for plan v2's idle-slot minutes: at each delivered R-idle block, the age in minutes of the oldest listed task since it was created or last set pending/in progress, capped at idle_rule.minutes_cap. Not a time integral (that would need persistent state); blocks of one idle spell add up, so read it as a relative size, not as minutes."
+value = { kind = "counter", unit = "min", labels = ["kind"] }
+
+[metric.idle_rule_age_unknown]
+doc = "Delivered R-idle blocks whose listed tasks had no known start time (a task list read from the store carries none), so idle_slot_minutes got nothing from them."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }

@@ -137,6 +137,8 @@ value = [
   { id = "nested_spawn.msg", setting = "guards.allowNestedSpawns", inverted = true, tier = "essential", source = "nested_spawn.msg_what" },
   { id = "task_guard.idle", setting = "guards.taskGuard", tier = "essential", source = "task_guard.idle_what" },
   { id = "task_guard.generic", setting = "", tier = "skill", source = "task_guard.generic_what" },
+  { id = "task_guard.idle_rule_idle", setting = "guards.idleRule", tier = "off", source = "idle_rule.what_idle" },
+  { id = "task_guard.idle_rule_open", setting = "guards.idleRule", tier = "off", source = "idle_rule.what_open" },
   { id = "tasklist_guard.reset", setting = "", tier = "skill", source = "tasklist_guard.what_reset" },
   { id = "rules_json.rm_rf_root", setting = "", tier = "essential", source = "guard_rules.msg_rm_rf_root" },
   { id = "write.no_heredoc", setting = "", tier = "essential", source = "guard_rules.msg_no_heredoc" },
