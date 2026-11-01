@@ -60,8 +60,8 @@ impl Env {
     }
 
     /// The one child holds `unread` real messages (the newest of urgency `urgency`), 40 days old, in a real SQLite store; the summary
-    /// the Primary's turn reads is computed from it by the engine at the start of each turn (so it follows the archive marker, the
-    /// switch and any expiry mark on disk), `stale_registry` is not a parameter: the engine derives it from the registry row.
+    /// the Primary's turn reads is computed from it by the engine at the start of each turn, `stale_registry` is not a parameter: the
+    /// engine derives it from the registry row.
     fn summary(&self, wt: &str, unread: u32, urgency: &str, _stale_registry: bool) {
         *self.pending.borrow_mut() = Some((wt.to_string(), unread, urgency.to_string()));
     }
@@ -163,11 +163,16 @@ fn off_by_default_an_archived_worktree_gone_child_is_still_named_as_before() {
     e.archive(&wt);
     let out = e.turn();
     assert!(out.contains(NUDGE), "the root cause: anti-hall's own archive marker is ignored by the nudge, got: {out}");
-    assert!(!e.dsdir().join(format!("expired/{CHILD}.json")).exists(), "nothing is marked while the switch is off");
+}
+
+/// The unread count the summary file holds for the one child, as a number.
+fn summary_unread(e: &Env) -> (serde_json::Value, serde_json::Value) {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(e.dsdir().join(format!("summaries/{}.json", e.key))).unwrap()).unwrap();
+    (v["workspaces"][CHILD]["unread"].clone(), v)
 }
 
 #[test]
-fn on_an_archived_worktree_gone_child_is_not_named_and_its_unread_is_marked_expired() {
+fn on_an_archived_worktree_gone_child_is_not_named_and_its_unread_count_stays_raw() {
     let e = Env::new("on");
     e.settings(true);
     let wt = e.worktree(false, true);
@@ -175,11 +180,76 @@ fn on_an_archived_worktree_gone_child_is_not_named_and_its_unread_is_marked_expi
     e.archive(&wt);
     let out = e.turn();
     assert!(!out.contains(NUDGE) && !out.contains(URGENT) && !out.contains("devswarm-archive-ready"), "silent, got: {out:?}");
-    let mark: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(e.dsdir().join(format!("expired/{CHILD}.json"))).unwrap()).unwrap();
-    assert_eq!(mark["store"], 3, "the backlog is marked expired up to its message count: {mark}");
-    assert!(mark["incarnation"].as_str().is_some_and(|i| i.contains("sess-1") && i.ends_with("|100")), "bound to the incarnation: {mark}");
-    // a second turn is quiet too and does not rewrite the mark
-    assert!(!e.turn().contains("need attention"));
+    let (unread, _) = summary_unread(&e);
+    assert_eq!(unread, 3, "the summary still counts the backlog: nothing is marked or hidden");
+    assert!(!e.dsdir().join("expired").exists(), "no mark is written anywhere");
+    assert!(!e.turn().contains("need attention"), "a second turn is quiet too");
+    assert_eq!(summary_unread(&e).0, 3);
+}
+
+#[test]
+fn the_summary_is_the_same_whatever_the_switch_with_an_archived_dead_child_and_unread_mail() {
+    // the control: the summary is computed by code this change does not touch, so an archived dead child with unread mail counts the same
+    // with the switch off (the behaviour before this change) and on; only the reminders differ
+    let off = Env::new("sum-off");
+    let wt = off.worktree(false, true);
+    off.summary(&wt, 4, "normal", false);
+    off.archive(&wt);
+    off.turn();
+    let on = Env::new("sum-on");
+    on.settings(true);
+    let wt2 = on.worktree(false, true);
+    on.summary(&wt2, 4, "normal", false);
+    on.archive(&wt2);
+    on.turn();
+    let (u_off, v_off) = summary_unread(&off);
+    let (u_on, v_on) = summary_unread(&on);
+    assert_eq!(u_off, 4);
+    assert_eq!(u_on, 4);
+    let strip = |v: &serde_json::Value, wt: &str| v["workspaces"].to_string().replace(wt, "<wt>");
+    assert_eq!(strip(&v_off, &wt), strip(&v_on, &wt2), "the workspaces section is identical");
+}
+
+#[test]
+fn an_archive_complete_dead_child_is_never_named_and_its_unread_stays_raw_in_the_summary() {
+    // archived AND its descriptor moved away (archive-complete): it is not a workspace row at all, so no nudge names it with the
+    // switch on or off; its unread stays in the summary's archived-stranded list
+    for on in [false, true] {
+        let e = Env::new(if on { "complete-on" } else { "complete-off" });
+        if on {
+            e.settings(true);
+        }
+        let wt = e.worktree(false, true);
+        e.summary(&wt, 3, "urgent", false);
+        e.archive(&wt);
+        e.materialize();
+        std::fs::remove_file(e.dsdir().join(format!("workspaces/{CHILD}.json"))).unwrap();
+        e.pending.borrow_mut().take(); // the summary on disk stays as computed with the descriptor gone below
+        let inv_home = e.dir.join("home");
+        let st = ah_engine::meshw::store::MeshStore::open(&e.dsdir().join("store").join(&e.key).join("devswarm.db")).unwrap();
+        let inv = ah_engine::meshw::common::Inv {
+            home: inv_home.clone(),
+            env: Default::default(),
+            cwd: e.repo.to_string_lossy().to_string(),
+            now: NOW_MS as i64,
+            stdin: None,
+            write_home: inv_home,
+            store_override: None,
+        };
+        let Ok(sum) = ah_engine::meshw::summary::compute(&st, &inv, None) else { panic!("summary") };
+        let sum = sum.stringify();
+        e.put(&format!("summaries/{}.json", e.key), serde_json::from_str(&sum).unwrap());
+        let v: serde_json::Value = serde_json::from_str(&sum).unwrap();
+        assert!(v["workspaces"].get(CHILD).is_none(), "an archive-complete child is not a workspace row: {sum}");
+        let listed = |k: &str| v[k].as_array().is_some_and(|a| a.iter().any(|x| x["id"] == CHILD && x["unread"] == 3));
+        assert!(listed("archivedStranded") || listed("orphans"), "its raw unread stays in the summary (on={on}): {sum}");
+        let out = e.turn();
+        assert!(!out.contains(NUDGE) && !out.contains(URGENT), "no per-workspace nudge (on={on}), got: {out:?}");
+        assert!(
+            listed("archivedStranded") && !listed("orphans") && !out.contains("devswarm-orphaned-mesh"),
+            "stranded, never an orphan notice (on={on}): {out:?}"
+        );
+    }
 }
 
 #[test]
@@ -205,7 +275,6 @@ fn on_a_live_child_still_nudges() {
     e.summary(&wt, 3, "normal", false);
     let out = e.turn();
     assert!(out.contains(NUDGE), "a child that is not archived and has its worktree is nagged, got: {out}");
-    assert!(!e.dsdir().join(format!("expired/{CHILD}.json")).exists());
 }
 
 #[test]
@@ -247,7 +316,6 @@ fn on_a_worktree_that_is_merely_absent_never_silences_a_child_that_is_not_archiv
     e.summary(&wt, 3, "urgent", false);
     let out = e.turn();
     assert!(out.contains(NUDGE) || out.contains(URGENT), "not archived: the reminder stays whatever the directory does, got: {out:?}");
-    assert!(!e.dsdir().join(format!("expired/{CHILD}.json")).exists(), "and no mark is written");
     // the directory comes back: the same reminder, not a different one
     e.worktree(true, true);
     let back = e.turn();
@@ -263,7 +331,6 @@ fn on_an_archived_child_whose_worktree_is_present_is_not_dead() {
     e.archive(&wt);
     let out = e.turn();
     assert!(out.contains(NUDGE), "archived but its worktree exists: not provably dead, got: {out:?}");
-    assert!(!e.dsdir().join(format!("expired/{CHILD}.json")).exists());
 }
 
 #[test]
@@ -279,22 +346,30 @@ fn on_a_missing_worktree_behind_a_link_leaving_the_home_is_not_gone() {
     e.archive(&wt);
     let out = e.turn();
     assert!(out.contains(NUDGE), "a path absent only because a link points outside the home proves nothing, got: {out:?}");
-    assert!(!e.dsdir().join(format!("expired/{CHILD}.json")).exists());
+}
+
+/// The reminder text of a turn without its first paragraph (the rotating general tip is not part of this check), with the scratch
+/// paths made stable.
+fn stable(e: &Env, wt: &str, out: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(out).unwrap();
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    ctx.split_once("\n\n").map_or(ctx, |x| x.1).replace(wt, "<wt>").replace(&e.dir.to_string_lossy().to_string(), "<dir>")
 }
 
 #[test]
-fn a_failed_mark_write_leaves_the_turn_quiet_and_the_unread_counted() {
-    // the mark directory is a regular file, so no mark can be written: the dead child is still left out of the nudge, nothing is
-    // claimed written (the writer answers false: pinned natively in dead_marks), and the next turn, with a writable directory, writes it
-    let e = Env::new("mark-fails");
-    e.settings(true);
-    let wt = e.worktree(false, true);
-    e.summary(&wt, 3, "normal", false);
-    e.archive(&wt);
-    std::fs::write(e.dsdir().join("expired"), "not a directory").unwrap();
-    assert!(!e.turn().contains(NUDGE), "a dead child is left out whether or not its mark could be written");
-    assert!(e.dsdir().join("expired").is_file(), "nothing replaced the file");
-    std::fs::remove_file(e.dsdir().join("expired")).unwrap();
-    e.turn();
-    assert!(e.dsdir().join(format!("expired/{CHILD}.json")).exists(), "the next turn writes the mark");
+fn off_the_whole_reminder_output_is_the_recorded_text() {
+    // the real payload of a Primary's turn with the switch off (and with it never set): the exact text the engine said before this change
+    // for an archived worktree-gone child with unread mail; it is byte-compared against a recorded file, so any drift of the off path fails
+    let want = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/dead-children-off.txt")).unwrap();
+    for explicit_off in [false, true] {
+        let e = Env::new(if explicit_off { "golden-off-explicit" } else { "golden-off" });
+        if explicit_off {
+            e.settings(false);
+        }
+        let wt = e.worktree(false, true);
+        e.summary(&wt, 3, "urgent", true);
+        e.archive(&wt);
+        let out = e.turn();
+        assert_eq!(stable(&e, &wt, &out).trim_end(), want.trim_end(), "the off output changed (explicit off: {explicit_off})");
+    }
 }

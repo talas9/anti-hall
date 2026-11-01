@@ -1,6 +1,6 @@
 //! Host primitives of the `devswarm-parent-inbox` check for a Primary that runs inside a git checkout (roadmap #68 part 2B).
 //! The script (`engine/logic/devswarm-parent-inbox.js`) holds every decision and text; these functions hold no rule, threshold or
-//! message, they only extract what it asks for. They write nothing (but `piExpire`). An answer an upstream reader cannot give is
+//! message, they only extract what it asks for. They write nothing. An answer an upstream reader cannot give is
 //! `{"unsure": true}`, which the script counts and logs with its cause before the turn goes on.
 //!
 //! | raw function | what it does |
@@ -8,8 +8,7 @@
 //! | `piAppDb()` | whether the DevSwarm app's database file exists at the path the app uses (`appDbPath`) |
 //! | `piSnap(windowMs, now)` | reads the app database snapshot once for this call: `{file, readable, focused}` (the file exists, a snapshot was read, the id of the workspace selected within `windowMs`) |
 //! | `piWs(id, worktree, now)` | `workspaceFor(snap, { id, worktreePath })` with the fields the table reads: `{id, label, rank, isPinned, builderType, active, archived, finish, brief}`, or `null` |
-//! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored, dead, deadReason}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
-//! | `piExpire(id, offeredMarkJson, now)` | GH #508: writes the expiry mark a summary row offered (compare-and-set to the larger positions under a lock); `true` only when it wrote. The one function here that writes |
+//! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored, dead}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
 //! | `piActivity(id, worktree, session, lastOutbound, now)` | `{ts, dormant, idleAlive, idleMs}`: the widest activity signal and the liveness state of `rowLivenessState` |
 //! | `piMarker(id, worktree, session)` | `isArchivedWorkspace(home, id, worktree, { sessionId })`: anti-hall's own archive marker names the row archived |
 //! | `piApp(id, worktree, repoKey, now)` | the app side of "archived" for a row (`appArchivedVerdict`, then the supervisor's active-list cache) |
@@ -304,12 +303,10 @@ fn row_state(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, repo_key:
     let superseded = if marker { false } else { gate_superseded(&w, &inv.home, id, wt, sid, inv.now as f64)? };
     let ignored = is_safe_id(id) && archive_ignored(&inv.home, id);
     // GH #508: the one definition of a dead child: ARCHIVED (anti-hall's marker or the app) AND the worktree provably gone; off unless the switch is on
-    let on = crate::meshw::summary::skip_dead_on(inv);
+    let on = crate::meshw::deadchild::skip_dead_on(inv);
     let gone = crate::meshw::deadchild::worktree_gone(wt.unwrap_or(""), &inv.home);
     let dead = on && (marker || app) && gone == Some(true);
-    Ok(
-        json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored, "dead": dead, "deadReason": if dead { json!("archived-worktree-gone") } else { Value::Null }}),
-    )
+    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored, "dead": dead}))
 }
 
 /// `appHasLiveChild` up to the per-row eligibility: the open, unarchived, non-primary workspaces of the project the working directory
@@ -594,16 +591,6 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         "piRow",
         Function::new(c.clone(), |id: String, wt: Option<String>, sid: Option<String>, key: String, now: f64| -> rquickjs::Result<String> {
             with_settings(|st| answer(row_state(&inv_of(st, now), &id, wt.as_deref(), sid.as_deref(), &key)))
-        })?,
-    )?;
-    h.set(
-        "piExpire",
-        Function::new(c.clone(), |id: String, offered: String, now: f64| -> rquickjs::Result<bool> {
-            with_settings(|st| {
-                let inv = inv_of(st, now);
-                let Ok(v) = serde_json::from_str::<Value>(&offered) else { return false };
-                crate::meshw::summary::skip_dead_on(&inv) && crate::meshw::deadchild::write_offer(&inv.home, &id, &v, now)
-            })
         })?,
     )?;
     h.set(

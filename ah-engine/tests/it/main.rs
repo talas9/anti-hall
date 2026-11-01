@@ -27,7 +27,6 @@ mod compiled_logic_gate;
 mod crashloop_drill;
 mod ctxbudget_e2e;
 mod dead_children;
-mod dead_marks;
 mod defaults_failover;
 mod defaults_keys;
 mod dep_budget;

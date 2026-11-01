@@ -17,7 +17,6 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_string_of, js_trim};
 use crate::defaults;
 use crate::meshw::common::{Inv, n, s, s_or_null};
-use crate::meshw::deadchild;
 use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::store::MeshStore;
@@ -339,20 +338,6 @@ pub(crate) fn archive_complete_ids(home: &Path) -> HashSet<String> {
     out
 }
 
-/// GH #508: whether the switch `devswarm.skipDeadChildren` is on (a child that is archived with its worktree gone no longer counts
-/// its backlog, and the nudges leave it out). Off (the default) keeps every count as it was.
-pub(crate) fn skip_dead_on(inv: &Inv) -> bool {
-    crate::checks::guardkit::settings::get_bool(&inv.settings(), defaults::raw("devswarm_parent.sw_skip_dead"))
-}
-
-/// GH #508: the NDJSON lines of a registry row's inbox, read only when the switch is on (the expiry mark is checked against them).
-fn nd_lines_of(on: bool, r: Option<&Reg>) -> f64 {
-    match r {
-        Some(r) if on && r.inbox_path.is_some() => ndjson_backlog(r.inbox_path.as_deref(), r.cursor_path.as_deref()).1,
-        _ => 0.0,
-    }
-}
-
 /// `crossLinkedIdentity(a, b)` on (id, sessionId) pairs.
 pub(crate) fn cross_linked(a_id: &str, a_sess: Option<&str>, b_id: &str, b_sess: Option<&str>) -> bool {
     if a_id.is_empty() || b_id.is_empty() || a_id == b_id {
@@ -660,7 +645,6 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let broadcast_all = messages(st, bpart, 0.0)?;
     let rows = registry(st)?;
     let archived = archive_complete_ids(home);
-    let dead_on = skip_dead_on(inv);
     let registry_ids: HashSet<String> = rows.iter().map(|d| d.id.clone()).filter(|id| !archived.contains(id)).collect();
     let aliases = crate::meshw::common::read_aliases(home);
     let mut resolver = Resolver { rows: &rows, aliases: aliases.clone(), pwid: HashMap::new() };
@@ -693,11 +677,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
         if owner.is_none() {
             crate::metrics::bump("mesh_summary_owner_fallback", &[]);
         }
-        // GH #508: the expiry mark of an archived, worktree-gone child, per source (store rows, NDJSON lines), validated in one place
-        let reg_ctx = Some((d.session_id.as_deref(), d.worktree_path.as_deref()));
-        let nd_lines = nd_lines_of(dead_on, Some(d));
-        let (through_store, through_nd) = deadchild::applied(home, dead_on, &d.id, reg_ctx, total, nd_lines);
-        let cursor = owner.as_ref().and_then(|o| o.store).unwrap_or(floor).max(through_store);
+        let cursor = owner.as_ref().and_then(|o| o.store).unwrap_or(floor);
         let mut unread = (total - cursor).max(0.0);
         // unread rows the recipient's own family sent, when the union already counted them (the store-only path counts them below)
         let mut own_unread: Option<usize> = None;
@@ -706,8 +686,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             let nd_floor = match owner.as_ref().and_then(|o| o.nd) {
                 Some(v) => v,
                 None => floor_of(st, &mut cur, home, &inv.cwd, &d.id, true),
-            }
-            .max(through_nd);
+            };
             let (known, lines) = ndjson_backlog(d.inbox_path.as_deref(), d.cursor_path.as_deref());
             if known && lines > nd_floor {
                 // the NDJSON side has unread lines: the summary counts the loss-free union at the floors (reader-cursors
@@ -850,10 +829,6 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             ("archive_request_only_unread".into(), OVal::Bool(archive_request_only)),
             ("pendingQuestions".into(), OVal::Arr(kept.clone())),
         ];
-        // GH #508: the expiry mark this row offers for writing (archived, worktree provably gone), only with the switch on
-        if let Some(m) = deadchild::offer(home, dead_on, &d.id, reg_ctx, total, nd_lines).and_then(|m| OVal::parse(&m.to_string())) {
-            w.push((defaults::text("devswarm_parent.mark_offer_field").into(), m));
-        }
         // push state from the freshest heartbeat file
         let beat = read_json(&devswarm_root(home).join(defaults::text("mesh_write.dir_heartbeats")).join(format!(
             "{}{}",
@@ -984,9 +959,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             continue;
         }
         let total = st.reader().message_count(id).unwrap_or_else(|e| soft("count", e)) as f64;
-        let reg = rows.iter().find(|r| r.id == *id);
-        let reg_ctx = reg.map(|r| (r.session_id.as_deref(), r.worktree_path.as_deref()));
-        let floor = floor_of(st, &mut cur, home, &inv.cwd, id, false).max(deadchild::applied(home, dead_on, id, reg_ctx, total, nd_lines_of(dead_on, reg)).0);
+        let floor = floor_of(st, &mut cur, home, &inv.cwd, id, false);
         let unread = (total - floor).max(0.0);
         if unread <= 0.0 {
             continue;
@@ -1010,8 +983,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             continue;
         }
         let total = st.reader().message_count(&d.id).unwrap_or_else(|e| soft("count", e)) as f64;
-        let floor = floor_of(st, &mut cur, home, &inv.cwd, &d.id, false)
-            .max(deadchild::applied(home, dead_on, &d.id, Some((d.session_id.as_deref(), d.worktree_path.as_deref())), total, nd_lines_of(dead_on, Some(d))).0);
+        let floor = floor_of(st, &mut cur, home, &inv.cwd, &d.id, false);
         let unread = (total - floor).max(0.0);
         if unread > 0.0 {
             stale.push(OVal::Obj(vec![("id".into(), s(&d.id)), ("worktreePath".into(), s(wt)), ("unread".into(), num(unread))]));

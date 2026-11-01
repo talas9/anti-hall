@@ -13511,7 +13511,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.defer_log_kind` | `parent-inbox-defer` |  |  | The kind of the engine event-log line a deferral of the Primary prompt hook to its Node hook writes (the line's text names the cause, so every deferral is countable). |
 | `devswarm_parent.dir_archive_nudges` | `archive-nudges` |  |  | The per-workspace archive-recommendation records (archive-nudges/<id>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_broadcast_seen` | `parent-inbox-broadcast-seen` |  |  | The per-session broadcast seen-state (parent-inbox-broadcast-seen/<session>.json), under the DevSwarm directory. |
-| `devswarm_parent.dir_expired` | `expired` |  |  | The directory (under the devswarm state dir) of the expiry marks of archived, worktree-gone children. A mark holds the child's incarnation and, per source, the positions it covers (store rows, NDJSON lines); mail past them still counts. |
 | `devswarm_parent.dir_locks` | `locks` |  |  | The lock files directory, under the DevSwarm directory. |
 | `devswarm_parent.dir_notice_cursor` | `maintainer-notice-cursor` |  |  | The per-project maintainer-notice cursors (maintainer-notice-cursor/<repoKey>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_orphans_seen` | `orphans-seen` |  |  | The directory (under the devswarm state dir) of the per-session orphaned-mesh warning records. |
@@ -13559,16 +13558,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.legend_dormant` | `dormant = no recent activity signal; often a workspace already CLOSED in the ...` |  |  | The line under the table that explains a dormant row, shown only when one is listed. |
 | `devswarm_parent.legend_not_draining` | `not-draining = a union-unread backlog has sat undrained >20m — a coordination...` |  |  | The line under the table that explains a not-draining row, shown only when one is listed. |
 | `devswarm_parent.low_urgency` | `low` |  |  | The urgency that keeps an unread backlog out of the normal nudge tier (tierOf). |
-| `devswarm_parent.mark_at` | `at` |  |  | The field of an expiry mark holding when it was last raised (ms). |
 | `devswarm_parent.mark_brief_not_delivered` | `⚠ brief not delivered` |  |  | Title-cell marker: the brief was never delivered. |
 | `devswarm_parent.mark_brief_withheld` | `⚠ brief withheld` |  |  | Title-cell marker: the brief was withheld. |
-| `devswarm_parent.mark_incarnation` | `incarnation` |  |  | The field of an expiry mark (and of the mark a summary row offers) naming the child incarnation it covers. |
-| `devswarm_parent.mark_incarnation_fmt` | `{sid}\|{wt}\|{at}` |  |  | How an incarnation is spelled: the archive marker's session id, worktree path and archivedAt together; a re-created child with the same id differs in at least one. Placeholders: {sid}, {wt}, {at}. |
-| `devswarm_parent.mark_nd` | `nd` |  |  | The field of an expiry mark holding the NDJSON inbox line position it covers. |
-| `devswarm_parent.mark_offer_field` | `deadMark` |  |  | The summary workspace row field carrying the expiry mark the row offers for writing (only with devswarm.skipDeadChildren on, for an archived child whose worktree is provably gone). |
 | `devswarm_parent.mark_on_screen` | `on screen` |  |  | Title-cell marker: the owner has the workspace on screen. |
 | `devswarm_parent.mark_pinned` | `pinned` |  |  | Title-cell marker: pinned in the DevSwarm app. |
-| `devswarm_parent.mark_store` | `store` |  |  | The field of an expiry mark holding the store message position it covers. |
 | `devswarm_parent.marketplace_default` | `.claude/plugins/marketplaces/anti-hall` |  |  | The marketplace clone, relative to the home directory, when the variable is unset or not an existing absolute directory. |
 | `devswarm_parent.max_listed` | `6` |  |  | Most workspaces the nudge segments name inline; the rest are counted. |
 | `devswarm_parent.max_mesh_issues` | `5` |  |  | Most orphaned partitions or stale registry rows the mesh-issue lines name (MAX_MESH_ISSUES). |
@@ -14720,9 +14713,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 | `dssup_appdb_date_unread` | counter | dates |  | Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full). |
 | `ingest_drops` | counter | paths | reason | Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason. |
-| `devswarm_dead_child_expired` | counter | messages | reason | Unread messages marked expired for an archived child whose worktree is provably gone (devswarm.skipDeadChildren), counted only when a mark was actually written. |
 | `devswarm_dead_child_skipped` | counter | workspaces | check, reason | Children left out of a DevSwarm nudge because they are archived and their worktree is provably gone (devswarm.skipDeadChildren), by check (attention, archive_ready, stale_registry) and reason (archived_worktree_gone). |
-| `devswarm_dead_mark_ignored` | counter | marks | reason | Expiry marks the summary did not apply (devswarm.skipDeadChildren), by reason: malformed (not an object of integer positions), other_incarnation (the child was re-created or re-archived), worktree_back (the worktree exists again or is no longer provably gone), beyond_stored (the mark reaches past what is stored). The full count is shown. |
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds

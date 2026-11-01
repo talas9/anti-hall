@@ -442,7 +442,7 @@ function piRoster(ctx, summary) {
   if (Array.isArray(ws)) { ah.unable('devswarm-parent-inbox:workspaces_array'); ws = null; }
   var summaryWorkspaces = ws !== null && typeof ws === 'object' ? ws : {};
   var ids = Object.keys(summaryWorkspaces);
-  var out = { rows: [], attention: [], archiveList: [], expire: [], ownExtra: 0, ownExtraUrgency: null, deferral: null, snapUnreadable: false };
+  var out = { rows: [], attention: [], archiveList: [], ownExtra: 0, ownExtraUrgency: null, deferral: null, snapUnreadable: false };
   // the DevSwarm app's database, read once
   var focusEnv = ah.env.get(ah.cfg('devswarm_parent.env_focus_ms'));
   var focusRaw = Number(focusEnv === null ? undefined : focusEnv); // Number(undefined) is NaN, Number(null) would be 0
@@ -552,8 +552,6 @@ function piRoster(ctx, summary) {
     // GH #508 (devswarm.skipDeadChildren): one definition of a dead child, decided natively (piRow): ARCHIVED (anti-hall's marker or the app) AND
     // its worktree provably gone. Such a child can never drain its mail, so no nudge names it. Unsure, or the switch off: as before.
     var deadRow = st.dead === true;
-    var offer = deadRow ? entry[ah.cfg('devswarm_parent.mark_offer_field')] : null;
-    if (offer && typeof offer === 'object' && unread > 0) out.expire.push({ id: id, offer: offer, unread: unread });
     if (((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused && deadRow) {
       ah.metric('devswarm_dead_child_skipped', ['check', 'attention', 'reason', 'archived_worktree_gone']);
     }
@@ -613,13 +611,6 @@ function piRoster(ctx, summary) {
     });
   }
   return out;
-}
-
-// GH #508: write the expiry mark a summary row offered for an archived, worktree-gone child. The engine validates the offer, writes it
-// monotonically (compare-and-set to the larger positions under a lock) and says whether it wrote; only a written mark is counted.
-// Nothing is deleted or acknowledged; mail that arrives after the mark still counts.
-function piExpire(x, now) {
-  if (ahHost.piExpire(x.id, JSON.stringify(x.offer), now) === true) ah.metric('devswarm_dead_child_expired', ['reason', 'archived_worktree_gone'], x.unread);
 }
 
 // `archiveCooldownElapsed(home, id, now)`: no earlier recommendation, or its cooldown is over.
@@ -1462,7 +1453,6 @@ function piDecide(p, opts) {
     var inj = attention.filter(function (w) { return w.unread > 0; }).map(function (w) { return { id: w.id, unread: w.unread, cursor: w.cursor, total: w.total, status: w.status || null }; });
     ah.state.appendFile(piRel(ah.cfg('devswarm_parent.file_log')), JSON.stringify({ ts: Math.floor(ah.clock.now()), event: 'inject', workspaces: inj }) + '\n');
   }
-  if (roster !== null) roster.expire.forEach(function (x) { piExpire(x, now); });
   archiveList.forEach(function (id) { ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_archive_nudges') + '/' + id + '.json'), JSON.stringify({ lastNudgedAt: now })); });
   if (!segments.length) return 'allow';
   return { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_parent.segment_joiner'))) };

@@ -1,0 +1,13 @@
+💡 task tracker: requests need tracking before work starts.
+Do instead: track each request as a priority-sorted task.
+
+💡 task tracker: workspace-sized work needs a child workspace.
+Do instead: assign the feature, fix or deploy to a child workspace.
+
+💡 anti-hall · devswarm-comms: mesh only — native hivecontrol messaging blocked. Check: `roster` / `mesh read`. Direct: `send --to <meshId>`.
+
+⚠️ anti-hall · devswarm-stale-data: ingest daemon last alive — ago — roster/app-state freshness may be stale (the daemon may have stopped or never started for this worktree). Mesh sends are written directly to the store and are NOT affected. Run /anti-hall:doctor to check the DevSwarm ingest daemon. Shown once per stale episode.
+
+⚠️ anti-hall · devswarm-stale-workspaces: 1 workspace(s) whose worktree is gone but still hold unread — 11111111-aaaa-4bbb-8ccc-222222222222 (3 unread). Investigate or clean up the registry entry.
+
+⚠️ anti-hall · devswarm-urgent-inbox: 1 workspace(s) have an URGENT/HIGH-priority direct message waiting, unread — 11111111-aaaa-4bbb-8ccc-222222222222 (3 unread). CHILD NOT DRAINING: STOP and poke it NOW (`<dir>/home/.anti-hall/ah-engine/bin/ah-engine mesh send --to <id> --message-file <path>`, then `~/.anti-hall/ah-engine/bin/ah-engine agents send <id> --text "read your mesh inbox"` to wake it if it is idle) or escalate — do not wait to see if it drains on its own — before continuing.
