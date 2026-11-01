@@ -501,6 +501,7 @@ fn over_cap(args: &Args, results: &[combine::HookResult], joined: &str) -> Optio
 /// wrapper with `dispatch.defer_exit`.
 pub fn run(raw: &str, args: &Args) -> Outcome {
     let o = run_inner(raw, args, None, true);
+    stopchan::settle(&o); // GH #540: the caller gets the final answer here
     crate::client::release_wait_marker(); // nothing is written after this result: the final result is ready
     o
 }
@@ -638,6 +639,7 @@ fn start_node_for(e: &table::Entry, event: &str, raw: &[u8], payload: Option<&Fi
 fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> Outcome {
     let mut tele = plan::Tele::default();
     OWED_NOTICE.with(|n| n.borrow_mut().take()); // nothing owed by an earlier call of this thread
+    stopchan::forget_owed(); // nor a held note claimed by one (its claim is recovered after the claim timeout)
     let o = deliver_notice(run_core(raw, args, payload, complete, &mut tele), &args.event);
     crate::telemetry::emit::flush(); // the Node hooks' telemetry events of this call, in one append
     if tele.notable() {
@@ -1098,6 +1100,8 @@ pub fn hook_main(args: &[String]) -> i32 {
         let mut so = std::io::stdout();
         crate::discard::harmless(so.write_all(o.out.as_bytes())); // keep: a closed pipe leaves nobody to tell
         crate::discard::harmless(so.flush()); // keep: a closed pipe leaves nobody to tell
+        stopchan::settle(&o); // GH #540: a held note this prompt claimed is removed only now that the answer carrying it was written
+        crate::telemetry::emit::flush(); // and its count
         mark_done();
         // Last step: until here the wrapper finds the wait marker (the answer is still being delivered) and from here the done mark
         // (launcher RCA: releasing it when `run_core` returned left a window with neither, in which a finished answer was killed).

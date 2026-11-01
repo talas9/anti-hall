@@ -443,16 +443,33 @@ fn the_health_advisory_obeys_the_pending_work_guard() {
     assert_eq!(serde_json::from_str::<Value>(out.trim()).unwrap(), json!({"systemMessage": HEALTH}), "background work runs: no soft block");
 }
 
+/// The advisory spends the session's cap like a check's note does: with a cap of 1, a Stop whose only soft block is the health advisory
+/// leaves the next Stop of the same session (a check's note) capped. Before the second fix lane the advisory never touched the count, so
+/// the note got a second soft block.
 #[test]
 fn the_health_advisory_counts_against_the_cap_of_the_session() {
     let r = Rig::new("health-counts");
     r.settings(Some(json!({"stopAdditionalContext": true, "stopContinuationCap": 1})));
+    r.transcript();
     std::fs::create_dir_all(r.state()).unwrap();
-    let stop = |sid: &str| r.run("Stop", &json!({"session_id": sid, "cwd": r.dir.join("proj"), "hook_event_name": "Stop"})).1;
     std::fs::write(r.state().join(ah_engine::defaults::text("fail_open.notice_file")), HEALTH).unwrap();
-    assert!(stop("sc1h").contains("additionalContext"), "the first continuation of the session");
-    // the advisory is once per session, so a second session shows the chain is per session
-    assert!(stop("sc2h").contains("additionalContext"), "another session has its own count");
+    // Stop 1 of session sc1: no check has a note (not plan mode), so the soft block is the advisory's
+    let (code, out, err) =
+        r.run("Stop", &json!({"session_id": "sc1", "cwd": r.dir.join("proj"), "hook_event_name": "Stop", "transcript_path": r.dir.join("t.jsonl")}));
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert_eq!(serde_json::from_str::<Value>(out.trim()).unwrap(), json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": HEALTH}}));
+    assert!(
+        std::fs::read_to_string(r.chan_dir().join("sc1")).unwrap_or_default().replace(' ', "").contains("\"n\":1"),
+        "the advisory's soft block is in the session's count"
+    );
+    // Stop 2 of the same session, now with a note: the cap of 1 is spent
+    let (code, out, err) = r.run("Stop", &r.stop(true));
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert_eq!(out, "", "the cap of the session is spent by the advisory: the note stays where it was");
+    assert!(err.contains(PLAN_NOTE), "{err:?}");
+    let c = r.counters();
+    assert!(c.contains(&"soft_block/health-advisory".to_string()) && c.contains(&"cap_hit/all".to_string()), "{c:?}");
+    assert!(!c.contains(&"soft_block/tasklist-guard".to_string()), "{c:?}");
 }
 
 /// P2 (stopchan.rs:245): a prompt consumed the held note with the switch off, and on the Codex host.
@@ -508,26 +525,42 @@ fn a_held_note_is_delivered_exactly_once_to_parallel_prompts() {
     }
 }
 
-/// Held notes made at the same time as prompts: nothing is lost and nothing is delivered twice (every hold is delivered by exactly one prompt).
+/// Holds made while prompts run, exactly: parallel Stops that hold the same note hold it ONCE and one prompt delivers it, once (no
+/// "one or two"); and when holds and prompts overlap, every note that was really held (counted `deferred_pending_work`) is delivered by
+/// exactly one prompt, in full and once inside its answer, and nothing is left over.
 #[test]
 fn holds_and_prompts_in_parallel_lose_nothing_and_repeat_nothing() {
     for round in 0..ROUNDS {
         let r = Rig::new(&format!("par-mix-{round}"));
-        r.settings(Some(json!({"stopAdditionalContext": true, "stopContinuationCap": 50})));
+        r.settings(Some(json!({"stopAdditionalContext": true, "stopContinuationCap": 50, "stopContinuationCeiling": 50})));
         r.transcript();
         running_agent(&r);
-        r.forget_advisories();
-        let stop = r.stop(false);
-        let prompt = r.prompt();
+        std::fs::create_dir_all(r.home().join(".anti-hall/advisory-state-sc1.json")).unwrap(); // every Stop speaks: the Stop channel's own state is under test
+        let (stop, prompt) = (r.stop(false), r.prompt());
+        // phase 1: three Stops at once hold the same note: one hold, two repeats, and exactly one delivery
+        let outs = r.par(&vec![("Stop", stop.clone()); 3]);
+        assert!(outs.iter().all(|o| !o.1.contains("additionalContext")), "round {round}: held, not sent: {outs:?}");
+        let c = r.counters();
+        assert_eq!(c.iter().filter(|w| *w == "deferred_pending_work/tasklist-guard").count(), 1, "round {round}: {c:?}");
+        assert_eq!(c.iter().filter(|w| *w == "deferred_duplicate/tasklist-guard").count(), 2, "round {round}: {c:?}");
+        let outs = r.par(&vec![("UserPromptSubmit", prompt.clone()); 3]);
+        let got: Vec<usize> = outs.iter().map(|o| o.1.matches(PLAN_NOTE).count()).collect();
+        assert_eq!(got.iter().sum::<usize>(), 1, "round {round}: exactly one delivery, in one answer: {got:?} {outs:?}");
+        assert!(!r.note_file().exists(), "round {round}: consumed");
+        // phase 2: holds and prompts overlap: every real hold is delivered by exactly one prompt
         let jobs: Vec<(&str, Value)> = vec![("Stop", stop.clone()), ("UserPromptSubmit", prompt.clone()), ("Stop", stop), ("UserPromptSubmit", prompt.clone())];
         let outs = r.par(&jobs);
         let (_, last, _) = r.run("UserPromptSubmit", &prompt);
-        let delivered = outs.iter().map(|o| &o.1).chain(std::iter::once(&last)).filter(|o| o.contains(PLAN_NOTE)).count();
-        let held = std::fs::read_dir(r.chan_dir())
-            .map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(ah_engine::defaults::text("stop_channel.note_suffix"))).count())
-            .unwrap_or(0);
-        // two Stops each hold the same text: a note still held is delivered by the last prompt, so what was held is seen once or twice, never lost
-        assert!((1..=2).contains(&delivered) && held == 0, "round {round}: delivered {delivered}, still held {held}: {outs:?}");
+        let answers: Vec<&String> = outs.iter().map(|o| &o.1).chain(std::iter::once(&last)).collect();
+        assert!(answers.iter().all(|o| o.matches(PLAN_NOTE).count() <= 1), "round {round}: a note is in one answer once: {answers:?}");
+        let delivered = answers.iter().filter(|o| o.contains(PLAN_NOTE)).count();
+        let c = r.counters();
+        let holds = c.iter().filter(|w| *w == "deferred_pending_work/tasklist-guard").count() - 1; // phase 1 held one
+        assert_eq!(delivered, holds, "round {round}: every hold delivered exactly once: {c:?} {outs:?}");
+        assert_eq!(c.iter().filter(|w| *w == "deferred_delivered/all").count(), delivered + 1, "round {round}: {c:?}");
+        let left: Vec<_> =
+            std::fs::read_dir(r.chan_dir()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n != "sc1").collect();
+        assert!(left.iter().all(|n| n.ends_with(".lock")), "round {round}: no note and no claim left: {left:?}");
     }
 }
 
@@ -545,4 +578,449 @@ fn a_blocker_beside_the_health_advisory_still_blocks() {
     let (code, out, err) = r.run_with("Stop", &payload, &[("ANTIHALL_DISPATCH_DEMAND", "0"), ("ANTIHALL_MAX_PARALLEL_DISPATCH", "4")]);
     let blocked = code == 2 || out.contains("\"decision\":\"block\"");
     assert!(blocked, "the open task still blocks the Stop: {code} {out:?} {err:?}");
+}
+
+// ---- the second review of PR #561 (second fix lane): three properties ----
+//
+// 1. a held note goes out ONCE, IN FULL, or goes out NOW on its old channel; never cut, never lost;
+// 2. a HARD CEILING of soft blocks per user prompt that tool calls cannot reset;
+// 3. anything unknown gives today's answer and a `state_failed` count.
+
+fn tracker_file(r: &Rig) -> PathBuf {
+    let paths = ah_engine::defaults::raw("agent_tracker.paths");
+    r.home().join(paths.str_field("base")).join(paths.str_field("dir")).join(paths.str_field("state"))
+}
+
+fn tool_call(r: &Rig, id: usize) {
+    let line = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("tu{id}"), "name": "Bash", "input": {"command": "ls"}}]}});
+    std::fs::OpenOptions::new().append(true).open(r.dir.join("t.jsonl")).unwrap().write_all(format!("{line}\n").as_bytes()).unwrap();
+}
+
+/// P1 (stopstate.rs `Guard::hold`, `joined.chars().take(max)`): a held note was cut at the limit, so the NEWEST text was lost and nothing was
+/// counted. Now a note that does not fit the hold is not held: it goes out now on its old channel (stderr for this check), it is counted
+/// `state_failed` (`note_too_large`), and nothing is half-kept.
+#[test]
+fn a_note_that_does_not_fit_the_hold_goes_out_now_and_is_never_cut() {
+    let r = Rig::new("toolarge");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    r.transcript();
+    running_agent(&r);
+    std::fs::create_dir_all(r.state()).unwrap();
+    std::fs::write(r.state().join("config.toml"), "[stop_channel]\nnote_max_chars = 200\n").unwrap(); // the prefix and the note take more than 200
+    assert_eq!(r.stop_out(false), "", "no soft block while the agent runs");
+    assert!(!r.note_file().exists(), "a note that does not fit is not kept, not even cut: {:?}", std::fs::read_to_string(r.note_file()));
+    let c = r.counters();
+    assert!(c.contains(&"state_failed/note_too_large".to_string()) && c.contains(&"system_message/tasklist-guard".to_string()), "{c:?}");
+    assert!(!c.iter().any(|w| w.starts_with("deferred_") || w.starts_with("soft_block/")), "{c:?}");
+    let (_, out, _) = r.run("UserPromptSubmit", &r.prompt());
+    assert!(!out.contains("Held from"), "nothing was held, so nothing is delivered late: {out:?}");
+}
+
+/// The same advisory at every Stop of an unattended run is held once and delivered once, whatever the size limit says.
+#[test]
+fn the_same_note_at_every_stop_is_held_once_and_delivered_once_in_full() {
+    let r = Rig::new("dedupe");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    r.transcript();
+    running_agent(&r);
+    for i in 0..12 {
+        assert_eq!(r.stop_out(i > 0), "");
+    }
+    let c = r.counters();
+    assert_eq!(c.iter().filter(|w| *w == "deferred_pending_work/tasklist-guard").count(), 1, "{c:?}");
+    assert_eq!(c.iter().filter(|w| *w == "deferred_duplicate/tasklist-guard").count(), 11, "{c:?}");
+    assert!(!c.iter().any(|w| w.starts_with("state_failed/")), "the repeats did not fill the hold: {c:?}");
+    let (_, out, _) = r.run("UserPromptSubmit", &r.prompt());
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert_eq!(ctx.matches(PLAN_NOTE).count(), 1, "once, in full: {ctx:?}");
+}
+
+/// P2 (stopchan.rs `next_chain`): any tool call restarted the chain, so a soft block, a tool call, a soft block... went on without end: 10
+/// of 10 Stops got a soft block. The ceiling per prompt counts them whatever happens between; only a prompt restarts it.
+#[test]
+fn a_tool_call_between_soft_blocks_cannot_run_past_the_ceiling_per_prompt() {
+    let r = Rig::new("ceiling");
+    r.settings(Some(json!({"stopAdditionalContext": true, "stopContinuationCeiling": 3})));
+    r.transcript();
+    let mut softs = 0;
+    for i in 0..10 {
+        let out = r.stop_out(i > 0);
+        if out.contains("additionalContext") {
+            assert_eq!(out, soft(), "Stop {i}");
+            softs += 1;
+        }
+        tool_call(&r, i); // the model made a tool call after every soft block: the consecutive count restarts each time
+    }
+    assert_eq!(softs, 3, "10 Stops with a tool call between each: the ceiling of 3 holds");
+    let c = r.counters();
+    assert_eq!(c.iter().filter(|w| *w == "cap_hit/ceiling").count(), 7, "counted as the ceiling, not as the cap: {c:?}");
+    assert!(!c.contains(&"cap_hit/all".to_string()), "{c:?}");
+    assert_eq!(c.iter().filter(|w| *w == "system_message/tasklist-guard").count(), 7, "{c:?}");
+    // a prompt starts the next turn: the ceiling starts again
+    r.run("UserPromptSubmit", &r.prompt());
+    assert_eq!(r.stop_out(false), soft());
+}
+
+/// The shipped ceiling is 6: the same run without the setting.
+#[test]
+fn the_shipped_ceiling_is_six_per_prompt() {
+    let r = Rig::new("ceiling-default");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    r.transcript();
+    let mut softs = 0;
+    for i in 0..10 {
+        softs += usize::from(r.stop_out(i > 0).contains("additionalContext"));
+        tool_call(&r, i);
+    }
+    assert_eq!(softs, 6);
+    assert_eq!(ah_engine::defaults::raw("stop_channel.num_ceiling").to_json()["default"], 6, "the shipped default");
+}
+
+/// A ceiling of 0 never soft-blocks, and the health advisory is under the same ceiling.
+#[test]
+fn a_ceiling_of_zero_never_soft_blocks_and_the_advisory_obeys_it() {
+    let r = Rig::new("ceiling0");
+    r.settings(Some(json!({"stopAdditionalContext": true, "stopContinuationCeiling": 0})));
+    r.transcript();
+    assert_eq!(r.stop_out(false), "");
+    std::fs::create_dir_all(r.state()).unwrap();
+    std::fs::write(r.state().join(ah_engine::defaults::text("fail_open.notice_file")), HEALTH).unwrap();
+    let (_, out, _) = r.run("Stop", &json!({"session_id": "sc9", "cwd": r.dir.join("proj"), "hook_event_name": "Stop"}));
+    assert_eq!(serde_json::from_str::<Value>(out.trim()).unwrap(), json!({"systemMessage": HEALTH}));
+    assert!(r.counters().contains(&"cap_hit/ceiling".to_string()), "{:?}", r.counters());
+}
+
+/// P3 (stopchan.rs `pending_work`): a corrupt tracker state read as "no pending work", so a note was sent as a soft block while an agent might
+/// run. Now the tracker is unknown: nothing is held, nothing is sent as additionalContext, and it is counted `state_failed` (`tracker`).
+#[test]
+fn an_unreadable_tracker_is_unknown_work_and_sends_nothing() {
+    for (name, body) in [("garbage", "{ not json"), ("empty", ""), ("wrongshape", "[1,2]")] {
+        let r = Rig::new(&format!("tracker-{name}"));
+        r.settings(Some(json!({"stopAdditionalContext": true})));
+        r.transcript();
+        std::fs::create_dir_all(tracker_file(&r).parent().unwrap()).unwrap();
+        std::fs::write(tracker_file(&r), body).unwrap();
+        assert_eq!(r.stop_out(false), "", "{name}: no soft block on an unknown tracker");
+        assert!(!r.note_file().exists(), "{name}: nothing is held either");
+        let c = r.counters();
+        assert!(c.contains(&"state_failed/tracker_unreadable".to_string()) && c.contains(&"system_message/tasklist-guard".to_string()), "{name}: {c:?}");
+        assert!(!c.iter().any(|w| w.starts_with("soft_block/")), "{name}: {c:?}");
+        assert!(!r.chan_dir().join("sc1").exists(), "{name}: no soft block was reserved");
+        // the control: the same tracker with the pending guard switched off is not read, and the soft block goes out
+        r.settings(Some(json!({"stopAdditionalContext": true, "stopDeferPending": false})));
+        assert_eq!(r.stop_out(false), soft(), "{name}: control");
+    }
+}
+
+/// An absent tracker file is a tracker that tracked nothing (a session that never ran an agent): the soft block goes out.
+#[test]
+fn an_absent_tracker_is_no_pending_work() {
+    let r = Rig::new("tracker-absent");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    r.transcript();
+    assert!(!tracker_file(&r).exists());
+    assert_eq!(r.stop_out(false), soft());
+}
+
+// ---- one randomized test for all three properties ----
+
+/// A small reproducible generator (xorshift64*): the seeds below are fixed, so a failure names a seed and replays.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    Stop,
+    Tool,
+    Prompt,
+    AgentStart,
+    AgentFinish,
+    ParStops,
+    ParMix,
+    CorruptTracker,
+    HealTracker,
+    CorruptChain,
+}
+
+const SEEDS: [u64; 6] =
+    [0x9E37_79B9_7F4A_7C15, 0xD1B5_4A32_D192_ED03, 0x1234_5678_9ABC_DEF1, 0xCAFE_F00D_DEAD_BEEF, 0x0F0F_0F0F_1357_9BDF, 0x8BAD_F00D_0000_0007];
+const OPS: usize = 40;
+const CAP: u64 = 2;
+const CEILING: u64 = 3;
+
+/// What the engine knows about one session, as the test models it, and what it has seen so far.
+#[derive(Default)]
+struct Model {
+    n: u64,
+    t: u64,
+    held: bool,
+    agent: bool,
+    tracker_bad: bool,
+    chain_bad: bool,
+    tools: usize,
+    /// answers that carried the held note (the deliveries), the holds counted new, and the counters read so far
+    delivered: usize,
+    seen: usize,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Want {
+    Soft,
+    Held,
+    Ceiling,
+    Cap,
+    FailTracker,
+    FailChain,
+}
+
+impl Model {
+    /// What a Stop must do in this state, in the order the engine decides: the tracker first (unknown work), then the count.
+    fn want(&self) -> Want {
+        if self.tracker_bad {
+            Want::FailTracker
+        } else if self.chain_bad {
+            Want::FailChain
+        } else if self.t >= CEILING {
+            Want::Ceiling
+        } else if self.n >= CAP {
+            Want::Cap
+        } else if self.agent {
+            Want::Held
+        } else {
+            Want::Soft
+        }
+    }
+}
+
+fn chain_file(r: &Rig) -> Option<String> {
+    std::fs::read_to_string(r.chan_dir().join("sc1")).ok()
+}
+
+fn has_ctx(out: &str) -> bool {
+    out.contains("additionalContext")
+}
+
+/// Drives mixed sequences through the real `ah-engine hook` and asserts the three properties on every step.
+#[test]
+fn the_three_properties_hold_over_random_sequences_of_stops_tool_calls_prompts_and_agents() {
+    let (mut softs_all, mut ceil_all, mut held_all, mut deliv_all, mut fail_all, mut cap_all, mut par_all) = (0, 0, 0, 0, 0, 0, 0);
+    for seed in SEEDS {
+        let mut rng = Rng(seed);
+        let r = Rig::new(&format!("prop-{seed:x}"));
+        r.settings(Some(json!({"stopAdditionalContext": true, "stopContinuationCap": CAP, "stopContinuationCeiling": CEILING})));
+        r.transcript();
+        // the advisory layer would let only the first Stop of a session speak; a directory in its state file's place leaves every Stop
+        // to the Stop channel's own state
+        std::fs::create_dir_all(r.home().join(".anti-hall/advisory-state-sc1.json")).unwrap();
+        let mut m = Model::default();
+        let mut trace: Vec<String> = Vec::new();
+        for step in 0..OPS {
+            let op = match rng.below(24) {
+                0..=7 => Op::Stop,
+                8..=12 => Op::Tool,
+                13..=14 => Op::Prompt,
+                15 => Op::AgentStart,
+                16 => Op::AgentFinish,
+                17 => Op::ParStops,
+                18 => Op::ParMix,
+                19 => Op::CorruptTracker,
+                20 => Op::HealTracker,
+                21 => Op::CorruptChain,
+                _ => Op::Stop,
+            };
+            trace.push(format!("{op:?}"));
+            let ctxt = format!("seed {seed:x} step {step} {op:?} (trace {trace:?})");
+            let active = rng.below(2) == 0; // stop_hook_active is not the signal: it must not change any outcome
+            let chain_before = chain_file(&r);
+            let note_before = std::fs::read(r.note_file()).ok();
+            // a running agent is `known` only while its transcript is recent
+            if m.agent && !m.tracker_bad {
+                running_agent(&r);
+            }
+            match op {
+                Op::Tool => {
+                    m.tools += 1;
+                    tool_call(&r, m.tools);
+                    m.n = 0; // restarts only the consecutive count
+                }
+                Op::AgentStart => {
+                    running_agent(&r);
+                    m.agent = true;
+                    m.tracker_bad = false;
+                }
+                Op::AgentFinish => {
+                    std::fs::remove_file(tracker_file(&r)).ok();
+                    m.agent = false;
+                    m.tracker_bad = false;
+                }
+                Op::CorruptTracker => {
+                    std::fs::create_dir_all(tracker_file(&r).parent().unwrap()).unwrap();
+                    std::fs::write(tracker_file(&r), "{ not a tracker").unwrap();
+                    m.tracker_bad = true;
+                }
+                Op::HealTracker => {
+                    if m.agent {
+                        running_agent(&r);
+                    } else {
+                        std::fs::remove_file(tracker_file(&r)).ok();
+                    }
+                    m.tracker_bad = false;
+                }
+                Op::CorruptChain => {
+                    std::fs::create_dir_all(r.chan_dir()).unwrap();
+                    std::fs::write(r.chan_dir().join("sc1"), "{ not a chain").unwrap();
+                    m.chain_bad = true;
+                }
+                Op::Stop => {
+                    let want = m.want();
+                    let (code, out, err) = r.run("Stop", &r.stop(active));
+                    assert_eq!(code, 0, "{ctxt}: {out:?} {err:?}");
+                    assert!(err.contains(PLAN_NOTE), "{ctxt}: the user's copy is kept: {err:?}");
+                    let c = r.counters();
+                    let new: Vec<&String> = c[m.seen..].iter().collect();
+                    m.seen = c.len();
+                    let has = |w: &str| new.iter().any(|x| x.as_str() == w);
+                    match want {
+                        Want::Soft => {
+                            assert_eq!(out, soft(), "{ctxt}");
+                            assert!(has("soft_block/tasklist-guard"), "{ctxt}: {new:?}");
+                            m.n += 1;
+                            m.t += 1;
+                            softs_all += 1;
+                        }
+                        Want::Held => {
+                            assert!(!has_ctx(&out), "{ctxt}: held, not sent: {out:?}");
+                            assert!(has(if m.held { "deferred_duplicate/tasklist-guard" } else { "deferred_pending_work/tasklist-guard" }), "{ctxt}: {new:?}");
+                            m.held = true;
+                            held_all += 1;
+                        }
+                        Want::Ceiling | Want::Cap => {
+                            assert!(!has_ctx(&out), "{ctxt}: {out:?}");
+                            assert!(has(if want == Want::Ceiling { "cap_hit/ceiling" } else { "cap_hit/all" }), "{ctxt}: {new:?}");
+                            assert_eq!(std::fs::read(r.note_file()).ok(), note_before, "{ctxt}: nothing consumed or held");
+                            if want == Want::Ceiling { ceil_all += 1 } else { cap_all += 1 }
+                        }
+                        Want::FailTracker | Want::FailChain => {
+                            assert!(!has_ctx(&out), "{ctxt}: unknown state sends no additionalContext: {out:?}");
+                            let reason = if want == Want::FailTracker { "state_failed/tracker_unreadable" } else { "state_failed/state_corrupt" };
+                            assert!(has(reason), "{ctxt}: {new:?}");
+                            assert_eq!(std::fs::read(r.note_file()).ok(), note_before, "{ctxt}: nothing consumed or held");
+                            assert_eq!(chain_file(&r), chain_before, "{ctxt}: no soft block was reserved");
+                            fail_all += 1;
+                        }
+                    }
+                }
+                Op::Prompt => {
+                    let (code, out, err) = r.run("UserPromptSubmit", &r.prompt());
+                    assert_eq!(code, 0, "{ctxt}: {err:?}");
+                    let got = out.matches(PLAN_NOTE).count();
+                    if m.held {
+                        assert_eq!(got, 1, "{ctxt}: the held note comes out once, in full: {out:?}");
+                        assert!(out.contains(ah_engine::defaults::text("stop_channel.msg_held_prefix")), "{ctxt}: {out:?}");
+                        m.delivered += 1;
+                        deliv_all += 1;
+                    } else {
+                        assert_eq!(got, 0, "{ctxt}: nothing was held: {out:?}");
+                    }
+                    m.held = false;
+                    m.n = 0;
+                    m.t = 0;
+                    m.chain_bad = false;
+                    assert!(chain_file(&r).is_none(), "{ctxt}: a prompt starts a new chain");
+                }
+                Op::ParStops => {
+                    let stop = r.stop(active);
+                    let outs = r.par(&vec![("Stop", stop); 3]);
+                    let soft_n = outs.iter().filter(|o| has_ctx(&o.1)).count() as u64;
+                    let want = m.want();
+                    let allowed = if want == Want::Soft { CAP.saturating_sub(m.n).min(CEILING.saturating_sub(m.t)) } else { 0 };
+                    assert_eq!(soft_n, allowed.min(3), "{ctxt}: parallel Stops never pass the cap or the ceiling: {outs:?}");
+                    assert!(outs.iter().all(|o| o.1.matches(PLAN_NOTE).count() <= 1), "{ctxt}");
+                    if matches!(want, Want::FailTracker | Want::FailChain) {
+                        assert_eq!(chain_file(&r), chain_before, "{ctxt}: unknown state reserved nothing");
+                        assert_eq!(std::fs::read(r.note_file()).ok(), note_before, "{ctxt}");
+                        fail_all += 3;
+                    }
+                    m.n += soft_n;
+                    m.t += soft_n;
+                    softs_all += soft_n as usize;
+                    m.seen = r.counters().len();
+                    par_all += 1;
+                }
+                Op::ParMix => {
+                    let (stop, prompt) = (r.stop(active), r.prompt());
+                    let jobs: Vec<(&str, Value)> = vec![("Stop", stop.clone()), ("UserPromptSubmit", prompt), ("Stop", stop)];
+                    let outs = r.par(&jobs);
+                    assert!(outs.iter().all(|o| o.1.matches(PLAN_NOTE).count() <= 1), "{ctxt}: {outs:?}");
+                    if m.tracker_bad {
+                        assert!(!has_ctx(&outs[0].1) && !has_ctx(&outs[2].1), "{ctxt}: unknown tracker: no additionalContext on a Stop: {outs:?}");
+                    }
+                    deliv_all += outs.iter().filter(|o| o.1.contains(ah_engine::defaults::text("stop_channel.msg_held_prefix"))).count();
+                    m.delivered += outs.iter().filter(|o| o.1.contains(ah_engine::defaults::text("stop_channel.msg_held_prefix"))).count();
+                    // the order of a race is not known: the state is read back from disk, and the invariants below judge it
+                    m.chain_bad = false;
+                    let c = chain_file(&r).and_then(|t| serde_json::from_str::<Value>(&t).ok());
+                    m.n = c.as_ref().and_then(|v| v["n"].as_u64()).unwrap_or(0);
+                    m.t = c.as_ref().and_then(|v| v["t"].as_u64()).unwrap_or(0);
+                    m.held = r.note_file().exists();
+                    m.seen = r.counters().len();
+                    par_all += 1;
+                }
+            }
+            if matches!(op, Op::ParStops) {
+                // resync the held flag with the disk (a parallel hold is real only if the file is there)
+                m.held = r.note_file().exists();
+                if let Some(v) = chain_file(&r).and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+                    assert_eq!((v["n"].as_u64(), v["t"].as_u64()), (Some(m.n), Some(m.t)), "{ctxt}: the saved count is the model's");
+                }
+            }
+            // ---- the invariants of every step ----
+            // P2: the saved count never passes the cap or the ceiling
+            if let Some(v) = chain_file(&r).and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+                let (n, t) = (v["n"].as_u64().unwrap(), v["t"].as_u64().unwrap());
+                assert!(n <= CAP && t <= CEILING && n <= t, "{ctxt}: n {n} t {t}");
+            }
+            // P1: every note that was held is delivered once or is still held: holds = deliveries + held now; nothing else is on disk
+            let c = r.counters();
+            let holds = c.iter().filter(|w| *w == "deferred_pending_work/tasklist-guard").count();
+            let held_now = usize::from(r.note_file().exists());
+            assert_eq!(holds, m.delivered + held_now, "{ctxt}: each held note is delivered exactly once or still held: {c:?}");
+            let stray: Vec<_> = std::fs::read_dir(r.chan_dir())
+                .map(|rd| {
+                    rd.flatten()
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .filter(|n| n.contains(ah_engine::defaults::text("stop_channel.claim_infix")))
+                        .collect()
+                })
+                .unwrap_or_default();
+            assert!(stray.is_empty(), "{ctxt}: a claim was left: {stray:?}");
+        }
+        // end of the run: one last prompt leaves nothing held
+        let (_, out, _) = r.run("UserPromptSubmit", &r.prompt());
+        let got = out.matches(PLAN_NOTE).count();
+        assert_eq!(got, usize::from(m.held), "seed {seed:x}: the last prompt delivers a still-held note once, in full");
+        assert!(!r.note_file().exists(), "seed {seed:x}");
+        let c = r.counters();
+        let holds = c.iter().filter(|w| *w == "deferred_pending_work/tasklist-guard").count();
+        assert_eq!(holds, m.delivered + got, "seed {seed:x}: held {holds}, delivered {} + {got}", m.delivered);
+        assert_eq!(c.iter().filter(|w| *w == "deferred_delivered/all").count(), m.delivered + got, "seed {seed:x}");
+    }
+    // the run exercised every branch, so the properties above were not vacuous
+    assert!(
+        softs_all > 0 && ceil_all > 0 && held_all > 0 && deliv_all > 0 && fail_all > 0 && cap_all > 0 && par_all > 0,
+        "coverage: soft {softs_all} ceiling {ceil_all} held {held_all} delivered {deliv_all} fail {fail_all} cap {cap_all} par {par_all}"
+    );
 }

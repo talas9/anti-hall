@@ -579,6 +579,22 @@ pub(crate) fn load_state(env: &Env) -> State {
     }
 }
 
+/// [`load_state`] with an error channel, for a caller that must tell "no work is tracked" from "the tracker cannot be read": an absent
+/// state file is an empty tracker (nothing has been tracked yet); a file that is too large, cannot be read or is not a tracker state
+/// is an `Err` (the caller treats the tracker as UNKNOWN, never as "nothing pending").
+pub(crate) fn load_state_checked(env: &Env) -> Result<State, ()> {
+    let p = env.dir().join(pth("state"));
+    match std::fs::metadata(&p) {
+        Ok(m) if m.len() <= lim("state_max_bytes") => {
+            let text = std::fs::read_to_string(&p).map_err(|_| ())?;
+            serde_json::from_str(&text).map_err(|_| ())
+        }
+        Ok(_) => Err(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
+        Err(_) => Err(()),
+    }
+}
+
 /// A child's launch identity for the guards: (the tool call id that launched it, its agent type), each "" when unknown. Both come
 /// from the host's meta file (`agent_tracker.meta` tool_use_id, `agent_tracker.no_work` agent_type_fields); a child the tracker
 /// knows as a Codex rescue wrapper has the rescue type even when its meta names none (hosts that keep the type in the launch input).
@@ -597,7 +613,16 @@ fn launch_of(a: &Agent) -> (String, String) {
 /// Reuse the tracker's ingestion and state rules; never tick, save, probe a CLI,
 /// deliver reminders or rewrite the user's history from a hook decision.
 pub(crate) fn guard_rows(env: &Env, session: &str, transcript: &str, cwd: &str) -> Vec<Value> {
-    let mut st = load_state(env);
+    guard_rows_of(env, load_state(env), session, transcript, cwd)
+}
+
+/// [`guard_rows`] with an error channel: a tracker state that exists but cannot be read or understood is an `Err` instead of an empty
+/// tracker (see [`load_state_checked`]).
+pub(crate) fn guard_rows_checked(env: &Env, session: &str, transcript: &str, cwd: &str) -> Result<Vec<Value>, ()> {
+    load_state_checked(env).map(|st| guard_rows_of(env, st, session, transcript, cwd))
+}
+
+fn guard_rows_of(env: &Env, mut st: State, session: &str, transcript: &str, cwd: &str) -> Vec<Value> {
     let owner = st.agents.values().find(|a| a.path == transcript).map(|a| a.id.clone()).unwrap_or_else(|| session.to_string());
     st.agents.retain(|_, a| a.id == owner || a.parent == owner || (!cwd.is_empty() && a.cwd == cwd));
     let sessions = live::registry(env);

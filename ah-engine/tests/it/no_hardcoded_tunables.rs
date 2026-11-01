@@ -139,6 +139,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/client.rs", "static LAST_UNAVAILABLE", "a thread-local boolean marker initialised false: state, not a tunable"),
     ("src/dispatch/mod.rs", "static OWED_NOTICE", "a thread-local slot initialised empty (None): state, the notice text comes from defaults"),
     (
+        "src/dispatch/stopchan.rs",
+        "static OWED",
+        "a thread-local slot initialised empty (None): the held note a prompt claimed and owes until its answer is written; the note text is data",
+    ),
+    (
         "src/deadline.rs",
         "static CUT_GRACE",
         "a thread-local slot initialised to not armed (None): state, the grace itself comes from diagnostics.deadline_grace_ms",

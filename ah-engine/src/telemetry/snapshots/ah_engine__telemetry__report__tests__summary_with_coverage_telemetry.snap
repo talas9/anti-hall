@@ -219,6 +219,12 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
         "by_project": {},
         "total": 0
       },
+      "deferred_duplicate": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
       "deferred_pending_work": {
         "by_check": {},
         "by_model": {},
