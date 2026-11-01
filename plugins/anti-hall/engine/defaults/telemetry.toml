@@ -296,7 +296,7 @@ doc = "Per check, model, project and output channel (delivery.channel_label: blo
 value = { kind = "counter", unit = "answers", labels = ["check", "channel", "model", "project"] }
 
 [metric.stop_channel]
-doc = "Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime."
+doc = "Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, over_total, limit_clamped, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime."
 value = { kind = "counter", unit = "stops", labels = ["counter", "check", "model", "project"] }
 
 [metric.context_spills]

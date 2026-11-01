@@ -225,6 +225,12 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
         "by_project": {},
         "total": 0
       },
+      "limit_clamped": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
       "no_background_field": {
         "by_check": {},
         "by_model": {},
@@ -238,6 +244,12 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
         "total": 0
       },
       "over_length": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "over_total": {
         "by_check": {},
         "by_model": {},
         "by_project": {},

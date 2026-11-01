@@ -12,8 +12,12 @@ doc = "Switch (context.stopAdditionalContext, default off): a check's model-faci
 value = { section = "context", key = "stopAdditionalContext", env = "ANTIHALL_STOP_ADDITIONAL_CONTEXT", option = "", default = false }
 
 [stop_channel.num_k]
-doc = "Most Stop continuations one chain may take (context.stopContinuationLimit, default 3): the Stop-hook continuations in the transcript (Stop hook feedback entries and Stop additionalContext attachments) AFTER the last human-typed prompt, or since the start of the transcript when it holds no human prompt (an unattended run of notification turns is bounded the same way). At or past it a note stays on its old channel. It counts the transcript, never stores a count, and does not depend on the host's stop_hook_active flag. 0 = no soft block is ever sent."
-value = { section = "context", key = "stopContinuationLimit", env = "ANTIHALL_STOP_CONTINUATION_LIMIT", option = "", default = 3, min = 0 }
+doc = "Most continuations THIS channel may cause in one chain (context.stopContinuationLimit, default 3): the Stop additionalContext attachments in the transcript AFTER the last human-typed prompt, or since the start of the transcript when it holds no human prompt (an unattended run of notification turns is bounded the same way). At or past it a note stays on its old channel (counter over_k). A hard block's `Stop hook feedback:` entry is a different, older mechanism and does not count toward it (it counts toward stop_channel.num_total). It counts the transcript, never stores a count, and does not depend on the host's stop_hook_active flag. A whole number from 0 to 8 (the host's own cap on consecutive Stop continuations); a string, a float, a negative or a non-number is ignored and the default stands; a larger whole number is lowered to 8 and counted (limit_clamped). 0 = no soft block is ever sent."
+value = { section = "context", key = "stopContinuationLimit", env = "ANTIHALL_STOP_CONTINUATION_LIMIT", option = "", default = 3, min = 0, max = 8, integer = true, reject_below_min = true }
+
+[stop_channel.num_total]
+doc = "Most continuations of BOTH shapes together (this channel's attachments and hard-block `Stop hook feedback:` entries) in one chain since the last human-typed prompt (context.stopTotalContinuationLimit, default 8, the host's own cap on consecutive Stop continuations). At or past it a note stays on its old channel (counter over_total): a safety guard on the whole chain, whatever caused it. Same rules as stop_channel.num_k: a whole number from 0 to 8; a string, a float, a negative or a non-number is ignored and the default stands; a larger whole number is lowered to 8 and counted (limit_clamped). 0 = no soft block is ever sent."
+value = { section = "context", key = "stopTotalContinuationLimit", env = "ANTIHALL_STOP_TOTAL_CONTINUATION_LIMIT", option = "", default = 8, min = 0, max = 8, integer = true, reject_below_min = true }
 
 # ---- what moves ----
 
@@ -67,7 +71,7 @@ doc = "What the text of a Stop-hook continuation entry (a transcript line of typ
 value = "Stop hook feedback:"
 
 [stop_channel.attachment_type]
-doc = "The transcript attachment type the host writes for a hook's additionalContext (a line of type attachment whose attachment.hookEvent is the event): this is how a Stop additionalContext continuation is recorded."
+doc = "The transcript attachment type the host writes for a hook's additionalContext (a line of type attachment whose attachment.hookEvent is the event): this is how a Stop additionalContext continuation is recorded. An attachment of this type without a hookEvent is not counted. Also the marker for the host's write lag: a newest transcript line that cannot be parsed (half written) but contains this text counts as one continuation of this channel."
 value = "hook_additional_context"
 
 [stop_channel.human_origin_kinds]
@@ -95,5 +99,5 @@ unit = "bytes"
 # ---- counters ----
 
 [stop_channel.counters]
-doc = "The outcomes of the metric stop_channel, in the order the telemetry summary lists them (detail.stop_channel); one count per moved note. emitted: the note was sent as Stop additionalContext. over_k: the chain already took stop_channel.num_k continuations since the last human prompt. no_background_field: the payload has no background-tasks array, so pending work is unknown. background_pending: background tasks are running. transcript_unreadable: the transcript is absent, unreadable, not UTF-8 JSON lines of a known shape, or the last human prompt is further back than stop_channel.tail_max_bytes. over_length: the combined context would pass stop_channel.context_max_chars. blocked_kept: the answer is a hard block; the notes stay where they are and the block is untouched. Every outcome but emitted leaves the answer exactly as it is without the Stop channel."
-value = ["emitted", "over_k", "no_background_field", "background_pending", "transcript_unreadable", "over_length", "blocked_kept"]
+doc = "The outcomes of the metric stop_channel, in the order the telemetry summary lists them (detail.stop_channel); one count per moved note. emitted: the note was sent as Stop additionalContext. over_k: the chain already took stop_channel.num_k of this channel's own continuations since the last human prompt. over_total: the chain's continuations of both shapes together reached stop_channel.num_total. limit_clamped: a configured limit was above its maximum and was lowered to it (counted besides the note's own outcome). no_background_field: the payload has no background-tasks array, so pending work is unknown. background_pending: background tasks are running. transcript_unreadable: the transcript is absent, unreadable, not UTF-8 JSON lines of a known shape, or the last human prompt is further back than stop_channel.tail_max_bytes. over_length: the combined context would pass stop_channel.context_max_chars. blocked_kept: the answer is a hard block; the notes stay where they are and the block is untouched. Every outcome but emitted leaves the answer exactly as it is without the Stop channel."
+value = ["emitted", "over_k", "over_total", "limit_clamped", "no_background_field", "background_pending", "transcript_unreadable", "over_length", "blocked_kept"]

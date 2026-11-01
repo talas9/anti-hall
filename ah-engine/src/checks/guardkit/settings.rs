@@ -20,6 +20,7 @@ use crate::checks::guardkit::text::{js_string_of, js_trim};
 use crate::checks::lit_re;
 use crate::defaults::{self, V};
 use serde_json::Value;
+use std::cell::Cell;
 
 /// `coerceBoolToken` after the trim `coerceValue` does: `None` when the string is empty or not an on/off word.
 pub(crate) fn token(raw: &str) -> Option<bool> {
@@ -180,25 +181,32 @@ pub fn js_number(s: &str) -> Option<f64> {
 }
 
 /// The bounds of a number entry: a value below `min` is raised to it, or rejected (the next source decides) when the entry says
-/// `reject_below_min`; a value above `max` is lowered to it.
-fn bounded(n: f64, entry: &V) -> Option<f64> {
+/// `reject_below_min`; a value above `max` is lowered to it (and `clamped` is set, so a caller can count it). An entry with
+/// `integer = true` rejects a value that is not a whole number.
+fn bounded(n: f64, entry: &V, clamped: &Cell<bool>) -> Option<f64> {
     let min = entry.get("min").and_then(V::as_integer).map(|m| m as f64);
     let max = entry.get("max").and_then(V::as_integer).map(|m| m as f64);
+    if entry.get("integer").and_then(V::as_bool).unwrap_or(false) && n.fract() != 0.0 {
+        return None;
+    }
     if entry.get("reject_below_min").and_then(V::as_bool).unwrap_or(false) && min.is_some_and(|m| n < m) {
         return None;
     }
     let n = min.map_or(n, |m| n.max(m));
+    if max.is_some_and(|m| n > m) {
+        clamped.set(true);
+    }
     Some(max.map_or(n, |m| n.min(m)))
 }
 
-fn coerce_str(ty: Ty, entry: &V, raw: &str) -> Option<Val> {
+fn coerce_str(ty: Ty, entry: &V, raw: &str, clamped: &Cell<bool>) -> Option<Val> {
     let t = js_trim(raw);
     if t.is_empty() {
         return None;
     }
     match ty {
         Ty::Bool => token(t).map(Val::B),
-        Ty::Num => bounded(js_number(t)?, entry).map(Val::N),
+        Ty::Num => bounded(js_number(t)?, entry, clamped).map(Val::N),
         Ty::Enum => {
             let lower = t.to_lowercase();
             entry.get("values").map(V::strings).unwrap_or_default().contains(&lower.as_str()).then_some(Val::S(lower))
@@ -207,30 +215,34 @@ fn coerce_str(ty: Ty, entry: &V, raw: &str) -> Option<Val> {
     }
 }
 
-fn coerce_value(ty: Ty, entry: &V, v: &Value) -> Option<Val> {
+fn coerce_value(ty: Ty, entry: &V, v: &Value, clamped: &Cell<bool>) -> Option<Val> {
+    let whole = entry.get("integer").and_then(V::as_bool).unwrap_or(false);
     match (ty, v) {
-        (_, Value::String(s)) => coerce_str(ty, entry, s),
+        // a whole-number entry takes a JSON integer only: a string ("100") or a float (3.0, 1e18) is not one (the next source decides)
+        (Ty::Num, Value::String(_)) if whole => None,
+        (Ty::Num, Value::Number(n)) if whole && !(n.is_i64() || n.is_u64()) => None,
+        (_, Value::String(s)) => coerce_str(ty, entry, s, clamped),
         (Ty::Bool, Value::Bool(b)) => Some(Val::B(*b)),
         (Ty::Bool, Value::Number(_)) => coerce_json(v).map(Val::B),
-        (Ty::Num, Value::Number(n)) => bounded(n.as_f64().filter(|f| f.is_finite())?, entry).map(Val::N),
-        (Ty::Enum | Ty::Str, Value::Number(_) | Value::Bool(_)) => js_string_of(v).and_then(|s| coerce_str(ty, entry, &s)),
+        (Ty::Num, Value::Number(n)) => bounded(n.as_f64().filter(|f| f.is_finite())?, entry, clamped).map(Val::N),
+        (Ty::Enum | Ty::Str, Value::Number(_) | Value::Bool(_)) => js_string_of(v).and_then(|s| coerce_str(ty, entry, &s, clamped)),
         _ => None,
     }
 }
 
-fn resolve_typed(st: &Settings, entry: &V, ty: Ty) -> Option<Val> {
+fn resolve_typed(st: &Settings, entry: &V, ty: Ty, clamped: &Cell<bool>) -> Option<Val> {
     let env_name = entry.str_field("env");
     if !env_name.is_empty() {
         let names = std::iter::once(env_name).chain(entry.get("aliases").map(V::strings).unwrap_or_default());
         for n in names {
-            if let Some(v) = st.env.get(n).and_then(|raw| coerce_str(ty, entry, raw)) {
+            if let Some(v) = st.env.get(n).and_then(|raw| coerce_str(ty, entry, raw, clamped)) {
                 return Some(v);
             }
         }
     }
     let (section, key) = (entry.str_field("section"), entry.str_field("key"));
     if let Some(v) = read_object(st, defaults::text("guardkit.settings_file"))
-        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|v| coerce_value(ty, entry, v)))
+        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|v| coerce_value(ty, entry, v, clamped)))
     {
         return Some(v);
     }
@@ -241,14 +253,14 @@ fn resolve_typed(st: &Settings, entry: &V, ty: Ty) -> Option<Val> {
     let default = default_string(entry);
     let env_key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), option.to_ascii_uppercase());
     if let Some(raw) = st.env.get(&env_key) {
-        return if *raw == default { None } else { coerce_str(ty, entry, raw) };
+        return if *raw == default { None } else { coerce_str(ty, entry, raw, clamped) };
     }
     let stored = stored_options(st)?;
     let v = stored.get(option)?;
     if js_string_of(v).is_some_and(|s| s == default) {
         return None;
     }
-    coerce_value(ty, entry, v)
+    coerce_value(ty, entry, v, clamped)
 }
 
 /// `String(default)` of a setting entry.
@@ -263,7 +275,7 @@ fn default_string(entry: &V) -> String {
 
 /// The value one boolean switch resolves to before its default: `None` when no source sets it.
 fn resolve(st: &Settings, entry: &V) -> Option<bool> {
-    match resolve_typed(st, entry, Ty::Bool) {
+    match resolve_typed(st, entry, Ty::Bool, &Cell::new(false)) {
         Some(Val::B(b)) => Some(b),
         _ => None,
     }
@@ -272,7 +284,7 @@ fn resolve(st: &Settings, entry: &V) -> Option<bool> {
 /// An enum setting (`settings.get` of a `type: 'enum'` entry): the first tier that holds one of the entry's `values`,
 /// else its `default`.
 pub fn get_enum(st: &Settings, entry: &V) -> String {
-    match resolve_typed(st, entry, Ty::Enum) {
+    match resolve_typed(st, entry, Ty::Enum, &Cell::new(false)) {
         Some(Val::S(s)) => s,
         _ => entry.str_field("default").to_string(),
     }
@@ -281,7 +293,7 @@ pub fn get_enum(st: &Settings, entry: &V) -> String {
 /// A string setting (`settings.get` of a `type: 'string'` entry): the first tier that holds a non-empty value (a string is
 /// trimmed, a number or boolean is written the way `String()` does), else its `default`.
 pub fn get_string(st: &Settings, entry: &V) -> String {
-    match resolve_typed(st, entry, Ty::Str) {
+    match resolve_typed(st, entry, Ty::Str, &Cell::new(false)) {
         Some(Val::S(s)) => s,
         _ => entry.str_field("default").to_string(),
     }
@@ -289,9 +301,15 @@ pub fn get_string(st: &Settings, entry: &V) -> String {
 
 /// A numeric setting: the first tier that holds a finite number (raised to the entry's `min`), else its `default`.
 pub fn get_number(st: &Settings, entry: &V) -> f64 {
-    match resolve_typed(st, entry, Ty::Num) {
-        Some(Val::N(n)) => n,
-        _ => entry.get("default").and_then(V::as_integer).unwrap_or(0) as f64,
+    get_number_flagged(st, entry).0
+}
+
+/// `get_number`, and whether the value that won was above the entry's `max` (so it was lowered to it).
+pub fn get_number_flagged(st: &Settings, entry: &V) -> (f64, bool) {
+    let clamped = Cell::new(false);
+    match resolve_typed(st, entry, Ty::Num, &clamped) {
+        Some(Val::N(n)) => (n, clamped.get()),
+        _ => (entry.get("default").and_then(V::as_integer).unwrap_or(0) as f64, false),
     }
 }
 
