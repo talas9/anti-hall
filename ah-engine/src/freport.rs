@@ -46,24 +46,29 @@ pub fn parse_duration_ms(s: &str) -> Option<u64> {
     (per > 0 && n > 0).then(|| n.saturating_mul(per))
 }
 
-/// Days since 1970-01-01 of a civil date (proleptic Gregorian), `None` for an impossible date.
-fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let dim = match m {
+fn is_leap(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+fn days_in_month(y: i64, m: i64) -> Option<i64> {
+    Some(match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 => 28 + i64::from(leap),
+        2 if is_leap(y) => 29,
+        2 => 28,
         _ => return None,
-    };
-    if !(1..=dim).contains(&d) {
+    })
+}
+
+/// Days since the epoch (1 January of `delivery.report_epoch_year`) of a civil date from that year on, `None` for an impossible one.
+fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
+    let epoch = defaults::num("delivery.report_epoch_year") as i64;
+    if y < epoch || !(1..=days_in_month(y, m)?).contains(&d) {
         return None;
     }
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146_097 + doe - 719_468)
+    let years: i64 = (epoch..y).map(|yy| if is_leap(yy) { 366 } else { 365 }).sum();
+    let months: i64 = (1..m).filter_map(|mm| days_in_month(y, mm)).sum();
+    Some(years + months + d - 1)
 }
 
 /// An absolute time in epoch ms: epoch seconds or milliseconds (a number of 12 or more digits is ms), or RFC 3339
@@ -72,7 +77,7 @@ pub fn parse_time_ms(s: &str) -> Option<u64> {
     let s = s.trim();
     if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
         let n: u64 = s.parse().ok()?;
-        return Some(if s.len() >= 12 { n } else { n.saturating_mul(1000) });
+        return Some(if s.len() >= defaults::num("delivery.report_epoch_ms_digits") as usize { n } else { n.saturating_mul(unit_ms("s")) });
     }
     let (date, time) = match s.split_once('T') {
         Some((d, t)) => (d, Some(t)),
@@ -326,7 +331,10 @@ pub fn table(v: &Value) -> String {
     let mut out = Vec::new();
     let w = &v["funnel"]["window"];
     let stamp = |k: &str| w.get(k).and_then(Value::as_u64).map_or("-".to_string(), |x| x.to_string());
-    out.push(format!("{}: from {} to {} ms (asked from {}, to {})", title("window"), stamp("baseline_ms"), stamp("end_ms"), stamp("from_ms"), stamp("to_ms")));
+    out.push(defaults::render(
+        "delivery.report_window_line",
+        &[("title", &title("window")), ("start", &stamp("baseline_ms")), ("end", &stamp("end_ms")), ("from", &stamp("from_ms")), ("to", &stamp("to_ms"))],
+    ));
     for k in ["note"].iter().chain(&["notes"]) {
         if let Some(a) = w.get(*k).and_then(Value::as_array) {
             out.extend(a.iter().filter_map(Value::as_str).map(|s| format!("  {s}")));
@@ -342,7 +350,7 @@ pub fn table(v: &Value) -> String {
         rows.extend(body.into_iter().take(cap));
         out.extend(pad(rows).into_iter().map(|l| format!("  {l}")));
         if total > cap {
-            out.push(format!("  ... {} more rows (see --json)", total - cap));
+            out.push(format!("  {}", defaults::render("delivery.report_more_rows", &[("n", &(total - cap))])));
         }
     };
     if let Some(rows) = v["funnel"]["rows"].as_array() {
@@ -365,20 +373,20 @@ pub fn table(v: &Value) -> String {
         section(&mut out, "funnel", head, body);
     }
     if let Some(rows) = v["latency"]["rows"].as_array() {
-        let head = ["check", "count", "p50", "p95", "max"].map(str::to_string).to_vec();
+        let head: Vec<String> = defaults::list("delivery.report_latency_cols").into_iter().map(str::to_string).collect();
         let body = rows
             .iter()
             .map(|r| {
-                let max = if r["max_exact"] == true { n(&r["max_ms"]) } else { format!("<={}", n(&r["max_ms"])) };
-                vec![n(&r["check"]), n(&r["count"]), n(&r["p50_ms"]), n(&r["p95_ms"]), max]
+                head.iter().map(|k| if k == "max_ms" && r["max_exact"] != true { format!("<={}", n(&r[k.as_str()])) } else { n(&r[k.as_str()]) }).collect()
             })
             .collect();
         section(&mut out, "latency", head, body);
         out.push(format!("  {}", v["latency"]["note"].as_str().unwrap_or("")));
     }
     if let Some(rows) = v["failures"]["rows"].as_array() {
-        let head = ["check", "runs", "fail_open", "timeouts", "failures"].map(str::to_string).to_vec();
-        let body = rows.iter().map(|r| ["check", "runs", "fail_open", "timeouts", "failures"].iter().map(|k| n(&r[*k])).collect()).collect();
+        let cols = defaults::list("delivery.report_failure_cols");
+        let head: Vec<String> = cols.iter().map(|c| (*c).to_string()).collect();
+        let body = rows.iter().map(|r| cols.iter().map(|k| n(&r[*k])).collect()).collect();
         section(&mut out, "failures", head, body);
         if let Some(e) = v["failures"]["engine"].as_object().filter(|e| !e.is_empty()) {
             out.push(format!("  engine: {}", e.iter().map(|(k, x)| format!("{k}={}", n(x))).collect::<Vec<_>>().join(" ")));

@@ -726,6 +726,32 @@ value = ["requests", "errors", "panics", "busy_replies", "budget_trips", "deadli
 doc = "Headings of the text report (`telemetry report` without --json): the window line and one title per section."
 value = { window = "Window", funnel = "Delivery funnel", latency = "Check latency (ms)", failures = "Failures and fail-opens" }
 
+[delivery.report_epoch_ms_digits]
+doc = "A number given to --from / --to with at least this many digits is epoch milliseconds; with fewer it is epoch seconds."
+value = 12
+min = 1
+
+[delivery.report_epoch_year]
+doc = "The year epoch seconds count from (the Unix epoch, 1 January 00:00 UTC); an RFC 3339 --from / --to before it is refused."
+value = 1970
+min = 1
+
+[delivery.report_window_line]
+doc = "The first line of the text report. Placeholders: {title}, {start} and {end} (the real window, epoch ms), {from} and {to} (as asked, or -)."
+value = "{title}: from {start} to {end} ms (asked from {from}, to {to})"
+
+[delivery.report_more_rows]
+doc = "The last line of a text table cut at delivery.report_rows_max. Placeholders: {n}."
+value = "... {n} more rows (see --json)"
+
+[delivery.report_latency_cols]
+doc = "The columns of the text latency table, in order; the first is the check, the others name the fields of a latency row (count, p50_ms, p95_ms, max_ms)."
+value = ["check", "count", "p50_ms", "p95_ms", "max_ms"]
+
+[delivery.report_failure_cols]
+doc = "The columns of the text failures table, in order; each names a field of a failures row."
+value = ["check", "runs", "fail_open", "timeouts", "failures"]
+
 [delivery.report_rows_max]
 doc = "Most rows per section the text report prints (the JSON carries all of them); the rest are counted in a last line."
 value = 60
