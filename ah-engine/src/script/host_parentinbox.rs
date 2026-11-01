@@ -9,6 +9,7 @@
 //! | `piSnap(windowMs, now)` | reads the app database snapshot once for this call: `{file, readable, focused}` (the file exists, a snapshot was read, the id of the workspace selected within `windowMs`) |
 //! | `piWs(id, worktree, now)` | `workspaceFor(snap, { id, worktreePath })` with the fields the table reads: `{id, label, rank, isPinned, builderType, active, archived, finish, brief}`, or `null` |
 //! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
+//! | `piGone(worktree)` | GH #508: `{on, gone}`: the switch `devswarm.skipDeadChildren` and whether the worktree is provably gone (`null` when it cannot be established or the switch is off) |
 //! | `piActivity(id, worktree, session, lastOutbound, now)` | `{ts, dormant, idleAlive, idleMs}`: the widest activity signal and the liveness state of `rowLivenessState` |
 //! | `piMarker(id, worktree, session)` | `isArchivedWorkspace(home, id, worktree, { sessionId })`: anti-hall's own archive marker names the row archived |
 //! | `piApp(id, worktree, repoKey, now)` | the app side of "archived" for a row (`appArchivedVerdict`, then the supervisor's active-list cache) |
@@ -302,7 +303,20 @@ fn row_state(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, repo_key:
     let app = w.app_archived(id, wt)?;
     let superseded = if marker { false } else { gate_superseded(&w, &inv.home, id, wt, sid, inv.now as f64)? };
     let ignored = is_safe_id(id) && archive_ignored(&inv.home, id);
-    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored}))
+    // GH #508: the one definition of a dead child (archived, or its worktree provably gone) the nudges share; off unless the switch is on
+    let on = crate::meshw::summary::skip_dead_on(inv);
+    let gone = crate::meshw::summary::worktree_gone(wt.unwrap_or(""));
+    let archived = marker || app;
+    let dead = on && (archived || gone == Some(true));
+    let reason = if !dead {
+        Value::Null
+    } else if archived {
+        json!("archived")
+    } else {
+        json!("worktree-gone")
+    };
+    let expire = on && archived && gone == Some(true);
+    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored, "gone": gone, "dead": dead, "deadReason": reason, "expire": expire}))
 }
 
 /// `appHasLiveChild` up to the per-row eligibility: the open, unarchived, non-primary workspaces of the project the working directory
@@ -587,6 +601,16 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         "piRow",
         Function::new(c.clone(), |id: String, wt: Option<String>, sid: Option<String>, key: String, now: f64| -> rquickjs::Result<String> {
             with_settings(|st| answer(row_state(&inv_of(st, now), &id, wt.as_deref(), sid.as_deref(), &key)))
+        })?,
+    )?;
+    h.set(
+        "piGone",
+        Function::new(c.clone(), |wt: Option<String>| -> rquickjs::Result<String> {
+            with_settings(|st| {
+                let on = crate::meshw::summary::skip_dead_on(&inv_of(st, 0.0));
+                let gone = if on { crate::meshw::summary::worktree_gone(wt.as_deref().unwrap_or("")) } else { None };
+                json!({"on": on, "gone": gone}).to_string()
+            })
         })?,
     )?;
     h.set(

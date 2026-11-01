@@ -707,3 +707,23 @@ value = "orphans-seen"
 [metric.devswarm_orphans_warning_suppressed]
 doc = "Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session)."
 value = { kind = "counter", unit = "warnings", labels = ["reason"] }
+
+[devswarm_parent.sw_skip_dead]
+doc = "Skip dead children."
+value = { section = "devswarm", key = "skipDeadChildren", type = "boolean", env = "ANTIHALL_DEVSWARM_SKIP_DEAD_CHILDREN", option = "", default = false }
+
+[devswarm_parent.dir_expired]
+doc = "The directory (under the devswarm state dir) of the expiry marks of archived, worktree-gone children: {through} is the message position up to which the backlog is expired; mail past it still counts."
+value = "expired"
+
+[devswarm_parent.stale_registry_head_dead]
+doc = "The stale-workspaces segment when devswarm.skipDeadChildren is on: names the fact and the exact step that clears it. Placeholders: {count}, {shown}, {extra}, {cli}."
+value = "⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree is gone but still hold unread — {shown}{extra}. No session can read that mail. Clear it per workspace with `{cli} archive <id>` (non-destructive: the descriptor moves to archived/, the messages stay, and the unread is then marked expired so this notice stops)."
+
+[metric.devswarm_dead_child_skipped]
+doc = "Children left out of a DevSwarm nudge because they are archived or their worktree is gone (devswarm.skipDeadChildren), by check (attention, archive_ready, stale_registry, wake) and reason (archived, worktree-gone)."
+value = { kind = "counter", unit = "workspaces", labels = ["check", "reason"] }
+
+[metric.devswarm_dead_child_expired]
+doc = "Unread messages marked expired for an archived child whose worktree is gone (devswarm.skipDeadChildren), counted once per mark written."
+value = { kind = "counter", unit = "messages", labels = ["reason"] }
