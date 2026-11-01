@@ -25,7 +25,7 @@ ring = { version = "0.17", default-features = false }
 # The atomically swapped snapshot of the shipped defaults that every settings read loads (src/defaults.rs, #195). Chosen by A/B
 # against the std `RwLock<Option<Arc<_>>>` it replaces: equal uncontended (~30 ns a read), 84 ns against 733 ns a read with 8
 # threads reading at once (every settings read of every daemon thread loads it). Pinned exactly; adds itself and rustversion.
-arc-swap = "=1.9.1"
+arc-swap = "=1.9.3"
 # Heap profiler for the opt-in `diag` feature only (a dependency no default or release build compiles).
 dhat = { version = "0.3.3", optional = true }
 # Scripted check logic (D88): an embedded QuickJS-NG interpreter runs the plugin's editable check scripts. Default features
