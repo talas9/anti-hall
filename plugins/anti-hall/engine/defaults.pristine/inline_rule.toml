@@ -1,0 +1,58 @@
+# ---- R-inline (plan v3 L04, GH #336 #341 #485): the heavy-work-on-the-main-thread rule behind guards.inlineRule (off by default) ----
+# The rule itself already exists and is on: command-guard (`command`) stops heavy commands and Bash file writes on the main thread,
+# coordinator-work-guard stops the 7th file-changing step within 10 minutes, edit-guard stops main-thread edits. With the switch
+# off nothing below is read and every answer is the one those guards always gave. With it on:
+#   1. the Bash write-parity block of command-guard stands down while spawning is stopped, as edit-guard's own Edit/Write block
+#      already does (there is nobody to hand the edit to): the call is allowed and a one-time stand-down note says why;
+#   2. the coordinator-work-guard window block names the count it reached and the limit (the older text named neither);
+#   3. the blocks of command-guard and coordinator-work-guard are counted (inline_rule_blocked).
+# Acted-on / ignored for command-guard (funnel check `command`), edit-guard and coordinator-work-guard come from the delivery funnel
+# (delivery.act rows in diagnostics.toml, added unconditionally: they only measure).
+
+[inline_rule.sw]
+doc = "R-inline. Switch guards.inlineRule (default off, plan v3 L04). On: the Bash write-parity block of command-guard stands down while spawning is stopped (as edit-guard does for Edit/Write), the coordinator-work-guard window block names the step count and the limit, and the blocks of command-guard and coordinator-work-guard are counted. Off: every answer is unchanged and nothing is counted."
+value = { section = "guards", key = "inlineRule", type = "boolean", env = "ANTIHALL_INLINE_RULE", option = "", default = false }
+
+[inline_rule.window_what]
+doc = "Headline of the coordinator-work-guard window block when guards.inlineRule is on. `{count}` is the number of file-changing steps in the window counting the stopped one, `{minutes}` the window length (guards.coordinatorWorkWindowMinutes) and `{block_at}` the step that is stopped (guards.coordinatorWorkBlockAt). The clearing step stays in the block's why and instead lines."
+value = "{count} file-changing steps in the main thread within {minutes} min, this one included; the limit is {block_at}."
+
+[inline_rule.guard_command]
+doc = "Counter label `guard` of a command-guard block (the heavy-command block and the Bash write-parity block)."
+value = "command-guard"
+
+[inline_rule.guard_cwork]
+doc = "Counter label `guard` of a coordinator-work-guard window block."
+value = "coordinator-work-guard"
+
+[inline_rule.guard_parity]
+doc = "Counter label `guard` of a stand-down of the command-guard Bash write-parity block (the edit-guard verdict applied to a Bash write)."
+value = "command-edit-parity"
+
+[inline_rule.kind_remote]
+doc = "Counter label `kind` of a heavy-command block on a remote or cloud command."
+value = "remote"
+
+[inline_rule.kind_verb]
+doc = "Counter label `kind` of a heavy-command block that matched a heavy verb."
+value = "verb"
+
+[inline_rule.kind_category]
+doc = "Counter label `kind` of a heavy-command block that matched a heavy category (or the default label)."
+value = "category"
+
+[inline_rule.kind_write]
+doc = "Counter label `kind` of a Bash write-parity block (a sed -i, tee, cp, mv, redirect or inline-code write to a project file)."
+value = "write"
+
+[inline_rule.kind_window]
+doc = "Counter label `kind` of a coordinator-work-guard window block."
+value = "window"
+
+[metric.inline_rule_blocked]
+doc = "R-inline blocks delivered (guards.inlineRule on), by guard (command-guard, coordinator-work-guard) and kind (command-guard: remote, verb, category for a heavy command, write for a Bash write; coordinator-work-guard: window)."
+value = { kind = "counter", unit = "blocks", labels = ["guard", "kind"] }
+
+[metric.inline_rule_standdown]
+doc = "R-inline stand-downs (guards.inlineRule on): calls a block would have stopped but that were allowed because spawning is stopped and there is nobody to hand the work to, by guard (command-edit-parity: the Bash write-parity block of command-guard)."
+value = { kind = "counter", unit = "calls", labels = ["guard"] }

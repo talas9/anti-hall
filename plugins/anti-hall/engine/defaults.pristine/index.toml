@@ -44,6 +44,7 @@ files = [
     "session_gates.toml",
     "codex_handover.toml",
     "task_guards.toml",
+    "inline_rule.toml",
     "advisory.toml",
     "inference.toml",
     "devswarm_role.toml",

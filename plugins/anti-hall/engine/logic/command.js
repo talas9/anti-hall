@@ -5009,6 +5009,8 @@ function guarded(fn) {
   try { return fn(); } catch (e) { if (cmdFatal(e)) throw e; ah.log('command_swallowed', String((e && e.stack) || e)); return undefined; }
 }
 
+function irBlocked(kind) { ah.metric('inline_rule_blocked', ['guard', ah.cfg('inline_rule.guard_command'), 'kind', ah.cfg(kind)]); } // R-inline (guards.inlineRule)
+
 function mainFlow(payload) {
   const isSkipped = (name) => cmdSkipped(name);
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
@@ -5079,6 +5081,11 @@ function mainFlow(payload) {
       if (scans.some(function (c) { return classifyBashWork(c, payload, { editOnly: true }).editBlocks.length; })) {
         // a DevSwarm child workspace is a worker on its own branch (hooks/lib/devswarm-role.js isChildWorker): its edits are its job
         if (cmdChildWorker((payload && payload.cwd) || '')) return undefined;
+        if (ah.settings.bool('inline_rule.sw')) { // R-inline: stands down while spawning is stopped (decide() counts it and tells the note)
+          S.parityStop = sd.applies(payload, ah.cfg('command.edit_guard_name'));
+          if (S.parityStop) return undefined;
+          irBlocked('inline_rule.kind_write');
+        }
         return blockExact(LIB['./edit-guard.js'].delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload));
       }
     }
@@ -5150,6 +5157,7 @@ function mainFlow(payload) {
     allowed: allowedShapes,
     briefExtra: segNote,
   }, payload && payload.session_id);
+  if (ah.settings.bool('inline_rule.sw')) irBlocked(remote ? 'inline_rule.kind_remote' : cls && cls.kind === 'verb' ? 'inline_rule.kind_verb' : 'inline_rule.kind_category');
   return blockExact(reason);
 }
 
@@ -5174,6 +5182,13 @@ function decide(p, opts, event) {
   if (!ti || typeof ti !== 'object' || typeof ti.command !== 'string') return null;
   cmdBegin(opts);
   let v;
-  try { v = mainFlow(p); } finally { cmdEnd(); } // a fatal exception (stack, memory, time) reaches the engine's own failure policy
+  try {
+    v = mainFlow(p);
+    if (S.parityStop && (v === 'allow' || v == null || (v && v.advisory !== undefined))) { // R-inline: counted; the once-per-session note rides the allow
+      ah.metric('inline_rule_standdown', ['guard', ah.cfg('inline_rule.guard_parity')]);
+      const n = v && v.advisory !== undefined ? '' : guarded(() => sd.note(p, S.parityStop));
+      if (n) v = { advisory: text.advisoryJson(ah.cfg('standdown.pre_event'), n) };
+    }
+  } finally { cmdEnd(); } // a fatal exception (stack, memory, time) reaches the engine's own failure policy
   return v === null || v === undefined ? 'allow' : v;
 }

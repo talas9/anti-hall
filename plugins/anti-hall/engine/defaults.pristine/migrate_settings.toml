@@ -62,6 +62,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"coordinatorWorkNudgeAt\",\"type\":\"number\",\"default\":4,\"min\":0,\"rejectBelowMin\":true,\"env\":\"ANTIHALL_COORDINATOR_WORK_NUDGE_AT\"}",
   "{\"section\":\"guards\",\"key\":\"coordinatorWorkBlockAt\",\"type\":\"number\",\"default\":7,\"min\":0,\"rejectBelowMin\":true,\"env\":\"ANTIHALL_COORDINATOR_WORK_BLOCK_AT\"}",
   "{\"section\":\"guards\",\"key\":\"coordinatorWorkMaxEntries\",\"type\":\"number\",\"default\":50,\"min\":1,\"rejectBelowMin\":true,\"env\":\"ANTIHALL_COORDINATOR_WORK_MAX_ENTRIES\"}",
+  "{\"section\":\"guards\",\"key\":\"inlineRule\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_INLINE_RULE\"}",
   "{\"section\":\"guards\",\"key\":\"bashEditParity\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_BASH_EDIT_PARITY\"}",
   "{\"section\":\"guards\",\"key\":\"shellWriteChecks\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_SHELL_WRITE_CHECKS\"}",
   "{\"section\":\"guards\",\"key\":\"reaperMatch\",\"type\":\"string\",\"default\":\"\",\"env\":\"ANTIHALL_REAPER_MATCH\"}",

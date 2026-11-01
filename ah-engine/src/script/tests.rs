@@ -4071,3 +4071,174 @@ fn the_session_summary_speaks_at_the_end_and_off_is_silent() {
     assert_eq!(run_event("session-summary", "SessionEnd", &[("ANTIHALL_UI_SESSION_SUMMARY", "off")], &h), Some(Some(Verdict::Allow)));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
+
+// ---- R-inline (guards.inlineRule): the stand-down of the Bash write-parity block, the window text and the block counters ----
+
+mod inline_rule_counters {
+    use super::*;
+
+    const CACHE: &str = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json";
+
+    /// A main-thread session of a DevSwarm checkout (the context in which the edit and heavy-command gates block); `on` sets the switch.
+    fn env_of(h: &str, on: bool) -> RequestEnv {
+        let mut pairs = vec![
+            ("HOME", h),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("DEVSWARM_REPO_ID", "r1"),
+            ("DEVSWARM_SOURCE_BRANCH", "feat"),
+            ("ANTIHALL_INGEST_DRY_RUN", "1"),
+        ];
+        if on {
+            pairs.push(("ANTIHALL_INLINE_RULE", "1"));
+        }
+        RequestEnv::from_pairs(pairs)
+    }
+
+    fn project(h: &str) -> String {
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git/refs/heads")).unwrap();
+        std::fs::create_dir_all(format!("{proj}/src")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        proj
+    }
+
+    fn bash(proj: &str, sid: &str, command: &str) -> Value {
+        json!({"tool_name": "Bash", "session_id": sid, "cwd": proj, "tool_input": {"command": command}})
+    }
+
+    /// The usage hard stop: the weekly bucket is full, so nobody can be handed the work.
+    fn stop_spawning(h: &str) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let body = json!({"timestamp": now, "data": {"fiveHourPercent": 10.0, "weeklyPercent": 95.0,
+            "fiveHourResetsAt": "2099-01-01T05:00:00.000Z", "weeklyResetsAt": "2099-01-02T00:00:00.000Z"}});
+        let p = format!("{h}/{CACHE}");
+        std::fs::create_dir_all(std::path::Path::new(&p).parent().unwrap()).unwrap();
+        std::fs::write(p, body.to_string()).unwrap();
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn blocked(m: &crate::metrics::Metrics, guard: &str, kind: &str) -> u64 {
+        m.counter("inline_rule_blocked", &[("guard", guard), ("kind", kind)])
+    }
+
+    fn standdown(m: &crate::metrics::Metrics) -> u64 {
+        m.counter("inline_rule_standdown", &[("guard", defaults::text("inline_rule.guard_parity"))])
+    }
+
+    const WRITE: &str = "sed -i 's/a/b/' src/x.rs";
+
+    #[test]
+    fn a_blocked_heavy_command_and_a_blocked_write_are_counted_by_kind_and_off_counts_nothing() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (cmd, kind_write) = (defaults::text("inline_rule.guard_command"), defaults::text("inline_rule.kind_write"));
+        for on in [false, true] {
+            let h = home(&format!("ir-blk-{on}"));
+            let proj = project(&h);
+            let e = env_of(&h, on);
+            drained();
+            for (i, c) in ["npm test", WRITE].iter().enumerate() {
+                match run_forced("command", &bash(&proj, "s", c), &e) {
+                    Some(Some(Verdict::Exact(x))) => assert_eq!(x.code, 2, "on={on}: {c} is blocked"),
+                    other => panic!("on={on}: {c} is blocked, got {other:?} (case {i})"),
+                }
+            }
+            let m = drained();
+            let heavy: u64 =
+                ["inline_rule.kind_remote", "inline_rule.kind_verb", "inline_rule.kind_category"].iter().map(|k| blocked(&m, cmd, defaults::text(k))).sum();
+            if on {
+                assert_eq!(heavy, 1, "one heavy-command block counted");
+                assert_eq!(blocked(&m, cmd, kind_write), 1, "one write block counted");
+            } else {
+                assert_eq!((heavy, blocked(&m, cmd, kind_write), standdown(&m)), (0, 0, 0), "off: nothing is counted");
+            }
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
+    }
+
+    #[test]
+    fn a_bash_write_stands_down_while_spawning_is_stopped_with_one_note_and_only_with_the_switch_on() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        // off: the write is blocked whatever the usage is (the older answer)
+        let h = home("ir-sd-off");
+        let proj = project(&h);
+        stop_spawning(&h);
+        drained();
+        let v = run_forced("command", &bash(&proj, "s-off", WRITE), &env_of(&h, false));
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "off: still blocked: {v:?}");
+        assert_eq!(standdown(&drained()), 0);
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        // on, spawning allowed: still blocked (and counted as a block, not a stand-down)
+        let h = home("ir-sd-free");
+        let proj = project(&h);
+        drained();
+        let v = run_forced("command", &bash(&proj, "s-free", WRITE), &env_of(&h, true));
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "spawning allowed: blocked: {v:?}");
+        let m = drained();
+        assert_eq!((standdown(&m), blocked(&m, defaults::text("inline_rule.guard_command"), defaults::text("inline_rule.kind_write"))), (0, 1));
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        // on, spawning stopped: allowed with the stand-down note once, then allowed quietly
+        let h = home("ir-sd-on");
+        let proj = project(&h);
+        stop_spawning(&h);
+        drained();
+        let e = env_of(&h, true);
+        // a write that is also heavy with unbounded output is still stopped by the heavy-command block: it neither counts as a stand-down
+        // nor uses up the session's note
+        let both = run_forced("command", &bash(&proj, "s-on", &format!("{WRITE} && npm test")), &e);
+        assert!(matches!(both, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "a heavy write is still stopped: {both:?}");
+        assert_eq!(standdown(&drained()), 0, "a blocked call is not a stand-down");
+        // the same session's plain write: allowed with the note (still unspent), then quietly
+        let first = run_forced("command", &bash(&proj, "s-on", WRITE), &e);
+        let Some(Some(Verdict::Advisory(a))) = first else { panic!("stopped: allowed with the stand-down note, got {first:?}") };
+        assert!(a.contains("PreToolUse") && a.contains("weekly"), "the note says why: {a}");
+        assert_eq!(run_forced("command", &bash(&proj, "s-on", WRITE), &e), Some(Some(Verdict::Allow)), "the note is told once per session");
+        let m = drained();
+        assert_eq!(
+            (standdown(&m), blocked(&m, defaults::text("inline_rule.guard_command"), defaults::text("inline_rule.kind_write"))),
+            (2, 0),
+            "both plain writes stood down"
+        );
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
+    /// The window file of a session that already holds `n` steps, all in the last minute.
+    fn seed_window(h: &str, sid: &str, n: usize) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let ts: Vec<u64> = (0..n as u64).map(|i| now - 60_000 + i).collect();
+        let body = json!({"v": 1, "version": "t", "firstTs": now - 60_000, "ts": ts, "armed": true, "calls": n, "work": n, "blocks": 0, "lastBlockAt": 0, "skippedWouldBlock": 0, "pre": []});
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/coordinator-work-session-{sid}.json"), body.to_string()).unwrap();
+    }
+
+    #[test]
+    fn the_window_block_names_the_count_and_the_limit_only_with_the_switch_on_and_is_counted() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let at = defaults::raw("coordinator_work.block_setting").get("default").and_then(|v| v.as_integer()).unwrap() as usize;
+        let mut texts = Vec::new();
+        for on in [false, true] {
+            let h = home(&format!("ir-win-{on}"));
+            let proj = project(&h);
+            seed_window(&h, "sw", at - 1);
+            drained();
+            let v = run_forced("coordinator-work-guard", &bash(&proj, "sw", "git commit --allow-empty -m x"), &env_of(&h, on));
+            let Some(Some(Verdict::Exact(x))) = v else { panic!("on={on}: the step is stopped, got {v:?}") };
+            assert_eq!(x.code, 2);
+            texts.push(x.out);
+            let n = drained()
+                .counter("inline_rule_blocked", &[("guard", defaults::text("inline_rule.guard_cwork")), ("kind", defaults::text("inline_rule.kind_window"))]);
+            assert_eq!(n, u64::from(on), "on={on}: the window block is counted only with the switch on");
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
+        let old = defaults::text("coordinator_work.block_what");
+        let [off, on] = texts.as_slice() else { panic!("one block text per switch state") };
+        assert!(off.contains(old) && !off.contains("the limit is"), "off: the older headline: {off}");
+        let want = format!("{at} file-changing steps in the main thread within 10 min, this one included; the limit is {at}.");
+        assert!(on.contains(&want) && !on.contains(old), "on: the headline names the count and the limit: {on}");
+        assert!(on.contains(defaults::text("coordinator_work.block_instead")), "on: the step that clears it stays: {on}");
+    }
+}

@@ -411,6 +411,30 @@ mod tests {
         assert_eq!(funnel_count(&t, "task-tracker", &opus, "delivery.stage_lost"), 0, "the other model's loss is not this one's");
     }
 
+    /// R-inline (plan v3 L04): the funnel counts a check under the name its dispatch entry gives it (`Entry::check`), which for the
+    /// command-guard hook is `command`, not `command-guard`. The `delivery.act` rows of the three main-thread guards must be keyed by
+    /// those names, or their blocks reach `decided` but never `acted_on` or `ignored`.
+    #[test]
+    fn the_act_rows_of_the_main_thread_guards_are_keyed_by_their_dispatch_check_and_a_block_reaches_decided_then_acted_on() {
+        for (hook, tool, event) in
+            [("command-guard", "Bash", "PreToolUse"), ("coordinator-work-guard", "Bash", "PreToolUse"), ("edit-guard", "Write", "PreToolUse")]
+        {
+            let payload = serde_json::json!({"hook_event_name": event, "tool_name": tool});
+            let entry = crate::dispatch::table::select("claude", event, &payload, Some(tool))
+                .into_iter()
+                .find(|e| e.id == hook)
+                .unwrap_or_else(|| panic!("the claude {event} table has a {hook} entry for {tool}"));
+            let check = entry.check.as_deref().unwrap_or_else(|| panic!("{hook} is answered by a built-in check"));
+            assert!(defaults::raw("delivery.act").get(check).is_some(), "{hook}: delivery.act has a row for its check `{check}`");
+            let t = Telemetry::new();
+            let session = format!("s-{hook}");
+            deliver(&t, &session, check);
+            assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_decided"), 1, "{hook}: a block is decided under `{check}`");
+            observe_tool(&t, &session, "Agent");
+            assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1, "{hook}: a spawn after the block is acted on");
+        }
+    }
+
     #[test]
     fn the_essential_reminders_are_never_shed_and_their_grace_stays_under_the_cap() {
         for c in ["task-tracker", "tasklist-guard", "devswarm-parent-inbox", "devswarm-child-gate", "verify-first"] {
