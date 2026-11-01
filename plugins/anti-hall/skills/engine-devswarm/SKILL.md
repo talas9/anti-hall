@@ -71,5 +71,6 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.maintainerNotice.show` = true: Setting devswarm.maintainerNotice.show: whether unseen maintainer notices are shown
 - `devswarm.archiveRequestRenagHours` = 24: Setting devswarm.archiveRequestRenagHours: hours a pending archive-request suppresses the nag...
 - `devswarm.orphanWarningOnce` = true: Switch devswarm.orphanWarningOnce (default on): the orphaned-mesh warning is shown once per...
+- `devswarm.skipDeadChildren` = false: Skip dead children
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

@@ -707,3 +707,15 @@ value = "orphans-seen"
 [metric.devswarm_orphans_warning_suppressed]
 doc = "Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session)."
 value = { kind = "counter", unit = "warnings", labels = ["reason"] }
+
+[devswarm_parent.sw_skip_dead]
+doc = "Skip dead children."
+value = { section = "devswarm", key = "skipDeadChildren", type = "boolean", env = "ANTIHALL_DEVSWARM_SKIP_DEAD_CHILDREN", option = "", default = false }
+
+[devswarm_parent.stale_registry_head_dead]
+doc = "The stale-workspaces segment when devswarm.skipDeadChildren is on: names the fact and the exact step that clears it. Placeholders: {count}, {shown}, {extra}, {cli}."
+value = "⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree is gone but still hold unread — {shown}{extra}. No session can read that mail. Clear it per workspace with `{cli} archive <id>` (non-destructive: the descriptor moves to archived/ and the messages stay; this notice then stops naming it)."
+
+[metric.devswarm_dead_child_skipped]
+doc = "Children left out of a DevSwarm nudge because they are archived and their worktree is provably gone (devswarm.skipDeadChildren), by check (attention, archive_ready, stale_registry) and reason (archived_worktree_gone)."
+value = { kind = "counter", unit = "workspaces", labels = ["check", "reason"] }

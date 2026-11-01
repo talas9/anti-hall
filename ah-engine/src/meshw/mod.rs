@@ -32,6 +32,7 @@ pub mod args;
 pub mod clog;
 pub mod common;
 pub mod cursors;
+pub mod deadchild;
 pub mod diagverbs;
 pub mod dsbverbs;
 pub mod extverbs;

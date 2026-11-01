@@ -8,7 +8,7 @@
 //! | `piAppDb()` | whether the DevSwarm app's database file exists at the path the app uses (`appDbPath`) |
 //! | `piSnap(windowMs, now)` | reads the app database snapshot once for this call: `{file, readable, focused}` (the file exists, a snapshot was read, the id of the workspace selected within `windowMs`) |
 //! | `piWs(id, worktree, now)` | `workspaceFor(snap, { id, worktreePath })` with the fields the table reads: `{id, label, rank, isPinned, builderType, active, archived, finish, brief}`, or `null` |
-//! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
+//! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored, dead}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
 //! | `piActivity(id, worktree, session, lastOutbound, now)` | `{ts, dormant, idleAlive, idleMs}`: the widest activity signal and the liveness state of `rowLivenessState` |
 //! | `piMarker(id, worktree, session)` | `isArchivedWorkspace(home, id, worktree, { sessionId })`: anti-hall's own archive marker names the row archived |
 //! | `piApp(id, worktree, repoKey, now)` | the app side of "archived" for a row (`appArchivedVerdict`, then the supervisor's active-list cache) |
@@ -302,7 +302,11 @@ fn row_state(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, repo_key:
     let app = w.app_archived(id, wt)?;
     let superseded = if marker { false } else { gate_superseded(&w, &inv.home, id, wt, sid, inv.now as f64)? };
     let ignored = is_safe_id(id) && archive_ignored(&inv.home, id);
-    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored}))
+    // GH #508: the one definition of a dead child: ARCHIVED (anti-hall's marker or the app) AND the worktree provably gone; off unless the switch is on
+    let on = crate::meshw::deadchild::skip_dead_on(inv);
+    let gone = crate::meshw::deadchild::worktree_gone(wt.unwrap_or(""), &inv.home);
+    let dead = on && (marker || app) && gone == Some(true);
+    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored, "dead": dead}))
 }
 
 /// `appHasLiveChild` up to the per-row eligibility: the open, unarchived, non-primary workspaces of the project the working directory

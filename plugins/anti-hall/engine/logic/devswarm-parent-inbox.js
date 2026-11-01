@@ -549,7 +549,13 @@ function piRoster(ctx, summary) {
     var appArchivedRow = st.app;
     var rowWs = appWs(id, wtPath);
     var ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
-    if (((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused) {
+    // GH #508 (devswarm.skipDeadChildren): one definition of a dead child, decided natively (piRow): ARCHIVED (anti-hall's marker or the app) AND
+    // its worktree provably gone. Such a child can never drain its mail, so no nudge names it. Unsure, or the switch off: as before.
+    var deadRow = st.dead === true;
+    if (((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused && deadRow) {
+      ah.metric('devswarm_dead_child_skipped', ['check', 'attention', 'reason', 'archived_worktree_gone']);
+    }
+    if (((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused && !deadRow) {
       var wsName = (rowWs && rowWs.label) || piReadName(home, id);
       var reportUnread = graced ? 0 : unread;
       out.attention.push({
@@ -558,7 +564,10 @@ function piRoster(ctx, summary) {
       });
     }
     if (archiveReady && !appArchivedRow && !ownerFocused && !st.ignored && piArchiveCooldown(home, id, now) && !piAutoArchiveOwns(home, id, now)
-        && !(archiveRequestQuiet && !archiveReadyQuiet)) out.archiveList.push(id);
+        && !(archiveRequestQuiet && !archiveReadyQuiet)) {
+      if (deadRow) ah.metric('devswarm_dead_child_skipped', ['check', 'archive_ready', 'reason', 'archived_worktree_gone']);
+      else out.archiveList.push(id);
+    }
     // the live-table row
     var archivedSuperseded = !archivedRow && st.superseded;
     if (!archivedRow && appArchivedRow) archivedRow = true;
@@ -802,14 +811,14 @@ function piDriftNotice(home, top, primaryId, sid, tp) {
 // ---- orphaned partitions, stale registry rows and the broadcast feed ---------------------------------------------------------
 
 // `buildOrphansSegment(list)` / `buildStaleRegistrySegment(list)`: partitions or rows named by id with their unread count, null for none.
-function piIssueSegment(list, headKey) {
+function piIssueSegment(list, headKey, cli) {
   var safe = list.filter(function (o) { return o && o.id != null && piSafeId(String(o.id)); });
   if (!safe.length) return null;
   safe.sort(function (a, b) { return (Number(b.unread) || 0) - (Number(a.unread) || 0); });
   var max = ah.cfgNum('devswarm_parent.max_mesh_issues');
   var shown = safe.slice(0, max).map(function (o) { return text.render(ah.cfg('devswarm_parent.issue_part'), { id: o.id, unread: piFinite(o.unread) ? o.unread : 0 }); });
   var extra = safe.length > max ? text.render(ah.cfg('devswarm_parent.issue_extra'), { n: safe.length - max }) : '';
-  return text.render(ah.cfg(headKey), { count: safe.length, shown: shown.join(ah.cfg('devswarm_parent.issue_joiner')), extra: extra });
+  return text.render(ah.cfg(headKey), { count: safe.length, shown: shown.join(ah.cfg('devswarm_parent.issue_joiner')), extra: extra, cli: cli });
 }
 
 // `broadcastKey(r)`.
@@ -1324,13 +1333,18 @@ function piDecide(p, opts) {
         }
       }
       if (Array.isArray(summary.staleRegistryPartitions) && summary.staleRegistryPartitions.length) {
+        var skipDead = ah.settings.bool('devswarm_parent.sw_skip_dead') === true;
         var visible = summary.staleRegistryPartitions.filter(function (row) {
           if (!row || row.id == null) return true;
+          if (skipDead) { // GH #508: archived (anti-hall's marker or the app) AND the worktree provably gone: nobody can read that mail
+            var rs = JSON.parse(ahHost.piRow(String(row.id), piStrField(row.worktreePath), null, key, now));
+            if (!rs.unsure && rs.dead === true) { ah.metric('devswarm_dead_child_skipped', ['check', 'stale_registry', 'reason', 'archived_worktree_gone']); return false; }
+          }
           var a = JSON.parse(ahHost.piApp(String(row.id), piStrField(row.worktreePath), key, now));
           if (a.unsure) { ah.unable('devswarm-parent-inbox:stale_reg_app'); return true; } // not provably archived: still listed
           return !a.archived;
         });
-        if (visible.length) staleRegSeg = piIssueSegment(visible, 'devswarm_parent.stale_registry_head');
+        if (visible.length) staleRegSeg = piIssueSegment(visible, skipDead ? 'devswarm_parent.stale_registry_head_dead' : 'devswarm_parent.stale_registry_head', cli);
       }
       if (Array.isArray(summary.recent) && summary.recent.length) {
         var br = piBroadcastRows(summary.recent, home, jx.isObj(p) ? p.session_id : undefined, now);
