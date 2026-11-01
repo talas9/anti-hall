@@ -71,6 +71,7 @@ mod reference;
 mod reliability;
 mod schedule;
 mod session_e2e;
+mod settings_overflow;
 mod sibling_sweep_reload;
 mod spawn_budget;
 mod spool;
