@@ -33,6 +33,7 @@ pub mod shrink;
 pub mod spill;
 pub mod stopchan;
 pub mod stoploop;
+pub mod stopstate;
 pub mod table;
 
 use crate::client::Outcome;

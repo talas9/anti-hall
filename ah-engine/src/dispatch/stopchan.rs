@@ -17,6 +17,7 @@
 //! `stop_channel.toml`; the counters are `telemetry::emit::stop_channel` events (metric `stop_channel`).
 use super::combine::{self, HookResult};
 use super::stoploop;
+use super::stopstate::{self, Chain, Fail};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::settings::{get_bool, get_number};
 use crate::reqenv::RequestEnv;
@@ -64,28 +65,7 @@ fn base_id(id: &str) -> &str {
 }
 
 fn dir() -> PathBuf {
-    crate::paths::dir().join(defaults::text("stop_channel.state_dir"))
-}
-
-/// The per-session record of the consecutive soft blocks: how many, and the transcript length when the last one was sent.
-#[derive(Default)]
-struct Chain {
-    n: u64,
-    off: u64,
-}
-
-impl Chain {
-    fn path(session: &str) -> PathBuf {
-        dir().join(session)
-    }
-    fn read(session: &str) -> Chain {
-        let v: Value = std::fs::read_to_string(Chain::path(session)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
-        Chain { n: v.get("n").and_then(Value::as_u64).unwrap_or(0), off: v.get("off").and_then(Value::as_u64).unwrap_or(u64::MAX) }
-    }
-    fn write(&self, session: &str) {
-        crate::discard::harmless(crate::limits::ensure_private_dir(&dir())); // keep: the write below reports a directory that is missing
-        crate::discard::logged("stop_channel_state_write", crate::atomic::write(Chain::path(session), json!({"n": self.n, "off": self.off}).to_string()));
-    }
+    stopstate::dir()
 }
 
 /// Remove the files not touched for `stop_channel.state_max_age_days` (a session that ended mid-chain, or with a note held).
@@ -104,25 +84,33 @@ fn transcript_of(p: &Value) -> Option<&str> {
     p.get("transcript_path").and_then(Value::as_str).filter(|t| std::path::Path::new(t).is_absolute())
 }
 
-/// Did the transcript get a tool call after byte `off`? An unknown offset (`u64::MAX`) says no; a transcript shorter than the offset
-/// was replaced, which is a change. At most `stop_channel.scan_max_bytes` of the end are read.
-fn tool_since(p: &Value, off: u64) -> bool {
+/// What the transcript proves about the chain.
+enum Proof {
+    /// A tool call came after the last soft block: the chain starts again.
+    Restart,
+    /// Nothing shows a restart (also an unknown offset: the chain cannot be restarted by a tool call, only by a prompt).
+    Same,
+}
+
+/// Did the transcript get a tool call after byte `off`? Only a tool call that is read in the transcript restarts the chain. A
+/// transcript that is absent, cannot be read, or is shorter than `off` (rewritten) proves nothing and is a [`Fail`]. At most
+/// `stop_channel.scan_max_bytes` of the end are read.
+fn tool_since(p: &Value, off: u64) -> Result<Proof, Fail> {
     if off == u64::MAX {
-        return false;
+        return Ok(Proof::Same);
     }
-    let Some(path) = transcript_of(p) else { return false };
-    let Ok(mut f) = std::fs::File::open(path) else { return false };
-    let Ok(len) = f.metadata().map(|m| m.len()) else { return false };
+    let path = transcript_of(p).ok_or(Fail::Transcript)?;
+    let mut f = std::fs::File::open(path).map_err(|_| Fail::Transcript)?;
+    let len = f.metadata().map_err(|_| Fail::Transcript)?.len();
     if len < off {
-        return true;
+        return Err(Fail::Shrunk);
     }
     let from = off.max(len.saturating_sub(defaults::num("stop_channel.scan_max_bytes")));
     let mut buf = Vec::new();
-    if f.seek(SeekFrom::Start(from)).is_err() || f.take(len - from).read_to_end(&mut buf).is_err() {
-        return false;
-    }
+    f.seek(SeekFrom::Start(from)).map_err(|_| Fail::Transcript)?;
+    f.take(len - from).read_to_end(&mut buf).map_err(|_| Fail::Transcript)?;
     let text = String::from_utf8_lossy(&buf);
-    defaults::list("stop_channel.tool_markers").iter().any(|m| text.contains(m))
+    Ok(if defaults::list("stop_channel.tool_markers").iter().any(|m| text.contains(m)) { Proof::Restart } else { Proof::Same })
 }
 
 /// Is a background agent or shell task of this session running that the turn may be waiting on?
@@ -236,6 +224,29 @@ fn with_context(out: &str, event: &str, text: &str, drop_message: bool) -> Strin
     format!("{v}\n")
 }
 
+/// Count a state that could not be proven and leave the notes where they were (the answer of the call is what it was before the Stop
+/// channel): the reason, and each note that stayed on its old channel.
+fn failed(f: Fail, notes: &[Note], who: &(String, String)) {
+    count("state_failed", f.label(), who);
+    for n in notes {
+        count("system_message", &n.check, who);
+    }
+}
+
+/// The chain after one more soft block, or `None` when the cap holds it back. The chain restarts only on a tool call read in the
+/// transcript after the last soft block (a prompt restarts it in [`on_prompt`]); a state that cannot be proven is a [`Fail`].
+fn next_chain(guard: &stopstate::Guard, p: &Value, cap: u64) -> Result<Option<Chain>, Fail> {
+    let mut chain = guard.chain()?;
+    if chain.n > 0 && matches!(tool_since(p, chain.off)?, Proof::Restart) {
+        chain = Chain::fresh();
+    }
+    if chain.n >= cap {
+        return Ok(None);
+    }
+    let off = transcript_of(p).and_then(|t| std::fs::metadata(t).ok()).map_or(u64::MAX, |m| m.len());
+    Ok(Some(Chain { n: chain.n + 1, off }))
+}
+
 /// Apply the Stop channel to the results of one dispatch (`host`, `event`, payload `p`), before they are combined.
 pub fn apply(host: &str, event: &str, p: &Value, env: &RequestEnv, results: &mut Vec<HookResult>) {
     let session = stoploop::safe(Some(p), "session_id");
@@ -243,7 +254,7 @@ pub fn apply(host: &str, event: &str, p: &Value, env: &RequestEnv, results: &mut
         return;
     }
     if defaults::list("stop_channel.prompt_events").contains(&event) {
-        on_prompt(&session, event, p, results);
+        on_prompt(host, &session, event, p, env, results);
         return;
     }
     if !defaults::list("stop_channel.events").contains(&event) || !defaults::list("stop_channel.hosts").contains(&host) {
@@ -266,22 +277,31 @@ pub fn apply(host: &str, event: &str, p: &Value, env: &RequestEnv, results: &mut
     if notes.is_empty() {
         return;
     }
-    let mut chain = Chain::read(&session);
+    let pending = sw.defer && pending_work(p, &session, &st);
     let all = defaults::text("stop_channel.all_label");
-    // the chain restarts when the transcript shows a tool call after the last soft block
-    if chain.n > 0 && tool_since(p, chain.off) {
-        chain = Chain { n: 0, off: u64::MAX };
-    }
-    if chain.n >= sw.cap {
-        count("cap_hit", all, &who);
-        for n in &notes {
-            count("system_message", &n.check, &who);
+    // count, decide and save under the session's lock: parallel Stops cannot pass the cap together
+    let guard = match stopstate::lock(&session) {
+        Ok(g) => g,
+        Err(f) => return failed(f, &notes, &who),
+    };
+    let next = match next_chain(&guard, p, sw.cap) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            count("cap_hit", all, &who);
+            for n in &notes {
+                count("system_message", &n.check, &who);
+            }
+            return;
         }
+        Err(f) => return failed(f, &notes, &who),
+    };
+    if pending {
+        hold(&guard, &notes, results, &who);
         return;
     }
-    if sw.defer && pending_work(p, &session, &st) {
-        hold(&session, &notes, results, &who);
-        return;
+    // the soft block is reserved (saved) before it is emitted: a save that fails emits nothing
+    if let Err(f) = guard.save(next) {
+        return failed(f, &notes, &who);
     }
     for n in &notes {
         if let Some(r) = results.get_mut(n.at) {
@@ -290,21 +310,16 @@ pub fn apply(host: &str, event: &str, p: &Value, env: &RequestEnv, results: &mut
         count("soft_block", &n.check, &who);
     }
     prune();
-    chain.n += 1;
-    chain.off = transcript_of(p).and_then(|t| std::fs::metadata(t).ok()).map_or(u64::MAX, |m| m.len());
-    chain.write(&session);
 }
 
 /// Keep the notes for the next prompt and take them off this Stop's answer.
-fn hold(session: &str, notes: &[Note], results: &mut super::spill::Results, who: &(String, String)) {
+fn hold(guard: &stopstate::Guard, notes: &[Note], results: &mut super::spill::Results, who: &(String, String)) {
     let joiner = defaults::text("dispatch.context_joiner");
     let body = notes.iter().map(|n| n.text.as_str()).collect::<Vec<_>>().join(joiner);
-    let text: String =
-        format!("{}{body}", defaults::text("stop_channel.msg_held_prefix")).chars().take(defaults::num("stop_channel.note_max_chars") as usize).collect();
-    crate::discard::harmless(crate::limits::ensure_private_dir(&dir())); // keep: the write below reports a directory that is missing
-    if let Err(e) = crate::atomic::write(note_path(session), text) {
-        crate::discard::note("stop_channel_note_write", &e.to_string());
-        return; // a note that could not be kept stays where it was: the user still sees it
+    let text = format!("{}{body}", defaults::text("stop_channel.msg_held_prefix"));
+    // a note that could not be kept stays where it was: the user still sees it
+    if let Err(f) = guard.hold(&text, &body, defaults::num("stop_channel.note_max_chars") as usize) {
+        return failed(f, notes, who);
     }
     prune();
     for n in notes {
@@ -315,41 +330,102 @@ fn hold(session: &str, notes: &[Note], results: &mut super::spill::Results, who:
     }
 }
 
-fn note_path(session: &str) -> PathBuf {
-    dir().join(format!("{session}{}", defaults::text("stop_channel.note_suffix")))
+/// A prompt starts a new chain and delivers the notes held at an earlier Stop, once, as its `additionalContext`. With the channel off, or
+/// on a host that is not listed, nothing is read, reset or consumed.
+fn on_prompt(host: &str, session: &str, event: &str, p: &Value, env: &RequestEnv, results: &mut Vec<HookResult>) {
+    let sw = Switches::read(&Settings::from_env(env));
+    if !sw.any() || !defaults::list("stop_channel.hosts").contains(&host) || !stopstate::dir().is_dir() {
+        return; // off, another host, or the channel never used on this machine: nothing to reset or deliver
+    }
+    let who = labels(p);
+    let bail = |f: Fail| count("state_failed", f.label(), &who);
+    let guard = match stopstate::lock(session) {
+        Ok(g) => g,
+        Err(f) => return bail(f),
+    };
+    if let Err(f) = guard.clear() {
+        return bail(f); // a chain that cannot be restarted delivers nothing either
+    }
+    let claims = match guard.claim() {
+        Ok(c) => c,
+        Err(f) => return bail(f),
+    };
+    let texts: Vec<&str> = claims.texts.iter().map(String::as_str).filter(|t| !t.trim().is_empty()).collect();
+    if !texts.is_empty() {
+        let text = texts.join(defaults::text("dispatch.context_joiner"));
+        let out = format!("{}\n", json!({HSO: {EVENT: event, CTX: text}}));
+        results.push(HookResult { id: defaults::text("stop_channel.delivery_id").to_string(), code: Some(0), out, err: String::new() });
+        count("deferred_delivered", defaults::text("stop_channel.all_label"), &who);
+    }
+    if let Err(f) = claims.release() {
+        bail(f); // delivered; a claim that stays is recovered (and delivered again) after the claim timeout
+    }
 }
 
-/// A prompt starts a new chain and delivers the note held at an earlier Stop, once, as its `additionalContext`.
-fn on_prompt(session: &str, event: &str, p: &Value, results: &mut Vec<HookResult>) {
-    if !dir().is_dir() {
-        return; // the channel was never used on this machine: nothing to reset or deliver
-    }
-    crate::discard::harmless(std::fs::remove_file(Chain::path(session))); // keep: an absent chain is the goal state
-    let path = note_path(session);
-    let Ok(text) = std::fs::read_to_string(&path) else { return };
-    crate::discard::harmless(std::fs::remove_file(&path)); // keep: the note is delivered once; a failed removal is retried by prune
-    if text.trim().is_empty() {
-        return;
-    }
-    let out = format!("{}\n", json!({HSO: {EVENT: event, CTX: text}}));
-    results.push(HookResult { id: defaults::text("stop_channel.delivery_id").to_string(), code: Some(0), out, err: String::new() });
-    count("deferred_delivered", defaults::text("stop_channel.all_label"), &labels(p));
+/// Does an answer already continue the turn at `event` (a hard block, or Stop `additionalContext`)? Text added to it costs no further
+/// continuation.
+fn continues(existing: &str, event: &str) -> bool {
+    combine::json_blocks(existing)
+        || object_of(existing)
+            .and_then(|v| v.get(HSO).cloned())
+            .is_some_and(|h| h.get(EVENT).and_then(Value::as_str) == Some(event) && h.get(CTX).and_then(Value::as_str).is_some_and(|t| !t.is_empty()))
 }
 
 /// Does the engine-health advisory go to the model at this event (the merge into a Stop answer)? Only when the Stop channel is on
-/// for the `stop_channel.health_check` pseudo-check on a host that honours Stop `additionalContext`. The advisory is once per
-/// session, so it needs no cap of its own.
-pub fn health_to_context(host: &str, event: &str) -> bool {
+/// for the `stop_channel.health_check` pseudo-check on a host that honours Stop `additionalContext`, and under the same cap and
+/// pending-work guard as a check's note: `raw` is the payload of the call (its session), `existing` the answer so far. An answer that
+/// already continues the turn takes the text without a further continuation.
+pub fn health_to_context(host: &str, event: &str, raw: &str, existing: &str) -> bool {
     if !defaults::list("stop_channel.events").contains(&event) || !defaults::list("stop_channel.hosts").contains(&host) {
         return false;
     }
-    let sw = Switches::read(&Settings::from_env(&RequestEnv::capture()));
+    let env = RequestEnv::capture();
+    let st = Settings::from_env(&env);
+    let sw = Switches::read(&st);
     let check = defaults::text("stop_channel.health_check");
-    let on = sw.enabled(check);
-    if on {
-        count("soft_block", check, &(defaults::text("delivery.model_unknown").to_string(), defaults::text("delivery.project_other").to_string()));
+    if !sw.enabled(check) {
+        return false;
     }
-    on
+    let p: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let who = labels(&p);
+    if continues(existing, event) {
+        count("soft_block", check, &who);
+        return true;
+    }
+    let session = stoploop::safe(Some(&p), "session_id");
+    if session.is_empty() {
+        return false; // no session to count a chain under
+    }
+    let note = [Note { at: 0, check: check.to_string(), text: String::new(), from_stderr: false }];
+    let pending = sw.defer && pending_work(&p, &session, &st);
+    let guard = match stopstate::lock(&session) {
+        Ok(g) => g,
+        Err(f) => return fail_false(f, &note, &who),
+    };
+    let next = match next_chain(&guard, &p, sw.cap) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            count("cap_hit", defaults::text("stop_channel.all_label"), &who);
+            count("system_message", check, &who);
+            return false;
+        }
+        Err(f) => return fail_false(f, &note, &who),
+    };
+    if pending {
+        count("system_message", check, &who); // the advisory is once per session: it stays where it was rather than waiting for a prompt
+        return false;
+    }
+    if let Err(f) = guard.save(next) {
+        return fail_false(f, &note, &who);
+    }
+    count("soft_block", check, &who);
+    true
+}
+
+/// [`failed`] for a caller that answers "no soft block".
+fn fail_false(f: Fail, notes: &[Note], who: &(String, String)) -> bool {
+    failed(f, notes, who);
+    false
 }
 
 #[cfg(test)]

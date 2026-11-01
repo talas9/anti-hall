@@ -195,7 +195,7 @@ pub fn with_notice(raw: &str, host: &str, event: &str, mut o: crate::client::Out
     let Ok(text) = std::fs::read_to_string(notice_path()) else { return o };
     let session = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| p["session_id"].as_str().map(str::to_string)).unwrap_or_else(|| "-".into());
     if crate::health::first_in_session(&session, defaults::text("fail_open.notice_tag"))
-        && let Some(merged) = crate::health::merge_advisory_for(host, event, &o.out, text.trim())
+        && let Some(merged) = crate::health::merge_advisory_for(host, event, raw, &o.out, text.trim())
     {
         o.out = merged;
     }

@@ -231,6 +231,12 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
         "by_project": {},
         "total": 0
       },
+      "state_failed": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
       "system_message": {
         "by_check": {},
         "by_model": {},

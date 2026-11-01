@@ -296,7 +296,7 @@ doc = "Per check, model, project and output channel (delivery.channel_label: blo
 value = { kind = "counter", unit = "answers", labels = ["check", "channel", "model", "project"] }
 
 [metric.stop_channel]
-doc = "Uses of the Stop channel (GH #540; context.stopAdditionalContext): per counter (soft_block, system_message, cap_hit, deferred_pending_work, deferred_delivered; stop_channel.counters), check, model family and project, how many Stops used it. Past the series cap only model and project fold into the overflow label. Lifetime; `telemetry summary` detail.stop_channel shows the window."
+doc = "Uses of the Stop channel (GH #540; context.stopAdditionalContext): per counter (soft_block, system_message, cap_hit, deferred_pending_work, deferred_delivered, state_failed; stop_channel.counters; for state_failed the check label is the reason, stop_channel.reasons), check, model family and project, how many Stops used it. Past the series cap only model and project fold into the overflow label. Lifetime; `telemetry summary` detail.stop_channel shows the window."
 value = { kind = "counter", unit = "stops", labels = ["counter", "check", "model", "project"] }
 
 [metric.context_spills]

@@ -26,6 +26,12 @@ struct Rig {
     dir: PathBuf,
 }
 
+impl Drop for Rig {
+    fn drop(&mut self) {
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir)); // keep: a test directory; an absent one is the goal state
+    }
+}
+
 impl Rig {
     fn new(name: &str) -> Rig {
         let dir = std::env::temp_dir().join(format!("ahd-stopchan-{name}-{}", std::process::id()));
@@ -74,8 +80,12 @@ impl Rig {
     }
 
     fn run_with(&self, event: &str, payload: &Value, env: &[(&str, &str)]) -> (i32, String, String) {
+        self.run_host("claude", event, payload, env)
+    }
+
+    fn run_host(&self, host: &str, event: &str, payload: &Value, env: &[(&str, &str)]) -> (i32, String, String) {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-        c.args(["hook", "--event", event])
+        c.args(["hook", "--event", event, "--host", host])
             .env_clear()
             .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .env("PATH", "/usr/bin:/bin")
@@ -288,4 +298,251 @@ fn the_health_advisory_merged_into_a_stop_answer_follows_the_switch() {
 fn codex_stays_on_its_current_channel() {
     // the Codex Stop hook's additionalContext behaviour is unconfirmed: stop_channel.hosts lists claude only
     assert_eq!(ah_engine::defaults::list("stop_channel.hosts"), vec!["claude"]);
+}
+
+// ---- fail-closed, atomic state (the review of PR #561: GH #540 first fix lane) ----
+//
+// Every test runs the real `ah-engine hook --event Stop|UserPromptSubmit`. The race tests start the processes at the same moment, 20
+// rounds each.
+
+const ROUNDS: usize = 20;
+
+impl Rig {
+    fn chan_dir(&self) -> PathBuf {
+        self.state().join(ah_engine::defaults::text("stop_channel.state_dir"))
+    }
+
+    fn note_file(&self) -> PathBuf {
+        self.chan_dir().join(format!("sc1{}", ah_engine::defaults::text("stop_channel.note_suffix")))
+    }
+
+    /// Run `jobs` (event, payload) as processes started together; the answers come back in job order.
+    fn par(&self, jobs: &[(&str, Value)]) -> Vec<(i32, String, String)> {
+        let gate = std::sync::Barrier::new(jobs.len());
+        std::thread::scope(|s| {
+            let hs: Vec<_> = jobs
+                .iter()
+                .map(|(e, p)| {
+                    let gate = &gate;
+                    s.spawn(move || {
+                        gate.wait();
+                        self.run(e, p)
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    }
+
+    /// A held note, made the real way: a Stop while a background agent runs.
+    fn hold_a_note(&self) {
+        running_agent(self);
+        assert_eq!(self.stop_out(false), "", "held");
+        assert!(self.note_file().is_file(), "the note is on disk");
+    }
+}
+
+fn soft_count(outs: &[(i32, String, String)]) -> usize {
+    outs.iter().filter(|(_, o, _)| o.contains("additionalContext")).count()
+}
+
+/// P1 (stopchan.rs:87): a counter path that is a directory never saved, and every later read said 0: six Stops, six soft blocks.
+#[test]
+fn a_counter_that_cannot_be_saved_sends_no_soft_block_and_is_counted() {
+    let r = Rig::new("dirchain");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    r.transcript();
+    std::fs::create_dir_all(r.chan_dir().join("sc1")).unwrap(); // the chain's file name is a directory
+    for i in 0..6 {
+        assert_eq!(r.stop_out(i > 0), "", "Stop {i}: unprovable state, the answer is what it was before the channel");
+    }
+    let c = r.counters();
+    assert_eq!(c.iter().filter(|w| *w == "state_failed/state_not_a_file").count(), 6, "{c:?}");
+    assert!(!c.iter().any(|w| w.starts_with("soft_block/")), "{c:?}");
+}
+
+#[test]
+fn a_corrupt_or_empty_counter_file_fails_closed() {
+    for (name, body) in [("empty", ""), ("garbage", "{\"n\":"), ("fields", "{\"x\":1}")] {
+        let r = Rig::new(&format!("corrupt-{name}"));
+        r.settings(Some(json!({"stopAdditionalContext": true})));
+        r.transcript();
+        std::fs::create_dir_all(r.chan_dir()).unwrap();
+        std::fs::write(r.chan_dir().join("sc1"), body).unwrap();
+        assert_eq!(r.stop_out(false), "", "{name}");
+        assert!(r.counters().contains(&"state_failed/state_corrupt".to_string()), "{name}: {:?}", r.counters());
+    }
+}
+
+/// P2 (stopchan.rs:116): a transcript cut below the saved offset reset the count: soft blocks without end.
+#[test]
+fn a_shrunk_transcript_does_not_restart_the_count() {
+    let r = Rig::new("shrunk");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    let t = r.transcript();
+    assert_eq!(r.stop_out(false), soft());
+    assert_eq!(r.stop_out(true), soft());
+    assert_eq!(r.stop_out(true), "", "capped");
+    std::fs::write(&t, "{\"type\":\"user\"}\n").unwrap(); // rewritten, shorter than at the last soft block
+    assert_eq!(r.stop_out(true), "", "a rewritten transcript proves no tool call: still capped");
+    assert!(r.counters().contains(&"state_failed/transcript_shrunk".to_string()), "{:?}", r.counters());
+}
+
+#[test]
+fn an_unreadable_transcript_does_not_restart_the_count_and_sends_nothing() {
+    let r = Rig::new("notranscript");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    let t = r.transcript();
+    assert_eq!(r.stop_out(false), soft());
+    std::fs::remove_file(&t).unwrap();
+    assert_eq!(r.stop_out(true), "", "the restart cannot be proven");
+    assert!(r.counters().contains(&"state_failed/transcript_unreadable".to_string()), "{:?}", r.counters());
+}
+
+/// P2 (stopchan.rs:269): the count was read, then written after the emit; parallel Stops all read 0.
+#[test]
+fn parallel_stops_never_pass_the_cap() {
+    for round in 0..ROUNDS {
+        let r = Rig::new(&format!("par-cap-{round}"));
+        r.settings(Some(json!({"stopAdditionalContext": true})));
+        r.transcript();
+        // the advisory layer would let only the first of the parallel Stops speak (its once-per-session stamp is written by whoever finishes
+        // first); a directory in its state file's place leaves every Stop to the Stop channel's own count
+        std::fs::create_dir_all(r.home().join(".anti-hall/advisory-state-sc1.json")).unwrap();
+        let stop = r.stop(false);
+        let outs = r.par(&vec![("Stop", stop); 6]);
+        assert_eq!(soft_count(&outs), 2, "round {round}: cap 2 allows exactly 2 continuations: {outs:?}");
+        let c = r.counters();
+        assert_eq!(c.iter().filter(|w| w.starts_with("soft_block/")).count(), 2, "round {round}: {c:?}");
+    }
+}
+
+/// P2 (stopchan.rs:342): the health advisory merged into a Stop answer ignored the cap.
+#[test]
+fn the_health_advisory_obeys_the_cap() {
+    let r = Rig::new("health-cap");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    std::fs::create_dir_all(r.chan_dir()).unwrap();
+    std::fs::write(r.chan_dir().join("sc1h"), format!("{{\"n\":2,\"off\":{}}}", u64::MAX)).unwrap(); // the cap is spent
+    std::fs::write(r.state().join(ah_engine::defaults::text("fail_open.notice_file")), HEALTH).unwrap();
+    let (code, out, err) = r.run("Stop", &json!({"session_id": "sc1h", "cwd": r.dir.join("proj"), "hook_event_name": "Stop"}));
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert_eq!(serde_json::from_str::<Value>(out.trim()).unwrap(), json!({"systemMessage": HEALTH}), "capped: the advisory stays on systemMessage");
+    assert!(r.counters().contains(&"cap_hit/all".to_string()), "{:?}", r.counters());
+}
+
+#[test]
+fn the_health_advisory_obeys_the_pending_work_guard() {
+    let r = Rig::new("health-pending");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    running_agent(&r);
+    std::fs::create_dir_all(r.state()).unwrap();
+    std::fs::write(r.state().join(ah_engine::defaults::text("fail_open.notice_file")), HEALTH).unwrap();
+    let (code, out, err) = r.run("Stop", &json!({"session_id": "sc1", "cwd": r.dir.join("proj"), "hook_event_name": "Stop"}));
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert_eq!(serde_json::from_str::<Value>(out.trim()).unwrap(), json!({"systemMessage": HEALTH}), "background work runs: no soft block");
+}
+
+#[test]
+fn the_health_advisory_counts_against_the_cap_of_the_session() {
+    let r = Rig::new("health-counts");
+    r.settings(Some(json!({"stopAdditionalContext": true, "stopContinuationCap": 1})));
+    std::fs::create_dir_all(r.state()).unwrap();
+    let stop = |sid: &str| r.run("Stop", &json!({"session_id": sid, "cwd": r.dir.join("proj"), "hook_event_name": "Stop"})).1;
+    std::fs::write(r.state().join(ah_engine::defaults::text("fail_open.notice_file")), HEALTH).unwrap();
+    assert!(stop("sc1h").contains("additionalContext"), "the first continuation of the session");
+    // the advisory is once per session, so a second session shows the chain is per session
+    assert!(stop("sc2h").contains("additionalContext"), "another session has its own count");
+}
+
+/// P2 (stopchan.rs:245): a prompt consumed the held note with the switch off, and on the Codex host.
+#[test]
+fn a_prompt_with_the_switch_off_reads_and_consumes_nothing() {
+    let r = Rig::new("prompt-off");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    r.transcript();
+    r.hold_a_note();
+    let before = std::fs::read(r.note_file()).unwrap();
+    r.settings(None);
+    let (code, out, err) = r.run("UserPromptSubmit", &r.prompt());
+    assert_eq!(code, 0, "{err:?}");
+    assert!(!out.contains(PLAN_NOTE), "switch off: nothing delivered: {out:?}");
+    assert_eq!(std::fs::read(r.note_file()).unwrap(), before, "switch off: the note is untouched");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    let (_, out, _) = r.run("UserPromptSubmit", &r.prompt());
+    assert!(out.contains(PLAN_NOTE), "switched on again: delivered: {out:?}");
+}
+
+#[test]
+fn a_prompt_on_the_codex_host_reads_and_consumes_nothing() {
+    let r = Rig::new("prompt-codex");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    r.transcript();
+    r.hold_a_note();
+    std::fs::write(r.chan_dir().join("sc1"), format!("{{\"n\":2,\"off\":{}}}", u64::MAX)).unwrap();
+    let (_, out, _) = r.run_host("codex", "UserPromptSubmit", &r.prompt(), &[]);
+    assert!(!out.contains(PLAN_NOTE), "{out:?}");
+    assert!(r.note_file().is_file(), "the note is untouched");
+    assert!(r.chan_dir().join("sc1").is_file(), "the count is untouched");
+}
+
+/// P2 (stopchan.rs:329): two prompts could both read the note (twice delivered), or a replacement written between read and remove was deleted.
+#[test]
+fn a_held_note_is_delivered_exactly_once_to_parallel_prompts() {
+    for round in 0..ROUNDS {
+        let r = Rig::new(&format!("par-note-{round}"));
+        r.settings(Some(json!({"stopAdditionalContext": true})));
+        r.transcript();
+        r.hold_a_note();
+        let outs = r.par(&vec![("UserPromptSubmit", r.prompt()); 5]);
+        let n = outs.iter().filter(|(_, o, _)| o.contains(PLAN_NOTE)).count();
+        assert_eq!(n, 1, "round {round}: exactly one prompt gets the note: {outs:?}");
+        assert!(!r.note_file().exists(), "round {round}: consumed");
+        let left: Vec<_> = std::fs::read_dir(r.chan_dir()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(
+            !left.iter().any(
+                |n| n.contains(ah_engine::defaults::text("stop_channel.claim_infix")) || n.ends_with(ah_engine::defaults::text("stop_channel.lock_suffix"))
+            ),
+            "round {round}: no claim or lock left: {left:?}"
+        );
+    }
+}
+
+/// Held notes made at the same time as prompts: nothing is lost and nothing is delivered twice (every hold is delivered by exactly one prompt).
+#[test]
+fn holds_and_prompts_in_parallel_lose_nothing_and_repeat_nothing() {
+    for round in 0..ROUNDS {
+        let r = Rig::new(&format!("par-mix-{round}"));
+        r.settings(Some(json!({"stopAdditionalContext": true, "stopContinuationCap": 50})));
+        r.transcript();
+        running_agent(&r);
+        r.forget_advisories();
+        let stop = r.stop(false);
+        let prompt = r.prompt();
+        let jobs: Vec<(&str, Value)> = vec![("Stop", stop.clone()), ("UserPromptSubmit", prompt.clone()), ("Stop", stop), ("UserPromptSubmit", prompt.clone())];
+        let outs = r.par(&jobs);
+        let (_, last, _) = r.run("UserPromptSubmit", &prompt);
+        let delivered = outs.iter().map(|o| &o.1).chain(std::iter::once(&last)).filter(|o| o.contains(PLAN_NOTE)).count();
+        let held = std::fs::read_dir(r.chan_dir())
+            .map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(ah_engine::defaults::text("stop_channel.note_suffix"))).count())
+            .unwrap_or(0);
+        // two Stops each hold the same text: a note still held is delivered by the last prompt, so what was held is seen once or twice, never lost
+        assert!((1..=2).contains(&delivered) && held == 0, "round {round}: delivered {delivered}, still held {held}: {outs:?}");
+    }
+}
+
+/// Control: a Stop that blocks keeps its block; the health advisory next to it is only text on a turn that already continues.
+#[test]
+fn a_blocker_beside_the_health_advisory_still_blocks() {
+    let r = Rig::new("blocker");
+    r.settings(Some(json!({"stopAdditionalContext": true})));
+    std::fs::create_dir_all(r.state()).unwrap();
+    std::fs::write(r.state().join(ah_engine::defaults::text("fail_open.notice_file")), HEALTH).unwrap();
+    let create = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "one"}}]}});
+    let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: one"}]}});
+    std::fs::write(r.dir.join("t.jsonl"), format!("{create}\n{result}\n")).unwrap();
+    let payload = json!({"session_id": "sb1", "cwd": r.home(), "hook_event_name": "Stop", "transcript_path": r.dir.join("t.jsonl")});
+    let (code, out, err) = r.run_with("Stop", &payload, &[("ANTIHALL_DISPATCH_DEMAND", "0"), ("ANTIHALL_MAX_PARALLEL_DISPATCH", "4")]);
+    let blocked = code == 2 || out.contains("\"decision\":\"block\"");
+    assert!(blocked, "the open task still blocks the Stop: {code} {out:?} {err:?}");
 }
