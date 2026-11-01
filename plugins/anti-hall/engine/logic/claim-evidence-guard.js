@@ -71,7 +71,12 @@ function ceStart(sent, a) {
 // clearing check named in the block. Off is today's behaviour.
 function ceFocus() { return ah.settings.bool('claim_evidence.sw_focus'); }
 
+// While `ceNoFocusLabel` is set the extra focus labels are ignored, and while `ceQuiet` is set nothing is counted: the second pass that asks
+// what today's check would have decided (it must not count the same refusals twice).
+var ceNoFocusLabel = false, ceQuiet = false;
+
 // Counter (guards.claimEvidenceTelemetry): a claim the focus switch cleared that today's checks would have kept, by what cleared it.
+// Taken once per reply, at the final decision, never inside the claim scan.
 function ceFocusCleared(by) {
   if (!ah.settings.bool('claim_evidence.sw_telemetry')) return;
   ah.metric('claim_focus_cleared', ['guard', ah.cfg('claim_evidence.guard_name'), 'by', by]);
@@ -83,7 +88,7 @@ function ceStrict() { return ah.settings.bool('claim_evidence.sw_strict'); }
 
 // Counter (guards.claimEvidenceTelemetry): a suppressor candidate the strict checks refused, by reason. A lost count never changes a decision.
 function ceRejected(reason) {
-  if (!ah.settings.bool('claim_evidence.sw_telemetry')) return;
+  if (ceQuiet || !ah.settings.bool('claim_evidence.sw_telemetry')) return;
   ah.metric('claim_evidence_suppressor_rejected', ['reason', reason]);
   ah.advisory('claim_evidence', 'rejected_' + reason);
 }
@@ -161,8 +166,7 @@ function ceReason(sent, hit, prev) {
   }
   if (ceLabelled(sent, hit)) return { reason: ah.cfg('claim_evidence.ack_reason'), chain: false };
   // the focus switch: more honest-label phrasings ('I haven't confirmed that'), the same reach
-  if (ceFocus() && ceLabelled(sent, hit, 'claim_evidence.ack_focus_res', 'claim_evidence.trailing_label_focus_re')) {
-    ceFocusCleared('label');
+  if (ceFocus() && !ceNoFocusLabel && ceLabelled(sent, hit, 'claim_evidence.ack_focus_res', 'claim_evidence.trailing_label_focus_re')) {
     return { reason: ah.cfg('claim_evidence.ack_reason'), chain: false };
   }
   return null;
@@ -259,7 +263,7 @@ function decide(p) {
   if (!reply.trim() || !tp) return 'allow';
 
   // the cheap gate: the reply alone, with quoted text and code removed
-  var scan = ah.text.maskQuoted(reply), claim = null, done = false;
+  var scan = ah.text.maskQuoted(reply), claim = null, done = false, rescued = false;
   if (r1) {
     // rule 1 reads quoted text too (quote marks out, code, fences and blockquotes still masked): a quote is covered only by a
     // reporting verb that opens its clause, never by its quote marks alone
@@ -272,9 +276,21 @@ function decide(p) {
     }
     ceLogSuppressed(seen);
     ceCountSuppressed(seen);
+    // the focus switch: no claim left, but would today's scan (without the extra labels) have found one? Asked once, quietly.
+    if (claim === null && ceFocus()) {
+      ceNoFocusLabel = true;
+      ceQuiet = true;
+      var base = ceFindClaim(scan1, []);
+      ceNoFocusLabel = false;
+      ceQuiet = false;
+      rescued = base !== null;
+    }
   }
   if (r2) done = ceAny(ah.cfg('claim_evidence.done_res'), scan) !== null && ceAny(ah.cfg('claim_evidence.ack_pushed_res'), scan) === null;
-  if (claim === null && !done) return 'allow';
+  if (claim === null && !done) {
+    if (rescued) ceFocusCleared('label');
+    return 'allow';
+  }
 
   // the transcript, for a hit only
   var tpOpen = hookProc.open(p, tp);
@@ -304,13 +320,17 @@ function decide(p) {
   // between the check and the reply does not hide the check). It only ever relaxes: the wider turn is looked at when the narrow one held the reply.
   if (ceFocus()) {
     var owner = inLast ? ev.ownerToolsThisTurn : ev.ownerToolsAtEnd;
+    if (typeof owner === 'number') owner = Math.min(owner, ah.cfgNum('claim_evidence.focus_turn_calls'));
     if (what !== null && typeof owner === 'number' && owner > tools) {
       var wide = ceWhat(owner);
       if (wide === null) ceFocusCleared('turn_continued');
       what = wide;
     }
   }
-  if (what === null) return 'allow';
+  if (what === null) {
+    if (rescued) ceFocusCleared('label');
+    return 'allow';
+  }
   var instead = what === ah.cfg('claim_evidence.msg_pushed_what') ? ah.cfg('claim_evidence.msg_pushed_instead') : ah.cfg('claim_evidence.msg_claim_instead');
   // the focus switch: name the check that clears this claim
   if (ceFocus() && what !== ah.cfg('claim_evidence.msg_pushed_what') && claim !== null && typeof claim.row.clears === 'string') {

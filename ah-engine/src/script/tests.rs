@@ -3284,6 +3284,68 @@ mod claim_evidence_guard {
     }
 
     #[test]
+    fn a_check_older_than_the_widened_turn_reach_backs_nothing_and_the_label_count_is_taken_once_per_reply() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |name: &str, labels: &[(&str, &str)]| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter(name, labels)
+        };
+        let r = "PR #12 is merged.";
+        let cap = defaults::num("claim_evidence.focus_turn_calls") as usize;
+        // the only matching check sits beyond the reach: held; just inside it: allowed
+        let mk = |filler: usize| {
+            let mut v = vec![typed("go"), assistant("m1", "", &["gh pr view 12 --json state"]), result("{}"), notification()];
+            for i in 0..filler {
+                v.push(assistant(&format!("f{i}"), "", &["ls"]));
+                v.push(result("a"));
+            }
+            v.push(assistant("last", r, &[]));
+            v
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let (v, _) = stop_unlocked("rc-cap-far", &mk(cap), r, &[FOCUS], json!({}));
+        assert!(blocked(&v).is_some(), "the check is {} calls back: beyond the reach of {cap}", cap + 1);
+        let (v, _) = stop_unlocked("rc-cap-near", &mk(cap - 1), r, &[FOCUS], json!({}));
+        assert_eq!(v, ALLOW, "the check is exactly at the reach");
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        // a labelled claim in a reply with a code span is scanned twice, counted once
+        let l = "Tests pass, but I haven't confirmed that. See `cargo test`.";
+        let lines = [typed("go"), assistant("m1", l, &[])];
+        let (v, _) = stop_unlocked("rc-once", &lines, l, &[FOCUS], json!({}));
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("claim_focus_cleared", &[("guard", "claim-evidence-guard"), ("by", "label")]), 1, "once per reply");
+        // a labelled claim followed by a bare one is held and counts nothing
+        let l = "Tests pass, but I haven't confirmed that. PR #12 is merged.";
+        let lines = [typed("go"), assistant("m1", l, &[])];
+        let (v, _) = stop_unlocked("rc-bare-after", &lines, l, &[FOCUS], json!({}));
+        assert!(blocked(&v).is_some(), "the bare claim is held");
+        assert_eq!(count("claim_focus_cleared", &[("guard", "claim-evidence-guard"), ("by", "label")]), 0, "a held reply counts nothing");
+        // the refusals of the strict checks are not counted twice by the second, quiet pass
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let l = "If true CI is green.";
+        let lines = [typed("go"), assistant("m1", l, &[])];
+        let (v, _) = stop_unlocked("rc-quiet", &lines, l, &[FOCUS], json!({}));
+        assert!(blocked(&v).is_some());
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("claim_evidence_suppressor_rejected", &[("reason", "filler_opener")]), 1, "counted once");
+    }
+
+    #[test]
+    fn a_claim_relayed_from_a_worker_is_judged_like_any_other_with_the_switch_on() {
+        // the row's "someone else's work" filter: a reporting verb opens the clause and covers it; a bare 'per the worker' does not,
+        // by design: a delegated result is unverified until the coordinator checks it (relayed worker reports were deferred in #427)
+        let t = |tag: &str, r: &str| {
+            let lines = [typed("go"), assistant("m1", r, &[])];
+            blocked(&stop(tag, &lines, r, &[FOCUS], json!({})).0).is_some()
+        };
+        assert!(!t("rc-relay-said", "The worker said that tests pass."));
+        assert!(!t("rc-relay-reported", "The subagent reported tests pass."));
+        assert!(t("rc-relay-per", "Per the worker, tests pass."), "held by design: a delegated result needs the coordinator's own check");
+    }
+
+    #[test]
     fn a_stop_with_no_claim_stays_inside_the_stop_latency_bar() {
         let reply = "Renamed the function and updated its two callers.";
         let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &["sed -i x y"])];

@@ -96,6 +96,12 @@ value = [
   '\b(?:not|never)\s+(?:yet\s+|been\s+|fully\s+)?(?:confirmed|validated|reproduced|proven|established|measured)\b',
 ]
 
+[claim_evidence.focus_turn_calls]
+doc = "Read only while guards.claimEvidenceFocus is on: the most tool calls (counted back from the reply) that the widened turn (everything since the last owner prompt) may reach. A long autonomous session has hours of calls between two owner prompts; a check older than this many calls backs nothing. The turn the guard sees without the switch is never narrowed by it. Default 30, from one live session's 79 claim blocks replayed through the engine: of the 62 the engine still holds, a reach of 20 clears 17, 30 clears 18 and 40 clears 18, so the farthest clearing command sat 21 to 30 calls back."
+value = 30
+min = 1
+max = 1000
+
 [claim_evidence.trailing_label_focus_re]
 doc = "Read only while guards.claimEvidenceFocus is on, as well as claim_evidence.trailing_label_re: an honest label that closes the sentence as its own clause, in the way people write it ('Tests pass, but I haven't confirmed that.', 'Tests pass; I couldn't verify it.'). It covers every claim before it in that sentence. Rust regular expression, case-insensitive, matched against the sentence; a short object (up to 30 characters, no sentence punctuation) may follow the verb."
 value = '[,;:(\u2014\u2013]\s*(?:but\s+|and\s+|though\s+)?(?:i\s+|we\s+)?(?:(?:haven.t|have not|could not|couldn.t|can.t|cannot|did not|didn.t)\s+(?:yet\s+|fully\s+)?(?:confirm|verif|check|test|validat|prov)\w*|(?:not|never)\s+(?:yet\s+)?(?:confirmed|verified|validated|proven))\b[^.;\n]{0,30}\W*$'

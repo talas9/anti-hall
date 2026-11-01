@@ -289,11 +289,13 @@ function decide(p) {
     if (tailLines === undefined) tailLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes')) : null;
     cited = sgCites(lastText, tailLines);
   }
-  // the focus switch: count what it cleared that today's check would have held (a hit skipped as an obligation, or an extra honest label)
-  if (hit === null && focusSaved) sgFocusCleared('obligation');
+  // the focus switch: what it cleared that today's check would have held (a hit skipped as an obligation, or an extra honest label);
+  // counted once, below, only when the reply is finally let through
+  var focusClear = null;
+  if (hit === null && focusSaved) focusClear = 'obligation';
   else if (hit !== null && sgFocus() && !sgBaseAck(lastText) && sgFocusAck(lastText)) {
     if (tailLines === undefined) tailLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes')) : null;
-    if (!sgCites(lastText, tailLines)) sgFocusCleared('label');
+    if (!sgCites(lastText, tailLines)) focusClear = 'label';
   }
   var wouldBlock = hit !== null && !sgHasAck(lastText) && !cited;
   // the Stop gate: Jev is waited for only when the rule layer flagged a likely unverified claim (the predicate is speculation_guard.jev_gate)
@@ -346,7 +348,10 @@ function decide(p) {
         var evLines = readable ? rp.lines(transcript, ah.cfgNum('inference.window_bytes')) : null;
         if (evLines !== null) inference = inf.unsupported(markerText, evLines, lastText);
       }
-      if (inference === null) return finish('allow', 'allow');
+      if (inference === null) {
+        if (focusClear !== null && !loopSafe) sgFocusCleared(focusClear);
+        return finish('allow', 'allow');
+      }
     }
   }
   if (loopSafe) return finish('allow', 'allow');
