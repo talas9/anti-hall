@@ -912,9 +912,16 @@ fn prune_advised(dir: &std::path::Path) {
 /// Fold an advisory into hook output `existing` (what the Node hook or engine printed). Output that is
 /// not a JSON object is left untouched (returns None) so a protocol line is never corrupted.
 pub fn merge_advisory(event: &str, existing: &str, text: &str) -> Option<String> {
+    merge_advisory_for("", event, "", existing, text) // no host is known here: never one that `stop_channel.hosts` lists, so a Stop advisory stays on systemMessage
+}
+
+/// [`merge_advisory`] for a call of `host` with payload `raw` (the dispatcher knows both): a Stop advisory goes to `additionalContext` (it reaches
+/// the model) when the Stop channel is on for it and its cap and pending-work guard allow it (`dispatch::stopchan::health_to_context`, GH #540),
+/// else to `systemMessage` as before.
+pub fn merge_advisory_for(host: &str, event: &str, raw: &str, existing: &str, text: &str) -> Option<String> {
     let mut v: Value = if existing.trim().is_empty() { json!({}) } else { serde_json::from_str(existing).ok()? };
     let obj = v.as_object_mut()?;
-    if defaults::list("health.context_events").contains(&event) {
+    if defaults::list("health.context_events").contains(&event) || crate::dispatch::stopchan::health_to_context(host, event, raw, existing) {
         let hso = obj.entry("hookSpecificOutput").or_insert_with(|| json!({}));
         let h = hso.as_object_mut()?;
         h.entry("hookEventName").or_insert_with(|| json!(event));

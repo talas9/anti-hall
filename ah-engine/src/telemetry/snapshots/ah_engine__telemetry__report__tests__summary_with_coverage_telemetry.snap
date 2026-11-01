@@ -1,6 +1,5 @@
 ---
 source: src/telemetry/report.rs
-assertion_line: 468
 expression: "serde_json::to_string_pretty(&v).unwrap()"
 ---
 {
@@ -205,6 +204,50 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
         "ms_total": 2300,
         "tokens_in": 900,
         "tokens_out": 60
+      }
+    },
+    "stop_channel": {
+      "cap_hit": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "deferred_delivered": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "deferred_duplicate": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "deferred_pending_work": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "soft_block": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "state_failed": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
+      },
+      "system_message": {
+        "by_check": {},
+        "by_model": {},
+        "by_project": {},
+        "total": 0
       }
     }
   },

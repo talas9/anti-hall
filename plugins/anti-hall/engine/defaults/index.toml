@@ -33,6 +33,7 @@ files = [
     "prompt_emit.toml",
     "ctxbudget.toml",
     "inject_gate.toml",
+    "stop_channel.toml",
     "context_size.toml",
     "session.toml",
     "response_guards.toml",
