@@ -197,3 +197,51 @@ fn the_reply_after_a_hold_is_never_held_again_with_the_switch_on_or_off() {
     assert_eq!(code, 0, "{out:?} {err:?}");
     assert!(out.contains("\"decision\":\"block\""), "the first Stop is still held: {out:?}");
 }
+
+#[test]
+fn a_passive_shown_by_a_system_is_a_guess_held_with_the_switch_on_and_off() {
+    let r = "The error must be shown by the renderer by now.";
+    for focus in [false, true] {
+        let rig = Rig::new(&format!("shownby-{focus}"));
+        rig.transcript(&[human(), reply(r)]);
+        let (code, out, err) = rig.stop(r, focus);
+        assert_eq!(code, 0, "{out:?} {err:?}");
+        assert!(out.contains("\"decision\":\"block\"") && out.contains("unverified claim"), "focus={focus}: held: {out:?}");
+    }
+}
+
+#[test]
+fn a_label_about_another_subject_does_not_clear_the_claim_before_it() {
+    let r = "Tests pass, but I haven't confirmed the deploy.";
+    for focus in [false, true] {
+        let rig = Rig::new(&format!("othersubj-{focus}"));
+        rig.transcript(&[human(), tool_call("u1", "ls"), tool_result("u1", "a"), reply(r)]);
+        let (code, out, err) = rig.stop(r, focus);
+        assert_eq!(code, 0, "{out:?} {err:?}");
+        assert!(out.contains("\"decision\":\"block\"") && out.contains("claim evidence guard"), "focus={focus}: held: {out:?}");
+    }
+    // the same label about the claim itself still clears it with the switch on
+    for r in ["Tests pass, but I haven't confirmed that.", "Tests pass; I couldn't verify it."] {
+        let rig = Rig::new("samesubj");
+        rig.transcript(&[human(), tool_call("u1", "ls"), tool_result("u1", "a"), reply(r)]);
+        let (code, out, err) = rig.stop(r, true);
+        assert_eq!(code, 0, "{out:?} {err:?}");
+        assert!(!out.contains("claim evidence guard"), "{r}: {out:?}");
+    }
+}
+
+#[test]
+fn a_quoted_attributed_statement_after_a_colon_is_not_a_claim_with_the_switch_on() {
+    let r = "The worker said: \"Tests pass.\"";
+    let rig = Rig::new("colon");
+    rig.transcript(&[human(), tool_call("u1", "ls"), tool_result("u1", "a"), reply(r)]);
+    let (code, out, err) = rig.stop(r, true);
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert!(!out.contains("\"decision\":\"block\""), "on: attributed: {out:?}");
+    // an unattributed claim after a colon is still held
+    let r = "Status: tests pass.";
+    let rig = Rig::new("colon2");
+    rig.transcript(&[human(), tool_call("u1", "ls"), tool_result("u1", "a"), reply(r)]);
+    let (_, out, _) = rig.stop(r, true);
+    assert!(out.contains("claim evidence guard"), "{out:?}");
+}

@@ -61,6 +61,12 @@ function ceStart(sent, a) {
       off = off + m[1];
       continue;
     }
+    // focus switch: a colon right after a reporting verb ('The worker said: "..."') keeps the attribution over the words after it
+    if (ceFocus() && ah.re.find(ah.cfg('claim_evidence.clause_join_focus_break_re'), 'i', before.slice(off + m[0], off + m[1])) &&
+        ah.re.find(ah.cfg('claim_evidence.clause_join_focus_re'), 'i', before.slice(0, off + m[0]))) {
+      off = off + m[1];
+      continue;
+    }
     from = off + m[1];
     off = from;
   }

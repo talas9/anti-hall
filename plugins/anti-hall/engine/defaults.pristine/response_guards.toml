@@ -189,8 +189,8 @@ value = [
 ]
 
 [speculation_guard.obligation_focus_re]
-doc = "Read only while guards.claimEvidenceFocus is on, as well as speculation_guard.obligation_re: more words after a must-be or should-be that name a real obligation ('must be shown failing before any fix', 'must be proven', 'must be demonstrated'). Only words that state a duty to produce evidence; a passive verb about what the system does ('must be caught by the wrapper', 'should be recorded by now') is a guess and stays held. Regex source, case-insensitive."
-value = '^\s+(?:shown|proven|proved|demonstrated)\b'
+doc = "Read only while guards.claimEvidenceFocus is on, as well as speculation_guard.obligation_re: more words after a must-be or should-be that name a real obligation ('must be shown failing before any fix', 'must be proven', 'must be demonstrated'). Only words that state a duty to produce evidence; a passive verb about what the system does ('must be caught by the wrapper', 'should be recorded by now', 'must be shown by the renderer') is a guess and stays held, so shown/proven/demonstrated count only when a stop, an infinitive, 'that' or a duty word follows. Regex source, case-insensitive."
+value = '^\s+(?:shown|proven|proved|demonstrated)(?:\s*[.,;:!?)]|\s*$|\s+(?:to|that|before|first|failing|working|passing|again|against|green|red)\b)'
 
 [speculation_guard.requirement_focus_re]
 doc = "Read only while guards.claimEvidenceFocus is on, as well as speculation_guard.requirement_line_re: more labels that open a requirement line ('Rule:', 'Constraint:', 'Brief:', 'Definition of done:'), after an optional list bullet. Regex source, case-insensitive."

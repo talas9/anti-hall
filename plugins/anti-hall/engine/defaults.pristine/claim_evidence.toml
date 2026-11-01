@@ -94,7 +94,7 @@ value = [
 [claim_evidence.ack_focus_res]
 doc = "More honest-label phrasings (rule 1), read only while guards.claimEvidenceFocus is on, with the same reach as claim_evidence.ack_res: the writer says it did not confirm the claim ('I haven't confirmed that', 'could not verify', 'unconfirmed', 'not yet proven'). Regular expressions, case-insensitive, matched against the claim's sentence with quoted text and code removed. A dot stands for either apostrophe."
 value = [
-  '\b(?:haven.t|have not|hadn.t|had not|did not|didn.t|could not|couldn.t|can.t|cannot|was not able to|wasn.t able to|am not able to|unable to)\s+(?:yet\s+|fully\s+|really\s+)?(?:confirm|verif|check|test|validat|reproduc|prov|measur)\w*\b',
+  '\b(?:haven.t|have not|hadn.t|had not|did not|didn.t|could not|couldn.t|can.t|cannot|was not able to|wasn.t able to|am not able to|unable to)\s+(?:yet\s+|fully\s+|really\s+)?(?:confirm|verif|check|test|validat|reproduc|prov|measur)\w*\b(?:\s+(?:yet|fully|really))?(?:\s+(?:it|that|this|them|those|these|the above|the result|the results|any of (?:it|that|this|them))\b|\s*(?:[.,;:!?)]|$))',
   '\bunconfirmed\b',
   '\bunproven\b',
   '\b(?:not|never)\s+(?:yet\s+|been\s+|fully\s+)?(?:confirmed|validated|reproduced|proven|established|measured)\b',
@@ -107,8 +107,8 @@ min = 1
 max = 1000
 
 [claim_evidence.trailing_label_focus_re]
-doc = "Read only while guards.claimEvidenceFocus is on, as well as claim_evidence.trailing_label_re: an honest label that closes the sentence as its own clause, in the way people write it ('Tests pass, but I haven't confirmed that.', 'Tests pass; I couldn't verify it.'). It covers every claim before it in that sentence. Rust regular expression, case-insensitive, matched against the sentence; a short object (up to 30 characters, no sentence punctuation) may follow the verb."
-value = '[,;:(\u2014\u2013]\s*(?:but\s+|and\s+|though\s+)?(?:i\s+|we\s+)?(?:(?:haven.t|have not|could not|couldn.t|can.t|cannot|did not|didn.t)\s+(?:yet\s+|fully\s+)?(?:confirm|verif|check|test|validat|prov)\w*|(?:not|never)\s+(?:yet\s+)?(?:confirmed|verified|validated|proven))\b[^.;\n]{0,30}\W*$'
+doc = "Read only while guards.claimEvidenceFocus is on, as well as claim_evidence.trailing_label_re: an honest label that closes the sentence as its own clause, in the way people write it ('Tests pass, but I haven't confirmed that.', 'Tests pass; I couldn't verify it.'). It covers every claim before it in that sentence. Rust regular expression, case-insensitive, matched against the sentence; only an anaphor ('it', 'that', 'the result') may follow the verb: a label about another subject ('I haven't confirmed the deploy') does not cover the claim before it."
+value = '[,;:(\u2014\u2013]\s*(?:but\s+|and\s+|though\s+)?(?:i\s+|we\s+)?(?:(?:haven.t|have not|could not|couldn.t|can.t|cannot|did not|didn.t)\s+(?:yet\s+|fully\s+)?(?:confirm|verif|check|test|validat|prov)\w*|(?:not|never)\s+(?:yet\s+)?(?:confirmed|verified|validated|proven))\b(?:\s+(?:yet|fully|really))?(?:\s+(?:it|that|this|them|those|these|the above|the result|the results|any of (?:it|that|this|them)))?\W*$'
 
 [claim_evidence.msg_claim_instead_focus]
 doc = "Rule 1 advice while guards.claimEvidenceFocus is on: it names the check that clears this claim (the block advice is cut to 115 characters by the message layer, so the clears texts are short). Placeholder: {clears} the claim row's `clears` text."
@@ -179,6 +179,14 @@ value = '\baccording\s+to\s+(?:[\w#\x27-]+\s+){0,3}[\w#\x27-]+$'
 [claim_evidence.clause_join_break_re]
 doc = "Which clause break may keep a clause going after a source phrase (strict mode): only a comma ('According to the docs, CI is green' stays one clause); a semicolon, dash or other break ends it ('I updated the config according to the docs; CI is green' leaves the second claim bare). Rust regular expression, case-insensitive, matched against the break text itself."
 value = '^,$'
+
+[claim_evidence.clause_join_focus_re]
+doc = "Read only while guards.claimEvidenceFocus is on: a reporting verb that, when it ends right before a colon, keeps the clause going, so a quoted statement after it stays attributed ('The worker said: \"Tests pass.\"'). Rust regular expression, case-insensitive, matched against the sentence up to the colon; it must end with $."
+value = '\b(?:says?|said|saying|reports?|reported|reporting|claims?|claimed|states?|stated|wrote|writes|written|mentions?|mentioned|shows?|showed|asserts?|asserted)(?:\s+that)?\s*$'
+
+[claim_evidence.clause_join_focus_break_re]
+doc = "Which clause break may keep a clause going after a reporting verb while guards.claimEvidenceFocus is on: only a colon. Rust regular expression, case-insensitive, matched against the break text itself."
+value = '^:$'
 
 [claim_evidence.ack_before_not_re]
 doc = "Text that ends right before an honest-label word and negates it (strict mode): 'not unverified', 'never unverified'. Rust regular expression, case-insensitive, matched against the sentence up to the label; it must end with $."
