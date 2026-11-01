@@ -168,7 +168,8 @@ fn null_out_of_range_numbers(txt: &str) -> (String, usize) {
                 i += 1;
             }
             let tok = txt.get(start..i).unwrap_or("");
-            if tok.parse::<f64>().is_ok_and(f64::is_infinite) {
+            // only a token that is a JSON number can overflow: Rust's f64 parser also reads `01e400`, which JavaScript rejects
+            if is_json_number(tok) && tok.parse::<f64>().is_ok_and(f64::is_infinite) {
                 replaced += 1;
                 out.push_str("null");
             } else {
@@ -180,6 +181,29 @@ fn null_out_of_range_numbers(txt: &str) -> (String, usize) {
         }
     }
     (out, replaced)
+}
+
+/// True when `tok` is a number by the JSON grammar: `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?`, nothing before or after.
+fn is_json_number(tok: &str) -> bool {
+    let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
+    let rest = tok.strip_prefix('-').unwrap_or(tok);
+    let int = digits(rest);
+    let Some(after_int) = rest.get(int..) else { return false };
+    if int == 0 || (int > 1 && rest.starts_with('0')) {
+        return false;
+    }
+    let after_frac = match after_int.strip_prefix('.') {
+        Some(f) if digits(f) > 0 => f.get(digits(f)..).unwrap_or("!"),
+        Some(_) => return false,
+        None => after_int,
+    };
+    match after_frac.strip_prefix(['e', 'E']) {
+        Some(e) => {
+            let e = e.strip_prefix(['+', '-']).unwrap_or(e);
+            digits(e) > 0 && e.get(digits(e)..).is_some_and(str::is_empty)
+        }
+        None => after_frac.is_empty(),
+    }
 }
 
 /// [`js_reads_differently_str`] on file bytes, decoded as Node decodes them (UTF-8, bad bytes replaced).
@@ -220,6 +244,21 @@ mod tests {
         assert!(parse_settings_as_js("{\"x\":1e400,\"s\":\"\\ud800\"}").is_none());
         let deep = format!("{{\"x\":1e400,\"d\":{}1{}}}", "[".repeat(200), "]".repeat(200));
         assert!(parse_settings_as_js(&deep).is_none());
+    }
+
+    #[test]
+    fn a_token_that_is_not_a_json_number_is_never_read_as_an_overflowing_one() {
+        // `01e400` parses in Rust's f64 parser (to infinity) but is not JSON: the document stays invalid, never "valid with a null" (#569 review)
+        for bad in ["01e400", "-01e400", "00", "1e", "1e+", "1.e400", "1e400-", "1e400e5", "1e400.5", "-", "--1e400"] {
+            let doc = format!("{{\"safe\":false,\"x\":{bad}}}");
+            assert!(parse_settings_as_js(&doc).is_none(), "{bad}");
+            // an overflowing number next to it does not launder it either
+            let doc = format!("{{\"a\":1e400,\"x\":{bad}}}");
+            assert!(parse_settings_as_js(&doc).is_none(), "{bad} beside a real overflow");
+        }
+        for ok in ["0", "-0", "0.5", "1E400", "1e+400", "1e-400", "-1.5e+400", "123456789e2"] {
+            assert!(is_json_number(ok), "{ok}");
+        }
     }
 
     #[test]
