@@ -146,29 +146,28 @@ pub fn parse_settings_as_js(txt: &str) -> Option<(Value, usize)> {
 
 /// `txt` with every number token outside the f64 range (outside strings) written as `null`, and how many there were.
 fn null_out_of_range_numbers(txt: &str) -> (String, usize) {
-    let b = txt.as_bytes();
+    let char_at = |at: usize| txt.get(at..).and_then(|s| s.chars().next());
     let (mut out, mut i, mut replaced, mut in_str) = (String::with_capacity(txt.len()), 0usize, 0usize, false);
-    while i < b.len() {
-        let c = b[i];
+    while let Some(ch) = char_at(i) {
+        let w = ch.len_utf8();
         if in_str {
             // copy the escape pair or the character whole, so a multi-byte character is never split
-            let n = if c == b'\\' { 2 } else { txt[i..].chars().next().map_or(1, char::len_utf8) };
-            let end = (i + n).min(b.len());
-            out.push_str(txt.get(i..end).unwrap_or(""));
-            if c == b'"' {
+            let n = if ch == '\\' { w + char_at(i + w).map_or(0, char::len_utf8) } else { w };
+            out.push_str(txt.get(i..i + n).unwrap_or(""));
+            if ch == '"' {
                 in_str = false;
             }
-            i = end;
-        } else if c == b'"' {
+            i += n;
+        } else if ch == '"' {
             in_str = true;
             out.push('"');
-            i += 1;
-        } else if matches!(c, b'-' | b'0'..=b'9') {
+            i += w;
+        } else if ch == '-' || ch.is_ascii_digit() {
             let start = i;
-            while i < b.len() && matches!(b[i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+            while char_at(i).is_some_and(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E')) {
                 i += 1;
             }
-            let tok = &txt[start..i];
+            let tok = txt.get(start..i).unwrap_or("");
             if tok.parse::<f64>().is_ok_and(f64::is_infinite) {
                 replaced += 1;
                 out.push_str("null");
@@ -176,9 +175,8 @@ fn null_out_of_range_numbers(txt: &str) -> (String, usize) {
                 out.push_str(tok);
             }
         } else {
-            let ch = txt[i..].chars().next().unwrap_or(' ');
             out.push(ch);
-            i += ch.len_utf8();
+            i += w;
         }
     }
     (out, replaced)
