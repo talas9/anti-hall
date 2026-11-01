@@ -277,6 +277,35 @@ pub(crate) fn blocks(r: &HookResult) -> bool {
     r.code == Some(2) || (r.code.is_some() && json_blocks(&r.out))
 }
 
+/// The output channels one answer of a check uses, as the keys of `delivery.channel_label` (B1 funnel): `block` (exit 2 or a JSON
+/// block), `soft_block` (a non-blocking answer of a `dispatch.stop_events` event that carries `additionalContext`: it continues
+/// the turn), `advisory` (`additionalContext` on any other event), `system_message` (a non-empty `systemMessage`), `stderr` (stderr
+/// text on an answer that does not block), `plain` (stdout that is not a JSON object). An answer on several channels is on each.
+pub(crate) fn channel_keys(event: &str, r: &HookResult) -> Vec<&'static str> {
+    let parsed = parse_object(&r.out);
+    let non_empty = |v: Option<&Ordered>| v.and_then(Ordered::as_str).is_some_and(|s| !s.is_empty());
+    let blocking = r.code == Some(2) || json_blocks(&r.out);
+    let ctx = parsed.as_ref().is_some_and(|p| non_empty(p.get(HSO_KEY).and_then(|h| h.get(HSO_CTX))));
+    let sys = parsed.as_ref().is_some_and(|p| non_empty(p.get(TOP_MSG)));
+    let stop = defaults::list("dispatch.stop_events").contains(&event);
+    let mut keys = Vec::new();
+    if blocking {
+        keys.push("block");
+    } else if ctx {
+        keys.push(if stop { "soft_block" } else { "advisory" });
+    }
+    if sys {
+        keys.push("system_message");
+    }
+    if !blocking && !r.err.trim().is_empty() {
+        keys.push("stderr");
+    }
+    if parsed.is_none() && !r.out.trim().is_empty() && !blocking {
+        keys.push("plain");
+    }
+    keys
+}
+
 const TOP_DECISION: &str = "decision";
 const TOP_REASON: &str = "reason";
 const TOP_MSG: &str = "systemMessage";
@@ -535,6 +564,26 @@ mod tests {
     fn r(id: &str, code: i32, out: &str, err: &str) -> HookResult {
         HookResult { id: id.into(), code: Some(code), out: out.into(), err: err.into() }
     }
+    #[test]
+    fn an_answer_is_classified_into_the_channels_it_uses() {
+        let ctx = |ev: &str| format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"{ev}\",\"additionalContext\":\"x\"}}}}\n");
+        // hard blocks: exit 2 (stderr is the block's own text), and a JSON block on exit 0
+        assert_eq!(channel_keys("PreToolUse", &r("a", 2, "", "no\n")), vec!["block"]);
+        assert_eq!(channel_keys("Stop", &r("a", 0, "{\"decision\":\"block\",\"reason\":\"R\"}\n", "")), vec!["block"]);
+        // additionalContext: a soft block on a Stop event (it continues the turn), an advisory anywhere else
+        assert_eq!(channel_keys("Stop", &r("a", 0, &ctx("Stop"), "")), vec!["soft_block"]);
+        assert_eq!(channel_keys("PreToolUse", &r("a", 0, &ctx("PreToolUse"), "")), vec!["advisory"]);
+        // systemMessage and stderr text on an allow are shown to the user, not the model
+        assert_eq!(channel_keys("Stop", &r("a", 0, "{\"systemMessage\":\"m\"}\n", "")), vec!["system_message"]);
+        assert_eq!(channel_keys("PostToolUse", &r("a", 0, "", "note\n")), vec!["stderr"]);
+        // plain stdout, and an answer on several channels counts on each
+        assert_eq!(channel_keys("UserPromptSubmit", &r("a", 0, "hello\n", "")), vec!["plain"]);
+        let both = "{\"systemMessage\":\"m\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"x\"}}\n";
+        assert_eq!(channel_keys("Stop", &r("a", 0, both, "e\n")), vec!["soft_block", "system_message", "stderr"]);
+        // an empty additionalContext says nothing to the host, so it is no channel
+        assert!(channel_keys("Stop", &r("a", 0, "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"\"}}\n", "")).is_empty());
+    }
+
     fn ans(c: Combined) -> Outcome {
         match c {
             Combined::Answer(o) => o,

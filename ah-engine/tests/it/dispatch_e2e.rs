@@ -342,6 +342,171 @@ fn the_built_in_check_blocks_in_process_and_through_the_daemon() {
     assert!(metrics.contains("dispatch_checks") && metrics.contains("decided"), "the daemon counts what it answered: {metrics}");
 }
 
+/// B1: a real hook call through the daemon (a force push on a Bash PreToolUse payload that names its model) lands in the funnel
+/// as one decided and delivered answer of the git check, labelled with the payload's model family and the project, on the block
+/// channel, and `telemetry funnel --by model,project` reads it back.
+#[test]
+fn a_real_hook_call_is_counted_in_the_funnel_by_model_project_and_channel() {
+    let e = Env::new("funnel");
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let p = serde_json::json!({
+        "session_id": "e2e-funnel", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "model": "claude-opus-4-8",
+        "tool_input": {"command": "git push --force origin main"},
+    })
+    .to_string();
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut row = serde_json::Value::Null;
+    while Instant::now() < until {
+        e.run(&args, false, &p, true);
+        let (code, out, _) = e.run(&["telemetry", "funnel", "--by", "model,project", "--json"], false, "", true);
+        if code == 0
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+            && let Some(r) = v["funnel"]["rows"].as_array().and_then(|rows| rows.iter().find(|r| r["check"] == "git" && r["delivered"].as_u64() > Some(0)))
+        {
+            row = r.clone();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let status = e.run(&["status", "--json"], false, "", true).1;
+    e.stop();
+    assert!(!row.is_null(), "the git check's answer reached the funnel: {status}");
+    assert_eq!(row["model"], "opus", "the payload's model id is read to its family: {row}");
+    assert!(row["decided"].as_u64() >= Some(1) && row["delivered"].as_u64() >= Some(1), "{row}");
+    assert!(row["channels"]["block"].as_u64() >= Some(1), "a force push is blocked: {row}");
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["delivery"]["funnel"]["enabled"], true, "status --json carries the funnel block: {status}");
+    assert!(status["delivery"]["funnel"]["totals"]["decided"].as_u64() >= Some(1), "{status}");
+}
+
+impl Env {
+    /// Calls a quiet event until the daemon the hook client starts is running, so the calls after it are all served by it.
+    fn warm_daemon(&self) {
+        let until = Instant::now() + common::scaled(Duration::from_secs(30));
+        while Instant::now() < until {
+            let map = self.map(&[]);
+            let warm = bash("echo warm", &self.dir).replace("\"e2e\"", "\"warm\"");
+            self.run(&["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()], false, &warm, true);
+            let (code, out, _) = self.run(&["status", "--json"], false, "", true);
+            if code == 0 && serde_json::from_str::<serde_json::Value>(&out).is_ok_and(|v| v["running"] == true) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("no daemon came up");
+    }
+
+    fn funnel(&self) -> serde_json::Value {
+        let (code, out, err) = self.run(&["telemetry", "funnel", "--by", "model,project", "--json"], false, "", true);
+        assert_eq!(code, 0, "{err}");
+        serde_json::from_str(&out).unwrap()
+    }
+
+    fn config(&self, text: &str) {
+        std::fs::create_dir_all(self.state()).unwrap();
+        std::fs::write(self.state().join("config.toml"), text).unwrap();
+    }
+}
+
+/// Sum of one funnel stage over the rows of `check`.
+fn stage_sum(f: &serde_json::Value, check: &str, stage: &str) -> u64 {
+    f["funnel"]["rows"].as_array().unwrap().iter().filter(|r| r["check"] == check).map(|r| r[stage].as_u64().unwrap_or(0)).sum()
+}
+
+fn channel_sum(f: &serde_json::Value, check: &str) -> u64 {
+    f["funnel"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["check"] == check)
+        .flat_map(|r| r["channels"].as_object().unwrap().values().map(|n| n.as_u64().unwrap_or(0)))
+        .sum()
+}
+
+/// Review finding 1 of PR 553: an entry in `shadow` mode runs, but the client drops its answer. Real UserPromptSubmit input,
+/// `[events.UserPromptSubmit] mode = "shadow"`: nothing reaches the agent (empty stdout and stderr, exit 0), and the funnel counts
+/// the answers as decided and suppressed, never delivered and in no channel.
+#[test]
+fn a_shadowed_answer_is_decided_and_suppressed_never_delivered() {
+    let e = Env::new("funnel-shadow");
+    e.config("[events.UserPromptSubmit]\nmode = \"shadow\"\n");
+    e.warm_daemon();
+    let p = serde_json::json!({"session_id": "shadow", "cwd": e.dir, "hook_event_name": "UserPromptSubmit", "prompt": "hello", "model": "claude-opus-4-8"})
+        .to_string();
+    let (code, out, err) = e.run(&["hook", "--event", "UserPromptSubmit"], false, &p, true);
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut f = e.funnel();
+    while stage_sum(&f, "verify-first", "suppressed") == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+        f = e.funnel();
+    }
+    e.stop();
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "shadow: nothing reaches the agent");
+    for check in ["verify-first", "task-tracker"] {
+        assert_eq!(stage_sum(&f, check, "decided"), 1, "{check}: {f}");
+        assert_eq!(stage_sum(&f, check, "suppressed"), 1, "{check}: {f}");
+        assert_eq!(stage_sum(&f, check, "delivered"), 0, "{check} is not delivered: {f}");
+        assert_eq!(channel_sum(&f, check), 0, "{check} is in no channel: {f}");
+    }
+}
+
+/// Review finding 4 of PR 553: one block is exactly one decided and one delivered answer, on the block channel, in the funnel and in
+/// the unsplit `status` ledger. (The reviewer's "twice" was two force pushes: two calls, two counts.)
+#[test]
+fn one_block_is_one_decided_and_one_delivered_answer() {
+    let e = Env::new("funnel-one-block");
+    e.warm_daemon();
+    let p = serde_json::json!({
+        "session_id": "one-block", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "model": "claude-opus-4-8",
+        "tool_input": {"command": "git push --force origin main"},
+    })
+    .to_string();
+    let (code, _, err) = e.run(&["hook", "--event", "PreToolUse"], false, &p, true);
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut f = e.funnel();
+    while stage_sum(&f, "git", "delivered") == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+        f = e.funnel();
+    }
+    std::thread::sleep(Duration::from_millis(500)); // a second count, if one were coming, would be in by now
+    let f2 = e.funnel();
+    let status: serde_json::Value = serde_json::from_str(&e.run(&["status", "--json"], false, "", true).1).unwrap();
+    e.stop();
+    assert_eq!(code, 2, "a force push is blocked: {err}");
+    assert_eq!((stage_sum(&f2, "git", "decided"), stage_sum(&f2, "git", "delivered")), (1, 1), "{f2}");
+    assert_eq!(channel_sum(&f2, "git"), 1, "{f2}");
+    assert_eq!(status["delivery"]["per_check"]["git"]["decided"], 1, "{status}");
+    assert_eq!(status["delivery"]["per_check"]["git"]["delivered"], 1, "{status}");
+}
+
+/// The funnel only counts: with `delivery.funnel_enabled` 1 and 0 the same real hook payloads (a prompt, a force push, a shadowed
+/// prompt) give byte-identical stdout, stderr and exit code.
+#[test]
+fn the_funnel_switch_changes_no_hook_output() {
+    let run = |on: u8, shadow: bool| {
+        let e = Env::new(&format!("funnel-parity-{on}-{shadow}"));
+        let cfg = if shadow { "[events.UserPromptSubmit]\nmode = \"shadow\"\n" } else { "" };
+        e.config(&format!("{cfg}[delivery]\nfunnel_enabled = {on}\n"));
+        e.warm_daemon();
+        let cwd = "/";
+        let prompt =
+            serde_json::json!({"session_id": "parity", "cwd": cwd, "hook_event_name": "UserPromptSubmit", "prompt": "hello", "model": "claude-opus-4-8"})
+                .to_string();
+        let push = serde_json::json!({
+            "session_id": "parity", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "model": "claude-opus-4-8",
+            "tool_input": {"command": "git push --force origin main"},
+        })
+        .to_string();
+        let got = (e.run(&["hook", "--event", "UserPromptSubmit"], false, &prompt, true), e.run(&["hook", "--event", "PreToolUse"], false, &push, true));
+        e.stop();
+        got
+    };
+    for shadow in [false, true] {
+        assert_eq!(run(1, shadow), run(0, shadow), "shadow={shadow}: the switch must not change any output");
+    }
+}
+
 /// The three agent controls are answered by the dispatcher itself: their Node commands (which would print `NODE-RAN`) are
 /// never run, an ask-guard block carries Node's exact bytes (the JSON decision on stdout, exit 2, nothing on stderr), and the
 /// answer is the same in process and through the daemon.

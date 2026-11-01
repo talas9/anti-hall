@@ -532,3 +532,115 @@ value = "allow_notice"
 [diagnostics.deadline_cut_outcome_allow]
 doc = "Outcome word of a deadline cut that allowed (the session was already told, or there is no session)."
 value = "allow"
+
+[delivery.funnel_enabled]
+doc = "Per-rule funnel (B1, plan v2 section 6): 1 splits the delivery stages (decided, delivered, acted_on, ignored, lost, shed, suppressed) and the output channels of every check by the session's model family and the project, in the metrics delivery_funnel and delivery_channel (`telemetry funnel`). It only counts: no answer changes. 0 stops the split (what was recorded stays); the unsplit delivery_stage and delivery_lost counters are unaffected. On by default because it changes no behaviour and the baseline window needs its data."
+value = 1
+min = 0
+max = 1
+
+[delivery.stage_acted_on]
+doc = "Funnel stage label for a delivered answer whose acted-on condition (delivery.act, else delivery.react) was met within its window. The unsplit delivery_stage counter keeps the older label `complied` (delivery.stage_complied) so restored counters stay valid."
+value = "acted_on"
+
+[delivery.stage_lost]
+doc = "Funnel stage label for an answer that did not reach the agent for a reason other than shedding (hard_deadline, cpu_budget, client_gone, check_deferred, undelivered)."
+value = "lost"
+
+[delivery.stage_suppressed]
+doc = "Stage label for an answer a check made that the client's hook configuration never emits (the entry's mode is shadow: it runs and is measured, its answer is dropped). Counted as decided and as suppressed, never as delivered, in an output channel, or armed for a reaction."
+value = "suppressed"
+
+[delivery.stage_shed]
+doc = "Funnel stage label for an answer shed by the CPU hard limit (the reason named in delivery.reason_shed)."
+value = "shed"
+
+[delivery.act]
+doc = """Per check, its acted-on condition (B1). A row: tools = the host tool names that count; polarity = "do" (one of the tools within the window is the reaction, none is ignored) or "avoid" (none within the window is the reaction, one is ignored); window = how many occurrences of window_event the window lasts (its age is also capped by delivery.react_window_ms); window_event = the hook event that advances the window (a tool call = PreToolUse, a turn end = Stop, a user prompt = UserPromptSubmit). Tools are always matched on delivery.react_event. A check with no row here but a delivery.react row uses that row (polarity do, window delivery.react_window_calls tool calls); a check with neither has no acted-on figure. The conditions are by tool class only: they prove the agent did the kind of thing the rule asks for, not that it did it because of the rule or on the named object (the task ids or agent ids in the message are not compared), so acted_on is an upper bound.
+swarm-guard: after a blocked spawn the agent starts no further agent within 3 tool calls (avoid). task-guard and task-tracker: a spawn, task change or message within 8 tool calls of the idle-task block (do). idle-agent-sweep: TaskStop or SendMessage within 8 tool calls (do). claim-evidence-guard: a read, search, web lookup or shell check before the next Stop (do; a claim restated as unverified in text, which the brief also counts as acted-on, cannot be seen from tool calls and shows as ignored). silent-agent-nudge: SendMessage or TaskStop within 8 tool calls (do). coordinator-work-guard: an agent spawn within 8 tool calls of the main-thread work block (do).
+Not covered, no firing check on dev: reply style (R-style)."""
+value = { swarm-guard = { tools = ["Agent", "Task"], polarity = "avoid", window = 3, window_event = "PreToolUse" }, task-guard = { tools = ["Agent", "Task", "TaskCreate", "TaskUpdate", "SendMessage"], polarity = "do", window = 8, window_event = "PreToolUse" }, task-tracker = { tools = ["Agent", "Task", "TaskCreate", "TaskUpdate", "SendMessage", "TaskList", "TaskGet", "TodoWrite"], polarity = "do", window = 8, window_event = "PreToolUse" }, idle-agent-sweep = { tools = ["TaskStop", "SendMessage"], polarity = "do", window = 8, window_event = "PreToolUse" }, claim-evidence-guard = { tools = ["Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch"], polarity = "do", window = 1, window_event = "Stop" }, silent-agent-nudge = { tools = ["SendMessage", "TaskStop"], polarity = "do", window = 8, window_event = "PreToolUse" }, coordinator-work-guard = { tools = ["Agent", "Task"], polarity = "do", window = 8, window_event = "PreToolUse" } }
+
+[delivery.channel_label]
+doc = "The output channel labels of metric delivery_channel, by the channel the dispatcher classified an answer into: block (exit 2, or a JSON block decision outside a Stop event), soft_block (a Stop-class event answer that blocks through JSON, or one that carries additionalContext), advisory (additionalContext on any other event), system_message (a systemMessage field: shown to the user, not read by the model), stderr (stderr text on an exit-0 answer: not read by the model), plain (plain stdout text on an event whose stdout is context). An answer that uses several channels counts once in each."
+value = { block = "block", soft_block = "soft_block", advisory = "advisory", system_message = "system_message", stderr = "stderr", plain = "plain" }
+
+[delivery.model_keys]
+doc = "Top-level hook payload fields that name the session's model, first present one wins (Codex payloads carry `model`)."
+value = ["model", "parent_model"]
+
+[delivery.model_families]
+doc = "Model families the funnel splits by, matched in order as a substring of the lower-cased model id; the first match is the label. Other ids are labelled delivery.model_unknown. Add the family of a new model here (Claude: fable, opus, sonnet, haiku; Codex: gpt and codex)."
+value = ["fable", "opus", "sonnet", "haiku", "gpt", "codex"]
+
+[delivery.model_unknown]
+doc = "Funnel model label of a session whose model could not be read from the payload or the transcript tail."
+value = "unknown"
+
+[delivery.model_retry_max]
+doc = "Times the funnel reads a session's transcript tail looking for its model before it settles on delivery.model_unknown for that session (each read is bounded by the model_routing.session_model_* limits)."
+value = 3
+min = 1
+max = 20
+
+[delivery.session_models_max]
+doc = "Sessions whose resolved model the funnel remembers; past it the oldest is forgotten (and resolved again if it reappears)."
+value = 256
+min = 1
+
+[delivery.project_slots]
+doc = "Distinct project labels the funnel keeps; further projects are counted under delivery.project_other, so the split stays bounded."
+value = 32
+min = 1
+
+[delivery.project_other]
+doc = "Funnel project label for every project past delivery.project_slots."
+value = "other"
+
+[delivery.report_dims]
+doc = "The dimensions `telemetry funnel --by` accepts (comma list); each is a label of delivery_funnel and delivery_channel."
+value = ["model", "project"]
+
+[delivery.report_stages]
+doc = "The funnel stages the report lists, in order; each names a `delivery.stage_<name>` label."
+value = ["decided", "delivered", "acted_on", "ignored", "lost", "shed", "suppressed"]
+
+[delivery.report_note_overflow]
+doc = "Printed in the funnel report's window.overflow when some counts sit in the overflow bucket (a series past telemetry.max_series_by_metric kept its check and stage and folded its model and project into the overflow label), and on each row that is such a bucket. Placeholders: {counts}."
+value = "{counts} counts sit in the overflow bucket (model and project folded into `other`); their check and stage are exact, so the totals are complete."
+
+[delivery.report_overflow_stage]
+doc = "Report key for answers counted under a stage label the report does not list (an older series whose stage label was folded into the overflow label): they stay in the row and the totals under this key instead of being dropped."
+value = "unlisted"
+
+[delivery.report_bad_dim]
+doc = "Printed by `telemetry funnel` for a --by word it does not know. Placeholders: {dim}, {dims}."
+value = "telemetry funnel: cannot split by {dim}; use a comma list of: {dims}"
+
+[delivery.report_note_lifetime]
+doc = "Printed in the funnel report's window block when no window was asked: the counters are lifetime."
+value = "lifetime counters since the funnel metrics were first recorded"
+
+[delivery.report_note_partial]
+doc = "Printed in the funnel report's window block when no metrics snapshot is as old as the window: the figures cover only what the oldest snapshot and the live counters hold."
+value = "the oldest metrics snapshot is newer than the window start, so the figures cover less than the window"
+
+[delivery.polarity_avoid]
+doc = "The `polarity` value of a delivery.act row whose reaction is NOT calling one of its tools within the window (any other value means the call is the reaction)."
+value = "avoid"
+
+[delivery.report_verb]
+doc = "The `telemetry` subcommand that prints the funnel (`ah-engine telemetry funnel --by model,project --window 7d`; `--since` is accepted for `--window`)."
+value = "funnel"
+
+[delivery.report_rollup]
+doc = "The metrics rollup resolution (telemetry.rollups) whose stored snapshots give the start of a windowed funnel report."
+value = "hour"
+
+[delivery.report_no_daemon]
+doc = "Printed by `telemetry funnel` when no engine daemon answers: the funnel counters are in the daemon's metrics and their window baseline in its stored snapshots."
+value = "telemetry funnel needs the running engine (start it with `ah-engine status` or a hook call); no daemon answered"
+
+[delivery.model_transcript_keep]
+doc = "The projection the funnel asks `tailEntries` for when it looks up a session's model in the transcript tail (JSON text: a list of key paths): each line's `type` and `message.model`."
+value = '[["type"], ["message", "model"]]'
