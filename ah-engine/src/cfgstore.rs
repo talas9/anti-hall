@@ -714,10 +714,14 @@ fn load_user(p: &Paths) -> Result<(BTreeMap<String, Json>, crate::hookcfg::Layer
 fn load_settings(p: &Paths) -> Result<Json, ConfigError> {
     let Some(path) = p.settings.as_deref() else { return Ok(Json::Null) };
     match read_text(path)? {
-        Some(t) => match serde_json::from_str::<Json>(&t) {
-            Ok(j @ Json::Object(_)) => Ok(j),
-            Ok(_) => Err(ConfigError::NotObject(path.to_path_buf())),
-            Err(e) => Err(ConfigError::Parse { path: path.to_path_buf(), message: e.to_string() }),
+        // read the way JavaScript reads it: a number outside the f64 range (1e400) is `null` (that one key is unset, #569), not a bad file
+        Some(t) => match crate::checks::guardkit::jsdiff::parse_settings_as_js(&t) {
+            Some((j @ Json::Object(_), _)) => Ok(j),
+            Some(_) => Err(ConfigError::NotObject(path.to_path_buf())),
+            None => Err(ConfigError::Parse {
+                path: path.to_path_buf(),
+                message: serde_json::from_str::<Json>(&t).err().map_or_else(|| "unreadable".to_string(), |e| e.to_string()),
+            }),
         },
         None => Ok(Json::Null),
     }
