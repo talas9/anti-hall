@@ -37,6 +37,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "static LAST_DROP",
         "an empty thread-local slot that holds the reason of the last dropped answer until its observer takes it: an initial None, not a tunable",
     ),
+    (
+        "src/funnel.rs",
+        "static REQUEST",
+        "an empty thread-local slot naming the session and project of the request this thread serves, cleared when the request guard drops: state, not a tunable",
+    ),
     ("src/delivery.rs", "static DECIDED", "an empty thread-local list of the answers one request produced until its end settles them: state, not a tunable"),
     ("src/learn.rs", "static LAST_REPEAT", "a thread-local counter slot that starts at zero and is set per block: an initial value, not a tunable"),
     (

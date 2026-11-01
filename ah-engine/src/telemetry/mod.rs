@@ -477,6 +477,41 @@ impl Telemetry {
         json!({"running": true, "persisted": persisted, "snapshot_ms": snap, "note": note, "metrics": m.snapshot(check)})
     }
 
+    /// The `telemetry funnel` body: the funnel stages and channels per check, split by `by` (a comma list of `delivery.report_dims`),
+    /// for the last `window` days (less the metrics snapshot taken at the window start) or, with no window, since the counters began.
+    pub fn funnel_json(&self, by: &str, window: &str) -> Value {
+        let by = match crate::funnel::parse_by(by) {
+            Ok(b) => b,
+            Err(e) => return json!({"error": e}),
+        };
+        let days = if window.trim().is_empty() {
+            None
+        } else {
+            match report::check_window(window) {
+                Ok(d) => Some(d),
+                Err(e) => return json!({"error": e}),
+            }
+        };
+        let live = {
+            let mut m = lk(&self.metrics);
+            self.rec.mirror_into(&mut m);
+            crate::metrics::drain_pending(&mut m);
+            m.export()
+        };
+        let (baseline, complete) = match days {
+            None => (None, true),
+            Some(d) => match self.store.rollup_at(defaults::text("delivery.report_rollup"), now_ms().saturating_sub(d * event::DAY_MS)) {
+                Some((ts, body, exact)) => (Some((ts, body)), exact),
+                None => (None, false),
+            },
+        };
+        let mut v = crate::funnel::report(&live, baseline, complete, &by, days);
+        if let Some(o) = v.as_object_mut() {
+            o.insert("running".into(), json!(true));
+        }
+        v
+    }
+
     /// The `metrics --rollup` body: the stored rollups of one resolution since `since_ms`.
     pub fn rollups_json(&self, resolution: &str, since_ms: u64) -> Value {
         let known: Vec<&str> = crate::storage::resolutions().iter().map(|r| r.0).collect();
