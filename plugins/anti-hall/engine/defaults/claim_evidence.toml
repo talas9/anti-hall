@@ -24,6 +24,14 @@ value = { section = "guards", key = "claimEvidenceTelemetry", type = "boolean", 
 doc = "Switch guards.claimEvidenceStrict (default on): a suppressor must not let a bare factual claim through (GH #427). A filler opener ('If you ask', 'If true'), a reporting word that is a noun after an article ('the reports') or the start of a compound ('doc-string'), a negated or noun-like label ('not unverified', 'unchecked boxes', 'unverified aside') and a source phrase closed by a comma are judged by the lists below. Off restores the earlier looser reading."
 value = { section = "guards", key = "claimEvidenceStrict", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_STRICT", option = "", default = true }
 
+[claim_evidence.sw_focus]
+doc = "Switch guards.claimEvidenceFocus (default OFF; R-claim, plan v2 section 4): the claim and hedge checks stop blocking replies that are honest or evidenced, and every block names the exact check that clears it. On: (1) the tool calls of a turn are counted since the last OWNER prompt, so a background-task notification or an injected hook message between the check and the reply no longer hides the check (transcript.ev_cont_*); (2) the extra honest-label phrasings of claim_evidence.ack_focus_res and speculation_guard.ack_focus_ci count ('I haven't confirmed that', 'unconfirmed'); (3) a 'must be shown failing' style requirement is no guess (speculation_guard.obligation_focus_re); (4) a claim block says which command clears it (the row's clears text). Off: today's behaviour, byte for byte."
+value = { section = "guards", key = "claimEvidenceFocus", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_FOCUS", option = "", default = false }
+
+[metric.claim_focus_cleared]
+doc = "Replies or claims the R-claim focus switch (guards.claimEvidenceFocus) let through that today's checks would have kept as a claim or hedge, by guard (claim-evidence-guard, speculation-guard) and by what cleared them (turn_continued: the check was in the same owner turn, before a notification; label: an extra honest-label phrasing; obligation: a requirement, not a guess). turn_continued is exact (today's evidence count would have held the reply); label counts a claim or hedge the extra phrasing covered (for the hedge check only when the turn's tool output did not already cite it); obligation counts a hedge skipped because of the extra requirement words."
+value = { kind = "counter", unit = "replies", labels = ["guard", "by"] }
+
 [metric.claim_evidence_suppressor_rejected]
 doc = "Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427)."
 value = { kind = "counter", unit = "candidates", labels = ["reason"] }
@@ -78,6 +86,23 @@ value = [
   '\b(?:pending|awaiting|waiting for)\s+(?:ci|review|the run|the check)',
   '\b(?:expected|supposed|meant|intended)\s+to\s+(?:pass|work|be)\b',
 ]
+
+[claim_evidence.ack_focus_res]
+doc = "More honest-label phrasings (rule 1), read only while guards.claimEvidenceFocus is on, with the same reach as claim_evidence.ack_res: the writer says it did not confirm the claim ('I haven't confirmed that', 'could not verify', 'unconfirmed', 'not yet proven'). Regular expressions, case-insensitive, matched against the claim's sentence with quoted text and code removed. A dot stands for either apostrophe."
+value = [
+  '\b(?:haven.t|have not|hadn.t|had not|did not|didn.t|could not|couldn.t|can.t|cannot|was not able to|wasn.t able to|am not able to|unable to)\s+(?:yet\s+|fully\s+|really\s+)?(?:confirm|verif|check|test|validat|reproduc|prov|measur)\w*\b',
+  '\bunconfirmed\b',
+  '\bunproven\b',
+  '\b(?:not|never)\s+(?:yet\s+|been\s+|fully\s+)?(?:confirmed|validated|reproduced|proven|established|measured)\b',
+]
+
+[claim_evidence.trailing_label_focus_re]
+doc = "Read only while guards.claimEvidenceFocus is on, as well as claim_evidence.trailing_label_re: an honest label that closes the sentence as its own clause, in the way people write it ('Tests pass, but I haven't confirmed that.', 'Tests pass; I couldn't verify it.'). It covers every claim before it in that sentence. Rust regular expression, case-insensitive, matched against the sentence; a short object (up to 30 characters, no sentence punctuation) may follow the verb."
+value = '[,;:(\u2014\u2013]\s*(?:but\s+|and\s+|though\s+)?(?:i\s+|we\s+)?(?:(?:haven.t|have not|could not|couldn.t|can.t|cannot|did not|didn.t)\s+(?:yet\s+|fully\s+)?(?:confirm|verif|check|test|validat|prov)\w*|(?:not|never)\s+(?:yet\s+)?(?:confirmed|verified|validated|proven))\b[^.;\n]{0,30}\W*$'
+
+[claim_evidence.msg_claim_instead_focus]
+doc = "Rule 1 advice while guards.claimEvidenceFocus is on: it names the check that clears this claim (the block advice is cut to 115 characters by the message layer, so the clears texts are short). Placeholder: {clears} the claim row's `clears` text."
+value = "run {clears}, or mark it not verified."
 
 [claim_evidence.sentence_end_re]
 doc = "Where a sentence of the reply ends (a claim is judged inside its own sentence). Rust regular expression."
@@ -246,13 +271,13 @@ value = "suppressed ({reason}): \"{quote}\" ({claim})"
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------
 
 [claim_evidence.claims]
-doc = "The result claims rule 1 looks for, in order; the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. With no tool call at all this turn, every row fires."
+doc = "The result claims rule 1 looks for, in order; the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. clears: the check that clears the claim, named in the block while guards.claimEvidenceFocus is on. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. With no tool call at all this turn, every row fires."
 value = [
-  { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|\S*test\S*\.(?:sh|js|py))\b'] },
-  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
-  { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also|personally|independently|just|successfully)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|successful(?:ly)?|every|each|the|it|this|all|both)\b|^\W*(?:verified|confirmed)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', needs = [] },
-  { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', needs = [] },
-  { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', needs = [] },
+  { id = "tests pass", clears = "the project's test runner and quote its summary line", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|\S*test\S*\.(?:sh|js|py))\b'] },
+  { id = "shipped", clears = "gh pr view <n> --json state (or git log, a health curl)", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
+  { id = "verified", clears = "the check you verified with and quote its output", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also|personally|independently|just|successfully)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|successful(?:ly)?|every|each|the|it|this|all|both)\b|^\W*(?:verified|confirmed)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', needs = [] },
+  { id = "fixed", clears = "the failing test or repro and quote it passing", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', needs = [] },
+  { id = "all done", clears = "the task list or acceptance check and quote it", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', needs = [] },
 ]
 
 [claim_evidence.msg_claim_what]

@@ -2748,6 +2748,120 @@ fn the_parent_gate_counts_the_shared_peek_count_when_on_and_the_old_projection_w
     eprintln!("parent-gate fixtures:\n{}", table.join("\n"));
 }
 
+// ---- speculation-guard under guards.claimEvidenceFocus (R-claim, default off): honest hedges and requirements are not guesses ----
+
+mod speculation_focus {
+    use super::claim_evidence_guard::COUNTS;
+    use super::*;
+
+    const FOCUS: (&str, &str) = ("ANTIHALL_CLAIM_EVIDENCE_FOCUS", "1");
+
+    /// One Stop with the reply as the payload carries it (a transcript with the owner's prompt and the reply, as the host writes it).
+    fn stop(tag: &str, reply: &str, extra: &[(&str, &str)]) -> Option<Option<Verdict>> {
+        let _shared = COUNTS.read().unwrap_or_else(|e| e.into_inner());
+        stop_unlocked(tag, reply, extra)
+    }
+
+    /// Every Stop counts into the process-wide metric table; the counter test holds the write side so nothing else counts meanwhile.
+    fn stop_unlocked(tag: &str, reply: &str, extra: &[(&str, &str)]) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        let t = format!("{h}/t.jsonl");
+        let lines = [
+            json!({"type": "user", "origin": {"kind": "human"}, "message": {"role": "user", "content": "go"}}),
+            json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "text", "text": reply}]}}),
+        ];
+        std::fs::write(&t, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let payload = json!({"transcript_path": t, "session_id": tag, "cwd": h, "last_assistant_message": reply});
+        super::super::run_forced("speculation-guard", &payload, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs))
+    }
+
+    fn held(v: &Option<Option<Verdict>>) -> Option<String> {
+        match v {
+            Some(Some(Verdict::Exact(x))) if x.out.contains("\"decision\":\"block\"") => Some(x.out.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_hedge_with_an_honest_not_confirmed_label_passes_only_with_the_focus_switch_on() {
+        // the shape of the live false positive: a likely cause, said to be unconfirmed in plain words
+        for (i, r) in [
+            "The likely candidates are the recent builds, but I haven't confirmed that.",
+            "The likely cause is the stale cache; I couldn't verify it.",
+            "That is probably the config. Unconfirmed.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(held(&stop(&format!("sf-off{i}"), r, &[])).is_some(), "off: today's block: {r}");
+            assert_eq!(stop(&format!("sf-on{i}"), r, &[FOCUS]), Some(Some(Verdict::Allow)), "on: allowed: {r}");
+        }
+        // today's honest labels pass with the switch on or off
+        for (i, r) in [
+            "The likely cause is the stale cache, but I haven\u{2019}t verified it.",
+            "The likely cause is the stale cache (unverified).",
+            "The likely cause is the cache; not verified.",
+            "It is probably the cache, I don't know.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(stop(&format!("sf-old-off{i}"), r, &[]), Some(Some(Verdict::Allow)), "{r}");
+            assert_eq!(stop(&format!("sf-old-on{i}"), r, &[FOCUS]), Some(Some(Verdict::Allow)), "{r}");
+        }
+        // a bare hedge is still held with the switch on
+        for (i, r) in ["The likely cause is the stale cache.", "It is probably the config.", "I suspect the build."].iter().enumerate() {
+            assert!(held(&stop(&format!("sf-bare{i}"), r, &[FOCUS])).is_some(), "on: still held: {r}");
+        }
+    }
+
+    #[test]
+    fn a_requirement_that_something_must_be_shown_is_no_guess_only_with_the_focus_switch_on() {
+        for (i, r) in
+            ["Each fix must be shown failing before any change is made.", "The cause must be proven before the fix.", "Rule: a fix should be reproduced first."]
+                .iter()
+                .enumerate()
+        {
+            assert!(held(&stop(&format!("sf-req-off{i}"), r, &[])).is_some(), "off: today's block: {r}");
+            assert_eq!(stop(&format!("sf-req-on{i}"), r, &[FOCUS]), Some(Some(Verdict::Allow)), "on: allowed: {r}");
+        }
+        // a guess beside a requirement is still held
+        let r = "Each fix must be shown failing first. The cause is probably the cache.";
+        assert!(held(&stop("sf-req-guess", r, &[FOCUS])).is_some());
+        // a plain 'must be' that states a guess is still held
+        assert!(held(&stop("sf-req-guess2", "It must be the cache.", &[FOCUS])).is_some());
+    }
+
+    #[test]
+    fn the_block_names_the_hedge_and_with_the_switch_on_the_step_that_clears_it() {
+        let r = "The likely cause is the stale cache.";
+        let off = held(&stop("sf-msg-off", r, &[])).expect("held");
+        assert!(off.contains("\\\"likely\\\"") && off.contains("verify the claim or label it unverified"), "{off}");
+        let on = held(&stop("sf-msg-on", r, &[FOCUS])).expect("held");
+        assert!(on.contains("\\\"likely\\\"") && on.contains("I haven't confirmed that") && on.contains("run the lookup for"), "{on}");
+    }
+
+    #[test]
+    fn the_focus_switch_counts_the_hedges_it_cleared_by_cause() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |by: &str| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("claim_focus_cleared", &[("guard", "speculation-guard"), ("by", by)])
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        assert_eq!(stop_unlocked("sf-cnt-label", "The likely cause is the cache, but I haven't confirmed that.", &[FOCUS]), Some(Some(Verdict::Allow)));
+        assert_eq!(count("label"), 1);
+        assert_eq!(stop_unlocked("sf-cnt-req", "Each fix must be shown failing first.", &[FOCUS]), Some(Some(Verdict::Allow)));
+        assert_eq!(count("obligation"), 1);
+        // off: held, nothing counted
+        assert!(held(&stop_unlocked("sf-cnt-off", "The likely cause is the cache, but I haven't confirmed that.", &[])).is_some());
+        assert_eq!(count("label"), 0);
+    }
+}
+
 // ---- claim-evidence-guard (GH #313): a claim needs a tool call of this turn; pushed is not done ----
 
 mod claim_evidence_guard {
@@ -3180,6 +3294,206 @@ mod claim_evidence_guard {
         let (v, _) = stop_unlocked("ce-lat", &lines, reply, &[], json!({}));
         assert_eq!(v, ALLOW);
         assert!(started.elapsed() < std::time::Duration::from_millis(20), "{:?}", started.elapsed());
+    }
+
+    // ---- R-claim focus (plan v2 section 4, guards.claimEvidenceFocus, default off): the false positives it clears ----
+
+    const FOCUS: (&str, &str) = ("ANTIHALL_CLAIM_EVIDENCE_FOCUS", "1");
+
+    /// A background-task notification, as the host writes it: a user record with string content and `origin.kind` task-notification.
+    fn notification() -> Value {
+        json!({"type": "user", "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": "<task-notification>agent done</task-notification>"}})
+    }
+
+    /// A hook-injected continuation: a user record with string content and `isMeta`.
+    fn injected() -> Value {
+        json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": "Stop hook feedback:\nsay it"}})
+    }
+
+    /// A prompt the owner typed, as the host writes it.
+    fn typed(text: &str) -> Value {
+        json!({"type": "user", "origin": {"kind": "human"}, "message": {"role": "user", "content": text}})
+    }
+
+    /// The check ran, then a notification and a later tool call came before the reply (the shape of the live false positive).
+    fn check_then_notification(cmd: &str, reply: &str) -> Vec<Value> {
+        vec![
+            typed("go"),
+            assistant("m1", "", &[cmd]),
+            result("{\"merged\": true, \"state\": \"closed\"}"),
+            notification(),
+            assistant("m2", "", &["ls"]),
+            result("a"),
+            injected(),
+            assistant("m3", reply, &[]),
+        ]
+    }
+
+    #[test]
+    fn a_check_made_before_a_task_notification_in_the_same_owner_turn_backs_the_claim_only_with_the_focus_switch_on() {
+        let r = "PR #12 is merged.";
+        let lines = check_then_notification("gh pr view 12 --json state,mergedAt", r);
+        // off: the notification started a new turn, the only calls since are `ls`: held, as today
+        assert!(blocked(&stop("rc-turn-off", &lines, r, &[], json!({})).0).is_some(), "off: today's block");
+        // on: the owner's turn is the unit, the check in it backs the claim
+        assert_eq!(stop("rc-turn-on", &lines, r, &[FOCUS], json!({})).0, ALLOW);
+        // a check made BEFORE the owner's last prompt still backs nothing
+        let older = [
+            typed("first"),
+            assistant("m1", "", &["gh pr view 12 --json state"]),
+            result("{}"),
+            assistant("m1b", "done", &[]),
+            typed("second"),
+            assistant("m2", "", &["ls"]),
+            result("a"),
+            notification(),
+            assistant("m3", r, &[]),
+        ];
+        assert!(blocked(&stop("rc-turn-older", &older, r, &[FOCUS], json!({})).0).is_some(), "an earlier owner turn is no evidence");
+        // an injected or notification record with NO check anywhere in the owner turn is still held with the switch on
+        let none = [typed("go"), assistant("m1", "", &["ls"]), result("a"), notification(), assistant("m2", r, &[])];
+        assert!(blocked(&stop("rc-turn-none", &none, r, &[FOCUS], json!({})).0).is_some(), "no check in the turn: held");
+        // a record with no origin field and no meta flag is an owner prompt, as before
+        let plain = [
+            json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+            assistant("m1", "", &["gh pr view 12 --json state"]),
+            result("{}"),
+            json!({"type": "user", "message": {"role": "user", "content": "and then?"}}),
+            assistant("m2", "", &["ls"]),
+            result("a"),
+            assistant("m3", r, &[]),
+        ];
+        assert!(blocked(&stop("rc-turn-plain", &plain, r, &[FOCUS], json!({})).0).is_some(), "an unmarked user record starts a turn");
+    }
+
+    #[test]
+    fn the_focus_switch_only_relaxes_it_never_holds_a_reply_that_today_passes() {
+        // a push before a notification with no look at CI: today the push is outside the turn the guard sees, so the reply passes; the
+        // switch must not turn that into a hold
+        let r = "The change is pushed and done.";
+        let lines = [
+            typed("go"),
+            assistant("m1", "", &["git push origin HEAD"]),
+            result("ok"),
+            notification(),
+            assistant("m2", "", &["ls"]),
+            result("a"),
+            assistant("m3", r, &[]),
+        ];
+        assert_eq!(stop("rc-relax-off", &lines, r, &[], json!({})).0, ALLOW);
+        assert_eq!(stop("rc-relax-on", &lines, r, &[FOCUS], json!({})).0, ALLOW);
+    }
+
+    #[test]
+    fn an_honest_not_confirmed_label_is_no_claim_with_the_focus_switch_on_and_a_label_in_another_clause_still_is_not() {
+        let t = |tag: &str, r: &str, on: bool| {
+            let lines = [typed("go"), assistant("m1", r, &[])];
+            let extra: Vec<(&str, &str)> = if on { vec![FOCUS] } else { vec![] };
+            stop(tag, &lines, r, &extra, json!({})).0
+        };
+        for (i, r) in ["Tests pass, but I haven't confirmed that.", "Tests pass; I couldn't verify it.", "Tests pass, but I haven\u{2019}t verified it."]
+            .iter()
+            .enumerate()
+        {
+            assert!(blocked(&t(&format!("rc-lab-off{i}"), r, false)).is_some(), "off: today's block: {r}");
+            assert_eq!(t(&format!("rc-lab-on{i}"), r, true), ALLOW, "on: allowed: {r}");
+        }
+        // today's honest labels stay honest with the switch on or off
+        for (i, r) in ["PR #12 is merged (not verified).", "Tests pass (unverified).", "Unverified: the service is live.", "PR #12 is merged (unconfirmed)."]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(t(&format!("rc-lab-old-off{i}"), r, false), ALLOW, "{r}");
+            assert_eq!(t(&format!("rc-lab-old-on{i}"), r, true), ALLOW, "{r}");
+        }
+        // a label that does not name the claim (another clause, another thing) still leaves the claim bare
+        for (i, r) in [
+            "Tests pass in my head but I did not run the linter.",
+            "PR #12 is merged. I haven't confirmed the deploy.",
+            "I haven't confirmed the deploy logs for last week, and the suite is passing.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(blocked(&t(&format!("rc-lab-bare{i}"), r, true)).is_some(), "on: still held: {r}");
+        }
+    }
+
+    #[test]
+    fn negated_quoted_and_relayed_claims_stay_allowed_and_a_bare_one_stays_held_with_the_switch_on() {
+        let t = |tag: &str, r: &str| {
+            let lines = [typed("go"), assistant("m1", r, &[])];
+            blocked(&stop(tag, &lines, r, &[FOCUS], json!({})).0).is_some()
+        };
+        for (i, r) in [
+            "Nothing is merged yet.",
+            "PR #12 is not merged.",
+            "Once the suite is passing I will merge.",
+            "The old comment said \"all tests pass\" and was wrong.",
+            "The subagent reported that tests pass.",
+            "According to the PR body, the change is merged.",
+            "The criteria require that PR #405 is merged.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(!t(&format!("rc-fp{i}"), r), "must allow: {r}");
+        }
+        for (i, r) in ["PR #12 is merged.", "All tests pass.", "The fix is verified and deployed."].iter().enumerate() {
+            assert!(t(&format!("rc-tp{i}"), r), "must hold: {r}");
+        }
+    }
+
+    #[test]
+    fn every_block_names_the_claim_and_with_the_switch_on_the_check_that_clears_it() {
+        let cases = [
+            ("PR #12 is merged.", "gh pr view"),
+            ("All tests pass.", "test runner"),
+            ("I verified the fix.", "the check you verified with"),
+            ("The bug is fixed.", "the failing test or repro"),
+            ("All the tasks are done.", "task list"),
+        ];
+        for (i, (r, clears)) in cases.iter().enumerate() {
+            let lines = [typed("go"), assistant("m1", r, &[])];
+            let reason = |extra: &[(&str, &str)], tag: String| {
+                let out = blocked(&stop(&tag, &lines, r, extra, json!({})).0).unwrap_or_else(|| panic!("held: {r}"));
+                serde_json::from_str::<Value>(out.trim()).unwrap()["reason"].as_str().unwrap().to_string()
+            };
+            let off = reason(&[], format!("rc-msg-off{i}"));
+            assert!(off.contains("no matching check") && off.contains("run the check and show its result"), "{off}");
+            let on = reason(&[FOCUS], format!("rc-msg-on{i}"));
+            assert!(on.contains("no matching check") && on.contains(clears) && on.contains("not verified"), "names the clearing check: {on}");
+            assert!(on.lines().count() <= 3, "{on}");
+        }
+    }
+
+    #[test]
+    fn the_focus_switch_counts_what_it_cleared_by_guard_and_cause() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |by: &str| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("claim_focus_cleared", &[("guard", "claim-evidence-guard"), ("by", by)])
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let r = "PR #12 is merged.";
+        let lines = check_then_notification("gh pr view 12 --json state", r);
+        let (v, _) = stop_unlocked("rc-cnt-turn", &lines, r, &[FOCUS], json!({}));
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("turn_continued"), 1, "the turn continuity cleared one reply");
+        // the switch off counts nothing and changes nothing
+        let (v, _) = stop_unlocked("rc-cnt-off", &lines, r, &[], json!({}));
+        assert!(blocked(&v).is_some());
+        assert_eq!(count("turn_continued"), 0, "off: nothing is counted");
+        let r2 = "Tests pass, but I haven't confirmed that.";
+        let l2 = [typed("go"), assistant("m1", r2, &[])];
+        let (v, _) = stop_unlocked("rc-cnt-label", &l2, r2, &[FOCUS], json!({}));
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("label"), 1, "the extra label cleared one claim");
+        // telemetry off: still allowed, nothing counted
+        let (v, _) = stop_unlocked("rc-cnt-tel", &l2, r2, &[FOCUS, ("ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", "0")], json!({}));
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("label"), 0);
     }
 }
 

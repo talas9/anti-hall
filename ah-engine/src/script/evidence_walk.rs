@@ -78,6 +78,8 @@ struct Last<'a> {
     id: Option<&'a str>,
     text: String,
     tools: usize,
+    /// The tool calls since the last OWNER prompt (a notification or injected record does not start a new turn).
+    owner_tools: usize,
 }
 
 /// The evidence being joined with `\n`.
@@ -113,6 +115,8 @@ struct Walked {
     last_text: String,
     tools_this_turn: usize,
     tools_at_end: usize,
+    owner_tools_this_turn: usize,
+    owner_tools_at_end: usize,
 }
 
 /// `clWalk` over the items of `lines`; `None` when it has no reply and no payload to stand in for one.
@@ -121,17 +125,22 @@ fn walk_lines(lines: &[&Line], payload: Option<&str>) -> Option<Walked> {
     let pn = payload_norm.as_deref();
     let mut ev = Ev { s: String::new(), parts: 0 };
     let mut tools = 0usize;
+    let mut owner_tools = 0usize;
     let mut last: Option<Last> = None;
     for l in lines {
-        for Item { kind, text, id } in &l.items {
+        for Item { kind, text, id, cont } in &l.items {
             match kind {
                 'p' => {
                     tools = 0;
+                    if !*cont {
+                        owner_tools = 0;
+                    }
                     ev.push(text);
                 }
                 'r' | 'a' => ev.push(text),
                 'i' => {
                     tools += 1;
+                    owner_tools += 1;
                     ev.push(text);
                 }
                 't' => match last.as_mut() {
@@ -139,12 +148,13 @@ fn walk_lines(lines: &[&Line], payload: Option<&str>) -> Option<Walked> {
                         cur.text.push('\n');
                         cur.text.push_str(text);
                         cur.tools = tools;
+                        cur.owner_tools = owner_tools;
                     }
                     _ => {
                         if let Some(done) = last.take() {
                             ev.push_reply(&done.text, pn);
                         }
-                        last = Some(Last { id: id.as_deref(), text: text.clone(), tools });
+                        last = Some(Last { id: id.as_deref(), text: text.clone(), tools, owner_tools });
                     }
                 },
                 _ => {}
@@ -155,14 +165,28 @@ fn walk_lines(lines: &[&Line], payload: Option<&str>) -> Option<Walked> {
         None => {
             payload?;
             let ev_len = ev.s.len();
-            Some(Walked { walk: Walk { text: ev.s, ev_len }, last_text: String::new(), tools_this_turn: tools, tools_at_end: tools })
+            Some(Walked {
+                walk: Walk { text: ev.s, ev_len },
+                last_text: String::new(),
+                tools_this_turn: tools,
+                tools_at_end: tools,
+                owner_tools_this_turn: owner_tools,
+                owner_tools_at_end: owner_tools,
+            })
         }
         Some(l) => {
             let mut text = ev.s;
             let ev_len = text.len();
             text.push('\n');
             text.push_str(&l.text);
-            Some(Walked { walk: Walk { text, ev_len }, last_text: l.text, tools_this_turn: l.tools, tools_at_end: tools })
+            Some(Walked {
+                walk: Walk { text, ev_len },
+                last_text: l.text,
+                tools_this_turn: l.tools,
+                tools_at_end: tools,
+                owner_tools_this_turn: l.owner_tools,
+                owner_tools_at_end: owner_tools,
+            })
         }
     }
 }
@@ -170,7 +194,8 @@ fn walk_lines(lines: &[&Line], payload: Option<&str>) -> Option<Walked> {
 /// `evidence_walk(path, window, payload)`: JSON text. `null` when the transcript cannot be read; `{"unsure":true}` as
 /// [`super::host_ts::evidence`]; `{"truncated":b,"walked":false}` when the
 /// window holds no reply and there is no payload; else `{"truncated","walked":true,"lastText","toolsThisTurn","toolsAtEnd",
-/// "evidenceChars","withLastChars"}` (the two lengths in UTF-16 units) and the walk is kept for `walk_has` / `walk_numbers`.
+/// "evidenceChars","withLastChars","ownerToolsThisTurn","ownerToolsAtEnd"}` (the two lengths in UTF-16 units; the owner counts
+/// restart only at an owner prompt, not at a task notification or an injected record: `transcript.ev_cont_*`) and the walk is kept for `walk_has` / `walk_numbers`.
 pub fn evidence_walk(path: &str, window: f64, payload: Option<&str>) -> String {
     if !path.starts_with('/') {
         return unsure();
@@ -188,7 +213,7 @@ pub fn evidence_walk(path: &str, window: f64, payload: Option<&str>) -> String {
         Some(Err(u)) => return u,
         Some(Ok(v)) => v,
     };
-    let Some(Walked { walk, last_text, tools_this_turn, tools_at_end }) = walked else {
+    let Some(Walked { walk, last_text, tools_this_turn, tools_at_end, owner_tools_this_turn, owner_tools_at_end }) = walked else {
         return json!({"truncated": truncated, "walked": false}).to_string();
     };
     let with_last_chars = js_len(&walk.text);
@@ -207,6 +232,7 @@ pub fn evidence_walk(path: &str, window: f64, payload: Option<&str>) -> String {
     json!({
         "truncated": truncated, "walked": true, "lastText": last_text, "toolsThisTurn": tools_this_turn, "toolsAtEnd": tools_at_end,
         "evidenceChars": evidence_chars, "withLastChars": with_last_chars,
+        "ownerToolsThisTurn": owner_tools_this_turn, "ownerToolsAtEnd": owner_tools_at_end,
     })
     .to_string()
 }
@@ -394,6 +420,41 @@ mod tests {
         let w: Value = serde_json::from_str(&evidence_walk(&p, 1e9, None)).unwrap();
         std::fs::remove_file(&p).ok();
         assert_eq!((w["toolsThisTurn"].as_u64(), w["toolsAtEnd"].as_u64()), (Some(0), Some(1)), "a tool call after the reply is counted at the end only");
+    }
+
+    #[test]
+    fn the_owner_counts_restart_only_at_an_owner_prompt_and_the_plain_counts_are_unchanged() {
+        let note = json!({"type": "user", "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": "<task-notification>done</task-notification>"}});
+        let injected = json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": "Stop hook feedback: say it"}});
+        let peer = json!({"type": "user", "origin": {"kind": "peer"}, "isMeta": true, "message": {"role": "user", "content": "from another session"}});
+        let human = json!({"type": "user", "origin": {"kind": "human"}, "message": {"role": "user", "content": "next"}});
+        let counts = |tag: &str, lines: &[Value]| {
+            let p = write(tag, lines);
+            let w: Value = serde_json::from_str(&evidence_walk(&p, 1e9, None)).unwrap();
+            std::fs::remove_file(&p).ok();
+            [
+                w["toolsThisTurn"].as_u64().unwrap(),
+                w["ownerToolsThisTurn"].as_u64().unwrap(),
+                w["toolsAtEnd"].as_u64().unwrap(),
+                w["ownerToolsAtEnd"].as_u64().unwrap(),
+            ]
+        };
+        // two calls, a notification, an injected record and a peer record, one more call, the reply: the plain turn restarts at each
+        // of them, the owner's turn does not
+        let lines =
+            [human.clone(), assistant("m1", "", 2), result("r"), note, assistant("m2", "", 1), result("r"), injected, peer, assistant("m3", "reply", 0)];
+        assert_eq!(counts("owner1", &lines), [0, 3, 0, 3]);
+        // a typed prompt (origin human, or no origin at all) restarts both
+        let after = [human.clone(), assistant("m1", "", 2), human.clone(), assistant("m2", "reply", 1)];
+        assert_eq!(counts("owner2", &after), [1, 1, 1, 1]);
+        let plain = [user("go"), assistant("m1", "", 2), user("again"), assistant("m2", "reply", 0)];
+        assert_eq!(counts("owner3", &plain), [0, 0, 0, 0]);
+        // the evidence answer is unchanged: the same items, no new kind
+        let p = write("owner4", &lines);
+        let ev: Value = serde_json::from_str(&evidence(&p, 1e9)).unwrap();
+        std::fs::remove_file(&p).ok();
+        let kinds: std::collections::BTreeSet<&str> = ev["items"].as_array().unwrap().iter().map(|i| i[0].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["i", "p", "r", "t"].into_iter().collect());
     }
 
     #[test]

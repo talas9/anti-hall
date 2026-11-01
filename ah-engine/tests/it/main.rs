@@ -13,6 +13,7 @@ mod deploy_defaults_gate;
 mod event_budgets;
 mod invisible_channel;
 mod lane_waste;
+mod r_claim_e2e;
 mod replies;
 mod roles;
 mod transcript_support;

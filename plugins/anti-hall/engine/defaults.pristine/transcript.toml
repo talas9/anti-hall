@@ -220,3 +220,19 @@ value = "assistant"
 [transcript.ev_role_attachment]
 doc = "The role of a hook attachment transcript entry."
 value = "attachment"
+
+[transcript.ev_cont_meta_key]
+doc = "The transcript record field that is true on a record the host injected (a hook message, a scheduled check): such a user record is not an owner prompt. The evidence walk reports the tool calls since the last owner prompt (ownerToolsThisTurn, ownerToolsAtEnd) next to the ones since the last user record of any kind."
+value = "isMeta"
+
+[transcript.ev_cont_origin_key]
+doc = "The transcript record field that says where a user record came from; its kind (transcript.ev_cont_origin_kind_key) is compared with transcript.ev_cont_origin_kinds."
+value = "origin"
+
+[transcript.ev_cont_origin_kind_key]
+doc = "The field of the origin object that names the kind of the record's source."
+value = "kind"
+
+[transcript.ev_cont_origin_kinds]
+doc = "Origin kinds of a user record that is NOT typed by the owner: a background-task notification, a message from another session, an automatic continuation. Such a record does not start a new turn in ownerToolsThisTurn / ownerToolsAtEnd. A record with no origin field counts as an owner prompt, as before."
+value = ["task-notification", "peer", "auto-continuation"]

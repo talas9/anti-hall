@@ -67,6 +67,17 @@ function ceStart(sent, a) {
   return Math.max(from, a - ah.cfgNum('claim_evidence.skip_window'));
 }
 
+// Switch guards.claimEvidenceFocus (R-claim, default off): turn counted since the last owner prompt, more honest-label phrasings, the
+// clearing check named in the block. Off is today's behaviour.
+function ceFocus() { return ah.settings.bool('claim_evidence.sw_focus'); }
+
+// Counter (guards.claimEvidenceTelemetry): a claim the focus switch cleared that today's checks would have kept, by what cleared it.
+function ceFocusCleared(by) {
+  if (!ah.settings.bool('claim_evidence.sw_telemetry')) return;
+  ah.metric('claim_focus_cleared', ['guard', ah.cfg('claim_evidence.guard_name'), 'by', by]);
+  ah.advisory('claim_evidence', 'focus_cleared_' + by);
+}
+
 // Switch guards.claimEvidenceStrict: the suppressor checks of GH #427 (compound or noun source words, filler openers, negated labels).
 function ceStrict() { return ah.settings.bool('claim_evidence.sw_strict'); }
 
@@ -117,8 +128,8 @@ function ceInReach(list, head, reach, row) {
 }
 
 // True when an honest label (claim_evidence.ack_res) in the claim's own sentence sits within reach_label counted words of the claim.
-function ceLabelled(sent, hit) {
-  var list = ah.cfg('claim_evidence.ack_res'), reach = ah.cfgNum('claim_evidence.reach_label'), strict = ceStrict();
+function ceLabelled(sent, hit, key, trailKey) {
+  var list = ah.cfg(key || 'claim_evidence.ack_res'), reach = ah.cfgNum('claim_evidence.reach_label'), strict = ceStrict();
   for (var i = 0; i < list.length; i++) {
     var all = ah.re.findAll(list[i], 'i', sent);
     for (var j = 0; j < all.length; j++) {
@@ -132,7 +143,7 @@ function ceLabelled(sent, hit) {
     }
   }
   // a label that closes the sentence as its own clause covers every claim before it ('...; unverified.')
-  var tail = ah.re.find(ah.cfg('claim_evidence.trailing_label_re'), 'i', sent);
+  var tail = ah.re.find(ah.cfg(trailKey || 'claim_evidence.trailing_label_re'), 'i', sent);
   return !!tail && tail[0] >= hit[1];
 }
 
@@ -149,6 +160,11 @@ function ceReason(sent, hit, prev) {
     return { reason: prev.reason, chain: true };
   }
   if (ceLabelled(sent, hit)) return { reason: ah.cfg('claim_evidence.ack_reason'), chain: false };
+  // the focus switch: more honest-label phrasings ('I haven't confirmed that'), the same reach
+  if (ceFocus() && ceLabelled(sent, hit, 'claim_evidence.ack_focus_res', 'claim_evidence.trailing_label_focus_re')) {
+    ceFocusCleared('label');
+    return { reason: ah.cfg('claim_evidence.ack_reason'), chain: false };
+  }
   return null;
 }
 
@@ -266,21 +282,40 @@ function decide(p) {
   if (ev === null || ev.unsure || !ev.walked) return 'allow';
   var inLast = ev.lastText !== '' && ceCollapse(reply).indexOf(ceCollapse(ev.lastText)) >= 0;
   var tools = inLast ? ev.toolsThisTurn : ev.toolsAtEnd;
-  var cmds = null, what = null;
-  if (done && tools > 0) {
-    cmds = ceCommands(tpOpen, tools);
-    if (cmds !== null && cePushedUnchecked(cmds)) what = ah.cfg('claim_evidence.msg_pushed_what');
-  }
-  if (what === null && claim !== null) {
-    var needs = claim.row.needs;
-    if (tools === 0) what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
-    else if (needs.length > 0) {
-      if (cmds === null) cmds = ceCommands(tpOpen, tools);
-      if (cmds !== null && !ceAnyCmd(needs, cmds)) what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
+  // what the reply is held for with the last `n` tool calls as the turn's evidence, else null
+  var ceWhat = function (n) {
+    var cmds = null, w = null;
+    if (done && n > 0) {
+      cmds = ceCommands(tpOpen, n);
+      if (cmds !== null && cePushedUnchecked(cmds)) w = ah.cfg('claim_evidence.msg_pushed_what');
+    }
+    if (w === null && claim !== null) {
+      var needs = claim.row.needs;
+      if (n === 0) w = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
+      else if (needs.length > 0) {
+        if (cmds === null) cmds = ceCommands(tpOpen, n);
+        if (cmds !== null && !ceAnyCmd(needs, cmds)) w = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
+      }
+    }
+    return w;
+  };
+  var what = ceWhat(tools);
+  // the focus switch: the turn is everything since the last OWNER prompt (a background-task notification or an injected hook message
+  // between the check and the reply does not hide the check). It only ever relaxes: the wider turn is looked at when the narrow one held the reply.
+  if (ceFocus()) {
+    var owner = inLast ? ev.ownerToolsThisTurn : ev.ownerToolsAtEnd;
+    if (what !== null && typeof owner === 'number' && owner > tools) {
+      var wide = ceWhat(owner);
+      if (wide === null) ceFocusCleared('turn_continued');
+      what = wide;
     }
   }
   if (what === null) return 'allow';
   var instead = what === ah.cfg('claim_evidence.msg_pushed_what') ? ah.cfg('claim_evidence.msg_pushed_instead') : ah.cfg('claim_evidence.msg_claim_instead');
+  // the focus switch: name the check that clears this claim
+  if (ceFocus() && what !== ah.cfg('claim_evidence.msg_pushed_what') && claim !== null && typeof claim.row.clears === 'string') {
+    instead = text.render(ah.cfg('claim_evidence.msg_claim_instead_focus'), { clears: claim.row.clears, quote: text.clean(claim.quote) });
+  }
   ah.log(ah.cfg('claim_evidence.log_kind'), what);
   ceCountFired(what === ah.cfg('claim_evidence.msg_pushed_what') ? 'pushed' : 'claim');
   if (ah.cfg('claim_evidence.mode') !== 'block') return 'allow';

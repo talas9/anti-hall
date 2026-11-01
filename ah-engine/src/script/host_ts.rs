@@ -81,6 +81,9 @@ pub(super) struct Item {
     pub kind: char,
     pub text: String,
     pub id: Option<String>,
+    /// True on a `p` item whose record is NOT an owner prompt (a background-task notification, a hook- or peer-injected message:
+    /// `transcript.ev_cont_*`). Never serialized, so `evidence` answers the same; only the evidence walk reads it.
+    pub cont: bool,
 }
 
 impl Item {
@@ -114,6 +117,19 @@ pub(super) fn window_bytes(window: f64) -> u64 {
     if window.is_finite() && window > 0.0 { (window as u64).min(cap) } else { cap }
 }
 
+/// True when a user record that is no tool result is not something the owner typed: its meta flag is set, or its origin kind is
+/// one of `transcript.ev_cont_origin_kinds` (a background-task notification, a peer message, an automatic continuation). The
+/// field names and the kinds are config (`transcript.ev_cont_*`); a record with neither field is an owner prompt, as before.
+fn not_owner_prompt(e: &Value) -> bool {
+    if prop(e, defaults::text("transcript.ev_cont_meta_key")).and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let kind = prop(e, defaults::text("transcript.ev_cont_origin_key"))
+        .and_then(|o| prop(o, defaults::text("transcript.ev_cont_origin_kind_key")))
+        .and_then(Value::as_str);
+    kind.is_some_and(|k| defaults::list("transcript.ev_cont_origin_kinds").contains(&k))
+}
+
 /// The evidence of one line (no trailing `\r`): `Ok(None)` when it adds nothing, `Err(())` when only JavaScript can read it
 /// exactly (the whole call is then unsure).
 pub(super) fn line_items(line: &str) -> Result<Option<LineEv>, ()> {
@@ -127,9 +143,9 @@ pub(super) fn line_items(line: &str) -> Result<Option<LineEv>, ()> {
     }
     let mut items: Vec<Item> = Vec::new();
     let mut chars = 0usize;
-    let mut push = |kind: char, text: String, id: Option<String>| {
+    let mut push = |kind: char, text: String, id: Option<String>, cont: bool| {
         chars += text.len();
-        items.push(Item { kind, text, id });
+        items.push(Item { kind, text, id, cont });
     };
     let message = prop(&e, "message").filter(|m| truthy(m));
     let role_v = prop(&e, "type").filter(|t| truthy(t)).or_else(|| message.and_then(|m| prop(m, "role")));
@@ -140,27 +156,27 @@ pub(super) fn line_items(line: &str) -> Result<Option<LineEv>, ()> {
         let results: Vec<&Value> =
             blocks.iter().filter(|b| truthy(b) && prop(b, "type").and_then(Value::as_str) == Some(defaults::text("transcript.ev_type_tool_result"))).collect();
         if results.is_empty() {
-            push('p', as_text(content), None);
+            push('p', as_text(content), None, not_owner_prompt(&e));
         } else {
             for r in &results {
-                push('r', as_text(prop(r, "content")), None);
+                push('r', as_text(prop(r, "content")), None, false);
             }
             if let Some(u) = prop(&e, "toolUseResult") {
-                push('r', as_text(Some(u)), None);
+                push('r', as_text(Some(u)), None, false);
             }
         }
     } else if role == defaults::text("transcript.ev_role_attachment") {
-        push('a', as_text(prop(&e, "attachment")), None);
+        push('a', as_text(prop(&e, "attachment")), None, false);
     } else if role == defaults::text("transcript.ev_role_assistant") {
         for b in blocks {
             if truthy(b) && prop(b, "type").and_then(Value::as_str) == Some(defaults::text("transcript.ev_type_tool_use")) {
-                push('i', as_text(prop(b, "input")), None);
+                push('i', as_text(prop(b, "input")), None, false);
             }
         }
         let text = text_blocks(content);
         if !js_trim(&text).is_empty() {
             let id = message.and_then(|m| prop(m, "id")).and_then(Value::as_str).map(str::to_string);
-            push('t', text, id);
+            push('t', text, id, false);
         }
     }
     Ok(Some(LineEv { items, chars }))

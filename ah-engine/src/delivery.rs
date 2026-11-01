@@ -388,6 +388,25 @@ mod tests {
         assert_eq!((funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), funnel_count(&t, check, &ctx(), "delivery.stage_ignored")), (1, 1));
     }
 
+    /// R-claim: both claim checks are acted on by a lookup before the next Stop and ignored by a Stop with none.
+    #[test]
+    fn the_claim_and_hedge_checks_are_acted_on_by_a_lookup_before_the_next_stop_and_ignored_without_one() {
+        for check in ["claim-evidence-guard", "speculation-guard"] {
+            let t = Telemetry::new();
+            let (acted, ignored) = ("delivery.stage_acted_on", "delivery.stage_ignored");
+            deliver(&t, "s-ignored", check);
+            observe(&t, "s-ignored", "Stop", "");
+            assert_eq!((funnel_count(&t, check, &ctx(), acted), funnel_count(&t, check, &ctx(), ignored)), (0, 1), "{check}: a Stop with no lookup");
+            for tool in ["Read", "Grep", "Bash"] {
+                let s = format!("s-acted-{tool}");
+                deliver(&t, &s, check);
+                observe(&t, &s, defaults::text("delivery.react_event"), tool);
+                observe(&t, &s, "Stop", "");
+            }
+            assert_eq!((funnel_count(&t, check, &ctx(), acted), funnel_count(&t, check, &ctx(), ignored)), (3, 1), "{check}: a lookup before the Stop");
+        }
+    }
+
     #[test]
     fn the_funnel_splits_every_stage_by_the_model_and_project_of_the_answer_and_a_lost_answer_is_lost_not_delivered() {
         let t = Telemetry::new();

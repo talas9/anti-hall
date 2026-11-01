@@ -13,12 +13,30 @@
 
 function sgT(key, flags, t) { return ah.re.test(ah.cfg(key), flags, t); }
 
-function sgHasAck(t) {
+// Switch guards.claimEvidenceFocus (R-claim, default off): more honest-label phrasings, more obligation words, the clearing step in the block.
+function sgFocus() { return ah.settings.bool('claim_evidence.sw_focus'); }
+
+// Counter (guards.claimEvidenceTelemetry): a hedge the focus switch let through that today's check would have kept, by what cleared it.
+function sgFocusCleared(by) {
+  if (!ah.settings.bool('claim_evidence.sw_telemetry')) return;
+  ah.metric('claim_focus_cleared', ['guard', ah.cfg('speculation_guard.guard_name'), 'by', by]);
+  ah.advisory('speculation_guard', 'focus_cleared_' + by);
+}
+
+function sgBaseAck(t) {
   var ci = ah.cfg('speculation_guard.ack_ci'), cs = ah.cfg('speculation_guard.ack_cs'), i;
   for (i = 0; i < ci.length; i++) if (ah.re.test(ci[i], 'i', t)) return true;
   for (i = 0; i < cs.length; i++) if (ah.re.test(cs[i], '', t)) return true;
   return false;
 }
+
+function sgFocusAck(t) {
+  var fx = ah.cfg('speculation_guard.ack_focus_ci');
+  for (var i = 0; i < fx.length; i++) if (ah.re.test(fx[i], 'i', t)) return true;
+  return false;
+}
+
+function sgHasAck(t) { return sgBaseAck(t) || (sgFocus() && sgFocusAck(t)); }
 
 // Same-turn tool evidence as citation (dogfood 2026-10-09): a reply that names specifics (paths, versions, numbers, identifiers) found in
 // the output of tool calls made since the last human prompt cites that output, so its hedge is not an unevidenced guess.
@@ -64,10 +82,20 @@ function sgCites(reply, lines) {
 }
 
 // A "must be" / "should be" that states a duty, not a claim: the 40 units after it read as an obligation, or its line is a requirement.
+// With the focus switch on, more words after it (obligation_focus_re) and more requirement labels (requirement_focus_re) count; `sgSaved`
+// then notes that a hit was skipped only because of them.
+var sgSaved = false;
 function sgObligation(text, start, end) {
   if (sgT('speculation_guard.obligation_re', 'i', jx.sliceUnits(text.slice(end), ah.cfgNum('speculation_guard.obligation_window')))) return true;
   var ls = start === 0 ? 0 : text.lastIndexOf('\n', start - 1) + 1, le = text.indexOf('\n', start);
-  return sgT('speculation_guard.requirement_line_re', 'i', text.slice(ls, le < 0 ? text.length : le));
+  var line = text.slice(ls, le < 0 ? text.length : le);
+  if (sgT('speculation_guard.requirement_line_re', 'i', line)) return true;
+  if (sgFocus() && (sgT('speculation_guard.obligation_focus_re', 'i', jx.sliceUnits(text.slice(end), ah.cfgNum('speculation_guard.obligation_window'))) ||
+      sgT('speculation_guard.requirement_focus_re', 'i', line))) {
+    sgSaved = true;
+    return true;
+  }
+  return false;
 }
 
 // An unhedged completion claim (speculation_guard.claim_markers): true when any pattern matches.
@@ -253,11 +281,19 @@ function decide(p) {
   }
   if (skipped) return 'allow';
 
+  sgSaved = false;
   var hit = sgHit(markerText);
+  var focusSaved = sgSaved;
   var cited = false;
   if (hit !== null && !sgHasAck(lastText)) {
     if (tailLines === undefined) tailLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes')) : null;
     cited = sgCites(lastText, tailLines);
+  }
+  // the focus switch: count what it cleared that today's check would have held (a hit skipped as an obligation, or an extra honest label)
+  if (hit === null && focusSaved) sgFocusCleared('obligation');
+  else if (hit !== null && sgFocus() && !sgBaseAck(lastText) && sgFocusAck(lastText)) {
+    if (tailLines === undefined) tailLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes')) : null;
+    if (!sgCites(lastText, tailLines)) sgFocusCleared('label');
   }
   var wouldBlock = hit !== null && !sgHasAck(lastText) && !cited;
   // the Stop gate: Jev is waited for only when the rule layer flagged a likely unverified claim (the predicate is speculation_guard.jev_gate)
@@ -334,6 +370,8 @@ function decide(p) {
   ah.state.prune(ah.cfg('speculation_guard.prune_prefix'), stateName);
   var what = jevBlock ? ah.cfg('speculation_guard.msg_what_jev')
     : (inference !== null ? text.render(ah.cfg('inference.msg_what'), { sentence: inf.oneLine(inference.sentence, ah.cfgNum('inference.oneline_max')) }) : text.render(ah.cfg('speculation_guard.msg_what'), { marker: marker }));
-  var reason = text.message('block', guard, { what: what, why: ah.cfg('speculation_guard.msg_why'), instead: ah.cfg('speculation_guard.msg_instead') });
+  // the focus switch: a regex block names the step that clears it
+  var instead = sgFocus() && marker !== null && !jevBlock && inference === null ? text.render(ah.cfg('speculation_guard.msg_instead_focus'), { marker: marker }) : ah.cfg('speculation_guard.msg_instead');
+  var reason = text.message('block', guard, { what: what, why: ah.cfg('speculation_guard.msg_why'), instead: instead });
   return finish({ exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } }, 'block');
 }

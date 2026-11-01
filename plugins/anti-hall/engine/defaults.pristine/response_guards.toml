@@ -179,6 +179,27 @@ max = 400
 doc = "Regex source (case-insensitive) of a line that starts with an explicit requirement label, after an optional list bullet."
 value = '^\s*(?:(?:[-*+•]|\d+[.)])\s+)?(?:requirement|acceptance(?:\s+criteria)?|ac|spec)\s*:'
 
+[speculation_guard.ack_focus_ci]
+doc = "More acknowledgments that make hedging honest (regex sources, case-insensitive), read only while guards.claimEvidenceFocus is on: the writer says it did not confirm ('I haven't confirmed that', 'could not verify', 'unconfirmed', 'not yet proven'). A dot stands for either apostrophe."
+value = [
+  '\b(?:haven.t|have not|hadn.t|had not|did not|didn.t|could not|couldn.t|can.t|cannot|was not able to|wasn.t able to|am not able to|unable to)\s+(?:yet\s+|fully\s+|really\s+)?(?:confirm|verif|check|test|validat|reproduc|prov|measur)\w*\b',
+  '\bunconfirmed\b',
+  '\bunproven\b',
+  '\b(?:not|never)\s+(?:yet\s+|been\s+|fully\s+)?(?:confirmed|validated|reproduced|proven|established|measured)\b',
+]
+
+[speculation_guard.obligation_focus_re]
+doc = "Read only while guards.claimEvidenceFocus is on, as well as speculation_guard.obligation_re: more words after a must-be or should-be that name a real obligation ('must be shown failing before any fix', 'must be proven', 'should be recorded'). Regex source, case-insensitive."
+value = '^\s+(?:shown|proven|proved|demonstrated|caught|reproduced|failing|recorded|logged|cited|named|listed|written|added)\b'
+
+[speculation_guard.requirement_focus_re]
+doc = "Read only while guards.claimEvidenceFocus is on, as well as speculation_guard.requirement_line_re: more labels that open a requirement line ('Rule:', 'Constraint:', 'Brief:', 'Definition of done:'), after an optional list bullet. Regex source, case-insensitive."
+value = '^\s*(?:(?:[-*+•]|\d+[.)])\s+)?(?:rule|constraint|brief|guideline|criteria|criterion|definition\s+of\s+done)\s*:'
+
+[speculation_guard.msg_instead_focus]
+doc = "Block advice while guards.claimEvidenceFocus is on: it names the step that clears this block. Placeholder: {marker} the hedge found."
+value = "run the lookup for \"{marker}\" and quote it, or add \"I haven't confirmed that\"."
+
 [speculation_guard.quote_line_re]
 doc = "Regex source of a blockquote line (up to three spaces of indent, then a greater-than sign)."
 value = '^[ \t]{0,3}>'
