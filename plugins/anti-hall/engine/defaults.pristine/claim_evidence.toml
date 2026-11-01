@@ -32,6 +32,10 @@ value = { section = "guards", key = "claimEvidenceFocus", type = "boolean", env 
 doc = "Replies or claims the R-claim focus switch (guards.claimEvidenceFocus) let through that today's checks would have kept as a claim or hedge, by guard (claim-evidence-guard, speculation-guard) and by what cleared them (turn_continued: the check was in the same owner turn, before a notification; label: an extra honest-label phrasing; obligation: a requirement, not a guess). turn_continued is exact (today's evidence count would have held the reply); label counts a claim or hedge the extra phrasing covered (for the hedge check only when the turn's tool output did not already cite it); obligation counts a hedge skipped because of the extra requirement words."
 value = { kind = "counter", unit = "replies", labels = ["guard", "by"] }
 
+[metric.claim_after_block]
+doc = "Replies that follow a hold of the claim-evidence guard (the Stop that carries stop_hook_active, which the guard always lets through), by outcome: passed (the reply no longer states a claim) or still_claiming (it still does). Counted only while guards.claimEvidenceFocus is on (and guards.claimEvidenceTelemetry); the share still_claiming / all is the part of holds that changed nothing. The count reads the reply text, not the transcript, so it says the claim is still stated, not that no check ran."
+value = { kind = "counter", unit = "stops", labels = ["outcome"] }
+
 [metric.claim_evidence_suppressor_rejected]
 doc = "Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427)."
 value = { kind = "counter", unit = "candidates", labels = ["reason"] }

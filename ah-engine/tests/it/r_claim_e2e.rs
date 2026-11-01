@@ -66,8 +66,13 @@ impl Rig {
 
     /// One Stop as the host sends it, with the reply in the payload.
     fn stop(&self, text: &str, focus: bool) -> (i32, String, String) {
+        self.stop_with(text, focus, false)
+    }
+
+    /// The same Stop with `stop_hook_active` as given: true is the reply that follows a hold.
+    fn stop_with(&self, text: &str, focus: bool, active: bool) -> (i32, String, String) {
         let payload = json!({"session_id": "rc1", "cwd": self.dir.join("proj"), "hook_event_name": "Stop", "permission_mode": "default",
-                             "stop_hook_active": false, "background_tasks": [], "session_crons": [], "transcript_path": self.t(),
+                             "stop_hook_active": active, "background_tasks": [], "session_crons": [], "transcript_path": self.t(),
                              "last_assistant_message": text});
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["hook", "--event", "Stop", "--host", "claude"])
@@ -149,4 +154,21 @@ fn a_likely_cause_that_says_it_is_not_confirmed_is_not_held_only_with_the_switch
     let (code, out, err) = rig.stop(bare, true);
     assert_eq!(code, 0, "{out:?} {err:?}");
     assert!(out.contains("unverified claim") && out.contains("I haven't confirmed that"), "{out:?}");
+}
+
+#[test]
+fn the_reply_after_a_hold_is_never_held_again_with_the_switch_on_or_off() {
+    // the counting of this reply (`claim_after_block`) is asserted in script/tests.rs, where the in-process counters can be read;
+    // here the real payload shows the count never changes the answer
+    let still = "PR #12 is merged.";
+    let rig = Rig::new("after");
+    rig.transcript(&[human(), tool_call("u1", "ls"), tool_result("u1", "a"), reply(still)]);
+    for focus in [false, true] {
+        let (code, out, err) = rig.stop_with(still, focus, true);
+        assert_eq!(code, 0, "{out:?} {err:?}");
+        assert!(!out.contains("\"decision\":\"block\""), "focus={focus}: the hold is once: {out:?}");
+    }
+    let (code, out, err) = rig.stop_with(still, true, false);
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert!(out.contains("\"decision\":\"block\""), "the first Stop is still held: {out:?}");
 }

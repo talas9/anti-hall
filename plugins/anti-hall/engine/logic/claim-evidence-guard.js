@@ -250,11 +250,30 @@ function ceState(path) {
   return Object.assign({}, r.v, { hash: typeof r.v.hash === 'string' ? r.v.hash : '', blocks: typeof r.v.blocks === 'number' && isFinite(r.v.blocks) ? r.v.blocks : 0 });
 }
 
+// Counter (guards.claimEvidenceTelemetry, only while guards.claimEvidenceFocus is on): the reply that follows a hold of this guard (the Stop
+// that carries stop_hook_active) is read for a claim, for counting only, by outcome (passed, still_claiming). The decision stays allow: the
+// hold is once. No transcript is read, so it counts the claim text, not the missing check.
+function ceCountAfterBlock(p) {
+  if (!ceFocus() || !ah.settings.bool('claim_evidence.sw_telemetry') || !ah.settings.bool('claim_evidence.sw_claim')) return;
+  if (ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; }) || coordinator.isCodexPayload(p)) return;
+  if (ah.settings.skipped(ah.cfg('claim_evidence.guard_name'))) return;
+  var reply = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
+  if (!reply.trim()) return;
+  ceQuiet = true;
+  var claim = ceFindClaim(ah.text.maskQuoted(ceUnquote(reply)), []);
+  ceQuiet = false;
+  ah.metric('claim_after_block', ['outcome', claim === null ? 'passed' : 'still_claiming']);
+}
+
 function decide(p) {
   if (ah.env.get(ah.cfg('session.judge_child_env')) === ah.cfg('session.judge_child_on')) return 'allow';
   var r1 = ah.settings.bool('claim_evidence.sw_claim'), r2 = ah.settings.bool('claim_evidence.sw_pushed');
   if (!r1 && !r2) return 'allow';
-  if (p === null || typeof p !== 'object' || p.stop_hook_active === true) return 'allow';
+  if (p !== null && typeof p === 'object' && p.stop_hook_active === true) {
+    ceCountAfterBlock(p);
+    return 'allow';
+  }
+  if (p === null || typeof p !== 'object') return 'allow';
   if (ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; }) || coordinator.isCodexPayload(p)) return 'allow';
   var guard = ah.cfg('claim_evidence.guard_name');
   if (ah.settings.skipped(guard)) return 'allow';

@@ -3557,6 +3557,50 @@ mod claim_evidence_guard {
         assert_eq!(v, ALLOW);
         assert_eq!(count("label"), 0);
     }
+
+    #[test]
+    fn the_reply_after_a_hold_is_counted_by_outcome_with_the_switch_on_and_always_allowed() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |outcome: &str| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("claim_after_block", &[("outcome", outcome)])
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let active = json!({"stop_hook_active": true});
+        let still = "PR #12 is merged.";
+        let clean = "I checked the PR list; nothing else changed.";
+        let lines = |r: &str| [typed("go"), assistant("m1", r, &[])];
+        // a reply that still claims: allowed (the hold is once), counted once as still_claiming
+        let (v, _) = stop_unlocked("rc-ab-still", &lines(still), still, &[FOCUS], active.clone());
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("still_claiming"), 1);
+        assert_eq!(count("passed"), 0);
+        // a reply that no longer claims: allowed, counted once as passed
+        let (v, _) = stop_unlocked("rc-ab-clean", &lines(clean), clean, &[FOCUS], active.clone());
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("passed"), 1);
+        assert_eq!(count("still_claiming"), 0);
+        // a reply with an honest label no longer claims (the focus labels are read)
+        let labelled = "Tests pass, but I haven't confirmed that.";
+        let (v, _) = stop_unlocked("rc-ab-label", &lines(labelled), labelled, &[FOCUS], active.clone());
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("passed"), 1);
+        // the switch off counts nothing and still allows
+        let (v, _) = stop_unlocked("rc-ab-off", &lines(still), still, &[], active.clone());
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("still_claiming"), 0);
+        assert_eq!(count("passed"), 0);
+        // telemetry off: allowed, nothing counted
+        let (v, _) = stop_unlocked("rc-ab-tel", &lines(still), still, &[FOCUS, ("ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", "0")], active.clone());
+        assert_eq!(v, ALLOW);
+        assert_eq!(count("still_claiming"), 0);
+        // a Stop that is not a stop_hook_active one is not counted here: it is held as always
+        let (v, _) = stop_unlocked("rc-ab-first", &lines(still), still, &[FOCUS], json!({}));
+        assert!(blocked(&v).is_some());
+        assert_eq!(count("still_claiming"), 0);
+        assert_eq!(count("passed"), 0);
+    }
 }
 
 /// The prompt key of the task guard: the uuid of the newest real user entry (not a tool result), read newest-first from a capped fetch,
