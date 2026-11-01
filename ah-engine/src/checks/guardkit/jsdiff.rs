@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn a_token_that_is_not_a_json_number_is_never_read_as_an_overflowing_one() {
         // `01e400` parses in Rust's f64 parser (to infinity) but is not JSON: the document stays invalid, never "valid with a null" (#569 review)
-        for bad in ["01e400", "-01e400", "00", "1e", "1e+", "1.e400", "1e400-", "1e400e5", "1e400.5", "-", "--1e400"] {
+        for bad in ["01e400", "-01e400", "00", "1e", "1e+", "1.e400", "1e400-", "1e400e5", "1e400.5", "-", "-+1e400"] {
             let doc = format!("{{\"safe\":false,\"x\":{bad}}}");
             assert!(parse_settings_as_js(&doc).is_none(), "{bad}");
             // an overflowing number next to it does not launder it either
