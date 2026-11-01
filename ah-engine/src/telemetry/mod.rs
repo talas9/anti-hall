@@ -146,6 +146,23 @@ fn block_text(v: &Verdict) -> Option<&str> {
     }
 }
 
+/// What a funnel report is asked for (`telemetry funnel` / `telemetry report`).
+#[derive(Debug, Clone, Default)]
+pub struct ReportAsk {
+    /// The `--by` split.
+    pub by: String,
+    /// `--since` (or the older `--window`): a length back from now.
+    pub since: String,
+    /// `--from`: an absolute start.
+    pub from: String,
+    /// `--to`: an absolute end.
+    pub to: String,
+    /// Add the latency and failure sections.
+    pub full: bool,
+    /// The counters are the last stored snapshot, not a running daemon's.
+    pub stored: bool,
+}
+
 impl Telemetry {
     fn sink(&self, item: Staged) {
         match staged(item) {
@@ -477,37 +494,114 @@ impl Telemetry {
         json!({"running": true, "persisted": persisted, "snapshot_ms": snap, "note": note, "metrics": m.snapshot(check)})
     }
 
-    /// The `telemetry funnel` body: the funnel stages and channels per check, split by `by` (a comma list of `delivery.report_dims`),
-    /// for the last `window` days (less the metrics snapshot taken at the window start) or, with no window, since the counters began.
+    /// The `telemetry funnel` body: [`Telemetry::funnel_report`] for the funnel alone, over the last `window` (or lifetime when empty).
     pub fn funnel_json(&self, by: &str, window: &str) -> Value {
-        let by = match crate::funnel::parse_by(by) {
+        self.funnel_report(&ReportAsk { by: by.into(), since: window.into(), ..ReportAsk::default() })
+    }
+
+    /// The funnel report (B4): the funnel stages and channels per check, split by `ask.by` (a comma list of `delivery.report_dims`),
+    /// over the window of `ask` (`--since`, or `--from` / `--to`; lifetime when none is given). A window is the end snapshot less the
+    /// start snapshot: the start is the last stored snapshot at or before the asked start, from the finest rollup resolution that keeps
+    /// one that old; the end is the live counters, or with `--to` the last stored snapshot at or before it. `ask.full` adds the
+    /// latency and failure sections (`delivery.report_sections`).
+    pub fn funnel_report(&self, ask: &ReportAsk) -> Value {
+        let v = self.funnel_report_body(ask);
+        let outcome = if v.get("error").is_some() {
+            "error"
+        } else if v["funnel"]["window"]["resets"].as_u64() > Some(0) {
+            "reset"
+        } else if v["funnel"]["window"]["complete"] == false {
+            "partial"
+        } else {
+            "ok"
+        };
+        self.with_metrics(|m| m.inc("funnel_reports", &[("outcome", outcome)]));
+        v
+    }
+
+    fn funnel_report_body(&self, ask: &ReportAsk) -> Value {
+        use crate::freport;
+        let by = match crate::funnel::parse_by(&ask.by) {
             Ok(b) => b,
             Err(e) => return json!({"error": e}),
         };
-        let days = if window.trim().is_empty() {
-            None
-        } else {
-            match report::check_window(window) {
-                Ok(d) => Some(d),
-                Err(e) => return json!({"error": e}),
-            }
+        let timed = [&ask.since, &ask.from, &ask.to].iter().any(|s| !s.trim().is_empty());
+        if (timed || ask.full) && !freport::enabled() {
+            return json!({"error": defaults::text("delivery.report_off")});
+        }
+        let now = now_ms();
+        let span = match freport::resolve_span(&ask.since, &ask.from, &ask.to, now) {
+            Ok(s) => s,
+            Err(e) => return json!({"error": e}),
         };
+        // a running daemon's live counters take what the process noted since the last drain (fail-opens, bumps with no handle); a
+        // report of stored snapshots reads the snapshots as they are
+        if !ask.stored {
+            crate::failopen::drain_into(self);
+        }
         let live = {
             let mut m = lk(&self.metrics);
-            self.rec.mirror_into(&mut m);
-            crate::metrics::drain_pending(&mut m);
+            if !ask.stored {
+                self.rec.mirror_into(&mut m);
+                crate::metrics::drain_pending(&mut m);
+            }
             m.export()
         };
-        let (baseline, complete) = match days {
-            None => (None, true),
-            Some(d) => match self.store.rollup_at(defaults::text("delivery.report_rollup"), now_ms().saturating_sub(d * event::DAY_MS)) {
+        let stored_ms = self.snapshot_ms.load(std::sync::atomic::Ordering::SeqCst);
+        let (mut end, mut end_ms) = (live, if ask.stored { stored_ms } else { now });
+        if let Some(to) = span.to_ms {
+            match freport::pick_resolution(now.saturating_sub(to)).and_then(|r| self.store.rollup_at(r, to)) {
+                Some((ts, body, true)) => (end, end_ms) = (body, ts),
+                _ => return json!({"error": defaults::render("delivery.report_no_end_snapshot", &[("to", &to)])}),
+            }
+        }
+        let resolution = span.from_ms.and_then(|f| freport::pick_resolution(now.saturating_sub(f)));
+        let (baseline, complete) = match (span.from_ms, resolution) {
+            (Some(f), Some(r)) => match self.store.rollup_at(r, f) {
                 Some((ts, body, exact)) => (Some((ts, body)), exact),
                 None => (None, false),
             },
+            (Some(_), None) => (None, false),
+            (None, _) => (None, true),
         };
-        let mut v = crate::funnel::report(&live, baseline, complete, &by, days);
+        let start = baseline.as_ref().map(|(_, b)| b.clone());
+        let mut v = crate::funnel::report(&end, baseline.clone(), complete, &by, span.from_ms.is_some());
+        let resets = freport::count_resets(&end, start.as_ref());
+        let base_ms = baseline.as_ref().map(|(ts, _)| *ts);
+        let mut notes = Vec::new();
+        if resets > 0 {
+            notes.push(defaults::render("delivery.report_note_reset", &[("resets", &resets)]));
+        }
+        if let (Some(f), Some(b), Some(r)) = (span.from_ms, base_ms, resolution)
+            && complete
+            && b < f
+            && f - b > 0
+        {
+            notes.push(defaults::render("delivery.report_note_lag", &[("lag_ms", &(f - b)), ("resolution", &r)]));
+        }
+        if base_ms.is_some_and(|b| b >= end_ms) {
+            notes.push(defaults::text("delivery.report_note_empty").to_string());
+        }
+        {
+            let w = &mut v["funnel"]["window"];
+            w["from_ms"] = json!(span.from_ms);
+            w["to_ms"] = json!(span.to_ms);
+            w["end_ms"] = json!(end_ms);
+            w["resolution"] = json!(resolution);
+            w["resets"] = json!(resets.max(w["resets"].as_u64().unwrap_or(0) as usize));
+            w["notes"] = json!(notes);
+        }
+        if ask.full {
+            for section in defaults::list("delivery.report_sections") {
+                match section {
+                    "latency" => v["latency"] = freport::latency(&end, start.as_ref()),
+                    "failures" => v["failures"] = freport::failures(&end, start.as_ref()),
+                    _ => {}
+                }
+            }
+        }
         if let Some(o) = v.as_object_mut() {
-            o.insert("running".into(), json!(true));
+            o.insert("running".into(), json!(!ask.stored));
         }
         v
     }

@@ -212,9 +212,9 @@ pub fn parse_by(by: &str) -> Result<Vec<String>, String> {
 }
 
 /// The funnel report: per check (and per model / project when asked) the stages and channels of `live`, less `baseline` when the
-/// report is for a window (`days`). `baseline` is the oldest snapshot at or before the window start; `complete` is false when no
+/// report is for a window (`windowed`). `baseline` is the oldest snapshot at or before the window start; `complete` is false when no
 /// snapshot is that old (the figures then cover only what the snapshots hold, and say so).
-pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: &[String], days: Option<u64>) -> Value {
+pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: &[String], windowed: bool) -> Value {
     let stage_names: Vec<(&str, &str)> =
         defaults::list("delivery.report_stages").into_iter().map(|k| (k, defaults::text(&format!("delivery.stage_{k}")))).collect();
     let channel_names: Vec<(&str, &str)> =
@@ -237,9 +237,11 @@ pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: 
     // a series whose model or project is the overflow bucket's: past the series cap those labels fold, the check and stage stay
     let folded = |labels: &BTreeMap<String, String>| ["model", "project"].iter().any(|d| labels.get(*d).is_some_and(|v| v == over || v == other));
     let mut overflow_counts = 0u64;
+    let mut resets = 0usize;
     let mut rows: BTreeMap<Vec<String>, Counts> = BTreeMap::new();
     for (name, labels, v) in counters(live) {
-        let cur = v.saturating_sub(base.get(&(name.clone(), labels.clone())).copied().unwrap_or(0));
+        let (cur, reset) = crate::freport::delta(v, base.get(&(name.clone(), labels.clone())).copied().unwrap_or(0));
+        resets += usize::from(reset);
         if cur == 0 {
             continue;
         }
@@ -289,10 +291,10 @@ pub fn report(live: &Value, baseline: Option<(u64, Value)>, complete: bool, by: 
         out_rows.push(Value::Object(row));
     }
     let window = json!({
-        "days": days,
         "baseline_ms": baseline.as_ref().map(|(ts, _)| *ts),
         "complete": complete,
-        "note": if days.is_none() { defaults::text("delivery.report_note_lifetime") } else if complete { "" } else { defaults::text("delivery.report_note_partial") },
+        "resets": resets,
+        "note": if !windowed { defaults::text("delivery.report_note_lifetime") } else if complete { "" } else { defaults::text("delivery.report_note_partial") },
     });
     let mut window = window;
     if overflow_counts > 0 {
@@ -369,7 +371,7 @@ mod tests {
             ("delivery_channel|check=c1|channel=block|model=opus|project=pa", 3),
             ("delivery_stage|check=c1|stage=decided", 99),
         ]);
-        let by_model = report(&live, None, true, &["model".to_string()], None);
+        let by_model = report(&live, None, true, &["model".to_string()], false);
         let rows = by_model["funnel"]["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
         let opus = rows.iter().find(|r| r["model"] == "opus").unwrap();
@@ -378,11 +380,11 @@ mod tests {
         assert_eq!(opus["channels"]["block"], 3);
         let sonnet = rows.iter().find(|r| r["model"] == "sonnet").unwrap();
         assert!(sonnet["acted_on_rate"].is_null(), "no acted_on or ignored answer: no rate");
-        let flat = report(&live, None, true, &[], None);
+        let flat = report(&live, None, true, &[], false);
         assert_eq!(flat["funnel"]["rows"][0]["decided"], 14, "without --by the models are summed");
         let base =
             snap(&[("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", 4), ("delivery_funnel|check=c1|model=opus|project=pa|stage=acted_on", 6)]);
-        let win = report(&live, Some((123, base)), false, &["model".to_string()], Some(7));
+        let win = report(&live, Some((123, base)), false, &["model".to_string()], true);
         let opus = win["funnel"]["rows"].as_array().unwrap().iter().find(|r| r["model"] == "opus").unwrap().clone();
         assert_eq!((opus["decided"].as_u64(), opus["acted_on"].as_u64()), (Some(6), Some(0)), "the window is live less the baseline");
         assert_eq!(win["funnel"]["window"]["baseline_ms"], 123);
@@ -466,7 +468,7 @@ mod tests {
             ("delivery_funnel|check=c1|model=other|project=other|stage=other", 2),
             ("delivery_channel|check=c1|channel=other|model=opus|project=pa", 1),
         ]);
-        let r = report(&live, None, true, &[], None);
+        let r = report(&live, None, true, &[], false);
         let unlisted = defaults::text("delivery.report_overflow_stage");
         assert_eq!(r["funnel"]["rows"][0]["decided"], 3);
         assert_eq!(r["funnel"]["rows"][0][unlisted], 2);
@@ -509,5 +511,95 @@ mod tests {
         assert_eq!(win["funnel"]["window"]["complete"], false, "the snapshot is newer than the window start, and the report says so");
         // a bad word is refused with the accepted ones named
         assert!(t.funnel_json("session", "")["error"].as_str().unwrap().contains("model"));
+    }
+
+    /// Seed the stored snapshots a report reads: (age in ms before now, decided answers, check runs of 800 us, runs of 200 ms, deadline cuts).
+    fn seeded(dir: &std::path::Path, snaps: &[(u64, u64, u64, u64, u64)]) -> (Telemetry, Vec<u64>) {
+        use crate::db::Db;
+        use crate::storage::{SqliteStore, Store};
+        let store = SqliteStore::new(Db::open(dir).unwrap());
+        let now = crate::health::now_ms();
+        let mut stamps = Vec::new();
+        for (age, decided, fast, slow, cuts) in snaps {
+            let mut m = crate::metrics::Metrics::default();
+            m.add("delivery_funnel", &[("check", "swarm-guard"), ("model", "opus"), ("project", "pa"), ("stage", "decided")], *decided);
+            m.add("fail_open", &[("check", "swarm-guard"), ("reason", "deadline_cut")], *cuts);
+            m.add("check_calls", &[("check", "swarm-guard")], fast + slow);
+            for _ in 0..*fast {
+                m.observe("check_latency_us", &[("check", "swarm-guard")], 800);
+            }
+            for _ in 0..*slow {
+                m.observe("check_latency_us", &[("check", "swarm-guard")], 200_000);
+            }
+            let ts = now - age;
+            assert!(store.save_metrics(ts, &m.export()));
+            stamps.push(ts);
+        }
+        let t = Telemetry::with_store(Box::new(SqliteStore::new(Db::open(dir).unwrap())));
+        t.restore_metrics();
+        (t, stamps)
+    }
+
+    #[test]
+    fn a_report_over_a_time_window_is_the_end_snapshot_less_the_start_for_the_funnel_latency_and_failures() {
+        use crate::db::TempDir;
+        use crate::telemetry::ReportAsk;
+        const H: u64 = 3_600_000;
+        let dir = TempDir::new("report-window");
+        // 5 h ago: 2 decided, 4 fast runs; 3 h ago: 5 decided, 10 fast, 1 cut; 1 h ago: 12 decided, 30 fast + 5 slow runs, 4 cuts
+        let (t, at) = seeded(&dir.0, &[(5 * H, 2, 4, 0, 0), (3 * H, 5, 10, 0, 1), (H, 12, 30, 5, 4)]);
+        let ask = |since: &str, from: &str, to: &str| ReportAsk {
+            by: "model".into(),
+            since: since.into(),
+            from: from.into(),
+            to: to.into(),
+            full: true,
+            stored: true,
+        };
+        // the last 2 h: the start is the snapshot 3 h ago (the last one at or before the asked start), the end the last stored one
+        let v = t.funnel_report(&ask("2h", "", ""));
+        assert!(v.get("error").is_none(), "{v}");
+        let w = &v["funnel"]["window"];
+        assert_eq!((w["baseline_ms"].as_u64(), w["end_ms"].as_u64(), w["complete"].clone()), (Some(at[1]), Some(at[2]), json!(true)), "{w}");
+        assert_eq!(w["resolution"], "minute", "the finest resolution that keeps a snapshot 2 h old");
+        assert!(
+            w["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("really starts")),
+            "the start lags the asked start and says so: {w}"
+        );
+        assert_eq!(v["funnel"]["rows"][0]["decided"], 7, "12 - 5");
+        let l = &v["latency"]["rows"][0];
+        assert_eq!((l["check"].as_str(), l["count"].as_u64()), (Some("swarm-guard"), Some(25)), "20 fast + 5 slow runs in the window: {l}");
+        assert_eq!((l["p50_ms"].clone(), l["p95_ms"].clone()), (json!(1.0), json!(1000.0)));
+        let f = &v["failures"]["rows"][0];
+        assert_eq!((f["fail_open"].as_u64(), f["timeouts"].as_u64(), f["runs"].as_u64()), (Some(3), Some(3), Some(25)), "{f}");
+        // an absolute window with an end: 4 h ago to 2 h ago is the 5 h snapshot to the 3 h one
+        let ms = |ago: u64| (crate::health::now_ms() - ago).to_string();
+        let v = t.funnel_report(&ask("", &ms(4 * H), &ms(2 * H)));
+        assert_eq!((v["funnel"]["window"]["baseline_ms"].as_u64(), v["funnel"]["window"]["end_ms"].as_u64()), (Some(at[0]), Some(at[1])), "{v}");
+        assert_eq!(v["funnel"]["rows"][0]["decided"], 3, "5 - 2");
+        assert_eq!(v["latency"]["rows"][0]["count"], 6, "10 - 4 fast runs");
+        assert_eq!(v["failures"]["rows"][0]["timeouts"], 1);
+        // a window that starts after the last snapshot is empty and says so; lifetime reads everything
+        let v = t.funnel_report(&ask("", &ms(1_800_000), ""));
+        assert!(v["funnel"]["window"]["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("same stored snapshot")), "{v}");
+        assert_eq!(t.funnel_report(&ask("", "", ""))["funnel"]["rows"][0]["decided"], 12);
+        // no snapshot at or before --to: an error naming it; a bad flag is refused; the funnel verb without `full` has no extra section
+        let v = t.funnel_report(&ask("", &ms(1000 * H), &ms(900 * H)));
+        assert!(v["error"].as_str().unwrap().contains("no stored metrics snapshot"), "{v}");
+        assert!(t.funnel_report(&ask("1x", "", ""))["error"].as_str().unwrap().contains("1x"));
+        let plain = t.funnel_report(&ReportAsk { since: "2h".into(), stored: true, ..ReportAsk::default() });
+        assert!(plain.get("latency").is_none() && plain.get("failures").is_none());
+        // the reports are counted by outcome
+        let (ok, err) = t.with_metrics(|m| (m.counter("funnel_reports", &[("outcome", "ok")]), m.counter("funnel_reports", &[("outcome", "error")])));
+        assert!(ok >= 3 && err == 2, "ok {ok} err {err}");
+    }
+
+    #[test]
+    fn a_counter_that_restarted_inside_the_window_reports_its_end_value_and_the_report_flags_the_reset() {
+        let live = snap(&[("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", 3)]);
+        let base = snap(&[("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", 10)]);
+        let r = report(&live, Some((5, base)), true, &[], true);
+        assert_eq!(r["funnel"]["rows"][0]["decided"], 3, "below the start: the counter restarted, the end value stands");
+        assert_eq!(r["funnel"]["window"]["resets"], 1);
     }
 }

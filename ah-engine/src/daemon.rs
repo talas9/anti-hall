@@ -388,8 +388,17 @@ impl Shared {
     /// The `telemetry` control verb: `summary` or `events [kind=<k>] [limit=<n>]`, each with `window=<7d>`.
     fn telemetry_json(&self, args: &str) -> serde_json::Value {
         let sub = args.split_whitespace().next().unwrap_or("summary");
-        if sub == defaults::text("delivery.report_verb") {
-            return self.telemetry.funnel_json(&kv(args, "by"), &kv(args, "window"));
+        let weekly = sub == defaults::text("delivery.report_weekly_verb");
+        if weekly || sub == defaults::text("delivery.report_verb") {
+            let since = Some(kv(args, "since")).filter(|s| !s.is_empty()).unwrap_or_else(|| kv(args, "window"));
+            return self.telemetry.funnel_report(&telemetry::ReportAsk {
+                by: kv(args, "by"),
+                since,
+                from: kv(args, "from"),
+                to: kv(args, "to"),
+                full: weekly,
+                stored: false,
+            });
         }
         let limit = kv(args, "limit").parse().unwrap_or(defaults::num("telemetry.recent_default") as usize);
         self.telemetry.telemetry_json(sub, &kv(args, "window"), &kv(args, "kind"), limit)

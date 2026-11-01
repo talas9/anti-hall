@@ -90,7 +90,7 @@ fn is_byte_metric(name: &str) -> bool {
 }
 
 /// The bucket bounds of the histogram `name`.
-fn bounds_for(name: &str) -> Vec<u64> {
+pub fn bounds_for(name: &str) -> Vec<u64> {
     if is_byte_metric(name) { byte_bounds() } else { bucket_bounds() }
 }
 

@@ -630,16 +630,110 @@ doc = "The `polarity` value of a delivery.act row whose reaction is NOT calling 
 value = "avoid"
 
 [delivery.report_verb]
-doc = "The `telemetry` subcommand that prints the funnel (`ah-engine telemetry funnel --by model,project --window 7d`; `--since` is accepted for `--window`)."
+doc = "The `telemetry` subcommand that prints the funnel (`ah-engine telemetry funnel --by model,project --since 6h`; `--window` is the older spelling of `--since`; `--from` / `--to` give an absolute window)."
 value = "funnel"
 
-[delivery.report_rollup]
-doc = "The metrics rollup resolution (telemetry.rollups) whose stored snapshots give the start of a windowed funnel report."
-value = "hour"
+[delivery.report_enabled]
+doc = "Weekly funnel report (B4): 1 lets `ah-engine telemetry report` (and the time-window flags of `telemetry funnel`) answer; 0 makes both refuse with delivery.report_off. Read-only: it computes from the stored metrics snapshots and changes no answer. On by default for the same reason as delivery.funnel_enabled (measurement only; the #537 swarm-guard check and the production baseline need it)."
+value = 1
+min = 0
+
+[delivery.report_sections]
+doc = "The sections `telemetry report` prints after the funnel (which is always printed, its window block is the report's window), in order: latency (per-check count, p50, p95, max in ms from the check_latency_us histograms) and failures (fail-opens, timeouts and failures per check, and the engine-wide error counters). A word that is not one of these is ignored."
+value = ["latency", "failures"]
+
+[delivery.report_weekly_verb]
+doc = "The `telemetry` subcommand of the weekly report (`ah-engine telemetry report`): the funnel verb with every section, defaulting to delivery.report_weekly_window and delivery.report_weekly_by."
+value = "report"
+
+[delivery.report_weekly_window]
+doc = "The window `telemetry report` covers when none of --since, --window, --from and --to is given."
+value = "7d"
+
+[delivery.report_weekly_by]
+doc = "The split `telemetry report` uses when --by is not given (a comma list of delivery.report_dims)."
+value = "model,project"
+
+[delivery.report_window_units]
+doc = "Suffixes a report window (`--since 6h`, `--window 7d`) accepts, each with its length in milliseconds. A bare number takes delivery.report_bare_unit."
+value = { ms = 1, s = 1000, m = 60000, h = 3600000, d = 86400000, w = 604800000 }
+
+[delivery.report_bare_unit]
+doc = "The unit of a report window written as a bare number (`--window 7` is 7 days, as it always was for `telemetry funnel`). One of delivery.report_window_units."
+value = "d"
+
+[delivery.report_bad_window]
+doc = "Printed when a report window (--since / --window) is not a whole number with an optional unit. Placeholders: {window}, {units}."
+value = "unsupported window '{window}': use a whole number with a unit from ({units}) such as 7d, 36h or 90m; a bare number is days"
+
+[delivery.report_bad_time]
+doc = "Printed when --from or --to is neither epoch seconds or milliseconds nor an RFC 3339 time. Placeholders: {flag}, {value}."
+value = "unsupported {flag} '{value}': use epoch seconds or milliseconds, or a time like 2026-11-01T09:30:00Z (a date alone is midnight UTC; a time without Z or an offset is UTC)"
+
+[delivery.report_bad_range]
+doc = "Printed when the window is empty, in the future or given two ways. Placeholders: {why}."
+value = "unsupported window: {why}"
+
+[delivery.report_why_both]
+doc = "The {why} of delivery.report_bad_range when --since or --window is given together with --from."
+value = "give either --since / --window or --from, not both"
+
+[delivery.report_why_order]
+doc = "The {why} of delivery.report_bad_range when the start is not before the end."
+value = "--from must be earlier than --to"
+
+[delivery.report_why_future]
+doc = "The {why} of delivery.report_bad_range when the start is in the future."
+value = "--from is in the future"
+
+[delivery.report_off]
+doc = "Printed by `telemetry report` / a windowed `telemetry funnel` when delivery.report_enabled is 0."
+value = "the funnel report is switched off (delivery.report_enabled = 0)"
+
+[delivery.report_no_end_snapshot]
+doc = "Printed when --to is asked and no stored metrics snapshot is at or before it: the window's end cannot be read. Placeholders: {to}."
+value = "no stored metrics snapshot at or before --to ({to} ms); the snapshots are kept per telemetry.rollups, so an end older than that cannot be reported"
+
+[delivery.report_note_empty]
+doc = "Printed in the report's window block when the start and end snapshots are the same one, so nothing falls between them (the snapshots are one per rollup bucket)."
+value = "the window start and end resolve to the same stored snapshot, so the figures are empty; widen the window or wait for the next snapshot"
+
+[delivery.report_note_reset]
+doc = "Printed in the report's window block when some series went down between the start snapshot and the end (the counters restarted without being restored). For those series the end value is reported as the window figure, which can miss what happened before the restart. Placeholders: {resets}."
+value = "{resets} series went down between the window start and its end (counters restarted); their figures are the end value, not a difference"
+
+[delivery.report_note_lag]
+doc = "Printed in the report's window block when the start snapshot is older than the asked start: it is the last snapshot of its rollup bucket, so up to that many ms before the asked start are included. Placeholders: {lag_ms}, {resolution}."
+value = "the window really starts {lag_ms} ms before the asked start (the last stored {resolution} snapshot at or before it)"
+
+[delivery.report_latency_note]
+doc = "Printed with the latency section. The histogram is the check's wall time per run, recorded for every run that returned a verdict: a run cut at the deadline records the time it took, and a check dropped before it ran (shed, client gone, a cut before it started) records its short answer time, so a healthy p95 does not prove the check ran. Read it next to the failures section."
+value = "wall time per run in ms; quantiles are the upper bound of their bucket, null means above over_ms; max is exact only when max_exact is true (otherwise the upper bound of the highest bucket used in the window). Runs cut at the deadline or dropped before they ran still record a time, so read it beside the failures section"
+
+[delivery.report_failure_reason_keys]
+doc = "The fail_open reasons (keys of wire.toml fail_open.reason_*) the failures section counts as failures, apart from timeouts."
+value = ["fail_open.reason_internal", "fail_open.reason_missing_key"]
+
+[delivery.report_timeout_reason_keys]
+doc = "The fail_open reasons (keys of wire.toml fail_open.reason_*) the failures section counts as timeouts."
+value = ["fail_open.reason_deadline", "fail_open.reason_script_timeout"]
+
+[delivery.report_engine_counters]
+doc = "The label-free metrics the failures section reports for the whole engine over the window."
+value = ["requests", "errors", "panics", "busy_replies", "budget_trips", "deadline_soft", "slow_replies"]
+
+[delivery.report_table_titles]
+doc = "Headings of the text report (`telemetry report` without --json): the window line and one title per section."
+value = { window = "Window", funnel = "Delivery funnel", latency = "Check latency (ms)", failures = "Failures and fail-opens" }
+
+[delivery.report_rows_max]
+doc = "Most rows per section the text report prints (the JSON carries all of them); the rest are counted in a last line."
+value = 60
+min = 1
 
 [delivery.report_no_daemon]
-doc = "Printed by `telemetry funnel` when no engine daemon answers: the funnel counters are in the daemon's metrics and their window baseline in its stored snapshots."
-value = "telemetry funnel needs the running engine (start it with `ah-engine status` or a hook call); no daemon answered"
+doc = "Printed by `telemetry funnel` / `telemetry report` when no engine daemon answers and there is no stored metrics database to read instead."
+value = "telemetry funnel needs the running engine or a stored metrics database (start the engine with `ah-engine status` or a hook call); neither was found"
 
 [delivery.model_transcript_keep]
 doc = "The projection the funnel asks `tailEntries` for when it looks up a session's model in the transcript tail (JSON text: a list of key paths): each line's `type` and `message.model`."

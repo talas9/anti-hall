@@ -380,6 +380,114 @@ fn a_real_hook_call_is_counted_in_the_funnel_by_model_project_and_channel() {
     assert!(status["delivery"]["funnel"]["totals"]["decided"].as_u64() >= Some(1), "{status}");
 }
 
+/// B4: the real `ah-engine telemetry report` against a seeded state directory with no daemon: the stored metrics snapshots (three,
+/// at 5 h, 3 h and 1 h ago) give a 2 h window as the 1 h snapshot less the 3 h one, for the funnel, the per-check latency and the
+/// fail-opens, in JSON and as text; the funnel verb takes a sub-day window too; a bad flag exits 64 with the accepted forms.
+#[test]
+fn the_report_cli_reads_a_time_window_from_stored_snapshots_with_latency_and_failures() {
+    use ah_engine::storage::Store;
+    const H: u64 = 3_600_000;
+    let e = Env::new("report-files");
+    std::fs::create_dir_all(e.state()).unwrap();
+    let store = ah_engine::storage::SqliteStore::new(ah_engine::db::Db::open(&e.state()).unwrap());
+    let now = ah_engine::health::now_ms();
+    for (age, decided, fast, slow, cuts) in [(5 * H, 2u64, 4u64, 0u64, 0u64), (3 * H, 5, 10, 0, 1), (H, 12, 30, 5, 4)] {
+        let mut m = ah_engine::metrics::Metrics::default();
+        m.add("delivery_funnel", &[("check", "swarm-guard"), ("model", "opus"), ("project", "pa"), ("stage", "decided")], decided);
+        m.add("delivery_funnel", &[("check", "swarm-guard"), ("model", "opus"), ("project", "pa"), ("stage", "delivered")], decided);
+        m.add("fail_open", &[("check", "swarm-guard"), ("reason", "deadline_cut")], cuts);
+        m.add("check_calls", &[("check", "swarm-guard")], fast + slow);
+        m.add("requests", &[], fast + slow);
+        for _ in 0..fast {
+            m.observe("check_latency_us", &[("check", "swarm-guard")], 800);
+        }
+        for _ in 0..slow {
+            m.observe("check_latency_us", &[("check", "swarm-guard")], 200_000);
+        }
+        assert!(store.save_metrics(now - age, &m.export()));
+    }
+    drop(store);
+    let (code, out, err) = e.run(&["telemetry", "report", "--since", "2h", "--by", "model", "--json"], false, "", true);
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["from"], "files", "no daemon ran: the stored snapshots were read: {v}");
+    assert_eq!(v["funnel"]["rows"][0]["decided"], 7, "12 - 5 decided answers inside the window: {v}");
+    assert_eq!(v["funnel"]["window"]["baseline_ms"].as_u64(), Some(now - 3 * H), "{v}");
+    let l = &v["latency"]["rows"][0];
+    assert_eq!(
+        (l["check"].as_str(), l["count"].as_u64(), l["p50_ms"].clone(), l["p95_ms"].clone()),
+        (Some("swarm-guard"), Some(25), 1.0.into(), 1000.0.into()),
+        "{l}"
+    );
+    let f = &v["failures"]["rows"][0];
+    assert_eq!(
+        (f["check"].as_str(), f["fail_open"].as_u64(), f["timeouts"].as_u64(), f["runs"].as_u64()),
+        (Some("swarm-guard"), Some(3), Some(3), Some(25)),
+        "{f}"
+    );
+    assert_eq!(v["failures"]["engine"]["requests"], 25);
+    // the text form: a window line and one table per section
+    let (code, text, _) = e.run(&["telemetry", "report", "--since", "2h"], false, "", true);
+    assert_eq!(code, 0);
+    for want in ["Window:", "Delivery funnel", "Check latency (ms)", "Failures and fail-opens", "swarm-guard"] {
+        assert!(text.contains(want), "{want} in:\n{text}");
+    }
+    // the funnel verb takes the same window and stays the funnel alone; an absolute start and a bad flag
+    let (code, out, _) = e.run(&["telemetry", "funnel", "--since", "90m", "--json"], false, "", true);
+    let f: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(code == 0 && f.get("latency").is_none() && f["funnel"]["window"]["from_ms"].is_u64(), "{f}");
+    let from = (now - 4 * H).to_string();
+    let to = (now - 2 * H).to_string();
+    let (code, out, _) = e.run(&["telemetry", "report", "--from", &from, "--to", &to, "--json"], false, "", true);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((code, v["latency"]["rows"][0]["count"].as_u64()), (0, Some(6)), "5 h snapshot to 3 h snapshot: {v}");
+    let (code, out, _) = e.run(&["telemetry", "report", "--from", "yesterday-ish", "--json"], false, "", true);
+    assert!(code == 64 && out.contains("--from") && out.contains("2026-11-01T09:30:00Z"), "{code} {out}");
+    let (code, out, _) = e.run(&["telemetry", "report", "--since", "2h", "--from", &from, "--json"], false, "", true);
+    assert!(code == 64 && out.contains("not both"), "{code} {out}");
+}
+
+/// B4: the same report through a running daemon, from a real hook call: the git check's force-push block lands in the funnel row,
+/// the latency section carries its run, and the failures section is there with the engine counters.
+#[test]
+fn the_report_cli_through_a_running_daemon_carries_the_funnel_latency_and_failures_of_a_real_hook_call() {
+    let e = Env::new("report-live");
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let p = serde_json::json!({
+        "session_id": "e2e-report", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "model": "claude-opus-4-8",
+        "tool_input": {"command": "git push --force origin main"},
+    })
+    .to_string();
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut report = serde_json::Value::Null;
+    while Instant::now() < until {
+        e.run(&args, false, &p, true);
+        let (code, out, _) = e.run(&["telemetry", "report", "--json"], false, "", true);
+        if code == 0
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+            && v["from"] == "daemon"
+            && v["funnel"]["rows"].as_array().is_some_and(|rows| rows.iter().any(|r| r["check"] == "git" && r["delivered"].as_u64() > Some(0)))
+            && v["latency"]["rows"].as_array().is_some_and(|rows| rows.iter().any(|r| r["check"] == "git"))
+        {
+            report = v;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (_, text, _) = e.run(&["telemetry", "report"], false, "", true);
+    e.stop();
+    assert!(!report.is_null(), "the git check's block reached the report's funnel and latency sections");
+    let row = report["funnel"]["rows"].as_array().unwrap().iter().find(|r| r["check"] == "git").unwrap().clone();
+    assert_eq!((row["model"].as_str(), row["channels"]["block"].as_u64() >= Some(1)), (Some("opus"), true), "{row}");
+    assert!(report["latency"]["rows"].as_array().unwrap().iter().any(|r| r["check"] == "git" && r["count"].as_u64() >= Some(1)));
+    assert!(report["failures"]["engine"]["requests"].as_u64() >= Some(1), "{}", report["failures"]);
+    let from = report["funnel"]["window"]["from_ms"].as_u64().expect("the weekly report has a window start");
+    let week = 7 * 86_400_000;
+    assert!(ah_engine::health::now_ms().abs_diff(from + week) < 120_000, "the weekly report defaults to a 7 day window: {}", report["funnel"]["window"]);
+    assert!(text.contains("Check latency (ms)") && text.contains("git"), "{text}");
+}
+
 impl Env {
     /// Calls a quiet event until the daemon the hook client starts is running, so the calls after it are all served by it.
     fn warm_daemon(&self) {
