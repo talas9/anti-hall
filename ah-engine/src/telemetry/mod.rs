@@ -32,6 +32,7 @@ use event::{Event, Kind, Outcome};
 use persist::{Flushed, TelDb};
 use recorder::Recorder;
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 /// Metrics plus the impact ledger.
@@ -467,6 +468,7 @@ impl Telemetry {
         let kept = self.store.save_metrics(now, &body);
         if kept {
             self.snapshot_ms.store(now, std::sync::atomic::Ordering::SeqCst);
+            lk(&self.metrics).clear_rejected(); // the snapshot carried what the restore refused
         }
         kept
     }
@@ -539,15 +541,16 @@ impl Telemetry {
         if !ask.stored {
             crate::failopen::drain_into(self);
         }
-        let live = {
+        // a report of stored snapshots reads the newest snapshot AS STORED (never through the restore, which drops what it cannot load);
+        // a daemon's report reads its live registry
+        let (live, stored_ms) = if ask.stored {
+            self.store.load_metrics().map_or_else(|| (json!({"counters": {}, "histograms": {}}), 0), |(ts, body)| (body, ts))
+        } else {
             let mut m = lk(&self.metrics);
-            if !ask.stored {
-                self.rec.mirror_into(&mut m);
-                crate::metrics::drain_pending(&mut m);
-            }
-            m.export()
+            self.rec.mirror_into(&mut m);
+            crate::metrics::drain_pending(&mut m);
+            (m.export(), self.snapshot_ms.load(std::sync::atomic::Ordering::SeqCst))
         };
-        let stored_ms = self.snapshot_ms.load(std::sync::atomic::Ordering::SeqCst);
         let (mut end, mut end_ms) = (live, if ask.stored { stored_ms } else { now });
         if let Some(to) = span.to_ms {
             match freport::pick_resolution(now.saturating_sub(to)).and_then(|r| self.store.rollup_at(r, to)) {
@@ -576,10 +579,6 @@ impl Telemetry {
         if diff.mismatched > 0 {
             notes.push(defaults::render("delivery.report_note_mismatch", &[("n", &diff.mismatched)]));
         }
-        if !diff.partial_checks.is_empty() {
-            let checks = diff.partial_checks.iter().map(String::as_str).collect::<Vec<_>>().join(", ");
-            notes.push(defaults::render("delivery.report_note_partial_checks", &[("checks", &checks)]));
-        }
         if let (Some(f), Some(b), Some(r)) = (span.from_ms, base_ms, resolution)
             && complete
             && b < f
@@ -600,6 +599,38 @@ impl Telemetry {
                 }
             }
         }
+        // the window is decided by its ROWS: a check is partial when any row of any section is, and the window is complete only when
+        // no row is (and nothing else is unproven: an exact start, no restart or refused series, no capped sum, not empty)
+        let mut by_check: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut any_row = false;
+        let mut rows_of = |rows: Option<&Vec<Value>>| {
+            for r in rows.into_iter().flatten().filter(|r| r["partial"] == true) {
+                any_row = true;
+                let reasons = by_check.entry(r["check"].as_str().unwrap_or_default().to_string()).or_default();
+                reasons.extend(r["partial_reasons"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string));
+            }
+        };
+        rows_of(v["funnel"]["rows"].as_array());
+        rows_of(v["latency"]["rows"].as_array());
+        rows_of(v["failures"]["rows"].as_array());
+        any_row |= v["failures"]["partial"] == true;
+        for c in &diff.partial_checks {
+            by_check.entry(c.clone()).or_default().extend(diff.reasons_of(c).into_iter().map(str::to_string));
+        }
+        let texts = defaults::raw("delivery.report_reason_texts");
+        let mut by_reason: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (c, rs) in &by_check {
+            for r in rs {
+                by_reason.entry(r.clone()).or_default().push(c.clone());
+            }
+        }
+        for r in diff.global.iter().map(|r| r.to_string()) {
+            by_reason.insert(r, vec![defaults::text("delivery.report_all_checks").to_string()]);
+        }
+        for (r, checks) in &by_reason {
+            let why = texts.get(r.as_str()).and_then(defaults::V::as_str).unwrap_or(r.as_str());
+            notes.push(defaults::render("delivery.report_note_partial_checks", &[("why", &why), ("checks", &checks.join(", "))]));
+        }
         if diff.saturated() {
             notes.push(defaults::text("delivery.report_note_saturated").to_string());
         }
@@ -611,8 +642,9 @@ impl Telemetry {
             w["resolution"] = json!(resolution);
             w["empty"] = json!(empty);
             w["saturated"] = json!(diff.saturated());
-            // complete only when every figure is proven: an exact start, no restarted or uncomparable series, no capped sum, not empty
-            w["complete"] = json!(complete && diff.clean() && !empty);
+            w["partial_checks"] = json!(by_check.keys().collect::<Vec<_>>());
+            w["partial_reasons"] = json!(by_check);
+            w["complete"] = json!(complete && diff.clean() && !empty && !any_row && by_check.is_empty());
             w["notes"] = json!(notes);
         }
         if let Some(o) = v.as_object_mut() {

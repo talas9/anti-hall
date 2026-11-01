@@ -133,11 +133,10 @@ fn funnel_report(rest: &[String], weekly: bool, window: &str) -> (Value, i32) {
         return (v.clone(), code_of(&v));
     }
     // no daemon: the stored snapshots of the last run, read-only (nothing is created, migrated or written; an older or newer schema is
-    // reported, not upgraded)
+    // reported, not upgraded; the newest snapshot is read as stored, never restored into a registry that would drop what it cannot load)
     let stored = match crate::storage::ReadOnlyStore::open(&paths::dir()) {
         Ok(store) => {
             let t = crate::telemetry::Telemetry::with_store(Box::new(store));
-            t.restore_metrics();
             Some(t.funnel_report(&crate::telemetry::ReportAsk { stored: true, ..ask }))
         }
         Err(crate::storage::ReadOnlyError::Missing) => None,

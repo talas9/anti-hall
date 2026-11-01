@@ -227,42 +227,59 @@ pub fn delta(end: u64, start: u64) -> (u64, bool) {
     if end >= start { (end - start, false) } else { (end, true) }
 }
 
-/// One histogram of a snapshot: buckets, count, max.
-struct Hist {
-    buckets: Vec<u64>,
-    count: u64,
-    max: u64,
+pub use crate::metrics::why;
+
+/// One counter of a snapshot: its value (0 when it is not a count) and, when it cannot be trusted as it is, the [`why`] word.
+struct Cv {
+    v: u64,
+    flag: Option<&'static str>,
 }
 
-/// The counters of a snapshot and how many series could not be read (a value that is not a count).
-fn read_counters(snap: &Value) -> (BTreeMap<String, u64>, usize) {
-    let Some(m) = snap.get("counters").and_then(Value::as_object) else { return (BTreeMap::new(), 0) };
-    let (mut ok, mut bad) = (BTreeMap::new(), 0);
-    for (k, v) in m {
-        match v.as_u64() {
-            Some(n) => {
-                ok.insert(k.clone(), n);
-            }
-            None => bad += 1,
-        }
-    }
-    (ok, bad)
+/// One histogram of a snapshot, checked (see [`crate::metrics::check_hist`]).
+enum Hv {
+    Ok { buckets: Vec<u64>, count: u64, max: u64, saturated: bool },
+    Bad(&'static str),
 }
 
-/// The histograms of a snapshot and how many series could not be read (buckets or count that are not counts).
-fn read_hists(snap: &Value) -> (BTreeMap<String, Hist>, usize) {
-    let Some(m) = snap.get("histograms").and_then(Value::as_object) else { return (BTreeMap::new(), 0) };
-    let (mut out, mut bad) = (BTreeMap::new(), 0);
-    for (k, x) in m {
-        let buckets: Option<Vec<u64>> = x.get("buckets").and_then(Value::as_array).and_then(|a| a.iter().map(Value::as_u64).collect());
-        match (buckets, x.get("count").and_then(Value::as_u64)) {
-            (Some(buckets), Some(count)) => {
-                out.insert(k.clone(), Hist { buckets, count, max: x.get("max").and_then(Value::as_u64).unwrap_or(0) });
-            }
-            _ => bad += 1,
-        }
-    }
-    (out, bad)
+/// The counters of a snapshot, each checked (nothing is skipped or coerced: a value that is not a count is kept as flagged), and
+/// whether the `counters` section had the wrong shape.
+fn read_counters(snap: &Value) -> (BTreeMap<String, Cv>, bool) {
+    let section = snap.get("counters");
+    let Some(m) = section.and_then(Value::as_object) else { return (BTreeMap::new(), section.is_some()) };
+    let out = m
+        .iter()
+        .map(|(k, v)| {
+            let cv = match v.as_u64() {
+                Some(n) => Cv { v: n, flag: (n == u64::MAX).then_some(why::saturated()) },
+                None => Cv { v: 0, flag: Some(why::invalid()) },
+            };
+            (k.clone(), cv)
+        })
+        .collect();
+    (out, false)
+}
+
+/// The histograms of a snapshot, each checked against the layout of its metric, and whether the section had the wrong shape.
+fn read_hists(snap: &Value) -> (BTreeMap<String, Hv>, bool) {
+    let section = snap.get("histograms");
+    let Some(m) = section.and_then(Value::as_object) else { return (BTreeMap::new(), section.is_some()) };
+    let out = m
+        .iter()
+        .map(|(k, x)| {
+            let hv = match crate::metrics::check_hist(parse_key(k).0, x) {
+                Ok((buckets, count, max, saturated)) => Hv::Ok { buckets, count, max, saturated },
+                Err(why) => Hv::Bad(why),
+            };
+            (k.clone(), hv)
+        })
+        .collect();
+    (out, false)
+}
+
+/// The series the engine refused when it restored a snapshot (`rejected`), by key and reason.
+fn read_rejected(snap: &Value) -> Vec<(String, &'static str)> {
+    let Some(m) = snap.get("rejected").and_then(Value::as_object) else { return Vec::new() };
+    m.keys().map(|k| (k.clone(), why::rejected())).collect()
 }
 
 /// One counter series of a window: its figure is end less start, or the end value when the series restarted (`reset`).
@@ -272,42 +289,55 @@ pub struct Series {
     pub name: String,
     /// Its labels.
     pub labels: BTreeMap<String, String>,
-    /// The window figure.
+    /// The window figure (0 when a side could not be read; see `flag`).
     pub value: u64,
     /// The series went down between the two snapshots, so the figure is the end value, not a difference.
     pub reset: bool,
+    /// Why the figure cannot be proven (a [`why`] word), when it cannot: the row of its check is partial.
+    pub flag: Option<&'static str>,
 }
 
 /// One histogram of a window, bucket by bucket.
 #[derive(Debug, Clone)]
 pub struct HistWin {
-    /// The window's count per bucket (the end buckets whole when the series restarted or could not be compared).
+    /// The window's count per bucket (the end buckets whole when the series restarted); empty when `flag` says it cannot be read.
     pub buckets: Vec<u64>,
     /// The end snapshot's largest value.
     pub max: u64,
     /// True when `max` was seen inside the window (it grew, or there is no start to compare with).
     pub max_new: bool,
+    /// Why the window cannot be proven (a [`why`] word). With `usable` false there is no figure at all.
+    pub flag: Option<&'static str>,
+    /// False when a side of the series could not be read or the series vanished: no bucket is shown for it.
+    pub usable: bool,
 }
 
-/// The window between two snapshots, computed once for every section of a report: every counter series and every histogram bucket
-/// is compared with its start value. A series that went down (a counter, or any one bucket or the count of a histogram), or that the
-/// start has and the end lost, is a RESET: it is counted in `resets` and the check it belongs to is `partial`, so every figure derived
-/// from it is marked. A histogram whose bucket layout differs, or a value that is not a count, is `mismatched` and marks its check the
-/// same way. All sums are checked: past `u64` they stop at the maximum and `saturated` is set.
+/// The window between two snapshots, computed once for every section of a report. Every counter series and every histogram of both
+/// snapshots is CHECKED when read (a value that is not a count, a bucket layout other than the supported one, a count that is not the
+/// total of its buckets, a value at the largest `u64`, a series the restore refused) and then compared once. Nothing is dropped or
+/// coerced: a series that fails any of this, went down (a RESET), or is on one side only (VANISHED) marks its check `partial` with the
+/// reason ([`Diff::reasons_of`]) in the funnel, latency and failure sections, and makes the window incomplete. A snapshot that is not
+/// the stored shape marks every check. All sums are checked: past `u64` they stop at the maximum and `saturated` is set.
 #[derive(Debug, Default)]
 pub struct Diff {
-    /// The end snapshot's counter series.
+    /// The end snapshot's counter series (and the flagged ones of either side).
     pub series: Vec<Series>,
-    /// The end snapshot's histograms, by series key.
+    /// The histograms, by series key.
     pub hists: BTreeMap<String, HistWin>,
     /// Series that went down or vanished between the snapshots.
     pub resets: usize,
-    /// Series that could not be compared (a different bucket layout, or a value that is not a count).
+    /// Series that could not be compared (a value that is not a count, another bucket layout, a count that is not its buckets' total).
     pub mismatched: usize,
-    /// The checks (label `check`) with a reset or mismatched series: every figure of theirs is partial.
+    /// Series at the largest count.
+    pub saturated_series: usize,
+    /// The checks (label `check`) with a flagged series: every figure of theirs is partial.
     pub partial_checks: BTreeSet<String>,
-    /// The metric names with a reset or mismatched series (label-free engine counters included).
-    pub partial_names: BTreeSet<String>,
+    /// Per check, why it is partial.
+    pub partial_reasons: BTreeMap<String, BTreeSet<&'static str>>,
+    /// The metric names with a flagged series (label-free engine counters included), with the reasons.
+    pub partial_names: BTreeMap<String, BTreeSet<&'static str>>,
+    /// Reasons that touch every figure (a snapshot that is not the stored shape).
+    pub global: BTreeSet<&'static str>,
     saturated: Cell<bool>,
 }
 
@@ -315,85 +345,200 @@ impl Diff {
     /// The window of `end` less `start`; no start is the lifetime figures.
     pub fn new(end: &Value, start: Option<&Value>) -> Diff {
         let mut d = Diff::default();
-        let (ec, eu) = read_counters(end);
-        let (sc, su) = start.map(read_counters).unwrap_or_default();
-        d.mismatched += eu + su;
-        for (k, v) in &ec {
-            let (value, reset) = match sc.get(k) {
-                Some(s) => delta(*v, *s),
-                None => (*v, false),
+        // a snapshot that is not an object, or whose sections are not objects, cannot be read at all: every figure is unproven
+        let shape_bad = |v: &Value| !v.is_object();
+        if shape_bad(end) || start.is_some_and(shape_bad) {
+            d.global.insert(why::unreadable());
+            d.mismatched += 1;
+        }
+        let (ec, ec_bad) = read_counters(end);
+        let (sc, sc_bad) = start.map(read_counters).unwrap_or_default();
+        let (eh, eh_bad) = read_hists(end);
+        let (sh, sh_bad) = start.map(read_hists).unwrap_or_default();
+        for bad in [ec_bad, sc_bad, eh_bad, sh_bad] {
+            if bad {
+                d.global.insert(why::unreadable());
+                d.mismatched += 1;
+            }
+        }
+        for (k, e) in &ec {
+            let s = sc.get(k);
+            let (value, reset) = match s {
+                Some(s) if s.flag != Some(why::invalid()) && e.flag != Some(why::invalid()) => delta(e.v, s.v),
+                _ => (e.v, false),
             };
-            let (name, labels) = parse_key(k);
+            let mut flag: Option<&'static str> = None;
+            for f in [e.flag, s.and_then(|s| s.flag)].into_iter().flatten() {
+                if flag != Some(f) {
+                    d.flagged(k, f);
+                }
+                flag = flag.or(Some(f));
+            }
             if reset {
                 d.resets += 1;
-                d.mark(k);
+                d.mark(k, why::reset());
+                flag = flag.or(Some(why::reset()));
             }
-            d.series.push(Series { name: name.to_string(), labels: labels.into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(), value, reset });
+            let (name, labels) = parse_key(k);
+            d.series.push(Series {
+                name: name.to_string(),
+                labels: labels.into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+                value,
+                reset,
+                flag,
+            });
         }
-        for k in sc.keys().filter(|k| !ec.contains_key(*k)) {
-            d.resets += 1;
-            d.mark(k);
-        }
-        let (eh, ehu) = read_hists(end);
-        let (sh, shu) = start.map(read_hists).unwrap_or_default();
-        d.mismatched += ehu + shu;
-        for (k, h) in &eh {
-            let (name, _) = parse_key(k);
-            let layout = crate::metrics::bounds_for(name).len() + 1 == h.buckets.len();
-            let (buckets, max_new) = match sh.get(k) {
-                Some(b) if !layout || b.buckets.len() != h.buckets.len() => {
-                    d.mismatched += 1;
-                    d.mark(k);
-                    (h.buckets.clone(), true)
+        for (k, s) in sc.iter().filter(|(k, _)| !ec.contains_key(*k)) {
+            let flag = match s.flag {
+                Some(f) => {
+                    d.flagged(k, f);
+                    f
                 }
-                Some(b) if h.count < b.count || h.buckets.iter().zip(&b.buckets).any(|(x, y)| x < y) => {
+                None => {
                     d.resets += 1;
-                    d.mark(k);
-                    (h.buckets.clone(), true)
+                    d.mark(k, why::vanished());
+                    why::vanished()
                 }
-                Some(b) => (h.buckets.iter().zip(&b.buckets).map(|(x, y)| x - y).collect(), h.max > b.max),
-                None if !layout => {
-                    d.mismatched += 1;
-                    d.mark(k);
-                    (h.buckets.clone(), true)
-                }
-                None => (h.buckets.clone(), true),
             };
-            d.hists.insert(k.clone(), HistWin { buckets, max: h.max, max_new });
+            d.push_gone(k, flag);
         }
-        for k in sh.keys().filter(|k| !eh.contains_key(*k)) {
-            d.resets += 1;
-            d.mark(k);
+        for (k, e) in &eh {
+            let s = sh.get(k);
+            let win = match (e, s) {
+                (Hv::Bad(w), _) => {
+                    let w = *w;
+                    d.flagged(k, w);
+                    HistWin { buckets: Vec::new(), max: 0, max_new: false, flag: Some(w), usable: false }
+                }
+                (Hv::Ok { .. }, Some(Hv::Bad(w))) => {
+                    let w = *w;
+                    d.flagged(k, w);
+                    HistWin { buckets: Vec::new(), max: 0, max_new: false, flag: Some(w), usable: false }
+                }
+                (Hv::Ok { buckets, count, max, saturated }, other) => {
+                    let mut flag = None;
+                    if *saturated {
+                        d.flagged(k, why::saturated());
+                        flag = Some(why::saturated());
+                    }
+                    let (win, max_new) = match other {
+                        Some(Hv::Ok { buckets: b, count: bc, max: bm, saturated: bs }) => {
+                            if *bs && flag.is_none() {
+                                d.flagged(k, why::saturated());
+                                flag = Some(why::saturated());
+                            }
+                            if count < bc || buckets.iter().zip(b).any(|(x, y)| x < y) {
+                                d.resets += 1;
+                                d.mark(k, why::reset());
+                                flag = flag.or(Some(why::reset()));
+                                (buckets.clone(), true)
+                            } else {
+                                (buckets.iter().zip(b).map(|(x, y)| x - y).collect(), max > bm)
+                            }
+                        }
+                        _ => (buckets.clone(), true),
+                    };
+                    HistWin { buckets: win, max: *max, max_new, flag, usable: true }
+                }
+            };
+            d.hists.insert(k.clone(), win);
+        }
+        for (k, s) in sh.iter().filter(|(k, _)| !eh.contains_key(*k)) {
+            let w = match s {
+                Hv::Bad(w) => {
+                    d.flagged(k, w);
+                    *w
+                }
+                Hv::Ok { .. } => {
+                    d.resets += 1;
+                    d.mark(k, why::vanished());
+                    why::vanished()
+                }
+            };
+            d.hists.insert(k.clone(), HistWin { buckets: Vec::new(), max: 0, max_new: false, flag: Some(w), usable: false });
+        }
+        // series the engine refused when it restored the end snapshot's predecessor
+        for (k, w) in read_rejected(end) {
+            if ec.contains_key(&k) || eh.contains_key(&k) {
+                continue;
+            }
+            d.flagged(&k, w);
+            d.push_gone(&k, w);
+            if crate::metrics::is_registered(parse_key(&k).0) && defaults::raw(&format!("metric.{}", parse_key(&k).0)).str_field("kind") == "histogram" {
+                d.hists.insert(k, HistWin { buckets: Vec::new(), max: 0, max_new: false, flag: Some(w), usable: false });
+            }
         }
         d
     }
 
-    fn mark(&mut self, key: &str) {
+    /// A series that has no figure of its own in the window (gone, or refused): a row for its check, value 0, flagged.
+    fn push_gone(&mut self, key: &str, flag: &'static str) {
         let (name, labels) = parse_key(key);
-        self.partial_names.insert(name.to_string());
+        self.series.push(Series {
+            name: name.to_string(),
+            labels: labels.into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            value: 0,
+            reset: flag == why::vanished(),
+            flag: Some(flag),
+        });
+    }
+
+    /// Count a flagged series (by what is wrong with it) and mark its check.
+    fn flagged(&mut self, key: &str, reason: &'static str) {
+        if reason == why::saturated() {
+            self.saturated_series += 1;
+        } else {
+            self.mismatched += 1;
+        }
+        self.mark(key, reason);
+    }
+
+    fn mark(&mut self, key: &str, reason: &'static str) {
+        let (name, labels) = parse_key(key);
+        self.partial_names.entry(name.to_string()).or_default().insert(reason);
         if let Some(c) = labels.get("check") {
             self.partial_checks.insert((*c).to_string());
+            self.partial_reasons.entry((*c).to_string()).or_default().insert(reason);
         }
     }
 
-    /// True when a figure of `check` cannot be proven (one of its series restarted or could not be compared).
+    /// True when a figure of `check` cannot be proven (one of its series restarted, vanished, was refused or could not be compared,
+    /// or a snapshot was unreadable).
     pub fn is_partial(&self, check: &str) -> bool {
-        self.partial_checks.contains(check)
+        !self.global.is_empty() || self.partial_checks.contains(check)
     }
 
-    /// True when the whole window is provable: no reset, no mismatch, no sum stopped at the maximum.
+    /// Why `check` is partial (sorted; empty when it is not).
+    pub fn reasons_of(&self, check: &str) -> Vec<&'static str> {
+        let mut r: BTreeSet<&'static str> = self.global.clone();
+        if let Some(own) = self.partial_reasons.get(check) {
+            r.extend(own);
+        }
+        r.into_iter().collect()
+    }
+
+    /// True when the whole window is provable: no reset, no mismatch, no saturated series or sum.
     pub fn clean(&self) -> bool {
-        self.resets == 0 && self.mismatched == 0 && !self.saturated.get()
+        self.resets == 0 && self.mismatched == 0 && !self.saturated() && self.global.is_empty()
     }
 
-    /// True when a sum stopped at `u64::MAX`.
+    /// True when a series or a sum reached the largest count.
     pub fn saturated(&self) -> bool {
-        self.saturated.get()
+        self.saturated.get() || self.saturated_series > 0
     }
 
     /// `a + b`, stopping at `u64::MAX` and remembering that it did.
     pub fn add(&self, a: u64, b: u64) -> u64 {
         a.checked_add(b).unwrap_or_else(|| {
+            self.saturated.set(true);
+            u64::MAX
+        })
+    }
+
+    /// [`Diff::add`] that also sets `row` when the sum stopped at the maximum: the row it belongs to is partial.
+    pub fn add_row(&self, a: u64, b: u64, row: &mut bool) -> u64 {
+        a.checked_add(b).unwrap_or_else(|| {
+            *row = true;
             self.saturated.set(true);
             u64::MAX
         })
@@ -405,21 +550,44 @@ fn ms(us: u64) -> Value {
     if us > (1u64 << f64::MANTISSA_DIGITS) { Value::Null } else { json!((us as f64) / 1000.0) }
 }
 
+/// The partial reasons of a row of `check` as the words of its report (sorted); `sat` adds the saturated sum of the row itself.
+pub fn reason_words_of(d: &Diff, check: &str, sat: bool) -> Vec<&'static str> {
+    let mut r = d.reasons_of(check);
+    if sat && !r.contains(&why::saturated()) {
+        r.push(why::saturated());
+        r.sort_unstable();
+    }
+    r
+}
+
 /// The per-check latency of the window: `check_latency_us` of the window, bucket by bucket. Quantiles are the upper bound of their
 /// bucket (`null` above the last bound; integer rank arithmetic); `max_ms` is the largest value seen only when it grew inside the
-/// window (`max_exact`), otherwise the upper bound of the highest bucket the window used. A row is `partial` when a series of its
-/// check restarted or could not be compared.
+/// window (`max_exact`), otherwise the upper bound of the highest bucket the window used. A row is `partial` (with `partial_reasons`)
+/// when a series of its check restarted, vanished, was refused or could not be compared; a histogram that cannot be read (its bucket
+/// layout is not the supported one, its count is not its buckets' total, a side is missing) is a row with NO figures and `partial`,
+/// never an absent row.
 pub fn latency(d: &Diff) -> Value {
     let bounds = crate::metrics::bounds_for("check_latency_us");
     let mut rows: BTreeMap<String, Value> = BTreeMap::new();
     for (key, h) in &d.hists {
         let (name, labels) = parse_key(key);
-        if name != "check_latency_us" || h.buckets.len() != bounds.len() + 1 {
+        if name != "check_latency_us" {
             continue;
         }
         let Some(check) = labels.get("check") else { continue };
-        let count = h.buckets.iter().fold(0u64, |a, n| d.add(a, *n));
-        if count == 0 {
+        if !h.usable {
+            rows.insert(
+                (*check).to_string(),
+                json!({
+                    "check": check, "count": Value::Null, "p50_ms": Value::Null, "p95_ms": Value::Null, "max_ms": Value::Null, "max_exact": false,
+                    "partial": true, "partial_reasons": reason_words_of(d, check, false),
+                }),
+            );
+            continue;
+        }
+        let mut sat = false;
+        let count = h.buckets.iter().fold(0u64, |a, n| d.add_row(a, *n, &mut sat));
+        if count == 0 && !d.is_partial(check) {
             continue;
         }
         let q = |p: u64| crate::telemetry::report::quantile(&h.buckets, &bounds, p).map_or(Value::Null, ms);
@@ -429,9 +597,20 @@ pub fn latency(d: &Diff) -> Value {
             (true, false) => (Some(bounds[top]), false),
             (false, false) => (None, false),
         };
+        let partial = d.is_partial(check) || sat || h.flag.is_some();
+        let mut reasons = reason_words_of(d, check, sat);
+        if let Some(f) = h.flag.filter(|f| !reasons.contains(f)) {
+            reasons.push(f);
+            reasons.sort_unstable();
+        }
+        // a saturated count or bucket has no honest quantile
+        let figs = !(sat || h.flag == Some(why::saturated()));
         rows.insert(
             (*check).to_string(),
-            json!({ "check": check, "count": count, "p50_ms": q(500), "p95_ms": q(950), "max_ms": max.map_or(Value::Null, ms), "max_exact": exact, "partial": d.is_partial(check) }),
+            json!({
+                "check": check, "count": count, "p50_ms": if figs { q(500) } else { Value::Null }, "p95_ms": if figs { q(950) } else { Value::Null },
+                "max_ms": max.map_or(Value::Null, ms), "max_exact": exact, "partial": partial, "partial_reasons": reasons,
+            }),
         );
     }
     let over = bounds.last().copied().unwrap_or(0);
@@ -446,37 +625,44 @@ fn reason_words(list: &str) -> Vec<&'static str> {
 /// The failure section of the window: per check the fail-opens by reason (`fail_open`), which of them are timeouts and which are
 /// failures, the check's runs (`check_calls`), and the engine-wide error counters (`delivery.report_engine_counters`) plus the
 /// answers dropped by reason. A reporting-only reason (`fail_open.reporting_reasons`: the verdict applied, only its delivery failed) is
-/// kept apart and not in `total`. A row is `partial` when a series of its check restarted; `engine_partial` names the engine counters
-/// that did, `answers_dropped_partial` says the dropped counts did.
+/// kept apart and not in `total`. A row is `partial` (with `partial_reasons`) when a series of its check restarted, vanished, was refused,
+/// could not be compared or a sum of the row reached the maximum; a check with a flagged series always has a row. `engine_partial` names
+/// the engine counters that were flagged, `answers_dropped_partial` says the dropped counts were.
 pub fn failures(d: &Diff) -> Value {
     let (timeouts, fails) = (reason_words("delivery.report_timeout_reason_keys"), reason_words("delivery.report_failure_reason_keys"));
     let mut checks: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+    let mut sat_checks: BTreeSet<String> = BTreeSet::new();
     let mut engine: BTreeMap<String, u64> = BTreeMap::new();
     let mut dropped: BTreeMap<String, u64> = BTreeMap::new();
     let wanted = defaults::list("delivery.report_engine_counters");
     let get = |row: &Map<String, Value>, k: &str| row.get(k).and_then(Value::as_u64).unwrap_or(0);
     for s in &d.series {
         let cur = s.value;
-        if cur == 0 {
+        if cur == 0 && s.flag.is_none() {
             continue;
         }
         match s.name.as_str() {
             "fail_open" => {
-                let (Some(reason), Some(check)) = (s.labels.get("reason"), s.labels.get("check")) else { continue };
+                let Some(check) = s.labels.get("check") else { continue };
                 let row = checks.entry(check.clone()).or_default();
+                let Some(reason) = s.labels.get("reason") else { continue };
+                let mut sat = false;
                 let by = row.entry("fail_open_by_reason").or_insert_with(|| json!({}));
-                by[reason.as_str()] = json!(d.add(by.get(reason.as_str()).and_then(Value::as_u64).unwrap_or(0), cur));
+                by[reason.as_str()] = json!(d.add_row(by.get(reason.as_str()).and_then(Value::as_u64).unwrap_or(0), cur, &mut sat));
                 let reporting = crate::failopen::is_reporting(reason);
                 let slot = if reporting { "reporting_only" } else { "fail_open" };
-                let total = d.add(get(row, slot), cur);
+                let total = d.add_row(get(row, slot), cur, &mut sat);
                 row.insert(slot.into(), json!(total));
                 if !reporting {
                     for (class, list) in [("timeouts", &timeouts), ("failures", &fails)] {
                         if list.contains(&reason.as_str()) {
-                            let t = d.add(get(row, class), cur);
+                            let t = d.add_row(get(row, class), cur, &mut sat);
                             row.insert(class.into(), json!(t));
                         }
                     }
+                }
+                if sat {
+                    sat_checks.insert(check.clone());
                 }
             }
             "check_calls" => {
@@ -498,20 +684,23 @@ pub fn failures(d: &Diff) -> Value {
     }
     let rows: Vec<Value> = checks
         .into_iter()
-        .filter(|(_, r)| r.contains_key("fail_open") || r.contains_key("reporting_only"))
+        .filter(|(c, r)| r.contains_key("fail_open") || r.contains_key("reporting_only") || d.is_partial(c))
         .map(|(check, mut r)| {
             for k in ["fail_open", "timeouts", "failures", "runs"] {
                 r.entry(k).or_insert(json!(0));
             }
-            r.insert("partial".into(), json!(d.is_partial(&check)));
+            let sat = sat_checks.contains(&check);
+            r.insert("partial".into(), json!(d.is_partial(&check) || sat));
+            r.insert("partial_reasons".into(), json!(reason_words_of(d, &check, sat)));
             r.insert("check".into(), json!(check));
             Value::Object(r)
         })
         .collect();
-    let totals = rows.iter().filter_map(|r| r["fail_open"].as_u64()).fold(0u64, |a, n| d.add(a, n));
-    let engine_partial: Vec<&str> = wanted.iter().copied().filter(|n| d.partial_names.contains(*n)).collect();
-    let dropped_partial = d.partial_names.contains("answers_dropped");
-    let partial = dropped_partial || !engine_partial.is_empty() || rows.iter().any(|r| r["partial"] == true);
+    let mut total_sat = false;
+    let totals = rows.iter().filter_map(|r| r["fail_open"].as_u64()).fold(0u64, |a, n| d.add_row(a, n, &mut total_sat));
+    let engine_partial: Vec<&str> = wanted.iter().copied().filter(|n| d.partial_names.contains_key(*n)).collect();
+    let dropped_partial = d.partial_names.contains_key("answers_dropped");
+    let partial = dropped_partial || total_sat || !d.global.is_empty() || !engine_partial.is_empty() || rows.iter().any(|r| r["partial"] == true);
     json!({
         "rows": rows, "fail_open_total": totals, "engine": engine, "answers_dropped": dropped,
         "partial": partial, "engine_partial": engine_partial, "answers_dropped_partial": dropped_partial,
@@ -844,8 +1033,10 @@ mod tests {
         );
         assert_eq!(f["partial"], true);
         // a bucket down while the count is up, and the reverse (count down, buckets up), are both resets
-        start["histograms"][key]["count"] = json!(100);
-        end["histograms"][key]["buckets"] = json!(a);
+        let mut big = a.clone();
+        big[0] = 100;
+        start = snap(&[(key, &big, 5)], &[]);
+        end = snap(&[(key, &a, 5)], &[]);
         assert_eq!(Diff::new(&end, Some(&start)).resets, 1, "count 10 below 100");
         // the series set differs: a series the end lost is a reset, a new one is not
         let lost = snap(&[], &[("check_calls|check=gone", 4)]);
@@ -869,5 +1060,35 @@ mod tests {
         assert!(d.saturated() && !d.clean());
         assert_eq!(ms(1u64 << 60), Value::Null, "past what a JSON number holds exactly");
         assert_eq!(ms(2500), json!(2.5));
+    }
+
+    #[test]
+    fn a_series_that_is_refused_vanished_or_unreadable_marks_its_check_with_the_reason_and_an_unreadable_snapshot_marks_every_check() {
+        let n = crate::metrics::bounds_for("check_latency_us").len() + 1;
+        let key = "check_latency_us|check=alpha";
+        // 11 buckets totalling 30 with count 500: refused as inconsistent, its latency row has no figures but exists
+        let mut b = vec![0u64; n];
+        b[0] = 30;
+        let mut end = snap(&[], &[("check_calls|check=beta", 4), ("check_calls|check=gamma", u64::MAX)]);
+        end["histograms"] = json!({ key: {"buckets": b, "count": 500, "sum": 0, "max": 1} });
+        let start = snap(&[], &[("check_calls|check=beta", 1), ("check_calls|check=delta", 2)]);
+        let d = Diff::new(&end, Some(&start));
+        assert_eq!(d.partial_checks.iter().map(String::as_str).collect::<Vec<_>>(), ["alpha", "delta", "gamma"], "{d:?}");
+        assert_eq!(d.reasons_of("alpha"), [why::inconsistent()]);
+        assert_eq!(d.reasons_of("delta"), [why::vanished()]);
+        assert_eq!(d.reasons_of("gamma"), [why::saturated()]);
+        assert!(d.reasons_of("beta").is_empty() && !d.is_partial("beta"), "control: a check with only valid series");
+        let row = &latency(&d)["rows"][0];
+        assert_eq!((row["check"].as_str(), row["partial"].clone(), row["count"].clone()), (Some("alpha"), json!(true), Value::Null), "{row}");
+        // a snapshot that is not the stored shape marks every check
+        let d = Diff::new(&json!({"counters": [1, 2]}), Some(&start));
+        assert!(d.is_partial("anything") && d.reasons_of("anything") == [why::unreadable()] && !d.clean());
+        assert!(!Diff::new(&Value::Null, None).clean());
+        // a series the restore refused is carried in `rejected` and flagged in the next window
+        let mut carried = snap(&[], &[("check_calls|check=beta", 4)]);
+        carried["rejected"] = json!({ key: "layout" });
+        let d = Diff::new(&carried, Some(&snap(&[], &[("check_calls|check=beta", 1)])));
+        assert_eq!(d.reasons_of("alpha"), [why::rejected()]);
+        assert_eq!(latency(&d)["rows"][0]["partial"], true);
     }
 }

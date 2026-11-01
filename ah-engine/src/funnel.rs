@@ -18,7 +18,7 @@ use crate::freport::Diff;
 use crate::telemetry::Telemetry;
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
 
 /// Who an answer belongs to, as the funnel labels it.
@@ -181,8 +181,15 @@ pub fn channels(t: &Telemetry, check: &str, event: &str, r: &HookResult, c: &Ctx
 
 // ---- the report -------------------------------------------------------------------------------------------------------------
 
-/// One report row's counts: by stage label, and by channel label.
-type Counts = (BTreeMap<String, u64>, BTreeMap<String, u64>);
+/// One report row's counts: by stage label, and by channel label, and whether a sum of the row stopped at the maximum or a series
+/// that feeds it is flagged (its rate is then unavailable).
+#[derive(Default)]
+struct Counts {
+    stages: BTreeMap<String, u64>,
+    channels: BTreeMap<String, u64>,
+    sat: bool,
+    flagged: bool,
+}
 
 /// Validate `--by`: the words of the comma list, each one of `delivery.report_dims`.
 pub fn parse_by(by: &str) -> Result<Vec<String>, String> {
@@ -221,7 +228,7 @@ pub fn report(d: &Diff, baseline_ms: Option<u64>, complete: bool, by: &[String],
     let mut overflow_counts = 0u64;
     let mut rows: BTreeMap<Vec<String>, Counts> = BTreeMap::new();
     for s in &d.series {
-        if s.value == 0 {
+        if s.value == 0 && s.flag.is_none() {
             continue;
         }
         let (stage, is_stage) = match s.name.as_str() {
@@ -233,8 +240,11 @@ pub fn report(d: &Diff, baseline_ms: Option<u64>, complete: bool, by: &[String],
             overflow_counts = d.add(overflow_counts, s.value);
         }
         let row = rows.entry(key_of(&s.labels)).or_default();
-        let slot = (if is_stage { &mut row.0 } else { &mut row.1 }).entry(stage).or_insert(0);
-        *slot = d.add(*slot, s.value);
+        row.flagged |= s.flag.is_some();
+        let mut sat = row.sat;
+        let slot = (if is_stage { &mut row.stages } else { &mut row.channels }).entry(stage).or_insert(0);
+        *slot = d.add_row(*slot, s.value, &mut sat);
+        row.sat = sat;
     }
     let mut out_rows = Vec::new();
     let mut totals: BTreeMap<String, u64> = BTreeMap::new();
@@ -243,10 +253,12 @@ pub fn report(d: &Diff, baseline_ms: Option<u64>, complete: bool, by: &[String],
         let t = totals.entry(k.to_string()).or_insert(0);
         *t = d.add(*t, n);
     };
-    for (key, (st, ch)) in &rows {
+    let mut sat_checks: BTreeSet<String> = BTreeSet::new();
+    for (key, acc) in &rows {
+        let (st, ch) = (&acc.stages, &acc.channels);
         let mut row = Map::new();
         let check = key.first().cloned().unwrap_or_default();
-        row.insert("partial".into(), json!(d.is_partial(&check)));
+        let mut sat = acc.sat;
         row.insert("check".into(), json!(check));
         for (i, dim) in by.iter().enumerate() {
             row.insert(dim.clone(), json!(key.get(i + 1).cloned().unwrap_or_default()));
@@ -257,7 +269,7 @@ pub fn report(d: &Diff, baseline_ms: Option<u64>, complete: bool, by: &[String],
             row.insert((*k).to_string(), json!(n));
         }
         // counts under a stage the report does not list stay visible, never dropped
-        let unlisted = st.iter().filter(|(l, _)| !stage_names.iter().any(|(_, n)| n == l)).fold(0u64, |a, (_, n)| d.add(a, *n));
+        let unlisted = st.iter().filter(|(l, _)| !stage_names.iter().any(|(_, n)| n == l)).fold(0u64, |a, (_, n)| d.add_row(a, *n, &mut sat));
         if unlisted > 0 {
             total_add(unlisted_key, unlisted);
             row.insert(unlisted_key.to_string(), json!(unlisted));
@@ -269,17 +281,32 @@ pub fn report(d: &Diff, baseline_ms: Option<u64>, complete: bool, by: &[String],
         // the rate in integer permille: a sum of two counts can pass u64, and the float of a large count is not exact
         let (a, i) = (u128::from(stage("delivery.stage_acted_on")), u128::from(stage("delivery.stage_ignored")));
         let den = a + i;
-        let rate = (a * 1000 + den / 2).checked_div(den).map_or(Value::Null, |permille| json!(permille as f64 / 1000.0));
+        // a rate over a row with a saturated, unreadable or restarted input, or a sum that stopped at the maximum, is not a number
+        let rate = if acc.sat || sat || acc.flagged || d.is_partial(&check) {
+            Value::Null
+        } else {
+            (a * 1000 + den / 2).checked_div(den).map_or(Value::Null, |permille| json!(permille as f64 / 1000.0))
+        };
         row.insert("acted_on_rate".into(), rate);
         let mut channels: Map<String, Value> = channel_names.iter().filter_map(|(_, label)| ch.get(*label).map(|n| ((*label).to_string(), json!(n)))).collect();
-        let unlisted_ch = ch.iter().filter(|(l, _)| !channel_names.iter().any(|(_, n)| n == l)).fold(0u64, |a, (_, n)| d.add(a, *n));
+        let unlisted_ch = ch.iter().filter(|(l, _)| !channel_names.iter().any(|(_, n)| n == l)).fold(0u64, |a, (_, n)| d.add_row(a, *n, &mut sat));
         if unlisted_ch > 0 {
             channels.insert(unlisted_key.to_string(), json!(unlisted_ch));
         }
         row.insert("channels".into(), Value::Object(channels));
+        if sat {
+            sat_checks.insert(check.clone());
+        }
+        row.insert("partial".into(), json!(d.is_partial(&check) || sat));
+        row.insert("partial_reasons".into(), json!(crate::freport::reason_words_of(d, &check, sat)));
         out_rows.push(Value::Object(row));
     }
-    let partial_checks: Vec<&String> = rows.keys().filter_map(|k| k.first()).filter(|c| d.is_partial(c)).collect();
+    // every check with an unproven figure, whether or not it has a funnel row of its own
+    let mut partial_checks: BTreeSet<String> = d.partial_checks.clone();
+    partial_checks.extend(sat_checks.iter().cloned());
+    if !d.global.is_empty() {
+        partial_checks.extend(rows.keys().filter_map(|k| k.first().cloned()));
+    }
     let note = if !windowed {
         defaults::text("delivery.report_note_lifetime")
     } else if complete {
@@ -289,7 +316,7 @@ pub fn report(d: &Diff, baseline_ms: Option<u64>, complete: bool, by: &[String],
     };
     let mut window = json!({
         "baseline_ms": baseline_ms,
-        "complete": complete && d.clean(),
+        "complete": complete && d.clean() && sat_checks.is_empty(),
         "resets": d.resets,
         "mismatched": d.mismatched,
         "partial_checks": partial_checks,
@@ -402,8 +429,16 @@ mod tests {
             ("delivery_funnel|check=c1|model=opus|project=pa|stage=ignored", 1),
         ]);
         let r = rep(&live, None, true, &[], false);
+        assert_eq!(r["funnel"]["rows"][0]["acted_on_rate"], Value::Null, "a series at u64::MAX stopped counting: no rate, not a number: {r}");
+        assert_eq!(r["funnel"]["rows"][0]["partial"], true, "{r}");
+        assert_eq!(r["funnel"]["window"]["complete"], false, "{r}");
+        let big = snap(&[
+            ("delivery_funnel|check=c1|model=opus|project=pa|stage=acted_on", 1u64 << 62),
+            ("delivery_funnel|check=c1|model=opus|project=pa|stage=ignored", 1),
+        ]);
+        let r = rep(&big, None, true, &[], false);
         assert_eq!(r["funnel"]["rows"][0]["acted_on_rate"], json!(1.0), "{r}");
-        assert_eq!(r["funnel"]["window"]["complete"], true, "control: no sum passed u64");
+        assert_eq!(r["funnel"]["window"]["complete"], true, "control: no value and no sum reached u64::MAX");
         // two models fold into one row without --by: the sum passes u64 and stops there, and the window says so
         let big = snap(&[
             ("delivery_funnel|check=c1|model=opus|project=pa|stage=decided", u64::MAX),

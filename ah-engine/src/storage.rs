@@ -350,7 +350,8 @@ fn rollup_at_in(c: &rusqlite::Connection, resolution: &str, cutoff_ms: u64) -> O
         Some(r) => (r, true),
         None => (row(sql::ROLLUP_OLDEST, &[&resolution])?, false),
     };
-    Some((u64::try_from(found.0).unwrap_or(0), serde_json::from_str(&found.1).ok()?, exact))
+    // a body that is not JSON is `null` (the report names it unreadable), not a missing snapshot
+    Some((u64::try_from(found.0).unwrap_or(0), serde_json::from_str(&found.1).unwrap_or(serde_json::Value::Null), exact))
 }
 
 /// Why the metrics databases cannot be opened for reading.
@@ -371,12 +372,52 @@ pub struct ReadOnlyStore {
 }
 
 impl ReadOnlyStore {
+    /// `file:<path>?immutable=1` with the path percent-encoded (`?`, `#`, `%`, spaces and every other byte outside the URI's unreserved set).
+    fn immutable_uri(path: &std::path::Path) -> String {
+        let mut out = String::from("file:");
+        for b in path.to_string_lossy().bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~') {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out.push_str("?immutable=1");
+        out
+    }
+
+    /// Open one database file for reading without creating or writing a file. Three cases, from the files beside it (SQLite keeps a
+    /// WAL database's `-wal` and `-shm` exactly while a connection is open, deletes them at the last clean close, and a stopped daemon
+    /// leaves them with the committed data in the `-wal`):
+    /// - none of them: nothing has it open and nothing waits in a log, so it is opened `immutable=1` (SQLite documents: no file locking,
+    ///   no change detection, nothing created, works in a read-only directory);
+    /// - all of them, and no rollback journal: the data may be in the `-wal`, which `immutable` would silently ignore, so it is opened
+    ///   read-only the ordinary way, which creates nothing and refreshes only the derived `-shm` index in place;
+    /// - some of them, or a journal: SQLite would have to create or recover files to read it, so the report refuses with a message.
     fn open_file(path: &std::path::Path, migrations: &[&str]) -> Result<rusqlite::Connection, String> {
         use rusqlite::OpenFlags;
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let unreadable = |why: String| crate::defaults::render("delivery.report_db_unreadable", &[("db", &name), ("why", &why)]);
-        let c = rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-            .map_err(|e| unreadable(e.to_string()))?;
+        let exists = |suffix: &&str| {
+            let mut p = path.as_os_str().to_os_string();
+            p.push(suffix);
+            std::fs::symlink_metadata(&p).is_ok()
+        };
+        let pair = crate::defaults::list("delivery.report_db_sidecars");
+        let (have, blockers): (Vec<&str>, Vec<&str>) = (
+            pair.iter().filter(|s| exists(s)).copied().collect(),
+            crate::defaults::list("delivery.report_db_blockers").iter().filter(|s| exists(s)).copied().collect(),
+        );
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let opened = if blockers.is_empty() && have.is_empty() {
+            rusqlite::Connection::open_with_flags(Self::immutable_uri(path), flags | OpenFlags::SQLITE_OPEN_URI)
+        } else if blockers.is_empty() && have.len() == pair.len() {
+            rusqlite::Connection::open_with_flags(path, flags)
+        } else {
+            let files: Vec<&str> = have.iter().chain(&blockers).copied().collect();
+            return Err(crate::defaults::render("delivery.report_db_busy", &[("db", &name), ("files", &files.join(", "))]));
+        };
+        let c = opened.map_err(|e| unreadable(e.to_string()))?;
         c.busy_timeout(crate::defaults::millis("storage.busy_timeout_ms")).map_err(|e| unreadable(e.to_string()))?;
         c.pragma_update(None, "query_only", true).map_err(|e| unreadable(e.to_string()))?;
         let found: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(|e| unreadable(e.to_string()))?;
@@ -424,7 +465,8 @@ impl Store for ReadOnlyStore {
     fn load_metrics(&self) -> Option<(u64, serde_json::Value)> {
         let c = self.hot.lock().unwrap_or_else(|e| e.into_inner());
         let (ts, body): (i64, String) = c.query_row(sql::METRICS_LOAD, [], |r| Ok((r.get(0)?, r.get(1)?))).ok_logged("storage_metrics_load")?;
-        Some((u64::try_from(ts).unwrap_or(0), serde_json::from_str(&body).ok()?))
+        // a body that is not JSON is returned as `null`, never as "no snapshot": the report names the snapshot unreadable
+        Some((u64::try_from(ts).unwrap_or(0), serde_json::from_str(&body).unwrap_or(serde_json::Value::Null)))
     }
 
     fn rollups(&self, _: &str, _: u64) -> Vec<serde_json::Value> {

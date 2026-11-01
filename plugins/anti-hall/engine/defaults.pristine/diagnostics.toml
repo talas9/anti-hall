@@ -751,8 +751,20 @@ doc = "Printed in the report's window block when some series could not be compar
 value = "{n} series could not be compared between the window start and its end (a different bucket layout or a value that is not a count); the figures of their checks are partial"
 
 [delivery.report_note_partial_checks]
-doc = "Printed in the report's window block naming the checks whose figures are partial because a counter or histogram bucket of theirs went down inside the window or could not be compared. Placeholders: {checks}."
-value = "partial figures for: {checks} (a counter or histogram bucket of the check went down inside the window); read their numbers as lower bounds that may mix two runs of the engine"
+doc = "Printed in the report's window block once per reason a check's figures are partial (a series of the check restarted, vanished, was refused by the restore, could not be read or compared, or reached the largest count). Placeholders: {why} (the delivery.report_reason_texts text of the reason), {checks} (the checks it touches)."
+value = "partial figures ({why}) for: {checks}; read their numbers as lower bounds that may mix two runs of the engine"
+
+[delivery.report_reason_words]
+doc = "The word each reason a report row is partial goes by in the JSON (`partial_reasons`), keyed by the reason's name in the engine: reset, invalid, layout, inconsistent, saturated, vanished, rejected, unreadable. The texts of delivery.report_reason_texts are keyed by these words."
+value = { reset = "reset", invalid = "invalid", layout = "layout", inconsistent = "inconsistent", saturated = "saturated", vanished = "vanished", rejected = "rejected", unreadable = "unreadable" }
+
+[delivery.report_reason_texts]
+doc = "The text of each reason a report row is partial, keyed by the word of delivery.report_reason_words (the `partial_reasons` words of a row)."
+value = { reset = "a counter or histogram bucket went down inside the window", invalid = "a stored value is not a count", layout = "a latency histogram's buckets are not the supported layout", inconsistent = "a histogram's count is not the total of its buckets", saturated = "a value or sum reached the largest count", vanished = "a series of the start snapshot is missing from the end", rejected = "the engine refused to load a stored series when it restarted", unreadable = "a stored snapshot is not readable" }
+
+[delivery.report_all_checks]
+doc = "Names every check in a window note when the reason touches the whole snapshot (an unreadable snapshot)."
+value = "every check"
 
 [delivery.report_note_saturated]
 doc = "Printed in the report's window block when a sum reached the largest count the report holds and stopped there."
@@ -789,6 +801,18 @@ value = "{db} has schema version {found}, older than the {known} this engine rea
 [delivery.report_schema_new]
 doc = "Printed by the offline `telemetry report` when a metrics database has a newer schema than this engine reads. Placeholders: {db}, {found}, {known}."
 value = "{db} has schema version {found}, newer than the {known} this engine reads; it was written by a newer engine, so update this one before reading it"
+
+[delivery.report_db_sidecars]
+doc = "The files a WAL database keeps beside it while a connection is open (suffixes: write-ahead log and its shared-memory index). With NONE of them (and no delivery.report_db_blockers) the offline report opens the database `immutable=1`: SQLite then takes no locks and creates no file, and nothing can be waiting in a log. With ALL of them (a stopped daemon leaves them; the committed data sits in the log) it opens the database read-only the ordinary way, which creates nothing and only refreshes the derived shared-memory index in place. With only SOME it refuses (SQLite would have to create the rest)."
+value = ["-wal", "-shm"]
+
+[delivery.report_db_blockers]
+doc = "File-name suffixes that, beside a metrics database, show a write in flight or a crashed one (the rollback journal): the offline report refuses instead of reading around it."
+value = ["-journal"]
+
+[delivery.report_db_busy]
+doc = "Printed by the offline `telemetry report` when the files beside a database (delivery.report_db_sidecars, delivery.report_db_blockers) are not a set it can read without creating or writing one. Placeholders: {db}, {files}."
+value = "cannot read {db} without writing: {files} sit beside it and SQLite would have to create or recover files to read it; stop the engine that owns it so it closes the database cleanly (or remove nothing by hand), then run the report again"
 
 [delivery.report_db_unreadable]
 doc = "Printed by the offline `telemetry report` when a metrics database cannot be opened for reading. Placeholders: {db}, {why}."
