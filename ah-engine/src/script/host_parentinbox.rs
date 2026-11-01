@@ -305,7 +305,7 @@ fn row_state(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, repo_key:
     let ignored = is_safe_id(id) && archive_ignored(&inv.home, id);
     // GH #508: the one definition of a dead child (archived, or its worktree provably gone) the nudges share; off unless the switch is on
     let on = crate::meshw::summary::skip_dead_on(inv);
-    let gone = crate::meshw::summary::worktree_gone(wt.unwrap_or(""));
+    let gone = crate::meshw::summary::worktree_gone(wt.unwrap_or(""), &inv.home);
     let archived = marker || app;
     let dead = on && (archived || gone == Some(true));
     let reason = if !dead {
@@ -607,8 +607,9 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         "piGone",
         Function::new(c.clone(), |wt: Option<String>| -> rquickjs::Result<String> {
             with_settings(|st| {
-                let on = crate::meshw::summary::skip_dead_on(&inv_of(st, 0.0));
-                let gone = if on { crate::meshw::summary::worktree_gone(wt.as_deref().unwrap_or("")) } else { None };
+                let inv = inv_of(st, 0.0);
+                let on = crate::meshw::summary::skip_dead_on(&inv);
+                let gone = if on { crate::meshw::summary::worktree_gone(wt.as_deref().unwrap_or(""), &inv.home) } else { None };
                 json!({"on": on, "gone": gone}).to_string()
             })
         })?,

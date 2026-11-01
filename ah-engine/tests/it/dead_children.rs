@@ -36,11 +36,14 @@ impl Env {
         self.dir.join("home/.anti-hall/devswarm")
     }
 
-    /// The child's worktree path; `parent_exists` false puts it under a directory that is not there (an unmounted volume).
-    fn worktree(&self, exists: bool, parent_exists: bool) -> String {
-        let wt = if parent_exists { self.dir.join("wts/child-wt") } else { self.dir.join("unmounted/wts/child-wt") };
-        if parent_exists {
-            std::fs::create_dir_all(self.dir.join("wts")).unwrap();
+    /// The child's worktree path, under the home like a DevSwarm repos root; `exists` makes the directory; `inside_home` false puts it
+    /// outside the home (a path on a volume that may be unmounted).
+    fn worktree(&self, exists: bool, inside_home: bool) -> String {
+        let wt = if inside_home { self.dir.join("home/.devswarm/repos/3/8205fc11/child-wt") } else { self.dir.join("elsewhere/wts/child-wt") };
+        if inside_home {
+            std::fs::create_dir_all(self.dir.join("home/.devswarm/repos")).unwrap();
+        } else {
+            std::fs::create_dir_all(self.dir.join("elsewhere")).unwrap();
         }
         if exists {
             std::fs::create_dir_all(&wt).unwrap();
@@ -172,7 +175,7 @@ fn on_a_live_child_still_nudges() {
 }
 
 #[test]
-fn on_a_worktree_under_a_missing_parent_is_not_proven_gone_and_still_nudges() {
+fn on_a_worktree_outside_the_home_is_not_proven_gone_and_still_nudges() {
     let e = Env::new("unmounted");
     e.settings(true);
     let wt = e.worktree(false, false);

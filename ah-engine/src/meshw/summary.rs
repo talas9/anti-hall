@@ -345,20 +345,26 @@ pub(crate) fn skip_dead_on(inv: &Inv) -> bool {
 }
 
 /// GH #508, the one definition of a gone worktree every check shares: `Some(true)` only on positive proof (the path is absent AND
-/// its parent directory is present, so an unmounted volume or a permission error is never "gone"), `Some(false)` when the path is
-/// there, `None` when the answer cannot be established (the caller then keeps the old behaviour).
-pub(crate) fn worktree_gone(wt: &str) -> Option<bool> {
+/// its nearest existing ancestor is a directory inside the home directory, so a path on an unmounted volume or behind a
+/// permission error is never "gone"), `Some(false)` when the path is there, `None` when the answer cannot be established (the
+/// caller then keeps the old behaviour). Every missing level counts: a removed worktree usually takes its repos-root folders with it.
+pub(crate) fn worktree_gone(wt: &str, home: &Path) -> Option<bool> {
     if wt.is_empty() {
         return None;
     }
     match std::fs::symlink_metadata(wt) {
-        Ok(_) => Some(false),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let parent = Path::new(wt).parent()?;
-            std::fs::metadata(parent).ok().filter(std::fs::Metadata::is_dir).map(|_| true)
-        }
-        Err(_) => None,
+        Ok(_) => return Some(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return None,
     }
+    for a in Path::new(wt).ancestors().skip(1) {
+        match std::fs::metadata(a) {
+            Ok(m) => return (m.is_dir() && a.starts_with(home)).then_some(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// GH #508: the position up to which the backlog of an archived, worktree-gone child was marked expired (`expired/<id>.json`, written
@@ -377,7 +383,7 @@ fn expired_through(home: &Path, on: bool, id: &str) -> f64 {
     };
     let Some(arch) = read_json(&root.join(defaults::text("mesh_write.dir_archived")).join(format!("{id}{suffix}"))) else { return 0.0 };
     match arch.get(defaults::text("mesh_write.field_worktree_path")) {
-        Some(OVal::Str(wt)) if worktree_gone(wt) == Some(true) => through,
+        Some(OVal::Str(wt)) if worktree_gone(wt, home) == Some(true) => through,
         _ => 0.0,
     }
 }
@@ -1119,12 +1125,22 @@ mod tests {
     #[test]
     fn a_worktree_is_gone_only_on_positive_proof() {
         let d = std::env::temp_dir().join(format!("ah-gone-{}", std::process::id()));
-        std::fs::create_dir_all(d.join("here")).unwrap();
-        let p = |x: &str| d.join(x).to_string_lossy().to_string();
-        assert_eq!(worktree_gone(&p("here")), Some(false), "present");
-        assert_eq!(worktree_gone(&p("absent")), Some(true), "absent under an existing parent");
-        assert_eq!(worktree_gone(&p("no-parent/absent")), None, "an absent parent (an unmounted volume?) proves nothing");
-        assert_eq!(worktree_gone(""), None, "no path proves nothing");
+        let home = d.join("home");
+        std::fs::create_dir_all(home.join("repos/here")).unwrap();
+        let p = |x: &str| home.join(x).to_string_lossy().to_string();
+        assert_eq!(worktree_gone(&p("repos/here"), &home), Some(false), "present");
+        assert_eq!(worktree_gone(&p("repos/absent"), &home), Some(true), "absent under an existing parent");
+        assert_eq!(
+            worktree_gone(&p("repos/3/8205fc11/absent"), &home),
+            Some(true),
+            "the repos-root folders went with it: the nearest existing ancestor is in the home"
+        );
+        assert_eq!(
+            worktree_gone(&d.join("elsewhere/absent").to_string_lossy(), &home),
+            None,
+            "an ancestor outside the home (an unmounted volume?) proves nothing"
+        );
+        assert_eq!(worktree_gone("", &home), None, "no path proves nothing");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
