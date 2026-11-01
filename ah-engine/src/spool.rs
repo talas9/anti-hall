@@ -97,7 +97,7 @@ fn lock(p: &Path) -> std::io::Result<File> {
 }
 
 /// Take an exclusive flock on `f`, bounded by `spool.lock_wait_ms` (a stuck holder makes this give up with `WouldBlock`).
-fn flock_bounded(f: &File) -> std::io::Result<()> {
+pub(crate) fn flock_bounded(f: &File) -> std::io::Result<()> {
     let until = std::time::Instant::now() + defaults::millis("spool.lock_wait_ms");
     loop {
         // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.

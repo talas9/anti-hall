@@ -713,17 +713,45 @@ doc = "Skip dead children."
 value = { section = "devswarm", key = "skipDeadChildren", type = "boolean", env = "ANTIHALL_DEVSWARM_SKIP_DEAD_CHILDREN", option = "", default = false }
 
 [devswarm_parent.dir_expired]
-doc = "The directory (under the devswarm state dir) of the expiry marks of archived, worktree-gone children: {through} is the message position up to which the backlog is expired; mail past it still counts."
+doc = "The directory (under the devswarm state dir) of the expiry marks of archived, worktree-gone children. A mark holds the child's incarnation and, per source, the positions it covers (store rows, NDJSON lines); mail past them still counts."
 value = "expired"
 
 [devswarm_parent.stale_registry_head_dead]
 doc = "The stale-workspaces segment when devswarm.skipDeadChildren is on: names the fact and the exact step that clears it. Placeholders: {count}, {shown}, {extra}, {cli}."
-value = "⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree is gone but still hold unread — {shown}{extra}. No session can read that mail. Clear it per workspace with `{cli} archive <id>` (non-destructive: the descriptor moves to archived/, the messages stay, and the unread is then marked expired so this notice stops)."
+value = "⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree is gone but still hold unread — {shown}{extra}. No session can read that mail. Clear it per workspace with `{cli} archive <id>` (non-destructive: the descriptor moves to archived/ and the messages stay; this notice then stops naming it)."
+
+[devswarm_parent.mark_incarnation]
+doc = "The field of an expiry mark (and of the mark a summary row offers) naming the child incarnation it covers."
+value = "incarnation"
+
+[devswarm_parent.mark_store]
+doc = "The field of an expiry mark holding the store message position it covers."
+value = "store"
+
+[devswarm_parent.mark_nd]
+doc = "The field of an expiry mark holding the NDJSON inbox line position it covers."
+value = "nd"
+
+[devswarm_parent.mark_at]
+doc = "The field of an expiry mark holding when it was last raised (ms)."
+value = "at"
+
+[devswarm_parent.mark_incarnation_fmt]
+doc = "How an incarnation is spelled: the archive marker's session id, worktree path and archivedAt together; a re-created child with the same id differs in at least one. Placeholders: {sid}, {wt}, {at}."
+value = "{sid}|{wt}|{at}"
+
+[devswarm_parent.mark_offer_field]
+doc = "The summary workspace row field carrying the expiry mark the row offers for writing (only with devswarm.skipDeadChildren on, for an archived child whose worktree is provably gone)."
+value = "deadMark"
+
+[metric.devswarm_dead_mark_ignored]
+doc = "Expiry marks the summary did not apply (devswarm.skipDeadChildren), by reason: malformed (not an object of integer positions), other_incarnation (the child was re-created or re-archived), worktree_back (the worktree exists again or is no longer provably gone), beyond_stored (the mark reaches past what is stored). The full count is shown."
+value = { kind = "counter", unit = "marks", labels = ["reason"] }
 
 [metric.devswarm_dead_child_skipped]
-doc = "Children left out of a DevSwarm nudge because they are archived or their worktree is gone (devswarm.skipDeadChildren), by check (attention, archive_ready, stale_registry, wake) and reason (archived, worktree-gone)."
+doc = "Children left out of a DevSwarm nudge because they are archived and their worktree is provably gone (devswarm.skipDeadChildren), by check (attention, archive_ready, stale_registry) and reason (archived_worktree_gone)."
 value = { kind = "counter", unit = "workspaces", labels = ["check", "reason"] }
 
 [metric.devswarm_dead_child_expired]
-doc = "Unread messages marked expired for an archived child whose worktree is gone (devswarm.skipDeadChildren), counted once per mark written."
+doc = "Unread messages marked expired for an archived child whose worktree is provably gone (devswarm.skipDeadChildren), counted only when a mark was actually written."
 value = { kind = "counter", unit = "messages", labels = ["reason"] }

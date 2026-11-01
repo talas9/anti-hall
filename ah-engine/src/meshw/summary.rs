@@ -17,6 +17,7 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_string_of, js_trim};
 use crate::defaults;
 use crate::meshw::common::{Inv, n, s, s_or_null};
+use crate::meshw::deadchild;
 use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::store::MeshStore;
@@ -344,46 +345,10 @@ pub(crate) fn skip_dead_on(inv: &Inv) -> bool {
     crate::checks::guardkit::settings::get_bool(&inv.settings(), defaults::raw("devswarm_parent.sw_skip_dead"))
 }
 
-/// GH #508, the one definition of a gone worktree every check shares: `Some(true)` only on positive proof (the path is absent AND
-/// its nearest existing ancestor is a directory inside the home directory, so a path on an unmounted volume or behind a
-/// permission error is never "gone"), `Some(false)` when the path is there, `None` when the answer cannot be established (the
-/// caller then keeps the old behaviour). Every missing level counts: a removed worktree usually takes its repos-root folders with it.
-pub(crate) fn worktree_gone(wt: &str, home: &Path) -> Option<bool> {
-    if wt.is_empty() {
-        return None;
-    }
-    match std::fs::symlink_metadata(wt) {
-        Ok(_) => return Some(false),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return None,
-    }
-    for a in Path::new(wt).ancestors().skip(1) {
-        match std::fs::metadata(a) {
-            Ok(m) => return (m.is_dir() && a.starts_with(home)).then_some(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return None,
-        }
-    }
-    None
-}
-
-/// GH #508: the position up to which the backlog of an archived, worktree-gone child was marked expired (`expired/<id>.json`, written
-/// by the parent-inbox check; nothing is deleted, the messages stay in the store). 0 when the switch is off, no mark exists, or the
-/// child is no longer both archived and gone (a revived child counts everything again). Mail past the mark still counts.
-fn expired_through(home: &Path, on: bool, id: &str) -> f64 {
-    if !on || !is_safe_id(id) {
-        return 0.0;
-    }
-    let root = devswarm_root(home);
-    let suffix = defaults::text("mesh_write.json_suffix");
-    let Some(mark) = read_json(&root.join(defaults::text("devswarm_parent.dir_expired")).join(format!("{id}{suffix}"))) else { return 0.0 };
-    let through = match mark.get("through") {
-        Some(OVal::Num(x)) if x.is_finite() && *x > 0.0 => x.floor(),
-        _ => return 0.0,
-    };
-    let Some(arch) = read_json(&root.join(defaults::text("mesh_write.dir_archived")).join(format!("{id}{suffix}"))) else { return 0.0 };
-    match arch.get(defaults::text("mesh_write.field_worktree_path")) {
-        Some(OVal::Str(wt)) if worktree_gone(wt, home) == Some(true) => through,
+/// GH #508: the NDJSON lines of a registry row's inbox, read only when the switch is on (the expiry mark is checked against them).
+fn nd_lines_of(on: bool, r: Option<&Reg>) -> f64 {
+    match r {
+        Some(r) if on && r.inbox_path.is_some() => ndjson_backlog(r.inbox_path.as_deref(), r.cursor_path.as_deref()).1,
         _ => 0.0,
     }
 }
@@ -728,8 +693,11 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
         if owner.is_none() {
             crate::metrics::bump("mesh_summary_owner_fallback", &[]);
         }
-        let through = expired_through(home, dead_on, &d.id);
-        let cursor = owner.as_ref().and_then(|o| o.store).unwrap_or(floor).max(through);
+        // GH #508: the expiry mark of an archived, worktree-gone child, per source (store rows, NDJSON lines), validated in one place
+        let reg_ctx = Some((d.session_id.as_deref(), d.worktree_path.as_deref()));
+        let nd_lines = nd_lines_of(dead_on, Some(d));
+        let (through_store, through_nd) = deadchild::applied(home, dead_on, &d.id, reg_ctx, total, nd_lines);
+        let cursor = owner.as_ref().and_then(|o| o.store).unwrap_or(floor).max(through_store);
         let mut unread = (total - cursor).max(0.0);
         // unread rows the recipient's own family sent, when the union already counted them (the store-only path counts them below)
         let mut own_unread: Option<usize> = None;
@@ -738,7 +706,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             let nd_floor = match owner.as_ref().and_then(|o| o.nd) {
                 Some(v) => v,
                 None => floor_of(st, &mut cur, home, &inv.cwd, &d.id, true),
-            };
+            }
+            .max(through_nd);
             let (known, lines) = ndjson_backlog(d.inbox_path.as_deref(), d.cursor_path.as_deref());
             if known && lines > nd_floor {
                 // the NDJSON side has unread lines: the summary counts the loss-free union at the floors (reader-cursors
@@ -757,9 +726,6 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
                 unread = u.union.unread as f64;
                 own_unread = Some(u.own_excluded);
             }
-        }
-        if through > 0.0 {
-            unread = unread.min((total - through).max(0.0));
         }
         let (gate_vals, gate_by) = {
             let mut vals = OVal::Obj(Vec::new());
@@ -884,6 +850,10 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             ("archive_request_only_unread".into(), OVal::Bool(archive_request_only)),
             ("pendingQuestions".into(), OVal::Arr(kept.clone())),
         ];
+        // GH #508: the expiry mark this row offers for writing (archived, worktree provably gone), only with the switch on
+        if let Some(m) = deadchild::offer(home, dead_on, &d.id, reg_ctx, total, nd_lines).and_then(|m| OVal::parse(&m.to_string())) {
+            w.push((defaults::text("devswarm_parent.mark_offer_field").into(), m));
+        }
         // push state from the freshest heartbeat file
         let beat = read_json(&devswarm_root(home).join(defaults::text("mesh_write.dir_heartbeats")).join(format!(
             "{}{}",
@@ -1014,7 +984,9 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             continue;
         }
         let total = st.reader().message_count(id).unwrap_or_else(|e| soft("count", e)) as f64;
-        let floor = floor_of(st, &mut cur, home, &inv.cwd, id, false).max(expired_through(home, dead_on, id));
+        let reg = rows.iter().find(|r| r.id == *id);
+        let reg_ctx = reg.map(|r| (r.session_id.as_deref(), r.worktree_path.as_deref()));
+        let floor = floor_of(st, &mut cur, home, &inv.cwd, id, false).max(deadchild::applied(home, dead_on, id, reg_ctx, total, nd_lines_of(dead_on, reg)).0);
         let unread = (total - floor).max(0.0);
         if unread <= 0.0 {
             continue;
@@ -1038,7 +1010,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             continue;
         }
         let total = st.reader().message_count(&d.id).unwrap_or_else(|e| soft("count", e)) as f64;
-        let floor = floor_of(st, &mut cur, home, &inv.cwd, &d.id, false).max(expired_through(home, dead_on, &d.id));
+        let floor = floor_of(st, &mut cur, home, &inv.cwd, &d.id, false)
+            .max(deadchild::applied(home, dead_on, &d.id, Some((d.session_id.as_deref(), d.worktree_path.as_deref())), total, nd_lines_of(dead_on, Some(d))).0);
         let unread = (total - floor).max(0.0);
         if unread > 0.0 {
             stale.push(OVal::Obj(vec![("id".into(), s(&d.id)), ("worktreePath".into(), s(wt)), ("unread".into(), num(unread))]));
@@ -1120,52 +1093,6 @@ mod tests {
     fn a_non_finite_ts_outranks_every_finite_one() {
         let out = collapse(vec![Q { from: s("a"), ts: 5.0, seq: Some(1.0) }, Q { from: s("a"), ts: f64::NAN, seq: Some(2.0) }]);
         assert_eq!(out[0].stringify(), r#"{"from":"a","ts":null,"seq":2,"occurrences":2,"firstTs":5,"lastTs":null}"#);
-    }
-
-    #[test]
-    fn a_worktree_is_gone_only_on_positive_proof() {
-        let d = std::env::temp_dir().join(format!("ah-gone-{}", std::process::id()));
-        let home = d.join("home");
-        std::fs::create_dir_all(home.join("repos/here")).unwrap();
-        let p = |x: &str| home.join(x).to_string_lossy().to_string();
-        assert_eq!(worktree_gone(&p("repos/here"), &home), Some(false), "present");
-        assert_eq!(worktree_gone(&p("repos/absent"), &home), Some(true), "absent under an existing parent");
-        assert_eq!(
-            worktree_gone(&p("repos/3/8205fc11/absent"), &home),
-            Some(true),
-            "the repos-root folders went with it: the nearest existing ancestor is in the home"
-        );
-        assert_eq!(
-            worktree_gone(&d.join("elsewhere/absent").to_string_lossy(), &home),
-            None,
-            "an ancestor outside the home (an unmounted volume?) proves nothing"
-        );
-        assert_eq!(worktree_gone("", &home), None, "no path proves nothing");
-        std::fs::remove_dir_all(&d).unwrap();
-    }
-
-    #[test]
-    fn an_expiry_mark_counts_only_while_the_child_is_archived_and_its_worktree_gone() {
-        let d = std::env::temp_dir().join(format!("ah-expired-{}", std::process::id()));
-        let ds = devswarm_root(&d);
-        let sfx = defaults::text("mesh_write.json_suffix");
-        let put = |dir: &str, id: &str, body: &str| {
-            let p = ds.join(dir);
-            std::fs::create_dir_all(&p).unwrap();
-            std::fs::write(p.join(format!("{id}{sfx}")), body).unwrap();
-        };
-        let wt = d.join("gone-wt").to_string_lossy().to_string();
-        std::fs::create_dir_all(&d).unwrap();
-        put(defaults::text("devswarm_parent.dir_expired"), "c1", r#"{"through":7.9}"#);
-        put(defaults::text("mesh_write.dir_archived"), "c1", &format!(r#"{{"worktreePath":"{wt}"}}"#));
-        assert_eq!(expired_through(&d, true, "c1"), 7.0, "archived and gone: the mark holds");
-        assert_eq!(expired_through(&d, false, "c1"), 0.0, "the switch off: no mark is read");
-        std::fs::create_dir_all(&wt).unwrap();
-        assert_eq!(expired_through(&d, true, "c1"), 0.0, "a revived child (worktree back) counts everything again");
-        std::fs::remove_dir(&wt).unwrap();
-        put(defaults::text("devswarm_parent.dir_expired"), "c2", r#"{"through":3}"#);
-        assert_eq!(expired_through(&d, true, "c2"), 0.0, "a mark without an archive marker is not honoured");
-        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

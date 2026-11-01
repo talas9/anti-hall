@@ -549,12 +549,13 @@ function piRoster(ctx, summary) {
     var appArchivedRow = st.app;
     var rowWs = appWs(id, wtPath);
     var ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
-    // GH #508 (devswarm.skipDeadChildren): one definition of a dead child, decided natively (piRow): archived by anti-hall's own marker or the
-    // app, or its worktree provably gone. Such a child can never drain its mail, so no nudge names it. Unsure, or the switch off: as before.
+    // GH #508 (devswarm.skipDeadChildren): one definition of a dead child, decided natively (piRow): ARCHIVED (anti-hall's marker or the app) AND
+    // its worktree provably gone. Such a child can never drain its mail, so no nudge names it. Unsure, or the switch off: as before.
     var deadRow = st.dead === true;
-    if (deadRow && st.expire === true && unread > 0 && total > 0) out.expire.push({ id: id, through: total, unread: unread });
+    var offer = deadRow ? entry[ah.cfg('devswarm_parent.mark_offer_field')] : null;
+    if (offer && typeof offer === 'object' && unread > 0) out.expire.push({ id: id, offer: offer, unread: unread });
     if (((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused && deadRow) {
-      ah.metric('devswarm_dead_child_skipped', ['check', 'attention', 'reason', st.deadReason]);
+      ah.metric('devswarm_dead_child_skipped', ['check', 'attention', 'reason', 'archived_worktree_gone']);
     }
     if (((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet)) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused && !deadRow) {
       var wsName = (rowWs && rowWs.label) || piReadName(home, id);
@@ -566,7 +567,7 @@ function piRoster(ctx, summary) {
     }
     if (archiveReady && !appArchivedRow && !ownerFocused && !st.ignored && piArchiveCooldown(home, id, now) && !piAutoArchiveOwns(home, id, now)
         && !(archiveRequestQuiet && !archiveReadyQuiet)) {
-      if (deadRow) ah.metric('devswarm_dead_child_skipped', ['check', 'archive_ready', 'reason', st.deadReason]);
+      if (deadRow) ah.metric('devswarm_dead_child_skipped', ['check', 'archive_ready', 'reason', 'archived_worktree_gone']);
       else out.archiveList.push(id);
     }
     // the live-table row
@@ -614,14 +615,11 @@ function piRoster(ctx, summary) {
   return out;
 }
 
-// GH #508: mark the backlog of an archived, worktree-gone child expired up to `x.through` (the partition's message count): one small record per
-// child under expired/, rewritten only when the count grew. Nothing is deleted or acknowledged; mail past the mark still counts.
-function piExpire(home, x, now) {
-  var rel = piRel(ah.cfg('devswarm_parent.dir_expired') + '/' + x.id + '.json');
-  var prev = piJson(home + '/' + rel);
-  if (prev && piFinite(prev.through) && prev.through >= x.through) return;
-  ah.state.writeAtomic(rel, JSON.stringify({ through: x.through, at: now, reason: 'archived+worktree-gone', unread: x.unread }));
-  ah.metric('devswarm_dead_child_expired', ['reason', 'archived_worktree_gone'], x.unread);
+// GH #508: write the expiry mark a summary row offered for an archived, worktree-gone child. The engine validates the offer, writes it
+// monotonically (compare-and-set to the larger positions under a lock) and says whether it wrote; only a written mark is counted.
+// Nothing is deleted or acknowledged; mail that arrives after the mark still counts.
+function piExpire(x, now) {
+  if (ahHost.piExpire(x.id, JSON.stringify(x.offer), now) === true) ah.metric('devswarm_dead_child_expired', ['reason', 'archived_worktree_gone'], x.unread);
 }
 
 // `archiveCooldownElapsed(home, id, now)`: no earlier recommendation, or its cooldown is over.
@@ -667,8 +665,6 @@ function piSkipped(ctx, id, wt, sid, marker, appKey) {
     else if (a.archived) return true;
   }
   if (ah.settings.touched('devswarm_parent.set_held')) ah.unable('devswarm-parent-inbox:held_partitions'); // the owner's held partitions are not applied here
-  var g = JSON.parse(ahHost.piGone(wt)); // GH #508: a worktree that is provably gone has no child to wake (off, or unsure: not skipped)
-  if (g.on === true && g.gone === true) { ah.metric('devswarm_dead_child_skipped', ['check', 'wake', 'reason', 'worktree-gone']); return true; }
   if (ahHost.piIgnored(id)) return true;
   var live = sid ? ah.mesh.sessionAlive(sid) : false;
   if (id !== '' && sid && wt) {
@@ -1349,9 +1345,9 @@ function piDecide(p, opts) {
         var skipDead = ah.settings.bool('devswarm_parent.sw_skip_dead') === true;
         var visible = summary.staleRegistryPartitions.filter(function (row) {
           if (!row || row.id == null) return true;
-          if (skipDead) { // GH #508: anti-hall's own archive marker counts as archived too (the app verdict alone missed it)
+          if (skipDead) { // GH #508: archived (anti-hall's marker or the app) AND the worktree provably gone: nobody can read that mail
             var rs = JSON.parse(ahHost.piRow(String(row.id), piStrField(row.worktreePath), null, key, now));
-            if (!rs.unsure && (rs.marker === true || rs.app === true)) { ah.metric('devswarm_dead_child_skipped', ['check', 'stale_registry', 'reason', 'archived']); return false; }
+            if (!rs.unsure && rs.dead === true) { ah.metric('devswarm_dead_child_skipped', ['check', 'stale_registry', 'reason', 'archived_worktree_gone']); return false; }
           }
           var a = JSON.parse(ahHost.piApp(String(row.id), piStrField(row.worktreePath), key, now));
           if (a.unsure) { ah.unable('devswarm-parent-inbox:stale_reg_app'); return true; } // not provably archived: still listed
@@ -1466,7 +1462,7 @@ function piDecide(p, opts) {
     var inj = attention.filter(function (w) { return w.unread > 0; }).map(function (w) { return { id: w.id, unread: w.unread, cursor: w.cursor, total: w.total, status: w.status || null }; });
     ah.state.appendFile(piRel(ah.cfg('devswarm_parent.file_log')), JSON.stringify({ ts: Math.floor(ah.clock.now()), event: 'inject', workspaces: inj }) + '\n');
   }
-  if (roster !== null) roster.expire.forEach(function (x) { piExpire(home, x, now); });
+  if (roster !== null) roster.expire.forEach(function (x) { piExpire(x, now); });
   archiveList.forEach(function (id) { ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_archive_nudges') + '/' + id + '.json'), JSON.stringify({ lastNudgedAt: now })); });
   if (!segments.length) return 'allow';
   return { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_parent.segment_joiner'))) };
