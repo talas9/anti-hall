@@ -25,6 +25,7 @@ pub(crate) struct Entry {
     pub max: Option<f64>,
     pub exclusive_min: Option<f64>,
     pub reject_below_min: bool,
+    pub integer: bool,
     pub values: Vec<String>,
     pub env: Option<String>,
     pub env_aliases: Vec<String>,
@@ -57,6 +58,7 @@ fn entry_of(v: &serde_json::Value) -> Entry {
         max: f("max"),
         exclusive_min: f("exclusiveMin"),
         reject_below_min: b("rejectBelowMin"),
+        integer: b("integer"),
         values: list("values"),
         env: s("env"),
         env_aliases: list("envAliases"),
@@ -166,6 +168,9 @@ pub(crate) fn coerce_value(entry: &Entry, raw: Option<&J>) -> Option<J> {
             }
             if entry.exclusive_min.is_some_and(|m| n <= m) {
                 return None;
+            }
+            if entry.integer && n.fract() != 0.0 {
+                return None; // a whole-number setting takes no fraction
             }
             if entry.reject_below_min && entry.min.is_some_and(|m| n < m) {
                 return None;
@@ -945,6 +950,19 @@ mod tests {
     fn pretty_matches_json_stringify_with_two_spaces() {
         let v = parse_json(r#"{"a":{"b":[1,2,{}],"c":[]},"d":"x"}"#).unwrap();
         assert_eq!(pretty(&v), "{\n  \"a\": {\n    \"b\": [\n      1,\n      2,\n      {}\n    ],\n    \"c\": []\n  },\n  \"d\": \"x\"\n}");
+    }
+
+    #[test]
+    fn the_stop_limits_are_whole_numbers_from_zero_to_the_host_cap() {
+        for key in ["stopContinuationLimit", "stopTotalContinuationLimit"] {
+            let e = find("context", key).expect("entry");
+            assert_eq!((e.min, e.max, e.integer, e.reject_below_min), (Some(0.0), Some(8.0), true, true), "{key}");
+            assert_eq!(coerce_value(e, Some(&J::Str("100".into()))), Some(J::Num(8.0)), "{key}: above the cap is lowered to it");
+            assert_eq!(coerce_value(e, Some(&J::Num(1e18))), Some(J::Num(8.0)), "{key}");
+            assert_eq!(coerce_value(e, Some(&J::Str("3.5".into()))), None, "{key}: a fraction is rejected");
+            assert_eq!(coerce_value(e, Some(&J::Str("-1".into()))), None, "{key}: a negative is rejected");
+            assert_eq!(coerce_value(e, Some(&J::Str("5".into()))), Some(J::Num(5.0)), "{key}");
+        }
     }
 
     #[test]

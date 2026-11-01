@@ -17,6 +17,7 @@
 //   key, type: 'boolean'|'number'|'string'|'enum'|'csv',
 //   values,      // enum only: allowed string values
 //   min, max,    // number only: inclusive bounds
+//   integer        // number only: a value that is not a whole number is rejected (falls through to the default)
 //   rejectBelowMin // number only: a below-min value falls through (to the default) instead of clamping to min
 //   default,     // the value used when nothing else resolves it
 //   env,         // optional ANTIHALL_* env var that overrides everything else
@@ -242,7 +243,8 @@ const SECTIONS = [
       { key: 'inlineEventChars', type: 'number', min: 0, default: 6000, env: 'ANTIHALL_CONTEXT_INLINE_EVENT', advanced: true, description: 'Characters all hooks of one SessionStart may inject inline together; the largest shrinkable contexts become a summary plus a file until it fits; 0 = no total. [read by: ah-engine dispatcher]' },
       { key: 'protocolOnce', type: 'boolean', default: true, env: 'ANTIHALL_PROTOCOL_ONCE', description: 'Send the verify-first protocol text once per session: the whole compact text at a fresh start, a short digest after a compaction or resume. false = the whole text at every start. [read by: ah-engine verify-first-full]' },
       { key: 'stopAdditionalContext', type: 'boolean', default: false, env: 'ANTIHALL_STOP_ADDITIONAL_CONTEXT', description: 'Stop channel (GH #540): a check\'s model-facing Stop note is sent as Stop additionalContext (a soft block that continues the turn) instead of systemMessage, which the model does not act on. Needs the background_tasks field in the Stop payload. Off = the Stop answer is unchanged. [read by: ah-engine src/dispatch/stopchan.rs]' },
-      { key: 'stopContinuationLimit', type: 'number', min: 0, default: 3, env: 'ANTIHALL_STOP_CONTINUATION_LIMIT', advanced: true, description: 'Most Stop continuations one chain may take, counted in the transcript since the last human-typed prompt (or its start); at or past it a note stays on systemMessage. Stateless. 0 = never soft-block. [read by: ah-engine src/dispatch/stopchan.rs]' },
+      { key: 'stopContinuationLimit', type: 'number', min: 0, max: 8, integer: true, rejectBelowMin: true, default: 3, env: 'ANTIHALL_STOP_CONTINUATION_LIMIT', advanced: true, description: "Most continuations the Stop channel itself may cause in one chain (its additionalContext attachments after the last human-typed prompt, or since the transcript start); at or past it a note stays on systemMessage. A hard block's own feedback does not count here (see stopTotalContinuationLimit). Whole number 0 to 8 (the host's own cap); a string, float or negative is ignored (the default stands), a larger number is lowered to 8. Stateless. 0 = never soft-block. [read by: ah-engine src/dispatch/stopchan.rs]" },
+      { key: 'stopTotalContinuationLimit', type: 'number', min: 0, max: 8, integer: true, rejectBelowMin: true, default: 8, env: 'ANTIHALL_STOP_TOTAL_CONTINUATION_LIMIT', advanced: true, description: "Most Stop continuations of both shapes together (the channel's own and hard-block feedback) in one chain since the last human-typed prompt; at or past it a note stays on systemMessage. A safety guard on the whole chain. Same rules as stopContinuationLimit (whole number 0 to 8, default 8). 0 = never soft-block. [read by: ah-engine src/dispatch/stopchan.rs]" },
     ],
   },
   {

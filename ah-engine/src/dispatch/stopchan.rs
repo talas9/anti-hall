@@ -14,14 +14,20 @@
 //!   the turn poll; an absent field is unknown work): else `no_background_field` / `background_pending`;
 //! - the combined Stop `additionalContext` stays within `stop_channel.context_max_chars` (the host keeps about 2000 characters
 //!   inline): else `over_length`;
-//! - the transcript shows fewer than `stop_channel.num_k` Stop continuations since the last human-typed prompt, or since the
-//!   start of the transcript when it holds none (so an unattended run of notification turns is bounded too): else `over_k`; a
-//!   transcript that cannot be read or understood: `transcript_unreadable`. The host's `stop_hook_active` flag is not used.
+//! - the transcript shows fewer than `stop_channel.num_k` of THIS channel's own continuations (a `hook_additional_context`
+//!   attachment of the event) since the last human-typed prompt, or since the start of the transcript when it holds none (so an
+//!   unattended run of notification turns is bounded too): else `over_k`. A hard block's `Stop hook feedback:` entry is another,
+//!   older mechanism and does not count toward K; but the two shapes TOGETHER stay under `stop_channel.num_total` (a safety guard
+//!   on the whole chain): else `over_total`. A transcript that cannot be read or understood: `transcript_unreadable`. The host's
+//!   `stop_hook_active` flag is not used.
+//!
+//! Both limits are read as whole numbers (a string, a float or a negative is not one: the default stands) and are held to the
+//! TOML maximum (a larger value is lowered to it and counted: `limit_clamped`).
 //!
 //! Everything (switch, K, lists, texts, markers, sizes) is read from the plugin's `stop_channel.toml`.
 use super::combine::{self, HookResult};
 use crate::checks::git::util::Settings;
-use crate::checks::guardkit::settings::{get_bool, get_number};
+use crate::checks::guardkit::settings::{get_bool, get_number_flagged};
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use crate::telemetry::emit;
@@ -33,12 +39,24 @@ use super::combine::{HSO_CTX as CTX, HSO_EVENT as EVENT, HSO_KEY as HSO, TOP_MSG
 /// The switches, resolved once per call.
 struct Switches {
     global: bool,
+    /// Most of this channel's own continuations in a chain (`stop_channel.num_k`).
     k: u64,
+    /// Most continuations of both shapes together in a chain (`stop_channel.num_total`).
+    total: u64,
+    /// Did a configured limit exceed its maximum (and get lowered to it)?
+    clamped: bool,
 }
 
 impl Switches {
     fn read(st: &Settings) -> Switches {
-        Switches { global: get_bool(st, defaults::raw("stop_channel.sw_main")), k: get_number(st, defaults::raw("stop_channel.num_k")).max(0.0) as u64 }
+        let (k, k_clamped) = get_number_flagged(st, defaults::raw("stop_channel.num_k"));
+        let (total, total_clamped) = get_number_flagged(st, defaults::raw("stop_channel.num_total"));
+        Switches {
+            global: get_bool(st, defaults::raw("stop_channel.sw_main")),
+            k: k.max(0.0) as u64,
+            total: total.max(0.0) as u64,
+            clamped: k_clamped || total_clamped,
+        }
     }
 
     /// Does `check`'s Stop note go to `additionalContext`? A per-check row beats the global switch; `check_off` beats `check_on`.
@@ -82,9 +100,24 @@ fn count(outcome: &str, check: &str, who: &(String, String)) {
 enum Line {
     /// A prompt the human typed: the chain starts again after it.
     Human,
-    /// A Stop continuation the host recorded (a Stop-hook feedback entry, or a Stop `additionalContext` attachment).
-    Continuation,
+    /// A continuation this channel caused: a Stop `additionalContext` attachment.
+    Own,
+    /// A continuation a hard block caused: a `Stop hook feedback:` entry (an older mechanism; it counts only toward the total).
+    Feedback,
     Other,
+}
+
+/// The continuations of a chain, by shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Chain {
+    own: u64,
+    feedback: u64,
+}
+
+impl Chain {
+    fn total(self) -> u64 {
+        self.own.saturating_add(self.feedback)
+    }
 }
 
 /// The text of a user line's message: a string content, or the first text block of a list.
@@ -108,7 +141,7 @@ fn classify(v: &Value, event: &str) -> Line {
             {
                 Line::Human
             } else if message_text(v).trim_start().starts_with(defaults::text("stop_channel.feedback_prefix")) {
-                Line::Continuation
+                Line::Feedback
             } else {
                 Line::Other
             }
@@ -116,7 +149,7 @@ fn classify(v: &Value, event: &str) -> Line {
         Some("attachment") => {
             let a = v.get("attachment");
             if str_of(a.and_then(|a| a.get("type"))) == defaults::text("stop_channel.attachment_type") && str_of(a.and_then(|a| a.get("hookEvent"))) == event {
-                Line::Continuation
+                Line::Own
             } else {
                 Line::Other
             }
@@ -131,13 +164,21 @@ fn parse_line(seg: &[u8]) -> Option<Value> {
     (v.is_object() && v.get("type").and_then(Value::as_str).is_some()).then_some(v)
 }
 
+/// Does a line that cannot be parsed hold the attachment marker (`stop_channel.attachment_type`)? A plain substring test.
+fn has_marker(seg: &[u8]) -> bool {
+    let m = defaults::text("stop_channel.attachment_type").as_bytes();
+    !m.is_empty() && seg.windows(m.len()).any(|w| w == m)
+}
+
 /// The continuations counted in a window of the transcript, newest line first, up to the last human prompt. `Ok(None)`: the window
 /// starts inside the file and holds no human prompt, so it proves nothing (read a bigger one). A line that is not UTF-8 JSON of a
-/// known shape is `Err` (the unfinished last line of a file being written is the one exception).
-fn scan(buf: &[u8], partial_first: bool, event: &str) -> Result<Option<u64>, ()> {
+/// known shape is `Err`, with two exceptions for the NEWEST line (the host may be writing it): an unfinished one is skipped, and
+/// one that holds the attachment marker counts as one own continuation (the host's write lag must not let a chain run one past K).
+fn scan(buf: &[u8], partial_first: bool, event: &str) -> Result<Option<Chain>, ()> {
     let segs: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
     let ended = buf.last() == Some(&b'\n');
-    let mut found = 0u64;
+    let mut found = Chain::default();
+    let mut newest = true;
     for (i, seg) in segs.iter().enumerate().rev() {
         if i == 0 && partial_first {
             return Ok(None); // the first segment of a window that starts inside the file is cut
@@ -145,7 +186,12 @@ fn scan(buf: &[u8], partial_first: bool, event: &str) -> Result<Option<u64>, ()>
         if seg.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
+        let is_newest = std::mem::replace(&mut newest, false);
         let Some(v) = parse_line(seg) else {
+            if is_newest && has_marker(seg) {
+                found.own = found.own.saturating_add(1);
+                continue;
+            }
             if i + 1 == segs.len() && !ended {
                 continue; // the host is still writing this line
             }
@@ -153,17 +199,18 @@ fn scan(buf: &[u8], partial_first: bool, event: &str) -> Result<Option<u64>, ()>
         };
         match classify(&v, event) {
             Line::Human => return Ok(Some(found)),
-            Line::Continuation => found += 1,
+            Line::Own => found.own = found.own.saturating_add(1),
+            Line::Feedback => found.feedback = found.feedback.saturating_add(1),
             Line::Other => {}
         }
     }
     Ok(if partial_first { None } else { Some(found) })
 }
 
-/// The Stop continuations since the last human-typed prompt in the transcript at `path` (since its start when it has none). The end
+/// The Stop continuations (by shape) since the last human-typed prompt in the transcript at `path` (since its start when it has none). The end
 /// of the file is read in a window that doubles up to `stop_channel.tail_max_bytes`; a file that is absent, empty, not a regular
 /// file, unreadable, of an unknown shape or whose last human prompt is further back than the maximum is `Err`.
-fn chain_len(path: &str, event: &str) -> Result<u64, ()> {
+fn chain_len(path: &str, event: &str) -> Result<Chain, ()> {
     let mut f = std::fs::File::open(path).map_err(|_| ())?;
     let meta = f.metadata().map_err(|_| ())?;
     let len = meta.len();
@@ -198,7 +245,7 @@ enum Gate {
 }
 
 /// Is a continuation allowed? `ctx_chars` is the length the combined Stop `additionalContext` would have.
-fn gate(p: &Value, event: &str, k: u64, ctx_chars: usize) -> Gate {
+fn gate(p: &Value, event: &str, sw: &Switches, ctx_chars: usize) -> Gate {
     match p.get(defaults::text("stop_channel.pending_field")) {
         Some(Value::Array(tasks)) if tasks.is_empty() => {}
         Some(Value::Array(_)) => return Gate::Stay("background_pending"),
@@ -207,13 +254,17 @@ fn gate(p: &Value, event: &str, k: u64, ctx_chars: usize) -> Gate {
     if ctx_chars as u64 > defaults::num("stop_channel.context_max_chars") {
         return Gate::Stay("over_length");
     }
-    if k == 0 {
+    if sw.k == 0 {
         return Gate::Stay("over_k");
+    }
+    if sw.total == 0 {
+        return Gate::Stay("over_total");
     }
     let Some(path) = transcript_of(p) else { return Gate::Stay("transcript_unreadable") };
     match chain_len(path, event) {
-        Ok(n) if n < k => Gate::Go,
-        Ok(_) => Gate::Stay("over_k"),
+        Ok(c) if c.own >= sw.k => Gate::Stay("over_k"),
+        Ok(c) if c.total() >= sw.total => Gate::Stay("over_total"),
+        Ok(_) => Gate::Go,
         Err(()) => Gate::Stay("transcript_unreadable"),
     }
 }
@@ -303,11 +354,16 @@ pub fn apply(host: &str, event: &str, p: &Value, env: &RequestEnv, results: &mut
         return;
     }
     let who = labels(p);
+    if sw.clamped {
+        for n in &notes {
+            count("limit_clamped", &n.check, &who);
+        }
+    }
     let verdict = if results.iter().any(combine::blocks) {
         Gate::Stay("blocked_kept") // a hard block decides the answer (and continues the turn by itself); the notes beside it stay
     } else {
         let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
-        gate(p, event, sw.k, combined_chars(results, &texts))
+        gate(p, event, &sw, combined_chars(results, &texts))
     };
     if let Gate::Stay(outcome) = verdict {
         for n in &notes {
@@ -337,11 +393,14 @@ pub fn health_to_context(host: &str, event: &str, raw: &str, existing: &str, tex
     }
     let p: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
     let who = labels(&p);
+    if sw.clamped {
+        count("limit_clamped", check, &who);
+    }
     let verdict = if combine::json_blocks(existing) {
         Gate::Stay("blocked_kept")
     } else {
         let have = combined_chars(&[HookResult { id: String::new(), code: Some(0), out: existing.to_string(), err: String::new() }], &[text]);
-        gate(&p, event, sw.k, have)
+        gate(&p, event, &sw, have)
     };
     match verdict {
         Gate::Go => {
@@ -404,18 +463,22 @@ mod tests {
         format!("{}\n", v.join("\n")).into_bytes()
     }
 
+    fn chain(own: u64, feedback: u64) -> Result<Option<Chain>, ()> {
+        Ok(Some(Chain { own, feedback }))
+    }
+
     #[test]
     fn the_count_runs_from_the_end_to_the_last_human_prompt() {
         let t = [human(), feedback(), attached(), human(), notification(), feedback(), attached(), notification()];
-        assert_eq!(scan(&lines(&t), false, "Stop"), Ok(Some(2)));
+        assert_eq!(scan(&lines(&t), false, "Stop"), chain(1, 1), "each shape is counted by itself");
         let t = [feedback(), typed_only(), attached()];
-        assert_eq!(scan(&lines(&t), false, "Stop"), Ok(Some(1)), "promptSource typed alone is a human prompt");
+        assert_eq!(scan(&lines(&t), false, "Stop"), chain(1, 0), "promptSource typed alone is a human prompt");
     }
 
     #[test]
     fn a_transcript_without_a_human_prompt_counts_from_its_start() {
         let t = [notification(), feedback(), notification(), attached(), notification()];
-        assert_eq!(scan(&lines(&t), false, "Stop"), Ok(Some(2)));
+        assert_eq!(scan(&lines(&t), false, "Stop"), chain(1, 1));
         assert_eq!(scan(&lines(&t), true, "Stop"), Ok(None), "a window cut inside the file proves nothing without a human prompt");
     }
 
@@ -423,7 +486,14 @@ mod tests {
     fn a_continuation_of_another_event_or_a_tool_result_quoting_the_prefix_is_not_counted() {
         let other = json!({"type": "attachment", "attachment": {"type": "hook_additional_context", "hookEvent": "PostToolUse"}}).to_string();
         let quoted = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "Stop hook feedback: x"}]}}).to_string();
-        assert_eq!(scan(&lines(&[other, quoted, human()]), false, "Stop"), Ok(Some(0)));
+        assert_eq!(scan(&lines(&[other, quoted, human()]), false, "Stop"), chain(0, 0));
+    }
+
+    /// Every real attachment carries a hookEvent; one without it is not counted (it cannot be told from another event's).
+    #[test]
+    fn an_attachment_without_a_hook_event_is_not_counted() {
+        let bare = json!({"type": "attachment", "attachment": {"type": "hook_additional_context", "content": ["x"]}}).to_string();
+        assert_eq!(scan(&lines(&[human(), bare]), false, "Stop"), chain(0, 0));
     }
 
     #[test]
@@ -434,7 +504,27 @@ mod tests {
         assert_eq!(scan(&[0xff, 0xfe, b'\n'], false, "Stop"), Err(()), "not UTF-8");
         let mut half = lines(&[human(), feedback()]);
         half.extend_from_slice(b"{\"type\":\"assis");
-        assert_eq!(scan(&half, false, "Stop"), Ok(Some(1)));
+        assert_eq!(scan(&half, false, "Stop"), chain(0, 1));
+    }
+
+    /// The newest line is half written and already names the attachment: it is one continuation of this channel. A half-written
+    /// line that does not, and an older bad line, keep today's behaviour.
+    #[test]
+    fn a_half_written_newest_line_that_holds_the_marker_counts_as_a_continuation() {
+        let mut half = lines(&[human(), attached()]);
+        half.extend_from_slice(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_con");
+        assert_eq!(scan(&half, false, "Stop"), chain(1, 0), "the cut is before the marker: unknown, as before");
+        let mut half = lines(&[human(), attached()]);
+        half.extend_from_slice(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\"hookEv");
+        assert_eq!(scan(&half, false, "Stop"), chain(2, 0), "the marker is there: counted");
+        let mut ended = lines(&[human()]);
+        ended.extend_from_slice(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\n");
+        assert_eq!(scan(&ended, false, "Stop"), chain(1, 0), "a finished but unparsable newest line with the marker counts too");
+        let mut older = lines(&[human()]);
+        older.extend_from_slice(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\n");
+        older.extend_from_slice(attached().as_bytes());
+        older.push(b'\n');
+        assert_eq!(scan(&older, false, "Stop"), Err(()), "only the NEWEST line gets the allowance");
     }
 
     // ---- apply() on synthetic results ----
@@ -499,21 +589,37 @@ mod tests {
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: the scratch directory of this test
     }
 
+    fn sw(k: u64, total: u64) -> Switches {
+        Switches { global: true, k, total, clamped: false }
+    }
+
     #[test]
     fn the_gate_names_the_reason_it_holds_a_note_back() {
         let (dir, _env, p) = rig("gate", &[human(), attached(), attached(), attached()]);
-        assert!(matches!(gate(&p, "Stop", 4, 10), Gate::Go));
-        assert!(matches!(gate(&p, "Stop", 3, 10), Gate::Stay("over_k")));
-        assert!(matches!(gate(&p, "Stop", 0, 10), Gate::Stay("over_k")));
-        assert!(matches!(gate(&p, "Stop", 4, 1_000_000), Gate::Stay("over_length")));
+        assert!(matches!(gate(&p, "Stop", &sw(4, 8), 10), Gate::Go));
+        assert!(matches!(gate(&p, "Stop", &sw(3, 8), 10), Gate::Stay("over_k")));
+        assert!(matches!(gate(&p, "Stop", &sw(0, 8), 10), Gate::Stay("over_k")));
+        assert!(matches!(gate(&p, "Stop", &sw(4, 3), 10), Gate::Stay("over_total")), "the total guard counts both shapes");
+        assert!(matches!(gate(&p, "Stop", &sw(4, 0), 10), Gate::Stay("over_total")));
+        assert!(matches!(gate(&p, "Stop", &sw(4, 8), 1_000_000), Gate::Stay("over_length")));
         let mut busy = p.clone();
         busy["background_tasks"] = json!([1]);
-        assert!(matches!(gate(&busy, "Stop", 4, 10), Gate::Stay("background_pending")));
+        assert!(matches!(gate(&busy, "Stop", &sw(4, 8), 10), Gate::Stay("background_pending")));
         busy.as_object_mut().unwrap().remove("background_tasks");
-        assert!(matches!(gate(&busy, "Stop", 4, 10), Gate::Stay("no_background_field")));
+        assert!(matches!(gate(&busy, "Stop", &sw(4, 8), 10), Gate::Stay("no_background_field")));
         let mut lost = p.clone();
         lost["transcript_path"] = json!("/nonexistent/t.jsonl");
-        assert!(matches!(gate(&lost, "Stop", 4, 10), Gate::Stay("transcript_unreadable")));
+        assert!(matches!(gate(&lost, "Stop", &sw(4, 8), 10), Gate::Stay("transcript_unreadable")));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: the scratch directory of this test
+    }
+
+    /// Hard-block feedback does not count toward K, only toward the total.
+    #[test]
+    fn hard_block_feedback_counts_toward_the_total_but_not_k() {
+        let (dir, _env, p) = rig("fb", &[human(), feedback(), feedback(), feedback(), attached()]);
+        assert!(matches!(gate(&p, "Stop", &sw(3, 8), 10), Gate::Go), "one own continuation of K=3");
+        assert!(matches!(gate(&p, "Stop", &sw(3, 4), 10), Gate::Stay("over_total")), "four in all reach a total of 4");
+        assert!(matches!(gate(&p, "Stop", &sw(1, 8), 10), Gate::Stay("over_k")));
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: the scratch directory of this test
     }
 }

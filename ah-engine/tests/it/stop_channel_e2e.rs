@@ -287,9 +287,9 @@ fn the_chain_bound_is_k_continuations_counted_in_the_transcript() {
     assert_eq!(r.stop_out(), soft(), "0 continuations so far");
     r.transcript(&[human(), reply(), attached()]);
     assert_eq!(r.stop_out(), soft(), "1");
-    r.transcript(&[human(), reply(), attached(), reply(), feedback()]);
-    assert_eq!(r.stop_out(), soft(), "2: a block's feedback entry counts like a Stop additionalContext attachment");
-    r.transcript(&[human(), reply(), attached(), reply(), feedback(), reply(), attached()]);
+    r.transcript(&[human(), reply(), attached(), reply(), attached()]);
+    assert_eq!(r.stop_out(), soft(), "2");
+    r.transcript(&[human(), reply(), attached(), reply(), attached(), reply(), attached()]);
     assert_eq!(r.stop_out(), "", "3 = K: the note stays on its old channel");
     assert_eq!(r.stop_out(), "", "and stays there while the transcript does not change");
     assert_eq!(r.counted(EMITTED), 3, "{:?}", r.counters());
@@ -330,7 +330,7 @@ fn a_tool_call_between_continuations_does_not_reset_the_count() {
     let r = Rig::new("tools");
     r.on();
     // after each continuation the model calls a tool, then stops again with stop_hook_active false
-    let t = [human(), reply(), attached(), tool_call(), tool_result(), reply(), feedback(), tool_call(), tool_result(), reply()];
+    let t = [human(), reply(), attached(), tool_call(), tool_result(), reply(), attached(), tool_call(), tool_result(), reply()];
     r.transcript(&t);
     assert_eq!(r.stop_out(), soft(), "2 continuations");
     r.transcript(&[t.as_slice(), &[attached(), tool_call(), tool_result(), reply()]].concat());
@@ -355,7 +355,7 @@ fn a_notification_turn_is_not_a_human_prompt() {
     let r = Rig::new("notif");
     r.on();
     // an unattended run: notification turns only, no typed prompt anywhere; the count runs from the start of the transcript
-    r.transcript(&[notification(), reply(), attached(), notification(), reply(), feedback(), notification(), reply()]);
+    r.transcript(&[notification(), reply(), attached(), notification(), reply(), attached(), notification(), reply()]);
     assert_eq!(r.stop_out(), soft(), "2 continuations");
     r.append(&[attached(), notification(), reply()]);
     assert_eq!(r.stop_out(), "", "3: an AFK chain of notification turns cannot go past K either");
@@ -373,7 +373,7 @@ fn a_big_transcript_is_read_in_a_growing_window_up_to_the_last_human_prompt() {
     // 3 MB of filler after the typed prompt (past the first window), two continuations in it
     let mut t = vec![human(), attached()];
     t.extend(std::iter::repeat_n(filler.clone(), 400));
-    t.push(feedback());
+    t.push(attached());
     t.extend(std::iter::repeat_n(filler, 400));
     r.transcript(&t);
     assert!(std::fs::metadata(r.t()).unwrap().len() > 3_000_000);
@@ -586,4 +586,188 @@ fn the_health_advisory_merged_into_a_stop_answer_follows_the_switch_and_the_gate
     r.fresh();
     assert_eq!(health_stop(&r, &plain_stop(&r, "sc1h"), &long), json!({"systemMessage": long}));
     assert_eq!(r.counters(), vec!["over_length/health-advisory".to_string()]);
+}
+
+// ---- GH #566: the bounds ----
+
+/// The settings file for a chain test: the switch on, and `extra` context keys.
+fn knobs(r: &Rig, extra: Value) {
+    let mut c = json!({"stopAdditionalContext": true});
+    c.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    r.settings(Some(c));
+}
+
+/// A chain of `n` own continuations after a typed prompt.
+fn chain_of(n: usize) -> Vec<String> {
+    let mut t = vec![human(), reply()];
+    for _ in 0..n {
+        t.push(attached());
+        t.push(reply());
+    }
+    t
+}
+
+/// Drive a real chain of Stops under settings `extra` until the channel stops emitting; the number of emitted continuations.
+fn emitted_in_a_chain(r: &Rig, extra: Value) -> usize {
+    knobs(r, extra);
+    r.fresh();
+    let mut emitted = 0;
+    for _ in 0..30 {
+        r.no_advisory_layer();
+        if r.stop_with(&r.stop()).is_empty() {
+            break;
+        }
+        emitted += 1;
+        r.append(&[attached(), reply()]);
+    }
+    emitted
+}
+
+#[test]
+fn a_huge_limit_is_held_to_the_hosts_cap_and_counted() {
+    let r = Rig::new("huge-k");
+    // whole numbers above the maximum are lowered to it (8); the raw JSON integer 10^18 is one
+    assert_eq!(emitted_in_a_chain(&r, json!({"stopContinuationLimit": 1_000_000_000_000_000_000u64, "stopTotalContinuationLimit": 1000})), 8);
+    assert!(r.counted("limit_clamped/tasklist-guard") >= 1, "{:?}", r.counters());
+    let r = Rig::new("huge-k-env");
+    knobs(&r, json!({}));
+    r.transcript(&chain_of(8));
+    r.no_advisory_layer();
+    let (code, out, err) =
+        r.run_host("claude", "Stop", &r.stop(), &[("ANTIHALL_STOP_CONTINUATION_LIMIT", "100"), ("ANTIHALL_STOP_TOTAL_CONTINUATION_LIMIT", "100")]);
+    assert_eq!(code, 0, "{err:?}");
+    assert_eq!(out, "", "the env value 100 is held to 8 too: 8 continuations already, so the 9th is not sent");
+    assert_eq!(r.counted("over_k/tasklist-guard"), 1, "{:?}", r.counters());
+    assert!(r.counted("limit_clamped/tasklist-guard") >= 1, "{:?}", r.counters());
+}
+
+/// A string, a float, a negative or a non-number is not a limit: the DEFAULT stands (3), never a larger value.
+#[test]
+fn a_limit_that_is_not_a_whole_number_falls_back_to_the_default() {
+    for (name, bad) in [
+        ("string", json!("100")),
+        ("float", json!(100.0)),
+        ("fraction", json!(5.5)),
+        ("huge float", json!(1e18)),
+        ("negative", json!(-1)),
+        ("negative huge", json!(-100)),
+        ("bool", json!(true)),
+        ("null", Value::Null),
+        ("list", json!([100])),
+    ] {
+        let r = Rig::new(&format!("badk-{name}").replace(' ', "-"));
+        assert_eq!(emitted_in_a_chain(&r, json!({"stopContinuationLimit": bad})), 3, "{name}: the default K");
+        assert_eq!(r.counted("limit_clamped/tasklist-guard"), 0, "{name}: not a clamp, the value was ignored");
+    }
+    // absent: the default
+    let r = Rig::new("absent-k");
+    assert_eq!(emitted_in_a_chain(&r, json!({})), 3);
+    // the same for the total guard: a bad value leaves its default (8), which here is above K, so K still decides
+    let r = Rig::new("bad-total");
+    assert_eq!(emitted_in_a_chain(&r, json!({"stopContinuationLimit": 8, "stopTotalContinuationLimit": "2"})), 8, "a string total is ignored (default 8)");
+    let r = Rig::new("bad-env");
+    knobs(&r, json!({}));
+    r.transcript(&chain_of(3));
+    r.no_advisory_layer();
+    for raw in ["3.5", "-1", "abc"] {
+        let (code, out, _) = r.run_host("claude", "Stop", &r.stop(), &[("ANTIHALL_STOP_CONTINUATION_LIMIT", raw)]);
+        assert_eq!(code, 0);
+        assert_eq!(out, "", "env {raw:?} is ignored: the default K=3 holds at 3 continuations");
+    }
+    let (_, out, _) = r.run_host("claude", "Stop", &r.stop(), &[("ANTIHALL_STOP_CONTINUATION_LIMIT", "4")]);
+    assert_eq!(out, soft(), "a valid env value 4 wins");
+}
+
+#[test]
+fn limits_inside_the_range_are_kept() {
+    for k in [1usize, 2, 5, 8] {
+        let r = Rig::new(&format!("k{k}"));
+        assert_eq!(emitted_in_a_chain(&r, json!({"stopContinuationLimit": k, "stopTotalContinuationLimit": 8})), k);
+        assert_eq!(r.counted("limit_clamped/tasklist-guard"), 0);
+    }
+}
+
+/// K counts only this channel's own continuations: hard-block feedback does not use it up.
+#[test]
+fn hard_block_feedback_does_not_count_toward_k() {
+    let r = Rig::new("fb-k");
+    r.on();
+    r.transcript(&[human(), reply(), feedback(), reply(), feedback(), reply(), feedback(), reply(), feedback(), reply()]);
+    assert_eq!(r.stop_out(), soft(), "four hard-block continuations, no own one: K=3 is not reached");
+    r.append(&[attached(), reply(), attached(), reply()]);
+    assert_eq!(r.stop_out(), soft(), "two own ones: still under K");
+    r.append(&[attached(), reply()]);
+    assert_eq!(r.stop_out(), "", "three own ones: K");
+    assert_eq!(r.counted("over_k/tasklist-guard"), 1, "{:?}", r.counters());
+}
+
+/// The overall guard: both shapes together reach the total.
+#[test]
+fn the_total_of_both_shapes_is_bounded_too() {
+    let r = Rig::new("total");
+    r.on();
+    let mut t = vec![human(), reply()];
+    for _ in 0..7 {
+        t.extend([feedback(), reply()]);
+    }
+    r.transcript(&t);
+    assert_eq!(r.stop_out(), soft(), "7 in all, 0 own: under the total of 8");
+    r.append(&[feedback(), reply()]);
+    assert_eq!(r.stop_out(), "", "8 in all: nothing is sent");
+    assert_eq!(r.counted("over_total/tasklist-guard"), 1, "{:?}", r.counters());
+    assert_eq!(r.counted("over_k/tasklist-guard"), 0, "it is the total, not K: {:?}", r.counters());
+    // the total is a setting
+    knobs(&r, json!({"stopTotalContinuationLimit": 9}));
+    assert_eq!(r.stop_out(), "", "a total above the maximum is lowered to 8");
+    knobs(&r, json!({"stopTotalContinuationLimit": 0}));
+    r.fresh();
+    assert_eq!(r.stop_out(), "", "total 0: never");
+    assert_eq!(r.counted("over_total/tasklist-guard"), 3, "{:?}", r.counters());
+}
+
+/// A mixed chain, driven Stop by Stop: hard blocks and own continuations interleave; the own ones stop at K, the sum at the total.
+#[test]
+fn a_mixed_chain_stops_at_k_own_continuations_or_the_total() {
+    let r = Rig::new("mixed");
+    knobs(&r, json!({"stopContinuationLimit": 3, "stopTotalContinuationLimit": 5}));
+    r.transcript(&[human(), reply(), feedback(), reply(), attached(), reply(), feedback(), reply()]);
+    r.no_advisory_layer();
+    assert_eq!(r.stop_with(&r.stop()), soft(), "1 own + 2 feedback = 3 in all");
+    r.append(&[attached(), reply()]);
+    assert_eq!(r.stop_with(&r.stop()), soft(), "2 own + 2 feedback = 4 in all");
+    r.append(&[feedback(), reply()]);
+    assert_eq!(r.stop_with(&r.stop()), "", "2 own + 3 feedback = 5 in all: the total");
+    assert_eq!(r.counted("over_total/tasklist-guard"), 1, "{:?}", r.counters());
+    knobs(&r, json!({"stopContinuationLimit": 2, "stopTotalContinuationLimit": 8}));
+    assert_eq!(r.stop_with(&r.stop()), "", "2 own = K=2");
+    assert_eq!(r.counted("over_k/tasklist-guard"), 1, "{:?}", r.counters());
+}
+
+/// The host's write lag: the newest line is half written when the Stop reads the file. K=3, two complete continuations and a
+/// half-written third: it counts (the 4th must not be sent).
+#[test]
+fn a_half_written_newest_continuation_counts_so_the_chain_never_runs_past_k() {
+    let r = Rig::new("lag");
+    r.on();
+    r.transcript(&chain_of(2));
+    let mut f = std::fs::OpenOptions::new().append(true).open(r.t()).unwrap();
+    f.write_all(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\"content\":[\"say it").unwrap();
+    drop(f);
+    assert_eq!(r.stop_out(), "", "2 complete + 1 half-written = 3 = K");
+    assert_eq!(r.counted("over_k/tasklist-guard"), 1, "{:?}", r.counters());
+    // a half-written newest line that does not name the attachment is skipped, as before
+    r.transcript(&chain_of(2));
+    let mut f = std::fs::OpenOptions::new().append(true).open(r.t()).unwrap();
+    f.write_all(b"{\"type\":\"assistant\",\"message\":{\"role\":\"assi").unwrap();
+    drop(f);
+    assert_eq!(r.stop_out(), soft(), "an unrelated half-written line changes nothing");
+}
+
+#[test]
+fn an_attachment_without_a_hook_event_is_not_a_continuation() {
+    let r = Rig::new("noevent");
+    r.on();
+    let bare = json!({"type": "attachment", "attachment": {"type": "hook_additional_context", "content": ["x"]}}).to_string();
+    r.transcript(&[human(), reply(), bare.clone(), bare.clone(), bare, reply()]);
+    assert_eq!(r.stop_out(), soft(), "three attachments with no hookEvent: none counts");
 }
