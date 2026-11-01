@@ -87,7 +87,7 @@ var advisorKit = {
     return r.lines[0][0] !== tx.lastOff || ah.sha1(JSON.stringify(r.lines[0][1])) !== tx.lastSig;
   },
   // A fold of transcript `tp` that has read nothing yet.
-  freshTx: function (tp) { return { path: tp, pos: -1, full: false, lastAdvisor: -1, lastUser: -1, userTs: -1, seen: false, avail: null, model: null, sayAt: -1, advisorModel: null }; },
+  freshTx: function (tp) { return { path: tp, pos: -1, full: false, lastAdvisor: -1, lastUser: -1, userTs: -1, seen: false, avail: null, model: null, sayAt: -1, advisorModel: null, mainModel: null }; },
   // The transcript read INCREMENTALLY into the per-agent state `st` (st.tx): only the bytes appended since the last call (from
   // st.tx.pos, at most advisor.window_bytes per call, a line over advisor.line_max_bytes skipped without being buffered), folded
   // into the newest owner message, advisor call, main model, advisor announcement and advisor_tool attachment. A first read of a
@@ -110,7 +110,7 @@ var advisorKit = {
     if (r === null || !Array.isArray(r.lines)) return null;
     if (tx.pos < 0) tx.full = r.start === 0;
     if (typeof tx.head !== 'string' || tx.head === '') { var hh = ah.fs.readHeadHex(tp, ah.cfgNum('advisor.fingerprint_bytes')); tx.head = typeof hh === 'string' ? hh : ''; }
-    else if (r.jumped === true) { tx.full = false; tx.avail = null; tx.seen = false; advisorKit.silence('gap_skipped'); } // unread bytes may hold an "off" attachment: only the window decides
+    else if (r.jumped === true) { tx.full = false; tx.avail = null; tx.seen = false; tx.advisorModel = null; advisorKit.silence('gap_skipped'); } // unread bytes may hold an "off" attachment: only the window decides
     var names = ah.cfg('advisor.tool_names'), types = ah.cfg('advisor.block_types'), results = ah.cfg('advisor.result_types');
     var flag = ah.cfg('advisor.flagship_model_re'), known = ah.cfg('advisor.known_model_re'), say = ah.cfg('advisor.say_do_re');
     var calls = [];
@@ -122,15 +122,19 @@ var advisorKit = {
       if (e.type === att.entry_type && jx.isObj(a) && a.type === att.type) { // the harness put the advisor tool in (or took it out of) the prompt
         var ch = a[att.change_key];
         tx.avail = a[att.available_key] !== false && (typeof ch !== 'string' || att.change_on.indexOf(ch) >= 0);
-        if (typeof a[att.model_key] === 'string' && a[att.model_key] !== '') tx.advisorModel = a[att.model_key];
+        // the NEWEST attachment decides the advisor model: one with no usable model string clears it (the settings fallback or
+        // unknown applies in rank()); an older attachment's model never carries over
+        tx.advisorModel = typeof a[att.model_key] === 'string' && a[att.model_key] !== '' ? a[att.model_key] : null;
         continue;
       }
+      if (e.type === 'assistant' && !jx.isObj(e.message)) { tx.mainModel = null; continue; }
       if (!jx.isObj(e.message)) continue;
       var c = e.message.content;
       if (e.type === 'user') {
         if (advisorKit.owner(e) && off > tx.lastUser) { tx.lastUser = off; tx.userTs = advisorKit.ts(e); tx.sayAt = -1; }
       } else if (e.type === 'assistant') {
         var m = e.message.model;
+        tx.mainModel = typeof m === 'string' && m !== '' ? m : null; // the LATEST assistant entry only: never an earlier one's model (rank rule)
         if (typeof m === 'string' && m !== '' && (ah.re.test(known, 'r', m) || ah.re.test(flag, 'r', m))) tx.model = m;
         if (!Array.isArray(c)) continue;
         for (var b = 0; b < c.length; b++) {
@@ -153,7 +157,7 @@ var advisorKit = {
     tx.read = r.read; tx.peak = r.peak; // the last read's bytes and largest line buffer: the latency test reads them
     st.tx = tx;
     advisorKit.consults(st, { calls: calls }); // counted where read: a call is read once, by whichever rule folds first
-    return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, avail: tx.avail, full: tx.full, model: tx.model, sayAt: tx.sayAt, advisorModel: typeof tx.advisorModel === 'string' ? tx.advisorModel : null,
+    return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, avail: tx.avail, full: tx.full, model: tx.model, mainModel: typeof tx.mainModel === 'string' ? tx.mainModel : null, sayAt: tx.sayAt, advisorModel: typeof tx.advisorModel === 'string' ? tx.advisorModel : null,
       scan: { calls: calls, size: r.size, read: r.read, peak: r.peak } };
   },
   // Does the session have an advisor tool? Signals that need no earlier advisor use come first: the payload's tool list, then the
@@ -166,13 +170,15 @@ var advisorKit = {
     return view ? advisorKit.rank(p, view) !== 'skip' : true;
   },
   // Rank rule (GH #500): the guard applies while the main model ranks below the advisor model; equal or higher is skipped. An
-  // unknown main or advisor model keeps it on. Counted (advisor.rank_metrics). Returns 'skip' | 'apply'; sets view.rankKind and view.rankArgs.
+  // unknown main or advisor model keeps it on. The main model is the latest assistant entry's own model (view.mainModel, null when it
+  // has no usable string); the advisor model is the newest advisor_tool attachment's, else the settings key: nothing carries over
+  // from an earlier entry or attachment. Counted (advisor.rank_metrics). Returns 'skip' | 'apply'; sets view.rankKind and view.rankArgs.
   rank: function (p, view) {
     if (!ah.settings.bool('advisor.sw_rank')) return 'apply';
     var m = ah.cfg('advisor.rank_metrics'), unk = ah.cfg('advisor.rank_unknown_label');
     var adv = typeof view.advisorModel === 'string' && view.advisorModel !== '' ? view.advisorModel : advisorKit.configuredModel(p);
-    var mr = advisorKit.modelRank(view.model), ar = advisorKit.modelRank(adv);
-    var args = { model: typeof view.model === 'string' && view.model !== '' ? view.model : unk, advisor: typeof adv === 'string' && adv !== '' ? adv : unk };
+    var mr = advisorKit.modelRank(view.mainModel), ar = advisorKit.modelRank(adv);
+    var args = { model: typeof view.mainModel === 'string' && view.mainModel !== '' ? view.mainModel : unk, advisor: typeof adv === 'string' && adv !== '' ? adv : unk };
     if (mr === null || ar === null) { view.rankKind = 'unknown'; view.rankArgs = args; advisorKit.raw('advisor.kind_rank', m.applied_unknown); return 'apply'; }
     if (mr >= ar) { advisorKit.raw('advisor.kind_rank', m.skipped); return 'skip'; }
     view.rankKind = 'lower'; view.rankArgs = args;

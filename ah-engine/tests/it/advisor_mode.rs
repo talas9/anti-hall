@@ -907,3 +907,108 @@ fn rank_counters_reach_the_telemetry_summary() {
         "{g}"
     );
 }
+
+// GH #500 review: the rank rule reads the LATEST assistant entry's model and the NEWEST attachment's advisor model; nothing carries
+// over from an earlier entry or attachment (an unknown latest/newest keeps the guard on).
+fn attach_with(model: Option<&str>) -> String {
+    match model {
+        Some(m) => format!(r#"{{"type":"attachment","attachment":{{"type":"advisor_tool","available":true,"model":{m},"toolChange":"add"}}}}"#),
+        None => r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":true,"toolChange":"add"}}"#.to_string(),
+    }
+}
+
+fn model_raw(raw: &str) -> String {
+    format!(r#"{{"type":"assistant","message":{{"role":"assistant","model":{raw},"content":[{{"type":"text","text":"working"}}]}}}}"#)
+}
+
+/// A Write of a plan through the real hook; `settings` is an `advisorModel` for a cwd of its own (None = no settings file).
+fn rank_plan(session: &str, lines: &[&str], settings: Option<&str>) -> (i32, String) {
+    let tp = transcript(session, lines);
+    let cwd = dir().join(format!("{session}-cwd"));
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    if let Some(s) = settings {
+        std::fs::write(cwd.join(".claude/settings.json"), format!(r#"{{"advisorModel":"{s}"}}"#)).unwrap();
+    }
+    let p = json!({"session_id": session, "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md", "content": "x"}, "transcript_path": tp});
+    run_out("advisor-guard", &[], &p)
+}
+
+const OPUS_ATT: &str = r#""claude-opus-5-5""#;
+const HAIKU_ATT: &str = r#""claude-haiku-5""#;
+
+#[test]
+fn rank_unknown_latest_main_never_inherits_an_earlier_opus() {
+    let opus = main_model("claude-opus-5-5");
+    let att = attach_with(Some(OPUS_ATT));
+    assert_eq!(rank_plan("rkc0", &[&att, USER, &opus], None), (0, String::new()), "control: an Opus main is skipped");
+    let cases: [(&str, String); 7] = [
+        ("rkc1", model_raw(r#""custom""#)),
+        ("rkc2", model_raw("null")),
+        ("rkc3", model_raw(r#""""#)),
+        ("rkc4", model_raw("5")),
+        ("rkc5", model_raw(r#""<synthetic>""#)),
+        ("rkc6", r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"no model field"}]}}"#.to_string()),
+        ("rkc7", r#"{"type":"assistant","content":"no message object"}"#.to_string()),
+    ];
+    for (s, latest) in &cases {
+        let (code, out) = rank_plan(s, &[&att, USER, &opus, USER, latest], None);
+        assert_eq!(code, 2, "{s} {latest}: {out}");
+        assert!(out.contains("or advisor claude-opus-5-5 unranked."), "{s}: {out}");
+    }
+}
+
+#[test]
+fn rank_unknown_latest_main_across_incremental_reads_of_one_session() {
+    let att = attach_with(Some(OPUS_ATT));
+    let tp = transcript("rkd", &[&att, USER, &main_model("claude-opus-5-5")]);
+    let cwd = dir().join("rkd-cwd");
+    let at = || {
+        let p = json!({"session_id": "rkd", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md"}, "transcript_path": tp});
+        run_out("advisor-guard", &[], &p)
+    };
+    assert_eq!(at(), (0, String::new()), "the Opus main is skipped on the first read");
+    append(&tp, USER);
+    append(&tp, &model_raw(r#""custom""#));
+    let (code, out) = at();
+    assert_eq!(code, 2, "the state kept the Opus rank from the first read, the new latest entry must replace it: {out}");
+}
+
+#[test]
+fn rank_advisor_model_comes_from_the_newest_attachment_only() {
+    let sonnet = main_model("claude-sonnet-5-5");
+    let haiku = attach_with(Some(HAIKU_ATT));
+    let opus = attach_with(Some(OPUS_ATT));
+    // newest attachment last (the transcript is append-only): haiku then opus -> sonnet is below opus
+    let (code, out) = rank_plan("rke1", &[&haiku, &opus, USER, &sonnet], None);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("main claude-sonnet-5-5 is below advisor claude-opus-5-5."), "{out}");
+    // opus then haiku: the newest (haiku) decides -> a sonnet main ranks above it and is skipped
+    assert_eq!(rank_plan("rke2", &[&opus, &haiku, USER, &sonnet], None), (0, String::new()));
+    // a newest attachment with no / null / empty model drops the older haiku; no settings -> unknown -> guard on
+    for (s, newest) in
+        [("rke3", attach_with(None)), ("rke4", attach_with(Some("null"))), ("rke5", attach_with(Some(r#""""#))), ("rke6", attach_with(Some("7")))]
+    {
+        let (code, out) = rank_plan(s, &[&haiku, &newest, USER, &sonnet], None);
+        assert_eq!(code, 2, "{s}: a stale haiku must not make the sonnet main look equal: {out}");
+        assert!(out.contains("main claude-sonnet-5-5 or advisor unknown unranked."), "{s}: {out}");
+        // the settings advisorModel is the fallback for that newest attachment, never the older one
+        let (code, out) = rank_plan(&format!("{s}s"), &[&haiku, &newest, USER, &sonnet], Some("opus"));
+        assert_eq!(code, 2, "{s}s: {out}");
+        assert!(out.contains("main claude-sonnet-5-5 is below advisor opus."), "{s}s: {out}");
+    }
+}
+
+#[test]
+fn rank_attachment_without_model_clears_the_advisor_model_across_incremental_reads() {
+    let tp = transcript("rkf", &[&attach_with(Some(HAIKU_ATT)), USER, &main_model("claude-sonnet-5-5")]);
+    let cwd = dir().join("rkf-cwd");
+    let at = || {
+        let p = json!({"session_id": "rkf", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md"}, "transcript_path": tp});
+        run_out("advisor-guard", &[], &p)
+    };
+    assert_eq!(at(), (0, String::new()), "sonnet main vs a haiku advisor: skipped");
+    append(&tp, &attach_with(None));
+    let (code, out) = at();
+    assert_eq!(code, 2, "the newer model-less attachment replaces the haiku kept in the state: {out}");
+    assert!(out.contains("or advisor unknown unranked."), "{out}");
+}
