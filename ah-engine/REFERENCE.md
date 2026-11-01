@@ -3135,7 +3135,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
 | `guard_rules.enum_digest_tier` | `7 entries` |  |  | Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget. |
 | `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
-| `guard_rules.exempt` | `42 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording. |
+| `guard_rules.exempt` | `46 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry). |
 | `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
@@ -5473,7 +5473,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.agent_subdirs` | `workflows` |  |  | Subdirectories of a session's subagents directory that hold one more directory level of agent transcripts (Claude Code puts workflow agents in subagents/workflows/<run>/agent-<id>.jsonl). |
 | `advisor.agent_transcript_keys` | `agent_transcript_path` |  |  | Hook payload fields that may carry a subagent's own transcript path. |
 | `advisor.agent_transcript_tpl` | `{dir}/{session}/subagents/agent-{agent}.jsonl` |  |  | Where a subagent's own transcript lies when the payload names none. Placeholders: {dir} (the main transcript's directory), {session} (its file name without .jsonl), {agent} (the agent id). A subagent is never judged by the main transcript; with no own transcript its rules stay silent. |
-| `advisor.attachment` | `6 entries` |  |  | The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. |
+| `advisor.attachment` | `7 entries` |  |  | The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. Its `model_key` names the advisor model (read for the rank rule, advisor.model_ranks). |
 | `advisor.block_types` | `tool_use, server_tool_use` |  |  | Transcript content-block types that are a tool call (the advisor is a server tool, so its block may be server_tool_use). |
 | `advisor.brief_head_bytes` | `2000` |  | bytes | How much of a dispatch prompt (from its start) is classified when the description names no thinking type. |
 | `advisor.dispatch_tools` | `Agent, Task` |  |  | Tool names that dispatch an agent: the thinking and second-attempt rules judge their brief (description, prompt). |
@@ -5486,6 +5486,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.kind_availability` | `advisor_availability` |  |  | Advisory kind (counters) of why the advisor rules stayed silent or how availability was established: the names of advisor.silence_metrics. |
 | `advisor.kind_consult` | `advisor_consult` |  |  | Advisory kind (counter) of the advisor calls seen in the transcript. Adherence monitoring (phase 2): the engine report's `advisory` section shows, per session-independent total, advisor_consult.consult (consults), advisor_retry.armed (failures watched), advisor_retry.consulted (consulted after the failure), advisor_retry.injected (retry blocks fired), advisor_retry.acted_on (blocks followed by a consult), advisor_review.injected and .suppressed (non-flagship review/plan spawns blocked and held back). The same tallies are kept per session in the retry state file. |
 | `advisor.kind_plan` | `advisor_plan` |  |  | Advisory kind (counters and cap) of the plan rule. |
+| `advisor.kind_rank` | `advisor_guard` |  |  | Advisory kind (counters) of the rank rule: see advisor.rank_metrics. |
 | `advisor.kind_retry` | `advisor_retry` |  |  | Advisory kind (counters and cap) of the retry rule. |
 | `advisor.kind_review` | `advisor_review` |  |  | Advisory kind (counters and cap) of the review rule. |
 | `advisor.kind_say_do` | `advisor_say_do` |  |  | Advisory kind (counters) of the say-do rule: miss (an announced advisor call that did not follow), blocked. |
@@ -5506,10 +5507,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.metric_dispatch_tpl` | `dispatch_{type}` |  |  | Counter name of a thinking dispatch of one type. Placeholder: {type}. |
 | `advisor.metric_latency_gt_tpl` | `latency_gt_{s}s` |  |  | Counter name of a consult latency past the last bucket. Placeholder: {s}. |
 | `advisor.metric_latency_le_tpl` | `latency_le_{s}s` |  |  | Counter name of a consult-latency bucket. Placeholder: {s}. |
-| `advisor.msg_plan_instead` | `Call the advisor on this plan first, then write it.` |  |  | What to do instead for the plan rule. |
+| `advisor.model_ranks` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Model family ranks, matched case-insensitively as a substring of the model id (so a version bump needs no edit); the highest rank is the strongest model. The advisor model comes from the advisor_tool attachment (advisor.attachment.model_key), else the settings key advisor.settings_key (an alias such as opus matches too). No match, or a name that matches more than one family (sonnet-opus), = unknown rank = the guard stays on. The main and advisor model count only when read in the current read window: any discarded input (a gap, an oversized or unparsable line, a truncated tail) makes both unknown until a fresh entry is read; sidechain entries never set the main model. |
+| `advisor.msg_plan_instead` | `Call the advisor tool once on this plan first, then write it.` |  |  | What to do instead for the plan rule. |
 | `advisor.msg_plan_what` | `A plan is being written with no advisor call since the task began.` |  |  | Block text of the plan rule. |
+| `advisor.msg_plan_what_lower` | `Plan written with no advisor call: main {model} is below advisor {advisor}.` |  |  | Block text of the plan rule when the main model ranks below the advisor model (the fact and what was done; the hook's line is capped near 115 characters). Placeholders: {model}, {advisor}. |
+| `advisor.msg_plan_what_unknown` | `Plan written with no advisor call: main {model} or advisor {advisor} unranked.` |  |  | Block text of the plan rule when the main or advisor model could not be ranked, so the guard stays on. Placeholders: {model}, {advisor} (a label when unknown). |
 | `advisor.msg_retry_instead` | `Consult the advisor on the failure before editing again.` |  |  | What to do instead for the retry rule. |
 | `advisor.msg_retry_what` | `{file} is being edited again after a failed test or build, with no advisor ca...` |  |  | Block text of the retry rule. Placeholder: {file}. |
+| `advisor.msg_retry_what_lower` | `Re-edit of {file} after a failed run, no advisor call: main {model} is below ...` |  |  | Block text of the retry rule when the main model ranks below the advisor model. Placeholders: {file}, {model}, {advisor}. |
+| `advisor.msg_retry_what_unknown` | `Re-edit of {file} after a failed run, no advisor call: main {model} or adviso...` |  |  | Block text of the retry rule when the main or advisor model could not be ranked, so the guard stays on. Placeholders: {file}, {model}, {advisor}. |
 | `advisor.msg_review_instead` | `Use an Opus, Fable or Codex agent for the review, or call the advisor yoursel...` |  |  | What to do instead for the review rule. |
 | `advisor.msg_review_what` | `A review-shaped agent on {model} is not allowed while the advisor is available.` |  |  | Block text of the review rule. Placeholder: {model}. |
 | `advisor.msg_say_do_instead` | `Call the advisor tool now, or say plainly that you are not consulting it. Blo...` |  |  | What to do instead for the say-do rule. |
@@ -5527,6 +5533,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.payload_tool_keys` | `tools, available_tools, allowed_tools` |  |  | Hook payload fields that may list the tools available to the session (an array of names or of objects with a name); the advisor counts as available when one names it. |
 | `advisor.plan_file_re` | `(?i)(?:^\|/)PLAN\.md$\|(?:^\|/)(?:\.omc/plans\|\.claude/plans\|\.anti-hall/plans\|p...` |  |  | Regular expression (Rust syntax) of a file path that is a plan file: PLAN.md anywhere, or a markdown file in a plans directory. |
 | `advisor.plan_tools` | `ExitPlanMode` |  |  | Tool names that always count as writing a plan. |
+| `advisor.rank_metrics` | `3 entries` |  |  | Counter names of advisor.kind_rank: skipped (the main model ranks equal or higher than the advisor model: the guard stayed silent), applied (the main ranks lower: the guard applied), applied_unknown (the main or advisor model could not be ranked: the guard applied). |
+| `advisor.rank_unknown_label` | `unknown` |  |  | Label for a model that is not known. |
 | `advisor.result_types` | `advisor_tool_result` |  |  | Transcript content-block types that are an advisor result (the server tool's answer carries a tool_use_id, not a name); one counts as an advisor call. |
 | `advisor.review_signals` | `review, reviewer, critique, critic` |  |  | Token phrases that make an agent spawn review-shaped (matched against its description and agent type like model_routing.complex). Reviews and plans only: audits and scans may run on a cheaper model. |
 | `advisor.say_do_re` | `(?i)\b(?:i\W?ll\|i will\|let me\|i\W?m going to\|going to\|will now\|next,? i)\s+(?...` |  |  | Regular expression (Rust syntax) of assistant text that announces an advisor call. |
@@ -5534,15 +5542,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.settings_files` | `2 entries, 2 entries, 2 entries, 2 entries, 2 entries` |  |  | Claude Code settings files that may set an advisor model (root: home = the user's home, cwd = the session's working directory, abs = the path as given). Read only when the head of the transcript was never read (so a missing advisor_tool attachment proves nothing); a set advisor.settings_key then counts as the advisor being available. |
 | `advisor.settings_key` | `advisorModel` |  |  | Top-level key of a Claude Code settings file that names the advisor model; a non-empty string means an advisor is configured. |
 | `advisor.settings_read_max_bytes` | `1048576` |  | bytes | Most bytes of one settings file read (a longer file is not parsed and counts as not configured). |
-| `advisor.silence_metrics` | `10 entries` |  |  | Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides). |
+| `advisor.sidechain_key` | `isSidechain` |  |  | Transcript entry field that is true for a subagent (sidechain) entry; such an entry never sets the main model of the rank rule. |
+| `advisor.silence_metrics` | `11 entries` |  |  | Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides), line_discarded (a transcript line was skipped as oversized, unparsable or still being written: the main and advisor model become unknown). |
 | `advisor.state_ext` | `.json` |  |  | File-name extension of the per-session retry state. |
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
 | `advisor.summary` | `Advisor sessions only: blocks once a plan written with no advisor call this t...` |  |  | One-line description of the advisor-guard check in the generated reference. |
 | `advisor.sw_plan` | `6 entries` |  |  | Blocks a plan written with no advisor call once. Default on, advisor sessions only. |
+| `advisor.sw_rank` | `6 entries` |  |  | Skip if main >= advisor; unknown = guard on. |
 | `advisor.sw_retry` | `6 entries` |  |  | Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only. |
 | `advisor.sw_review` | `6 entries` |  |  | Blocks a review agent on a non-flagship model once. Default on, advisor sessions only. |
-| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only. |
-| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only. |
+| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn announcing an advisor call not made. Default on, advisor sessions only. |
+| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking work sent by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only. |
 | `advisor.tasks_max` | `32` |  |  | Most tasks (owner messages) and issue keys one agent's state keeps (the oldest go first). |
 | `advisor.test_cmd_re` | `\b(?:cargo\s+(?:\+\S+\s+)?(?:test\|nextest\|build\|check\|clippy)\|npm\s+(?:run\s+...` |  |  | Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run. |
 | `advisor.test_file_re` | `(?i)(?:^\|/)(?:tests?\|__tests__\|specs?)/\|[._-](?:test\|spec)\.[A-Za-z0-9]+$\|_te...` |  |  | Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run). |
@@ -5898,7 +5908,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `389 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `390 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8315,7 +8325,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `395 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `396 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
