@@ -32,6 +32,7 @@ use event::{Event, Kind, Outcome};
 use persist::{Flushed, TelDb};
 use recorder::Recorder;
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 /// Metrics plus the impact ledger.
@@ -144,6 +145,23 @@ fn block_text(v: &Verdict) -> Option<&str> {
         Verdict::Routed(inner, _) => block_text(inner),
         _ => None,
     }
+}
+
+/// What a funnel report is asked for (`telemetry funnel` / `telemetry report`).
+#[derive(Debug, Clone, Default)]
+pub struct ReportAsk {
+    /// The `--by` split.
+    pub by: String,
+    /// `--since` (or the older `--window`): a length back from now.
+    pub since: String,
+    /// `--from`: an absolute start.
+    pub from: String,
+    /// `--to`: an absolute end.
+    pub to: String,
+    /// Add the latency and failure sections.
+    pub full: bool,
+    /// The counters are the last stored snapshot, not a running daemon's.
+    pub stored: bool,
 }
 
 impl Telemetry {
@@ -450,6 +468,7 @@ impl Telemetry {
         let kept = self.store.save_metrics(now, &body);
         if kept {
             self.snapshot_ms.store(now, std::sync::atomic::Ordering::SeqCst);
+            lk(&self.metrics).clear_rejected(); // the snapshot carried what the restore refused
         }
         kept
     }
@@ -477,37 +496,159 @@ impl Telemetry {
         json!({"running": true, "persisted": persisted, "snapshot_ms": snap, "note": note, "metrics": m.snapshot(check)})
     }
 
-    /// The `telemetry funnel` body: the funnel stages and channels per check, split by `by` (a comma list of `delivery.report_dims`),
-    /// for the last `window` days (less the metrics snapshot taken at the window start) or, with no window, since the counters began.
+    /// The `telemetry funnel` body: [`Telemetry::funnel_report`] for the funnel alone, over the last `window` (or lifetime when empty).
     pub fn funnel_json(&self, by: &str, window: &str) -> Value {
-        let by = match crate::funnel::parse_by(by) {
+        self.funnel_report(&ReportAsk { by: by.into(), since: window.into(), ..ReportAsk::default() })
+    }
+
+    /// The funnel report (B4): the funnel stages and channels per check, split by `ask.by` (a comma list of `delivery.report_dims`),
+    /// over the window of `ask` (`--since`, or `--from` / `--to`; lifetime when none is given). A window is the end snapshot less the
+    /// start snapshot: the start is the last stored snapshot at or before the asked start, from the finest rollup resolution that keeps
+    /// one that old; the end is the live counters, or with `--to` the last stored snapshot at or before it. `ask.full` adds the
+    /// latency and failure sections (`delivery.report_sections`).
+    pub fn funnel_report(&self, ask: &ReportAsk) -> Value {
+        let v = self.funnel_report_body(ask);
+        let outcome = if v.get("error").is_some() {
+            "error"
+        } else if v["funnel"]["window"]["resets"].as_u64() > Some(0) {
+            "reset"
+        } else if v["funnel"]["window"]["complete"] == false {
+            "partial"
+        } else {
+            "ok"
+        };
+        self.with_metrics(|m| m.inc("funnel_reports", &[("outcome", outcome)]));
+        v
+    }
+
+    fn funnel_report_body(&self, ask: &ReportAsk) -> Value {
+        use crate::freport;
+        let by = match crate::funnel::parse_by(&ask.by) {
             Ok(b) => b,
             Err(e) => return json!({"error": e}),
         };
-        let days = if window.trim().is_empty() {
-            None
-        } else {
-            match report::check_window(window) {
-                Ok(d) => Some(d),
-                Err(e) => return json!({"error": e}),
-            }
+        let timed = [&ask.since, &ask.from, &ask.to].iter().any(|s| !s.trim().is_empty());
+        if (timed || ask.full) && !freport::enabled() {
+            return json!({"error": defaults::text("delivery.report_off")});
+        }
+        let now = now_ms();
+        let span = match freport::resolve_span(&ask.since, &ask.from, &ask.to, now) {
+            Ok(s) => s,
+            Err(e) => return json!({"error": e}),
         };
-        let live = {
+        // a running daemon's live counters take what the process noted since the last drain (fail-opens, bumps with no handle); a
+        // report of stored snapshots reads the snapshots as they are
+        if !ask.stored {
+            crate::failopen::drain_into(self);
+        }
+        // a report of stored snapshots reads the newest snapshot AS STORED (never through the restore, which drops what it cannot load);
+        // a daemon's report reads its live registry
+        let (live, stored_ms) = if ask.stored {
+            self.store.load_metrics().map_or_else(|| (json!({"counters": {}, "histograms": {}}), 0), |(ts, body)| (body, ts))
+        } else {
             let mut m = lk(&self.metrics);
             self.rec.mirror_into(&mut m);
             crate::metrics::drain_pending(&mut m);
-            m.export()
+            (m.export(), self.snapshot_ms.load(std::sync::atomic::Ordering::SeqCst))
         };
-        let (baseline, complete) = match days {
-            None => (None, true),
-            Some(d) => match self.store.rollup_at(defaults::text("delivery.report_rollup"), now_ms().saturating_sub(d * event::DAY_MS)) {
+        let (mut end, mut end_ms) = (live, if ask.stored { stored_ms } else { now });
+        if let Some(to) = span.to_ms {
+            match freport::pick_resolution(now.saturating_sub(to)).and_then(|r| self.store.rollup_at(r, to)) {
+                Some((ts, body, true)) => (end, end_ms) = (body, ts),
+                _ => return json!({"error": defaults::render("delivery.report_no_end_snapshot", &[("to", &to)])}),
+            }
+        }
+        let resolution = span.from_ms.and_then(|f| freport::pick_resolution(now.saturating_sub(f)));
+        let (baseline, complete) = match (span.from_ms, resolution) {
+            (Some(f), Some(r)) => match self.store.rollup_at(r, f) {
                 Some((ts, body, exact)) => (Some((ts, body)), exact),
                 None => (None, false),
             },
+            (Some(_), None) => (None, false),
+            (None, _) => (None, true),
         };
-        let mut v = crate::funnel::report(&live, baseline, complete, &by, days);
+        let start = baseline.as_ref().map(|(_, b)| b);
+        // one comparison of the two snapshots feeds every section, so a restarted series is flagged in all of them
+        let diff = freport::Diff::new(&end, start);
+        let mut v = crate::funnel::report(&diff, baseline.as_ref().map(|(ts, _)| *ts), complete, &by, span.from_ms.is_some());
+        let base_ms = baseline.as_ref().map(|(ts, _)| *ts);
+        let mut notes = Vec::new();
+        if diff.resets > 0 {
+            notes.push(defaults::render("delivery.report_note_reset", &[("resets", &diff.resets)]));
+        }
+        if diff.mismatched > 0 {
+            notes.push(defaults::render("delivery.report_note_mismatch", &[("n", &diff.mismatched)]));
+        }
+        if let (Some(f), Some(b), Some(r)) = (span.from_ms, base_ms, resolution)
+            && complete
+            && b < f
+            && f - b > 0
+        {
+            notes.push(defaults::render("delivery.report_note_lag", &[("lag_ms", &(f - b)), ("resolution", &r)]));
+        }
+        let empty = base_ms.is_some_and(|b| b >= end_ms);
+        if empty {
+            notes.push(defaults::text("delivery.report_note_empty").to_string());
+        }
+        if ask.full {
+            for section in defaults::list("delivery.report_sections") {
+                match section {
+                    "latency" => v["latency"] = freport::latency(&diff),
+                    "failures" => v["failures"] = freport::failures(&diff),
+                    _ => {}
+                }
+            }
+        }
+        // the window is decided by its ROWS: a check is partial when any row of any section is, and the window is complete only when
+        // no row is (and nothing else is unproven: an exact start, no restart or refused series, no capped sum, not empty)
+        let mut by_check: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut any_row = false;
+        let mut rows_of = |rows: Option<&Vec<Value>>| {
+            for r in rows.into_iter().flatten().filter(|r| r["partial"] == true) {
+                any_row = true;
+                let reasons = by_check.entry(r["check"].as_str().unwrap_or_default().to_string()).or_default();
+                reasons.extend(r["partial_reasons"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string));
+            }
+        };
+        rows_of(v["funnel"]["rows"].as_array());
+        rows_of(v["latency"]["rows"].as_array());
+        rows_of(v["failures"]["rows"].as_array());
+        any_row |= v["failures"]["partial"] == true;
+        for c in &diff.partial_checks {
+            by_check.entry(c.clone()).or_default().extend(diff.reasons_of(c).into_iter().map(str::to_string));
+        }
+        let texts = defaults::raw("delivery.report_reason_texts");
+        let mut by_reason: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (c, rs) in &by_check {
+            for r in rs {
+                by_reason.entry(r.clone()).or_default().push(c.clone());
+            }
+        }
+        for r in diff.global.iter().map(|r| r.to_string()) {
+            by_reason.insert(r, vec![defaults::text("delivery.report_all_checks").to_string()]);
+        }
+        for (r, checks) in &by_reason {
+            let why = texts.get(r.as_str()).and_then(defaults::V::as_str).unwrap_or(r.as_str());
+            notes.push(defaults::render("delivery.report_note_partial_checks", &[("why", &why), ("checks", &checks.join(", "))]));
+        }
+        if diff.saturated() {
+            notes.push(defaults::text("delivery.report_note_saturated").to_string());
+        }
+        {
+            let w = &mut v["funnel"]["window"];
+            w["from_ms"] = json!(span.from_ms);
+            w["to_ms"] = json!(span.to_ms);
+            w["end_ms"] = json!(end_ms);
+            w["resolution"] = json!(resolution);
+            w["empty"] = json!(empty);
+            w["saturated"] = json!(diff.saturated());
+            w["partial_checks"] = json!(by_check.keys().collect::<Vec<_>>());
+            w["partial_reasons"] = json!(by_check);
+            w["complete"] = json!(complete && diff.clean() && !empty && !any_row && by_check.is_empty());
+            w["notes"] = json!(notes);
+        }
         if let Some(o) = v.as_object_mut() {
-            o.insert("running".into(), json!(true));
+            o.insert("running".into(), json!(!ask.stored));
         }
         v
     }

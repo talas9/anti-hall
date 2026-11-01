@@ -295,6 +295,10 @@ value = { kind = "counter", unit = "answers", labels = ["check", "model", "proje
 doc = "Per check, model, project and output channel (delivery.channel_label: block, soft_block, advisory, system_message, stderr, plain), how many answers used it. An answer using several channels counts once in each. Lifetime. Off with delivery.funnel_enabled = 0."
 value = { kind = "counter", unit = "answers", labels = ["check", "channel", "model", "project"] }
 
+[metric.funnel_reports]
+doc = "Funnel reports (`telemetry report`, or `telemetry funnel` with a time window) the running daemon computed (B4), by outcome: ok (the window start and end were read from stored snapshots, or no window was asked), partial (no stored snapshot was as old as the window start), reset (some series went down inside the window, the counters restarted), error (a bad flag, no snapshot at --to, or the report switched off with delivery.report_enabled = 0). A report run without a daemon is not counted (its process is gone). Lifetime."
+value = { kind = "counter", unit = "reports", labels = ["outcome"] }
+
 [metric.context_spills]
 doc = "Joined hook contexts that were over the host's inline cap and spilled to a file (#311), by event. Lifetime; `status` delivery.spills_by_event."
 value = { kind = "counter", unit = "spills", labels = ["event"] }

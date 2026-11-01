@@ -40,17 +40,17 @@ pub fn window_days(requested: &str) -> u64 {
     parse_window(requested).unwrap_or_else(|| defaults::num("telemetry.default_window_days"))
 }
 
-/// The upper bound of the bucket holding rank `q` of `hist`; `None` when it falls in the overflow bucket (above the
-/// largest bound) or there is nothing recorded.
-pub fn quantile(hist: &[u64], bounds: &[u64], q: f64) -> Option<u64> {
-    let total: u64 = hist.iter().sum();
+/// The upper bound of the bucket holding quantile `permille` / 1000 of `hist` (integer rank arithmetic, no overflow); `None` when
+/// it falls in the overflow bucket (above the largest bound) or there is nothing recorded.
+pub fn quantile(hist: &[u64], bounds: &[u64], permille: u64) -> Option<u64> {
+    let total = hist.iter().fold(0u64, |a, c| a.saturating_add(*c));
     if total == 0 {
         return None;
     }
-    let rank = ((total as f64) * q).ceil().max(1.0) as u64;
-    let mut seen = 0;
+    let rank = crate::metrics::quantile_rank(total, permille);
+    let mut seen = 0u64;
     for (i, c) in hist.iter().enumerate() {
-        seen += c;
+        seen = seen.saturating_add(*c);
         if seen >= rank {
             return bounds.get(i).copied();
         }
@@ -83,7 +83,7 @@ fn hook_injected(rows: &[DayRow]) -> u64 {
 
 fn add(m: &mut Map<String, Value>, key: &str, by: u64) {
     let cur = m.get(key).and_then(Value::as_u64).unwrap_or(0);
-    m.insert(key.to_string(), json!(cur + by));
+    m.insert(key.to_string(), json!(cur.saturating_add(by)));
 }
 
 /// The events of `kind` in the last `days` days, flushed and not yet flushed, oldest first, at most `telemetry.summary_event_limit`.
@@ -299,7 +299,7 @@ pub fn summary_json(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_
             json!({
                 "k": k, "h": h, "n": d.n, "outcomes": outcomes_of.get(&(k.clone(), h.clone())), "injected_bytes": d.ib_sum,
                 "mean_us": d.us_sum.checked_div(d.n).unwrap_or(0),
-                "p50_us": quantile(&d.hist, &bounds, 0.5), "p95_us": quantile(&d.hist, &bounds, 0.95), "p99_us": quantile(&d.hist, &bounds, 0.99),
+                "p50_us": quantile(&d.hist, &bounds, 500), "p95_us": quantile(&d.hist, &bounds, 950), "p99_us": quantile(&d.hist, &bounds, 990),
             })
         })
         .collect();
@@ -471,9 +471,13 @@ mod tests {
     #[test]
     fn quantiles_are_bucket_upper_bounds_and_null_above_the_last() {
         let b = [100, 1000];
-        assert_eq!(quantile(&[9, 1, 0], &b, 0.5), Some(100));
-        assert_eq!(quantile(&[9, 1, 0], &b, 0.95), Some(1000));
-        assert_eq!(quantile(&[0, 0, 5], &b, 0.5), None);
-        assert_eq!(quantile(&[0, 0, 0], &b, 0.5), None);
+        assert_eq!(quantile(&[9, 1, 0], &b, 500), Some(100));
+        assert_eq!(quantile(&[9, 1, 0], &b, 950), Some(1000));
+        assert_eq!(quantile(&[0, 0, 5], &b, 500), None);
+        assert_eq!(quantile(&[0, 0, 0], &b, 500), None);
+        // counts above 2^53: the median of 2^52 and 2^52 + 1 observations sits in the second bucket (rank 2^52 + 1 of 2^53 + 1)
+        let big = 1u64 << 52;
+        assert_eq!(quantile(&[big, big + 1, 0], &b, 500), Some(1000), "a float rank would round to the first bucket");
+        assert_eq!(quantile(&[u64::MAX, u64::MAX, 0], &b, 990), Some(100), "a sum past u64 stops at the maximum, no panic");
     }
 }

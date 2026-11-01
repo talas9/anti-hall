@@ -417,7 +417,9 @@ fn cmd_impact(p: &Parsed) -> i32 {
 
 fn cmd_telemetry(p: &Parsed) -> i32 {
     let (v, code) = crate::telemetry::cli::run(&p.rest);
-    emit(p, human(&v), v);
+    // the weekly report prints as tables unless --json is asked
+    let weekly = p.rest.first().is_some_and(|w| w == defaults::text("delivery.report_weekly_verb")) && v.get("error").is_none();
+    emit(p, if weekly { crate::freport::table(&v) } else { human(&v) }, v);
     code
 }
 

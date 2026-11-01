@@ -33,15 +33,15 @@ impl Hist {
         self.max = self.max.max(v);
     }
 
-    /// Upper bound of the bucket holding rank `q` (0..1); values above the last bound report the observed maximum.
-    fn quantile(&self, bounds: &[u64], q: f64) -> u64 {
+    /// Upper bound of the bucket holding quantile `permille` / 1000; values above the last bound report the observed maximum.
+    fn quantile(&self, bounds: &[u64], permille: u64) -> u64 {
         if self.count == 0 {
             return 0;
         }
-        let rank = ((self.count as f64) * q).ceil().max(1.0) as u64;
-        let mut seen = 0;
+        let rank = quantile_rank(self.count, permille);
+        let mut seen = 0u64;
         for (i, c) in self.buckets.iter().enumerate() {
-            seen += c;
+            seen = seen.saturating_add(*c);
             if seen >= rank {
                 return bounds.get(i).copied().unwrap_or(self.max);
             }
@@ -59,6 +59,9 @@ pub struct Metrics {
     series_per_metric: BTreeMap<String, usize>,
     /// Per metric, the series past `telemetry.max_series` that kept their `telemetry.overflow_keep_labels` value.
     kept_per_metric: BTreeMap<String, usize>,
+    /// Series a restored snapshot held that could not be loaded (key -> [`why`] word): exported once so the loss shows in the next
+    /// snapshot, then cleared ([`Metrics::clear_rejected`]). Bounded by `telemetry.max_series`.
+    rejected: BTreeMap<String, &'static str>,
 }
 
 /// Series key: `name` then `|label=value` pairs in label order.
@@ -89,8 +92,76 @@ fn is_byte_metric(name: &str) -> bool {
     defaults::has(&key) && defaults::raw(&key).str_field("unit") == defaults::text("telemetry.byte_unit")
 }
 
+/// The 1-based rank of quantile `permille` / 1000 among `total` observations (at least 1), in integer arithmetic: a float rounds the
+/// product of a count above 2^53 and picks a neighbouring bucket.
+pub fn quantile_rank(total: u64, permille: u64) -> u64 {
+    u64::try_from((u128::from(total) * u128::from(permille)).div_ceil(1000)).unwrap_or(u64::MAX).max(1)
+}
+
+/// Why a stored series cannot be compared: the words of a report's `partial_reasons`, read from `delivery.report_reason_words`
+/// (their texts are `delivery.report_reason_texts`, keyed by the word).
+pub mod why {
+    fn word(key: &str) -> &'static str {
+        crate::defaults::raw("delivery.report_reason_words").str_field(key)
+    }
+    /// A counter or bucket went down between the two snapshots: the series restarted.
+    pub fn reset() -> &'static str {
+        word("reset")
+    }
+    /// A value that is not a count (negative, fractional, text) or a field that is missing.
+    pub fn invalid() -> &'static str {
+        word("invalid")
+    }
+    /// A histogram whose bucket count is not the supported layout's.
+    pub fn layout() -> &'static str {
+        word("layout")
+    }
+    /// A histogram whose count is not the total of its buckets.
+    pub fn inconsistent() -> &'static str {
+        word("inconsistent")
+    }
+    /// A value at the largest count `u64` holds: it stopped counting there.
+    pub fn saturated() -> &'static str {
+        word("saturated")
+    }
+    /// A series the start snapshot has and the end lost.
+    pub fn vanished() -> &'static str {
+        word("vanished")
+    }
+    /// A series the engine refused when it restored a snapshot (carried in the next snapshot so the loss is seen).
+    pub fn rejected() -> &'static str {
+        word("rejected")
+    }
+    /// A snapshot that is not the shape the engine stores (not an object, or counters / histograms that are not objects).
+    pub fn unreadable() -> &'static str {
+        word("unreadable")
+    }
+}
+
+/// A histogram as stored, checked: `(buckets, count, max, saturated)`, or the [`why`] word it cannot be used for. Nothing is coerced:
+/// a missing or non-count field is `INVALID`, a bucket count other than the supported layout's is `LAYOUT`, a count that is not the total
+/// of its buckets is `INCONSISTENT`; a bucket or count at `u64::MAX` is usable but reported saturated.
+pub fn check_hist(name: &str, x: &Value) -> Result<(Vec<u64>, u64, u64, bool), &'static str> {
+    let buckets: Vec<u64> =
+        x.get("buckets").and_then(Value::as_array).and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<u64>>>()).ok_or(why::invalid())?;
+    let count = x.get("count").and_then(Value::as_u64).ok_or(why::invalid())?;
+    let max = match x.get("max") {
+        None => 0,
+        Some(m) => m.as_u64().ok_or(why::invalid())?,
+    };
+    if buckets.len() != bounds_for(name).len() + 1 {
+        return Err(why::layout());
+    }
+    let total = buckets.iter().try_fold(0u64, |a, n| a.checked_add(*n));
+    let saturated = count == u64::MAX || max == u64::MAX || buckets.contains(&u64::MAX) || total.is_none();
+    if total.is_some_and(|t| t != count) || (total.is_none() && count != u64::MAX) {
+        return Err(why::inconsistent());
+    }
+    Ok((buckets, count, max, saturated))
+}
+
 /// The bucket bounds of the histogram `name`.
-fn bounds_for(name: &str) -> Vec<u64> {
+pub fn bounds_for(name: &str) -> Vec<u64> {
     if is_byte_metric(name) { byte_bounds() } else { bucket_bounds() }
 }
 
@@ -240,29 +311,66 @@ impl Metrics {
     pub fn export(&self) -> Value {
         let hists: Map<String, Value> =
             self.hists.iter().map(|(k, h)| (k.clone(), json!({"buckets": h.buckets, "count": h.count, "sum": h.sum, "max": h.max}))).collect();
-        json!({"counters": self.counters, "histograms": hists})
+        let mut out = json!({"counters": self.counters, "histograms": hists});
+        if !self.rejected.is_empty() {
+            out["rejected"] = json!(self.rejected);
+        }
+        out
     }
 
-    /// Load a snapshot made by [`Metrics::export`]: its counters and histograms become the starting values. A histogram
-    /// whose bucket count no longer matches `telemetry.latency_buckets_us` is skipped (its buckets would be misread).
+    /// Forget the series [`Metrics::import`] refused, once a snapshot has carried them.
+    pub fn clear_rejected(&mut self) {
+        self.rejected.clear();
+    }
+
+    /// The series [`Metrics::import`] refused and no snapshot has carried yet.
+    pub fn rejected(&self) -> &BTreeMap<String, &'static str> {
+        &self.rejected
+    }
+
+    /// Remember a series the restore refused (bounded: past `telemetry.max_series` they share the overflow label's key).
+    fn reject(&mut self, key: &str, reason: &'static str) {
+        let key = if self.rejected.contains_key(key) || self.rejected.len() < defaults::num("telemetry.max_series") as usize {
+            key.to_string()
+        } else {
+            defaults::text("telemetry.overflow_label").to_string()
+        };
+        self.rejected.insert(key, reason);
+    }
+
+    /// Load a snapshot made by [`Metrics::export`]: its counters and histograms become the starting values. A series that cannot be
+    /// loaded as it is (a value that is not a count, a histogram whose bucket layout no longer matches `telemetry.latency_buckets_us`
+    /// or whose count is not the total of its buckets) is not loaded but NOT dropped silently: it is kept in [`Metrics::rejected`]
+    /// with the reason and appears in the next snapshot, so a report over the restart names its check as partial.
     pub fn import(&mut self, v: &Value) {
         if let Some(c) = v.get("counters").and_then(Value::as_object) {
             for (k, n) in c {
                 if let Some(n) = n.as_u64() {
                     self.track(k);
                     self.counters.insert(k.clone(), n);
+                } else {
+                    self.reject(k, why::invalid());
                 }
             }
         }
         if let Some(h) = v.get("histograms").and_then(Value::as_object) {
             for (k, x) in h {
-                let buckets: Vec<u64> = x.get("buckets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
-                if buckets.len() != bounds_for(k.split('|').next().unwrap_or("")).len() + 1 {
-                    continue;
+                match check_hist(k.split('|').next().unwrap_or(""), x) {
+                    Ok((buckets, count, max, _)) => {
+                        let sum = x.get("sum").and_then(Value::as_u64).unwrap_or(0);
+                        self.track(k);
+                        self.hists.insert(k.clone(), Hist { buckets, count, sum, max });
+                    }
+                    Err(reason) => self.reject(k, reason),
                 }
-                let n = |f: &str| x.get(f).and_then(Value::as_u64).unwrap_or(0);
-                self.track(k);
-                self.hists.insert(k.clone(), Hist { buckets, count: n("count"), sum: n("sum"), max: n("max") });
+            }
+        }
+        if let Some(r) = v.get("rejected").and_then(Value::as_object) {
+            // a loss an earlier restore already recorded and no snapshot has outlived: keep it one more round
+            for (k, w) in r {
+                if let Some(w) = [why::invalid(), why::layout(), why::inconsistent(), why::rejected()].into_iter().find(|x| w.as_str() == Some(*x)) {
+                    self.reject(k, w);
+                }
             }
         }
     }
@@ -305,13 +413,13 @@ impl Metrics {
                 if is_byte_metric(&name) {
                     return json!({
                         "name": name, "labels": labels, "count": h.count, "mean_bytes": mean, "max_bytes": h.max,
-                        "p50_bytes": h.quantile(&bounds, 0.50), "p95_bytes": h.quantile(&bounds, 0.95), "p99_bytes": h.quantile(&bounds, 0.99),
+                        "p50_bytes": h.quantile(&bounds, 500), "p95_bytes": h.quantile(&bounds, 950), "p99_bytes": h.quantile(&bounds, 990),
                         "quantile_note": defaults::text("msg.metrics_quantile_note"),
                     });
                 }
                 json!({
                     "name": name, "labels": labels, "count": h.count, "mean_us": mean, "max_us": h.max,
-                    "p50_us": h.quantile(&bounds, 0.50), "p95_us": h.quantile(&bounds, 0.95), "p99_us": h.quantile(&bounds, 0.99),
+                    "p50_us": h.quantile(&bounds, 500), "p95_us": h.quantile(&bounds, 950), "p99_us": h.quantile(&bounds, 990),
                     "quantile_note": defaults::text("msg.metrics_quantile_note"),
                 })
             })
@@ -426,7 +534,9 @@ mod tests {
         bad["histograms"]["check_latency_us|check=git"]["buckets"] = json!([1, 2]);
         let mut o = Metrics::default();
         o.import(&bad);
-        assert_eq!(o.snapshot("")["histograms"].as_array().unwrap().len(), 0, "a histogram with other buckets is skipped");
+        assert_eq!(o.snapshot("")["histograms"].as_array().unwrap().len(), 0, "a histogram with other buckets is not loaded");
+        assert_eq!(o.rejected().get("check_latency_us|check=git"), Some(&why::layout()), "but it is disclosed, attributed to its check");
+        assert_eq!(o.export()["rejected"]["check_latency_us|check=git"], "layout", "and the next snapshot carries it");
     }
 
     #[test]

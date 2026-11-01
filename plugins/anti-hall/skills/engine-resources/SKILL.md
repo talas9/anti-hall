@@ -29,7 +29,7 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine shadow-run` | `<job file>` Internal: the detached half of the Node shadow | main, codex, workspace, subagent |
 | `ah-engine status` | `[--memory] [--threads] [--migration]` Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules,... | main, codex, workspace, subagent |
 | `ah-engine stop` | `` Ask the daemon to drain and exit | main, codex |
-| `ah-engine telemetry` | `[summary\|events\|rollup\|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>] [--mistake <feature> <action> <target> <kind>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and... | main, codex, workspace, subagent (owner args: rollup) |
+| `ah-engine telemetry` | `[summary\|events\|rollup\|actions [feature]\|funnel\|report] [--window <7d>] [--since <6h\|7d>] [--from <time>] [--to <time>] [--by <model,project>] [--kind <k>] [--limit <n>] [--mistake <feature> <action> <target> <kind>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and... | main, codex, workspace, subagent (owner args: rollup) |
 | `ah-engine version` | `` Print the version this build reports | main, codex, workspace, subagent |
 | `ah-engine web` | `[open\|status] [--no-open] [--json]` The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is... | main, codex |
 | `ah-engine mcp-reaper` | `run [--dry-run]` The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job... | main, codex |
