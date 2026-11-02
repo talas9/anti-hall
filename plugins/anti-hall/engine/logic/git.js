@@ -2000,14 +2000,20 @@ function pushCreditVerdict(ev, lastCdDir) {
     }
     // a cd or pushd whose target the shell expands at run time (cd -, cd '-', cd "$X", a bare cd) leaves the directory unknown
     if (scopeOn) {
-      const dm = new RegExp(ah.cfg('git.push_dynamic_cd_re')).exec(S.raw);
-      if (dm) return gmKey('msg_push_dynamic_repo', { arg: dm[0].replace(/^[\s;&|(]+/, '') });
+      const wordRe = new RegExp(ah.cfg('git.push_cd_word_re'), 'g');
+      const litRe = new RegExp(ah.cfg('git.push_cd_literal_re'));
+      let dm;
+      while ((dm = wordRe.exec(S.raw)) !== null) {
+        if (dm[0].length === 0) { wordRe.lastIndex++; continue; }
+        if (!litRe.test(dm[1] || '')) return gmKey('msg_push_dynamic_repo', { arg: dm[0].replace(/^[\s;&|(){}`'"]+/, '').trim() });
+      }
     }
     const key = [dir].concat(repo).join('\n');
     const scope = proven ? pushScope(ev) : null;
-    const ckey = key + '\n' + (scope ? scope.join('\u0001') : '');
+    const recurse = scope ? pushRecursesByFlag(ev) : false;
+    const ckey = key + '\n' + (scope ? scope.join('\u0001') : '') + (recurse ? '\nrecurse' : '');
     if (!S.pushChecks.has(ckey)) {
-      const fresh = unpushedCredit(dir, repo, ev.env, scope);
+      const fresh = unpushedCredit(dir, repo, ev.env, scope, recurse);
       if (fresh.scoped) ah.metric('git_push_scoped', []);
       if (scopeOn && !proven) ah.metric('git_push_narrow_unproven', []);
       S.pushChecks.set(ckey, fresh);
@@ -2142,7 +2148,12 @@ function pushNarrowProven(cmd) {
   if (new RegExp(ah.cfg('git.push_narrow_forbidden_re')).test(cmd)) return false;
   const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
   const last = segs.pop();
-  if (!new RegExp(ah.cfg('git.push_narrow_push_re'), flags).test(last)) return false;
+  const pm = new RegExp(ah.cfg('git.push_narrow_push_re'), flags).exec(last);
+  if (!pm) return false;
+  // plain NAME=value assignments before the push leave it narrowed, unless a name can change what git reads or runs
+  const deny = new RegExp(ah.cfg('git.push_narrow_env_deny_re'));
+  const names = (pm[1] || '').match(new RegExp(ah.cfg('git.push_narrow_env_name_re'), 'g')) || [];
+  if (names.some((n) => deny.test(n))) return false;
   const allow = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
   return segs.every((sg) => allow.some((re) => re.test(sg)));
 }
@@ -2240,7 +2251,51 @@ function pushConfigNarrow(dir, repo, env) {
   return defaults.every((l) => narrow.includes(l.slice(l.indexOf(' ') + 1).trim().toLowerCase()));
 }
 
-function unpushedCredit(dir, repo, env, scope) {
+// GH #506: true when the push command line may publish submodule commits: an option starting with git.push_recurse_flag_prefix
+// (--recurse-submodules or anything it may abbreviate) whose value, `=value` or the next word, is not one of git.push_recurse_off_values.
+function pushRecursesByFlag(ev) {
+  const prefix = ah.cfg('git.push_recurse_flag_prefix'), off = ah.cfg('git.push_recurse_off_values');
+  const rest = gitSubcommand(ev.args).rest;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i].text;
+    if (!t.startsWith(prefix)) continue;
+    const eq = t.indexOf('=');
+    const val = eq >= 0 ? t.slice(eq + 1) : (i + 1 < rest.length ? rest[i + 1].text : '');
+    if (!off.includes(val.toLowerCase())) return true;
+  }
+  return false;
+}
+
+// GH #506: true when the repository's configuration makes a push publish submodule commits; a query that fails counts as recursing
+function pushRecursesByConfig(dir, repo, env) {
+  const lines = pushConfigQuery('git.push_argv_config_raw', ah.cfg('git.push_recurse_config_pattern'), dir, repo, env);
+  if (lines === null) return true;
+  const off = ah.cfg('git.push_recurse_off_values');
+  return lines.some((l) => !off.includes(l.slice(l.indexOf(' ') + 1).trim().toLowerCase()));
+}
+
+// GH #506: the submodule gitlinks the pushed commits change, as Map(path -> new commit ids), or null when the listing cannot be
+// read (the caller then reads every submodule, never fewer).
+function pushedGitlinks(dir, repo, env, scope, cap) {
+  const r = ah.exec(ah.cfg('git.git_binary'), fillPushArgv(ah.cfg('git.push_argv_gitlinks'), dir, repo, cap + 1, scope), { env: env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  if (r === null || r.status !== 0 || r.truncated === true) return null;
+  const re = new RegExp(ah.cfg('git.push_gitlink_line_re'));
+  const mode = ah.cfg('git.push_gitlink_mode');
+  const out = new Map();
+  for (const l of String(r.stdout || '').split('\n')) {
+    if (!l.trim()) continue;
+    const m = re.exec(l);
+    if (!m) return null;
+    if (m[1] !== mode && m[2] !== mode) continue;
+    if (m[5].startsWith('"')) return null; // a quoted path: not read here
+    if (m[2] !== mode || /^0+$/.test(m[4])) continue; // a removed gitlink publishes no submodule commit
+    if (!out.has(m[5])) out.set(m[5], []);
+    if (!out.get(m[5]).includes(m[4])) out.get(m[5]).push(m[4]);
+  }
+  return out;
+}
+
+function unpushedCredit(dir, repo, env, scope, recurse) {
   const cap = ah.cfg('git.push_max_commits');
   const out = { unchecked: false, hits: [], tags: [], over: false, scoped: false, count: 0 };
   const unpushed = new Set(); // full hashes of the repository's own unpushed commits: the tags in scope point at one
@@ -2286,8 +2341,14 @@ function unpushedCredit(dir, repo, env, scope) {
       if ((f[0] || '').trim() === ah.cfg('git.push_tag_object_type') && unpushed.has((f[2] || '').trim()) && f[3] && hasSelfCredit(f[3])) out.tags.push(f[1]);
     }
   }
-  // submodules: each checked-out one is scanned the same way, inside the same commit cap
-  const cdup = run(fillPushArgv(ah.cfg('git.push_argv_cdup'), dir, repo, 0), execEnv);
+  // submodules: each checked-out one is scanned the same way, inside the same commit cap. A narrowed push that does not recurse
+  // publishes only the submodule commits its gitlinks name, so only those are read (and only from the new gitlink back).
+  let gitlinks = null;
+  if (out.scoped && !recurse && !pushRecursesByConfig(dir, repo, execEnv)) {
+    gitlinks = pushedGitlinks(dir, repo, execEnv, scope, cap);
+    if (gitlinks !== null && gitlinks.size === 0) return out;
+  }
+  const cdup =run(fillPushArgv(ah.cfg('git.push_argv_cdup'), dir, repo, 0), execEnv);
   if (cdup === null) return out;
   const top = posix.resolveIn(S.procCwd, [dir, cdup.trim() || '.']);
   if (ah.fs.realpath(posix.join(top, ah.cfg('git.push_gitmodules_file'))) === null) return out;
@@ -2300,8 +2361,12 @@ function unpushedCredit(dir, repo, env, scope) {
   }
   for (const p of subs.split('\n').map((x) => x.trim()).filter(Boolean)) {
     if (count > cap || out.unchecked) break;
-    const rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : p;
-    scan(p, [], subEnv && Object.keys(subEnv).length ? subEnv : undefined, rel);
+    // git prints real paths; the top directory may be spelled through a symlink (/tmp), so try both spellings
+    let rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : p;
+    if (gitlinks !== null && rel === p) { const realTop = ah.fs.realpath(top); if (realTop && p.startsWith(realTop + '/')) rel = p.slice(realTop.length + 1); }
+    const subEnvArg = subEnv && Object.keys(subEnv).length ? subEnv : undefined;
+    if (gitlinks === null || rel === p) scan(p, [], subEnvArg, rel); // a path not under the top directory cannot be matched: read it whole
+    else if (gitlinks.has(rel)) scan(p, [], subEnvArg, rel, gitlinks.get(rel));
   }
   out.over = out.over || count > cap;
   return out;
