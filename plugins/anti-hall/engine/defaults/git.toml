@@ -921,7 +921,7 @@ value = ['''^\s*cd\s+(?:--\s+)?(~/[A-Za-z0-9_./@%+=:,-]*|~|(?:/|\./|\.\./)[A-Za-
 
 [git.push_dynamic_cd_re]
 doc = "Regular expression (JavaScript syntax) over the whole command for a cd or pushd at command position whose target the guard cannot read before it runs: none, `-`, a quoted `-`, or a word with a dollar sign, backtick or substitution. With guards.gitPushCreditScope on, a push in such a call is refused (msg_push_dynamic_repo); the text names the clearing step (write the path literally)."
-value = '''(?:^|[;&|\n(]\s*)(?:cd|pushd)(?:\s+--)?(?:\s*(?:$|[;&|\n)])|\s+(?:-(?:\s|$|[;&|])|'-'|"-"|[^\s;&|]*[$`]|["'][^"']*[$`]))'''
+value = '''(?:^\s*|[;&|\n(]\s*)(?:cd|pushd)(?:\s+--)?(?:\s*(?:$|[;&|\n)])|\s+(?:-(?:\s|$|[;&|])|'-'|"-"|[^\s;&|]*[$`]|["'][^"']*[$`]))'''
 
 [git.push_unscoped_globals]
 doc = "git options before the subcommand that change the configuration or the environment a push runs with: the push is not narrowed to its own commits."

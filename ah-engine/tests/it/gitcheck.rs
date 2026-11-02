@@ -1337,6 +1337,9 @@ fn cd_dash_quoted_dash_and_dollar_cd_before_push_block_with_dynamic_repo_text() 
         format!("cd $X && git {P} origin main"),
         format!("cd $(pwd) && git {P} origin main"),
         format!("cd && git {P} origin main"),
+        format!(" cd '-' && git {P} origin main"),
+        format!("\tcd - && git {P} origin main"),
+        format!("  cd \"$X\" && git {P} origin main"),
     ] {
         let (out, err, code) = e.hook_in(&cmd, w);
         if code != 2 || !err.contains("write the repository path literally") {
