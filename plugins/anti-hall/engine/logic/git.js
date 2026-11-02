@@ -2145,6 +2145,8 @@ function resolvePushLongOpt(table, word) {
 function pushNarrowProven(cmd) {
   if (typeof cmd !== 'string') return false;
   const flags = ah.cfg('git.push_narrow_re_flags');
+  // a harmless output tail (2>&1, | tail -5) on the push changes nothing it publishes: it is cut off before the rest is proven
+  cmd = cmd.replace(new RegExp(ah.cfg('git.push_narrow_tail_re')), '');
   if (new RegExp(ah.cfg('git.push_narrow_forbidden_re')).test(cmd)) return false;
   const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
   const last = segs.pop();
@@ -2186,7 +2188,9 @@ function pushScope(ev) {
   const longOpts = pushLongOptTable(valueOpts, ah.cfg('git.push_flag_opts'));
   const refRe = new RegExp(ah.cfg('git.push_refspec_unscoped_re'));
   const pos = [];
-  const rest = gitSubcommand(ev.args).rest;
+  // the only redirect a proven push carries is the output tail (push_narrow_tail_re): it names no ref
+  const redirRe = new RegExp(ah.cfg('git.push_scope_redirect_re'));
+  const rest = gitSubcommand(ev.args).rest.filter((t) => !redirRe.test(t.text));
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i].text;
     if (t === '--') { for (let j = i + 1; j < rest.length; j++) pos.push(rest[j].text); break; }
