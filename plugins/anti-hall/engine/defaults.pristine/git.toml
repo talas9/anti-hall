@@ -1080,6 +1080,30 @@ value = ["-C", "{dir}", "{repo}", "rev-parse", "--show-cdup"]
 doc = "The file at the top of a work tree whose presence makes the pre-push credit check scan each checked-out submodule too."
 value = ".gitmodules"
 
+[git.push_argv_gitlinks]
+doc = "git arguments listing, in raw form, every path the commits a push sends change (GH #506, guards.gitPushCreditScope): the submodule gitlinks among them name the only submodules a non-recursing push publishes a commit of. {revs} expands to the revisions the push names; a merge is listed against each parent."
+value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "-m", "--no-renames", "--raw", "--no-abbrev", "--format=", "{revs}", "--not", "--remotes", "--"]
+
+[git.push_gitlink_line_re]
+doc = "Regular expression (JavaScript syntax) for one raw line of push_argv_gitlinks: groups old mode, new mode, old id, new id, path."
+value = '''^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) [A-Z]\d*\t(.+)$'''
+
+[git.push_gitlink_mode]
+doc = "The file mode of a submodule gitlink in a raw tree listing."
+value = "160000"
+
+[git.push_recurse_flag_prefix]
+doc = "A push option starting with this text may be --recurse-submodules (git resolves an unambiguous prefix): its value, from `=value` or the next word, decides whether the push publishes submodule commits. Any other option that starts with it counts as recursing (the submodules are read, as without guards.gitPushCreditScope)."
+value = "--rec"
+
+[git.push_recurse_off_values]
+doc = "Values of --recurse-submodules (and of push.recurseSubmodules, submodule.recurse as git reports them) that publish no submodule commit. Any other value, or one this code cannot read, counts as recursing."
+value = ["no", "false", "off", "0"]
+
+[git.push_recurse_config_pattern]
+doc = "Key pattern (git --get-regexp syntax) of the settings that make a push publish submodule commits: push.recurseSubmodules and submodule.recurse."
+value = "^(push\\.recursesubmodules|submodule\\.recurse)$"
+
 [git.push_argv_submodules]
 doc = "git arguments printing the absolute path of each checked-out submodule, nested ones included; each is scanned with push_argv_log, and all of them share push_max_commits."
 value = ["-C", "{dir}", "{repo}", "submodule", "foreach", "--quiet", "--recursive", "pwd"]
