@@ -43,6 +43,8 @@ value = [
   "{\"section\":\"guards\",\"key\":\"handoverCommitGuard\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_HANDOVER_COMMIT_GUARD\",\"pluginOption\":\"guards_handover_commit_guard\"}",
   "{\"section\":\"guards\",\"key\":\"gitAliasResolve\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_GIT_ALIAS_RESOLVE\",\"locked\":true,\"safetyDirection\":\"off\"}",
   "{\"section\":\"guards\",\"key\":\"gitReusedMessageCheck\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_GIT_REUSED_MESSAGE_CHECK\",\"locked\":true,\"safetyDirection\":\"off\"}",
+  "{\"section\":\"guards\",\"key\":\"gitPushCreditCheck\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_GIT_PUSH_CREDIT_CHECK\",\"locked\":true,\"safetyDirection\":\"off\"}",
+  "{\"section\":\"guards\",\"key\":\"gitPushCreditScope\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_GIT_PUSH_CREDIT_SCOPE\"}",
   "{\"section\":\"guards\",\"key\":\"gitGuardHeredocData\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_GIT_GUARD_HEREDOC_DATA\"}",
   "{\"section\":\"guards\",\"key\":\"gitignoreHint\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_GITIGNORE_HINT\",\"pluginOption\":\"guards_gitignore_hint\"}",
   "{\"section\":\"guards\",\"key\":\"allowAnthropicEnvKey\",\"type\":\"boolean\",\"default\":false,\"homeOnly\":true,\"locked\":true,\"safetyDirection\":\"on\"}",

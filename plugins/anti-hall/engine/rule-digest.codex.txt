@@ -65,7 +65,7 @@ disk_watch.sw_enabled	- disk_watch.msg: Low disk space: ....
 	- git.commit_expansion: the commit message holds a shell expansion (...).
 	- git.push_credit: this push would publish commits with AI credit: ....
 	- git.push_dynamic_repo: this push runs in a repository path the guard cannot read before it runs (...).
-	- git.push_over_cap: more than ... local commits are on no remote, more than the credit check reads.
+	- git.push_over_cap: more than ... local commits are on no remote in ... (counted up to ...), more than the credit check reads.
 	- git.push_same_call: this call creates a commit whose message the guard cannot read (git ...) and pushes in the same call.
 	- git.push_tag_credit: the local annotated tag ... carries an AI credit in its message.
 	- git.script_credit: this call runs ..., whose line ... carries an AI credit line.

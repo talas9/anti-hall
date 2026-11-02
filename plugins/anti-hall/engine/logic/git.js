@@ -1960,15 +1960,20 @@ function committedHandovers(ev, lastCdDir) {
   return hits;
 }
 
-// GH #457 / PR #469: a push is refused while any local commit that no remote has carries an AI credit. What the push itself
-// would publish (refspecs, config, mirror, insteadOf) is never resolved: every unpushed commit counts, so no form of the push
-// routes around the check. One scan per repository and call (S.pushChecks: commits, annotated tags, submodules); a git query that
+// GH #457 / PR #469 / GH #506: a push is refused while a local commit it sends that no remote has carries an AI credit. Only a
+// push whose sent revisions the command line names and the configuration cannot widen is narrowed (pushScope, pushConfigNarrow);
+// any other form (every branch, a mirror, a glob, -c, a configured push refspec) counts every unpushed commit of the repository,
+// so no form of the push routes around the check. One scan per repository and call (S.pushChecks: commits, annotated tags, submodules); a git query that
 // cannot run, fails or times out lets the push go with an advisory (S.pushUnchecked). Names the hashes and the fix; never rewrites anything.
 function pushCreditVerdict(ev, lastCdDir) {
   try {
     if (!gitSettingOn('git.setting_push_credit')) return null;
     if (gitSubcommand(ev.args).rest.some((t) => TB.pushSkipOpts.has(t.text))) return null;
     let dir = lastCdDir || S.procCwd;
+    const scopeOn = gitSettingOn('git.setting_push_credit_scope');
+    const proven = scopeOn && pushNarrowProven(S.raw);
+    // a proven chain names its own directory, so the call-time pass and the backstop pass judge the same repository
+    if (proven) dir = pushNarrowDir(S.raw, S.procCwd) || dir;
     const repo = [];
     const repoOpts = ah.cfg('git.push_repo_opts');
     if (ev.dynEnv && ev.dynEnv.length) return gmKey('msg_push_dynamic_repo', { arg: ev.dynEnv[0] });
@@ -1993,14 +1998,26 @@ function pushCreditVerdict(ev, lastCdDir) {
       if (t.startsWith('-')) continue;
       break;
     }
+    // a cd or pushd whose target the shell expands at run time (cd -, cd '-', cd "$X", a bare cd) leaves the directory unknown
+    if (scopeOn) {
+      const dm = new RegExp(ah.cfg('git.push_dynamic_cd_re')).exec(S.raw);
+      if (dm) return gmKey('msg_push_dynamic_repo', { arg: dm[0].replace(/^[\s;&|(]+/, '') });
+    }
     const key = [dir].concat(repo).join('\n');
-    if (!S.pushChecks.has(key)) S.pushChecks.set(key, unpushedCredit(dir, repo, ev.env));
-    const r = S.pushChecks.get(key);
+    const scope = proven ? pushScope(ev) : null;
+    const ckey = key + '\n' + (scope ? scope.join('\u0001') : '');
+    if (!S.pushChecks.has(ckey)) {
+      const fresh = unpushedCredit(dir, repo, ev.env, scope);
+      if (fresh.scoped) ah.metric('git_push_scoped', []);
+      if (scopeOn && !proven) ah.metric('git_push_narrow_unproven', []);
+      S.pushChecks.set(ckey, fresh);
+    }
+    const r = S.pushChecks.get(ckey);
     if (r.tags.length) return gmKey('msg_push_tag_credit', { tags: r.tags.slice(0, TB.shown).join(', ') + (r.tags.length > TB.shown ? ah.cfg('git.more_marker') : '') });
-    const left = r.hits.length ? pushAck(key, r.hits) : r.hits;
+    const left = r.hits.length ? pushAck(ckey, r.hits) : r.hits;
     if (left.length) return gmKey('msg_push_credit', { shown: hitList(left) });
     // more unpushed commits than the cap: a credit past it cannot be ruled out, so the push is refused, never allowed unread
-    if (r.over) return gmKey('msg_push_over_cap', { cap: ah.cfg('git.push_max_commits') });
+    if (r.over) return gmKey('msg_push_over_cap', { cap: ah.cfg('git.push_max_commits'), repo: dir, count: r.count });
     if (r.unchecked) S.pushUnchecked = true;
     return null;
   } catch (e) {
@@ -2075,10 +2092,11 @@ function hitText(h) {
   return ah.cfg('git.push_hit_format').split('{sha}').join(h.sha).split('{branches}').join(list).split('{where}').join(where);
 }
 
-function fillPushArgv(tpl, dir, repo, n) {
+function fillPushArgv(tpl, dir, repo, n, revs) {
   const argv = [];
   for (const a of tpl) {
     if (a === '{repo}') argv.push(...repo);
+    else if (a === '{revs}') argv.push(...(revs || []));
     else argv.push(a.split('{dir}').join(dir).split('{n}').join(String(n)));
   }
   return argv;
@@ -2087,9 +2105,144 @@ function fillPushArgv(tpl, dir, repo, n) {
 // The unpushed commits of one repository and of each checked-out submodule (git.push_argv_log), plus the newest local annotated
 // tags (git.push_argv_tags): { hits } ({ sha, dir, repo, sub }), { tags } (names with a credit), { over } (past the cap or output
 // cut short), { unchecked } (a git query could not run, failed or timed out: the push goes on with the advisory).
-function unpushedCredit(dir, repo, env) {
+// GH #506: the revisions a push sends, read from its command line: its refspec sources, or HEAD for a bare push or a push naming
+// only a remote. null = the commits cannot be read from the command line (every branch, a mirror, a glob, a bare `:`, a changed
+// configuration), so the push is judged on every unpushed commit of the repository.
+// The push option table (git.push_value_opts + git.push_flag_opts): every name with its negated `--no-` form (which takes no
+// value), as { name (the positive form), spelled, value, negated }.
+function pushLongOptTable(valueOpts, flagOpts) {
+  const out = [];
+  for (const [list, value] of [[valueOpts, true], [flagOpts, false]]) {
+    for (const n of list) {
+      out.push({ name: n, spelled: n, value: value, negated: false });
+      if (n.startsWith('--') && !n.startsWith('--no-') && !list.includes('--no-' + n.slice(2))) out.push({ name: n, spelled: '--no-' + n.slice(2), value: false, negated: true });
+    }
+  }
+  return out;
+}
+
+// git's long-option lookup: an exact spelling wins, else the one entry the word is a prefix of; none or several = null.
+function resolvePushLongOpt(table, word) {
+  const exact = table.find((o) => o.spelled === word);
+  if (exact) return exact;
+  if (word.length <= 2) return null;
+  const hits = table.filter((o) => o.spelled.startsWith('--') && o.spelled.startsWith(word));
+  return hits.length === 1 ? hits[0] : null;
+}
+
+// GH #506 / PR #524 review: the narrowed scan reads git configuration and HEAD when the push is checked, BEFORE the call has run
+// anything, so it is valid only on positive proof that nothing in the same Bash call runs before the push and changes what it
+// publishes. Proof (all of it patterns in plugin TOML, git.push_narrow_*): no character that chains or substitutes commands,
+// every `&&` segment before the push matches the non-mutating allowlist (so none of them is a git command), and the last segment is
+// the one and only git command, the push itself, with no env prefix and no option before `push` (but -C <plain path>).
+// Anything else is read whole, as before #506: at worst the old false positive, never a credit leak.
+function pushNarrowProven(cmd) {
+  if (typeof cmd !== 'string') return false;
+  const flags = ah.cfg('git.push_narrow_re_flags');
+  if (new RegExp(ah.cfg('git.push_narrow_forbidden_re')).test(cmd)) return false;
+  const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
+  const last = segs.pop();
+  if (!new RegExp(ah.cfg('git.push_narrow_push_re'), flags).test(last)) return false;
+  const allow = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
+  return segs.every((sg) => allow.some((re) => re.test(sg)));
+}
+
+// The directory a proven chain pushes from: each `cd` segment before the push (they all matched git.push_narrow_before_res, whose
+// capture group 1 is the target) applied in order from the call's directory (S.procCwd), the way scanCommand tracks it.
+function pushNarrowDir(cmd, dir) {
+  const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
+  segs.pop();
+  const flags = ah.cfg('git.push_narrow_re_flags');
+  const res = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
+  let at = dir;
+  for (const sg of segs) {
+    for (const re of res) {
+      const m = re.exec(sg);
+      if (m && m[1]) { at = normalizeGuardPath(m[1], at) || m[1]; break; }
+    }
+  }
+  return at;
+}
+
+function pushScope(ev) {
+  const globals = ah.cfg('git.push_unscoped_globals');
+  for (const a of ev.args) {
+    if (globals.some((g) => a.text === g || a.text.startsWith(g + '='))) return null;
+  }
+  const envPrefixes = ah.cfg('git.push_unscoped_env_prefixes');
+  if (ev.env && Object.keys(ev.env).some((n) => envPrefixes.some((pre) => n.startsWith(pre)))) return null;
+  const unscoped = ah.cfg('git.push_unscoped_opts'), valueOpts = ah.cfg('git.push_value_opts');
+  const longOpts = pushLongOptTable(valueOpts, ah.cfg('git.push_flag_opts'));
+  const refRe = new RegExp(ah.cfg('git.push_refspec_unscoped_re'));
+  const pos = [];
+  const rest = gitSubcommand(ev.args).rest;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i].text;
+    if (t === '--') { for (let j = i + 1; j < rest.length; j++) pos.push(rest[j].text); break; }
+    if (t.startsWith('--')) {
+      // resolved the way git does: an exact name, else a unique prefix; none or several = not understood, read whole
+      const eq = t.indexOf('=');
+      const o = resolvePushLongOpt(longOpts, eq < 0 ? t : t.slice(0, eq));
+      if (o === null) return null;
+      if (!o.negated && unscoped.includes(o.name)) return null;
+      if (o.value && eq < 0) i++;
+      continue;
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      // a short cluster (-fu, -oX, -qo X): a value option takes the rest of the cluster, else the next word
+      for (let c = 1; c < t.length; c++) {
+        const s = '-' + t[c];
+        if (valueOpts.includes(s)) { if (c === t.length - 1) i++; break; }
+        if (!longOpts.some((x) => x.name === s)) return null;
+      }
+      continue;
+    }
+    pos.push(t);
+  }
+  if (pos.length <= 1) return [ah.cfg('git.push_bare_rev')];
+  const revs = [];
+  for (const spec of pos.slice(1)) {
+    const body = spec.replace(/^\+/, '');
+    if (body.startsWith(':') && body.length > 1) continue; // a deletion sends no commit
+    const src = body.split(':')[0];
+    if (!src || refRe.test(src)) return null;
+    if (!revs.includes(src)) revs.push(src);
+  }
+  return revs.length ? revs : null;
+}
+
+// GH #506: true when the repository's configuration cannot make a push send more than the refs its command line names. Git itself
+// reads and interprets the configuration (every spelling of a boolean, included files, includeIf); a query that fails, is cut
+// short or returns a line this code cannot read counts as "may send more" (the blocking side), never as "sends only HEAD".
+function pushConfigQuery(tplKey, pattern, dir, repo, env) {
+  const tpl = ah.cfg(tplKey).map((a) => a.split('{pattern}').join(pattern));
+  const r = ah.exec(ah.cfg('git.git_binary'), fillPushArgv(tpl, dir, repo, 0), { env: env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  if (r === null || r.truncated === true) return null;
+  const out = String(r.stdout || '');
+  if (r.status === 1 && out.trim() === '') return []; // no key matched
+  if (r.status !== 0) return null;
+  return out.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+function pushConfigNarrow(dir, repo, env) {
+  for (const p of ah.cfg('git.push_scope_bool_patterns')) {
+    const lines = pushConfigQuery('git.push_argv_config_bool', p, dir, repo, env);
+    if (lines === null) return false;
+    if (lines.some((l) => !/ false$/.test(l))) return false; // true, or anything git did not report as false
+  }
+  for (const p of ah.cfg('git.push_scope_any_patterns')) {
+    const lines = pushConfigQuery('git.push_argv_config_raw', p, dir, repo, env);
+    if (lines === null || lines.length) return false;
+  }
+  const defaults = pushConfigQuery('git.push_argv_config_raw', ah.cfg('git.push_scope_default_pattern'), dir, repo, env);
+  if (defaults === null) return false;
+  const narrow = ah.cfg('git.push_default_narrow');
+  return defaults.every((l) => narrow.includes(l.slice(l.indexOf(' ') + 1).trim().toLowerCase()));
+}
+
+function unpushedCredit(dir, repo, env, scope) {
   const cap = ah.cfg('git.push_max_commits');
-  const out = { unchecked: false, hits: [], tags: [], over: false };
+  const out = { unchecked: false, hits: [], tags: [], over: false, scoped: false, count: 0 };
   const unpushed = new Set(); // full hashes of the repository's own unpushed commits: the tags in scope point at one
   const execEnv = env && Object.keys(env).length ? env : undefined;
   const run = (argv, e) => {
@@ -2100,8 +2253,8 @@ function unpushedCredit(dir, repo, env) {
   };
   const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
   let count = 0;
-  const scan = (d, rp, e, sub) => {
-    const txt = run(fillPushArgv(ah.cfg('git.push_argv_log'), d, rp, cap + 1 - count), e);
+  const scan = (d, rp, e, sub, revs) => {
+    const txt = run(fillPushArgv(ah.cfg(revs ? 'git.push_argv_log_scoped' : 'git.push_argv_log'), d, rp, cap + 1 - count, revs), e);
     if (txt === null) return;
     for (const rec of txt.split(rs)) {
       const f = rec.replace(/^\n/, '').split(us);
@@ -2112,8 +2265,17 @@ function unpushedCredit(dir, repo, env) {
       if (count <= cap && f[1] && hasSelfCredit(f[1])) out.hits.push({ sha: sha.slice(0, TB.commitHashShort), dir: d, repo: rp, env: e, sub: sub });
     }
   };
-  scan(dir, repo, execEnv, null);
+  // GH #506: a push the command line and the configuration narrow reads only the commits it sends (its refspec sources, or HEAD,
+  // not on any remote), so unpushed work on other branches or worktrees neither blocks it nor fills the cap. A scoped query that
+  // fails (an unknown revision, a timeout) falls back to every unpushed commit of the repository, never to fewer.
+  if (scope && gitSettingOn('git.setting_push_credit_scope') && pushConfigNarrow(dir, repo, execEnv)) {
+    scan(dir, repo, execEnv, null, scope);
+    if (out.unchecked) { out.unchecked = false; out.over = false; out.hits = []; count = 0; unpushed.clear(); }
+    else out.scoped = true;
+  }
+  if (!out.scoped) scan(dir, repo, execEnv, null);
   out.over = out.over || count > cap;
+  out.count = count;
   if (out.unchecked || out.over) return out;
   // annotated tags: the newest {n}, and only those on an unpushed commit (one on a commit a remote has is public, a fetched tag
   // included); lightweight tags are commits (scanned above)
