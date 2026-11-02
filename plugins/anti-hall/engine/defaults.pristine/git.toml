@@ -459,6 +459,10 @@ value = { section = "guards", key = "gitCommitAudit", env = "ANTIHALL_GIT_COMMIT
 doc = "Switch for the pre-push credit backstop (GH #457): off lets a push through although an unpushed commit carries an AI credit."
 value = { section = "guards", key = "gitPushCreditCheck", env = "ANTIHALL_GIT_PUSH_CREDIT_CHECK", option = "", type = "boolean", default = true }
 
+[git.setting_push_credit_scope]
+doc = "Switch for narrowing the pre-push credit check to the commits a push sends (GH #506): off (the default) reads every unpushed commit of the repository for every push. On, a push proven to name literal paths and refs reads only the commits it sends, and a cd whose target the shell expands at run time before a push is refused (msg_push_dynamic_repo)."
+value = { section = "guards", key = "gitPushCreditScope", env = "ANTIHALL_GIT_PUSH_CREDIT_SCOPE", option = "", type = "boolean", default = false }
+
 [git.setting_heredoc_data]
 doc = "Switch for data-heredoc masking."
 value = { section = "guards", key = "gitGuardHeredocData", env = "ANTIHALL_GIT_GUARD_HEREDOC_DATA", option = "", type = "boolean", default = true }
@@ -855,9 +859,97 @@ value = ["--dry-run", "-n", "--delete", "-d"]
 doc = "git arguments listing every local commit no remote has (the pre-push credit check reads all of them, whatever the push would publish): {dir} is the repository directory, {repo} expands to the command's --git-dir/--work-tree, {n} the most commits read (the cap plus one, to see an overflow). Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep)."
 value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "--exclude=refs/stash", "--exclude=refs/original/*", "--all", "--not", "--remotes"]
 
+[git.push_argv_log_scoped]
+doc = "git arguments listing the commits of the refs a push sends that no remote has (GH #506), used for a push its command line and configuration narrow (guards.gitPushCreditScope): {dir}, {repo} and {n} as in push_argv_log, {revs} expands to the revisions the push names (its refspec sources, or HEAD for a bare push)."
+value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "{revs}", "--not", "--remotes", "--"]
+
+[git.push_argv_config_bool]
+doc = "git arguments asking git itself for each boolean configuration key matching {pattern} (git.push_scope_bool_patterns), parsed by git as a boolean in every spelling it accepts (a bare key, `= true`, yes, on, 1, any case, included files, includeIf): `<key> true` lines widen a push. Exit 1 with no output means no key matched; any other failure (a value git cannot read as a boolean) is treated as widening."
+value = ["-C", "{dir}", "{repo}", "config", "--type=bool", "--get-regexp", "{pattern}"]
+
+[git.push_argv_config_raw]
+doc = "git arguments listing each configuration key matching {pattern} (git.push_scope_any_patterns, git.push_scope_default_pattern) with its raw value, as `<key> <value>` lines. Exit 1 with no output means no key matched; any other failure is treated as widening."
+value = ["-C", "{dir}", "{repo}", "config", "--get-regexp", "{pattern}"]
+
+[git.push_scope_bool_patterns]
+doc = "Key patterns (git --get-regexp syntax) of boolean settings that make a bare push send more than the current branch when true: a remote mirror flag, push.followTags (git lowercases section and variable names, not the remote name)."
+value = ["^remote\\..*\\.mirror$", "^push\\.followtags$"]
+
+[git.push_scope_any_patterns]
+doc = "Key patterns (git --get-regexp syntax) of settings that widen a push whatever their value: a configured push refspec of a remote (it can be a glob or +refs/*; a bare push sends it instead of the current branch)."
+value = ["^remote\\..*\\.push$"]
+
+[git.push_scope_default_pattern]
+doc = "Key pattern (git --get-regexp syntax) of the push.default setting."
+value = "^push\\.default$"
+
+[git.push_default_narrow]
+doc = "push.default values (lower case) under which a bare push sends only the current branch. Any other value, including one this list does not know, widens the push (git.push_scope_default_pattern); an unset push.default is `simple`."
+value = ["nothing", "current", "upstream", "tracking", "simple"]
+
+[git.push_unscoped_opts]
+doc = "git push options after which the commits sent cannot be read from the command line (every branch, every tag, a mirror, pruning): the push is not narrowed to its own commits."
+value = ["--all", "--branches", "--mirror", "--tags", "--follow-tags", "--prune"]
+
+[git.push_value_opts]
+doc = "git push options that take a value: a long one as the next word unless written `--opt=value`, a short one as the rest of its cluster or else the next word; a negated `--no-` form takes none. Skipped when the command's refspecs are read. An option whose value is optional (--signed, --force-with-lease) takes it only after `=` and is listed in push_flag_opts."
+value = ["-o", "--push-option", "--repo", "--receive-pack", "--exec", "--recurse-submodules"]
+
+[git.push_flag_opts]
+doc = "git push options that take no separate value (GH #506). With push_value_opts this is the whole option table a command-line option is resolved against the way git resolves it: an exact name, else a unique prefix of a long name, the `--no-` forms included. An option that resolves to no entry or to more than one is not understood, and the push is not narrowed to its own commits (every unpushed commit is read)."
+value = ["-v", "--verbose", "-q", "--quiet", "--all", "--branches", "--mirror", "-d", "--delete", "--tags", "-n", "--dry-run", "--porcelain", "-f", "--force", "--force-with-lease", "--force-if-includes", "--thin", "-u", "--set-upstream", "--progress", "--prune", "--no-verify", "--verify", "--follow-tags", "--signed", "--atomic", "-4", "--ipv4", "-6", "--ipv6"]
+
+[git.push_narrow_re_flags]
+doc = "Regular expression flags for the push_narrow_* patterns (empty: case-sensitive)."
+value = ""
+
+[git.push_narrow_forbidden_re]
+doc = "Regular expression (JavaScript syntax) of what makes a Bash call unprovable for narrowing a push to its own commits (GH #506, PR #524 review): a command chain or pipe other than a double ampersand (semicolon, double bar, bar, a single ampersand, a newline), a substitution or subshell (dollar-paren, backtick, parentheses), a block or function body (braces), a here-document or here-string, and the words eval, source, alias, function, a shell name, exec, command, builtin, env, xargs, time or a leading dot (source). Any match: the push counts every unpushed commit of the repository."
+value = '[;|\n\r`(){}]|(?<!&)&(?!&)|<<|\$\(|(?:^|[\s&])(?:eval|source|alias|function|sh|bash|zsh|dash|ksh|exec|command|builtin|env|xargs|time|\.)\s'
+
+[git.push_narrow_separator]
+doc = "The only command separator a narrowed push may follow."
+value = "&&"
+
+[git.push_narrow_push_re]
+doc = "Regular expression (JavaScript syntax) the last segment of a call must match to be narrowed: the push itself, starting at `git push`, with no environment prefix and no option before the subcommand except -C <plain literal path>, and only plain words after it (no quote, dollar sign, glob or redirect: a word the shell may expand is not proven to name one remote or ref). -c and --config-env are not allowed."
+value = '''^\s*git\s+(?:-C\s+(?![-~])[A-Za-z0-9_./@%+=:,-]+\s+)?push(?:\s+[A-Za-z0-9_./@%+=:,^-]+)*\s*$'''
+
+[git.push_narrow_before_res]
+doc = "Allowlist of segments (regular expressions, JavaScript syntax) that may run before a narrowed push: only commands that change nothing a push publishes. Start: `cd <path>` with a literal absolute, ./, ../, ~/ or ~ path, or . or .. (not `cd -`, which goes to the previous directory; not a bare relative name, which CDPATH can redirect; not ~user). Capture group 1 is the target (pushNarrowDir)."
+value = ['''^\s*cd\s+(?:--\s+)?(~/[A-Za-z0-9_./@%+=:,-]*|~|(?:/|\./|\.\./)[A-Za-z0-9_./@%+=:,-]*|\.|\.\.)\s*$''']
+
+[git.push_dynamic_cd_re]
+doc = "Regular expression (JavaScript syntax) over the whole command for a cd or pushd at command position whose target the guard cannot read before it runs: none, `-`, a quoted `-`, or a word with a dollar sign, backtick or substitution. With guards.gitPushCreditScope on, a push in such a call is refused (msg_push_dynamic_repo); the text names the clearing step (write the path literally)."
+value = '''(?:^\s*|[;&|\n(]\s*)(?:cd|pushd)(?:\s+--)?(?:\s*(?:$|[;&|\n)])|\s+(?:-(?:\s|$|[;&|])|'-'|"-"|[^\s;&|]*[$`]|["'][^"']*[$`]))'''
+
+[git.push_unscoped_globals]
+doc = "git options before the subcommand that change the configuration or the environment a push runs with: the push is not narrowed to its own commits."
+value = ["-c", "--config-env"]
+
+[git.push_unscoped_env_prefixes]
+doc = "Environment variable name prefixes set on a push that change the configuration it runs with (GIT_CONFIG_COUNT/KEY/VALUE, GIT_CONFIG_PARAMETERS, GIT_CONFIG_GLOBAL): the push is not narrowed to its own commits."
+value = ["GIT_CONFIG"]
+
+[git.push_bare_rev]
+doc = "The revision a push that names no refspec (a bare push, or one naming only a remote) is narrowed to: the current branch of the push's repository."
+value = "HEAD"
+
+[git.push_refspec_unscoped_re]
+doc = "Regular expression (JavaScript syntax) over a push refspec source: a glob, a bare `:` (matching), the word `tag`, a leading dash or a shell expansion character makes the push not narrowable to its own commits (any other source, revision syntax such as HEAD~1 included, is what git log reads)."
+value = "^(?:[-:]|tag$|.*[*?\\[\\\\$`])"
+
+[metric.git_push_scoped]
+doc = "Pushes whose credit check read only the commits the push sends, not every unpushed commit of the repository (GH #506)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
+[metric.git_push_narrow_unproven]
+doc = "Pushes read in full because the same Bash call could not be proven to leave what the push publishes unchanged before it runs (a chain, a substitution, another command, an option or an environment prefix before the push; GH #506, PR #524 review)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
 [git.msg_push_over_cap]
-doc = "Block: more local commits are on no remote than the pre-push credit check reads, so a credit past the cap could not be ruled out. Placeholder: {cap}."
-value = { what = "more than {cap} local commits are on no remote, more than the credit check reads.", why = "A credit in a commit past the cap could not be ruled out, and the guard never allows what it did not read.", instead = "check them yourself (git log --all --not --remotes), reword any with an AI credit, then push.", override = "turn off guards.gitPushCreditCheck for this push, only after you checked the range." }
+doc = "Block: more local commits are on no remote than the pre-push credit check reads, so a credit past the cap could not be ruled out. Placeholders: {cap}, {repo} (the repository directory the push runs in) and {count} (the commits counted, read up to one past the cap)."
+value = { what = "more than {cap} local commits are on no remote in {repo} (counted up to {count}), more than the credit check reads.", why = "A credit in a commit past the cap could not be ruled out, and the guard never allows what it did not read.", instead = "check them yourself (git log <branch> --not --remotes for the branch you push, git log --all --not --remotes for every branch), reword any with an AI credit, then push.", override = "turn off guards.gitPushCreditCheck for this push, only after you checked the range." }
 
 [git.push_unchecked_advisory]
 doc = "Advisory when a git query of the pre-push credit check could not run (unavailable), failed (non-zero exit, e.g. not a repository) or passed push_timeout_ms: the push is let through unchecked."
@@ -926,7 +1018,7 @@ doc = "Advisory when a script a Bash call runs by path could not be read (missin
 value = "anti-hall: the script {file} was not checked for AI credit lines (missing, too large or not a literal path); check it yourself before it commits or pushes."
 
 [git.push_max_commits]
-doc = "Most unpushed local commits (on any ref, pushed or not by this push) the pre-push credit check reads; more is refused (msg_push_over_cap), never allowed unread."
+doc = "Most unpushed local commits the pre-push credit check reads: those the push sends when it is narrowed (push_argv_log_scoped), else every one of the repository's (on any ref). More is refused (msg_push_over_cap), never allowed unread."
 value = 50
 min = 1
 max = 1000
