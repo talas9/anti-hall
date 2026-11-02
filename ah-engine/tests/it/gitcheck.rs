@@ -1396,7 +1396,10 @@ fn bare_relative_cd_and_tilde_user_and_quoted_c_path_take_the_wide_scan() {
     let w = work.to_str().unwrap();
     let _ = e.hook("echo warm");
     let mut missed = Vec::new();
-    for cmd in [format!("cd sub && git {P}"), format!("git -C '{w}' {P}"), format!("git -C \"{w}\" {P} origin main")] {
+    // a bare relative cd name (CDPATH can redirect it) is not a literal target: refused with the literal-path text
+    let (_, err, code) = e.hook_in(&format!("cd sub && git {P}"), w);
+    assert!(code == 2 && err.contains("write the repository path literally"), "{code}: {err}");
+    for cmd in [format!("git -C '{w}' {P}"), format!("git -C \"{w}\" {P} origin main")] {
         let (out, err, code) = e.hook_in(&cmd, w);
         if code != 2 || !err.contains("AI credit") {
             missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
@@ -1431,4 +1434,36 @@ fn switch_off_matches_dev_for_all_inputs() {
         }
     }
     assert!(missed.is_empty(), "{missed:#?}");
+}
+
+/// GH #506 (Codex re-check of PR #524): any cd, pushd or popd word in a call that pushes, whose target is not a literal path, leaves
+/// the repository unreadable before the call runs: refused with the literal-path text, whatever wraps it (braces, a builtin prefix).
+#[test]
+fn any_non_literal_directory_change_in_a_pushing_call_is_refused() {
+    let e = Env::scoped("cd_class");
+    let work = clean_main_credited_branch(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("{{ cd -; git {P} origin main; }}"),
+        format!("popd && git {P} origin main"),
+        format!("cd ~- && git {P} origin main"),
+        format!("command cd - && git {P} origin main"),
+        format!("builtin cd - && git {P} origin main"),
+        format!("(cd - && git {P} origin main)"),
+        format!("pushd - && git {P} origin main"),
+        format!("cd /tmp; cd -; git {P} origin main"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, "/tmp");
+        if code != 2 || !err.contains("write the repository path literally") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    // a literal absolute target, bare or behind a builtin prefix or in a subshell, stays readable
+    for cmd in [format!("cd {w} && git {P} origin main"), format!("builtin cd {w} && git {P} origin main"), format!("(cd {w} && git {P} origin main)")] {
+        let (_, err, _) = e.hook_in(&cmd, "/tmp");
+        assert!(!err.contains("write the repository path literally"), "{cmd}: {err}");
+    }
 }

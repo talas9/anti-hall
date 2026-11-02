@@ -2000,8 +2000,13 @@ function pushCreditVerdict(ev, lastCdDir) {
     }
     // a cd or pushd whose target the shell expands at run time (cd -, cd '-', cd "$X", a bare cd) leaves the directory unknown
     if (scopeOn) {
-      const dm = new RegExp(ah.cfg('git.push_dynamic_cd_re')).exec(S.raw);
-      if (dm) return gmKey('msg_push_dynamic_repo', { arg: dm[0].replace(/^[\s;&|(]+/, '') });
+      const wordRe = new RegExp(ah.cfg('git.push_cd_word_re'), 'g');
+      const litRe = new RegExp(ah.cfg('git.push_cd_literal_re'));
+      let dm;
+      while ((dm = wordRe.exec(S.raw)) !== null) {
+        if (dm[0].length === 0) { wordRe.lastIndex++; continue; }
+        if (!litRe.test(dm[1] || '')) return gmKey('msg_push_dynamic_repo', { arg: dm[0].replace(/^[\s;&|(){}`'"]+/, '').trim() });
+      }
     }
     const key = [dir].concat(repo).join('\n');
     const scope = proven ? pushScope(ev) : null;
