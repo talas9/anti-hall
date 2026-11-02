@@ -73,6 +73,7 @@ and `TaskGet` read back. Designed for long, multi-session, multi-subagent work.
   blocker. The generic "open tasks remain" nudge also leaves out marked tasks
   and tasks whose `blockedBy` names a still-open task; if every open task is
   blocked, there is no nudge. Toggle: `guards.taskGuardOwnerBlockedMarker` (default on).
+- **R-idle (`guards.idleRule`, off by default):** the open-task Stop blocks also leave out a task a running agent attends (a live owner, or `#<id>` in the agent's description or launch name), a task with a `blockedOn` reason, a task whose subject or description says `PARKED:`/`BLOCKED:`/`WAITING:`/`on hold`/`deferred` WITH its reason (a bare `BLOCKED` still counts as idle), and a task that waits on a clock (`waiting until 14:30`, `retry after 2 days`); plan mode is quiet. The block names the exact `#<id>`s and one step that clears them: start an agent with the id in its description, mark the task blocked with a reason, or finish it.
 - **Parallel-dispatch demand:** every turn with a pending, unblocked, unowned,
   not-owner-blocked task that no in-flight agent covers, `task-tracker` injects
   `DISPATCH NOW in parallel — …: #7 "subject", #11 "subject", …`; at Stop the same
