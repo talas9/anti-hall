@@ -1090,7 +1090,7 @@ value = "--rec"
 
 [git.push_recurse_off_values]
 doc = "Values of --recurse-submodules (and of push.recurseSubmodules, submodule.recurse as git reports them) that publish no submodule commit. Any other value, or one this code cannot read, counts as recursing."
-value = ["no", "check", "false", "off", "0"]
+value = ["no", "false", "off", "0"]
 
 [git.push_recurse_config_pattern]
 doc = "Key pattern (git --get-regexp syntax) of the settings that make a push publish submodule commits: push.recurseSubmodules and submodule.recurse."

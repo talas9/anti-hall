@@ -2357,8 +2357,8 @@ function unpushedCredit(dir, repo, env, scope, recurse) {
   for (const p of subs.split('\n').map((x) => x.trim()).filter(Boolean)) {
     if (count > cap || out.unchecked) break;
     // git prints real paths; the top directory may be spelled through a symlink (/tmp), so try both spellings
-    const realTop = ah.fs.realpath(top);
-    const rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : (realTop && p.startsWith(realTop + '/') ? p.slice(realTop.length + 1) : p);
+    let rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : p;
+    if (gitlinks !== null && rel === p) { const realTop = ah.fs.realpath(top); if (realTop && p.startsWith(realTop + '/')) rel = p.slice(realTop.length + 1); }
     const subEnvArg = subEnv && Object.keys(subEnv).length ? subEnv : undefined;
     if (gitlinks === null || rel === p) scan(p, [], subEnvArg, rel); // a path not under the top directory cannot be matched: read it whole
     else if (gitlinks.has(rel)) scan(p, [], subEnvArg, rel, gitlinks.get(rel));

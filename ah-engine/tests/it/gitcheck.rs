@@ -1527,7 +1527,10 @@ fn a_recursing_scoped_push_still_reads_the_submodules() {
     let _ = e.hook("echo warm");
     let (out, err, code) = e.hook_in(&format!("git -C {w} {P} --recurse-submodules=on-demand origin main"), "/tmp");
     assert!(code == 2 && err.contains("AI credit"), "flag: {code} {out} {err}");
-    for (key, val) in [("push.recurseSubmodules", "on-demand"), ("submodule.recurse", "true")] {
+    // `check` only verifies, but it is read like on-demand and only: the submodules are read
+    let (out, err, code) = e.hook_in(&format!("git -C {w} {P} --recurse-submodules=check origin main"), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "check: {code} {out} {err}");
+    for (key, val) in [("push.recurseSubmodules", "on-demand"), ("push.recurseSubmodules", "check"), ("submodule.recurse", "true")] {
         git_ok(&work, &["config", key, val]);
         let (out, err, code) = e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp");
         assert!(code == 2 && err.contains("AI credit"), "{key}: {code} {out} {err}");
@@ -1545,4 +1548,19 @@ fn switch_off_reads_the_submodules_for_every_push() {
     let _ = e.hook("echo warm");
     let (out, err, code) = e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp");
     assert!(code == 2 && err.contains("AI credit"), "{code} {out} {err}");
+}
+
+/// Switch off: the submodule is named as on dev when the repository is reached through a symlink (the path git prints is
+/// not under the symlinked top directory, so the text is cut to its marker); the real-path normalisation applies only with the switch on.
+#[test]
+fn switch_off_names_the_submodule_as_dev_does_through_a_symlinked_repository() {
+    let e = Env::new("sub_off_link");
+    let work = meta_with_credited_submodule_commit(&e);
+    let link = e.dir.join("link");
+    std::os::unix::fs::symlink(&work, &link).unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git -C {} {P} origin main", link.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "{code} {out} {err}");
+    // an absolute path is not shortened to the submodule name: the where-text is cut to its marker, as on dev
+    assert!(err.contains("in submodule…"), "{err}");
 }
