@@ -46,7 +46,7 @@ function tgActionable(open, tasks, skips) {
     if (tk.statusLc(t) !== pending || t.blockUnknown) return false;
     if (t.owner && !tgCoordinator(t.owner)) return false;
     if (tgOwnerBlocked(t)) return false;
-    if (skips !== null && skips[t.id] !== undefined && skips[t.id] !== ah.cfg('idle_rule.reason_agent_ref')) return false;
+    if (skips !== null && skips[t.id] !== undefined) return false; // attended by an agent's description or launch name too: tk.evaluate reads descriptions only
     if (t.blockedBy.some(function (id) { return notDone[id] === true || known[id] !== true; })) return false;
     return tgPriorityRank(t.priority) <= floor;
   });

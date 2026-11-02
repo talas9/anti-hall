@@ -1486,12 +1486,12 @@ value = 3
 min = 1
 
 [idle_rule.parked_re]
-doc = "JavaScript regex source (case-insensitive) of a parked/blocked/waiting marker that GIVES ITS REASON: the marker word, then a colon, dash, parenthesis or on/for/until/till/by/behind, then at least two characters of reason. A bare BLOCKED with no reason does not match, so it still counts as idle."
-value = '(?:^|[\s\[(])(?:parked|blocked|waiting|on hold|deferred)\b\s*(?::|-|–|—|\(|\bon\b|\bfor\b|\buntil\b|\btill\b|\bby\b|\bbehind\b)\s*[^\s.,;:)]{2,}'
+doc = "JavaScript regex source (case-insensitive) of a parked/blocked/waiting marker that GIVES ITS REASON: the marker word, then a colon, dash, parenthesis or on/for/until/till/by/behind, then at least two characters of reason. A bare BLOCKED with no reason does not match, so it still counts as idle; a negated marker (not/no/never blocked) does not match either."
+value = '(?:^|[\s\[(])(?<!\b(?:not|no|never)\s+)(?:parked|blocked|waiting|on hold|deferred)\b\s*(?::|-|–|—|\(|\bon\b|\bfor\b|\buntil\b|\btill\b|\bby\b|\bbehind\b)\s*[^\s.,;:)]{2,}'
 
 [idle_rule.clock_re]
-doc = "JavaScript regex source (case-insensitive) of a wait on a clock: a waiting word (wait, until, till, after, retry, recheck, resume) followed within 40 characters of a time of day, a duration, tomorrow, tonight, next week/month/day or an ISO date."
-value = '\b(?:waiting|wait|until|till|after|retry|retrying|re-?check|resumes?|resuming)\b[^.\n]{0,40}?(?:\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|weeks?)\b|\btomorrow\b|\btonight\b|\bnext (?:week|month|day)\b|\b\d{4}-\d{2}-\d{2}\b)'
+doc = "JavaScript regex source (case-insensitive) of a wait on a clock: a waiting word (wait, until, till, after, retry, recheck, resume) that opens the text or a clause (after punctuation or the word then), so a noun inside a task title such as implement retry after 2 minutes is not a wait, followed within 40 characters of a time of day, a duration, tomorrow, tonight, next week/month/day or an ISO date."
+value = '(?:^|[\n.;:,(\[–—]\s*|\bthen\s+)(?:waiting|wait|until|till|after|retry|retrying|re-?check|resumes?|resuming)\b[^.\n]{0,40}?(?:\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|weeks?)\b|\btomorrow\b|\btonight\b|\bnext (?:week|month|day)\b|\b\d{4}-\d{2}-\d{2}\b)'
 
 [idle_rule.reason_owner]
 doc = "Suppression reason label: the task waits on the owner."

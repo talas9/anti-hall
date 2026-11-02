@@ -4723,7 +4723,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `idle_rule.blocked_on_min` | `3` |  |  | Fewest characters a task's blockedOn text needs to count as a stated reason (a bare or one-letter value does not). |
-| `idle_rule.clock_re` | `\b(?:waiting\|wait\|until\|till\|after\|retry\|retrying\|re-?check\|resumes?\|resuming...` |  |  | JavaScript regex source (case-insensitive) of a wait on a clock: a waiting word (wait, until, till, after, retry, recheck, resume) followed within 40 characters of a time of day, a duration, tomorrow, tonight, next week/month/day or an ISO date. |
+| `idle_rule.clock_re` | `(?:^\|[\n.;:,(\[–—]\s*\|\bthen\s+)(?:waiting\|wait\|until\|till\|after\|retry\|retryi...` |  |  | JavaScript regex source (case-insensitive) of a wait on a clock: a waiting word (wait, until, till, after, retry, recheck, resume) that opens the text or a clause (after punctuation or the word then), so a noun inside a task title such as implement retry after 2 minutes is not a wait, followed within 40 characters of a time of day, a duration, tomorrow, tonight, next week/month/day or an ISO date. |
 | `idle_rule.details_list` | `Idle tasks:\n{list}` |  |  | Saved-details block listing every idle task; `{list}` has one line per task: id, subject, status. |
 | `idle_rule.details_steps` | `To clear a task, do one of: (1) start an agent whose description contains its...` |  |  | Saved-details text with the three ways to clear a listed task; `{upd}` the task update tool, `{first}` the first listed id. |
 | `idle_rule.id_sep` | `, ` |  |  | Separator between the task ids of the visible block line. |
@@ -4733,7 +4733,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `idle_rule.kind_open` | `open` |  |  | Counter label: the generic open-tasks block. |
 | `idle_rule.minutes_cap` | `240` |  | min | Most minutes one block adds to idle_slot_minutes (the age of the oldest listed task is capped here). |
 | `idle_rule.more` | ` (+{n} more)` |  |  | Tail of the id list when more tasks than idle_rule.ids_max are idle; `{n}` is how many were left out. |
-| `idle_rule.parked_re` | `(?:^\|[\s\[(])(?:parked\|blocked\|waiting\|on hold\|deferred)\b\s*(?::\|-\|–\|—\|\(\|\b...` |  |  | JavaScript regex source (case-insensitive) of a parked/blocked/waiting marker that GIVES ITS REASON: the marker word, then a colon, dash, parenthesis or on/for/until/till/by/behind, then at least two characters of reason. A bare BLOCKED with no reason does not match, so it still counts as idle. |
+| `idle_rule.parked_re` | `(?:^\|[\s\[(])(?<!\b(?:not\|no\|never)\s+)(?:parked\|blocked\|waiting\|on hold\|defe...` |  |  | JavaScript regex source (case-insensitive) of a parked/blocked/waiting marker that GIVES ITS REASON: the marker word, then a colon, dash, parenthesis or on/for/until/till/by/behind, then at least two characters of reason. A bare BLOCKED with no reason does not match, so it still counts as idle; a negated marker (not/no/never blocked) does not match either. |
 | `idle_rule.reason_agent_ref` | `agent_ref` |  |  | Suppression reason label: a running agent's description or launch name names the task (#<id>). |
 | `idle_rule.reason_blocked_on` | `blocked_on` |  |  | Suppression reason label: the task has a blockedOn reason. |
 | `idle_rule.reason_clock` | `clock` |  |  | Suppression reason label: the task waits on a clock. |

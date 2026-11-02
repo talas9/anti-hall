@@ -674,3 +674,34 @@ fn idle_rule_is_quiet_in_plan_mode_and_blocks_the_same_tasks_outside_it() {
     assert!(idle_stop("ir-plan-off", &t, false, Some("plan")).is_some(), "off: unchanged, plan mode blocks as before");
     assert!(idle_stop("ir-default-on", &t, true, Some("default")).is_some(), "the twin: the same task outside plan mode blocks");
 }
+
+/// Review P1: an agent whose LAUNCH NAME (not its description) names the tasks attends them, for pending tasks too.
+#[test]
+fn idle_rule_skips_pending_tasks_named_by_an_agent_launch_name() {
+    let tasks = || vec![idle_task(1, "[P1] first", "pending"), idle_task(2, "[P1] second", "pending")];
+    let by_name = idle_transcript(&tasks(), &[("work on these tasks", Some("#1-#2-worker"))]);
+    assert!(idle_stop("ir-name-on", &by_name, true, None).is_none(), "on: the launch name references #1 and #2");
+    let by_desc = idle_transcript(&tasks(), &[("#1 #2 work on these tasks", None)]);
+    assert!(idle_stop("ir-desc-on", &by_desc, true, None).is_none(), "on: the description references #1 and #2");
+    // the twin: a launch name that names other tasks leaves them idle
+    let other = idle_transcript(&tasks(), &[("work on these tasks", Some("#8-#9-worker"))]);
+    let still = idle_stop("ir-name-other-on", &other, true, None).expect("a name naming other tasks does not attend #1 and #2");
+    assert!(still.contains("#1") && still.contains("#2"), "{still}");
+}
+
+/// Review P2: actionable work that merely mentions a retry, or says "not blocked", is not parked or clock-waiting.
+#[test]
+fn idle_rule_does_not_treat_actionable_text_as_clock_waiting_or_blocked() {
+    for (i, desc) in ["Implement retry after 2 minutes", "not blocked: implement the feature", "Unblocked: implement the feature"].iter().enumerate() {
+        let mut t = idle_task(61, "[P1] real work", "in_progress");
+        t.description = desc;
+        let r = idle_stop(&format!("ir-fp-{i}"), &idle_transcript(&[t], &[]), true, None);
+        assert!(r.is_some_and(|r| r.contains("#61")), "{desc:?} is actionable and must still fire");
+    }
+    // the twins: real clock waits and real parked markers still skip
+    for (i, desc) in ["wait 5 minutes then recheck", "Blocked: waiting for CI", "[PARKED: owner undecided]"].iter().enumerate() {
+        let mut t = idle_task(62, "[P1] waiting work", "in_progress");
+        t.description = desc;
+        assert!(idle_stop(&format!("ir-tw-{i}"), &idle_transcript(&[t], &[]), true, None).is_none(), "{desc:?} is a stated wait");
+    }
+}
