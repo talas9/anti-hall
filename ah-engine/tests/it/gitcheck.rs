@@ -1467,3 +1467,51 @@ fn any_non_literal_directory_change_in_a_pushing_call_is_refused() {
         assert!(!err.contains("write the repository path literally"), "{cmd}: {err}");
     }
 }
+
+/// GH #506 (live acceptance): a plain `NAME=value` prefix on the push does not change which repository or configuration git reads, so
+/// the push stays narrowed to its own commits (51+ unpushed elsewhere do not hit the cap); a name that can (`GIT_*`, `HOME`, `PATH`,
+/// `XDG_*`) keeps the whole-repository read.
+#[test]
+fn a_plain_env_prefix_on_the_push_keeps_it_scoped_but_a_git_or_home_name_does_not() {
+    let e = Env::scoped("env_prefix");
+    let (work, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    for cmd in [
+        format!("cd {w} && SKYCREW_TRIVIAL_PUSH=1 git {P} origin feat"),
+        format!("cd {w} && A=1 B=two git {P} origin feat"),
+        format!("SKYCREW_TRIVIAL_PUSH=1 git {P} origin feat"),
+    ] {
+        assert_eq!(e.hook_in(&cmd, m), (String::new(), String::new(), 0), "{cmd}");
+    }
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("cd {w} && GIT_DIR={m}/.git git {P} origin feat"),
+        format!("cd {w} && HOME=/x git {P} origin feat"),
+        format!("cd {w} && PATH=/usr/bin:/bin git {P} origin feat"),
+        format!("cd {w} && XDG_CONFIG_HOME=/x git {P} origin feat"),
+        format!("cd {w} && A=$X git {P} origin feat"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, m);
+        if code != 2 {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    // a credited commit among the pushed ones still blocks with the prefix
+    let e = Env::scoped("env_prefix_credit");
+    let (_, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    let (_, err, code) = e.hook_in(&format!("cd {} && A=1 git {P} origin feat", wt.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "{code}: {err}");
+}
+
+/// Switch off (the default): the same prefixed push is read whole, as on dev.
+#[test]
+fn switch_off_env_prefixed_push_reads_the_whole_repository() {
+    let e = Env::new("env_prefix_off");
+    let (_, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (_, err, code) = e.hook_in(&format!("cd {} && A=1 git {P} origin feat", wt.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("more than 50 local commits"), "{code}: {err}");
+}

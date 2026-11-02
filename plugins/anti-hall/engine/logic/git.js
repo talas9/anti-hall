@@ -2147,7 +2147,12 @@ function pushNarrowProven(cmd) {
   if (new RegExp(ah.cfg('git.push_narrow_forbidden_re')).test(cmd)) return false;
   const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
   const last = segs.pop();
-  if (!new RegExp(ah.cfg('git.push_narrow_push_re'), flags).test(last)) return false;
+  const pm = new RegExp(ah.cfg('git.push_narrow_push_re'), flags).exec(last);
+  if (!pm) return false;
+  // plain NAME=value assignments before the push leave it narrowed, unless a name can change what git reads or runs
+  const deny = new RegExp(ah.cfg('git.push_narrow_env_deny_re'));
+  const names = (pm[1] || '').match(new RegExp(ah.cfg('git.push_narrow_env_name_re'), 'g')) || [];
+  if (names.some((n) => deny.test(n))) return false;
   const allow = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
   return segs.every((sg) => allow.some((re) => re.test(sg)));
 }

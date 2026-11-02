@@ -912,8 +912,16 @@ doc = "The only command separator a narrowed push may follow."
 value = "&&"
 
 [git.push_narrow_push_re]
-doc = "Regular expression (JavaScript syntax) the last segment of a call must match to be narrowed: the push itself, starting at `git push`, with no environment prefix and no option before the subcommand except -C <plain literal path>, and only plain words after it (no quote, dollar sign, glob or redirect: a word the shell may expand is not proven to name one remote or ref). -c and --config-env are not allowed."
-value = '''^\s*git\s+(?:-C\s+(?![-~])[A-Za-z0-9_./@%+=:,-]+\s+)?push(?:\s+[A-Za-z0-9_./@%+=:,^-]+)*\s*$'''
+doc = "Regular expression (JavaScript syntax) the last segment of a call must match to be narrowed: the push itself, starting at `git push`, optionally after plain NAME=value assignments (group 1; a name matching push_narrow_env_deny_re keeps the push unproven), with no option before the subcommand except -C <plain literal path>, and only plain words after it (no quote, dollar sign, glob or redirect: a word the shell may expand is not proven to name one remote or ref). -c and --config-env are not allowed."
+value = '''^\s*((?:[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./@%+=:,-]*\s+)*)git\s+(?:-C\s+(?![-~])[A-Za-z0-9_./@%+=:,-]+\s+)?push(?:\s+[A-Za-z0-9_./@%+=:,^-]+)*\s*$'''
+
+[git.push_narrow_env_name_re]
+doc = "Regular expression (JavaScript syntax), read globally, for each variable name in the assignments before a narrowed push (group 1 of push_narrow_push_re)."
+value = '''[A-Za-z_][A-Za-z0-9_]*(?==)'''
+
+[git.push_narrow_env_deny_re]
+doc = "Regular expression (JavaScript syntax) over a variable name set on a push: a match can change which repository, configuration, binary or hook git reads or runs (GIT_*, HOME, XDG_*, PATH, loader and shell start-up variables), so the push is not narrowed to its own commits. Any other plain NAME=value assignment leaves it narrowed."
+value = '''^(?:GIT_|XDG_|LD_|DYLD_)|^(?:HOME|USERPROFILE|PATH|BASH_ENV|ENV|SHELLOPTS|PS4|IFS|EXEC_PATH)$'''
 
 [git.push_narrow_before_res]
 doc = "Allowlist of segments (regular expressions, JavaScript syntax) that may run before a narrowed push: only commands that change nothing a push publishes. Start: `cd <path>` with a literal absolute, ./, ../, ~/ or ~ path, or . or .. (not `cd -`, which goes to the previous directory; not a bare relative name, which CDPATH can redirect; not ~user). Capture group 1 is the target (pushNarrowDir)."
