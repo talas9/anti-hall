@@ -1467,3 +1467,82 @@ fn any_non_literal_directory_change_in_a_pushing_call_is_refused() {
         assert!(!err.contains("write the repository path literally"), "{cmd}: {err}");
     }
 }
+
+/// A pushed meta repository with a submodule `sub` (its gitlink commit is on the submodule's remote), then a credited commit in
+/// the submodule that no remote has, and one unpushed meta commit that does not touch the gitlink.
+fn meta_with_credited_submodule_commit(e: &Env) -> std::path::PathBuf {
+    let (work, _) = pushed_repo(e);
+    let sub_origin = e.dir.join("sub.git");
+    let seed = e.dir.join("seed");
+    std::fs::create_dir_all(&sub_origin).unwrap();
+    std::fs::create_dir_all(&seed).unwrap();
+    git_ok(&sub_origin, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&seed, &["init", "-q", "-b", "main"]);
+    git_ok(&seed, &["commit", "-q", "--allow-empty", "-m", "sub base"]);
+    git_ok(&seed, &["push", "-q", sub_origin.to_str().unwrap(), "main"]);
+    git_ok(&work, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub_origin.to_str().unwrap(), "sub"]);
+    git_ok(&work, &["commit", "-q", "-m", "add sub"]);
+    git_ok(&work, &["push", "-q", "origin", "main"]);
+    git_ok(&work.join("sub"), &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "meta change"]);
+    work
+}
+
+/// GH #506 (live acceptance): a scoped, non-recursing push of the meta repository publishes no submodule commit, so a credited
+/// unpushed commit in a submodule the pushed range does not reference neither blocks it nor is read.
+#[test]
+fn a_scoped_push_ignores_a_submodule_the_pushed_range_does_not_reference() {
+    let e = Env::scoped("sub_scoped_ok");
+    let work = meta_with_credited_submodule_commit(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    for cmd in
+        [format!("git -C {w} {P} origin main"), format!("cd {w} && git {P} -u origin main"), format!("git -C {w} {P} --recurse-submodules=no origin main")]
+    {
+        assert_eq!(e.hook_in(&cmd, "/tmp"), (String::new(), String::new(), 0), "{cmd}");
+    }
+}
+
+/// The same fixture with the submodule commit recorded in a pushed meta commit (the gitlink is bumped to it): the push publishes a
+/// gitlink to a credited commit no remote has, so it is refused.
+#[test]
+fn a_scoped_push_that_bumps_the_gitlink_to_a_credited_submodule_commit_blocks() {
+    let e = Env::scoped("sub_scoped_bump");
+    let work = meta_with_credited_submodule_commit(&e);
+    git_ok(&work, &["add", "sub"]);
+    git_ok(&work, &["commit", "-q", "-m", "bump sub"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp");
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("AI credit"), "{err}");
+}
+
+/// A recursing push (the flag, push.recurseSubmodules or submodule.recurse) can publish submodule commits: they are read.
+#[test]
+fn a_recursing_scoped_push_still_reads_the_submodules() {
+    let e = Env::scoped("sub_scoped_rec");
+    let work = meta_with_credited_submodule_commit(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git -C {w} {P} --recurse-submodules=on-demand origin main"), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "flag: {code} {out} {err}");
+    for (key, val) in [("push.recurseSubmodules", "on-demand"), ("submodule.recurse", "true")] {
+        git_ok(&work, &["config", key, val]);
+        let (out, err, code) = e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp");
+        assert!(code == 2 && err.contains("AI credit"), "{key}: {code} {out} {err}");
+        git_ok(&work, &["config", "--unset", key]);
+    }
+    assert_eq!(e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp"), (String::new(), String::new(), 0));
+}
+
+/// Switch off (the default): the submodule is read for every push, as on dev.
+#[test]
+fn switch_off_reads_the_submodules_for_every_push() {
+    let e = Env::new("sub_off");
+    let work = meta_with_credited_submodule_commit(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "{code} {out} {err}");
+}
