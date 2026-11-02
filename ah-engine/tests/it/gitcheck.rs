@@ -1612,3 +1612,56 @@ fn switch_off_names_the_submodule_as_dev_does_through_a_symlinked_repository() {
     // an absolute path is not shortened to the submodule name: the where-text is cut to its marker, as on dev
     assert!(err.contains("in submodule…"), "{err}");
 }
+
+/// Agents append `2>&1 | tail -5` to a push by habit: that output tail changes nothing the push publishes, so a proven push keeps its
+/// scope with it (51+ unpushed elsewhere do not hit the cap). Any other pipe or redirect leaves the push unproven.
+#[test]
+fn a_harmless_output_tail_on_a_proven_push_keeps_it_scoped() {
+    let e = Env::scoped("out_tail");
+    let (work, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    for cmd in [
+        format!("cd {w} && git {P} origin feat 2>&1 | tail -5"),
+        format!("cd {w} && git {P} origin feat | tail -n 5"),
+        format!("cd {w} && git {P} origin feat 2>&1"),
+        format!("cd {w} && git {P} origin feat 2>&1 | head -20"),
+        format!("cd {w} && git {P} origin feat | cat"),
+        format!("cd {w} && A=1 git {P} origin feat 2>&1 | tail -3"),
+        format!("git -C {w} {P} origin feat 2>&1 | tail"),
+    ] {
+        assert_eq!(e.hook_in(&cmd, m), (String::new(), String::new(), 0), "{cmd}");
+    }
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("cd {w} && git {P} origin feat | tee x"),
+        format!("cd {w} && git {P} origin feat > out.txt"),
+        format!("cd {w} && git {P} origin feat 2>&1 | sh"),
+        format!("cd {w} && git {P} origin feat | tail -5 | tee x"),
+        format!("cd {w} && git {P} origin feat < in.txt"),
+        format!("cd {w} && git {P} origin feat 2>&1 | tail -5; echo done"),
+        format!("cd {w} && git status | tail -5 && git {P} origin feat"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, m);
+        if code != 2 || !err.contains("more than 50 local commits") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    // a credited commit in the pushed range still blocks with the tail
+    let e = Env::scoped("out_tail_credit");
+    let (_, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    let (_, err, code) = e.hook_in(&format!("cd {} && git {P} origin feat 2>&1 | tail -5", wt.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "{code}: {err}");
+}
+
+/// Switch off: the same push with an output tail is read whole, as on dev.
+#[test]
+fn switch_off_an_output_tail_push_reads_the_whole_repository() {
+    let e = Env::new("out_tail_off");
+    let (_, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (_, err, code) = e.hook_in(&format!("cd {} && git {P} origin feat 2>&1 | tail -5", wt.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("more than 50 local commits"), "{code}: {err}");
+}

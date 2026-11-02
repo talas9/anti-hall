@@ -907,6 +907,14 @@ value = ""
 doc = "Regular expression (JavaScript syntax) of what makes a Bash call unprovable for narrowing a push to its own commits (GH #506, PR #524 review): a command chain or pipe other than a double ampersand (semicolon, double bar, bar, a single ampersand, a newline), a substitution or subshell (dollar-paren, backtick, parentheses), a block or function body (braces), a here-document or here-string, and the words eval, source, alias, function, a shell name, exec, command, builtin, env, xargs, time or a leading dot (source). Any match: the push counts every unpushed commit of the repository."
 value = '[;|\n\r`(){}]|(?<!&)&(?!&)|<<|\$\(|(?:^|[\s&])(?:eval|source|alias|function|sh|bash|zsh|dash|ksh|exec|command|builtin|env|xargs|time|\.)\s'
 
+[git.push_narrow_tail_re]
+doc = "Regular expression (JavaScript syntax), anchored at the end of the command, for the only output tail a proven push may carry (GH #506): an optional `2>&1`, then optionally a pipe to `tail` or `head` (with an optional `-n N` or `-N`) or to `cat`. It is cut off before push_narrow_forbidden_re and the segment patterns are checked; any other pipe, redirect (`>`, `<`), `tee` or shell stays unproven."
+value = '''(?:\s+2>&1)?(?:\s*\|\s*(?:(?:tail|head)(?:\s+(?:-n\s*\d+|-\d+))?|cat))?\s*$'''
+
+[git.push_scope_redirect_re]
+doc = "Regular expression (JavaScript syntax) for a push word that is a file-descriptor redirect (`2>&1`), the only redirect a proven push carries (push_narrow_tail_re): it is not read as a remote or refspec."
+value = '''^\d*>&\d+$'''
+
 [git.push_narrow_separator]
 doc = "The only command separator a narrowed push may follow."
 value = "&&"
