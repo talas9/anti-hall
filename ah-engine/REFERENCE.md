@@ -690,8 +690,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.log_batch` | `256` |  |  | Most queued lines the daemon's log thread writes in one append. |
 | `health.log_cap` | `65536` |  | bytes | Event log size above which it is trimmed to its last log_keep_lines lines. |
 | `health.log_flush_ms` | `1000` |  | ms | Longest the daemon waits at exit for its queued event-log lines to reach the file. |
+| `health.log_flush_poll_ms` | `5` |  | ms | How often the exit flush retries handing its request to the event-log queue while that queue is full. |
 | `health.log_keep_lines` | `200` |  |  | Lines kept when the event log is trimmed. |
 | `health.log_queue` | `4096` |  |  | Lines the daemon's log thread can hold before a worker appends its line itself. The daemon queues every event-log line to one thread that writes them in batches (the per-line stat, lock, open and write were where the four workers waited under load); other processes still append directly. |
+| `health.msg_flush_skipped` | `event log not flushed at exit: its queue was full or its writer gone` |  |  | Event-log detail when the exit flush gave up: the log queue stayed full or its writer was gone. |
 | `health.pid_probe` | `ps, -p, {pid}, -o, command=` |  |  | Command used to read a process's command line when checking whether a pid is a live engine: the program, then its arguments with `{pid}` substituted. |
 | `health.probe_poll_ms` | `2` |  | ms | How often a running probe command is checked for completion. |
 | `health.probe_timeout_ms` | `1000` |  | ms | Longest a pid or memory probe command (health.pid_probe, health.rss_probe) may run; it runs on the hook path, so a wedged one is cut off and reads as no answer. |

@@ -183,9 +183,33 @@ pub fn start_log_thread() {
 /// Wait (bounded) until every line queued so far is on disk: for the daemon's exit and for a reader that must see its own lines.
 pub fn flush_log() {
     let Some(tx) = LOG_QUEUE.get() else { return };
+    if !flush_via(tx, defaults::millis("health.log_flush_ms")) {
+        crate::discard::note("log_flush_skipped", defaults::text("health.msg_flush_skipped"));
+    }
+}
+
+/// Ask the log writer behind `tx` to acknowledge a flush, never blocking past `wait`: the request is retried while the queue is full
+/// (a healthy writer drains it), then the ack is awaited for the time left. False when the queue stayed full or the writer is gone.
+fn flush_via(tx: &std::sync::mpsc::SyncSender<LogMsg>, wait: std::time::Duration) -> bool {
+    use std::sync::mpsc::TrySendError;
+    let deadline = std::time::Instant::now() + wait;
     let (ack, done) = std::sync::mpsc::channel();
-    if tx.send(LogMsg::Flush(ack)).is_ok() {
-        crate::discard::harmless(done.recv_timeout(defaults::millis("health.log_flush_ms"))); // keep: a stuck writer must not hold the exit
+    let mut msg = LogMsg::Flush(ack);
+    loop {
+        match tx.try_send(msg) {
+            Ok(()) => {
+                crate::discard::harmless(done.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))); // keep: a stuck writer must not hold the exit
+                return true;
+            }
+            Err(TrySendError::Full(m)) => {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                msg = m;
+                std::thread::sleep(defaults::millis("health.log_flush_poll_ms"));
+            }
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
     }
 }
 
@@ -1171,5 +1195,31 @@ mod tests {
     fn fnv_is_stable() {
         assert_eq!(fnv(""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv("a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    /// F572: a full queue with a stuck writer must not hold the exit flush past its bound.
+    #[test]
+    fn a_stuck_log_writer_does_not_hold_the_flush() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<LogMsg>(1);
+        tx.try_send(LogMsg::Line(String::new())).unwrap();
+        let wait = defaults::millis("health.log_flush_ms");
+        let t = std::time::Instant::now();
+        assert!(!flush_via(&tx, wait));
+        assert!(t.elapsed() < wait * 3, "the flush took {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn a_healthy_log_writer_acks_the_flush() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<LogMsg>(4);
+        let h = std::thread::spawn(move || {
+            while let Ok(m) = rx.recv() {
+                if let LogMsg::Flush(a) = m {
+                    crate::discard::harmless(a.send(())); // keep: the waiter may be gone
+                }
+            }
+        });
+        assert!(flush_via(&tx, defaults::millis("health.log_flush_ms")));
+        drop(tx);
+        h.join().unwrap();
     }
 }
