@@ -1,0 +1,32 @@
+# ah-engine shipped defaults for notice turns (src/dispatch/notice.rs): a UserPromptSubmit whose prompt is a harness notice, not the
+# owner typing. With the switch on, the pure per-prompt reminders listed in notice_turn.skip_checks are dropped from the plan on such a
+# turn (they say nothing new there). The kind of a prompt is counted with the switch off too, so the share of notice turns is measured
+# before the switch is turned on. Format: see the header of engine.toml.
+
+[notice_turn.sw_main]
+doc = "Master switch of the notice-turn skip (context.injectGateNoticeTurns, default off): on, the checks in notice_turn.skip_checks are not run on a UserPromptSubmit that is a task notification, a mesh inbox tick, a goal check-in, or a message from another session or a teammate; off keeps every reminder, as before."
+value = { section = "context", key = "injectGateNoticeTurns", env = "ANTIHALL_NOTICE_TURNS", option = "", default = false }
+
+[notice_turn.events]
+doc = "The hook events whose prompt is tested for a notice kind (and whose dispatch entries notice_turn.skip_checks can drop)."
+value = ["UserPromptSubmit"]
+
+[notice_turn.prompt_chars]
+doc = "How many characters from the start of the prompt are tested against notice_turn.kinds. A notice announces itself at the start; the rest of a long prompt is never read."
+value = 400
+
+[notice_turn.kinds]
+doc = "Notice kinds by name, each a regular expression (Rust regex syntax, case-insensitive) anchored at the start of the prompt, so a human sentence that only mentions a notice never matches. The first match in table order wins; the name is the kind label of metric.notice_turn_matched and metric.notice_turn_skipped. notification = a harness task notification (optionally wrapped in a system reminder); mesh_tick = the mesh inbox tick cron prompt; goal_checkin = a goal check-in; peer = a message from another session; teammate = a teammate message."
+value = { notification = '^\s*(?:<system-reminder>\s*)?<task-notification>', mesh_tick = '^\s*\S*ah-engine\s+mesh\s+inbox\s+tick\b', goal_checkin = '^\s*Goal check-in:', peer = '^\s*<cross-session-message\b|Another Claude session sent a message', teammate = '^\s*<teammate-message' }
+
+[notice_turn.skip_checks]
+doc = "The UserPromptSubmit dispatch entry ids (a variant suffix is ignored) dropped on a notice turn while notice_turn.sw_main is on: the pure per-prompt reminders. Not idle-agent-sweep or agent-reminders (a notification usually reports a finished agent, and they carry that fact), not devswarm-parent-inbox or devswarm-rt-advisory (the tick turn is the inbox turn), and not auto-handover, afk-mode, repair-on-reload or limit-conserve-inject (state or mode, not reminders)."
+value = ["verify-first", "task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"]
+
+[metric.notice_turn_matched]
+doc = "UserPromptSubmit prompts that are a harness notice, by kind (notice_turn.kinds). Counted with the switch on or off, so it measures the share of notice turns before the skip is enabled."
+value = { kind = "counter", unit = "prompts", labels = ["kind"] }
+
+[metric.notice_turn_skipped]
+doc = "Dispatch entries dropped from the plan of a notice turn while notice_turn.sw_main is on, by notice kind and by the base id of the check (notice_turn.skip_checks)."
+value = { kind = "counter", unit = "prompts", labels = ["kind", "check"] }

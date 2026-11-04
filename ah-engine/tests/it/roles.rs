@@ -418,6 +418,17 @@ fn every_block_text_has_a_rule_row_and_every_listed_rule_is_in_the_generated_out
 }
 
 #[test]
+fn the_clear_step_allowlist_holds_only_registered_rules_that_still_have_no_instead() {
+    // the ratchet (#538): an id that gained an instead must leave the list, and a rule with an instead is never on it
+    let allow = ah_engine::defaults::list("guard_rules.no_step_allow");
+    assert!(!allow.is_empty(), "the allowlist is the measured set of rules without a clear step");
+    for id in allow {
+        let row = skillgen::rules().into_iter().find(|r| r.id == id).unwrap_or_else(|| panic!("{id} is not a registered rule"));
+        assert!(skillgen::rule_parts(row.source).2.trim().is_empty(), "{id} has an instead now: remove it from guard_rules.no_step_allow");
+    }
+}
+
+#[test]
 fn the_digest_fits_its_budget_and_the_committed_digest_is_the_generated_one() {
     let text = skillgen::digest_text();
     assert!(text.len() as u64 <= ah_engine::defaults::num("roles.digest_budget"), "digest is {} bytes", text.len());

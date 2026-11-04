@@ -36,6 +36,7 @@ files = [
     "inject_gate.toml",
     "stop_channel.toml",
     "context_size.toml",
+    "notice_turn.toml",
     "session.toml",
     "response_guards.toml",
     "claim_evidence.toml",
