@@ -86,6 +86,8 @@ pub struct Plan {
     pub budget: Budget,
     /// The hash of the non-default hook configuration this plan was made under (empty = defaults).
     pub cfg_hash: String,
+    /// The notice turn this occurrence is, with the entries it dropped (the daemon counts it).
+    pub notice: Option<super::notice::Seen>,
 }
 
 impl Plan {
@@ -125,7 +127,8 @@ pub fn build(event: &str, matched: Vec<Entry>, cfg: &HookCfg, occ: &Occurrence<'
         ecfg.mode = Mode::On; // defence in depth: a guard event is never off or shadow, whatever a layer says (hookcfg rejects it)
         ecfg.max_rules = 0;
     }
-    let mut plan = Plan { items: Vec::new(), dropped: Vec::new(), event_off: false, budget: Budget::new(ecfg.budget_ms), cfg_hash: cfg.hash().to_string() };
+    let mut plan =
+        Plan { items: Vec::new(), dropped: Vec::new(), event_off: false, budget: Budget::new(ecfg.budget_ms), cfg_hash: cfg.hash().to_string(), notice: None };
     if ecfg.mode == Mode::Off {
         plan.event_off = true;
         plan.dropped = matched.into_iter().map(|e| (e.id, Outcome::Off)).collect();
@@ -138,6 +141,11 @@ pub fn build(event: &str, matched: Vec<Entry>, cfg: &HookCfg, occ: &Occurrence<'
     }
     let session_id = occ.payload.get("session_id").and_then(Value::as_str).unwrap_or("-");
     let cx = Ctx { payload: occ.payload, tool: occ.tool, env: occ.env, session_id, sessions: occ.sessions, facts: occ.facts };
+    // a notice turn (task notification, mesh tick, goal check-in, peer or teammate message) is noted whatever the switch says; the
+    // daemon counts it (this process is the hook client, whose own counters are never read)
+    let kind = super::notice::kind_of(event, occ.payload);
+    plan.notice = kind.map(|k| super::notice::Seen { kind: k.to_string(), skipped: Vec::new() });
+    let skip_notice = kind.is_some() && super::notice::enabled(occ.env);
     let mut kept = 0usize;
     for e in entries {
         let ec = cfg.entry(event, &e.id);
@@ -147,6 +155,14 @@ pub fn build(event: &str, matched: Vec<Entry>, cfg: &HookCfg, occ: &Occurrence<'
             // a check switched off is disabled: dropped from the plan, recorded as `off` in the event's telemetry (no Node hook
             // takes its place any more)
             plan.dropped.push((e.id.clone(), Outcome::Off));
+            continue;
+        }
+        if skip_notice && super::notice::skips(&e.id) {
+            // the pure reminders say nothing new on a harness notice: dropped before they run, like a false `when`
+            if let Some(n) = plan.notice.as_mut() {
+                n.skipped.push(e.id.clone());
+            }
+            plan.dropped.push((e.id, Outcome::SkippedPredicate));
             continue;
         }
         if let Some(w) = ec.when.as_ref().or(e.when.as_ref())
@@ -224,6 +240,8 @@ pub fn load_config(cwd: &str) -> HookCfg {
 /// What one dispatch records about its plan.
 #[derive(Debug, Default)]
 pub struct Tele {
+    /// The notice turn the plan found, for the daemon's counters.
+    pub notice: Option<super::notice::Seen>,
     /// Outcomes of every entry the plan considered, plus any the budget cut later.
     pub outcomes: Vec<(String, Outcome)>,
     /// The config hash.
@@ -410,10 +428,51 @@ mod tests {
         let t = Tele {
             outcomes: vec![("a".into(), Outcome::Ran), ("b".into(), Outcome::SkippedPredicate), ("c".into(), Outcome::Shadowed)],
             cfg_hash: "abc".into(),
+            notice: None,
         };
         assert!(t.notable());
         let d = t.detail();
         assert!(d.contains("cfg=abc") && d.contains("ran=[a]") && d.contains("skipped_predicate=[b]") && d.contains("shadowed=[c]"), "{d}");
-        assert!(!Tele { outcomes: vec![("a".into(), Outcome::Ran)], cfg_hash: String::new() }.notable());
+        assert!(!Tele { outcomes: vec![("a".into(), Outcome::Ran)], cfg_hash: String::new(), notice: None }.notable());
+    }
+
+    fn notice_plan(on: bool, prompt: &str) -> Plan {
+        let payload = json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": prompt});
+        let env = if on { RequestEnv::from_pairs([("ANTIHALL_NOTICE_TURNS", "1")]) } else { RequestEnv::default() };
+        let matched = table::select("claude", "UserPromptSubmit", &payload, None);
+        build(
+            "UserPromptSubmit",
+            matched,
+            &HookCfg::default(),
+            &Occurrence { payload: &payload, tool: None, env: &env, sessions: None, facts: &NoFacts, payload_ok: true },
+        )
+    }
+
+    #[test]
+    fn notice_turn_the_planner_drops_the_pure_reminders_only_with_the_switch_on() {
+        let note = "<task-notification>\n<task-id>b1</task-id>";
+        let human = notice_plan(true, "do the thing");
+        let off = notice_plan(false, note);
+        assert_eq!(ids(&human), ids(&off), "a human prompt and a switched-off notice plan the same entries");
+        let on = notice_plan(true, note);
+        // the plan notes the kind and what it dropped for the daemon to count (this process is the hook client)
+        let seen = on.notice.clone().unwrap_or_else(|| panic!("a notice turn is noted"));
+        let mut skipped: Vec<&str> = seen.skipped.iter().map(|i| i.split([':', '#']).next().unwrap_or(i)).collect();
+        skipped.sort_unstable();
+        let mut gone = vec!["verify-first", "task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"];
+        gone.sort_unstable();
+        assert_eq!((seen.kind.as_str(), skipped), ("notification", gone));
+        // switched off: still noted (measured before the switch is turned on), nothing dropped
+        assert_eq!(off.notice, Some(crate::dispatch::notice::Seen { kind: "notification".into(), skipped: Vec::new() }));
+        assert!(human.notice.is_none());
+        let kept: Vec<String> = on.items.iter().map(|i| i.entry.id.clone()).collect();
+        let skipped: Vec<String> = on.dropped.iter().filter(|(_, o)| matches!(o, Outcome::SkippedPredicate)).map(|(id, _)| id.clone()).collect();
+        for gone in ["verify-first", "task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"] {
+            assert!(!kept.iter().any(|k| k.starts_with(gone)), "{gone} still planned: {kept:?}");
+            assert!(skipped.iter().any(|k| k.starts_with(gone)), "{gone} not recorded as skipped: {skipped:?}");
+        }
+        for stays in ["idle-agent-sweep", "agent-reminders", "devswarm-parent-inbox", "auto-handover", "afk-mode"] {
+            assert!(kept.iter().any(|k| k.starts_with(stays)), "{stays} was dropped: {kept:?}");
+        }
     }
 }

@@ -1536,6 +1536,10 @@ value = "merge-gate"
 doc = "Where the opt-in switch is read from (guards.mergeGate, default off)."
 value = { section = "guards", key = "mergeGate", env = "ANTIHALL_MERGE_GATE", aliases = [], option = "guards_merge_gate", default = false }
 
+[merge_gate.clear_step_setting]
+doc = "Where the switch for the clear-step block text is read from (guards.mergeGateClearStep, default off): on, the block uses msg_what_v2 and msg_instead_v2 (#538)."
+value = { section = "guards", key = "mergeGateClearStep", env = "ANTIHALL_MERGE_GATE_CLEAR_STEP", aliases = [], option = "", default = false }
+
 [merge_gate.window_bytes]
 doc = "How much of the end of the transcript is scanned for a self-hedge (the same bounded tail the Node gate reads)."
 value = 131072
@@ -1599,6 +1603,14 @@ value = "Merging now could ship unfinished work."
 [merge_gate.msg_instead]
 doc = "The block message's alternative."
 value = "verify the agreed result before merging."
+
+[merge_gate.msg_what_v2]
+doc = "The block message's first line with guards.mergeGateClearStep on; {hedge} is the last hedge phrase found."
+value = 'the merge is paused: your last message says "{hedge}" and no real user prompt has resolved it.'
+
+[merge_gate.msg_instead_v2]
+doc = "The block message's alternative with guards.mergeGateClearStep on; {resolutions} is the comma-joined merge_gate.resolutions list. Kept short on purpose: the visible instead is cut to the saved-instructions pointer past 115 characters (10-text.js message), which would hide the phrases. With the shipped list it renders to 112."
+value = "owner replies: {resolutions}"
 
 [merge_gate.msg_override]
 doc = "The block message's override line."
