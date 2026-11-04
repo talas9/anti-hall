@@ -2226,6 +2226,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `merge_gate.clear_step_setting` | `6 entries` |  |  | Where the switch for the clear-step block text is read from (guards.mergeGateClearStep, default off): on, the block uses msg_what_v2 and msg_instead_v2 (#538). |
 | `merge_gate.env_assign` | `^[A-Za-z_][A-Za-z0-9_]*=` |  |  | Regex source of a leading environment assignment the scan skips before the command word. |
 | `merge_gate.guard_name` | `merge-gate` |  |  | The guard id this check answers to in skip.json. |
 | `merge_gate.hedge_patterns` | `first[- ]pass, not pixel[- ]perfect` |  |  | Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output. |
@@ -2238,8 +2239,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `merge_gate.jev_true` | `unresolved hedge present` |  |  | The label for a true answer of the mergeGateHedge question. |
 | `merge_gate.merge_rules` | `2 entries, 3 entries, 4 entries, 2 entries, 2 entries` |  |  | The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target. |
 | `merge_gate.msg_instead` | `verify the agreed result before merging.` |  |  | The block message's alternative. |
+| `merge_gate.msg_instead_v2` | `owner replies: {resolutions}` |  |  | The block message's alternative with guards.mergeGateClearStep on; {resolutions} is the comma-joined merge_gate.resolutions list. Kept short on purpose: the visible instead is cut to the saved-instructions pointer past 115 characters (10-text.js message), which would hide the phrases. With the shipped list it renders to 112. |
 | `merge_gate.msg_override` | `tell the agent "skip merge-gate"` |  |  | The block message's override line. |
 | `merge_gate.msg_what` | `the merge is paused while recent work remains unverified.` |  |  | The block message's first line; {hedge} is the last hedge phrase found. |
+| `merge_gate.msg_what_v2` | `the merge is paused: your last message says "{hedge}" and no real user prompt...` |  |  | The block message's first line with guards.mergeGateClearStep on; {hedge} is the last hedge phrase found. |
 | `merge_gate.msg_why` | `Merging now could ship unfinished work.` |  |  | The block message's reason. |
 | `merge_gate.non_human_origins` | `human, user` |  |  | The origin kinds of a user record that still count as a human typing. |
 | `merge_gate.protected_target` | `^(main\|master\|develop\|origin\/(main\|master\|develop))$` |  |  | Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge. |
@@ -3168,19 +3171,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
 | `guard_rules.enum_digest_tier` | `7 entries` |  |  | Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget. |
 | `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
-| `guard_rules.exempt` | `42 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording. |
+| `guard_rules.exempt` | `47 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry). |
 | `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
 | `guard_rules.msg_no_heredoc` | `4 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
 | `guard_rules.msg_rm_rf_root` | `4 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
+| `guard_rules.no_step_allow` | `21 items` |  |  | Ratchet for the clear-step lint (#538): the ids of registered non-off rules that have no instead text today. The list may only shrink: a new rule needs an instead (the step that clears the block), and an id that gains one must be removed here (guard_rules.problem_stale_allow). |
 | `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
 | `guard_rules.problem_digest` | `{id}: missing from the generated digest` |  |  | Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}. |
 | `guard_rules.problem_id` | `rule id empty or duplicate: {id}` |  |  | Registry problem: a rule id that is empty or repeated. Placeholder: {id}. |
 | `guard_rules.problem_line` | `{id}: essential rule without a usable digest field for {host}` |  |  | Registry problem: an essential rule with no digest field for a host, or a digest line with a placeholder left in it. Placeholders: {id}, {host}. |
+| `guard_rules.problem_no_step` | `{id}: no instead text naming the step that clears it (add the instead key bes...` |  |  | Registry problem: a non-off rule has no instead text (the step that clears it) and is not in guard_rules.no_step_allow. Placeholder: {id}. |
 | `guard_rules.problem_setting` | `{id}: setting {setting} matches no settings entry` |  |  | Registry problem: a rule row's setting names no settings entry (section and key). Placeholders: {id}, {setting}. |
 | `guard_rules.problem_skill` | `{id}: missing from the generated skill` |  |  | Registry problem: a rule is missing from the generated rules skill. Placeholder: {id}. |
 | `guard_rules.problem_source` | `{id}: source {source} does not exist` |  |  | Registry problem: the source key of a rule does not exist. Placeholders: {id}, {source}. |
+| `guard_rules.problem_stale_allow` | `{id}: has an instead text now, remove it from guard_rules.no_step_allow` |  |  | Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
 | `guard_rules.rules` | `152 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
@@ -3613,6 +3619,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.summary_chars` | `280` |  |  | Longest summary line a shrunk context keeps inline: its first line, cut at a word end. |
 | `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the inline caps. Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
 | `context_size.sw_keep_pinned` | `5 entries` |  |  | Pinned inline. Switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519). |
+
+### notice_turn.toml / notice_turn
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `notice_turn.events` | `UserPromptSubmit` |  |  | The hook events whose prompt is tested for a notice kind (and whose dispatch entries notice_turn.skip_checks can drop). |
+| `notice_turn.kinds` | `5 entries` |  |  | Notice kinds by name, each a regular expression (Rust regex syntax, case-insensitive) anchored at the start of the prompt, so a human sentence that only mentions a notice never matches. The first match in table order wins; the name is the kind label of metric.notice_turn_matched and metric.notice_turn_skipped. notification = a harness task notification (optionally wrapped in a system reminder); mesh_tick = the mesh inbox tick cron prompt; goal_checkin = a goal check-in; peer = a message from another session; teammate = a teammate message. |
+| `notice_turn.prompt_chars` | `400` |  |  | How many characters from the start of the prompt are tested against notice_turn.kinds. A notice announces itself at the start; the rest of a long prompt is never read. |
+| `notice_turn.skip_checks` | `verify-first, task-tracker, procwatch-advisory, gh-rt-advisory, switch-notice` |  |  | The UserPromptSubmit dispatch entry ids (a variant suffix is ignored) dropped on a notice turn while notice_turn.sw_main is on: the pure per-prompt reminders. Not idle-agent-sweep or agent-reminders (a notification usually reports a finished agent, and they carry that fact), not devswarm-parent-inbox or devswarm-rt-advisory (the tick turn is the inbox turn), and not auto-handover, afk-mode, repair-on-reload or limit-conserve-inject (state or mode, not reminders). |
+| `notice_turn.sw_main` | `5 entries` |  |  | Master switch of the notice-turn skip (context.injectGateNoticeTurns, default off): on, the checks in notice_turn.skip_checks are not run on a UserPromptSubmit that is a task notification, a mesh inbox tick, a goal check-in, or a message from another session or a teammate; off keeps every reminder, as before. |
 
 ### session.toml / session
 
@@ -5601,7 +5617,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.agent_subdirs` | `workflows` |  |  | Subdirectories of a session's subagents directory that hold one more directory level of agent transcripts (Claude Code puts workflow agents in subagents/workflows/<run>/agent-<id>.jsonl). |
 | `advisor.agent_transcript_keys` | `agent_transcript_path` |  |  | Hook payload fields that may carry a subagent's own transcript path. |
 | `advisor.agent_transcript_tpl` | `{dir}/{session}/subagents/agent-{agent}.jsonl` |  |  | Where a subagent's own transcript lies when the payload names none. Placeholders: {dir} (the main transcript's directory), {session} (its file name without .jsonl), {agent} (the agent id). A subagent is never judged by the main transcript; with no own transcript its rules stay silent. |
-| `advisor.attachment` | `6 entries` |  |  | The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. |
+| `advisor.attachment` | `7 entries` |  |  | The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. Its `model_key` names the advisor model (read for the rank rule, advisor.model_ranks) when the entry is not a sidechain one. |
 | `advisor.block_types` | `tool_use, server_tool_use` |  |  | Transcript content-block types that are a tool call (the advisor is a server tool, so its block may be server_tool_use). |
 | `advisor.brief_head_bytes` | `2000` |  | bytes | How much of a dispatch prompt (from its start) is classified when the description names no thinking type. |
 | `advisor.dispatch_tools` | `Agent, Task` |  |  | Tool names that dispatch an agent: the thinking and second-attempt rules judge their brief (description, prompt). |
@@ -5614,6 +5630,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.kind_availability` | `advisor_availability` |  |  | Advisory kind (counters) of why the advisor rules stayed silent or how availability was established: the names of advisor.silence_metrics. |
 | `advisor.kind_consult` | `advisor_consult` |  |  | Advisory kind (counter) of the advisor calls seen in the transcript. Adherence monitoring (phase 2): the engine report's `advisory` section shows, per session-independent total, advisor_consult.consult (consults), advisor_retry.armed (failures watched), advisor_retry.consulted (consulted after the failure), advisor_retry.injected (retry blocks fired), advisor_retry.acted_on (blocks followed by a consult), advisor_review.injected and .suppressed (non-flagship review/plan spawns blocked and held back). The same tallies are kept per session in the retry state file. |
 | `advisor.kind_plan` | `advisor_plan` |  |  | Advisory kind (counters and cap) of the plan rule. |
+| `advisor.kind_rank` | `advisor_guard` |  |  | Advisory kind (counters) of the rank rule: see advisor.rank_metrics. |
 | `advisor.kind_retry` | `advisor_retry` |  |  | Advisory kind (counters and cap) of the retry rule. |
 | `advisor.kind_review` | `advisor_review` |  |  | Advisory kind (counters and cap) of the review rule. |
 | `advisor.kind_say_do` | `advisor_say_do` |  |  | Advisory kind (counters) of the say-do rule: miss (an announced advisor call that did not follow), blocked. |
@@ -5630,14 +5647,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.lock_step_ms` | `5` |  | ms | The pause between attempts to take the advisor state lock. |
 | `advisor.lock_suffix` | `.lock` |  |  | Suffix of the per-agent state lock that the advisor-guard rules and the review rule hold while they read, decide and save the shared state. |
 | `advisor.lock_wait_ms` | `2000` |  | ms | How long a rule waits for the advisor state lock before it allows unjudged (fail open, counted allow_lock_busy). |
-| `advisor.max_lines` | `100000` |  |  | Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time). |
+| `advisor.max_lines` | `20000` |  |  | Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time; the rules stay silent for that call, counted silent_behind). Kept low: a read of ~100000 lines made the script fail with 'quickjs: Null' (GH #558). |
 | `advisor.metric_dispatch_tpl` | `dispatch_{type}` |  |  | Counter name of a thinking dispatch of one type. Placeholder: {type}. |
 | `advisor.metric_latency_gt_tpl` | `latency_gt_{s}s` |  |  | Counter name of a consult latency past the last bucket. Placeholder: {s}. |
 | `advisor.metric_latency_le_tpl` | `latency_le_{s}s` |  |  | Counter name of a consult-latency bucket. Placeholder: {s}. |
+| `advisor.model_ranks` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Model family ranks, matched case-insensitively as a substring of the model id (so a version bump needs no edit); the highest rank is the strongest model. The advisor model comes only from the newest non-sidechain advisor_tool attachment (advisor.attachment.model_key); the settings file never stands in. No match, or a name that matches more than one family (sonnet-opus), = unknown rank = the guard stays on. The main and advisor model count only when read in the current read window: any discarded input (a gap, an oversized or unparsable line, a truncated tail) makes both unknown until a fresh entry is read; sidechain entries never set the main model. |
 | `advisor.msg_plan_instead` | `Call the advisor on this plan first, then write it.` |  |  | What to do instead for the plan rule. |
 | `advisor.msg_plan_what` | `A plan is being written with no advisor call since the task began.` |  |  | Block text of the plan rule. |
+| `advisor.msg_plan_what_lower` | `Plan written with no advisor call: main {model} is below advisor {advisor}.` |  |  | Block text of the plan rule when the main model ranks below the advisor model (the fact and what was done; the hook's line is capped near 115 characters). Placeholders: {model}, {advisor}. |
+| `advisor.msg_plan_what_unknown` | `Plan written with no advisor call: main {model} or advisor {advisor} unranked.` |  |  | Block text of the plan rule when the main or advisor model could not be ranked, so the guard stays on. Placeholders: {model}, {advisor} (a label when unknown). |
 | `advisor.msg_retry_instead` | `Consult the advisor on the failure before editing again.` |  |  | What to do instead for the retry rule. |
 | `advisor.msg_retry_what` | `{file} is being edited again after a failed test or build, with no advisor ca...` |  |  | Block text of the retry rule. Placeholder: {file}. |
+| `advisor.msg_retry_what_lower` | `Re-edit of {file} after a failed run, no advisor call: main {model} is below ...` |  |  | Block text of the retry rule when the main model ranks below the advisor model. Placeholders: {file}, {model}, {advisor}. |
+| `advisor.msg_retry_what_unknown` | `Re-edit of {file} after a failed run, no advisor call: main {model} or adviso...` |  |  | Block text of the retry rule when the main or advisor model could not be ranked, so the guard stays on. Placeholders: {file}, {model}, {advisor}. |
 | `advisor.msg_review_instead` | `Use an Opus, Fable or Codex agent for the review, or call the advisor yoursel...` |  |  | What to do instead for the review rule. |
 | `advisor.msg_review_what` | `A review-shaped agent on {model} is not allowed while the advisor is available.` |  |  | Block text of the review rule. Placeholder: {model}. |
 | `advisor.msg_say_do_instead` | `Call the advisor tool now, or say plainly that you are not consulting it. Blo...` |  |  | What to do instead for the say-do rule. |
@@ -5655,6 +5677,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.payload_tool_keys` | `tools, available_tools, allowed_tools` |  |  | Hook payload fields that may list the tools available to the session (an array of names or of objects with a name); the advisor counts as available when one names it. |
 | `advisor.plan_file_re` | `(?i)(?:^\|/)PLAN\.md$\|(?:^\|/)(?:\.omc/plans\|\.claude/plans\|\.anti-hall/plans\|p...` |  |  | Regular expression (Rust syntax) of a file path that is a plan file: PLAN.md anywhere, or a markdown file in a plans directory. |
 | `advisor.plan_tools` | `ExitPlanMode` |  |  | Tool names that always count as writing a plan. |
+| `advisor.rank_metrics` | `4 entries` |  |  | Counter names of advisor.kind_rank: skipped (the main model ranks equal or higher than the advisor model: the guard stayed silent), applied (the main ranks lower: the guard applied), applied_unknown (the main or advisor model could not be ranked: the guard applied), applied_subagent (the call came from a subagent, which is never exempted: the guard applied). Each is also counted as metric advisor_rank{result}. |
+| `advisor.rank_unknown_label` | `unknown` |  |  | Label for a model that is not known. |
 | `advisor.result_types` | `advisor_tool_result` |  |  | Transcript content-block types that are an advisor result (the server tool's answer carries a tool_use_id, not a name); one counts as an advisor call. |
 | `advisor.review_signals` | `review, reviewer, critique, critic` |  |  | Token phrases that make an agent spawn review-shaped (matched against its description and agent type like model_routing.complex). Reviews and plans only: audits and scans may run on a cheaper model. |
 | `advisor.say_do_re` | `(?i)\b(?:i\W?ll\|i will\|let me\|i\W?m going to\|going to\|will now\|next,? i)\s+(?...` |  |  | Regular expression (Rust syntax) of assistant text that announces an advisor call. |
@@ -5662,15 +5686,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.settings_files` | `2 entries, 2 entries, 2 entries, 2 entries, 2 entries` |  |  | Claude Code settings files that may set an advisor model (root: home = the user's home, cwd = the session's working directory, abs = the path as given). Read only when the head of the transcript was never read (so a missing advisor_tool attachment proves nothing); a set advisor.settings_key then counts as the advisor being available. |
 | `advisor.settings_key` | `advisorModel` |  |  | Top-level key of a Claude Code settings file that names the advisor model; a non-empty string means an advisor is configured. |
 | `advisor.settings_read_max_bytes` | `1048576` |  | bytes | Most bytes of one settings file read (a longer file is not parsed and counts as not configured). |
-| `advisor.silence_metrics` | `10 entries` |  |  | Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides). |
+| `advisor.sidechain_key` | `isSidechain` |  |  | Transcript entry field that is true for a subagent (sidechain) entry; such an entry never sets the main model or the advisor model of the rank rule. |
+| `advisor.silence_metrics` | `12 entries` |  |  | Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides), line_discarded (a transcript line was skipped as oversized, unparsable or still being written: the main and advisor model become unknown), behind (a read stopped at advisor.max_lines with bytes left: the advisor rules stay silent for that call). |
 | `advisor.state_ext` | `.json` |  |  | File-name extension of the per-session retry state. |
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
 | `advisor.summary` | `Advisor sessions only: blocks once a plan written with no advisor call this t...` |  |  | One-line description of the advisor-guard check in the generated reference. |
 | `advisor.sw_plan` | `6 entries` |  |  | Blocks a plan written with no advisor call once. Default on, advisor sessions only. |
+| `advisor.sw_rank` | `6 entries` |  |  | Skips plan/retry blocks for an equal/higher main. Default off, advisor sessions only. |
 | `advisor.sw_retry` | `6 entries` |  |  | Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only. |
-| `advisor.sw_review` | `6 entries` |  |  | Blocks a review agent on a non-flagship model once. Default on, advisor sessions only. |
-| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only. |
-| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only. |
+| `advisor.sw_review` | `6 entries` |  |  | Blocks a non-flagship review agent once. Default on, advisor sessions only. |
+| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn that promises an advisor call. Default on, advisor sessions only. |
+| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking dispatch by a non-flagship main. Default on, advisor sessions only. |
 | `advisor.tasks_max` | `32` |  |  | Most tasks (owner messages) and issue keys one agent's state keeps (the oldest go first). |
 | `advisor.test_cmd_re` | `\b(?:cargo\s+(?:\+\S+\s+)?(?:test\|nextest\|build\|check\|clippy)\|npm\s+(?:run\s+...` |  |  | Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run. |
 | `advisor.test_file_re` | `(?i)(?:^\|/)(?:tests?\|__tests__\|specs?)/\|[._-](?:test\|spec)\.[A-Za-z0-9]+$\|_te...` |  |  | Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run). |
@@ -6026,7 +6052,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `399 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `400 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8444,7 +8470,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `405 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `406 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8781,7 +8807,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.table_headers_integrations` | `Integration, Effective, Configured, Source, Logs to` |  |  | The columns of the Jev integrations table. |
 | `ops.true_word` | `true` |  |  | The value `judge on` stores. |
 | `ops.trust_done` | `trusted {repo}/{rel} (sha256 {hash}):` |  |  | First line after a trust is recorded. Placeholders: repo, rel, hash. |
-| `ops.trust_exotic_breaks` | `,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
+| `ops.trust_exotic_breaks` | `
+,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
 | `ops.trust_missing` | `no {rel} in {top}` |  |  | No allowlist file. Placeholders: rel, top. |
 | `ops.trust_not_git` | `not inside a git repository: {target}` |  |  | No repository. Placeholder: target. |
 | `ops.trust_state` | `{rel} in {top} is {state}` |  |  | An unusable allowlist file. Placeholders: rel, top, state. |
@@ -11149,7 +11176,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.ready_git_timeout_ms` | `4000` |  |  | How long one git call of ready-check may run; a call that overruns is unknown, never a fact. |
 | `devswarm_cli.ready_gitlink_mode` | `160000` |  |  | The git file mode of a submodule pointer (a gitlink). |
 | `devswarm_cli.ready_is_ancestor` | `--is-ancestor` |  |  | The merge-base option that asks whether the first commit is an ancestor of the second. |
-| `devswarm_cli.ready_line_terminators` | `\n  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
+| `devswarm_cli.ready_line_terminators` | `\n
+  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
 | `devswarm_cli.ready_merge_base` | `merge-base` |  |  | The git subcommand that answers ancestry questions. |
 | `devswarm_cli.ready_no_renames` | `--no-renames` |  |  | The git diff option that reports a rename as a delete and an add. |
 | `devswarm_cli.ready_quiet` | `--quiet` |  |  | The git flag that keeps the fetch of `ready-check --fetch` quiet. |
@@ -11280,7 +11308,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_mb_grep_file_long` | `--file` |  |  | The long flag by which the pattern filter reads its patterns from a file (refused, with or without `=value`). |
 | `devswarm_cli.rr_mb_grep_file_short` | `f` |  |  | The short flag letter for the same (refused anywhere in a flag cluster). |
 | `devswarm_cli.rr_mb_inbox_word` | `inbox` |  |  | The word a mailbox cron prompt must contain (as a whole word) next to the CLI script name. |
-| `devswarm_cli.rr_mb_line_terms` | `\n  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
+| `devswarm_cli.rr_mb_line_terms` | `\n
+  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
 | `devswarm_cli.rr_mb_node` | `node` |  |  | The interpreter word a mailbox-class command starts with (a ping turn is made only of such calls). |
 | `devswarm_cli.rr_mb_pipe` | `\|` |  |  | The pipe character that separates a mailbox command from its read-only filters. |
 | `devswarm_cli.rr_mb_quotes` | `'"` |  |  | The two quote characters of a mailbox command, in this order: the literal quote, the string quote. |
@@ -13748,8 +13777,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.stale_build_label` | `stale anti-hall {version}` |  |  | The label of a row whose child runs an older anti-hall build than the machine's newest; {version} is the recorded version. Its rank is the not-draining rank. |
 | `devswarm_parent.stale_build_message` | `stale anti-hall {version}: run /reload-plugins (restart only if it persists) ...` |  |  | The text for a child that runs an older anti-hall build than the machine's newest. Placeholders: {version}, {cmd}. |
 | `devswarm_parent.stale_registry_head` | `⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree...` |  |  | The segment for registry rows whose worktree is gone but that still hold unread. Placeholders: {count}, {shown}, {extra}. |
+| `devswarm_parent.stale_registry_head_archived` | `⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree...` |  |  | The stale-workspaces segment when devswarm.skipArchivedChildren is on: names the fact and the exact step that clears it. Placeholders: {count}, {shown}, {extra}, {cli}. |
 | `devswarm_parent.stuck_statuses` | `stale, nudged, escalated` |  |  | Supervisor verdicts that mean a child is wedged (STUCK_STATUSES). |
 | `devswarm_parent.sw_orphans_once` | `6 entries` |  |  | Switch devswarm.orphanWarningOnce (default on): the orphaned-mesh warning is shown once per session per set of orphaned partition ids, not again on every keepalive or unread-count change (GH #419). Off restores the keepalive repeat. |
+| `devswarm_parent.sw_skip_archived` | `6 entries` |  |  | Skip archived rows. |
 | `devswarm_parent.table_activity_token` | `live` |  |  | What the activity-only status labels are replaced with before the table is hashed. |
 | `devswarm_parent.table_head` | `💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):\...` |  |  | The head of the live workspace table: the title line and the column header. |
 | `devswarm_parent.table_row` | `\| {workspace} \| {label} \| {finish} \| {unread} \| {last} \|` |  |  | One table row. Placeholders: {workspace}, {label}, {finish}, {unread}, {last}. |
@@ -14769,6 +14800,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
 | `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
+| `notice_turn_matched` | counter | prompts | kind | UserPromptSubmit prompts that are a harness notice, by kind (notice_turn.kinds). Counted with the switch on or off, so it measures the share of notice turns before the skip is enabled. |
+| `notice_turn_skipped` | counter | prompts | kind, check | Dispatch entries dropped from the plan of a notice turn while notice_turn.sw_main is on, by notice kind and by the base id of the check (notice_turn.skip_checks). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
 | `claim_evidence_suppressor_rejected` | counter | candidates | reason | Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427). |
@@ -14807,6 +14840,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `devswarm_parent_gate_suppressed` | counter | passes | reason | Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send). |
 | `mesh_noise_lookalike_kept` | counter | rows | kind | Rows or lines that start with a system prefix (poke, wake) but carry a mail provenance (an mtype, or a non-Primary sender), so they were counted as unread mail, by kind. |
 | `mesh_unread_position_unknown` | counter | counts | site | Unread counts reported unknown because the saved store read position was past the partition's message count, by site (count_for, union_of, shared_unread). |
+| `advisor_rank` | counter | verdicts | result | Verdicts of the advisor rank rule (guards.advisorRank, GH #500) at each plan or retry block decision: skipped (main ranks equal or higher: no block), applied (main ranks lower), applied_unknown (main or advisor model unknown), applied_subagent (subagent: never exempted). |
 | `burn_breaker_bypass` | counter | calls | kind | Tool calls the burn-breaker check let through while the breaker held, by kind (commit: a commit or push, per call, never a lift (PR #472); restore: the restore class; report: a report write; send: a mesh send; tool: an always-allowed tool; inspect: another allowed command; doubt: an error while judging, allowed) (GH #458). |
 | `burn_breaker_paused` | counter | calls | reason | Tool calls the burn-breaker check paused, by reason (burn: the token line; waste: the waste sensor's hard mark) (GH #458). |
 | `burn_pause_withheld` | counter | ticks | reason | Ticks the agent tracker held the hard burn flag but withheld the pause marker, by reason (building: a build call still in flight; soft: a recent soft outcome within burn.soft_hold). The nudge still goes out (GH #458). |
@@ -14854,6 +14888,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 | `dssup_appdb_date_unread` | counter | dates |  | Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full). |
 | `ingest_drops` | counter | paths | reason | Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason. |
+| `devswarm_archived_child_kept` | counter | workspaces | reason | Marker-archived children still named by a nudge because the marker is no proof (devswarm.skipArchivedChildren on), by reason (descriptor_newer: both without a session id and the descriptor was written after the marker; session_unknown: the session ids differ or only one side has one). |
+| `devswarm_archived_child_skipped` | counter | workspaces | check, reason | Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker). |
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds

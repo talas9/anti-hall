@@ -167,6 +167,8 @@ All three stay silent unless the session has the advisor tool, block once per tr
 
 Turn it off with `set guards.advisorRetry false` (likewise `guards.advisorPlan`, `guards.advisorReview`, `guards.advisorThinking`, `guards.advisorSayDo`) or the env `ANTIHALL_ADVISOR_RETRY`, `ANTIHALL_ADVISOR_PLAN`, `ANTIHALL_ADVISOR_REVIEW`, `ANTIHALL_ADVISOR_THINKING`, `ANTIHALL_ADVISOR_SAY_DO` set to `0`.
 
+The plan rule and the retry re-edit rule, in the main session only, are skipped while the main model ranks equal or higher than the advisor model (haiku < sonnet < opus < fable, matched by family name, so a new version needs no edit): an Opus main with an Opus advisor is left alone. A subagent is never exempted, and an unknown main or advisor model keeps the guard on. The review rule and the phase-3 rules are not affected. Switch: `guards.advisorRank` (env `ANTIHALL_ADVISOR_RANK`, default off); counters `advisor_guard.skipped_equal_or_higher`, `applied_lower_model`, `applied_unknown_model`, `applied_subagent_unranked`, and the metric `advisor_rank{result}`.
+
 ## Turning a hook off
 
 "Turn off the task-list nudge", "stop the per-turn verify-first line", "disable the

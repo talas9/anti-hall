@@ -8,7 +8,7 @@
 //! | `piAppDb()` | whether the DevSwarm app's database file exists at the path the app uses (`appDbPath`) |
 //! | `piSnap(windowMs, now)` | reads the app database snapshot once for this call: `{file, readable, focused}` (the file exists, a snapshot was read, the id of the workspace selected within `windowMs`) |
 //! | `piWs(id, worktree, now)` | `workspaceFor(snap, { id, worktreePath })` with the fields the table reads: `{id, label, rank, isPinned, builderType, active, archived, finish, brief}`, or `null` |
-//! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
+//! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored, closed, why}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
 //! | `piActivity(id, worktree, session, lastOutbound, now)` | `{ts, dormant, idleAlive, idleMs}`: the widest activity signal and the liveness state of `rowLivenessState` |
 //! | `piMarker(id, worktree, session)` | `isArchivedWorkspace(home, id, worktree, { sessionId })`: anti-hall's own archive marker names the row archived |
 //! | `piApp(id, worktree, repoKey, now)` | the app side of "archived" for a row (`appArchivedVerdict`, then the supervisor's active-list cache) |
@@ -302,7 +302,52 @@ fn row_state(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, repo_key:
     let app = w.app_archived(id, wt)?;
     let superseded = if marker { false } else { gate_superseded(&w, &inv.home, id, wt, sid, inv.now as f64)? };
     let ignored = is_safe_id(id) && archive_ignored(&inv.home, id);
-    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored}))
+    let (closed, why) = archived_closed(inv, id, marker, app)?;
+    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored, "closed": closed, "why": why}))
+}
+
+/// GH #508 (`devswarm.skipArchivedChildren`): whether an explicitly ARCHIVED row is closed for the nudges, and why (`app`, `marker`) or why
+/// not (`descriptor_newer`, `session_unknown`; empty when the row is not archived or the switch is off). The state is read fresh from the
+/// descriptor and the marker; no worktree path is inspected anywhere. A marker alone is no proof (a re-created child with the same id has
+/// one too), so a marker closes the row only when the descriptor is absent, names the same session, or (both without a session id) has
+/// not been written since the marker.
+fn archived_closed(inv: &Inv, id: &str, marker: bool, app: bool) -> R<(bool, &'static str)> {
+    if !crate::checks::guardkit::settings::get_bool(&inv.settings(), defaults::raw("devswarm_parent.sw_skip_archived")) {
+        return Ok((false, ""));
+    }
+    if app {
+        return Ok((true, "app"));
+    }
+    if !marker || !is_safe_id(id) {
+        return Ok((false, ""));
+    }
+    let root = devswarm_root(&inv.home);
+    let name = format!("{id}{}", json_suffix());
+    let marker_path = root.join(defaults::text("mesh_write.dir_archived")).join(&name);
+    let desc_path = root.join(defaults::text("mesh_write.dir_workspaces")).join(&name);
+    let sid_field = defaults::text("mesh_write.field_session_id");
+    let marker_sid = read_val(&marker_path).and_then(|m| real_sid(m.get(sid_field)));
+    let desc = match std::fs::read(&desc_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((true, "marker")),
+        Err(_) => return Ok((false, "session_unknown")),
+        Ok(bytes) => match OVal::parse(&String::from_utf8_lossy(&bytes)) {
+            Some(v) if matches!(v, OVal::Obj(_)) => v,
+            Some(_) => return Ok((true, "marker")),
+            None => return Ok((false, "session_unknown")), // unreadable or half-written: no proof it was not re-created
+        },
+    };
+    let desc_sid = real_sid(desc.get(sid_field));
+    match (marker_sid, desc_sid) {
+        (Some(m), Some(d)) if m == d => Ok((true, "marker")),
+        (None, None) => {
+            let mtime = |p: &Path| std::fs::metadata(p).ok().map(|m| liveness::mtime_ms(&m)).filter(|t| t.is_finite());
+            match (mtime(&marker_path), mtime(&desc_path)) {
+                (Some(m), Some(d)) if d <= m => Ok((true, "marker")),
+                _ => Ok((false, "descriptor_newer")),
+            }
+        }
+        _ => Ok((false, "session_unknown")),
+    }
 }
 
 /// `appHasLiveChild` up to the per-row eligibility: the open, unarchived, non-primary workspaces of the project the working directory
@@ -700,5 +745,60 @@ mod tests {
         std::fs::write(journal.join("a.ndjson"), "{}\n").unwrap();
         let inv = Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 1, stdin: None, store_override: None };
         assert_eq!(derive_text(&inv, proj).unwrap(), json!({"text": Value::Null}));
+    }
+
+    /// GH #508: the truth table of `archived_closed`. A marker closes a row only with proof it is the same incarnation; the app flag always
+    /// closes; the switch off, or no marker, never does.
+    #[test]
+    fn archived_closed_truth_table() {
+        let home = std::env::temp_dir().join(format!("ah-pi-closed-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        let root = devswarm_root(&home);
+        let (arch, ws) = (root.join(defaults::text("mesh_write.dir_archived")), root.join(defaults::text("mesh_write.dir_workspaces")));
+        std::fs::create_dir_all(&arch).unwrap();
+        std::fs::create_dir_all(&ws).unwrap();
+        let env: std::collections::HashMap<String, String> = [("ANTIHALL_DEVSWARM_SKIP_ARCHIVED_CHILDREN".to_string(), "true".to_string())].into();
+        let on = Inv { home: home.clone(), write_home: home.clone(), env, cwd: "/".into(), now: 1, stdin: None, store_override: None };
+        let off = Inv { home: home.clone(), write_home: home.clone(), env: Default::default(), cwd: "/".into(), now: 1, stdin: None, store_override: None };
+        let set = |dir: &Path, body: &str, secs: u64| {
+            let f = dir.join("c1.json");
+            std::fs::write(&f, body).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&f)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + secs))
+                .unwrap();
+        };
+        let closed = |inv: &Inv, marker: bool, app: bool| archived_closed(inv, "c1", marker, app).unwrap();
+        // no descriptor
+        set(&arch, "{\"sessionId\":\"a\"}", 10);
+        assert_eq!(closed(&on, true, false), (true, "marker"), "marker, no descriptor");
+        assert_eq!(closed(&on, false, true), (true, "app"), "the app flag closes");
+        assert_eq!(closed(&on, false, false), (false, ""), "not archived");
+        assert_eq!(closed(&off, true, true), (false, ""), "switch off: never closed");
+        // both sessions
+        set(&ws, "{\"sessionId\":\"a\"}", 99);
+        assert_eq!(closed(&on, true, false), (true, "marker"), "equal session ids close whatever the mtimes");
+        set(&ws, "{\"sessionId\":\"b\"}", 1);
+        assert_eq!(closed(&on, true, false), (false, "session_unknown"), "different sessions: re-created");
+        set(&ws, "{}", 1);
+        assert_eq!(closed(&on, true, false), (false, "session_unknown"), "marker has a session, descriptor none: re-created");
+        set(&arch, "{}", 10);
+        set(&ws, "{\"sessionId\":\"b\"}", 1);
+        assert_eq!(closed(&on, true, false), (false, "session_unknown"), "descriptor has a session, marker none");
+        // neither has a session: the mtimes decide
+        set(&ws, "{}", 10);
+        assert_eq!(closed(&on, true, false), (true, "marker"), "descriptor not newer");
+        set(&ws, "{}", 11);
+        assert_eq!(closed(&on, true, false), (false, "descriptor_newer"), "descriptor written after the marker");
+        // a descriptor that cannot be read proves nothing; one that is valid JSON but no object is no workspace
+        set(&ws, "{\"sessionId\":", 1);
+        assert_eq!(closed(&on, true, false), (false, "session_unknown"), "half-written descriptor");
+        set(&ws, "null", 1);
+        assert_eq!(closed(&on, true, false), (true, "marker"), "not an object");
+        // an unsafe id is never closed by a marker
+        assert_eq!(archived_closed(&on, "../x", true, false).unwrap(), (false, ""));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

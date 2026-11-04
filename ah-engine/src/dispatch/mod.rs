@@ -28,6 +28,7 @@ pub mod digest;
 pub mod inject;
 pub mod native;
 pub mod node;
+pub mod notice;
 pub mod plan;
 pub mod shrink;
 pub mod spill;
@@ -687,6 +688,7 @@ fn cold_start_kick(args: &Args) -> Option<Outcome> {
         cfg: String::new(),
         payload_sha1: None,
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+        notice: None,
     };
     ask_daemon(&meta, "{}", false); // keep: the answer is empty by construction; the call is for the daemon start
     Some(Outcome { out: String::new(), code: 0, err: String::new() })
@@ -733,6 +735,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     let dplan = plan::build(&args.event, entries, &cfg, &occurrence);
     tele.cfg_hash = dplan.cfg_hash.clone();
     tele.outcomes = dplan.outcomes();
+    tele.notice = dplan.notice.clone();
     let budget = dplan.budget;
     if dplan.event_off || dplan.items.is_empty() {
         return Outcome { out: String::new(), code: 0, err: String::new() };
@@ -804,6 +807,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         },
         // the daemon clamps its inner budgets (git, Jev) to what this client still waits (review finding 4)
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+        notice: tele.notice.clone(),
     };
     let session_id = parsed.as_ref().and_then(|p| p.get("session_id")).and_then(Value::as_str).unwrap_or_default().to_string();
     let answers = match (&parsed, complete) {
