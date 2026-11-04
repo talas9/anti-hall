@@ -202,6 +202,7 @@ fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_m
         add(slot, "tokens_out", fields_of(&e).and_then(|f| f.get_num("tokens_out")).unwrap_or(0));
     }
     let agent = agent_section(kind_events(tel, rec, Kind::Agent, days, now_ms));
+    let stop_channel = stop_channel_section(&kind_events(tel, rec, Kind::StopChan, days, now_ms));
     // daemon: the newest snapshot
     let snaps = kind_events(tel, rec, Kind::Daemon, days, now_ms);
     let latest = snaps.last().map(|e| {
@@ -217,8 +218,30 @@ fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_m
         "cmd": cmd,
         "model": model,
         "agent": agent,
+        "stop_channel": stop_channel,
         "daemon": {"snapshots": snaps.len(), "latest": latest},
     })
+}
+
+/// The Stop channel's counters of the window (GH #540): every counter of `stop_channel.counters` with its total and its split by
+/// check, model and project (a counter nothing used shows 0, so a switch that never fired is visible as such).
+fn stop_channel_section(events: &[Event]) -> Value {
+    let mut out = Map::new();
+    for c in defaults::list("stop_channel.counters") {
+        out.insert(c.to_string(), json!({"total": 0, "by_check": {}, "by_model": {}, "by_project": {}}));
+    }
+    for e in events {
+        let Some(slot) = out.get_mut(e.h.as_str()).and_then(Value::as_object_mut) else { continue };
+        add(slot, "total", 1);
+        let tok = |name: &str| fields_of(e).and_then(|f| f.get_tok(name)).unwrap_or("").to_string();
+        let split = [("by_check", e.e.as_str().to_string()), ("by_model", tok("model")), ("by_project", tok("project"))];
+        for (key, val) in split {
+            if let Some(m) = slot.get_mut(key).and_then(Value::as_object_mut) {
+                bump(m, &val);
+            }
+        }
+    }
+    Value::Object(out)
 }
 
 /// The agent tracker's daily totals: signals raised by name, reminders by channel and result, recoveries (with the mean

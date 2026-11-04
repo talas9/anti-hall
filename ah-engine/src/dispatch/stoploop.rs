@@ -28,7 +28,7 @@ pub fn is_stop_event(event: &str) -> bool {
     defaults::list("dispatch.stop_events").contains(&event)
 }
 
-fn safe(payload: Option<&Value>, field: &str) -> String {
+pub(super) fn safe(payload: Option<&Value>, field: &str) -> String {
     let v = payload.and_then(|p| p.get(field)).and_then(Value::as_str).unwrap_or("");
     v.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(defaults::num("dispatch.stop_id_max_chars") as usize).collect()
 }

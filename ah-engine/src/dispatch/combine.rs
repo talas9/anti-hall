@@ -308,11 +308,11 @@ pub(crate) fn channel_keys(event: &str, r: &HookResult) -> Vec<&'static str> {
 
 const TOP_DECISION: &str = "decision";
 const TOP_REASON: &str = "reason";
-const TOP_MSG: &str = "systemMessage";
-const HSO_KEY: &str = "hookSpecificOutput";
+pub(crate) const TOP_MSG: &str = "systemMessage";
+pub(crate) const HSO_KEY: &str = "hookSpecificOutput";
 const HSO_REASON: &str = "permissionDecisionReason";
-const HSO_CTX: &str = "additionalContext";
-const HSO_EVENT: &str = "hookEventName";
+pub(crate) const HSO_CTX: &str = "additionalContext";
+pub(crate) const HSO_EVENT: &str = "hookEventName";
 
 /// True when a top-level `decision` value blocks: the block's reason is then the top-level `reason`; any other JSON block is
 /// a `hookSpecificOutput` deny, whose reason is its `permissionDecisionReason`.

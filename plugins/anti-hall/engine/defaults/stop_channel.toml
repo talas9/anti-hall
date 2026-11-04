@@ -1,0 +1,103 @@
+# ah-engine shipped defaults for the Stop channel (src/dispatch/stopchan.rs, GH #540, plan v2 C1). A Stop note sent as
+# `systemMessage` is a warning for the user; the model does not act on it (lab: 0/10 followed, the same as silence). The same note
+# as Stop `additionalContext` continues the turn and is followed 10/10 (a soft block). Switching the channel on moves a check's
+# model-facing Stop note there, under stateless bounds (no state file: every bound is read from the Stop payload and the
+# transcript). OFF by default: with the switch off the Stop answer is byte for byte what the checks printed.
+# Format: see the header of engine.toml.
+
+# ---- settings (the `context` section of settings.json) ----
+
+[stop_channel.sw_main]
+doc = "Switch (context.stopAdditionalContext, default off): a check's model-facing Stop note is sent as Stop additionalContext (a soft block that continues the turn) instead of systemMessage. Per-check rows: stop_channel.check_on and stop_channel.check_off beat this switch."
+value = { section = "context", key = "stopAdditionalContext", env = "ANTIHALL_STOP_ADDITIONAL_CONTEXT", option = "", default = false }
+
+[stop_channel.num_k]
+doc = "Most continuations THIS channel may cause in one chain (context.stopContinuationLimit, default 3): the Stop additionalContext attachments in the transcript AFTER the last human-typed prompt, or since the start of the transcript when it holds no human prompt (an unattended run of notification turns is bounded the same way). At or past it a note stays on its old channel (counter over_k). A hard block's `Stop hook feedback:` entry is a different, older mechanism and does not count toward it (it counts toward stop_channel.num_total). It counts the transcript, never stores a count, and does not depend on the host's stop_hook_active flag. A whole number from 0 to 8 (the host's own cap on consecutive Stop continuations); a string, a float, a negative or a non-number is ignored and the default stands; a larger whole number is lowered to 8 and counted (limit_clamped). 0 = no soft block is ever sent."
+value = { section = "context", key = "stopContinuationLimit", env = "ANTIHALL_STOP_CONTINUATION_LIMIT", option = "", default = 3, min = 0, max = 8, integer = true, reject_below_min = true }
+
+[stop_channel.num_total]
+doc = "Most continuations of BOTH shapes together (this channel's attachments and hard-block `Stop hook feedback:` entries) in one chain since the last human-typed prompt (context.stopTotalContinuationLimit, default 8, the host's own cap on consecutive Stop continuations). At or past it a note stays on its old channel (counter over_total): a safety guard on the whole chain, whatever caused it. Same rules as stop_channel.num_k: a whole number from 0 to 8; a string, a float, a negative or a non-number is ignored and the default stands; a larger whole number is lowered to 8 and counted (limit_clamped). 0 = no soft block is ever sent."
+value = { section = "context", key = "stopTotalContinuationLimit", env = "ANTIHALL_STOP_TOTAL_CONTINUATION_LIMIT", option = "", default = 8, min = 0, max = 8, integer = true, reject_below_min = true }
+
+# ---- what moves ----
+
+[stop_channel.events]
+doc = "Hook events whose notes the Stop channel moves (SubagentStop is not listed: its additionalContext behaviour is not verified)."
+value = ["Stop"]
+
+[stop_channel.hosts]
+doc = "Hosts whose Stop hook honours additionalContext as a soft block (verified on Claude by the plan v2 lab). Codex is not listed: whether its Stop hook honours additionalContext is unconfirmed (parity issue #559), so it stays on systemMessage."
+value = ["claude"]
+
+[stop_channel.check_on]
+doc = "Check ids whose Stop note moves even while stop_channel.sw_main is off (a per-check switch-on). Variant ids (afk-mode:stop, swarm-guard#2) match their base check."
+value = []
+
+[stop_channel.check_off]
+doc = "Check ids whose Stop note never moves, whatever stop_channel.sw_main says (a per-check switch-off; it beats check_on)."
+value = []
+
+[stop_channel.user_only]
+doc = "Check ids whose Stop systemMessage is meant for the user only (a banner), so it stays there. A check whose text has no model/user split is model-facing and is not listed."
+value = []
+
+[stop_channel.stderr_checks]
+doc = "Check ids whose exit-0 stderr at Stop is an instruction the model can act on (the invisible-channel ratchet's Stop stderr offenders, channel_ratchet.offenders). With the Stop channel on, that text is also sent as additionalContext; stderr itself is left as it is, so the user still sees it. Only tasklist-guard is listed: its plan-mode note asks for the work to be tracked as tasks, which the model can do. task-guard's stderr says it deferred its own Stop block because live agents are active, and devswarm-child-gate's says its gate stopped blocking; a soft block on either would undo what the check decided, so they stay on stderr. Other checks' stderr is diagnostics and never moves."
+value = ["tasklist-guard"]
+
+[stop_channel.health_check]
+doc = "The check id the engine-health advisory counts and is switched under (stop_channel.check_on / check_off) when it is merged into a Stop answer."
+value = "health-advisory"
+
+# ---- the pending-work guard (the Stop payload's own field) ----
+
+[stop_channel.pending_field]
+doc = "The Stop payload field holding the session's running background tasks (an array). Absent or not an array = unknown = the note stays on its old channel (counter no_background_field); a non-empty array = work pending (counter background_pending): a continuation would only make the turn poll. No tracker is read."
+value = "background_tasks"
+
+# ---- the length bound ----
+
+[stop_channel.context_max_chars]
+doc = "Most characters the COMBINED Stop additionalContext of one answer may take (every context already in the answer, the moved notes and the joiners). The host keeps only about 2000 characters of a context inline. Over it nothing is moved: the notes stay on their old channel (counter over_length). A note is never cut."
+value = 1900
+min = 200
+max = 20000
+unit = "chars"
+
+# ---- the stateless chain bound (the transcript) ----
+
+[stop_channel.feedback_prefix]
+doc = "What the text of a Stop-hook continuation entry (a transcript line of type user) begins with: the host writes a hard block's reason (and any other Stop feedback) this way."
+value = "Stop hook feedback:"
+
+[stop_channel.attachment_type]
+doc = "The transcript attachment type the host writes for a hook's additionalContext (a line of type attachment whose attachment.hookEvent is the event): this is how a Stop additionalContext continuation is recorded. An attachment of this type without a hookEvent is not counted. Also the marker for the host's write lag: a newest transcript line that cannot be parsed (half written) but contains this text counts as one continuation of this channel."
+value = "hook_additional_context"
+
+[stop_channel.human_origin_kinds]
+doc = "Values of a user transcript line's origin.kind that mark a prompt the human typed (a notification turn is task-notification, a peer message peer). The chain count restarts at the last such line."
+value = ["human"]
+
+[stop_channel.human_prompt_sources]
+doc = "Values of a user transcript line's promptSource that mark a prompt the human typed (notification turns are system). Either this or stop_channel.human_origin_kinds marks a human prompt."
+value = ["typed"]
+
+[stop_channel.tail_start_bytes]
+doc = "Bytes of the end of the transcript read first for the chain count. When no human prompt is inside and the start of the file is not, the window doubles up to stop_channel.tail_max_bytes."
+value = 1048576
+min = 4096
+max = 67108864
+unit = "bytes"
+
+[stop_channel.tail_max_bytes]
+doc = "Most bytes of the end of the transcript read for the chain count. A chain whose last human prompt is further back than this is unknown (counter transcript_unreadable): the note stays on its old channel."
+value = 33554432
+min = 4096
+max = 536870912
+unit = "bytes"
+
+# ---- counters ----
+
+[stop_channel.counters]
+doc = "The outcomes of the metric stop_channel, in the order the telemetry summary lists them (detail.stop_channel); one count per moved note. emitted: the note was sent as Stop additionalContext. over_k: the chain already took stop_channel.num_k of this channel's own continuations since the last human prompt. over_total: the chain's continuations of both shapes together reached stop_channel.num_total. limit_clamped: a configured limit was above its maximum and was lowered to it (counted besides the note's own outcome). no_background_field: the payload has no background-tasks array, so pending work is unknown. background_pending: background tasks are running. transcript_unreadable: the transcript is absent, unreadable, not UTF-8 JSON lines of a known shape, or the last human prompt is further back than stop_channel.tail_max_bytes. over_length: the combined context would pass stop_channel.context_max_chars. blocked_kept: the answer is a hard block; the notes stay where they are and the block is untouched. Every outcome but emitted leaves the answer exactly as it is without the Stop channel."
+value = ["emitted", "over_k", "over_total", "limit_clamped", "no_background_field", "background_pending", "transcript_unreadable", "over_length", "blocked_kept"]

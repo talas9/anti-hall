@@ -1779,6 +1779,7 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
         crate::proc::kill_all();
         health::clear_marker();
         health::log_event("exit", code, &why);
+        health::flush_log(); // the line is only queued for the log thread; process::exit below would drop it
         std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
     });
 }
@@ -2115,6 +2116,10 @@ impl Footing {
 fn footing_watch(sh: Arc<Shared>, footing: Footing) {
     while !sh.draining.load(SeqCst) {
         std::thread::sleep(defaults::millis("daemon.orphan_check_ms"));
+        // a drain that began during the sleep unlinked the socket itself: that is not a lost footing, and the drain is already running
+        if sh.draining.load(SeqCst) {
+            return;
+        }
         if let Some(why) = footing.lost() {
             health::log_event("exit", "orphaned", why);
             begin_drain(&sh, why, false);
