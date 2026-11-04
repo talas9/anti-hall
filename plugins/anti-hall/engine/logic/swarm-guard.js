@@ -66,9 +66,13 @@ function swgUnder(abs, dir) {
 
 // True when the brief names its own working tree (a clone, worktree, cd or work-in target) at an absolute or ~ path outside the
 // session's tree: that agent works in another checkout, so it shares nothing with this one.
-function swgNamesOtherTree(t, tree) {
-  if (!tree) return false;
-  var hits = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree'), 'i', t), home = ah.home();
+// The bare fresh-clone matcher (swarm_guard.re_named_tree_bare, guards.sharedTreeBareClone) runs only after the main one found nothing;
+// swgBareHit tells the shared-tree note that the bare matcher alone made the difference, so it can count the exemption once per spawn.
+// swgBareSpan is the matched text, blanked from the in-place check: "use ~/x as the working copy" would otherwise trip the in-place word "working copy".
+var swgBareHit = false, swgBareSpan = '';
+
+function swgNamedTreeOutside(t, tree, key, home, bare) {
+  var hits = ah.re.findAll(ah.cfg(key), 'i', t);
   for (var i = 0; i < hits.length; i++) {
     var m = t.slice(hits[i][0], hits[i][1]), at = ah.re.find(ah.cfg('swarm_guard.re_named_tree_path'), '', m);
     if (!at) continue;
@@ -78,8 +82,16 @@ function swgNamesOtherTree(t, tree) {
     if (tilde) { if (!home) continue; raw = home + raw.slice(tilde[1]); }
     if (!ah.path.isAbsolute(raw)) continue;
     var abs = ah.path.resolveAbs(raw);
-    if (!swgInTree(abs, tree)) return true;
+    if (!swgInTree(abs, tree)) { if (bare) swgBareSpan = m; return true; }
   }
+  return false;
+}
+
+function swgNamesOtherTree(t, tree) {
+  if (!tree) return false;
+  var home = ah.home();
+  if (swgNamedTreeOutside(t, tree, 'swarm_guard.re_named_tree', home)) return true;
+  if (ah.settings.bool('swarm_guard.named_tree_bare_setting') && swgNamedTreeOutside(t, tree, 'swarm_guard.re_named_tree_bare', home, true)) { swgBareHit = true; return true; }
   return false;
 }
 
@@ -114,11 +126,12 @@ function swgInScratch(inp, tree) {
   var place = ah.cfg('swarm_guard.re_in_place');
   var negated = ah.cfg('swarm_guard.re_negated_in_place').split('{place}').join(place);
   var affirmative = t.replace(new RegExp(negated, 'gi'), ' ');
+  swgBareSpan = '';
   // an agent that only writes a report or results under the scratch location touches no checkout, unless it also says it edits repo files
   var scratchOnly = ah.settings.bool('swarm_guard.scratch_only_setting') &&
     ah.re.test(ah.cfg('swarm_guard.re_scratch_only').split('{path}').join(path), 'i', t) && !ah.re.test(ah.cfg('swarm_guard.re_repo_write'), 'i', t);
   return (scratchOnly || ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
-    !ah.re.test(place, 'i', affirmative);
+    !ah.re.test(place, 'i', swgBareSpan ? affirmative.split(swgBareSpan).join(' ') : affirmative);
 }
 
 function swgSharesTree(inp, tree) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp, tree); }
@@ -153,7 +166,11 @@ function swgSharedTreeNote(p) {
   var inp = swgIsObj(p.tool_input) ? p.tool_input : null;
   var tree = swgTree(p.cwd);
   if (tree === 'unsure') return null;
-  if (!inp || !swgSharesTree(inp, tree)) return '';
+  swgBareHit = false;
+  if (!inp || !swgSharesTree(inp, tree)) {
+    if (swgBareHit) { ah.advisory('swarm_guard_fp', 'named_tree_bare'); ah.metric('named_tree_bare', []); }
+    return '';
+  }
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string') return '';
   var scan = ah.transcript.agentsWindow(tp); // Node's runningAgents: the default window only

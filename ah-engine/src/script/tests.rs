@@ -965,6 +965,46 @@ mod swarm {
         assert!(note("fix it", &other).is_none(), "the running agent works in another clone");
     }
 
+    // issue #487: a bare fresh-clone statement ("clone ~/x", "use ~/x as the working copy") names a tree, behind guards.sharedTreeBareClone
+    #[test]
+    fn shared_tree_bare_clone_phrasings_name_their_own_tree_only_when_the_switch_is_on() {
+        let h = swarm_home("sw-bare");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        let bare = [
+            "Do the build: clone ~/x and build it, then fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x then test, fix hooks/foo.js and commit.",
+            "Fix hooks/foo.js. clone into ~/x and commit there.",
+            "Use ~/x as the working copy, fix hooks/foo.js and commit.",
+        ];
+        let still = [
+            "git clone ~/src ~/dst, then fix hooks/foo.js and commit.",
+            "Use ~/x/script to fix hooks/foo.js and commit.",
+            "Fix hooks/foo.js and commit; clone ~/proj/sub for reference.",
+            "Use ~/x as the working copy, but edit hooks/foo.js in place and commit.",
+        ];
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0}}"#).unwrap();
+        for p in bare {
+            assert!(note(p).is_some(), "switch off keeps the note: {p}");
+        }
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        for p in bare {
+            assert!(note(p).is_none(), "switch on exempts: {p}");
+        }
+        for p in still {
+            assert!(note(p).is_some(), "switch on still notes: {p}");
+        }
+        assert!(note("fix hooks/foo.js and commit it.").is_some(), "two spawns on the real session tree still note");
+    }
+
     #[test]
     fn what_the_script_cannot_reproduce_defers_before_the_spawn_is_recorded() {
         let h = swarm_home("sw-defer");

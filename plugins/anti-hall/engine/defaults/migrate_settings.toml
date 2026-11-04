@@ -89,6 +89,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"dispatchQuietSpawnStop\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DISPATCH_QUIET_SPAWN_STOP\"}",
   "{\"section\":\"guards\",\"key\":\"sharedTreeQuietNoWorktrees\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_SHARED_TREE_QUIET_NO_WORKTREES\"}",
   "{\"section\":\"guards\",\"key\":\"sharedTreeScratchOnly\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_SHARED_TREE_SCRATCH_ONLY\"}",
+  "{\"section\":\"guards\",\"key\":\"sharedTreeBareClone\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_SHARED_TREE_BARE_CLONE\"}",
   "{\"section\":\"agents\",\"key\":\"rearmNeedsChildren\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_AGENT_REARM_NEEDS_CHILDREN\"}",
   "{\"section\":\"context\",\"key\":\"taskTrackerChangeOnly\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_TASK_TRACKER_CHANGE_ONLY\"}",
   "{\"section\":\"context\",\"key\":\"taskTrackerUntrackedPrompts\",\"type\":\"number\",\"default\":8,\"min\":1,\"env\":\"ANTIHALL_TASK_TRACKER_UNTRACKED_PROMPTS\"}",

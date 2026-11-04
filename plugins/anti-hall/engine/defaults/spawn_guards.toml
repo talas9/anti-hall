@@ -345,6 +345,14 @@ value = '''[.:]+$'''
 doc = "JavaScript regex source: the home prefix of a named-tree path (~ or $HOME), replaced by the user's home directory."
 value = '''^(?:~|\$HOME)'''
 
+[swarm_guard.named_tree_bare_setting]
+doc = "Bare fresh-clone statements name a tree. Where the switch is read from that makes a brief such as \"clone ~/x and build\" or \"use ~/x as the working copy\" count as naming its own tree (guards.sharedTreeBareClone, default off)."
+value = { section = "guards", key = "sharedTreeBareClone", type = "boolean", env = "ANTIHALL_SHARED_TREE_BARE_CLONE", option = "", default = false }
+
+[swarm_guard.re_named_tree_bare]
+doc = "Rust regex source (case-insensitive): a bare fresh-clone statement with no determiner (\"clone ~/x\", \"Clone fresh into ~/x\", \"use ~/x as the working copy\"), read after re_named_tree only when the sharedTreeBareClone switch is on. The leading start-or-punctuation anchor keeps \"git clone ~/src ~/dst\" (a source path) from matching."
+value = '''(?:^|[,;:.\n]\s*)(?:fresh(?:ly)?\s+)?clone\s+(?:fresh(?:ly)?\s+)?(?:(?:into|to|at|in)\s+)?[`'"]?(?:~|\$HOME)?/[^\s`'",;)]+|\buse\s+[`'"]?(?:~|\$HOME)?/[^\s`'",;)]+\s+as\s+(?:the\s+|your\s+|its\s+)?(?:working\s+)?(?:clone|copy|tree|checkout|dir(?:ectory)?)'''
+
 [swarm_guard.re_scratch_negated]
 doc = "JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading."
 value = '''\b(?:not|no|without|instead\s+of)\s+(?:in\s+|a\s+|the\s+|any\s+)?scratch\b'''
@@ -530,6 +538,10 @@ value = { kind = "counter", unit = "spawns", labels = ["outcome"] }
 
 [metric.spawns_denied_over_cap]
 doc = "Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached."
+value = { kind = "counter", unit = "spawns", labels = [] }
+
+[metric.named_tree_bare]
+doc = "Spawns the shared-tree note exempted only because of a bare fresh-clone statement (guards.sharedTreeBareClone): the false-positive count of the old, narrower matcher."
 value = { kind = "counter", unit = "spawns", labels = [] }
 
 [spawn_ceiling.base]
