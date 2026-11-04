@@ -11,8 +11,13 @@
 //! * Switch on, contexts within the budget: the answer is the switch-off answer.
 //! * Switch off: the answer carries the context the switch on drops.
 //!
-//! The counters are unit-tested in `src/dispatch/ctxkeep.rs` (`metrics::bumped_on_this_thread`): this dispatcher runs in a child
-//! process, whose counters are not readable here. Each test has its own HOME, state directory and plugin root.
+//! The prompt digest (`context.promptDigest`, on by default) is off in every run here (`ANTIHALL_PROMPT_DIGEST=0`): with the switch off
+//! it digests the reminders whenever the rotating verify-first sentence makes the digest shorter than the full text, which would make
+//! the switch-off answer (and so the within-budget identity) depend on that sentence. This file tests the budget, not the digest.
+//!
+//! The counters are unit-tested in `src/dispatch/ctxkeep.rs` (`metrics::bumped_on_this_thread`); this dispatcher runs in a child
+//! process, so the end-to-end test reads what it queued for the daemon, the `counter` events in the telemetry inbox
+//! (`ctx_keep_counters_reach_the_daemon_through_the_inbox`). Each test has its own HOME, state directory and plugin root.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use serde_json::{Value, json};
@@ -100,6 +105,7 @@ impl Rig {
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
             .env("CLAUDE_CODE_ENTRYPOINT", "cli")
             .env("ANTIHALL_INGEST_DRY_RUN", "1")
+            .env("ANTIHALL_PROMPT_DIGEST", "0")
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -111,6 +117,18 @@ impl Rig {
         ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
         (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+    }
+
+    /// The counts this rig's dispatches queued for the daemon (`counter` events in the telemetry inbox), as `metric/label values=amount`.
+    fn counters(&self) -> Vec<String> {
+        let inbox = self.state().join(ah_engine::defaults::text("files.telemetry_inbox"));
+        std::fs::read_to_string(inbox)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["k"] == "counter")
+            .map(|v| format!("{}/{}={}", v["h"].as_str().unwrap(), v["e"].as_str().unwrap(), v["ib"]))
+            .collect()
     }
 
     /// Files in the context-spill directory of this rig's state directory.
@@ -182,4 +200,22 @@ fn ctx_keep_within_budget_the_answer_is_the_switch_off_answer() {
         assert!(!context(&out_on).is_empty(), "{host} {event}: there is a context to compare");
         assert_eq!(on.spill_files(), 0);
     }
+}
+
+/// The counters the lane is measured by are bumped by the hook dispatcher, a process of its own: its in-memory table dies with it,
+/// so they must be queued for the daemon (a `counter` event in the telemetry inbox) or the daemon's metrics never show them.
+#[test]
+fn ctx_keep_counters_reach_the_daemon_through_the_inbox() {
+    let r = Rig::new("counters");
+    let plugin = r.plugin(TIGHT, 90);
+    let (code, out, err) = r.run("claude", "UserPromptSubmit", &plugin, true);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    assert!(!context(&out).contains("task tracker"), "the tracker reminder was dropped: {out}");
+    let c = r.counters();
+    assert!(c.iter().any(|x| x == "ctx_keep_dropped/UserPromptSubmit/task-tracker=1"), "{c:?}");
+    assert!(c.iter().any(|x| x.starts_with("ctx_keep_dropped_chars/UserPromptSubmit=")), "{c:?}");
+    assert!(c.iter().any(|x| x == "ctx_keep_pinned_over/UserPromptSubmit=1"), "the pinned verify-first reminder alone is over a 1 character budget: {c:?}");
+    let off = Rig::new("counters-off");
+    off.run("claude", "UserPromptSubmit", &off.plugin(TIGHT, 90), false);
+    assert!(off.counters().is_empty(), "the switch off counts nothing: {:?}", off.counters());
 }

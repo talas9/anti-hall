@@ -219,6 +219,13 @@ impl Telemetry {
                     lk(&self.metrics).inc("context_spill_pinned", &[]);
                 }
             }
+            if ev.kind == Kind::Counter {
+                // a count the hook dispatcher bumped (`metrics::bump_by_shared`): it joins the registry and leaves no event row
+                if !crate::metrics::add_from_event(&mut lk(&self.metrics), ev.h.as_str(), ev.e.as_str(), ev.ib) {
+                    self.inbox_bad.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                return;
+            }
             if ev.kind == Kind::StopChan
                 && let Extras::Fields(f) = &ev.extras
             {
@@ -470,6 +477,7 @@ impl Telemetry {
 
     /// The `metrics` command's body: all series, optionally for one check, with the live gauges refreshed.
     pub fn metrics_json(&self, check: &str, gauges: &[(&str, f64)]) -> Value {
+        self.ingest_inbox(); // the counts a hook process queued since the last flush are part of what this reads
         let persisted = self.store.persisted();
         let note = defaults::text(if persisted { "telemetry.metrics_persisted_note" } else { "telemetry.not_persisted_note" });
         let snap = self.snapshot_ms.load(std::sync::atomic::Ordering::SeqCst);
@@ -825,6 +833,44 @@ mod tests {
         assert_eq!(sc["emitted"]["by_check"]["tasklist-guard"], 2);
         assert_eq!((sc["emitted"]["by_model"]["opus"].as_u64(), sc["over_k"]["by_project"]["p2"].as_u64()), (Some(2), Some(1)));
         assert_eq!(sc["blocked_kept"]["total"], 0, "a counter nothing used shows 0");
+    }
+
+    /// Plan v3 L12 / C2: the hook dispatcher is a process of its own, so a count it bumps (`metrics::bump_by_shared`) is appended to the
+    /// inbox as a `counter` event and joins the daemon's registry on the next flush, with no event row of its own. A count whose label
+    /// values do not match the metric's labels is refused and counted as a refused inbox line.
+    #[test]
+    fn counts_the_hook_dispatcher_bumped_reach_the_daemon_metrics_through_the_inbox() {
+        let (d, _db, t) = durable("tel-counter");
+        let inbox = d.0.join("inbox.jsonl");
+        t.set_inbox(inbox.clone());
+        let ev = "UserPromptSubmit";
+        emit::append_to(
+            &inbox,
+            &[
+                emit::counter("ctx_keep_dropped", &[("event", ev), ("check", "task-tracker")], 1),
+                emit::counter("ctx_keep_dropped_chars", &[("event", ev)], 700),
+                emit::counter("ctx_keep_dropped_chars", &[("event", ev)], 50),
+                emit::counter("ctx_keep_pinned_over", &[("event", ev)], 1),
+                emit::counter("ctx_keep_dropped", &[("event", ev)], 1), // one label value short
+                emit::counter("no_such_metric_anywhere", &[("event", ev)], 1),
+            ],
+        );
+        // a `metrics` read sees them at once, without waiting for the next flush
+        let live = t.metrics_json("", &[]);
+        let seen = live["metrics"]["counters"].as_array().map(|c| c.iter().filter(|x| x["name"] == "ctx_keep_pinned_over" && x["value"] == 1).count());
+        assert_eq!(seen, Some(1), "{live}");
+        assert!(t.flush());
+        let m = t.with_metrics(|m| m.export());
+        let count = |k: &str| m["counters"][k].as_u64();
+        assert_eq!(count("ctx_keep_dropped|event=UserPromptSubmit|check=task-tracker"), Some(1), "{m}");
+        assert_eq!(count("ctx_keep_dropped_chars|event=UserPromptSubmit"), Some(750), "{m}");
+        assert_eq!(count("ctx_keep_pinned_over|event=UserPromptSubmit"), Some(1), "{m}");
+        assert_eq!(
+            m["counters"].as_object().map(|c| c.keys().filter(|k| k.starts_with("ctx_keep_dropped|")).count()),
+            Some(1),
+            "the short one is refused: {m}"
+        );
+        assert_eq!(t.telemetry_json("summary", "1d", "", 10)["dropped"]["inbox_refused"], 2, "the two refused counts are reported");
     }
 
     #[test]

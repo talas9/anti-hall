@@ -69,7 +69,7 @@ pub fn apply(event: &str, env: &RequestEnv, results: &mut super::spill::Results)
             .min_by_key(|(i, c)| (c.pri, std::cmp::Reverse(c.chars), std::cmp::Reverse(*i)))
             .map(|(i, _)| i);
         let Some(i) = pick else {
-            metrics::bump("ctx_keep_pinned_over", &[("event", event)]);
+            metrics::bump_shared("ctx_keep_pinned_over", &[("event", event)]);
             break;
         };
         let Some(c) = cands.get_mut(i) else { break };
@@ -81,8 +81,8 @@ pub fn apply(event: &str, env: &RequestEnv, results: &mut super::spill::Results)
         c.live = false;
         let check = base(&r.id).to_string();
         r.out = combine::tidy(&out);
-        metrics::bump("ctx_keep_dropped", &[("event", event), ("check", &check)]);
-        metrics::bump_by("ctx_keep_dropped_chars", &[("event", event)], c.chars as u64);
+        metrics::bump_shared("ctx_keep_dropped", &[("event", event), ("check", &check)]);
+        metrics::bump_by_shared("ctx_keep_dropped_chars", &[("event", event)], c.chars as u64);
         n += 1;
         dropped_chars += c.chars;
         ids.push(check);
