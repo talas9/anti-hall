@@ -26,6 +26,7 @@ mod client_no_hooks;
 mod codex_scripts_parity;
 mod compiled_logic_gate;
 mod crashloop_drill;
+mod ctx_keep_e2e;
 mod ctxbudget_e2e;
 mod defaults_failover;
 mod defaults_keys;

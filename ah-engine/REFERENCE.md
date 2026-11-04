@@ -3619,6 +3619,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the inline caps. Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
 | `context_size.sw_keep_pinned` | `5 entries` |  |  | Pinned inline. Switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519). |
 
+### ctx_keep.toml / ctx_keep
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `ctx_keep.chars_by_event` | `2 entries` |  |  | Per event, the most characters of model-facing additionalContext (all hooks joined by dispatch.context_joiner) kept before the lowest-priority contexts are dropped. SessionStart: the host's inline cap (dispatch.context_cap) minus headroom. UserPromptSubmit: about 1.7 times the largest single context observed. An event of ctx_keep.events without a row here is not budgeted. |
+| `ctx_keep.events` | `SessionStart, UserPromptSubmit` |  |  | Hook events the budget applies to. |
+| `ctx_keep.msg_dropped` | `{n} low-priority context(s) dropped to fit the budget: {chars} characters ({i...` |  |  | Event-log detail after contexts were dropped by the budget. Placeholders: {n} (contexts dropped), {chars} (characters dropped), {ids} (the dropped check ids). |
+| `ctx_keep.sw_main` | `5 entries` |  |  | Switch (context.injectGateNoSpill, default off): the events in ctx_keep.events keep their model-facing contexts within ctx_keep.chars_by_event by dropping the lowest-priority ones, and the prompt digest, the SessionStart shrink and the over-cap spill are skipped for them (no context file is written). Contexts at or above dispatch.context_pin_priority are never dropped. |
+
 ### notice_turn.toml / notice_turn
 
 | Key | Default | Env override | Unit | What it is |
@@ -6023,7 +6032,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `400 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `401 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8441,7 +8450,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `406 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `407 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14768,6 +14777,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
 | `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
+| `ctx_keep_dropped` | counter | contexts | event, check | Model-facing contexts dropped by the per-event budget while ctx_keep.sw_main is on, by event and by the base id of the check. Every check seen here has a priority below dispatch.context_pin_priority. |
+| `ctx_keep_dropped_chars` | counter | chars | event | Characters of model-facing context dropped by the per-event budget while ctx_keep.sw_main is on, by event. |
+| `ctx_keep_pinned_over` | counter | events | event | Events whose pinned contexts alone (priority at or above dispatch.context_pin_priority) are over the budget while ctx_keep.sw_main is on: they are kept whole and the host's cap behaviour applies, by event. |
 | `notice_turn_matched` | counter | prompts | kind | UserPromptSubmit prompts that are a harness notice, by kind (notice_turn.kinds). Counted with the switch on or off, so it measures the share of notice turns before the skip is enabled. |
 | `notice_turn_skipped` | counter | prompts | kind, check | Dispatch entries dropped from the plan of a notice turn while notice_turn.sw_main is on, by notice kind and by the base id of the check (notice_turn.skip_checks). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
