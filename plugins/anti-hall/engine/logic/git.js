@@ -244,6 +244,14 @@ function splitSegmentsUncached(cmd) {
     }
     if (c === "'") { inSingle = true; cur += c; i++; continue; }
     if (c === '"') { inDouble = true; cur += c; i++; continue; }
+    // GH #591: a `#` that starts a word (after whitespace, an operator or the start) comments out the rest of its line, so an
+    // operator or quote inside the comment (`# git add x && git commit -F f`) never opens a segment or a quote. Only a `#` the
+    // shell certainly reads as a comment counts; any other `#` (`a#b`, `$#`, `)#`) stays text, so nothing live is ever dropped.
+    if (c === '#' && (i === 0 || /[\s;&|(]/.test(cmd[i - 1]))) {
+      const nl = cmd.indexOf('\n', i);
+      i = nl < 0 ? n : nl;
+      continue;
+    }
     // backslash-newline line continuation outside quotes: one logical command
     if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) { cur += ' '; i += (c2 === '\r') ? 3 : 2; continue; }
     // a backslash outside quotes makes the NEXT character literal: never an operator boundary

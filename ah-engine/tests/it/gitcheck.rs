@@ -1665,3 +1665,60 @@ fn switch_off_an_output_tail_push_reads_the_whole_repository() {
     let (_, err, code) = e.hook_in(&format!("cd {} && git {P} origin feat 2>&1 | tail -5", wt.to_str().unwrap()), "/tmp");
     assert!(code == 2 && err.contains("more than 50 local commits"), "{code}: {err}");
 }
+
+/// GH #591: shell comment text is no command. A wrapper script whose comments mention `git commit -F ... && git push` (and a call
+/// that passes `$(cat file)` as data) is not a commit plus a push; the same words as live commands in the same call still are.
+#[test]
+fn comment_text_naming_a_commit_and_a_push_is_not_a_commit_and_a_push() {
+    let e = Env::new("comment591");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    std::fs::write(work.join("msg.txt"), "summary\n").unwrap();
+    // the wrapper only reports: its comments and its usage text name the commands
+    let wrapper = format!(
+        "#!/bin/bash\n# e.g. the lane ran `git add x && git commit -F f` and then git {P} -q origin main\n# it's a report only\necho \"$1 $2\"\n"
+    );
+    std::fs::write(work.join("done.sh"), wrapper).unwrap();
+    // the same wrapper with a live commit plus a push after its comment lines
+    let live = format!("#!/bin/bash\n# note: it's real\ngit commit -q --allow-empty -F msg.txt\ngit {P} -q origin main\n");
+    std::fs::write(work.join("live.sh"), live).unwrap();
+    let _ = e.hook("echo warm");
+    let mut wrong = Vec::new();
+    for cmd in [
+        "bash done.sh --summary \"$(cat msg.txt)\"".to_string(),
+        format!("echo hi # ran git add x && git commit -F f && git {P} origin main"),
+        format!("# ran git add x && git commit -F f && git {P} origin main\necho hi"),
+    ] {
+        let r = e.hook_in(&cmd, w);
+        if r.2 == 2 {
+            wrong.push(format!("blocked: {cmd}: {r:?}"));
+        }
+    }
+    for cmd in [
+        "bash live.sh --summary \"$(cat msg.txt)\"".to_string(),
+        format!("git commit -q --allow-empty -m \"$(cat msg.txt)\" && git {P} origin main"),
+        format!("# a note\ngit commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("git commit -q --allow-empty -F msg.txt # note\ngit {P} origin main"),
+        // a `#` glued to the previous word is text, not a comment: the commit and push after it stay live
+        format!("echo $(true)# ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        // a `#` inside quotes is text
+        format!("git commit -q --allow-empty -F \"a # b.txt\" && git {P} origin main"),
+        format!("echo \"x # y\" ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("echo 'x # y' ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        // `$#`, `${{#var}}` and a mid-word `#` are not comments
+        format!("echo $# ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("echo ${{#PATH}} ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("echo a#b ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        // a trailing comment after the real commit and push changes nothing
+        format!("git commit -q --allow-empty -F msg.txt && git {P} origin main # trailing"),
+        // a heredoc body with a `#` line, and a `$(...)` body after a `#` in quotes, hide nothing that follows
+        format!("cat <<'EOF' > /dev/null\n# body line\nEOF\ngit commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("echo '#' $(git commit -q --allow-empty -F msg.txt) ; git {P} origin main"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("separate") {
+            wrong.push(format!("block expected: {cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
