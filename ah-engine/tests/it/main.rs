@@ -19,6 +19,7 @@ mod transcript_support;
 
 mod agent_cli;
 mod agent_scan_kept;
+mod archived_children;
 mod cascade_judge;
 mod cli_pipe;
 mod client_no_hooks;

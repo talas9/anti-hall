@@ -410,6 +410,10 @@ value = "⚠️ anti-hall · devswarm-orphaned-mesh: {count} partition(s) with u
 doc = "The segment for registry rows whose worktree is gone but that still hold unread. Placeholders: {count}, {shown}, {extra}."
 value = "⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree is gone but still hold unread — {shown}{extra}. Investigate or clean up the registry entry."
 
+[devswarm_parent.stale_registry_head_archived]
+doc = "The stale-workspaces segment when devswarm.skipArchivedChildren is on: names the fact and the exact step that clears it. Placeholders: {count}, {shown}, {extra}, {cli}."
+value = "⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree is gone but still hold unread — {shown}{extra}. Archive each with `{cli} archive <id>` (non-destructive: the descriptor moves to archived/ and the messages stay); an archived workspace is no longer named here."
+
 [devswarm_parent.issue_part]
 doc = "One partition or row of a mesh-issue line. Placeholders: {id}, {unread}."
 value = "{id} ({unread} unread)"
@@ -707,3 +711,18 @@ value = "orphans-seen"
 [metric.devswarm_orphans_warning_suppressed]
 doc = "Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session)."
 value = { kind = "counter", unit = "warnings", labels = ["reason"] }
+
+# Switch devswarm.skipArchivedChildren (default off, GH #508): a child that is explicitly ARCHIVED (the DevSwarm app's flag, or anti-hall's own
+# archive marker with proof the id was not re-created) is left out of the unread, urgent, archive-ready and stale-workspaces nudges. No
+# worktree path is inspected. Unread counts stay raw; nothing is deleted or acknowledged. (The doc below is short: the generated skill is size-bound.)
+[devswarm_parent.sw_skip_archived]
+doc = "Skip archived rows."
+value = { section = "devswarm", key = "skipArchivedChildren", type = "boolean", env = "ANTIHALL_DEVSWARM_SKIP_ARCHIVED_CHILDREN", option = "", default = false }
+
+[metric.devswarm_archived_child_skipped]
+doc = "Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker)."
+value = { kind = "counter", unit = "workspaces", labels = ["check", "reason"] }
+
+[metric.devswarm_archived_child_kept]
+doc = "Marker-archived children still named by a nudge because the marker is no proof (devswarm.skipArchivedChildren on), by reason (descriptor_newer: both without a session id and the descriptor was written after the marker; session_unknown: the session ids differ or only one side has one)."
+value = { kind = "counter", unit = "workspaces", labels = ["reason"] }

@@ -280,6 +280,7 @@ value = [
   "{\"section\":\"devswarm\",\"key\":\"requiredGates\",\"type\":\"csv\",\"default\":\"done,merged,tests_passed\",\"env\":\"ANTIHALL_DEVSWARM_REQUIRED_GATES\",\"pluginOption\":\"devswarm_required_gates\"}",
   "{\"section\":\"devswarm\",\"key\":\"inboxCmd\",\"type\":\"string\",\"default\":\"\",\"env\":\"ANTIHALL_DEVSWARM_INBOX_CMD\",\"pluginOption\":\"devswarm_inbox_cmd\"}",
   "{\"section\":\"devswarm\",\"key\":\"heldPartitions\",\"type\":\"csv\",\"default\":\"\",\"env\":\"ANTIHALL_DEVSWARM_HELD_PARTITIONS\"}",
+  "{\"section\":\"devswarm\",\"key\":\"skipArchivedChildren\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_DEVSWARM_SKIP_ARCHIVED_CHILDREN\"}",
   "{\"section\":\"devswarm\",\"key\":\"childGateStrict\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_CHILD_GATE_STRICT\"}",
   "{\"section\":\"devswarm\",\"key\":\"parentGateCap\",\"type\":\"number\",\"default\":3,\"min\":2,\"max\":5,\"env\":\"ANTIHALL_DEVSWARM_PARENT_GATE_CAP\"}",
   "{\"section\":\"devswarm\",\"key\":\"parentGateNeglectMinUnread\",\"type\":\"number\",\"default\":0,\"min\":0,\"env\":\"ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_MIN_UNREAD\"}",
