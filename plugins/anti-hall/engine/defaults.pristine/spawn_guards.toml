@@ -355,15 +355,15 @@ value = '''(?:^|[,;:.\n]\s*)(?:fresh(?:ly)?\s+)?clone\s+(?:fresh(?:ly)?\s+)?(?:(
 
 [swarm_guard.re_named_tree_bare_negation]
 doc = "Rust regex source (read with the r flag; (?i) inside), tested on the whole clause holding a bare fresh-clone match, any words between: a negation token (not, no, never, without, avoid, except, rather than, instead of, any n't contraction whatever its apostrophe) keeps the shared-tree note. Read only when sharedTreeBareClone is on."
-value = '''(?i)\b(?:not|no|never|nor|neither|none|nothing|nobody|nowhere|cannot|without|avoid\w*|except\w*|unless|forbid\w*|prohibit\w*|disallow\w*|refrain\w*|rather\s+than|instead\s+of|dont|doesnt|didnt|wont|cant|shouldnt|mustnt|couldnt|wouldnt|isnt|arent|wasnt|werent|havent|hasnt|hadnt|neednt)\b|\b\w+n(?:[^\s\p{L}\p{N}]|[\p{Lm}\p{Sk}])t\b'''
+value = '''(?i)\b(?:not|no|never|nor|neither|none|nothing|nobody|nowhere|cannot|without|avoid\w*|except\w*|unless|exclud\w*|ban(?:s|ned|ning)?|refus\w*|den(?:y|ies|ied)|reject\w*|sans|barring|w/o|forbid\w*|prohibit\w*|disallow\w*|refrain\w*|rather\s+than|instead\s+of|dont|doesnt|didnt|wont|cant|shouldnt|mustnt|couldnt|wouldnt|isnt|arent|wasnt|werent|havent|hasnt|hadnt|neednt)\b|\b\w*n(?:[^\s\p{L}\p{N}]|[\p{Lm}\p{Sk}])t\b'''
 
 [swarm_guard.re_named_tree_bare_clause_break]
-doc = "Rust regex source (read with the r flag, case-sensitive), read on the text with brackets, quotes, abbreviations and ellipses masked: where one clause ends for the bare fresh-clone negation test: a semicolon, a full stop, ! or ? before white space and a capital letter, or a blank line. Lists, newlines, commas and colons are no break."
-value = '''[.!?]\s+\p{Lu}|;|\n[ \t]*\n'''
+doc = "Rust regex source (read with the r flag, case-sensitive), read on the text with brackets, quotes, abbreviations and ellipses masked: where one clause ends for the bare fresh-clone negation test: a full stop, !, ? or semicolon before white space and a capital letter. Blank lines, lists, newlines, commas and colons are no break."
+value = '''[.!?;]\s+\p{Lu}'''
 
 [swarm_guard.re_named_tree_bare_mask]
-doc = "Rust regex source (read with the r flag; (?i) inside): text whose full stops are no clause break (abbreviations such as e.g., a lone letter or digit word before a stop (a path ending in one letter is no abbreviation), an ellipsis); masked before the clause break is read."
-value = '''(?i)\b(?:e\.g|i\.e|etc|vs|cf|approx|incl|viz|resp|nr|fig|inc|ltd|mr|mrs|ms|dr|st|no)\.|(?:^|\s)[a-z0-9]\.(?:\s|$)|\.{2,}|\u2026'''
+doc = "Rust regex source (read with the r flag; (?i) inside): text whose full stops are no clause break (abbreviations such as e.g. or U.S., titles, a lone letter or digit word before a stop (a path ending in one letter is no abbreviation), an ellipsis); masked before the clause break is read."
+value = '''(?i)\b(?:e\.g|i\.e|etc|vs|cf|approx|incl|viz|resp|nr|fig|inc|ltd|mr|mrs|ms|dr|st|no|prof|sr|jr|gen|mt|rev|sen|gov|col|capt|lt|sgt|hon|co|dept|est|ca)\.|(?:\b[a-z]{1,3}\.){2,}|(?:^|\s)[a-z0-9]\.(?:\s|$)|\.{2,}|\u2026'''
 
 [swarm_guard.bare_nest_open]
 doc = "Characters that open a nested span in a brief (brackets, quotes): a clause break inside one is masked; an unclosed one masks the rest."
@@ -374,16 +374,20 @@ doc = "Characters that close a nested span opened by bare_nest_open, in the same
 value = ")]}\u201D\u00BB\u203A"
 
 [swarm_guard.bare_nest_toggle]
-doc = "Characters that open a nested span when closed and close it when open (straight quote, code tick)."
-value = "\"`"
+doc = "Characters that open a nested span when closed and close it when open (straight quote, code tick, em and en dash)."
+value = "\"`\u2014\u2013"
 
 [swarm_guard.re_named_tree_bare_lead]
 doc = "Rust regex source: the punctuation anchor a re_named_tree_bare match may start with; the clause test starts after it."
 value = '''^[,;:.\n]\s*'''
 
+[swarm_guard.re_named_tree_bare_invisible]
+doc = "JavaScript regex source: invisible format characters (soft hyphen, zero-width, bidi marks), removed from the clause before the negation test so ne<ZWSP>ver is still never."
+value = '''[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]'''
+
 [swarm_guard.re_named_tree_bare_pathtok]
-doc = "JavaScript regex source: a path word (it starts with ~/, $HOME/, /, ./ or ../), blanked before the negation test so ~/no-tree is no negation while not/never stays."
-value = '''(^|[\s(\[{"'`“‘])(?:~|\$HOME|\$\{HOME\}|\.{1,2})?\/[^\s)\]}"'`”’,;]*'''
+doc = "JavaScript regex source: a path word (it starts with ~/, $HOME/, /, ./ or ../ and runs over path characters only), blanked before the negation test so ~/no-tree is no negation while not/never and ~/x(not stay."
+value = '''(^|[\s(\[{"'`\u201C\u2018])(?:~|\$HOME|\$\{HOME\}|\.{1,2})?\/[\w.~\/$@+\-]*'''
 
 [swarm_guard.re_scratch_negated]
 doc = "JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading."

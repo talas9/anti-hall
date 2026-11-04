@@ -72,45 +72,49 @@ var swgBareHit = false, swgBareSpans = [], swgBareAvoided = false;
 
 // Fail safe: any negation token ("not", "never", "without", "rather than", "n't" ...) anywhere in the clause that holds the bare statement,
 // before or after it and with any words between, keeps the shared-tree note. Only an unambiguous affirmative clause exempts the spawn.
-// Whatever is ambiguous WIDENS the clause, never narrows it: a clause ends only at a semicolon, a full stop/!/? before a capital letter, or
-// a blank line, and never inside brackets, quotes or code ticks (an unclosed one runs to the end), after an abbreviation, a lone letter or
-// digit, or in an ellipsis. The negation test then reads the unmasked clause, with path words blanked ("~/no-tree" is no negation).
+// Whatever is ambiguous WIDENS the clause, never narrows it: a clause ends only at a stop, !, ? or semicolon before a capital letter, and
+// never inside brackets, quotes, code ticks or dashes (an unclosed one runs to the end), after an abbreviation, a lone letter or digit, or
+// in an ellipsis. The negation test then reads the unmasked clause, with path words blanked ("~/no-tree" is no negation).
+// The clause breaks of a text are found once per text (swgBareBreaks), not once per hit.
 function swgBareMask(t) {
   var m = t.split(''), spans = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_mask'), 'r', t), i, k;
   for (i = 0; i < spans.length; i++) for (k = spans[i][0]; k < spans[i][1] && k < m.length; k++) m[k] = '_';
   var open = ah.cfg('swarm_guard.bare_nest_open'), close = ah.cfg('swarm_guard.bare_nest_close'), toggle = ah.cfg('swarm_guard.bare_nest_toggle');
-  var stack = [], tog = {};
+  var stack = [], tog = {}, togOpen = 0;
   for (i = 0; i < m.length; i++) {
-    var c = t.charAt(i), o = open.indexOf(c), inside = stack.length > 0 || Object.keys(tog).length > 0;
+    var c = t.charAt(i), o = open.indexOf(c), inside = stack.length > 0 || togOpen > 0;
     if (o >= 0) { inside = true; stack.push(close.charAt(o)); }
-    else if (toggle.indexOf(c) >= 0) { inside = true; if (tog[c]) { delete tog[c]; } else tog[c] = true; }
+    else if (toggle.indexOf(c) >= 0) { inside = true; if (tog[c]) { tog[c] = false; togOpen--; } else { tog[c] = true; togOpen++; } }
     else if (stack.length && c === stack[stack.length - 1]) stack.pop();
     if (inside) m[i] = '_';
   }
   return m.join('');
 }
 
-function swgBareClauseNegated(t, from, to) {
+function swgBareBreaks(t) { return ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_clause_break'), 'r', swgBareMask(t)); }
+
+function swgBareClauseNegated(t, from, to, brk) {
   var lead = ah.re.find(ah.cfg('swarm_guard.re_named_tree_bare_lead'), '', t.slice(from, to));
-  var at = from + (lead ? lead[1] : 0), brk = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_clause_break'), 'r', swgBareMask(t)), start = 0, end = t.length;
-  // a break's own match opens with its stop or semicolon and (for a capital break) ends on the next clause's first letter: both bounds use its start
+  var at = from + (lead ? lead[1] : 0), start = 0, end = t.length;
+  // a break's own match opens with its stop or semicolon and ends on the next clause's first letter: both bounds use its start
   for (var i = 0; i < brk.length; i++) {
     if (brk[i][0] < at) start = brk[i][0];
     else { end = brk[i][0]; break; }
   }
-  var clause = t.slice(start, end).replace(new RegExp(ah.cfg('swarm_guard.re_named_tree_bare_pathtok'), 'g'), '$1 ');
+  var clause = t.slice(start, end).replace(new RegExp(ah.cfg('swarm_guard.re_named_tree_bare_invisible'), 'g'), '')
+    .replace(new RegExp(ah.cfg('swarm_guard.re_named_tree_bare_pathtok'), 'g'), '$1 ');
   return ah.re.test(ah.cfg('swarm_guard.re_named_tree_bare_negation'), 'r', clause);
 }
 
 // For the bare matcher every exempting statement is collected (swgBareSpans, offsets into t): the in-place check blanks them all,
 // "use ~/x as the working copy" would otherwise trip the in-place word "working copy".
 function swgNamedTreeOutside(t, tree, key, home, bare) {
-  var hits = ah.re.findAll(ah.cfg(key), 'i', t), found = false;
+  var hits = ah.re.findAll(ah.cfg(key), 'i', t), found = false, brk = null;
   for (var i = 0; i < hits.length; i++) {
     var m = t.slice(hits[i][0], hits[i][1]), at = ah.re.find(ah.cfg('swarm_guard.re_named_tree_path'), '', m);
     if (!at) continue;
     // a negated bare statement ("do not use ~/x as the working copy") names no tree of this agent's
-    if (bare && swgBareClauseNegated(t, hits[i][0], hits[i][1])) continue;
+    if (bare) { if (brk === null) brk = swgBareBreaks(t); if (swgBareClauseNegated(t, hits[i][0], hits[i][1], brk)) continue; }
     var raw = m.slice(at[0], at[1]), trim = ah.re.find(ah.cfg('swarm_guard.re_named_tree_trim'), '', raw);
     if (trim) raw = raw.slice(0, trim[0]);
     var tilde = ah.re.find(ah.cfg('swarm_guard.re_named_tree_home'), '', raw);
