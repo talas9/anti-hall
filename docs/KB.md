@@ -372,6 +372,16 @@ model id; the sole hardcoded-model-id exception repo-wide remains
 `speculation-judge.js`'s direct Anthropic Messages API call
 (`claude-haiku-4-5`, unrelated to Fable, unchanged this pass).
 
+**[APPENDED 2026-11-04] Model-KB re-audit:** lineup moved on again. Claude: Opus 5.5
+(`claude-opus-5-5`, $4/$20), Sonnet 5.5 (`claude-sonnet-5-5`, $2/$10), Haiku 5.5 (`claude-haiku-5-5`,
+1M ctx) are current; Fable 5.1 pricing is now verified ($10/$50). Codex: the installed CLI catalog
+(v0.166.0) lists GPT-6.1 Sol / GPT-6 Astra / GPT-6.1 Terra / GPT-6 Luna above GPT-5.6. Stacked
+`[UPDATE 2026-11-04]` blocks were added to `KB-model-modes.md`, `KB-sonnet-5.md`, `KB-fable-5.md`,
+`KB-token-usage-models.md`, `KB-codex-vs-opus-coding.md` and `KB-gpt-5.6.md`; unverifiable items are marked
+UNVERIFIED in place. `MODEL-POLICY.md` (both variants) needed no change (tier-token routing).
+`session.model_kb_audit_date` bumped `2026-09-03` -> `2026-11-04` (session.toml, defaults.pristine, the
+Node `repo-audit-baseline.js` mirror, REFERENCE.md).
+
 **Historical docs — pre-redesign claims (do NOT fix; they are frozen records):**
 These describe the plugin *before* the cadence redesign and are intentionally
 stale. Listed here so no one mistakes them for current spec.

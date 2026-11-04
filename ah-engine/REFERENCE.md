@@ -3712,7 +3712,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.marketplace_env` | `ANTIHALL_MARKETPLACE_DIR` |  |  | The environment variable that points the update skill at another marketplace directory (used by its tests); honoured only for an absolute path to an existing directory. |
 | `session.md_ext` | `.md` |  |  | The extension of a progress or history file. |
 | `session.mirror_cache_root` | `.claude/plugins/cache/anti-hall/anti-hall` |  |  | Where the update skill mirrors each release, one version-named directory each, under the home directory. |
-| `session.model_kb_audit_date` | `2026-09-03` |  |  | The UTC date (YYYY-MM-DD) the model KBs were last audited; a test keeps the two equal. |
+| `session.model_kb_audit_date` | `2026-11-04` |  |  | The UTC date (YYYY-MM-DD) the model KBs were last audited; a test keeps the two equal. |
 | `session.older_suffix` | ` (newer)` |  |  | Appended to a drift advisory when the installed version is OLDER than the audited baseline. |
 | `session.parts_sep` | `; ` |  |  | Separator between the parts of the count-drift line. |
 | `session.plugin_json` | `.claude-plugin/plugin.json` |  |  | The running plugin's manifest, relative to the plugin root. |
