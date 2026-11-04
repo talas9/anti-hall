@@ -1871,7 +1871,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `schedule.action_args` | `4 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `17 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.actions` | `18 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.cpu_backoff_ms` | `60000` |  | ms | How long scheduled jobs pause after the daemon sustained-CPU self-check warns; 0 logs only. |
@@ -6033,7 +6033,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `401 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `403 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8451,9 +8451,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `407 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `409 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
-| `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
+| `settings_cli.sections` | `21 items` |  |  | The settings sections in display order: key, label, description. |
 
 ### webapi.toml / webapi
 
@@ -12772,6 +12772,49 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `job.engine_update` | `11 entries` |  |  | Automatic engine update check: runs `ah-engine engine-update --auto --json` as a subprocess. A no-op unless the setting engine.autoUpdate is stable or dev; the script limits itself to one check a day. Off when engine_update.every_ms is 0. |
 
+### engine_currency.toml / engine_currency
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `engine_currency.branch` | `dev` |  |  | The branch whose tip the running engine is compared with; it replaces {branch} in engine_currency.refs. |
+| `engine_currency.every_ms` | `3600000` |  | ms | How often the currency job runs; 0 turns it off. |
+| `engine_currency.git_program` | `git` |  |  | The git program the job runs (resolved through PATH). |
+| `engine_currency.git_timeout_ms` | `10000` |  | ms | Longest one git subprocess may run; its process group is killed at the limit and the result is unreadable. |
+| `engine_currency.hash_chars` | `12` |  | chars | How many characters of the files digest the status field and the log line show. |
+| `engine_currency.hash_object_args` | `-C, {checkout}, hash-object, --no-filters, --` |  |  | Arguments of the git call that gives the blob id of each live file, one line per file in order (the files are appended after the last argument). {checkout} is replaced; the filters are off so the id is the id of the bytes. |
+| `engine_currency.hash_paths` | `plugins/anti-hall/engine/defaults, plugins/anti-hall/engine/logic` |  |  | Paths (relative to the repository root and to the live plugin tree) whose files are compared by git blob id. |
+| `engine_currency.live_suffix` | `plugins/anti-hall` |  |  | What the engine's plugin root (the directory that holds engine/defaults) ends with inside a checkout-shaped tree; stripping it gives the live tree root that hash_paths are read from. A root that does not end with it is unreadable. |
+| `engine_currency.log_interval_ms` | `21600000` |  | ms | Least time before the same result for the same pair of commits and digests is logged again. |
+| `engine_currency.log_kind` | `currency` |  |  | The event-log kind of the lines the job writes. |
+| `engine_currency.ls_tree_args` | `7 items` |  |  | Arguments of the git call that lists the blob ids of hash_paths at a commit (the paths are appended after the last argument). {checkout} and {sha} are replaced. |
+| `engine_currency.max_files` | `2000` |  | files | Most live files read per run; a tree with more is unreadable (the walk is bounded). |
+| `engine_currency.msg_behind` | `engine is behind the checkout: live={live} branch_tip={dev} files={files}. Re...` |  |  | Event-log detail when the engine lags the branch tip. Placeholders: {live}, {dev}, {files}. |
+| `engine_currency.msg_files_differ` | `engine files differ from the checkout at the same commit: live={live} branch_...` |  |  | Event-log detail when the commit matches but files differ. Placeholders: {live}, {dev}, {files}. |
+| `engine_currency.msg_unreadable` | `engine currency not checked: {reason}` |  |  | Event-log detail when the comparison could not be made. Placeholders: {reason}. |
+| `engine_currency.poll_ms` | `20` |  | ms | How often the bounded runner checks whether a git subprocess has finished. |
+| `engine_currency.reason_no_checkout` | `checkout is not a directory` |  |  | Unreadable reason: the configured checkout is not a directory. |
+| `engine_currency.reason_no_files` | `live files unreadable` |  |  | Unreadable reason: the live files could not be listed or hashed (too many, none, or git failed). |
+| `engine_currency.reason_no_ref` | `no branch ref resolves` |  |  | Unreadable reason: none of engine_currency.refs resolves in the checkout (or git did not answer in time). |
+| `engine_currency.reason_no_root` | `plugin root is not inside a checkout-shaped tree` |  |  | Unreadable reason: the engine's plugin root is not inside a checkout-shaped tree (it does not end with engine_currency.live_suffix). |
+| `engine_currency.reason_no_sha` | `no build commit` |  |  | Unreadable reason: the engine's build version carries no commit. |
+| `engine_currency.reason_no_tree` | `branch tip tree unreadable` |  |  | Unreadable reason: git did not list the compared paths at the branch tip. |
+| `engine_currency.refs` | `refs/remotes/origin/{branch}, refs/heads/{branch}` |  |  | Refs tried in order for the branch tip. The local branch can be stale because deploys build from the remote-tracking ref, so that one comes first. {branch} is engine_currency.branch. |
+| `engine_currency.result_behind` | `behind` |  |  | Result label: the branch tip is not the engine's commit. |
+| `engine_currency.result_files_differ` | `files_differ` |  |  | Result label: the commit matches but a compared file differs. |
+| `engine_currency.result_ok` | `ok` |  |  | Result label (metric.engine_currency_check): the engine is the checkout's branch tip and every compared file matches. |
+| `engine_currency.result_unreadable` | `unreadable` |  |  | Result label: the comparison could not be made; the reason is in engine_currency.reason_*. |
+| `engine_currency.rev_parse_args` | `-C, {checkout}, rev-parse, --verify, --quiet, {ref}^{commit}` |  |  | Arguments of the git call that resolves a ref to a commit. {checkout} and {ref} are replaced. |
+| `engine_currency.sha_re` | `[+.]([0-9a-f]{7,40})(?:-dirty)?$` |  |  | Pattern that takes the commit out of the engine's build version (`0.2.1+d7e7b094`, `0.2.1+branch.d7e7b094-dirty`). Group 1 is the commit. |
+| `engine_currency.skip_names` | `.DS_Store` |  |  | File and directory names the live walk skips (files the operating system adds that git never holds). |
+| `engine_currency.source_checkout` | `6 entries` |  |  | Checkout the currency job compares with. |
+| `engine_currency.switch` | `6 entries` |  |  | Engine currency job on or off (kill switch). |
+
+### engine_currency.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.engine_currency` | `11 entries` |  |  | Engine currency: compare the running engine's commit and plugin files with the branch tip of the checkout named by diagnostics.engineCurrencyCheckout and report the difference. Report only: never fetches, deploys or rebuilds. Does nothing until the checkout is set. |
+
 ### post_update.toml / post_update
 
 | Key | Default | Env override | Unit | What it is |
@@ -14866,6 +14909,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 | `dssup_appdb_date_unread` | counter | dates |  | Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full). |
 | `ingest_drops` | counter | paths | reason | Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason. |
+| `engine_currency_check` | counter | checks | result | Engine currency checks (diagnostics.engineCurrency on, a checkout set), by result: ok, behind, files_differ, unreadable. |
 | `devswarm_archived_child_kept` | counter | workspaces | reason | Marker-archived children still named by a nudge because the marker is no proof (devswarm.skipArchivedChildren on), by reason (descriptor_newer: both without a session id and the descriptor was written after the marker; session_unknown: the session ids differ or only one side has one). |
 | `devswarm_archived_child_skipped` | counter | workspaces | check, reason | Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker). |
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |

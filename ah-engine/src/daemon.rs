@@ -667,6 +667,10 @@ impl Shared {
         if let (Some(m), Some(o)) = (v.as_object_mut(), crate::obs::counters::snapshot().as_object()) {
             m.extend(o.clone());
         }
+        // the engine currency job's last result (live commit, branch tip, file digests); absent while the job is off
+        if let (Some(m), Some(c)) = (v.as_object_mut(), crate::currency::last()) {
+            m.insert("currency".to_string(), c);
+        }
         v.to_string()
     }
 }
@@ -2365,6 +2369,11 @@ fn start_scheduler(sh: &Arc<Shared>) {
                 crate::procwatch::run_job(&crate::paths::dir(), &home, &rec)
             }
             "test_panic" if sh.cfg().test_hooks => std::panic::resume_unwind(Box::new(defaults::text("msg.reply_test_panic").to_string())),
+            "engine_currency" => {
+                let home = defaults::env_var("home").unwrap_or_default();
+                let count = |result: &str| sh.telemetry.with_metrics(|m| m.inc("engine_currency_check", &[("result", result)]));
+                crate::currency::run_job(&home, &count)
+            }
             "shadow_report" => crate::nodeback::report::scheduled(),
             "devswarm_reconcile" => Ok(crate::dswire::scheduled()),
             "devswarm_supervisor" => Ok(crate::dssup::cli::scheduled()),
