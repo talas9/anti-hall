@@ -1404,6 +1404,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.git_status_timeout_ms` | `2000` |  | ms | How long the `git status` question about a script file may take (command-guard.js gitCleanTracked: 2000 ms). |
 | `command.git_tag_value_flags` | `10 items` |  |  | git tag options that take a value. |
 | `command.git_timeout_ms` | `5000` |  | ms | How long a git question of the plain-push carve-out may take (command-guard.js: 5000 ms). |
+| `command.golden_redirect_root` | `/var/tmp` |  |  | Test harness only: the directory a golden case's home is laid out in when the temp dir sits inside a command.tmp_fixed_roots root (a home in a tmp root would silence every file-changing case). |
 | `command.guard_name` | `command-guard` |  |  | The guard id command-guard answers to in skip.json and in its messages. |
 | `command.heavy_default_label` | `heavy` |  |  | The category label when a heavy command has no classification. |
 | `command.heavy_pattern_label` | `heavy-pattern` |  |  | The category label of a heavy command found by a pattern. |
@@ -3711,7 +3712,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.marketplace_env` | `ANTIHALL_MARKETPLACE_DIR` |  |  | The environment variable that points the update skill at another marketplace directory (used by its tests); honoured only for an absolute path to an existing directory. |
 | `session.md_ext` | `.md` |  |  | The extension of a progress or history file. |
 | `session.mirror_cache_root` | `.claude/plugins/cache/anti-hall/anti-hall` |  |  | Where the update skill mirrors each release, one version-named directory each, under the home directory. |
-| `session.model_kb_audit_date` | `2026-09-03` |  |  | The UTC date (YYYY-MM-DD) the model KBs were last audited; a test keeps the two equal. |
+| `session.model_kb_audit_date` | `2026-11-04` |  |  | The UTC date (YYYY-MM-DD) the model KBs were last audited; a test keeps the two equal. |
 | `session.older_suffix` | ` (newer)` |  |  | Appended to a drift advisory when the installed version is OLDER than the audited baseline. |
 | `session.parts_sep` | `; ` |  |  | Separator between the parts of the count-drift line. |
 | `session.plugin_json` | `.claude-plugin/plugin.json` |  |  | The running plugin's manifest, relative to the plugin root. |
