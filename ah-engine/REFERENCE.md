@@ -3967,9 +3967,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `reply_length.assistant_type` | `assistant` |  |  | The transcript record type of the assistant's own messages, never counted as hook feedback. |
 | `reply_length.code_allow_chars` | `4000` |  |  | Characters of fenced code that do not count toward the character limit; only the excess counts. |
 | `reply_length.code_allow_lines` | `60` |  |  | Non-blank lines of fenced code that do not count toward the line limit; only the excess counts. |
-| `reply_length.detail_res` | `18 items` |  |  | Phrases in the user's last message that ask for detail, a plan, a design, a spec, a roadmap or a report (a long reply is then allowed). Rust regular expressions, case-insensitive. |
+| `reply_length.detail_res` | `18 items` |  |  | Phrases in the user's last message that ask for detail, an explanation, a plan, a design, a specification, a roadmap or a report, in any form of explain and specify (a long reply is then allowed). Rust regular expressions, case-insensitive. |
 | `reply_length.feedback_tokens` | `Stop hook feedback, hook_additional_context, hook_blocking_error, hook_system...` |  |  | Substrings that mark a transcript line as hook feedback (as opposed to the assistant quoting the marker); one of them plus the marker, on a record that is not an assistant message, counts as an earlier hit this turn. |
-| `reply_length.fence_re` | `^\s*(`{3,}\|~{3,})([^\n]*)$` |  |  | A line that carries a fenced code block marker (JavaScript pattern, matched per line): group 1 is the fence run (3 or more backticks or tildes), group 2 the rest of the line. A fence closes only on a run of the same character, at least as long as the opener, with nothing after it. |
+| `reply_length.fence_close_indent` | `3` |  |  | How many columns past the opener's prefix a closing fence may be indented (CommonMark: 3). |
+| `reply_length.fence_re` | `^(\s*(?:>\s?)*(?:(?:[-*+]\|\d{1,9}[.)])\s+)?)(`{3,}\|~{3,})([^\n]*)$` |  |  | A line that carries a fenced code block marker (CommonMark; JavaScript pattern, matched per line): group 1 the prefix (indent, blockquote markers, a list marker), group 2 the fence run (3 or more backticks or tildes), group 3 the rest of the line (the info string). A backtick fence whose info string holds a backtick is not a fence. A fence closes only on a run of the same character, at least as long as the opener, with nothing after it, indented at most 3 columns past the opener's prefix; an unclosed fence runs to the end of the reply. |
 | `reply_length.form` | `block` |  |  | What a hit does: block (the Stop is held; the default, OD7) or note (a systemMessage only). Both are implemented; a note can be moved out of sight by the Stop channel while background work runs. |
 | `reply_length.guard_name` | `reply-length-guard` |  |  | The guard id this check answers to in skip.json and in its messages. |
 | `reply_length.log_fired` | `fired: {chars} chars, {lines} lines (limit {max_chars} / {max_lines})` |  |  | Log text of a hit. Placeholders: {chars} {lines} {max_chars} {max_lines}. |
@@ -3985,7 +3986,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `reply_length.sw_max_lines` | `8 entries` |  |  | Setting guards.replyMaxLines: the most non-blank visible lines of a final reply before it is held (fenced code and tables are free up to their allowances). |
 | `reply_length.table_allow_chars` | `3000` |  |  | Characters of table rows that do not count toward the character limit; only the excess counts. |
 | `reply_length.table_allow_lines` | `40` |  |  | Non-blank table rows (lines matching table_line_re) that do not count toward the line limit; only the excess counts. |
-| `reply_length.table_line_re` | `^\s*\\|.*\\|\s*$` |  |  | A line that is a markdown table row or its separator (Rust regular expression). |
+| `reply_length.table_break_re` | `^\s*(?:#{1,6}(?:\s\|$)\|[-*+]\s\|\d{1,9}[.)]\s\|(?:[-*_][ \t]*){3,}$)` |  |  | A line that begins another block (Rust regular expression, run on the line without its quote markers): an ATX heading, a list item or a thematic break ends a table; a blank line, a fence or a quote depth change ends it too. Any other non-blank line after the delimiter row is a table row, with or without pipes (GFM). |
+| `reply_length.table_delim_re` | `^\s*\\|?\s*:?-+:?\s*(?:\\|\s*:?-+:?\s*)*\\|?\s*$` |  |  | A GFM table delimiter row (Rust regular expression): cells of dashes with optional alignment colons, separated by pipes, outer pipes optional (\|---\|---\|, ---\|---, :--\|--:). The line must also hold a pipe (table_pipe) and have as many cells as the header row before it; a table is found by this row, a line that merely holds pipes is prose. |
+| `reply_length.table_edge_re` | `^\s*\\|\|\\|\s*$` |  |  | The optional outer pipes of a table row (JavaScript pattern, global), removed before cells are counted. |
+| `reply_length.table_escape_re` | `\\.` |  |  | An escaped character inside a table row (JavaScript pattern, global): removed before cells are counted, so an escaped pipe does not split a cell. |
+| `reply_length.table_pipe` | `\|` |  |  | The GFM table cell separator. |
+| `reply_length.table_quote_re` | `^\s*(?:>\s?)*` |  |  | The blockquote markers (and indent) at the start of a line (JavaScript pattern), removed before a line is read as a table row; a table row continues the table only at the same quote depth as its header. |
 | `reply_length.tail_bytes` | `524288` |  |  | How many bytes at the end of the transcript are read to find the user's last prompt and any earlier hit after it. |
 
 ### afk.toml / afk
@@ -6052,7 +6058,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `400 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `403 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8470,7 +8476,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `406 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `409 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8807,8 +8813,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.table_headers_integrations` | `Integration, Effective, Configured, Source, Logs to` |  |  | The columns of the Jev integrations table. |
 | `ops.true_word` | `true` |  |  | The value `judge on` stores. |
 | `ops.trust_done` | `trusted {repo}/{rel} (sha256 {hash}):` |  |  | First line after a trust is recorded. Placeholders: repo, rel, hash. |
-| `ops.trust_exotic_breaks` | `
-,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
+| `ops.trust_exotic_breaks` | `,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
 | `ops.trust_missing` | `no {rel} in {top}` |  |  | No allowlist file. Placeholders: rel, top. |
 | `ops.trust_not_git` | `not inside a git repository: {target}` |  |  | No repository. Placeholder: target. |
 | `ops.trust_state` | `{rel} in {top} is {state}` |  |  | An unusable allowlist file. Placeholders: rel, top, state. |
@@ -11176,8 +11181,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.ready_git_timeout_ms` | `4000` |  |  | How long one git call of ready-check may run; a call that overruns is unknown, never a fact. |
 | `devswarm_cli.ready_gitlink_mode` | `160000` |  |  | The git file mode of a submodule pointer (a gitlink). |
 | `devswarm_cli.ready_is_ancestor` | `--is-ancestor` |  |  | The merge-base option that asks whether the first commit is an ancestor of the second. |
-| `devswarm_cli.ready_line_terminators` | `\n
-  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
+| `devswarm_cli.ready_line_terminators` | `\n  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
 | `devswarm_cli.ready_merge_base` | `merge-base` |  |  | The git subcommand that answers ancestry questions. |
 | `devswarm_cli.ready_no_renames` | `--no-renames` |  |  | The git diff option that reports a rename as a delete and an add. |
 | `devswarm_cli.ready_quiet` | `--quiet` |  |  | The git flag that keeps the fetch of `ready-check --fetch` quiet. |
@@ -11308,8 +11312,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_mb_grep_file_long` | `--file` |  |  | The long flag by which the pattern filter reads its patterns from a file (refused, with or without `=value`). |
 | `devswarm_cli.rr_mb_grep_file_short` | `f` |  |  | The short flag letter for the same (refused anywhere in a flag cluster). |
 | `devswarm_cli.rr_mb_inbox_word` | `inbox` |  |  | The word a mailbox cron prompt must contain (as a whole word) next to the CLI script name. |
-| `devswarm_cli.rr_mb_line_terms` | `\n
-  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
+| `devswarm_cli.rr_mb_line_terms` | `\n  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
 | `devswarm_cli.rr_mb_node` | `node` |  |  | The interpreter word a mailbox-class command starts with (a ping turn is made only of such calls). |
 | `devswarm_cli.rr_mb_pipe` | `\|` |  |  | The pipe character that separates a mailbox command from its read-only filters. |
 | `devswarm_cli.rr_mb_quotes` | `'"` |  |  | The two quote characters of a mailbox command, in this order: the literal quote, the string quote. |
