@@ -1,0 +1,140 @@
+# R-style (plan v3 L10, GH #488 #489): the reply-length guard behind guards.styleRule (off by default), Stop, Claude and Codex.
+# Replies are short by default and long only when the user asked for detail: a final reply over the size limits is held (form block)
+# or noted (form note) with a two-line message (shorten, keep decision + evidence + next action, move the detail to a file, PR or
+# ledger and link it). Stateless: no state file; a retry after the hold carries stop_hook_active and is allowed, so it cannot loop.
+# Logic: engine/logic/reply-length-guard.js (reads the reply and the owner turn's text only). Every number, pattern and text is here.
+# With the switch off the answer is empty as on dev; only the reply_style_observed counter is bumped, so the problem rate is
+# measurable before the switch turns on. Regular expressions in detail_res / table_line_re are Rust syntax (linear time, no
+# look-around); fence_re is a JavaScript pattern. Measured by reply_style_fired{again} and reply_style_observed (no delivery.act row:
+# a shorter next reply is not a tool reaction).
+
+[reply_length.sw_guard]
+doc = "Switch guards.styleRule (default off, plan v2 D14). On: a final reply over guards.replyMaxChars / guards.replyMaxLines that the user did not ask for is held once (reply_length.form). Off: nothing is held; only reply_style_observed is counted."
+value = { section = "guards", key = "styleRule", type = "boolean", env = "ANTIHALL_STYLE_RULE", option = "", default = false }
+
+[reply_length.sw_max_chars]
+doc = "Setting guards.replyMaxChars: the most visible characters of a final reply before it is held (fenced code and tables are free up to their allowances)."
+value = { type = "number", section = "guards", key = "replyMaxChars", env = "ANTIHALL_REPLY_MAX_CHARS", option = "", min = 100, max = 100000, default = 1200 }
+
+[reply_length.sw_max_lines]
+doc = "Setting guards.replyMaxLines: the most non-blank visible lines of a final reply before it is held (fenced code and tables are free up to their allowances)."
+value = { type = "number", section = "guards", key = "replyMaxLines", env = "ANTIHALL_REPLY_MAX_LINES", option = "", min = 3, max = 1000, default = 18 }
+
+[reply_length.guard_name]
+doc = "The guard id this check answers to in skip.json and in its messages."
+value = "reply-length-guard"
+
+[reply_length.summary]
+doc = "One-line description of the reply-length-guard check in the generated reference."
+value = "Stop (Claude and Codex): with guards.styleRule on, holds a final reply over guards.replyMaxChars / guards.replyMaxLines (fenced code and tables free up to an allowance) when the user's last message did not ask for detail, a plan, a design, a spec or a report; stateless (a retry carries stop_hook_active); counts reply_style_observed on every main-session Stop."
+
+[reply_length.form]
+doc = "What a hit does: block (the Stop is held; the default, OD7) or note (a systemMessage only). Both are implemented; a note can be moved out of sight by the Stop channel while background work runs."
+value = "block"
+
+[reply_length.marker]
+doc = "A fixed phrase of msg_what, looked for in the hook feedback after the user's last prompt to tell a repeated hit (again) from a first one. Must stay a literal substring of msg_what (a test checks it)."
+value = "Reply too long:"
+
+[reply_length.feedback_tokens]
+doc = "Substrings that mark a transcript line as hook feedback (as opposed to the assistant quoting the marker); one of them plus the marker, on a record that is not an assistant message, counts as an earlier hit this turn."
+value = ["Stop hook feedback", "hook_additional_context", "hook_blocking_error", "hook_system_message"]
+
+[reply_length.assistant_type]
+doc = "The transcript record type of the assistant's own messages, never counted as hook feedback."
+value = "assistant"
+
+[reply_length.tail_bytes]
+doc = "How many bytes at the end of the transcript are read to find the user's last prompt and any earlier hit after it."
+value = 524288
+min = 4096
+max = 8388608
+
+[reply_length.code_allow_lines]
+doc = "Non-blank lines of fenced code that do not count toward the line limit; only the excess counts."
+value = 60
+min = 0
+max = 10000
+
+[reply_length.code_allow_chars]
+doc = "Characters of fenced code that do not count toward the character limit; only the excess counts."
+value = 4000
+min = 0
+max = 1000000
+
+[reply_length.table_allow_lines]
+doc = "Non-blank table rows (lines matching table_line_re) that do not count toward the line limit; only the excess counts."
+value = 40
+min = 0
+max = 10000
+
+[reply_length.table_allow_chars]
+doc = "Characters of table rows that do not count toward the character limit; only the excess counts."
+value = 3000
+min = 0
+max = 1000000
+
+[reply_length.fence_re]
+doc = "A line that opens or closes a fenced code block (JavaScript pattern, matched per line)."
+value = '^\s*(?:`{3,}|~{3,})'
+
+[reply_length.table_line_re]
+doc = "A line that is a markdown table row or its separator (Rust regular expression)."
+value = '^\s*\|.*\|\s*$'
+
+[reply_length.detail_res]
+doc = "Phrases in the user's last message that ask for detail, a plan, a design, a spec, a roadmap or a report (a long reply is then allowed). Rust regular expressions, case-insensitive."
+value = [
+  '\bdetails?\b',
+  '\bdetailed\b',
+  '\bexplain\b',
+  '\bwhy\b',
+  '\bfull\s+(?:report|list|output|write-?up|breakdown)\b',
+  '\bin[\s-]+depth\b',
+  '\bwalk\s+me\s+through\b',
+  '\bhow\s+(?:does|do|did)\b',
+  '\bin\s+full\b',
+  '\bthorough(?:ly)?\b',
+  '\belaborate\b',
+  '\bplans?\b',
+  '\bdesigns?\b',
+  '\bspecs?\b',
+  '\broadmap\b',
+  '\breports?\b',
+]
+
+[reply_length.log_kind]
+doc = "Engine log kind written for a hit (fired)."
+value = "reply_length"
+
+[reply_length.log_fired]
+doc = "Log text of a hit. Placeholders: {chars} {lines} {max_chars} {max_lines}."
+value = "fired: {chars} chars, {lines} lines (limit {max_chars} / {max_lines})"
+
+[reply_length.msg_what]
+doc = "Block headline (one emoji, at most two lines in all); starts with the marker. Placeholders: {chars} {lines} {max_chars} {max_lines}."
+value = "\U0001F4CF Reply too long: {chars} chars / {lines} lines (limit {max_chars} / {max_lines})."
+
+[reply_length.msg_instead]
+doc = "Block advice: the step that clears the hold."
+value = "shorten it, keep the decision, evidence and next action, and link the detail from a file or PR."
+
+[reply_length.results]
+doc = "The result label values of reply_style_observed (ok: within the limits; over: over them and not exempt; exempt: skipped for a reason) and the reason label (none) that ok and over carry."
+value = { ok = "ok", over = "over", exempt = "exempt", none = "none" }
+
+[reply_length.reasons]
+doc = "The reason label values of reply_style_suppressed / the exempt reply_style_observed series (no_reply_text: a Codex payload with no last_assistant_message, allowed; no_owner_text: the user's last prompt cannot be read from the transcript, allowed)."
+value = { asked = "asked", short = "short", plan_mode = "plan_mode", subagent = "subagent", stop_hook_active = "stop_hook_active", no_reply_text = "no_reply_text", no_owner_text = "no_owner_text" }
+
+[metric.reply_style_observed]
+doc = "Final replies seen at a main-session Stop, whatever the switch: result ok (within the limits), over (over the limits and not exempt) or exempt (with its reason: asked, plan_mode, subagent, stop_hook_active, no_reply_text). Problem rate = over / (over + ok)."
+value = { kind = "counter", unit = "replies", labels = ["result", "reason"] }
+
+[metric.reply_style_fired]
+doc = "Replies the R-style guard held or noted (guards.styleRule on), by form (block, note) and again (true: an earlier hit of this owner turn is in the transcript; false: the first). Acted-on = 1 - again=true / again=false."
+value = { kind = "counter", unit = "replies", labels = ["form", "again"] }
+
+[metric.reply_style_suppressed]
+doc = "Replies the R-style guard let pass with the switch on, by reason (asked, short, plan_mode, subagent, stop_hook_active, no_reply_text)."
+value = { kind = "counter", unit = "replies", labels = ["reason"] }

@@ -4299,3 +4299,117 @@ mod idle_rule_counters {
         assert_eq!(m.counter("idle_rule_age_unknown", &[("kind", "open")]), 0);
     }
 }
+
+// ---- reply-length-guard R-style (guards.styleRule): its counters, the repeat marker and the message text ----
+
+mod r_style_counters {
+    use super::*;
+
+    fn long() -> String {
+        (0..40).map(|i| format!("Line {i}: the change is in place and the tests around it pass.")).collect::<Vec<_>>().join("\n")
+    }
+
+    fn prompt(t: &str) -> String {
+        json!({"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "promptSource": "typed", "message": {"role": "user", "content": t}}).to_string()
+    }
+
+    /// One Stop of the guard: the answer, with the switch on or off, over a transcript of these lines.
+    fn stop(tag: &str, lines: &[String], reply: Option<&str>, extra: Value, on: bool) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), format!("{}\n", lines.join("\n"))).unwrap();
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        if on {
+            pairs.push(("ANTIHALL_STYLE_RULE".into(), "1".into()));
+        }
+        let mut p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": tag, "cwd": h});
+        if let Some(r) = reply {
+            p["last_assistant_message"] = json!(r);
+        }
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            p[k] = v;
+        }
+        let v = super::super::run_forced("reply-length-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        v
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn held(v: &Option<Option<Verdict>>) -> bool {
+        matches!(v, Some(Some(Verdict::Exact(x))) if x.out.contains("\"decision\":\"block\""))
+    }
+
+    #[test]
+    fn every_main_session_stop_is_observed_whatever_the_switch_and_only_the_switch_on_fires() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let obs = |m: &crate::metrics::Metrics, result: &str, reason: &str| m.counter("reply_style_observed", &[("result", result), ("reason", reason)]);
+        let lines = [prompt("fix the failing test")];
+        drained();
+        // switch off: the answer is empty (allow), the long reply is still counted as over, and nothing fires or is suppressed
+        let v = stop("rs-off", &lines, Some(&long()), json!({}), false);
+        assert_eq!(v, Some(Some(Verdict::Allow)), "off: no answer");
+        let m = drained();
+        assert_eq!(obs(&m, "over", "none"), 1, "off: the long reply is observed");
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 0);
+        assert_eq!(m.counter("reply_style_suppressed", &[("reason", "short")]), 0, "off: suppressed is not counted");
+        // a short reply: ok
+        stop("rs-ok", &lines, Some("Done."), json!({}), false);
+        assert_eq!(obs(&drained(), "ok", "none"), 1);
+        // the exempt reasons, each counted once under result=exempt
+        stop("rs-asked", &[prompt("please explain this")], Some(&long()), json!({}), false);
+        assert_eq!(obs(&drained(), "exempt", "asked"), 1);
+        stop("rs-plan", &lines, Some(&long()), json!({"permission_mode": "plan"}), false);
+        assert_eq!(obs(&drained(), "exempt", "plan_mode"), 1);
+        stop("rs-sub", &lines, Some(&long()), json!({"agent_id": "a1"}), false);
+        assert_eq!(obs(&drained(), "exempt", "subagent"), 1);
+        stop("rs-hook", &lines, Some(&long()), json!({"stop_hook_active": true}), false);
+        assert_eq!(obs(&drained(), "exempt", "stop_hook_active"), 1);
+        stop("rs-none", &lines, None, json!({}), false);
+        assert_eq!(obs(&drained(), "exempt", "no_reply_text"), 1, "a payload with no reply text is allowed and counted");
+        // switch on: held, observed as over, fired once (first hit), and a pass is counted as suppressed
+        let v = stop("rs-on", &lines, Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        let m = drained();
+        assert_eq!(obs(&m, "over", "none"), 1);
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+        stop("rs-on-short", &lines, Some("Done."), json!({}), true);
+        assert_eq!(drained().counter("reply_style_suppressed", &[("reason", "short")]), 1);
+        stop("rs-on-asked", &[prompt("give me the design")], Some(&long()), json!({}), true);
+        assert_eq!(drained().counter("reply_style_suppressed", &[("reason", "asked")]), 1);
+    }
+
+    #[test]
+    fn a_repeat_after_the_hold_is_counted_as_again_but_a_quoted_marker_is_not() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let marker = defaults::text("reply_length.marker");
+        let fb = json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": format!("Stop hook feedback:\n{marker} 40 chars")}}).to_string();
+        let quoted = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": format!("I will not repeat: {marker} Stop hook feedback")}]}}).to_string();
+        drained();
+        // the hook feedback of an earlier hit of this owner turn stands after the prompt: again=true
+        let v = stop("rs-again", &[prompt("fix the failing test"), fb.clone()], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        let m = drained();
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "true")]), 1);
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 0);
+        // an assistant message that quotes the marker is not hook feedback
+        let v = stop("rs-quote", &[prompt("fix the failing test"), quoted], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        assert_eq!(drained().counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+        // feedback that belongs to an earlier prompt does not count for the new one
+        let v = stop("rs-old", &[prompt("first"), fb, prompt("fix the failing test")], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        assert_eq!(drained().counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+    }
+
+    #[test]
+    fn the_marker_is_a_literal_part_of_the_headline() {
+        assert!(
+            defaults::text("reply_length.msg_what").contains(defaults::text("reply_length.marker")),
+            "again detection looks for the marker in the delivered text"
+        );
+    }
+}
