@@ -3613,6 +3613,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the inline caps. Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
 | `context_size.sw_keep_pinned` | `5 entries` |  |  | Pinned inline. Switch (context.inlinePinned, default on): a hook whose dispatch.context_priority is at or above dispatch.context_pin_priority (the protocol, the rule digest, role text, reminders an agent must act on) is never shrunk by the default per-hook cap or by the event total; only an explicit context_size.hook_caps row still shrinks it. The event total also shrinks the lowest-priority contexts first (the largest first among equals). false = the size-only order, as before (#519). |
 
+### notice_turn.toml / notice_turn
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `notice_turn.events` | `UserPromptSubmit` |  |  | The hook events whose prompt is tested for a notice kind (and whose dispatch entries notice_turn.skip_checks can drop). |
+| `notice_turn.kinds` | `5 entries` |  |  | Notice kinds by name, each a regular expression (Rust regex syntax, case-insensitive) anchored at the start of the prompt, so a human sentence that only mentions a notice never matches. The first match in table order wins; the name is the kind label of metric.notice_turn_matched and metric.notice_turn_skipped. notification = a harness task notification (optionally wrapped in a system reminder); mesh_tick = the mesh inbox tick cron prompt; goal_checkin = a goal check-in; peer = a message from another session; teammate = a teammate message. |
+| `notice_turn.prompt_chars` | `400` |  |  | How many characters from the start of the prompt are tested against notice_turn.kinds. A notice announces itself at the start; the rest of a long prompt is never read. |
+| `notice_turn.skip_checks` | `verify-first, task-tracker, procwatch-advisory, gh-rt-advisory, switch-notice` |  |  | The UserPromptSubmit dispatch entry ids (a variant suffix is ignored) dropped on a notice turn while notice_turn.sw_main is on: the pure per-prompt reminders. Not idle-agent-sweep or agent-reminders (a notification usually reports a finished agent, and they carry that fact), not devswarm-parent-inbox or devswarm-rt-advisory (the tick turn is the inbox turn), and not auto-handover, afk-mode, repair-on-reload or limit-conserve-inject (state or mode, not reminders). |
+| `notice_turn.sw_main` | `5 entries` |  |  | Master switch of the notice-turn skip (context.injectGateNoticeTurns, default off): on, the checks in notice_turn.skip_checks are not run on a UserPromptSubmit that is a task notification, a mesh inbox tick, a goal check-in, or a message from another session or a teammate; off keeps every reminder, as before. |
+
 ### session.toml / session
 
 | Key | Default | Env override | Unit | What it is |
@@ -5997,7 +6007,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `396 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `397 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8415,7 +8425,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `402 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `403 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14740,6 +14750,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
 | `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
+| `notice_turn_matched` | counter | prompts | kind | UserPromptSubmit prompts that are a harness notice, by kind (notice_turn.kinds). Counted with the switch on or off, so it measures the share of notice turns before the skip is enabled. |
+| `notice_turn_skipped` | counter | prompts | kind, check | Dispatch entries dropped from the plan of a notice turn while notice_turn.sw_main is on, by notice kind and by the base id of the check (notice_turn.skip_checks). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted). |
 | `claim_evidence_suppressor_rejected` | counter | candidates | reason | Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427). |

@@ -28,6 +28,7 @@ pub mod digest;
 pub mod inject;
 pub mod native;
 pub mod node;
+pub mod notice;
 pub mod plan;
 pub mod shrink;
 pub mod spill;
