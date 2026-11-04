@@ -1,0 +1,34 @@
+# ah-engine shipped defaults for the per-event context budget (src/dispatch/ctxkeep.rs, plan v3 L12 / C2). Model-facing
+# additionalContext that would otherwise be moved into a spill file (the prompt digest, the SessionStart shrink, the over-cap join
+# spill) is instead kept within a budget per event: the lowest-priority contexts (dispatch.context_priority) are dropped until the
+# rest fits, and nothing is written to a file. A file the model must Read is not delivery. OFF by default: with the switch off the
+# three file writers behave exactly as before.
+# Format: see the header of engine.toml.
+
+[ctx_keep.sw_main]
+doc = "Switch (context.injectGateNoSpill, default off): the events in ctx_keep.events keep their model-facing contexts within ctx_keep.chars_by_event by dropping the lowest-priority ones, and the prompt digest, the SessionStart shrink and the over-cap spill are skipped for them (no context file is written). Contexts at or above dispatch.context_pin_priority are never dropped."
+value = { section = "context", key = "injectGateNoSpill", env = "ANTIHALL_CTX_NO_SPILL", option = "", default = false }
+
+[ctx_keep.events]
+doc = "Hook events the budget applies to."
+value = ["SessionStart", "UserPromptSubmit"]
+
+[ctx_keep.chars_by_event]
+doc = "Per event, the most characters of model-facing additionalContext (all hooks joined by dispatch.context_joiner) kept before the lowest-priority contexts are dropped. SessionStart: the host's inline cap (dispatch.context_cap) minus headroom. UserPromptSubmit: about 1.7 times the largest single context observed. An event of ctx_keep.events without a row here is not budgeted."
+value = { SessionStart = 9000, UserPromptSubmit = 3000 }
+
+[ctx_keep.msg_dropped]
+doc = "Event-log detail after contexts were dropped by the budget. Placeholders: {n} (contexts dropped), {chars} (characters dropped), {ids} (the dropped check ids)."
+value = "{n} low-priority context(s) dropped to fit the budget: {chars} characters ({ids})"
+
+[metric.ctx_keep_dropped]
+doc = "Model-facing contexts dropped by the per-event budget while ctx_keep.sw_main is on, by event and by the base id of the check. Every check seen here has a priority below dispatch.context_pin_priority."
+value = { kind = "counter", unit = "contexts", labels = ["event", "check"] }
+
+[metric.ctx_keep_dropped_chars]
+doc = "Characters of model-facing context dropped by the per-event budget while ctx_keep.sw_main is on, by event."
+value = { kind = "counter", unit = "chars", labels = ["event"] }
+
+[metric.ctx_keep_pinned_over]
+doc = "Events whose pinned contexts alone (priority at or above dispatch.context_pin_priority) are over the budget while ctx_keep.sw_main is on: they are kept whole and the host's cap behaviour applies, by event."
+value = { kind = "counter", unit = "events", labels = ["event"] }

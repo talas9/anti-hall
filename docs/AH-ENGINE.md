@@ -85,6 +85,16 @@ labelled with how it was measured in the README of `ah-engine/`.
   resume and as one line on a repeated start (`context.protocolOnce`, `verify_first.*` texts), and `context.orchFullOn = auto` sends the
   compact orchestration text with the full rules on the first spawn (`orch_state.auto_mode`). Switch: `context.shrinkInline`
   (`dispatch/shrink.rs`, `context_size.toml`).
+- **Per-event context budget (`ctx_keep.toml`, plan v3 L12 / C2).** The prompt digest, the SessionStart shrink and the over-cap join
+  spill each move model-facing `additionalContext` into a file the model has to Read. With `context.injectGateNoSpill` on (default
+  **off**, env `ANTIHALL_CTX_NO_SPILL`), an event in `ctx_keep.events` instead keeps its contexts within `ctx_keep.chars_by_event`
+  (SessionStart 9000, UserPromptSubmit 3000): while the joined contexts are over it, the one with the lowest
+  `dispatch.context_priority` is dropped (ties: the longest, then the latest) and the three file writers are skipped for that event.
+  A context at or above `dispatch.context_pin_priority` is never dropped; when the pinned ones alone are over the budget they stay
+  whole and the host's cap applies as before. Blocks and decisions are untouched and nothing is stored. Counters (in `ctx_keep.toml`):
+  `ctx_keep_dropped` (event, check), `ctx_keep_dropped_chars` (event), `ctx_keep_pinned_over` (event); the event log line is
+  `dispatch_ctx_dropped` (`ctx_keep.msg_dropped`). Code: `dispatch/ctxkeep.rs`. The Codex port needs no change: the same dispatcher
+  serves `--host codex`.
 - **Notice turns.** A UserPromptSubmit whose prompt (first `notice_turn.prompt_chars` characters) starts as a harness notice, matched
   by `notice_turn.kinds` (task notification, mesh inbox tick, goal check-in, message from another session, teammate message), is
   counted by kind in `notice_turn_matched` whether or not the switch is on. With `context.injectGateNoticeTurns` on (default off, env
