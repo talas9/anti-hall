@@ -172,12 +172,23 @@ fn a_reply_within_the_limits_the_switch_off_and_the_exempt_cases_are_left_alone(
         let fenced = format!("Here:\n{}", code(70));
         let plain = "fix the failing test";
         let rows = table(30);
+        let body = (0..40).map(|_| "a").collect::<Vec<_>>().join("\n");
+        let nested_backticks = format!("````markdown\n```\n{body}\n```\n````");
+        let tilde_in_backticks = format!("````markdown\n~~~\n{body}\n~~~\n````");
+        let backticks_in_tildes = format!("~~~~markdown\n```\n{body}\n```\n~~~~");
+        let longer_close = format!("```\n{body}\n`````");
         let cases: Vec<(&str, &str, &str, Patch, bool)> = vec![
             ("short reply", plain, "Done: the test passes.", nop, true),
             ("switch off", plain, &long, nop, false),
             ("asked to explain", "please explain how this works", &long, nop, true),
             ("asked for a plan", "write the plan for the migration", &long, nop, true),
             ("asked for a report", "give me the report", &long, nop, true),
+            ("asked for an explanation", "Give me an explanation of this behavior.", &long, nop, true),
+            ("asked for a specification", "Write the specification for this feature.", &long, nop, true),
+            ("nested backtick fence", "show the change", &nested_backticks, nop, true),
+            ("tilde fence inside a backtick fence", "show the change", &tilde_in_backticks, nop, true),
+            ("backtick fence inside a tilde fence", "show the change", &backticks_in_tildes, nop, true),
+            ("longer closing fence", "show the change", &longer_close, nop, true),
             ("70 fenced code lines", "show the change", &fenced, nop, true),
             ("30 table rows", "list them", &rows, nop, true),
             ("plan mode", plain, &long, |p| p["permission_mode"] = json!("plan"), true),
@@ -199,6 +210,22 @@ fn an_excess_of_code_over_its_allowance_is_held() {
     let rig = Rig::new("code-excess");
     let r = rig.run("claude", &rig.stop("claude", "show the change", &format!("Here:\n{}", code(200))), true);
     assert!(said(&r).contains(MARKER), "{r:?}");
+}
+
+/// A fence is closed only by a fence of the same character, at least as long, with nothing after it: lines inside an outer block that
+/// look like fences are code, and the excess over the allowance after the real close is prose again.
+#[test]
+fn a_fence_inside_a_longer_fence_does_not_end_it_and_prose_after_the_close_is_counted() {
+    let rig = Rig::new("fence-close");
+    let body = (0..40).map(|_| "a").collect::<Vec<_>>().join("\n");
+    // a short fence line with an info string inside a longer fence stays code; after the close, 40 prose lines are held
+    let held = format!("````markdown\n```rust\n{body}\n```\n````\n{}", prose(40));
+    let r = rig.run("claude", &rig.stop("claude", "show the change", &held), true);
+    assert!(said(&r).contains(MARKER), "prose after the real close is counted: {r:?}");
+    // an unclosed outer fence keeps everything after it as code
+    let open = format!("````markdown\n```\n{body}\n```");
+    let r = rig.run("claude", &rig.stop("claude", "show the change", &open), true);
+    assert!(!said(&r).contains(MARKER), "an unclosed fence runs to the end: {r:?}");
 }
 
 #[test]

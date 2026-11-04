@@ -11,13 +11,19 @@
 
 // {chars, lines} of the visible text: fenced lines and table rows are counted apart and only their excess over the allowance adds to the size.
 function rsSize(reply) {
-  var fence = jx.re('reply_length.fence_re', ''), tableRe = ah.cfg('reply_length.table_line_re'), lines = reply.split('\n'), inCode = false;
+  var fence = jx.re('reply_length.fence_re', ''), tableRe = ah.cfg('reply_length.table_line_re'), lines = reply.split('\n'), inCode = false, open = '';
   var chars = 0, rows = 0, codeChars = 0, codeRows = 0, tabChars = 0, tabRows = 0;
   for (var i = 0; i < lines.length; i++) {
     var l = lines[i];
-    if (fence.test(l)) { inCode = !inCode; continue; }
+    var fm = fence.exec(l);
+    if (inCode) {
+      // a fence closes only on a run of the same character, at least as long as the opener, with nothing after it
+      if (fm && fm[1].charAt(0) === open.charAt(0) && fm[1].length >= open.length && fm[2].trim() === '') inCode = false;
+      else { codeChars += Array.from(l).length; if (l.trim() !== '') codeRows++; }
+      continue;
+    }
+    if (fm && !(fm[1].charAt(0) === '`' && fm[2].indexOf('`') >= 0)) { inCode = true; open = fm[1]; continue; }
     var n = Array.from(l).length;
-    if (inCode) { codeChars += n; if (l.trim() !== '') codeRows++; continue; }
     if (l.trim() !== '' && ah.re.find(tableRe, '', l)) { tabChars += n; tabRows++; continue; }
     chars += n;
     if (l.trim() !== '') rows++;

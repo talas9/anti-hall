@@ -75,8 +75,8 @@ min = 0
 max = 1000000
 
 [reply_length.fence_re]
-doc = "A line that opens or closes a fenced code block (JavaScript pattern, matched per line)."
-value = '^\s*(?:`{3,}|~{3,})'
+doc = "A line that carries a fenced code block marker (JavaScript pattern, matched per line): group 1 is the fence run (3 or more backticks or tildes), group 2 the rest of the line. A fence closes only on a run of the same character, at least as long as the opener, with nothing after it."
+value = '^\s*(`{3,}|~{3,})([^\n]*)$'
 
 [reply_length.table_line_re]
 doc = "A line that is a markdown table row or its separator (Rust regular expression)."
@@ -87,7 +87,8 @@ doc = "Phrases in the user's last message that ask for detail, a plan, a design,
 value = [
   '\bdetails?\b',
   '\bdetailed\b',
-  '\bexplain\b',
+  '\bexplain(?:ed|s)?\b',
+  '\bexplanations?\b',
   '\bwhy\b',
   '\bfull\s+(?:report|list|output|write-?up|breakdown)\b',
   '\bin[\s-]+depth\b',
@@ -99,6 +100,7 @@ value = [
   '\bplans?\b',
   '\bdesigns?\b',
   '\bspecs?\b',
+  '\bspecifications?\b',
   '\broadmap\b',
   '\breports?\b',
 ]
