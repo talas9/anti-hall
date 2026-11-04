@@ -24,6 +24,7 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod combine;
+pub mod ctxkeep;
 pub mod digest;
 pub mod inject;
 pub mod ladder;
@@ -973,6 +974,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         digest::apply(&args.event, &req_env, &mut results); // several advisories of one prompt become one short digest
     }
     shrink::apply(&args.event, &req_env, &mut results); // per-hook inline caps: a long context becomes a summary line and a file
+    ctxkeep::apply(&args.event, &req_env, &mut results); // context.injectGateNoSpill: over the event budget the lowest-priority contexts are dropped, never filed
     if let Some(pl) = parsed.as_ref() {
         stopchan::apply(&args.host, &args.event, pl, &req_env, &mut results); // GH #540: the Stop note's channel (stateless bounds)
     }
@@ -999,6 +1001,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 return combine::sequential(&results, &args.event);
             }
             if defaults::num("dispatch.spill_over_cap") == 1
+                && !ctxkeep::covers(&args.event, &req_env)
                 && let Some(s) = spill::apply(&args.event, &results, &o.out, cap)
             {
                 o.out = s.out;

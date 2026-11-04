@@ -291,6 +291,14 @@ pub fn stop_channel(counter: &str, check: &str, model: &str, project: &str) -> E
     base(Kind::StopChan, counter, check, Outcome::Advise, 0, 0, Extras::Fields(Fields::new().tok("model", model).tok("project", project)))
 }
 
+/// The event for `by` counts of the metric `name` bumped in a process that is not the daemon (the hook dispatcher): the label values
+/// ride in `e`, in the order the metric registers its labels, joined by `/` (a `/` inside a value becomes `_`). The daemon adds them to
+/// its own registry when it reads the inbox ([`crate::metrics::add_from_event`]).
+pub fn counter(name: &str, labels: &[(&str, &str)], by: u64) -> Event {
+    let values: Vec<String> = labels.iter().map(|(_, v)| v.replace('/', "_")).collect();
+    base(Kind::Counter, name, &values.join("/"), Outcome::Advise, 0, by, Extras::None)
+}
+
 /// The event for a dispatcher path that would have handed the event to the Node hooks and answered without them
 /// (`path` is `budget`, `infra` or `panic`; `outcome` is Skip for an advisory event, Block or Allow for a guard event).
 pub fn no_node_path(path: &str, event: &str, outcome: Outcome) -> Event {
