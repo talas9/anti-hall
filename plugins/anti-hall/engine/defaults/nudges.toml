@@ -71,6 +71,16 @@ doc = "Ladder state files not touched for this many days are removed (sessions t
 value = 7
 min = 1
 
+[nudges.held_pass_stops]
+doc = "How many Stops a held block of a counted-block kind (count_blocks: the guard itself blocks) keeps every ladder block waiting while that guard lets the Stop pass (its own block cap or an unchanged set). The guard decided those Stops may end, so the ladder adds no block of any kind to them. The hold ends after this many passes, so a guard whose condition cleared cannot mute the ladder for the rest of the session. The mark itself is dropped then; the guard blocking again re-arms it."
+value = 8
+min = 1
+
+[nudges.state_max_bytes]
+doc = "Most bytes of a session's ladder state file read; a larger file is not valid state (counted as a parse failure and replaced by an empty state)."
+value = 65536
+min = 1024
+
 [nudges.headline_chars]
 doc = "Most characters of the advisory's first line the block quotes as its detail (ASCII only, so the block keeps one emoji)."
 value = 120

@@ -4,7 +4,8 @@
 //! ladder counts at most one fire per turn (Stop to Stop); the kind's hooks running quiet `quiet_reset` times in a row is the
 //! condition cleared, which resets the count (acted on). A due kind is held as pending and the next main-session Stop answers one
 //! block naming the required next action: a `block` (P0) kind at its first fire, an `escalate` kind after `after` fires and every
-//! `every` fires after that. A Stop with `stop_hook_active` never adds a ladder block, so an escalation cannot loop.
+//! `every` fires after that. A Stop with `stop_hook_active` never adds a ladder block, so an escalation cannot loop; nor does a Stop
+//! that a counted-block guard (task-guard's cap) lets pass while its own block is held (`at_stop`).
 //!
 //! The ladder observes the hook results BEFORE the token cuts (`inject`, `digest`, `shrink`) blank repeated advisories, and its
 //! block is appended after them. It fails open: no session, an unreadable or corrupt state file, a state write that fails or a
@@ -176,6 +177,8 @@ pub struct Track {
     pub shown: u64,
     /// The newest advisory's first line.
     pub headline: String,
+    /// Stops its guard (a counted-block kind) let pass while the block was held (`nudges.held_pass_stops`).
+    pub held: u64,
 }
 
 /// One session's ladder state.
@@ -206,6 +209,7 @@ pub fn count(st: &mut State, kinds: &[Kind], seen: &[(String, Seen)]) -> Vec<Ste
         match s {
             Seen::Fired(h) => {
                 t.quiet = 0;
+                t.held = 0;
                 t.headline.clone_from(h);
                 if !t.this_turn {
                     t.this_turn = true;
@@ -235,32 +239,58 @@ pub fn count(st: &mut State, kinds: &[Kind], seen: &[(String, Seen)]) -> Vec<Ste
     steps
 }
 
-/// At a Stop: the block reason of every pending kind (when `may_block`), and the turn boundary. Returns (reason, steps).
+/// At a Stop: the block reason of the pending kinds that fit `nudges.max_chars` (when `may_block`), and the turn boundary. Returns
+/// (reason, steps).
 ///
 /// `passed` names the kinds whose counted-block hooks (`count_blocks`) ran at this very Stop and let it pass: that guard saw the
-/// state with its own cap and clearing rules and decided the Stop may end, so the ladder adds no block for those kinds (a block
-/// there would contradict the guard, and loop once the guard's cap is reached). Their pending mark is kept.
+/// state with its own cap and clearing rules and decided the Stop may end. While such a kind holds a block (its guard blocked
+/// earlier), the ladder adds no block of any kind to this Stop, because one would contradict the guard and loop once the guard's cap
+/// is reached; every mark is kept. After `nudges.held_pass_stops` such passes the guard's mark is dropped (its condition has most
+/// likely cleared), so the hold cannot outlast it. A text that does not fit the limit whole stays pending for the next Stop.
 pub fn at_stop(st: &mut State, kinds: &[Kind], may_block: bool, passed: &[String]) -> (Option<String>, Vec<Step>) {
-    let mut texts: Vec<String> = Vec::new();
     let mut steps = Vec::new();
+    let mut held = false;
+    if may_block {
+        let max_held = defaults::num("nudges.held_pass_stops");
+        for k in kinds.iter().filter(|k| k.count_blocks && passed.contains(&k.name)) {
+            let Some(t) = st.kinds.get_mut(&k.name).filter(|t| t.pending) else { continue };
+            held = true;
+            t.held += 1;
+            if t.held > max_held {
+                t.pending = false;
+                t.held = 0;
+            }
+        }
+    }
+    let max = defaults::num("nudges.max_chars") as usize;
+    let joiner = defaults::text("dispatch.reason_joiner");
+    let mut reason = String::new();
     for k in kinds {
         let Some(t) = st.kinds.get_mut(&k.name) else { continue };
-        if may_block && t.pending && !passed.contains(&k.name) && matches!(k.class, Class::Block | Class::Escalate) {
+        if may_block && !held && t.pending && matches!(k.class, Class::Block | Class::Escalate) {
+            let key = if k.class == Class::Block { "nudges.msg_first_fire" } else { "nudges.msg_escalated" };
+            let render = |detail: &str| defaults::render(key, &[("action", &k.action), ("detail", &detail), ("n", &t.count)]);
+            let detail = if t.headline.is_empty() { String::new() } else { defaults::render("nudges.msg_detail", &[("text", &t.headline)]) };
+            let mut text = render(&detail);
+            if reason.is_empty() && text.chars().count() > max {
+                text = render(""); // the action and the consequence are the part to keep: the quoted line goes first
+                text = text.chars().take(max).collect();
+            }
+            let joined = if reason.is_empty() { 0 } else { joiner.chars().count() };
+            if reason.chars().count() + joined + text.chars().count() > max {
+                continue; // it does not fit whole: still owed, shown at the next Stop
+            }
+            if !reason.is_empty() {
+                reason.push_str(joiner);
+            }
+            reason.push_str(&text);
             t.pending = false;
             t.shown += 1;
-            let detail = if t.headline.is_empty() { String::new() } else { defaults::render("nudges.msg_detail", &[("text", &t.headline)]) };
-            let key = if k.class == Class::Block { "nudges.msg_first_fire" } else { "nudges.msg_escalated" };
-            texts.push(defaults::render(key, &[("action", &k.action), ("detail", &detail), ("n", &t.count)]));
             steps.push((k.name.clone(), if k.class == Class::Block { "blocked" } else { "escalated" }, true));
         }
         t.this_turn = false;
     }
-    if texts.is_empty() {
-        return (None, steps);
-    }
-    let max = defaults::num("nudges.max_chars") as usize;
-    let reason: String = texts.join(defaults::text("dispatch.reason_joiner")).chars().take(max).collect();
-    (Some(reason), steps)
+    ((!reason.is_empty()).then_some(reason), steps)
 }
 
 fn session_key(p: &Value) -> Option<String> {
@@ -273,14 +303,21 @@ fn state_file(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{key}{}", defaults::text("nudges.state_ext")))
 }
 
-/// The session's state: an absent file is a fresh state; a file that cannot be read or is not valid state is the `op` that failed
-/// (`nudges.state_error_ops`: read, parse).
+/// The session's state: an absent file is a fresh state; a file that cannot be read is `read`, one that is not valid state or is
+/// larger than `nudges.state_max_bytes` is `parse` (`nudges.state_error_ops`).
 pub fn load(dir: &Path, key: &str) -> Result<State, &'static str> {
-    match std::fs::read_to_string(state_file(dir, key)) {
-        Ok(t) => serde_json::from_str(&t).map_err(|_| "parse"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-        Err(_) => Err("read"),
+    let max = defaults::num("nudges.state_max_bytes");
+    let file = match std::fs::File::open(state_file(dir, key)) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(State::default()),
+        Err(_) => return Err("read"),
+    };
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(file, max.saturating_add(1)), &mut text).map_err(|_| "read")?;
+    if text.len() as u64 > max {
+        return Err("parse");
     }
+    serde_json::from_str(&text).map_err(|_| "parse")
 }
 
 /// Count one ladder state failure (`nudge_ladder_state_error`, label `op`); the call then takes no ladder action.
@@ -328,6 +365,7 @@ pub fn run_in(dir: &Path, event: &str, p: &Value, kinds: &[Kind], results: &[Hoo
             return None;
         }
     };
+    st.kinds.retain(|n, _| kinds.iter().any(|k| k.name == *n)); // a key that is no kind of the table (a hand-edited or stale file) is dropped
     let seen: Vec<(String, Seen)> = kinds.iter().map(|k| (k.name.clone(), observe(k, results))).collect();
     let mut steps = count(&mut st, kinds, &seen);
     let mut reason = None;
@@ -553,5 +591,113 @@ mod tests {
         assert!(stop(&d, &k, &quiet()).is_none(), "a capped guard's pass is not blocked by the ladder");
         // the guard did not run at all (kind absent): the held block is shown
         assert!(stop(&d, &k, &[]).is_some(), "no guard decision to contradict");
+    }
+
+    fn guard_block() -> HookResult {
+        HookResult { id: "g".into(), code: Some(0), out: json!({"decision": "block", "reason": "r"}).to_string(), err: String::new() }
+    }
+    fn guard_kind() -> Kind {
+        let mut g = kind(Class::Block, 0);
+        g.name = "g".into();
+        g.hooks = vec!["g".into()];
+        g.count_blocks = true;
+        g
+    }
+    fn watcher_kind() -> Kind {
+        let mut s = kind(Class::Escalate, 0);
+        s.name = "s".into();
+        s.hooks = vec!["s".into()];
+        s.after = 1;
+        s
+    }
+    fn watcher_adv() -> HookResult {
+        HookResult { id: "s".into(), code: Some(0), out: json!({"systemMessage": "stalled agent w1"}).to_string(), err: String::new() }
+    }
+    fn stop_all(dir: &Path, ks: &[Kind], r: &[HookResult]) -> Option<HookResult> {
+        run_in(dir, "Stop", &json!({"session_id": "s1"}), ks, r)
+    }
+
+    #[test]
+    fn a_held_counted_block_makes_every_other_kind_wait_while_its_guard_lets_the_stop_pass() {
+        let d = tmp("held-all");
+        let ks = [guard_kind(), watcher_kind()];
+        let quiet_guard = HookResult::quiet("g");
+        assert!(stop_all(&d, &ks, &[guard_block(), watcher_adv()]).is_none(), "the guard's own block carries the first Stop");
+        let st = load(&d, "s1").unwrap();
+        assert!(st.kinds["g"].pending && st.kinds["s"].pending, "both blocks are held: {st:?}");
+        // the guard ran at this Stop and let it pass (its cap): no ladder block of ANY kind may turn that into a block
+        assert!(stop_all(&d, &ks, &[quiet_guard.clone(), watcher_adv()]).is_none(), "the other kind waits too");
+        assert!(load(&d, "s1").unwrap().kinds["s"].pending, "its mark is kept");
+        // the guard did not run at all: nothing to contradict, the held block of the other kind is shown
+        assert!(stop_all(&d, &ks, &[watcher_adv()]).is_some(), "shown once the guard no longer decides this Stop");
+    }
+
+    #[test]
+    fn a_kind_with_no_held_counted_block_is_not_muted_by_a_quiet_guard() {
+        let d = tmp("held-none");
+        let ks = [guard_kind(), watcher_kind()];
+        assert!(stop_all(&d, &ks, &[HookResult::quiet("g"), watcher_adv()]).is_some(), "a guard that never blocked holds nothing: the escalation is shown");
+    }
+
+    #[test]
+    fn a_held_counted_block_expires_after_the_configured_number_of_passes() {
+        let d = tmp("held-expire");
+        let ks = [guard_kind(), watcher_kind()];
+        assert!(stop_all(&d, &ks, &[guard_block(), watcher_adv()]).is_none());
+        let max = defaults::num("nudges.held_pass_stops");
+        assert!(max >= 1);
+        for n in 1..=max {
+            assert!(stop_all(&d, &ks, &[HookResult::quiet("g"), watcher_adv()]).is_none(), "pass {n} of {max} is still held");
+        }
+        assert!(load(&d, "s1").unwrap().kinds["g"].pending, "the last held pass still keeps the mark");
+        assert!(stop_all(&d, &ks, &[HookResult::quiet("g"), watcher_adv()]).is_none(), "the pass that ends the hold is held too");
+        assert!(!load(&d, "s1").unwrap().kinds["g"].pending, "and drops the guard's mark");
+        assert!(stop_all(&d, &ks, &[HookResult::quiet("g"), watcher_adv()]).is_some(), "then the waiting kind is shown");
+    }
+
+    #[test]
+    fn a_reason_over_the_limit_keeps_whole_texts_and_leaves_the_rest_pending() {
+        let d = tmp("fit");
+        let long = "x".repeat(defaults::num("nudges.max_chars") as usize / 2);
+        let mut a = kind(Class::Block, 0);
+        a.name = "a".into();
+        a.hooks = vec!["a".into()];
+        a.action = format!("first {long}");
+        let mut b = a.clone();
+        b.name = "b".into();
+        b.hooks = vec!["b".into()];
+        b.action = format!("second {long}");
+        let ks = [a, b];
+        let adv = |id: &str| HookResult { id: id.into(), code: Some(0), out: json!({"systemMessage": "m"}).to_string(), err: String::new() };
+        let first = stop_all(&d, &ks, &[adv("a"), adv("b")]).expect("blocked");
+        let reason = serde_json::from_str::<Value>(&first.out).unwrap()["reason"].as_str().unwrap().to_string();
+        assert!(reason.chars().count() <= defaults::num("nudges.max_chars") as usize, "within the limit");
+        assert!(
+            reason.contains("first") && reason.contains("Required next") && reason.contains("Stop stays blocked"),
+            "the whole first text, clearing step and consequence: {reason}"
+        );
+        assert!(!reason.contains("second"), "{reason}");
+        let st = load(&d, "s1").unwrap();
+        assert!(!st.kinds["a"].pending && st.kinds["b"].pending, "the text that did not fit is still owed: {st:?}");
+        let next = stop_all(&d, &ks, &[]).expect("the owed block is shown at the next Stop");
+        assert!(next.out.contains("second"), "{}", next.out);
+    }
+
+    #[test]
+    fn an_oversize_or_foreign_keyed_state_is_bounded() {
+        let d = tmp("bound");
+        std::fs::create_dir_all(&d).unwrap();
+        let k = watcher_kind();
+        let bumped = |op: &str| crate::metrics::bumped_on_this_thread("nudge_ladder_state_error", &[("op", op)]);
+        let big = format!("{{\"kinds\":{{\"pad\":{{\"headline\":\"{}\"}}}}}}", "y".repeat(defaults::num("nudges.state_max_bytes") as usize));
+        std::fs::write(state_file(&d, "s1"), big).unwrap();
+        assert!(stop_all(&d, std::slice::from_ref(&k), &[watcher_adv()]).is_none(), "an oversize state adds no ladder action");
+        assert_eq!(bumped("parse"), 1, "and is counted");
+        assert!(std::fs::metadata(state_file(&d, "s1")).unwrap().len() < defaults::num("nudges.state_max_bytes"), "and is replaced by an empty state");
+        let foreign: String = (0..50).map(|i| format!("\"zz{i}\":{{\"count\":1}}")).collect::<Vec<_>>().join(",");
+        std::fs::write(state_file(&d, "s1"), format!("{{\"kinds\":{{{foreign},\"s\":{{\"count\":1}}}}}}")).unwrap();
+        stop_all(&d, std::slice::from_ref(&k), &[watcher_adv()]);
+        let st = load(&d, "s1").unwrap();
+        assert!(st.kinds.keys().all(|n| n == "s"), "keys that are no kind of the table do not survive: {:?}", st.kinds.keys().collect::<Vec<_>>());
     }
 }

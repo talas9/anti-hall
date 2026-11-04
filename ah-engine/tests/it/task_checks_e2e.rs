@@ -744,3 +744,73 @@ fn with_the_ladder_off_nothing_is_kept_or_added() {
     assert!(open.contains("\"decision\":\"block\"") && !open.contains("Required next"), "{open}");
     assert!(!w.path("state/nudge-ladder").exists(), "the switch is off: no ladder state is written");
 }
+
+/// One `UserPromptSubmit` through the dispatcher (every Node hook of the event a no-op), with the ladder switch given.
+fn prompt_run_env(w: &World, payload: &str, env: &[(&str, &str)]) -> String {
+    let map: serde_json::Map<String, serde_json::Value> = ids_for("UserPromptSubmit", "").iter().map(|id| (id.clone(), "true".into())).collect();
+    let map_path = w.path("prompt-map.json");
+    std::fs::write(&map_path, serde_json::json!({ "UserPromptSubmit": map }).to_string()).unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["hook", "--event", "UserPromptSubmit", "--fallback-map"])
+        .arg(&map_path)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", w.path("home"))
+        .env("AH_ENGINE_DIR", w.path("state"))
+        .env("AH_ENGINE_VERSION", "task-e2e")
+        .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+        .env("CLAUDE_PLUGIN_ROOT", &w.dir)
+        .envs(env.iter().copied())
+        .current_dir(&w.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+/// One stalled-agent reminder row in the session's reminder queue (the text the tracker writes).
+fn queue_stalled_reminder(w: &World, id: &str) {
+    let dir = w.path("home/.anti-hall/agent-tracker/reminders");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "agent tracker: subagent w1 is STALLED: no observable change (transcript, tool calls, commits, files) for 16m (running 40m). Last progress: \"a\". Message it, stop it, or re-dispatch it with a narrower brief.";
+    let row = serde_json::json!({"id": id, "signal": "stalled", "agent": "w1", "text": text});
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("s1.ndjson")).unwrap();
+    writeln!(f, "{row}").unwrap();
+}
+
+#[test]
+fn a_held_stall_escalation_adds_no_block_to_a_stop_a_capped_task_guard_let_pass() {
+    let on = [("ANTIHALL_NUDGES", "1")];
+    let w = World::new("ladder-capped-other-kind");
+    let rows = [("T-3 [Owner/blocked] wait", "pending")];
+    std::fs::write(w.path("t.jsonl"), task_list(&rows)).unwrap();
+    let prompt = serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl"), "prompt": "go"}).to_string();
+    queue_stalled_reminder(&w, "r0");
+    let first = prompt_run_env(&w, &prompt, &on);
+    assert!(first.contains("anti-hall agent tracker:"), "the tracker's reminder reaches the prompt (the digest cut keeps its header): {first}");
+    let open = enforce_stop_env(&w, &rows, &on);
+    assert!(open.contains("\"decision\":\"block\"") && !open.contains("Required next"), "task-guard's own block, no stacked ladder block: {open}");
+    queue_stalled_reminder(&w, "r1");
+    prompt_run_env(&w, &prompt, &on);
+    let state = std::fs::read_to_string(w.path("state/nudge-ladder/s1.json")).expect("the ladder kept its state");
+    assert!(state.contains("stalled_agents") && state.contains("\"pending\":true"), "the stall escalation is due and held: {state}");
+    for n in 1..=2 {
+        let o = enforce_stop_env(&w, &rows, &on);
+        assert!(o.contains("P0-P3") && !o.contains("Required next"), "block {n}: {o}");
+    }
+    // task-guard's cap is reached and it lets the Stop pass: a held block of ANOTHER kind must not turn that into a block
+    let capped = enforce_stop_env(&w, &rows, &on);
+    assert!(!capped.contains("block") && !capped.contains("Required next"), "the cap is reached: the Stop passes: {capped}");
+    let off = World::new("ladder-capped-other-kind-off");
+    queue_stalled_reminder(&off, "r0");
+    std::fs::write(off.path("t.jsonl"), task_list(&rows)).unwrap();
+    assert!(
+        !prompt_run_env(&off, &prompt.replace(&w.path("proj").to_string_lossy().to_string(), &off.path("proj").to_string_lossy()), &[])
+            .contains("Required next")
+    );
+    assert!(!off.path("state/nudge-ladder").exists(), "the switch is off: no ladder state is written");
+}
