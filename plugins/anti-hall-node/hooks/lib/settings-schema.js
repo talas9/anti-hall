@@ -275,6 +275,17 @@ const SECTIONS = [
     ],
   },
   {
+    key: 'nudges',
+    label: 'Nudge ladder',
+    description: 'Escalation of advisories that keep firing with no change: the ladder turns them into a Stop block that names the required next action.',
+    settings: [
+      { key: 'enabled', type: 'boolean', default: false, env: 'ANTIHALL_NUDGES', description: 'Nudge escalation ladder (GH #516): an advisory that keeps firing with no change becomes a Stop block that names the required next action, and a Stop block also carries the other hooks\' advisories in its reason. Off = neither happens.' },
+      { key: 'stall', type: 'boolean', default: false, env: 'ANTIHALL_NUDGES_STALL', description: 'Stalled-agent signal (GH #518): a running agent whose transcript, tool calls, commits and files did not change for a while is reported to the ladder. Needs nudges.enabled for the Stop block.' },
+      { key: 'idleWake', type: 'boolean', default: false, env: 'ANTIHALL_NUDGES_IDLE_WAKE', description: 'Idle-wake signals (GH #515): an idle session with open unassigned tasks and no agent, or a teammate that claims running work with nothing running, is woken and reported to the ladder.' },
+      { key: 'parallel', type: 'boolean', default: false, env: 'ANTIHALL_NUDGES_PARALLEL', description: 'Parallelism signal (GH #517): an idle main session with fewer agents than the cap and open items nobody works on is told to dispatch them in parallel.' },
+    ],
+  },
+  {
     key: 'versionAlerts',
     label: 'Version Alerts',
     description: 'Update-available nudges for anti-hall, Claude CLI, and DevSwarm.',

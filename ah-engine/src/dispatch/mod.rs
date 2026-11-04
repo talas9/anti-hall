@@ -978,7 +978,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     if !guard {
         spill::order_by_priority(&mut results); // #311: blocks and decisions are never reordered below advisories; context is highest priority first
     }
-    match combine::combine_for(&results, keep_advisories) {
+    let fold = keep_advisories && ladder::enabled(&req_env); // #516: a Stop block also carries the other hooks' advisories, only with the ladder on
+    match combine::combine_with(&results, keep_advisories, fold) {
         combine::Combined::Answer(mut o) => {
             o.err = format!("{}{}", pre_err, o.err);
             // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper

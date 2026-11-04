@@ -242,18 +242,18 @@ value = "agent tracker: {kind} {agent} has been idle for {idle} with its task st
 
 [agent_tracker.stall_sw]
 doc = "Stall nudge on/off (#518)."
-value = { section = "nudges", key = "stall", env = "ANTIHALL_NUDGES_STALL", aliases = [], option = "", default = true }
+value = { section = "nudges", key = "stall", env = "ANTIHALL_NUDGES_STALL", aliases = [], option = "", default = false }
 
 [agent_tracker.idle_wake_sw]
 doc = "Idle wake on/off (#515)."
-value = { section = "nudges", key = "idleWake", env = "ANTIHALL_NUDGES_IDLE_WAKE", aliases = [], option = "", default = true }
+value = { section = "nudges", key = "idleWake", env = "ANTIHALL_NUDGES_IDLE_WAKE", aliases = [], option = "", default = false }
 
 [agent_tracker.parallel_sw]
 doc = "Parallel nudge on/off (#517)."
-value = { section = "nudges", key = "parallel", env = "ANTIHALL_NUDGES_PARALLEL", aliases = [], option = "", default = true }
+value = { section = "nudges", key = "parallel", env = "ANTIHALL_NUDGES_PARALLEL", aliases = [], option = "", default = false }
 
 [msg.agent_stalled]
-doc = "Reminder of the stalled signal (GH #518): a running agent with no observable change, or the same progress line and no outcome, for nudges.stall. Placeholders: {kind}, {agent}, {what} (nudges.stall_words), {idle}, {age} (since first seen), {lines} (its last distinct progress lines)."
+doc = "Reminder of the stalled signal (GH #518): a running agent with no observable change, or the same progress line and no outcome, for nudges.stall_limits. Placeholders: {kind}, {agent}, {what} (nudges.stall_words), {idle}, {age} (since first seen), {lines} (its last distinct progress lines)."
 value = "agent tracker: {kind} {agent} is STALLED: {what} for {idle} (running {age}). Last progress: {lines}. Message it, stop it, or re-dispatch it with a narrower brief."
 
 [msg.agent_idle_no_agents]

@@ -27,8 +27,17 @@ fn env(h: &Path, now: u64) -> Env {
         now_ms: now,
         plugin_root: None,
         use_cli: false,
-        // These are plain reminder routing cases; the nudge loop has its own tests.
-        settings: Settings { home: h.to_string_lossy().to_string(), env: HashMap::from([("ANTIHALL_AGENT_NUDGE".into(), "false".into())]) },
+        // These are plain reminder routing cases; the nudge loop has its own tests. The ladder's signal switches (stall, idle wake,
+        // parallel) are off by default (GH #518 #515 #517): the signal tests turn them on here, and the off case drops one.
+        settings: Settings {
+            home: h.to_string_lossy().to_string(),
+            env: HashMap::from([
+                ("ANTIHALL_AGENT_NUDGE".into(), "false".into()),
+                ("ANTIHALL_NUDGES_STALL".into(), "true".into()),
+                ("ANTIHALL_NUDGES_IDLE_WAKE".into(), "true".into()),
+                ("ANTIHALL_NUDGES_PARALLEL".into(), "true".into()),
+            ]),
+        },
         act: true,
     }
 }
@@ -3271,11 +3280,13 @@ fn a_subagent_that_keeps_working_is_never_stalled_and_the_off_switch_holds_it() 
     let h2 = home("stall-off");
     main_session(&h2, "parent", n, 1, "waiting");
     running_sub(&h2, "parent", n, 2);
-    std::fs::create_dir_all(h2.join(".anti-hall")).unwrap();
-    std::fs::write(h2.join(".anti-hall/settings.json"), r#"{"nudges":{"stall":false}}"#).unwrap();
     let mut st2 = State::default();
-    ticks(&h2, &mut st2, &[n, n + 16 * MIN, n + 17 * MIN]);
-    assert!(!agent(&st2, "w1").flags.contains_key("stalled"), "nudges.stall off");
+    for at in [n, n + 16 * MIN, n + 17 * MIN] {
+        let mut off = env(&h2, at);
+        off.settings.env.remove("ANTIHALL_NUDGES_STALL"); // the shipped default: off
+        tick(&off, &mut st2);
+    }
+    assert!(!agent(&st2, "w1").flags.contains_key("stalled"), "nudges.stall is off by default");
 }
 
 #[test]

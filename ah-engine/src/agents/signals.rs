@@ -403,7 +403,7 @@ fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
     if a.stall_since == 0 || hung(a, now).is_some() {
         return None;
     }
-    let c = defaults::raw("nudges.stall");
+    let c = defaults::raw("nudges.stall_limits");
     let quiet = now.saturating_sub(a.stall_since);
     let rep = if a.said_since > 0 && a.progress == a.said_progress { now.saturating_sub(a.said_since) } else { 0 };
     let (what, idle) = if num(c, "quiet_ms") > 0 && quiet >= num(c, "quiet_ms") {
@@ -520,7 +520,7 @@ fn false_claim(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
 
 /// The bullet lines that follow a line holding a gap phrase in `reply` (at most `gap_lines_max`).
 fn gap_items(reply: &str) -> Vec<String> {
-    let c = defaults::raw("nudges.parallel");
+    let c = defaults::raw("nudges.parallel_limits");
     let phrases = defaults::list("nudges.parallel_gap_phrases");
     let marks = c.get("number_marks").map(V::strings).unwrap_or_default();
     let bullet = |t: &str| -> Option<String> {
@@ -552,7 +552,7 @@ fn gap_items(reply: &str) -> Vec<String> {
 /// GH #517: an idle main session with fewer running agents than the cap and open items: unassigned tasks while an agent runs
 /// (none running is idle_no_agents), or gap lines of its last reply no task subject covers. Text: running, cap and items, tab-joined.
 fn underparallel(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
-    let c = defaults::raw("nudges.parallel");
+    let c = defaults::raw("nudges.parallel_limits");
     if !env.switch("agent_tracker.parallel_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() {
         return None;
     }
@@ -701,7 +701,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
         "no_work" => defaults::render("msg.agent_no_work", &[("agent", &who), ("kind", &kind), ("tools", &f.evidence)]),
         "stalled" => {
-            let c = defaults::raw("nudges.stall");
+            let c = defaults::raw("nudges.stall_limits");
             let shown: Vec<String> =
                 a.said.iter().rev().take(num(c, "lines_shown") as usize).rev().map(|l| c.str_field("quote").replace("{line}", l)).collect();
             let lines = if shown.is_empty() { c.str_field("none").to_string() } else { shown.join(c.str_field("joiner")) };
@@ -721,7 +721,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
             defaults::render("msg.agent_idle_no_agents", &[("n", &f.evidence), ("idle", &age(f.since.saturating_sub(a.last_output_ms))), ("tasks", &f.text)])
         }
         "false_claim" => {
-            let line = defaults::raw("nudges.stall").str_field("quote").replace("{line}", &f.text);
+            let line = defaults::raw("nudges.stall_limits").str_field("quote").replace("{line}", &f.text);
             defaults::render("msg.agent_false_claim", &[("agent", &who), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("line", &line)])
         }
         "underparallel" => {

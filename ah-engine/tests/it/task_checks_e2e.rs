@@ -705,3 +705,42 @@ fn idle_rule_does_not_treat_actionable_text_as_clock_waiting_or_blocked() {
         assert!(idle_stop(&format!("ir-tw-{i}"), &idle_transcript(&[t], &[]), true, None).is_none(), "{desc:?} is a stated wait");
     }
 }
+
+// ---- the nudge ladder (nudges.enabled, ANTIHALL_NUDGES) next to a task-guard whose own block cap lets the Stop pass ----
+
+/// [`enforce_stop`] with extra environment for the one `ah-engine hook --event Stop` call.
+fn enforce_stop_env(w: &World, rows: &[(&str, &str)], env: &[(&str, &str)]) -> String {
+    std::fs::write(w.path("t.jsonl"), task_list(rows)).unwrap();
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let (code, out, err) = stop_run_env(w, "task-guard", &payload, env);
+    assert_eq!(code, 0, "the engine answers; the Node hook must not run: {err}");
+    out
+}
+
+#[test]
+fn the_ladder_adds_no_block_to_a_stop_a_capped_task_guard_let_pass() {
+    let on = [("ANTIHALL_NUDGES", "1")];
+    let w = World::new("ladder-capped");
+    let rows = [("T-3 [Owner/blocked] wait", "pending")];
+    // the open-task block counts as a fire of idle_open_tasks (P0): its ladder block is due, but this Stop is already blocked
+    let open = enforce_stop_env(&w, &rows, &on);
+    assert!(open.contains("\"decision\":\"block\"") && !open.contains("Required next"), "task-guard's own block, no stacked ladder block: {open}");
+    let state = std::fs::read_to_string(w.path("state/nudge-ladder/s1.json")).expect("the ladder kept its state");
+    assert!(state.contains("idle_open_tasks") && state.contains("\"pending\":true"), "the ladder block is held: {state}");
+    for n in 1..=2 {
+        let o = enforce_stop_env(&w, &rows, &on);
+        assert!(o.contains("P0-P3") && !o.contains("Required next"), "block {n}: {o}");
+    }
+    // task-guard's cap is reached and it lets the Stop pass: the held ladder block must not turn that into a block
+    let capped = enforce_stop_env(&w, &rows, &on);
+    assert!(!capped.contains("block") && !capped.contains("Required next"), "the cap is reached: the Stop passes: {capped}");
+}
+
+#[test]
+fn with_the_ladder_off_nothing_is_kept_or_added() {
+    let w = World::new("ladder-off");
+    let rows = [("T-3 [Owner/blocked] wait", "pending")];
+    let open = enforce_stop_env(&w, &rows, &[]);
+    assert!(open.contains("\"decision\":\"block\"") && !open.contains("Required next"), "{open}");
+    assert!(!w.path("state/nudge-ladder").exists(), "the switch is off: no ladder state is written");
+}

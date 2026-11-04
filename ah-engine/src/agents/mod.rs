@@ -468,7 +468,7 @@ pub struct Agent {
     pub waste: waste::Mark,
     /// Signals up now.
     pub flags: BTreeMap<String, Flag>,
-    /// Its last distinct progress lines (the first line of each reply text), newest last (GH #518, `nudges.stall.lines_kept`).
+    /// Its last distinct progress lines (the first line of each reply text), newest last (GH #518, `nudges.stall_limits.lines_kept`).
     #[serde(default)]
     pub said: Vec<String>,
     /// When the newest of `said` first appeared, and its progress units then.
@@ -477,7 +477,7 @@ pub struct Agent {
     /// Progress units when the newest line of `said` first appeared.
     #[serde(default)]
     pub said_progress: u64,
-    /// Its last reply text, cut at `nudges.parallel.reply_chars` (GH #517: the gap lines).
+    /// Its last reply text, cut at `nudges.parallel_limits.reply_chars` (GH #517: the gap lines).
     #[serde(default)]
     pub last_reply: String,
     /// The observable stall fingerprint of the last sample (transcript offset, tool calls, commits, changes, progress, edits, line).

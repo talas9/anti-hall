@@ -236,12 +236,16 @@ pub fn count(st: &mut State, kinds: &[Kind], seen: &[(String, Seen)]) -> Vec<Ste
 }
 
 /// At a Stop: the block reason of every pending kind (when `may_block`), and the turn boundary. Returns (reason, steps).
-pub fn at_stop(st: &mut State, kinds: &[Kind], may_block: bool) -> (Option<String>, Vec<Step>) {
+///
+/// `passed` names the kinds whose counted-block hooks (`count_blocks`) ran at this very Stop and let it pass: that guard saw the
+/// state with its own cap and clearing rules and decided the Stop may end, so the ladder adds no block for those kinds (a block
+/// there would contradict the guard, and loop once the guard's cap is reached). Their pending mark is kept.
+pub fn at_stop(st: &mut State, kinds: &[Kind], may_block: bool, passed: &[String]) -> (Option<String>, Vec<Step>) {
     let mut texts: Vec<String> = Vec::new();
     let mut steps = Vec::new();
     for k in kinds {
         let Some(t) = st.kinds.get_mut(&k.name) else { continue };
-        if may_block && t.pending && matches!(k.class, Class::Block | Class::Escalate) {
+        if may_block && t.pending && !passed.contains(&k.name) && matches!(k.class, Class::Block | Class::Escalate) {
             t.pending = false;
             t.shown += 1;
             let detail = if t.headline.is_empty() { String::new() } else { defaults::render("nudges.msg_detail", &[("text", &t.headline)]) };
@@ -269,9 +273,20 @@ fn state_file(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{key}{}", defaults::text("nudges.state_ext")))
 }
 
-/// The session's state; unreadable or corrupt is a fresh state (fail open).
-pub fn load(dir: &Path, key: &str) -> State {
-    std::fs::read_to_string(state_file(dir, key)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+/// The session's state: an absent file is a fresh state; a file that cannot be read or is not valid state is the `op` that failed
+/// (`nudges.state_error_ops`: read, parse).
+pub fn load(dir: &Path, key: &str) -> Result<State, &'static str> {
+    match std::fs::read_to_string(state_file(dir, key)) {
+        Ok(t) => serde_json::from_str(&t).map_err(|_| "parse"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
+        Err(_) => Err("read"),
+    }
+}
+
+/// Count one ladder state failure (`nudge_ladder_state_error`, label `op`); the call then takes no ladder action.
+fn state_error(op: &str) {
+    let ops = defaults::raw("nudges.state_error_ops");
+    crate::metrics::bump("nudge_ladder_state_error", &[("op", ops.str_field(op))]);
 }
 
 fn save(dir: &Path, key: &str, st: &State) -> bool {
@@ -302,7 +317,17 @@ fn emit(steps: &[Step]) {
 /// One whole ladder pass over `results` with the state under `dir`: the block to add, if any.
 pub fn run_in(dir: &Path, event: &str, p: &Value, kinds: &[Kind], results: &[HookResult]) -> Option<HookResult> {
     let key = session_key(p)?;
-    let mut st = load(dir, &key);
+    let mut st = match load(dir, &key) {
+        Ok(st) => st,
+        Err(op) => {
+            // no ladder action on this call; a file that is not valid state is replaced by an empty one so the next call recovers
+            state_error(op);
+            if op == "parse" && !save(dir, &key, &State::default()) {
+                state_error("write");
+            }
+            return None;
+        }
+    };
     let seen: Vec<(String, Seen)> = kinds.iter().map(|k| (k.name.clone(), observe(k, results))).collect();
     let mut steps = count(&mut st, kinds, &seen);
     let mut reason = None;
@@ -310,16 +335,25 @@ pub fn run_in(dir: &Path, event: &str, p: &Value, kinds: &[Kind], results: &[Hoo
         let active = p.get("stop_hook_active").and_then(Value::as_bool) == Some(true);
         // a Stop another hook already blocks carries that block; the ladder's waits for the next Stop (no stacked blocks)
         let blocked = results.iter().any(combine::blocks);
-        let (r, s) = at_stop(&mut st, kinds, !active && !blocked);
+        // a counted-block guard that ran at this Stop and let it pass (its own cap, or the condition cleared) is not contradicted
+        let passed: Vec<String> =
+            seen.iter().filter(|(n, s)| *s == Seen::Quiet && kinds.iter().any(|k| k.name == *n && k.count_blocks)).map(|(n, _)| n.clone()).collect();
+        let (r, s) = at_stop(&mut st, kinds, !active && !blocked, &passed);
         reason = r;
         steps.extend(s);
     }
     if !save(dir, &key, &st) {
+        state_error("write");
         return None; // a block whose shown mark cannot be kept would repeat: fail open
     }
     emit(&steps);
     let out = serde_json::json!({ "decision": "block", "reason": reason? }).to_string();
     Some(HookResult { id: defaults::text("nudges.hook_id").to_string(), code: Some(0), out, err: String::new() })
+}
+
+/// Whether the ladder is on (`nudges.enabled`, default off).
+pub fn enabled(env: &RequestEnv) -> bool {
+    get_bool(&Settings::from_env(env), defaults::raw("nudges.sw_enabled"))
 }
 
 /// The ladder for one dispatched call: observes `results` (before the token cuts) and returns the block to append, if any.
@@ -328,10 +362,10 @@ pub fn apply(event: &str, p: &Value, env: &RequestEnv, results: &[HookResult]) -
     if !defaults::list("nudges.events").contains(&event) {
         return None;
     }
-    let st = Settings::from_env(env);
-    if !get_bool(&st, defaults::raw("nudges.sw_enabled")) {
+    if !enabled(env) {
         return None;
     }
+    let st = Settings::from_env(env);
     let overrides = read_object(&st, defaults::text("guardkit.settings_file"))
         .and_then(|o| o.get(defaults::text("nudges.section")).and_then(|s| s.get(defaults::text("nudges.override_key"))).and_then(Value::as_object).cloned())
         .unwrap_or_default();
@@ -397,7 +431,7 @@ mod tests {
         for _ in 0..5 {
             assert!(run_in(&d, "PostToolUse", &json!({"session_id": "s1"}), std::slice::from_ref(&k), &adv("a")).is_none());
         }
-        assert_eq!(load(&d, "s1").kinds["k"].count, 1);
+        assert_eq!(load(&d, "s1").unwrap().kinds["k"].count, 1);
     }
 
     #[test]
@@ -406,7 +440,7 @@ mod tests {
         let k = kind(Class::Escalate, 2);
         stop(&d, &k, &adv("a"));
         stop(&d, &k, &adv("a"));
-        let mut st = load(&d, "s1");
+        let mut st = load(&d, "s1").unwrap();
         let steps = count(&mut st, std::slice::from_ref(&k), &[("k".into(), Seen::Quiet)]);
         assert!(steps.is_empty(), "one quiet run is not enough");
         let steps = count(&mut st, std::slice::from_ref(&k), &[("k".into(), Seen::Quiet)]);
@@ -433,7 +467,7 @@ mod tests {
         let k = kind(Class::Block, 2);
         let p = json!({"session_id": "s1", "stop_hook_active": true});
         assert!(run_in(&d, "Stop", &p, std::slice::from_ref(&k), &adv("a")).is_none());
-        assert!(load(&d, "s1").kinds["k"].pending, "held for the next Stop");
+        assert!(load(&d, "s1").unwrap().kinds["k"].pending, "held for the next Stop");
     }
 
     #[test]
@@ -442,11 +476,30 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(state_file(&d, "s1"), "{not json").unwrap();
         let k = kind(Class::Escalate, 2);
-        assert!(stop(&d, &k, &adv("a")).is_none(), "a corrupt file is a fresh state, not a block");
+        let bumped = |op: &str| crate::metrics::bumped_on_this_thread("nudge_ladder_state_error", &[("op", op)]);
+        assert!(stop(&d, &k, &adv("a")).is_none(), "a corrupt file adds no ladder action");
+        assert_eq!(bumped("parse"), 1, "and is counted");
+        assert!(load(&d, "s1").is_ok_and(|st| st.kinds.is_empty()), "the corrupt file is replaced by an empty state so the next call recovers");
+        let p0 = kind(Class::Block, 2);
+        assert!(stop(&d, &p0, &adv("a")).is_some(), "a P0 kind blocks once the state is readable again");
         let file = tmp("file");
         std::fs::write(&file, "x").unwrap();
-        let p0 = kind(Class::Block, 2);
-        assert!(stop(&file.join("sub"), &p0, &adv("a")).is_none(), "state that cannot be written adds nothing");
+        assert!(stop(&file.join("sub"), &p0, &adv("a")).is_none(), "state under a path that is no directory adds nothing");
+        assert_eq!(bumped("read"), 1, "and is counted");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ro = tmp("readonly");
+            std::fs::create_dir_all(&ro).unwrap();
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+            let blocked = stop(&ro, &p0, &adv("a"));
+            let writable = std::fs::write(ro.join("probe"), "x").is_ok(); // a root user ignores the mode: nothing to prove then
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+            if !writable {
+                assert!(blocked.is_none(), "state that cannot be written adds nothing");
+                assert_eq!(bumped("write"), 1, "and is counted");
+            }
+        }
         assert!(run_in(&d, "Stop", &json!({}), std::slice::from_ref(&p0), &adv("a")).is_none(), "no session, no ladder");
     }
 
@@ -484,7 +537,21 @@ mod tests {
         k.count_blocks = true;
         let b = vec![HookResult { id: "h".into(), code: Some(0), out: json!({"decision": "block", "reason": "r"}).to_string(), err: String::new() }];
         assert!(stop(&d, &k, &b).is_none(), "no second block on a Stop that is already blocked");
-        assert!(load(&d, "s1").kinds["k"].pending, "held");
+        assert!(load(&d, "s1").unwrap().kinds["k"].pending, "held");
         assert!(stop(&d, &k, &[]).is_some(), "shown at the next Stop");
+    }
+
+    #[test]
+    fn a_counted_block_guard_that_let_the_stop_pass_gets_no_ladder_block() {
+        let d = tmp("capped");
+        let mut k = kind(Class::Block, 0);
+        k.count_blocks = true;
+        let b = vec![HookResult { id: "h".into(), code: Some(0), out: json!({"decision": "block", "reason": "r"}).to_string(), err: String::new() }];
+        assert!(stop(&d, &k, &b).is_none(), "the guard's own block carries the Stop");
+        assert!(load(&d, "s1").unwrap().kinds["k"].pending, "held");
+        // the guard ran at the next Stop and let it pass (its cap): the ladder does not contradict it
+        assert!(stop(&d, &k, &quiet()).is_none(), "a capped guard's pass is not blocked by the ladder");
+        // the guard did not run at all (kind absent): the held block is shown
+        assert!(stop(&d, &k, &[]).is_some(), "no guard decision to contradict");
     }
 }

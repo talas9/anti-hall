@@ -340,9 +340,29 @@ fn set(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) {
     }
 }
 
-/// The advisories of the hooks that did not block, as one reason part the model reads (`dispatch.msg_stop_advisories`), cut to
-/// `dispatch.stop_advisory_chars`; `None` when they say nothing.
+/// `s` cut to at most `max` characters at a word boundary (the last whitespace within the limit; a single word longer than the
+/// limit is cut hard), without the trailing whitespace.
+fn cut_at_word(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.trim_end().to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    if s.chars().nth(max).is_some_and(char::is_whitespace) {
+        return head.trim_end().to_string(); // the cut falls between two words
+    }
+    match head.rfind(char::is_whitespace).and_then(|i| head.get(..i)) {
+        Some(words) if !words.trim().is_empty() => words.trim_end().to_string(),
+        _ => head,
+    }
+}
+
+/// The advisories of the hooks that did not block, as one reason part the model reads (`dispatch.msg_stop_advisories`), cut at a
+/// word to `dispatch.stop_advisory_chars`; `None` when they say nothing or the limit is 0 (off: not even the header is added).
 fn folded(advisories: &[&HookResult]) -> Option<String> {
+    let max = defaults::num("dispatch.stop_advisory_chars") as usize;
+    if max == 0 {
+        return None;
+    }
     let mut parts: Vec<String> = Vec::new();
     for r in advisories {
         let Some(o) = parse_object(&r.out) else { continue };
@@ -353,12 +373,8 @@ fn folded(advisories: &[&HookResult]) -> Option<String> {
             parts.push(c.to_string());
         }
     }
-    if parts.is_empty() {
-        return None;
-    }
-    let max = defaults::num("dispatch.stop_advisory_chars") as usize;
-    let text: String = parts.join(defaults::text("dispatch.message_joiner")).chars().take(max).collect();
-    Some(defaults::render("dispatch.msg_stop_advisories", &[("text", &text)]))
+    let text = cut_at_word(&parts.join(defaults::text("dispatch.message_joiner")), max);
+    (!text.is_empty()).then(|| defaults::render("dispatch.msg_stop_advisories", &[("text", &text)]))
 }
 
 /// The answer for several blocking results (rule 1 of the module docs). The host runs the hooks separately and gives the
@@ -377,14 +393,15 @@ fn folded(advisories: &[&HookResult]) -> Option<String> {
 /// give the model such text on an event whose plain stdout is not context (Stop, PreToolUse, ...), so it is kept where it says
 /// nothing to the model either: after the blocks' plain stdout on an exit 2 without JSON, else on stderr after the rest, as
 /// [`sequential`] moves plain text next to JSON. It is only added when there is some: a lone block stays byte for byte.
-fn blocked(blockers: &[&HookResult], advisories: &[&HookResult], notes: &str) -> Combined {
+fn blocked(blockers: &[&HookResult], advisories: &[&HookResult], notes: &str, fold: bool) -> Combined {
     if let ([one], [], "") = (blockers, advisories, notes) {
         return verbatim(one);
     }
     let mut reasons: Vec<String> = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect();
     // #516: on a Stop the model reads only the block reason (exit 2: stderr; exit 0: the reason field), never a systemMessage or a
-    // context, so the advisories that ride along are also folded into the reason, bounded by dispatch.stop_advisory_chars
-    if let Some(f) = folded(advisories) {
+    // context, so with the ladder on (`fold`) the advisories that ride along are also folded into the reason, bounded by
+    // dispatch.stop_advisory_chars. With the ladder off the reason is the blocks' own, as before.
+    if let Some(f) = fold.then(|| folded(advisories)).flatten() {
         reasons.push(f);
     }
     let joined = reasons.join(defaults::text("dispatch.reason_joiner"));
@@ -455,6 +472,12 @@ pub fn combine(results: &[HookResult]) -> Combined {
 /// [`combine`], with `keep_advisories` for an event whose hooks each give their own answer to the host and whose block must not
 /// hide the others' advisories (Stop and SubagentStop, `dispatch.stop_events`).
 pub fn combine_for(results: &[HookResult], keep_advisories: bool) -> Combined {
+    combine_with(results, keep_advisories, false)
+}
+
+/// [`combine_for`], with `fold` (the nudge ladder is on, `nudges.enabled`) to also carry the advisories that ride along with a
+/// block into the block reason, the only text the model reads on a Stop (#516).
+pub fn combine_with(results: &[HookResult], keep_advisories: bool, fold: bool) -> Combined {
     let blockers: Vec<&HookResult> = results.iter().filter(|r| blocks(r)).collect();
     if !blockers.is_empty() {
         let notes: String = results
@@ -464,7 +487,7 @@ pub fn combine_for(results: &[HookResult], keep_advisories: bool) -> Combined {
             .collect();
         let advisories: Vec<&HookResult> =
             results.iter().filter(|r| keep_advisories && r.code == Some(0) && !blocks(r) && parse_object(&r.out).is_some()).collect();
-        return blocked(&blockers, &advisories, &notes);
+        return blocked(&blockers, &advisories, &notes, fold);
     }
     let active: Vec<&HookResult> = results.iter().filter(|r| r.active()).collect();
     let answer = match active.len() {
@@ -591,11 +614,26 @@ mod tests {
     fn a_stop_block_carries_the_other_hooks_advisories_in_its_reason() {
         let block = r("a", 2, "", "stop: open tasks");
         let adv = r("b", 0, r#"{"systemMessage":"finish agent x"}"#, "");
-        let Combined::Answer(o) = combine_for(&[block.clone(), adv], true) else { panic!("an answer") };
+        let Combined::Answer(o) = combine_with(&[block.clone(), adv.clone()], true, true) else { panic!("an answer") };
         assert_eq!(o.code, 2);
         assert!(o.err.contains("stop: open tasks") && o.err.contains("finish agent x"), "{}", o.err);
-        let Combined::Answer(lone) = combine_for(&[block], true) else { panic!("an answer") };
+        let Combined::Answer(lone) = combine_with(std::slice::from_ref(&block), true, true) else { panic!("an answer") };
         assert_eq!(lone.err, "stop: open tasks", "a lone block stays byte for byte");
+        // the ladder off (nudges.enabled): the reason is the block's own, as before the fold existed
+        let Combined::Answer(off) = combine_for(&[block, adv], true) else { panic!("an answer") };
+        assert_eq!(off.err, "stop: open tasks\n", "no fold with the ladder off: {}", off.err);
+    }
+
+    #[test]
+    fn the_folded_advisories_are_cut_at_a_word_and_zero_chars_adds_nothing() {
+        assert_eq!(cut_at_word("alpha beta gamma", 16), "alpha beta gamma");
+        assert_eq!(cut_at_word("alpha beta gamma", 12), "alpha beta", "cut back to the last whole word");
+        assert_eq!(cut_at_word("alpha beta gamma", 10), "alpha beta", "the limit falls right after a word");
+        assert_eq!(cut_at_word("alphabetagamma", 5), "alpha", "one word longer than the limit is cut hard");
+        let adv = r("b", 0, r#"{"systemMessage":"   "}"#, "");
+        assert_eq!(folded(&[&adv]), None, "advisories that say nothing add no header");
+        let said = r("b", 0, r#"{"systemMessage":"finish agent x"}"#, "");
+        assert!(folded(&[&said]).is_some_and(|f| f.contains("finish agent x")));
     }
 
     fn r(id: &str, code: i32, out: &str, err: &str) -> HookResult {
@@ -693,8 +731,11 @@ mod tests {
     fn a_stop_advisory_rides_along_with_a_block_and_a_note_never_reaches_the_reason() {
         let block = "{\"decision\":\"block\",\"reason\":\"B\"}\n";
         let adv = "{\"systemMessage\":\"adv\"}\n";
-        // exit 0 JSON block: the advisory's message is kept next to the block, and (#516) folded into the reason the model reads
+        // exit 0 JSON block: the advisory's message is kept next to the block
         let o = ans(combine_for(&[r("a", 0, adv, ""), r("b", 0, block, "")], true));
+        assert_eq!(o, Outcome { code: 0, out: "{\"decision\":\"block\",\"reason\":\"B\",\"systemMessage\":\"adv\"}\n".into(), err: String::new() });
+        // with the ladder on (#516) it is also folded into the reason the model reads
+        let o = ans(combine_with(&[r("a", 0, adv, ""), r("b", 0, block, "")], true, true));
         let folded = defaults::render("dispatch.msg_stop_advisories", &[("text", &"adv")]).replace('\n', "\\n");
         let want = format!("{{\"decision\":\"block\",\"reason\":\"B\\n\\n{folded}\",\"systemMessage\":\"adv\"}}\n");
         assert_eq!(o, Outcome { code: 0, out: want, err: String::new() });

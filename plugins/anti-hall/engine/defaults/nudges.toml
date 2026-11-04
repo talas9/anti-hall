@@ -10,7 +10,7 @@
 
 [nudges.sw_enabled]
 doc = "Nudge ladder on/off."
-value = { section = "nudges", key = "enabled", env = "ANTIHALL_NUDGES", aliases = [], option = "", default = true }
+value = { section = "nudges", key = "enabled", env = "ANTIHALL_NUDGES", aliases = [], option = "", default = false }
 
 [nudges.override_key]
 doc = "The key in the nudges section of settings.json that holds the per-kind class override: an object of kind name to class word (advisory, escalate, block, off), e.g. {\"nudges\": {\"kinds\": {\"model_routing\": \"escalate\"}}}."
@@ -115,7 +115,7 @@ value = { name = "nudge_signal", label = "step", sampled = "sampled", stalled = 
 doc = "Tracker-side nudge signal steps, by step."
 value = { kind = "counter", unit = "steps", labels = ["step"] }
 
-[nudges.stall]
+[nudges.stall_limits]
 doc = "Stalled-agent detection: a running agent (no call in flight, not hung) whose transcript, tool calls, commits, files and progress did not change for quiet_ms, or whose progress line repeated with no outcome for repeat_ms, is STALLED. lines_kept: distinct progress lines kept per agent; lines_shown: how many the reminder names; line_chars: most characters of one line."
 value = { quiet_ms = 900000, repeat_ms = 2700000, lines_kept = 4, lines_shown = 2, line_chars = 120, joiner = " / ", quote = "\"{line}\"", none = "none" }
 
@@ -131,10 +131,18 @@ value = { idle_ms = 600000, claim_ms = 300000, tasks_dir = ".claude/tasks", task
 doc = "Phrases (case-insensitive) that make a teammate's last line a claim of running or background work."
 value = ["running in the background", "still running", "in the background", "is running now", "are running now", "kicked off", "waiting for the build", "waiting on the gate", "waiting for the tests"]
 
-[nudges.parallel]
+[nudges.parallel_limits]
 doc = "Parallelism check: a main session idle for idle_ms, with fewer running agents than the cap (spawn_ceiling.max_concurrent_setting; 0 = no cap) and open items: unassigned unblocked tasks while an agent runs, or gap lines of its last reply (bullet lines after a line holding a gap phrase, at most gap_lines_max) that no task subject covers. reply_chars: most characters of the last reply kept; items_shown: most items named."
 value = { idle_ms = 120000, reply_chars = 4000, gap_lines_max = 8, items_shown = 4, item_chars = 80, joiner = "; ", no_cap = "none", bullet_chars = "-*", number_marks = [". ", ") "] }
 
 [nudges.parallel_gap_phrases]
 doc = "Phrases (case-insensitive) of a reply line that opens a list of open gaps or next items."
 value = ["known gaps", "still open", "next items", "next steps", "remaining work", "not done", "left over"]
+
+[nudges.state_error_ops]
+doc = "The `op` label values of nudge_ladder_state_error: read (the state file exists but cannot be read), parse (it is not valid state), write (the state or its directory cannot be written)."
+value = { read = "read", parse = "parse", write = "write" }
+
+[metric.nudge_ladder_state_error]
+doc = "Ladder state failures (the ladder takes no action on that call), by op: read, parse or write."
+value = { kind = "counter", unit = "failures", labels = ["op"] }
