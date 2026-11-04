@@ -154,8 +154,8 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `tasklist_guard.stalled` (skill): ... tasks are marked in progress with no active agent. Why: They are stalled, not running in parallel. Instead: assign an agent to each stalled task.
 - `tasklist_guard.progress` (skill): ... files changed but progress is missing or stale. Why: The progress file must record what was done. Instead: update the progress file, then stop again.
 - `tasklist_guard.reduced` (skill): ... files changed but no work tracked. Why: Untracked work gets lost. Instead: list the open tasks and their status in your reply, priority first.
-- `task_tracker.full` (skill, switch `context.taskTracker`): each user request is tracked as a priority-sorted task before work starts, so none is lost.
-- `task_tracker.short` (skill, switch `context.taskTracker`): this prompt may hold a request that is not in the task list yet; add it as a task, so none is dropped.
+- `task_tracker.full` (skill, switch `context.taskTracker`): requests need tracking before work starts.
+- `task_tracker.short` (skill, switch `context.taskTracker`): capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
 - `roles.note_short` (skill, switch `context.roleNoteShort`): a subagent is told its role and where the engine guide is, in one line, not the verb list.
 - `task_tracker.primary` (skill): workspace-sized work needs a child workspace. Instead: assign the feature, fix or deploy to a child workspace.
 - `uncommitted.msg` (skill): this edit is paused: ... lines are uncommitted (limit ...). Why: Large unsaved changes are harder to review and resume. Instead: Commit the working changes, then continue editing.

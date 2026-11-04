@@ -15,10 +15,15 @@
 // task_tracker.toml (task_tracker.*), task_guards.toml (taskstate.*, dispatch_tier.*).
 'use strict';
 
-// the earlier wording stays reachable behind context.taskTrackerTerse (off)
+// Every text is read from its own key, whatever the switch says, so an edit of that key (the owner's or a shipped default's) is always honoured.
+// context.taskTrackerTerse (when on) only changes which wording an UNEDITED key has: a key still holding its stock value (stock_texts) reads as
+// terse_texts says; any other value is used as written.
 function ttT(k) {
-  if (!ah.settings.bool('task_tracker.terse_setting')) { var old = ah.cfg('task_tracker.legacy_texts'); if (typeof old[k] === 'string') return old[k]; }
-  return ah.cfg('task_tracker.' + k);
+  var v = ah.cfg('task_tracker.' + k);
+  var stock = ah.cfg('task_tracker.stock_texts');
+  if (typeof stock[k] !== 'string' || v !== stock[k] || !ah.settings.bool('task_tracker.terse_setting')) return v;
+  var terse = ah.cfg('task_tracker.terse_texts');
+  return typeof terse[k] === 'string' ? terse[k] : v;
 }
 function ttN(k) { return ah.cfgNum('task_tracker.' + k); }
 

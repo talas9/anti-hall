@@ -24,15 +24,15 @@ value = "task-tracker"
 
 [task_tracker.what_full]
 doc = "The first line of the full directive."
-value = "each user request is tracked as a priority-sorted task before work starts, so none is lost."
+value = "requests need tracking before work starts."
 
 [task_tracker.instead_head]
 doc = "The start of the full directive's 'Do instead' line."
-value = "create the task before the work and keep its status current."
+value = "track each request as a priority-sorted task."
 
 [task_tracker.non_blocking]
 doc = "The clause the compact protocol level leaves out of the directive (the session core already carries it)."
-value = " delegate heavy or long work to background subagents, so the main thread stays free."
+value = "keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; "
 
 [task_tracker.instead_tail]
 doc = "The end of the full directive's 'Do instead' line."
@@ -40,7 +40,7 @@ value = ""
 
 [task_tracker.what_short]
 doc = "The short per-turn reminder."
-value = "this prompt may hold a request that is not in the task list yet; add it as a task, so none is dropped."
+value = "capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
 
 [task_tracker.codex_from]
 doc = "The words of the directive that name the Claude-only task tool; the Codex text swaps the first occurrence."
@@ -121,7 +121,7 @@ value = "open tasks: 0{blocked}."
 
 [task_tracker.open_some]
 doc = "The open-tasks line when tasks are open; `{n}` the count, `{blocked}` the blocked-tasks tail, `{tail}` the oldest in-progress subject."
-value = "open tasks: {n}{blocked}{tail}; close the finished ones, so the list stays accurate."
+value = "open tasks: {n}{blocked}{tail} — update or close them."
 
 [task_tracker.blocked_tail]
 doc = "The tail naming tasks that wait on someone else; `{n}` is how many and `{why}` who."
@@ -129,7 +129,7 @@ value = " (+{n} blocked: {why})"
 
 [task_tracker.subject_tail]
 doc = "The tail naming the oldest in-progress task; `{subject}` is its quoted subject."
-value = " (oldest in progress: {subject})"
+value = " (oldest in_progress subject: {subject})"
 
 [task_tracker.subject_unknown]
 doc = "What stands for a subject that was never learned."
@@ -451,12 +451,16 @@ doc = "Short reminder speaks only on list change. Where the switch is read from 
 value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
 
 [task_tracker.terse_setting]
-doc = "Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default off): off restores the earlier texts listed in legacy_texts."
+doc = "Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default off): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off."
 value = { section = "context", key = "taskTrackerTerse", env = "ANTIHALL_TASK_TRACKER_TERSE", aliases = [], option = "", default = false }
 
-[task_tracker.legacy_texts]
-doc = "The earlier wording of the texts that context.taskTrackerTerse rewords, by key; used while that switch is off."
+[task_tracker.stock_texts]
+doc = "The stock value of each text that context.taskTrackerTerse can reword, by key (the shipped value of that key). A key whose current value equals its entry here is unedited, so the switch may swap in terse_texts; any other value is the owner's own and stays."
 value = { what_full = "requests need tracking before work starts.", instead_head = "track each request as a priority-sorted task.", non_blocking = "keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; ", what_short = "capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.", open_some = "open tasks: {n}{blocked}{tail} — update or close them.", subject_tail = " (oldest in_progress subject: {subject})" }
+
+[task_tracker.terse_texts]
+doc = "The factual wording used for an unedited text (see stock_texts) while context.taskTrackerTerse is on, by key. Same placeholders as the stock text of that key."
+value = { what_full = "each user request is tracked as a priority-sorted task before work starts, so none is lost.", instead_head = "create the task before the work and keep its status current.", non_blocking = " delegate heavy or long work to background subagents, so the main thread stays free.", what_short = "this prompt may hold a request that is not in the task list yet; add it as a task, so none is dropped.", open_some = "open tasks: {n}{blocked}{tail}; close the finished ones, so the list stays accurate.", subject_tail = " (oldest in progress: {subject})" }
 
 [task_tracker.event_full]
 doc = "Counter event: the full directive was sent."

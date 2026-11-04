@@ -21,12 +21,20 @@ doc = "Switch context.roleNote (default on): off stops the SessionStart / Subage
 value = { section = "context", key = "roleNote", env = "ANTIHALL_ROLE_NOTE", option = "", default = true }
 
 [roles.sw_note_short]
-doc = "Switch context.roleNoteShort (default off): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list; off gives every role the full note."
+doc = "Switch context.roleNoteShort (default off): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while roles.msg_note and that role's roles.describe entry still hold their stock values (roles.stock_msg_note, roles.stock_describe) and the line fits roles.note_max; an edited note text, role description or limit keeps the full, edited note. Off gives every role the full note."
 value = { section = "context", key = "roleNoteShort", env = "ANTIHALL_ROLE_NOTE_SHORT", option = "", default = false }
 
 [roles.describe_short]
 doc = "What a role is, in a few words, for the one-line role note. Only the roles listed here get the one-line note (the others keep the full note)."
 value = { subagent = "one assigned job, report back" }
+
+[roles.stock_msg_note]
+doc = "The stock value of roles.msg_note. The one-line role note replaces the full note only while roles.msg_note still equals this; an edited note text always wins."
+value = "anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {verbs}.{more} Full guide: {skill}"
+
+[roles.stock_describe]
+doc = "The stock value of roles.describe, by role. The one-line role note replaces the full note for a role only while that role's roles.describe entry still equals its entry here; an edited description always wins."
+value = { main = "the main session (Primary / coordinator): owns the repo, the settings and the other agents", workspace = "a DevSwarm workspace child: works on its own task and reports through the mesh", subagent = "a subagent or background task: does one assigned job and reports back", codex = "a Codex top-level session: the main seat on that platform" }
 
 [roles.event_emitted_short]
 doc = "Counter event: the one-line role note was sent."

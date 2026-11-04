@@ -5480,11 +5480,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.skill_frontmatter` | `---\nname: {name}\ndescription: "{description}"\n---\n\n` |  |  | Front matter of a generated skill. Placeholders: {name}, {description}. |
 | `roles.skill_host` | `2 entries` |  |  | Per host: where the generated skill files go under the plugin root, the skill folder name prefix, the command that names a skill in prose and the front matter name prefix. Codex skills are folders named anti-hall-<skill>. |
 | `roles.skill_labels` | `13 entries` |  |  | Labels the generated skills use. `roles_head` heads the role table, `verbs_head` the verb table, `guards_head` the guard list, `settings_head` the switches, `none` marks an empty cell, `yes` an allowed role, `self` a self-only role. |
+| `roles.stock_describe` | `4 entries` |  |  | The stock value of roles.describe, by role. The one-line role note replaces the full note for a role only while that role's roles.describe entry still equals its entry here; an edited description always wins. |
+| `roles.stock_msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The stock value of roles.msg_note. The one-line role note replaces the full note only while roles.msg_note still equals this; an edited note text always wins. |
 | `roles.summary_guard` | `PreToolUse on Bash: refuses an ah-engine command the caller's role may not ru...` |  |  | One-line description of the engine-role-guard check in the generated reference. |
 | `roles.summary_note` | `SessionStart and SubagentStart context: tells the session its role, the engin...` |  |  | One-line description of the engine-role-note check in the generated reference. |
 | `roles.sw_guard` | `5 entries` |  |  | Switch context.roleGuard (default on): off lets every role run every engine verb (the PreToolUse Bash check and the command-line check step aside). |
 | `roles.sw_note` | `5 entries` |  |  | Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note. |
-| `roles.sw_note_short` | `5 entries` |  |  | Switch context.roleNoteShort (default off): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list; off gives every role the full note. |
+| `roles.sw_note_short` | `5 entries` |  |  | Switch context.roleNoteShort (default off): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while roles.msg_note and that role's roles.describe entry still hold their stock values (roles.stock_msg_note, roles.stock_describe) and the line fits roles.note_max; an edited note text, role description or limit keeps the full, edited note. Off gives every role the full note. |
 
 ### lane_waste.toml / lane_test
 
@@ -8368,14 +8370,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.held_setting` | `6 entries` |  |  | Skips held tasks in DISPATCH NOW. Where the switch is read from that keeps held tasks out of the DISPATCH NOW line (guards.dispatchSkipHeld, default on): a task with any metadata.blockedOn value, or a status that says it waits, is never named. |
 | `task_tracker.held_status_re` | `blocked\|waiting\|on[-_ ]?hold\|deferred\|parked` |  |  | JavaScript regex source (case-insensitive) of a task status that means the task waits (on the owner or anything else) and is not dispatchable. |
 | `task_tracker.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of a status that means in progress. |
-| `task_tracker.instead_head` | `create the task before the work and keep its status current.` |  |  | The start of the full directive's 'Do instead' line. |
+| `task_tracker.instead_head` | `track each request as a priority-sorted task.` |  |  | The start of the full directive's 'Do instead' line. |
 | `task_tracker.instead_tail` | `` |  |  | The end of the full directive's 'Do instead' line. |
 | `task_tracker.jev_id` | `newRequest` |  |  | The Jev integration that labels each prompt. |
 | `task_tracker.jev_instructions` | `Classify the user's message below.` |  |  | The instruction Jev gets with the prompt. |
 | `task_tracker.jev_label_texts` | `a new, previously-unstated request or task, continuing or elaborating on work...` |  |  | What each label means, in the order of the labels. |
 | `task_tracker.jev_labels` | `new-request, follow-up, correction, question` |  |  | The labels Jev may answer with, in order. |
 | `task_tracker.jev_state_limit` | `4000` |  |  | How much of the prompt Jev sees, in UTF-16 units. |
-| `task_tracker.legacy_texts` | `6 entries` |  |  | The earlier wording of the texts that context.taskTrackerTerse rewords, by key; used while that switch is off. |
 | `task_tracker.main_owner_re` | `^(main\|orchestrator\|coordinator)$` |  |  | JavaScript regex source (case-insensitive) of an owner that still counts as unowned (the coordinator itself). |
 | `task_tracker.metrics_counters` | `demandsShown, demandsFollowed, demandsIgnored, idleNeglectBlocks` |  |  | The counters of the metrics file, in the order a fresh file lists them. |
 | `task_tracker.metrics_file` | `dispatch-demand-metrics.json` |  |  | The file that counts the dispatch demands shown, followed and ignored. |
@@ -8384,9 +8385,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.metrics_pending` | `pending` |  |  | The key of the metrics file that holds the demands still to be scored, per session. |
 | `task_tracker.metrics_pending_ttl_ms` | `86400000` |  | ms | How long a demand waits to be scored before it is dropped. |
 | `task_tracker.metrics_shown` | `demandsShown` |  |  | The counter of per-turn demand lines shown. |
-| `task_tracker.non_blocking` | ` delegate heavy or long work to background subagents, so the main thread stay...` |  |  | The clause the compact protocol level leaves out of the directive (the session core already carries it). |
+| `task_tracker.non_blocking` | `keep the MAIN thread non-blocking by delegating heavy/long work to background...` |  |  | The clause the compact protocol level leaves out of the directive (the session core already carries it). |
 | `task_tracker.note_joiner` | ` ` |  |  | What joins the directive or the reminder and the open-tasks line inside one text. |
-| `task_tracker.open_some` | `open tasks: {n}{blocked}{tail}; close the finished ones, so the list stays ac...` |  |  | The open-tasks line when tasks are open; `{n}` the count, `{blocked}` the blocked-tasks tail, `{tail}` the oldest in-progress subject. |
+| `task_tracker.open_some` | `open tasks: {n}{blocked}{tail} — update or close them.` |  |  | The open-tasks line when tasks are open; `{n}` the count, `{blocked}` the blocked-tasks tail, `{tail}` the oldest in-progress subject. |
 | `task_tracker.open_zero` | `open tasks: 0{blocked}.` |  |  | The open-tasks line when no countable task is open; `{blocked}` is the blocked-tasks tail. |
 | `task_tracker.owner_word` | `owner` |  |  | Who a blocked task waits on when it names nobody. |
 | `task_tracker.peer_prompt_chars` | `400` |  | chars | How many characters at the start of a prompt are tested against peer_prompt_re. |
@@ -8406,12 +8407,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.spawn_names` | `Agent, Task, Workflow` |  |  | The tools that spawn an agent. |
 | `task_tracker.state_prefix` | `task-tracker-` |  |  | Prefix of the per-session state file that remembers when the full directive was last injected. |
 | `task_tracker.state_suffix` | `.json` |  |  | Suffix of the per-session state file. |
+| `task_tracker.stock_texts` | `6 entries` |  |  | The stock value of each text that context.taskTrackerTerse can reword, by key (the shipped value of that key). A key whose current value equals its entry here is unedited, so the switch may swap in terse_texts; any other value is the owner's own and stays. |
 | `task_tracker.stop_setting` | `6 entries` |  |  | Quiets DISPATCH NOW during the spawn stop. Where the switch is read from that silences the DISPATCH NOW line while the weekly-usage spawn stop is active (guards.dispatchQuietSpawnStop, default on). |
 | `task_tracker.subject_max` | `50` |  |  | The longest subject the open-tasks line quotes, in UTF-16 units. |
-| `task_tracker.subject_tail` | ` (oldest in progress: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
+| `task_tracker.subject_tail` | ` (oldest in_progress subject: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
 | `task_tracker.subject_unknown` | `(subject unknown)` |  |  | What stands for a subject that was never learned. |
 | `task_tracker.summary` | `UserPromptSubmit task-list discipline: the full directive or the short remind...` |  |  | One-line description of the task-tracker check in the generated reference. |
-| `task_tracker.terse_setting` | `6 entries` |  |  | Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default off): off restores the earlier texts listed in legacy_texts. |
+| `task_tracker.terse_setting` | `6 entries` |  |  | Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default off): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off. |
+| `task_tracker.terse_texts` | `6 entries` |  |  | The factual wording used for an unedited text (see stock_texts) while context.taskTrackerTerse is on, by key. Same placeholders as the stock text of that key. |
 | `task_tracker.tier_arrow` | `→ ` |  |  | What starts a tier annotation. |
 | `task_tracker.tier_conf` | ` ({conf})` |  |  | The confidence part of a tier annotation; `{conf}` is the confidence rounded to two decimals. |
 | `task_tracker.tier_conf_floor` | `0.6` |  |  | A workspace or workflow verdict below this confidence (a decimal, written as text) is shown as the default tier. |
@@ -8443,8 +8446,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.unknown_tail` | `): check before dispatching more. ` |  |  | The end of the note that the running-agent count is unknown. |
 | `task_tracker.unknown_unreadable` | `transcript unreadable` |  |  | Part of that note when the transcript could not be read. |
 | `task_tracker.untracked_prompts` | `7 entries` |  |  | Prompts before the short reminder repeats. Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts). |
-| `task_tracker.what_full` | `each user request is tracked as a priority-sorted task before work starts, so...` |  |  | The first line of the full directive. |
-| `task_tracker.what_short` | `this prompt may hold a request that is not in the task list yet; add it as a ...` |  |  | The short per-turn reminder. |
+| `task_tracker.what_full` | `requests need tracking before work starts.` |  |  | The first line of the full directive. |
+| `task_tracker.what_short` | `capture every request as a priority-sorted task; keep statuses current; deleg...` |  |  | The short per-turn reminder. |
 | `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
 | `task_tracker.window_ms` | `21600000` |  | ms | How long the full directive stays fresh before it is injected again. |
 
