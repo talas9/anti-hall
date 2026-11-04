@@ -83,7 +83,7 @@ What the automatic guards check and how to read a block.
 - `guards.queuedWaitGuard` = true: Off lets a subagent poll background work with sleep loops
 - `guards.allowWideSearch` = false: On lets every agent run whole-disk searches (default off)
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
-- `guards.advisorRank` = true: Skip if main >= advisor; unknown = guard on
+- `guards.advisorRank` = false: Plan and retry rules only, main session only: skip the block when the main model ranks equal or...
 - `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once
 - `guards.advisorReview` = true: Blocks a review agent on a non-flagship model once
 - `guards.advisorSayDo` = true: Blocks a Stop once per turn announcing an advisor call not made

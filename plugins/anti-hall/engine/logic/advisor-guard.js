@@ -167,7 +167,7 @@ function agDecide(p) {
   if (isPlan && ah.settings.bool('advisor.sw_plan')) {
     var ps = advisorKit.load(p), pv = advisorKit.fold(p, ps);
     if (pv !== null) { advisorKit.consults(ps, pv.scan); advisorKit.save(p, ps); }
-    if (pv !== null && advisorKit.present(p, pv.scan, pv) && pv.lastAdvisor < pv.lastUser && advisorKit.gate('advisor.kind_plan', p, tool + ':' + file)) {
+    if (pv !== null && advisorKit.present(p, pv.scan, pv) && pv.lastAdvisor < pv.lastUser && !advisorKit.rankSkip(p, pv) && advisorKit.gate('advisor.kind_plan', p, tool + ':' + file)) {
       return advisorKit.block(advisorKit.what(pv, ah.cfg('advisor.msg_plan_what'), ah.cfg('advisor.msg_plan_what_lower'), ah.cfg('advisor.msg_plan_what_unknown'), {}), ah.cfg('advisor.msg_plan_instead'));
     }
   }
@@ -181,7 +181,7 @@ function agDecide(p) {
     if (s.fail !== null && jx.isObj(s.fail) && Array.isArray(s.fail.files) && s.fail.files.indexOf(file) >= 0) {
       if (v === null) v = advisorKit.fold(p, s);
       if (v !== null && v.lastAdvisor > s.fail.advisorAt) { advisorKit.bump(s, 'consulted', 'advisor.kind_retry', 'consulted'); s.fail = null; } // consulted since the failure: disarm
-      else if (v !== null && advisorKit.present(p, v.scan, v) && advisorKit.gate('advisor.kind_retry', p, file)) {
+      else if (v !== null && advisorKit.present(p, v.scan, v) && !advisorKit.rankSkip(p, v) && advisorKit.gate('advisor.kind_retry', p, file)) {
         s.blocked = { advisorAt: v.lastAdvisor };
         s.fail = null;
         verdict = advisorKit.block(advisorKit.what(v, ah.cfg('advisor.msg_retry_what'), ah.cfg('advisor.msg_retry_what_lower'), ah.cfg('advisor.msg_retry_what_unknown'), { file: file }), ah.cfg('advisor.msg_retry_instead'));

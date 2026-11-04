@@ -27,11 +27,11 @@ doc = "Blocks a plan written with no advisor call once. Default on, advisor sess
 value = { section = "guards", key = "advisorPlan", type = "boolean", env = "ANTIHALL_ADVISOR_PLAN", option = "", default = true }
 
 [advisor.sw_rank]
-doc = "Skip if main >= advisor; unknown = guard on."
-value = { section = "guards", key = "advisorRank", type = "boolean", env = "ANTIHALL_ADVISOR_RANK", option = "", default = true }
+doc = "Plan and retry rules only, main session only: skip the block when the main model ranks equal or higher than the advisor model; a subagent or an unknown model keeps the guard on. Default off."
+value = { section = "guards", key = "advisorRank", type = "boolean", env = "ANTIHALL_ADVISOR_RANK", option = "", default = false }
 
 [advisor.model_ranks]
-doc = "Model family ranks, matched case-insensitively as a substring of the model id (so a version bump needs no edit); the highest rank is the strongest model. The advisor model comes from the advisor_tool attachment (advisor.attachment.model_key), else the settings key advisor.settings_key (an alias such as opus matches too). No match, or a name that matches more than one family (sonnet-opus), = unknown rank = the guard stays on. The main and advisor model count only when read in the current read window: any discarded input (a gap, an oversized or unparsable line, a truncated tail) makes both unknown until a fresh entry is read; sidechain entries never set the main model."
+doc = "Model family ranks, matched case-insensitively as a substring of the model id (so a version bump needs no edit); the highest rank is the strongest model. The advisor model comes only from the newest non-sidechain advisor_tool attachment (advisor.attachment.model_key); the settings file never stands in. No match, or a name that matches more than one family (sonnet-opus), = unknown rank = the guard stays on. The main and advisor model count only when read in the current read window: any discarded input (a gap, an oversized or unparsable line, a truncated tail) makes both unknown until a fresh entry is read; sidechain entries never set the main model."
 value = [
   { match = "haiku", rank = 1 },
   { match = "sonnet", rank = 2 },
@@ -44,8 +44,12 @@ doc = "Advisory kind (counters) of the rank rule: see advisor.rank_metrics."
 value = "advisor_guard"
 
 [advisor.rank_metrics]
-doc = "Counter names of advisor.kind_rank: skipped (the main model ranks equal or higher than the advisor model: the guard stayed silent), applied (the main ranks lower: the guard applied), applied_unknown (the main or advisor model could not be ranked: the guard applied)."
-value = { skipped = "skipped_equal_or_higher", applied = "applied_lower_model", applied_unknown = "applied_unknown_model" }
+doc = "Counter names of advisor.kind_rank: skipped (the main model ranks equal or higher than the advisor model: the guard stayed silent), applied (the main ranks lower: the guard applied), applied_unknown (the main or advisor model could not be ranked: the guard applied), applied_subagent (the call came from a subagent, which is never exempted: the guard applied). Each is also counted as metric advisor_rank{result}."
+value = { skipped = "skipped_equal_or_higher", applied = "applied_lower_model", applied_unknown = "applied_unknown_model", applied_subagent = "applied_subagent_unranked" }
+
+[metric.advisor_rank]
+doc = "Verdicts of the advisor rank rule (guards.advisorRank, GH #500) at each plan or retry block decision: skipped (main ranks equal or higher: no block), applied (main ranks lower), applied_unknown (main or advisor model unknown), applied_subagent (subagent: never exempted)."
+value = { kind = "counter", unit = "verdicts", labels = ["result"] }
 
 [advisor.msg_plan_what_lower]
 doc = "Block text of the plan rule when the main model ranks below the advisor model (the fact and what was done; the hook's line is capped near 115 characters). Placeholders: {model}, {advisor}."
@@ -96,7 +100,7 @@ min = 1024
 unit = "bytes"
 
 [advisor.sidechain_key]
-doc = "Transcript entry field that is true for a subagent (sidechain) entry; such an entry never sets the main model of the rank rule."
+doc = "Transcript entry field that is true for a subagent (sidechain) entry; such an entry never sets the main model or the advisor model of the rank rule."
 value = "isSidechain"
 
 [advisor.max_lines]
@@ -349,7 +353,7 @@ value = ".jsonl"
 # agent (advisor.window_bytes per call from the saved offset; lines over advisor.line_max_bytes skipped unbuffered).
 
 [advisor.attachment]
-doc = "The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. Its `model_key` names the advisor model (read for the rank rule, advisor.model_ranks)."
+doc = "The transcript entry Claude Code writes when it puts the advisor tool into (or takes it out of) an agent's prompt: an entry of `entry_type` whose object `field` has type `type`. Its `available_key` false, or a `change_key` not in `change_on`, means off. The newest one wins; it needs no earlier advisor use. Its `model_key` names the advisor model (read for the rank rule, advisor.model_ranks) when the entry is not a sidechain one."
 value = { field = "attachment", entry_type = "attachment", type = "advisor_tool", available_key = "available", change_key = "toolChange", change_on = ["add"], model_key = "model" }
 
 [advisor.settings_files]

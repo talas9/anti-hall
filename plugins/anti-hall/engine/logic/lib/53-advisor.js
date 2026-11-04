@@ -129,9 +129,9 @@ var advisorKit = {
       if (e.type === att.entry_type && jx.isObj(a) && a.type === att.type) { // the harness put the advisor tool in (or took it out of) the prompt
         var ch = a[att.change_key];
         tx.avail = a[att.available_key] !== false && (typeof ch !== 'string' || att.change_on.indexOf(ch) >= 0);
-        // the NEWEST attachment decides the advisor model: one with no usable model string clears it (the settings fallback or
-        // unknown applies in rank()); an older attachment's model never carries over
-        tx.advisorModel = typeof a[att.model_key] === 'string' && a[att.model_key] !== '' ? a[att.model_key] : null;
+        // the NEWEST non-sidechain attachment decides the advisor model (a subagent's own attachment never does): one with no usable
+        // model string clears it (unknown: the guard stays on); an older attachment's model never carries over
+        if (e[ah.cfg('advisor.sidechain_key')] !== true) tx.advisorModel = typeof a[att.model_key] === 'string' && a[att.model_key] !== '' ? a[att.model_key] : null;
         continue;
       }
       if (e.type === 'assistant' && !jx.isObj(e.message)) { tx.mainModel = null; continue; }
@@ -176,24 +176,37 @@ var advisorKit = {
   // missing attachment proves nothing), an advisor model configured in the Claude Code settings (advisor.settings_files). Else
   // unknown: silent (fail open), counted.
   present: function (p, scan, view) {
-    if (!advisorKit.presentRaw(p, scan, view)) return false;
-    return view ? advisorKit.rank(p, view) !== 'skip' : true;
+    var names = ah.cfg('advisor.tool_names'), listed = advisorKit.payloadTools(p);
+    for (var i = 0; i < listed.length; i++) if (names.indexOf(listed[i]) >= 0) return true;
+    if (!view) { advisorKit.silence('unknown'); return false; }
+    if (view.avail === false) { advisorKit.silence('off'); return false; }
+    if (view.avail === true || view.seen) return true;
+    if (!view.full && advisorKit.configured(p)) { advisorKit.silence('settings_only'); return true; }
+    advisorKit.silence('unknown');
+    return false;
   },
-  // Rank rule (GH #500): the guard applies while the main model ranks below the advisor model; equal or higher is skipped. An
-  // unknown main or advisor model keeps it on. The main model is the latest assistant entry's own model (view.mainModel, null when it
-  // has no usable string); the advisor model is the newest advisor_tool attachment's, else the settings key: nothing carries over
-  // from an earlier entry or attachment. Counted (advisor.rank_metrics). Returns 'skip' | 'apply'; sets view.rankKind and view.rankArgs.
-  rank: function (p, view) {
-    if (!ah.settings.bool('advisor.sw_rank')) return 'apply';
+  // Rank rule (GH #500), asked only where a plan or a retry re-edit would be blocked (never inside present(), so the review rule and
+  // the phase-3 rules are untouched). True = skip the block: the MAIN session's model ranks equal or higher than the advisor model.
+  // Off (advisor.sw_rank), a subagent (payload agent_id: it has no main model of its own), or an unknown main or advisor model = false
+  // (the guard applies as today). The models are the ones the fold read this call (view.mainModel, view.advisorModel), so a main that
+  // switched down is ranked again at every call. Counted (advisor.rank_metrics). Sets view.rankKind/rankArgs for what().
+  rankSkip: function (p, view) {
+    if (!ah.settings.bool('advisor.sw_rank')) return false;
     var m = ah.cfg('advisor.rank_metrics'), unk = ah.cfg('advisor.rank_unknown_label');
-    var adv = typeof view.advisorModel === 'string' && view.advisorModel !== '' ? view.advisorModel : advisorKit.configuredModel(p);
-    var mr = advisorKit.modelRank(view.mainModel), ar = advisorKit.modelRank(adv);
-    var args = { model: typeof view.mainModel === 'string' && view.mainModel !== '' ? view.mainModel : unk, advisor: typeof adv === 'string' && adv !== '' ? adv : unk };
-    if (mr === null || ar === null) { view.rankKind = 'unknown'; view.rankArgs = args; advisorKit.raw('advisor.kind_rank', m.applied_unknown); return 'apply'; }
-    if (mr >= ar) { advisorKit.raw('advisor.kind_rank', m.skipped); return 'skip'; }
+    if (typeof p.agent_id === 'string' && p.agent_id !== '') { advisorKit.rankCount(m.applied_subagent, 'applied_subagent'); return false; }
+    var mm = view.mainModel, am = view.advisorModel;
+    var mr = advisorKit.modelRank(mm), ar = advisorKit.modelRank(am);
+    var args = { model: typeof mm === 'string' && mm !== '' ? mm : unk, advisor: typeof am === 'string' && am !== '' ? am : unk };
+    if (mr === null || ar === null) { view.rankKind = 'unknown'; view.rankArgs = args; advisorKit.rankCount(m.applied_unknown, 'applied_unknown'); return false; }
+    if (mr >= ar) { advisorKit.rankCount(m.skipped, 'skipped'); return true; }
     view.rankKind = 'lower'; view.rankArgs = args;
-    advisorKit.raw('advisor.kind_rank', m.applied);
-    return 'apply';
+    advisorKit.rankCount(m.applied, 'applied');
+    return false;
+  },
+  // One rank verdict: the advisory kind counter (name) and the engine metric advisor_rank{result}.
+  rankCount: function (name, result) {
+    advisorKit.raw('advisor.kind_rank', name);
+    ah.metric('advisor_rank', ['result', result]);
   },
   // The block text of a rule: the ranked variant (names the models) when the rank rule ran, else the plain one. The three texts
   // are passed in (advisor.msg_<rule>_what, _what_lower, _what_unknown); `extra` holds the rule's own placeholders.
@@ -214,23 +227,8 @@ var advisorKit = {
     }
     return hit;
   },
-  presentRaw: function (p, scan, view) {
-    var names = ah.cfg('advisor.tool_names'), listed = advisorKit.payloadTools(p);
-    for (var i = 0; i < listed.length; i++) if (names.indexOf(listed[i]) >= 0) return true;
-    if (!view) { advisorKit.silence('unknown'); return false; }
-    if (view.avail === false) { advisorKit.silence('off'); return false; }
-    if (view.avail === true || view.seen) return true;
-    if (!view.full && advisorKit.configured(p)) { advisorKit.silence('settings_only'); return true; }
-    advisorKit.silence('unknown');
-    return false;
-  },
   // Is an advisor model set in one of the Claude Code settings files (advisor.settings_files: {root: home|cwd|abs, path})?
   configured: function (p) {
-    var v = advisorKit.configuredModel(p);
-    return typeof v === 'string' && v !== '';
-  },
-  // The advisor model named by a Claude Code settings file ('' when none).
-  configuredModel: function (p) {
     var files = ah.cfg('advisor.settings_files'), key = ah.cfg('advisor.settings_key'), max = ah.cfgNum('advisor.settings_read_max_bytes');
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
@@ -241,9 +239,9 @@ var advisorKit = {
       var t = ah.fs.readText(full, max), o = null;
       if (typeof t !== 'string' || t === '') continue;
       try { o = JSON.parse(t); } catch (x) { continue; }
-      if (jx.isObj(o) && typeof o[key] === 'string' && o[key] !== '') return o[key];
+      if (jx.isObj(o) && typeof o[key] === 'string' && o[key] !== '') return true;
     }
-    return '';
+    return false;
   },
   // Is the main model a flagship? null when no known model was seen (the phase-3 rules are then silent).
   flagship: function (model) {
