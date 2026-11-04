@@ -3054,11 +3054,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nudges.events` | `PreToolUse, PostToolUse, UserPromptSubmit, Stop` |  |  | Events on which the ladder counts advisories. |
 | `nudges.every` | `2` |  |  | Default further fires between two blocks of one kind (a kind's own `every` wins). |
 | `nudges.headline_chars` | `120` |  |  | Most characters of the advisory's first line the block quotes as its detail (ASCII only, so the block keeps one emoji). |
-| `nudges.held_pass_stops` | `8` |  |  | How many Stops a held block of a counted-block kind (count_blocks: the guard itself blocks) keeps every ladder block waiting while that guard lets the Stop pass (its own block cap or an unchanged set). The guard decided those Stops may end, so the ladder adds no block of any kind to them. The hold ends after this many passes, so a guard whose condition cleared cannot mute the ladder for the rest of the session. The mark itself is dropped then; the guard blocking again re-arms it. |
 | `nudges.hook_id` | `nudge-ladder` |  |  | The id the ladder's own block carries among the hook results of a call. |
 | `nudges.idle_wake` | `13 entries` |  |  | Idle wake: idle_ms of a main session with open unblocked unassigned tasks and no agent running before the wake row; claim_ms of an idle teammate whose last line claims running work with no call in flight, background task or output. The task list: tasks_dir/<session>/*task_ext, a task open when its status is in open_statuses, assigned with an owner, blocked while a blocker is not in closed_statuses. tasks_shown: most task subjects named. |
 | `nudges.idle_wake_claims` | `9 items` |  |  | Phrases (case-insensitive) that make a teammate's last line a claim of running or background work. |
-| `nudges.kinds` | `9 entries` |  |  | The severity class table: per kind, its class word, the hook ids (dispatch table ids) whose advisories it counts, optional `match` substrings (any one in the advisory text; empty = any advisory of those hooks), optional `after`, `every`, `quiet_reset`, `count_blocks` (the hooks' blocks count as fires too: the cap and routing denies, the idle-tasks Stop block; a Stop another hook already blocks holds the ladder block to the next Stop) and `action`: the single required next action the block states. A hook that shows one state once (emit-dedupe: idle-agent-sweep; one reminder per row: agent-reminders) is quiet while the state holds, so its kind takes quiet_reset = 0 (its fires are distinct states). P0 kinds (block at first fire): agent cap and spawn ceiling, model routing on non-trivial work, main-thread heavy work inline. The idle-with-open-tasks P0 is already a Stop block of task-guard (idle-neglect); its advisories are counted here too. |
+| `nudges.kinds` | `9 entries` |  |  | The severity class table: per kind, its class word, the hook ids (dispatch table ids) whose advisories it counts, optional `match` substrings (any one in the advisory text; empty = any advisory of those hooks), optional `after`, `every`, `quiet_reset`, `count_blocks` (the hooks' blocks count as fires too: the cap and routing denies, the idle-tasks Stop block; a Stop another hook already blocks holds the ladder block to the next Stop) `live_flags` (tracker signal names) or `live_tasks` (the session has an open task): the fact the kind states, read fresh at every Stop; when it is gone the kind's entry is cleared and it never blocks, when it cannot be read the kind blocks nothing, and a guard's pass of a Stop after it blocked is never overridden by any kind; and `action`: the single required next action the block states. A hook that shows one state once (emit-dedupe: idle-agent-sweep; one reminder per row: agent-reminders) is quiet while the state holds, so its kind takes quiet_reset = 0 (its fires are distinct states). P0 kinds (block at first fire): agent cap and spawn ceiling, model routing on non-trivial work, main-thread heavy work inline. The idle-with-open-tasks P0 is already a Stop block of task-guard (idle-neglect); its advisories are counted here too. |
 | `nudges.max_chars` | `1200` |  |  | Most characters of the ladder's whole block reason (several due kinds are joined with dispatch.reason_joiner and cut here). |
 | `nudges.metric` | `8 entries` |  |  | The counter of the tracker-side nudge signals (GH #515/#517/#518): its name, its label, and the label values (sampled: a stall sample taken; stalled; claim_checked; claim_flagged; idle_wake; parallel). |
 | `nudges.msg_detail` | ` (seen: {text})` |  |  | How the advisory's first line is quoted in a block reason (empty headline: nothing). Placeholders: {text}. |
@@ -3073,7 +3072,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nudges.stall_limits` | `8 entries` |  |  | Stalled-agent detection: a running agent (no call in flight, not hung) whose transcript, tool calls, commits, files and progress did not change for quiet_ms, or whose progress line repeated with no outcome for repeat_ms, is STALLED. lines_kept: distinct progress lines kept per agent; lines_shown: how many the reminder names; line_chars: most characters of one line. |
 | `nudges.stall_words` | `2 entries` |  |  | The {what} of the stalled reminder: quiet (nothing observable changed) and repeat (the same progress line, no outcome). |
 | `nudges.state_dir` | `nudge-ladder` |  |  | The directory under the state dir holding one ladder state file per session. |
-| `nudges.state_error_ops` | `3 entries` |  |  | The `op` label values of nudge_ladder_state_error: read (the state file exists but cannot be read), parse (it is not valid state), write (the state or its directory cannot be written). |
+| `nudges.state_error_ops` | `4 entries` |  |  | The `op` label values of nudge_ladder_state_error: read (the state file exists but cannot be read), parse (it is not valid state), write (the state or its directory cannot be written), facts (a due kind's fact, the tracker state or the task list, cannot be read at a Stop, so the kind blocks nothing). |
 | `nudges.state_ext` | `.json` |  |  | The file name ending of a session's ladder state file. |
 | `nudges.state_max_age_days` | `7` |  |  | Ladder state files not touched for this many days are removed (sessions that ended). |
 | `nudges.state_max_bytes` | `65536` |  |  | Most bytes of a session's ladder state file read; a larger file is not valid state (counted as a parse failure and replaced by an empty state). |
@@ -6064,7 +6063,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `400 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `404 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8482,7 +8481,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `406 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `410 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `21 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14811,7 +14810,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
 | `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
-| `nudge_ladder_state_error` | counter | failures | op | Ladder state failures (the ladder takes no action on that call), by op: read, parse or write. |
+| `nudge_ladder_state_error` | counter | failures | op | Ladder state failures (the ladder takes no action on that call), by op: read, parse, write or facts. |
 | `nudge_signal` | counter | steps | step | Tracker-side nudge signal steps, by step. |
 | `protocol_delivery` | counter | starts | hook, kind | SessionStart protocol texts sent, by hook (the delivery record prefix: verify_first.delivery_prefix for the protocol, the orchestration rules' own prefix) and kind (verify_first.metric_kind): full (a fresh start, or a compaction or resume while verify_first.setting_full_after_compact is on), digest (the short text after a compaction or resume), repeat (the one line). |
 | `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
