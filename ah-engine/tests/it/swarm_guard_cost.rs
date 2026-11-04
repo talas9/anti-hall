@@ -77,6 +77,7 @@ fn run(home: &Path, args: &[&str], stdin: &str, extra: &[(&str, &str)]) -> (i32,
         .env("HOME", home)
         .env("USERPROFILE", home)
         .env("ANTIHALL_TEST_ISOLATION", "1")
+        .env("ANTIHALL_PAIR_RULE", "0") // R-pair defaults to on and denies an unnamed spawn: these tests measure swarm-guard alone
         .current_dir(home)
         .env("AH_ENGINE_DIR", home.join("engine-state"))
         .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))

@@ -1,5 +1,5 @@
 //! R-pair (`task-pair-guard`, switch `guards.pairRule`, GH #589) through the real dispatcher (`ah-engine hook --event <Event> --host claude`):
-//! real hook payloads in, the real output text out. The switch is on via `ANTIHALL_PAIR_RULE=1` unless the test says off. The engine's other
+//! real hook payloads in, the real output text out. The switch defaults to on; a test says off with `ANTIHALL_PAIR_RULE=0`. The engine's other
 //! checks run too, so a test asks whether the R-pair text is in the output, never whether the output is empty.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
@@ -56,9 +56,8 @@ impl World {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if on {
-            c.env("ANTIHALL_PAIR_RULE", "1");
-        }
+        // the switch defaults to on: an "off" case forces it off explicitly
+        c.env("ANTIHALL_PAIR_RULE", if on { "1" } else { "0" });
         let mut ch = c.spawn().unwrap();
         ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
@@ -234,7 +233,11 @@ fn stop_live_named_agent_without_task_blocks_and_names_it() {
     let t = transcript(&[task(1, "in_progress", Some("someone-else"))], &[("port the wake", Some("wake-worker"))]);
     let o = w.stop(&t, true, serde_json::json!({}));
     assert!(o.1.contains(GUARD) && o.1.contains("agent \\\"wake-worker\\\" owns no task"), "names the agent: {o:?}");
-    assert!(o.1.contains("set each task's owner to its agent's name"), "names the step: {o:?}");
+    assert!(
+        o.1.contains("TaskCreate or TaskUpdate a task owned by each listed agent"),
+        "names the step that gives the agent a task, on the visible line: {o:?}"
+    );
+    assert!(!o.1.contains("follow the saved instructions"), "the step is short enough to be shown, not replaced by a pointer: {o:?}");
 }
 
 #[test]
@@ -247,7 +250,7 @@ fn stop_task_owned_by_description_asks_for_the_launch_name() {
         o.1.contains(GUARD) && o.1.contains("#5 owner \\\"port the wake\\\" -> \\\"wake-worker\\\""),
         "names the task, its owner and the launch name: {o:?}"
     );
-    assert!(!o.1.contains("owns no task"), "the agent is attended by that task, so no F2 item: {o:?}");
+    assert!(!o.1.contains(" no task"), "the agent is attended by that task, so no F2 item: {o:?}");
 }
 
 #[test]
@@ -363,7 +366,8 @@ fn stop_two_live_agents_with_one_name_pair_with_two_tasks_of_that_owner() {
     // the twin: one task for two agents of the name leaves one agent without a task, and the block names a step that clears it
     let one = transcript(&[task(1, "in_progress", Some("worker"))], &agents);
     let o = w.stop(&one, true, serde_json::json!({}));
-    assert!(o.1.contains(GUARD) && o.1.contains("agent \\\"worker\\\" owns no task"), "one agent is left without a task: {o:?}");
+    assert!(o.1.contains(GUARD) && o.1.contains("1 of the agents named \\\"worker\\\" own no task"), "one agent is left without a task: {o:?}");
+    assert!(o.1.contains("TaskCreate"), "a new task is what clears it (the one task already has that owner): {o:?}");
     let fixed = transcript(&[task(1, "in_progress", Some("worker")), task(2, "in_progress", Some("worker"))], &agents);
     assert!(!pair_text(&w.stop(&fixed, true, serde_json::json!({}))), "TaskCreate owner=worker clears it");
     // more tasks than agents of the name is not a pairing fact
@@ -377,7 +381,7 @@ fn stop_three_agents_of_one_name_with_one_task_names_how_many_are_left() {
     w.track(&["a job", "b job", "c job"]);
     let t = transcript(&[task(1, "in_progress", Some("worker"))], &[("a job", Some("worker")), ("b job", Some("worker")), ("c job", Some("worker"))]);
     let o = w.stop(&t, true, serde_json::json!({}));
-    assert!(o.1.contains("2 agents named \\\"worker\\\" own no task"), "{o:?}");
+    assert!(o.1.contains("2 of the agents named \\\"worker\\\" own no task"), "{o:?}");
 }
 
 #[test]
@@ -388,5 +392,62 @@ fn stop_loose_owner_attends_the_surplus_agent_of_a_shared_name() {
     let t = transcript(&[task(1, "in_progress", Some("worker")), task(2, "in_progress", Some("second job"))], &agents);
     let o = w.stop(&t, true, serde_json::json!({}));
     assert!(o.1.contains("#2 owner \\\"second job\\\" -> \\\"worker\\\""), "the description owner is asked for the launch name: {o:?}");
-    assert!(!o.1.contains("owns no task"), "and it attends the second agent, so no agent item: {o:?}");
+    assert!(!o.1.contains(" no task"), "and it attends the second agent, so no agent item: {o:?}");
+}
+
+#[test]
+fn stop_agent_names_that_are_object_keys_never_crash_the_guard() {
+    // review finding: a plain-object name map threw on `__proto__` and `constructor` (a "guard could not run" notice instead of pairing, and the
+    // same with the switch off, where the base prints nothing)
+    for name in ["__proto__", "constructor"] {
+        let w = World::new(&format!("stop-key-{name}"));
+        w.track(&["job 1"]);
+        let agents = [("job 1", Some(name))];
+        let none = transcript(&[], &agents);
+        let on = w.stop(&none, true, serde_json::json!({}));
+        assert!(on.1.contains(GUARD) && on.1.contains(&format!("agent \\\"{name}\\\" owns no task")), "{name}: blocks and names the agent: {on:?}");
+        assert!(!on.1.contains("could not run"), "{name}: the guard ran: {on:?}");
+        let off = w.stop(&none, false, serde_json::json!({}));
+        assert!(!off.1.contains("could not run") && !pair_text(&off), "{name}: switch off prints nothing: {off:?}");
+        let owned = transcript(&[task(1, "in_progress", Some(if name == "constructor" { "constructor" } else { "__proto__" }))], &agents);
+        let ok = w.stop(&owned, true, serde_json::json!({}));
+        assert!(!pair_text(&ok) && !ok.1.contains("could not run"), "{name}: paired by its own name: {ok:?}");
+        let ok_off = w.stop(&owned, false, serde_json::json!({}));
+        assert!(!ok_off.1.contains("could not run"), "{name}: paired, switch off: {ok_off:?}");
+        // the Post advisory compares names too
+        let post = w.post(name, &none, true);
+        assert!(!post.1.contains("could not run") && !post.2.contains("could not run"), "{name}: post ran: {post:?}");
+    }
+}
+
+#[test]
+fn stop_missing_task_slot_names_the_step_that_creates_the_task() {
+    // review finding: one task owned 'reviewer-2' for two agents named 'reviewer-2' blocked with "TaskUpdate owner", which cannot clear it
+    let w = World::new("stop-slot");
+    w.track(&["job 1", "job 2"]);
+    let agents = [("job 1", Some("reviewer-2")), ("job 2", Some("reviewer-2"))];
+    let o = w.stop(&transcript(&[task(1, "in_progress", Some("reviewer-2"))], &agents), true, serde_json::json!({}));
+    assert!(o.1.contains(GUARD) && o.1.contains("TaskCreate"), "the block names the step that adds a task: {o:?}");
+    // zero tasks and one live agent: same
+    let w = World::new("stop-slot-zero");
+    w.track(&["job 1"]);
+    let o = w.stop(&transcript(&[], &[("job 1", Some("fresh-worker"))]), true, serde_json::json!({}));
+    assert!(o.1.contains(GUARD) && o.1.contains("TaskCreate"), "{o:?}");
+    // the step, done: a second task of the name clears it
+    let w = World::new("stop-slot-done");
+    w.track(&["job 1", "job 2"]);
+    let done = transcript(&[task(1, "in_progress", Some("reviewer-2")), task(2, "in_progress", Some("reviewer-2"))], &agents);
+    assert!(!pair_text(&w.stop(&done, true, serde_json::json!({}))), "the second task clears it");
+}
+
+#[test]
+fn pre_a_name_of_control_characters_or_white_space_is_no_name() {
+    // a name no task owner can ever equal (only control characters and white space) is an unnamed spawn, like a missing one
+    let w = World::new("pre-ctl-name");
+    for name in ["\u{1}\u{1}", "\t\t", "   ", "\n\n"] {
+        let o = w.pre(Some(name), true);
+        assert!(o.0 == 2 && (o.1.contains("has no name") || o.2.contains("has no name")), "{name:?} is denied as unnamed: {o:?}");
+    }
+    let o = w.pre(Some("wake\u{1}worker"), true);
+    assert!(!pair_text(&o), "a name with a control character inside is still a name: {o:?}");
 }

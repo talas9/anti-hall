@@ -29,7 +29,7 @@ Task-list, task-lifecycle and dispatch guards.
 - `guards.tasklistNoTaskTools` = "reduced": Nag form when task tools are missing
 - `guards.tasklistGuard` = true: Where the on/off switch is read from (guards.tasklistGuard, default on)
 - `guards.tasklistWorkThreshold` = 3: How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold)
-- `guards.pairRule` = false: Switch guards.pairRule (default off)
+- `guards.pairRule` = true: Switch guards.pairRule (default on)
 - `context.taskTrackerChangeOnly` = true: Short reminder speaks only on list change
 - `guards.dispatchSkipFileConflict` = true: Skips tasks whose file a running agent holds
 - `guards.dispatchSkipHeld` = true: Skips held tasks in DISPATCH NOW

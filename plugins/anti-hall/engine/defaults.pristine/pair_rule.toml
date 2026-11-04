@@ -4,8 +4,8 @@
 # stay in task_guards.toml. With the switch off the facts are computed and counted (pair_rule_observed) and nothing is printed.
 
 [pair_rule.sw]
-doc = "Switch guards.pairRule (default off). On: an Agent or Task spawn without a name is denied, a named agent no open task names as owner gets an advisory, and a Stop with a live named agent that owns no open task (or an in-progress task owned by the agent's id or description instead of its launch name) is blocked. Off: the facts are only counted."
-value = { section = "guards", key = "pairRule", type = "boolean", env = "ANTIHALL_PAIR_RULE", option = "", default = false }
+doc = "Switch guards.pairRule (default on). On: an Agent or Task spawn without a name is denied, a named agent no open task names as owner gets an advisory, and a Stop with a live named agent that owns no open task (or an in-progress task owned by the agent's id or description instead of its launch name) is blocked. Off: the facts are only counted."
+value = { section = "guards", key = "pairRule", type = "boolean", env = "ANTIHALL_PAIR_RULE", option = "", default = true }
 
 [pair_rule.summary]
 doc = "One-line summary of the task-pair-guard check."
@@ -97,8 +97,8 @@ doc = "The Stop block: why (saved details)."
 value = "Each task should be owned by the name of the agent working on it, so the task panel pairs them."
 
 [pair_rule.msg_stop_instead]
-doc = "The Stop block: the step that clears it."
-value = "set each task's owner to its agent's name (TaskUpdate owner), then stop again."
+doc = "The Stop block: the step that clears it, at most 115 characters (a longer one is shown as a pointer to the saved details) and about 78 so the visible line keeps its `(+n more)` tail. An agent short of a task needs a NEW task (changing the owner of a task the name already owns cannot add one); a task owned by an agent's id or description gets the launch name as owner (the listed item shows it)."
+value = "TaskCreate or TaskUpdate a task owned by each listed agent, then stop again."
 
 [pair_rule.item_agent]
 doc = "A visible item for a live agent that owns no open task; `{name}` is its launch name."
@@ -110,7 +110,7 @@ value = "#{id} owner \"{owner}\" -> \"{name}\""
 
 [pair_rule.detail_agent]
 doc = "The saved-details line for a live agent that owns no open task: names the step. `{name}` is its launch name."
-value = "agent \"{name}\" owns no open task: TaskUpdate the task it works on with owner=\"{name}\"."
+value = "agent \"{name}\" owns no open task: TaskUpdate the task it works on with owner=\"{name}\", or TaskCreate one and TaskUpdate it with that owner."
 
 [pair_rule.item_agent_many]
 doc = "A visible item for several live agents sharing one launch name that own fewer open tasks than there are agents: pairing is by name as a multiset (one task of the name per agent); `{name}` is the launch name, `{n}` how many of these agents have no task left."
@@ -118,7 +118,15 @@ value = "{n} agents named \"{name}\" own no task"
 
 [pair_rule.detail_agent_many]
 doc = "The saved-details line for the item_agent_many case: names the step. `{name}` is the launch name, `{n}` the agents left without a task."
-value = "{n} live agents named \"{name}\" own no open task (one open task per agent): TaskUpdate or TaskCreate until each has a task with owner=\"{name}\"."
+value = "{n} live agents named \"{name}\" own no open task (one open task per agent): TaskCreate a task for each, then TaskUpdate it with owner=\"{name}\" (or TaskUpdate the tasks they work on)."
+
+[pair_rule.item_agent_share]
+doc = "A visible item for a launch name that owns some open tasks but fewer than it has live agents (pairing is by name as a multiset, one open task of the name per agent): only a NEW task clears it, because setting the owner of a task the name already owns adds none. `{name}` is the launch name, `{n}` how many of its agents have no task left."
+value = "{n} of the agents named \"{name}\" own no task"
+
+[pair_rule.detail_agent_share]
+doc = "The saved-details line for the item_agent_share case: names the step. `{name}` is the launch name, `{n}` the agents left without a task, `{agents}` the live agents of that name, `{owned}` the open tasks it already owns."
+value = "{n} of the {agents} live agents called \"{name}\" own no open task ({owned} open tasks already carry that owner, one per agent is needed): TaskCreate a task for each, then TaskUpdate it with owner=\"{name}\"."
 
 [pair_rule.detail_task]
 doc = "The saved-details line for an in-progress task whose owner is an agent's id or description. `{id}`, `{owner}`, `{name}` as in item_task."

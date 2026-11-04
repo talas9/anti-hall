@@ -4351,9 +4351,8 @@ mod pair_rule_counters {
             track(&h, tag);
         }
         let mut pairs = vec![("HOME".to_string(), h.clone())];
-        if on {
-            pairs.push(("ANTIHALL_PAIR_RULE".into(), "1".into()));
-        }
+        // the switch defaults to on: an "off" case forces it off explicitly
+        pairs.push(("ANTIHALL_PAIR_RULE".into(), if on { "1" } else { "0" }.into()));
         p["hook_event_name"] = json!(event);
         p["session_id"] = json!(tag);
         p["cwd"] = json!(h);
@@ -4516,35 +4515,45 @@ mod pair_rule_pairing {
         std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
     }
 
-    /// One Stop (switch on) over `tasks` (owner, status) and `agents`.
-    fn stop(tag: &str, tasks: &[(String, &str)], agents: &[Ag]) -> Out {
+    /// One Stop over `tasks` (owner, status) and `agents`, the switch on or off: what it asked for and the whole text it said (visible line,
+    /// steps and saved details; empty when it printed nothing).
+    fn stop_with(tag: &str, tasks: &[(String, &str)], agents: &[Ag], on: bool) -> (Out, String) {
         let h = home(tag);
         std::fs::write(format!("{h}/t.jsonl"), transcript(tasks, agents)).unwrap();
         track(&h, agents);
         let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
-        let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())];
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        pairs.push(("ANTIHALL_PAIR_RULE".to_string(), if on { "1" } else { "0" }.to_string()));
         let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
         // the saved details hold the whole list (the visible line may leave items out and says so)
         let saved = saved_details(&h);
         crate::discard::harmless(std::fs::remove_dir_all(&h));
         match v {
-            Some(Some(Verdict::Allow)) => Out { f2: vec![], f3: vec![] },
+            Some(Some(Verdict::Allow)) => (Out { f2: vec![], f3: vec![] }, String::new()),
             Some(Some(Verdict::Exact(x))) => {
                 let reason = serde_json::from_str::<Value>(&x.out).unwrap()["reason"].as_str().unwrap().to_string() + "\n" + &saved;
                 let many = regex::Regex::new(r#"(\d+) (?:live )?agents named "([^"]*)" own no (?:open )?task"#).unwrap();
+                let share = regex::Regex::new(r#"(\d+) of the (?:\d+ live )?agents (?:named|called) "([^"]*)" own no (?:open )?task"#).unwrap();
                 let one = regex::Regex::new(r#"agent "([^"]*)" owns no (?:open )?task"#).unwrap();
                 let task = regex::Regex::new(r#"#(\d+) owner "([^"]*)"(?: -> | is agent )"([^"]*)""#).unwrap();
                 let mut f2: Vec<(String, usize)> = many.captures_iter(&reason).map(|c| (c[2].to_string(), c[1].parse().unwrap())).collect();
+                f2.extend(share.captures_iter(&reason).map(|c| (c[2].to_string(), c[1].parse().unwrap())));
                 f2.extend(one.captures_iter(&reason).map(|c| (c[1].to_string(), 1)));
                 f2.sort();
                 f2.dedup();
                 let mut f3: Vec<(String, String)> = task.captures_iter(&reason).map(|c| (c[1].to_string(), c[3].to_string())).collect();
                 f3.sort();
                 f3.dedup();
-                Out { f2, f3 }
+                (Out { f2, f3 }, reason)
             }
+            // a guard that could not run is the defect: no verdict at all, or an error
             other => panic!("{tag}: unexpected verdict {other:?}"),
         }
+    }
+
+    /// One Stop (switch on).
+    fn stop(tag: &str, tasks: &[(String, &str)], agents: &[Ag]) -> Out {
+        stop_with(tag, tasks, agents, true).0
     }
 
     /// The saved-details file(s) of the guard (its name carries the session, which the check does not pass), concatenated.
@@ -4670,9 +4679,17 @@ mod pair_rule_pairing {
     #[test]
     fn a_block_is_never_one_its_own_steps_cannot_clear_and_a_surplus_of_tasks_never_blocks() {
         let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
-        let owners = ["worker", "Worker ", "other", "", "alpha job", "beta job", "ALPHA", "main", "a000000000000002"];
+        let owners = ["worker", "Worker ", "other", "", "alpha job", "beta job", "ALPHA", "main", "a000000000000002", "__proto__", "constructor"];
         let statuses = ["in_progress", "pending", "completed"];
-        let names = [("alpha job", "worker"), ("beta job", "worker"), ("beta job", "other"), ("alpha job", "main"), ("gamma", "other")];
+        let names = [
+            ("alpha job", "worker"),
+            ("beta job", "worker"),
+            ("beta job", "other"),
+            ("alpha job", "main"),
+            ("gamma", "other"),
+            ("gamma", "__proto__"),
+            ("gamma", "constructor"),
+        ];
         let mut g = Lcg(0x5eed);
         let mut blocked = 0;
         for case in 0..160 {
@@ -4701,6 +4718,164 @@ mod pair_rule_pairing {
             assert_eq!(again, clean(), "case {case}: the stated steps must clear the block: {got:?} tasks={tasks:?} agents={agents:?}");
         }
         assert!(blocked > 20 && blocked < 150, "the sample exercises both sides: {blocked} blocked of 160");
+    }
+
+    /// Names that are inherited keys of a plain object, and that case-folds onto one (`__PROTO__`): a name is data, never a key of the code.
+    const OBJECT_KEY_NAMES: [&str; 12] = [
+        "__proto__",
+        "constructor",
+        "toString",
+        "hasOwnProperty",
+        "valueOf",
+        "__defineGetter__",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "__lookupSetter__",
+        "prototype",
+        "__PROTO__",
+        "Constructor",
+    ];
+
+    #[test]
+    fn an_agent_name_that_is_an_object_key_pairs_like_any_other_name() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        for (i, name) in OBJECT_KEY_NAMES.iter().enumerate() {
+            let tag = |k: &str| format!("pp-key{i}-{k}");
+            let agent = |d: &'static str| (d, *name, true);
+            // the reviewed failing input: one live agent, no task (the guard used to throw, with the switch off too)
+            let (got, _) = stop_with(&tag("none"), &[], &[agent("a job")], true);
+            assert_eq!(got.f2, vec![(name.to_string(), 1)], "{name}: no task");
+            assert_eq!(stop_with(&tag("none-off"), &[], &[agent("a job")], false).0, clean(), "{name}: switch off prints nothing");
+            // the reviewed failing input: the task owner is that name
+            assert_eq!(stop(&tag("paired"), &owned(&[(name, ip)]), &[agent("a job")]), clean(), "{name}: paired");
+            assert_eq!(stop_with(&tag("paired-off"), &owned(&[(name, ip)]), &[agent("a job")], false).0, clean(), "{name}: paired, switch off");
+            // a multiset of that name: three agents, one task
+            let three = [agent("a job"), agent("b job"), agent("c job")];
+            assert_eq!(stop(&tag("three"), &owned(&[(name, ip)]), &three).f2, vec![(name.to_string(), 2)], "{name}: three agents, one task");
+            assert_eq!(stop(&tag("three-ok"), &owned(&[(name, ip), (name, ip), (name, "pending")]), &three), clean(), "{name}: three and three");
+            // a task of another name does not pair it, and the name does not pair another agent
+            let mixed = [agent("a job"), wk("b job", "worker")];
+            assert_eq!(stop(&tag("mixed"), &owned(&[("worker", ip)]), &mixed).f2, vec![(name.to_string(), 1)], "{name}: beside a plain name");
+            // a loose owner (the agent's description) is told the launch name, whatever the name is
+            let loose = stop(&tag("loose"), &owned(&[("the long job", ip)]), &[("the long job", *name, true)]);
+            assert_eq!(loose.f3, vec![("1".to_string(), name.to_string())], "{name}: loose owner");
+        }
+    }
+
+    #[test]
+    fn a_name_is_compared_the_way_it_is_shown_so_a_block_can_always_be_cleared() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        // a name of nothing but control characters or white space is no name: it can never be set as an owner, so it is never a block
+        for (i, name) in ["\u{1}\u{1}", "\t\t", "  ", "\n\n", "\u{7f}\u{1b}", "\u{1}"].iter().enumerate() {
+            let got = stop_with(&format!("pp-ctl{i}-none"), &[], &[("a job", *name, true)], true);
+            assert_eq!(got.0, clean(), "{name:?}: an unnamed agent is not a pairing fact: {}", got.1);
+        }
+        // control characters and white space inside a name read as one space: the owner a block quotes is the owner that pairs
+        for (i, name) in ["wake\u{1}worker", "wake\tworker", "wake \n worker", " Wake  Worker ", "wake\u{7f}worker"].iter().enumerate() {
+            let none = stop_with(&format!("pp-ctl-in{i}-none"), &[], &[("a job", *name, true)], true);
+            assert_eq!(none.0.f2.len(), 1, "{name:?}: blocks: {}", none.1);
+            assert!(none.0.f2[0].0.eq_ignore_ascii_case("wake worker"), "{name:?}: the block quotes the name as it pairs: {:?}", none.0);
+            let fixed = stop(&format!("pp-ctl-in{i}-fixed"), &apply(&[], &none.0), &[("a job", *name, true)]);
+            assert_eq!(fixed, clean(), "{name:?}: the quoted owner clears it");
+            assert_eq!(stop(&format!("pp-ctl-in{i}-owned"), &owned(&[("wake worker", ip)]), &[("a job", *name, true)]), clean(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn two_object_key_names_never_pair_each_other() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let agents = [wk("a job", "__proto__"), wk("b job", "constructor")];
+        assert_eq!(stop("pp-key-two-a", &owned(&[("__proto__", ip), ("constructor", ip)]), &agents), clean());
+        let got = stop("pp-key-two-b", &owned(&[("__proto__", ip)]), &agents);
+        assert_eq!(got.f2, vec![("constructor".to_string(), 1)]);
+        let got = stop("pp-key-two-c", &owned(&[("toString", ip)]), &agents);
+        assert_eq!(got.f2, vec![("__proto__".to_string(), 1), ("constructor".to_string(), 1)]);
+    }
+
+    /// One missing-slot case: (tag, tasks (owner, status), agents).
+    type SlotCase = (&'static str, Vec<(String, &'static str)>, Vec<Ag>);
+
+    #[test]
+    fn a_missing_task_slot_is_cleared_by_creating_a_task_and_the_block_says_so() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let two = [wk("job 1", "reviewer-2"), wk("job 2", "reviewer-2")];
+        // the reviewed failing inputs: the owner is already set on the one task (TaskUpdate owner cannot add a task), and no task at all
+        let cases: Vec<SlotCase> = vec![
+            ("owner-already-set", owned(&[("reviewer-2", ip)]), two.to_vec()),
+            ("no-task-at-all", vec![], vec![wk("a job", "fresh-worker")]),
+            ("two-agents-no-task", vec![], two.to_vec()),
+            ("other-owner-only", owned(&[("someone", ip)]), vec![wk("a job", "fresh-worker")]),
+            ("completed-task-only", owned(&[("fresh-worker", "completed")]), vec![wk("a job", "fresh-worker")]),
+            (
+                "three-agents-two-tasks",
+                owned(&[("reviewer-2", ip), ("reviewer-2", "pending")]),
+                vec![wk("a", "reviewer-2"), wk("b", "reviewer-2"), wk("c", "reviewer-2")],
+            ),
+        ];
+        for (tag, tasks, agents) in cases {
+            let (got, reason) = stop_with(&format!("pp-slot-{tag}"), &tasks, &agents, true);
+            assert!(!got.f2.is_empty(), "{tag}: blocks: {reason}");
+            assert!(reason.contains("TaskCreate"), "{tag}: a missing task slot is cleared by creating a task, so the block names TaskCreate: {reason}");
+            let fixed = apply(&tasks, &got);
+            assert_eq!(fixed.len(), tasks.len() + got.f2.iter().map(|(_, n)| n).sum::<usize>(), "{tag}: the step adds one task per agent left");
+            assert_eq!(stop(&format!("pp-slot-{tag}-fixed"), &fixed, &agents), clean(), "{tag}: the stated step clears it");
+        }
+        // an owner fix alone never clears a missing slot: setting the owner of the one task again changes nothing
+        let tasks = owned(&[("reviewer-2", ip)]);
+        let again = stop("pp-slot-owner-only", &tasks, &two);
+        assert_eq!(again.f2, vec![("reviewer-2".to_string(), 1)], "the same owner again does not clear it");
+        // a task-owner step (f3 only) says TaskUpdate and no agent is named as task-less
+        let (got, reason) = stop_with("pp-slot-f3", &owned(&[("the long job", ip)]), &[("the long job", "worker", true)], true);
+        assert!(got.f2.is_empty() && !got.f3.is_empty() && reason.contains("TaskUpdate"), "{reason}");
+    }
+
+    /// Every ordered list of up to 3 agents over two names and up to 3 open tasks over two owners and "no owner", checked against the multiset
+    /// oracle: per name, the agents left over are `max(0, agents of the name - open tasks owned by it)`; nothing else is ever reported.
+    #[test]
+    fn the_whole_small_domain_agrees_with_the_multiset_oracle_and_every_block_clears() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let names = ["a", "__proto__"];
+        let owners = ["a", "__proto__", ""];
+        fn lists<T: Copy>(items: &[T], max: usize) -> Vec<Vec<T>> {
+            let mut all: Vec<Vec<T>> = vec![vec![]];
+            let mut layer: Vec<Vec<T>> = vec![vec![]];
+            for _ in 0..max {
+                layer = layer.iter().flat_map(|l| items.iter().map(move |i| l.iter().copied().chain([*i]).collect())).collect();
+                all.extend(layer.clone());
+            }
+            all
+        }
+        let mut checked = 0;
+        let mut blocked = 0;
+        for (ai, ag) in lists(&names, 3).iter().enumerate() {
+            let agents: Vec<Ag> = ag.iter().map(|n| ("a job", *n, true)).collect();
+            for (ti, tk) in lists(&owners, 3).iter().enumerate() {
+                let tasks: Vec<(String, &str)> = tk.iter().map(|o| (o.to_string(), "in_progress")).collect();
+                let mut want: Vec<(String, usize)> = names
+                    .iter()
+                    .filter_map(|n| {
+                        let live = ag.iter().filter(|x| *x == n).count();
+                        let open = tk.iter().filter(|o| *o == n).count();
+                        (live > open).then(|| (n.to_string(), live - open))
+                    })
+                    .collect();
+                want.sort();
+                let (got, reason) = stop_with(&format!("pp-dom-{ai}-{ti}"), &tasks, &agents, true);
+                assert_eq!(got, Out { f2: want.clone(), f3: vec![] }, "agents {ag:?} tasks {tk:?}: {reason}");
+                if !want.is_empty() {
+                    blocked += 1;
+                    assert!(reason.contains("TaskCreate"), "agents {ag:?} tasks {tk:?}: {reason}");
+                    assert_eq!(stop(&format!("pp-dom-{ai}-{ti}-fixed"), &apply(&tasks, &got), &agents), clean(), "agents {ag:?} tasks {tk:?} must clear");
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 15 * 40, "the whole domain");
+        assert!(blocked > 100, "{blocked} blocked");
     }
 
     #[test]
