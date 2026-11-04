@@ -827,6 +827,16 @@ value = 1000
 min = 10
 unit = "ms"
 
+[health.log_flush_poll_ms]
+doc = "How often the exit flush retries handing its request to the event-log queue while that queue is full."
+value = 5
+min = 1
+unit = "ms"
+
+[health.msg_flush_skipped]
+doc = "Event-log detail when the exit flush gave up: the log queue stayed full or its writer was gone."
+value = "event log not flushed at exit: its queue was full or its writer gone"
+
 [health.log_keep_lines]
 doc = "Lines kept when the event log is trimmed."
 value = 200
