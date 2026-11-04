@@ -298,8 +298,12 @@ function prgStop(p, on, home) {
   function linked(k) { return k < items.length || inexact.slice(0, k).some(function (b) { return b; }); }
   var k = Math.min(items.length, max);
   while (k > 1 && text.plain(whatOf(k)).length > ah.cfgNum(linked(k) ? 'pair_rule.what_budget_more' : 'pair_rule.what_budget')) k--;
+  // an agent short of a task (f2) needs a NEW task: changing an owner cannot supply a missing slot, so its step says create
+  var anyInexact = inexact.some(function (b) { return b; }), insteadKey = f2.length === 0 ? (anyInexact ? 'pair_rule.msg_stop_instead_full' : 'pair_rule.msg_stop_instead')
+    : f3.length === 0 ? (anyInexact ? 'pair_rule.msg_stop_instead_create_full' : 'pair_rule.msg_stop_instead_create')
+    : (anyInexact ? 'pair_rule.msg_stop_instead_full' : 'pair_rule.msg_stop_instead_mixed');
   var reason = text.message('block', ah.cfg('pair_rule.guard_name'), {
-    what: whatOf(k), why: ah.cfg('pair_rule.msg_stop_why'), instead: ah.cfg(inexact.some(function (b) { return b; }) ? 'pair_rule.msg_stop_instead_full' : 'pair_rule.msg_stop_instead'),
+    what: whatOf(k), why: ah.cfg('pair_rule.msg_stop_why'), instead: ah.cfg(insteadKey),
     extra: full, details: linked(k),
   });
   return { exact: { code: 0, out: text.blockJson(reason), err: '' } };

@@ -234,7 +234,7 @@ fn stop_live_named_agent_without_task_blocks_and_names_it() {
     let o = w.stop(&t, true, serde_json::json!({}));
     assert!(o.1.contains(GUARD) && o.1.contains("agent \\\"wake-worker\\\" owns no task"), "names the agent: {o:?}");
     assert!(
-        o.1.contains("TaskUpdate a task per listed agent to owner=its name (TaskCreate if none)"),
+        o.1.contains("TaskCreate a new task per listed agent, owner = its full name (TaskUpdate cannot add one)"),
         "names the step that gives the agent a task, on the visible line: {o:?}"
     );
     assert!(!o.1.contains("follow the saved instructions"), "the step is short enough to be shown, not replaced by a pointer: {o:?}");
@@ -427,7 +427,15 @@ fn stop_missing_task_slot_names_the_step_that_creates_the_task() {
     w.track(&["job 1", "job 2"]);
     let agents = [("job 1", Some("reviewer-2")), ("job 2", Some("reviewer-2"))];
     let o = w.stop(&transcript(&[task(1, "in_progress", Some("reviewer-2"))], &agents), true, serde_json::json!({}));
-    assert!(o.1.contains(GUARD) && o.1.contains("TaskCreate"), "the block names the step that adds a task: {o:?}");
+    assert!(
+        o.1.contains(GUARD) && o.1.contains("TaskCreate a new task per listed agent, owner = its full name (TaskUpdate cannot add one)"),
+        "the visible block text says to create a task owned by the agent's full name: {o:?}"
+    );
+    assert!(o.1.contains("reviewer-2"), "the listed item names reviewer-2: {o:?}");
+    assert!(!o.1.contains("TaskUpdate a task per listed agent"), "the old update-first instruction is gone: {o:?}");
+    // switch off: the same input is the base (empty) output
+    let off = w.stop(&transcript(&[task(1, "in_progress", Some("reviewer-2"))], &agents), false, serde_json::json!({}));
+    assert!(!pair_text(&off) && off.1.is_empty(), "switch off equals base: {off:?}");
     // zero tasks and one live agent: same
     let w = World::new("stop-slot-zero");
     w.track(&["job 1"]);
