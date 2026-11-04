@@ -122,9 +122,8 @@ impl Rig {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if on {
-            c.env("ANTIHALL_STYLE_RULE", "1");
-        }
+        // forced either way, so the off cases hold whatever the shipped default is
+        c.env("ANTIHALL_STYLE_RULE", if on { "1" } else { "0" });
         let mut ch = c.spawn().unwrap();
         ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
@@ -250,6 +249,25 @@ fn a_table_without_outer_pipes_and_a_fence_nested_in_a_longer_one_are_not_prose(
             let r = rig.run(host, &rig.stop(host, ask, &prose(40)), true);
             assert!(!said(&r).contains(MARKER), "{host}: {ask}: every form of explain and specify is exempt: {r:?}");
         }
+    }
+}
+
+/// Round 2: a list marker followed by a fence run, inside a fence, is code. The exact reply of the review: the outer fence holds the
+/// marker line and 19 more lines (20 lines, inside the code allowance), the prompt is a plain request. Both hosts, the switch on and off.
+#[test]
+fn a_list_marker_and_a_fence_run_inside_a_fence_do_not_close_it() {
+    for host in HOSTS {
+        let rig = Rig::new(&format!("marker-fence-{host}"));
+        let reply = format!("```\n- ```\n{}```", "a\n".repeat(19));
+        let switch = [true, false];
+        for on in switch {
+            let r = rig.run(host, &rig.stop(host, "Apply the patch.", &reply), on);
+            assert_eq!((r.0, r.1.as_str(), r.2.as_str()), (0, "", ""), "{host}, switch {on}: valid fenced code is left alone: {r:?}");
+        }
+        // a proper close still closes: the prose after it is held
+        let closed = format!("```\n- ```\n{}```\n{}", "a\n".repeat(5), prose(40));
+        let r = rig.run(host, &rig.stop(host, "Apply the patch.", &closed), true);
+        assert!(said(&r).contains(MARKER), "{host}: a real closer still ends the fence: {r:?}");
     }
 }
 

@@ -21,6 +21,32 @@ function rsQuote(line) {
   return m ? m[0].split('>').length - 1 : 0;
 }
 
+// The width of a run of indentation (a tab counts reply_length.tab_width columns).
+function rsWidth(ws) {
+  return ws.split('\t').join(' '.repeat(ah.cfgNum('reply_length.tab_width'))).length;
+}
+
+// The container of an opening fence: {ch, len} its run, q the blockquote depth, b the content width of its list marker(s) after the last
+// quote marker (its own leading indent does not count; 0 with no list marker).
+function rsOpener(prefix, run) {
+  var tail = prefix.slice(prefix.lastIndexOf('>') + 1);
+  return { ch: run.charAt(0), len: run.length, q: prefix.split('>').length - 1, b: tail.trim() === '' ? 0 : rsWidth(tail.trimStart()) };
+}
+
+// True when `line` closes the fence `o`: the same blockquote depth, then (after whitespace only: no list marker, no text) a run of the
+// same character, at least as long, with nothing after it, indented at most reply_length.fence_close_indent past the list marker's
+// content width. Anything else is code (a doubtful closer is never a closer).
+function rsCloses(line, o) {
+  var quote = jx.re('reply_length.fence_quote_re', ''), rest = line, m, k;
+  for (k = 0; k < o.q; k++) {
+    m = quote.exec(rest);
+    if (!m) return false;
+    rest = rest.slice(m[0].length);
+  }
+  m = jx.re('reply_length.fence_close_re', '').exec(rest);
+  return !!m && m[2].charAt(0) === o.ch && m[2].length >= o.len && rsWidth(m[1]) <= o.b + ah.cfgNum('reply_length.fence_close_indent');
+}
+
 // Classify every line of the reply: 'fence' (a fence marker line), 'code' (inside a fenced block), 'table' (a GFM table: header, delimiter
 // row and body rows), 'blank' or 'text' (prose). Fences follow CommonMark (backtick or tilde runs of 3 or more, an info string, a closer
 // of the same character and at least the same length with nothing after it; an unclosed fence runs to the end). A table is found by its
@@ -28,20 +54,19 @@ function rsQuote(line) {
 // another block start (reply_length.table_break_re) or a change of quote depth.
 function rsClassify(lines) {
   var fence = jx.re('reply_length.fence_re', ''), delim = ah.cfg('reply_length.table_delim_re'), brk = ah.cfg('reply_length.table_break_re');
-  var pipe = ah.cfg('reply_length.table_pipe'), quote = jx.re('reply_length.table_quote_re', ''), slack = ah.cfgNum('reply_length.fence_close_indent');
-  var kind = [], inCode = false, run = '', prefixLen = 0, i, fm;
+  var pipe = ah.cfg('reply_length.table_pipe'), quote = jx.re('reply_length.table_quote_re', '');
+  var kind = [], open = null, i, fm;
   for (i = 0; i < lines.length; i++) {
-    fm = fence.exec(lines[i]);
-    if (inCode) {
-      // a fence closes only on a run of the same character, at least as long as the opener, with nothing after it
-      if (fm && fm[2].charAt(0) === run.charAt(0) && fm[2].length >= run.length && fm[3].trim() === '' && fm[1].length <= prefixLen + slack) {
-        inCode = false;
+    if (open) {
+      if (rsCloses(lines[i], open)) {
+        open = null;
         kind.push('fence');
       } else kind.push('code');
-    } else if (fm && !(fm[2].charAt(0) === '`' && fm[3].indexOf('`') >= 0)) {
-      inCode = true;
-      run = fm[2];
-      prefixLen = fm[1].length;
+      continue;
+    }
+    fm = fence.exec(lines[i]);
+    if (fm && !(fm[2].charAt(0) === '`' && fm[3].indexOf('`') >= 0)) {
+      open = rsOpener(fm[1], fm[2]);
       kind.push('fence');
     } else kind.push(lines[i].trim() === '' ? 'blank' : 'text');
   }

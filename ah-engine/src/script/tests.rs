@@ -4318,9 +4318,8 @@ mod r_style_counters {
         let h = home(tag);
         std::fs::write(format!("{h}/t.jsonl"), format!("{}\n", lines.join("\n"))).unwrap();
         let mut pairs = vec![("HOME".to_string(), h.clone())];
-        if on {
-            pairs.push(("ANTIHALL_STYLE_RULE".into(), "1".into()));
-        }
+        // the switch is forced either way, so these tests hold whatever the shipped default is
+        pairs.push(("ANTIHALL_STYLE_RULE".into(), if on { "1" } else { "0" }.into()));
         let mut p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": tag, "cwd": h});
         if let Some(r) = reply {
             p["last_assistant_message"] = json!(r);
@@ -4436,7 +4435,7 @@ mod r_style_counters {
         let grid = |head: &str, delim: &str, n: usize, row: &dyn Fn(usize) -> String| format!("{head}\n{delim}\n{}", rows(n, row));
         let wide = |i: usize| format!("row {i:02} description | {}", "a".repeat(45));
         let nest = |open: &str, inner: &str, close: &str, body: String| format!("{open}\n{inner}\n{body}\n{inner}\n{close}");
-        vec![
+        let base = vec![
             // ---- GFM tables ----
             ("table without outer pipes (the reported input)", grid("name | value", "--- | ---", 25, &wide), false),
             ("table with outer pipes", grid("| name | n |", "|---|---|", 30, &|i| format!("| row {i} | {i} |")), false),
@@ -4491,7 +4490,55 @@ mod r_style_counters {
             ("a backtick info string with a backtick is not a fence", format!("``` a`b\n{prose}"), true),
             ("prose after the real close is counted", format!("````\n```\n{}\n```\n````\n{prose}", a(10)), true),
             ("code excess over its allowance", format!("```\n{}\n```", a(90)), true),
-        ]
+        ];
+        let mut all = base;
+        // ---- the closer must be nothing but a fence: a marker-like line inside a fence is code (round 2: `- ```` closed the fence) ----
+        let inside = |line: &str| format!("```\n{line}\n{}\n```", a(25));
+        let markers = [
+            ("a dash list marker and a run is code", "- ```"),
+            ("a star list marker and a run is code", "* ```"),
+            ("a plus list marker and a run is code", "+ ```"),
+            ("a numbered (dot) list marker and a run is code", "1. ```"),
+            ("a numbered (paren) list marker and a run is code", "2) ```"),
+            ("a quote marker and a run in an unquoted fence is code", "> ```"),
+            ("text before a run is code", "text ```"),
+            ("a tab before a run (4 columns) is code", "\t```"),
+            ("a list marker with an info string is code", "- ```js"),
+        ];
+        for (name, line) in markers {
+            all.push((name, inside(line), false));
+        }
+        all.push(("a list marker and a tilde run inside a tilde fence is code", format!("~~~\n- ~~~\n{}\n~~~", a(25)), false));
+        all.push(("a numbered marker and a longer run inside a fence is code", format!("```\n1) `````\n{}\n```", a(25)), false));
+        let quoted = |line: &str| format!("> ```\n{line}\n{}\n> ```", rows(25, |_| "> a".into()));
+        all.push(("a deeper quote marker and a run in a quoted fence is code", quoted("> > ```"), false));
+        all.push(("a list marker after the quote marker is code", quoted("> - ```"), false));
+        all.push(("an unquoted run inside a quoted fence stays code (lenient)", quoted("```"), false));
+        // an indented opener: the opener's own spaces do not widen the closer's allowance
+        all.push(("3 spaces opener, a 6 space run is code", format!("   ```\n      ```\n{}\n   ```", a(25)), false));
+        all.push(("3 spaces opener, an unindented run closes", format!("   ```\n{}\n```\n{prose}", a(10)), true));
+        // a list opener: the content width of the marker is the base of the closer's indent
+        let item = |close: &str| format!("- ```\n{}\n{close}\n{prose}", rows(10, |_| "  a".into()));
+        all.push(("list opener, a 2 space closer closes", item("  ```"), true));
+        all.push(("list opener, a 5 space closer closes", item("     ```"), true));
+        all.push(("list opener, a 6 space run is code", format!("- ```\n{}\n      ```\n{}", rows(10, |_| "  a".into()), rows(25, |_| "  a".into())), false));
+        // openers behind any mix of quote and list markers
+        all.push(("quote inside a list item opens a fence", format!("- > ```\n{}\n  > ```", rows(40, |_| "  > a".into())), false));
+        all.push(("list marker inside a list marker opens a fence", format!("- - ```\n{}", a(40)), false));
+        all.push(("numbered item with a quote opens a fence", format!("1. > ```\n{}\n   > ```", rows(40, |_| "   > a".into())), false));
+        all.push(("a quote marker then a list marker opens a fence", format!("> - ```\n{}\n>   ```", rows(40, |_| ">   a".into())), false));
+        // controls: a proper closer still closes
+        all.push(("a proper closer after a marker-like line closes", format!("```\n- ```\n{}\n```\n{prose}", a(10)), true));
+        all.push(("a closer indented 3 columns after a quote marker closes", format!("> ```\n{}\n>    ```\n{prose}", rows(10, |_| "> a".into())), true));
+        // the table allowance is the survey's 30 rows
+        let note = rows(18, |i| format!("note {i}"));
+        all.push((
+            "30 table rows leave the 18 prose lines at the limit",
+            format!("{}\n\n{note}", grid("| a | b |", "|---|---|", 28, &|i| format!("| {i} | x |"))),
+            false,
+        ));
+        all.push(("the 31st table row counts as a line", format!("{}\n\n{note}", grid("| a | b |", "|---|---|", 29, &|i| format!("| {i} | x |"))), true));
+        all
     }
 
     #[test]

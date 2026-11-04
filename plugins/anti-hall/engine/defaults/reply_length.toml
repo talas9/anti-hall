@@ -64,8 +64,8 @@ min = 0
 max = 1000000
 
 [reply_length.table_allow_lines]
-doc = "Non-blank table rows (lines matching table_line_re) that do not count toward the line limit; only the excess counts."
-value = 40
+doc = "Table rows (the header, the delimiter row and the body rows of a GFM table) that do not count toward the line limit; only the excess counts (survey: 30)."
+value = 30
 min = 0
 max = 10000
 
@@ -76,13 +76,27 @@ min = 0
 max = 1000000
 
 [reply_length.fence_re]
-doc = "A line that carries a fenced code block marker (CommonMark; JavaScript pattern, matched per line): group 1 the prefix (indent, blockquote markers, a list marker), group 2 the fence run (3 or more backticks or tildes), group 3 the rest of the line (the info string). A backtick fence whose info string holds a backtick is not a fence. A fence closes only on a run of the same character, at least as long as the opener, with nothing after it, indented at most 3 columns past the opener's prefix; an unclosed fence runs to the end of the reply."
-value = '^(\s*(?:>\s?)*(?:(?:[-*+]|\d{1,9}[.)])\s+)?)(`{3,}|~{3,})([^\n]*)$'
+doc = "A line that opens a fenced code block (CommonMark; JavaScript pattern, per line): group 1 the prefix (any mix of indent, blockquote markers and list markers), group 2 the fence run (3 or more backticks or tildes), group 3 the info string. A backtick fence whose info string holds a backtick is not a fence. An unclosed fence runs to the end of the reply."
+value = '^((?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])[ \t]))*[ \t]*)(`{3,}|~{3,})([^\n]*)$'
+
+[reply_length.fence_close_re]
+doc = "A line that can close a fence once its blockquote markers are removed (JavaScript pattern): group 1 the indent, group 2 the run, nothing after it. Text or a list marker before the run is not a closer. The run must be of the opener's character and at least as long."
+value = '^([ \t]*)(`{3,}|~{3,})\s*$'
+
+[reply_length.fence_quote_re]
+doc = "One blockquote marker (JavaScript pattern), removed from a line once per quote level of the opener before the closer is read. A line with fewer markers than the opener closes nothing: it stays code (the unquoted run inside a quoted fence is code, not the spec's implicit close)."
+value = '^\s*>[ \t]?'
 
 [reply_length.fence_close_indent]
-doc = "How many columns past the opener's prefix a closing fence may be indented (CommonMark: 3)."
+doc = "How many columns a closing fence may be indented past the content width of the opener's list marker (CommonMark: 3; the opener's own leading spaces do not count)."
 value = 3
 min = 0
+max = 16
+
+[reply_length.tab_width]
+doc = "Columns one tab counts in a fence's indentation (CommonMark: 4)."
+value = 4
+min = 1
 max = 16
 
 [reply_length.table_delim_re]
