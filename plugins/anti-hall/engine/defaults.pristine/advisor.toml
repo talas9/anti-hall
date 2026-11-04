@@ -27,7 +27,7 @@ doc = "Blocks a plan written with no advisor call once. Default on, advisor sess
 value = { section = "guards", key = "advisorPlan", type = "boolean", env = "ANTIHALL_ADVISOR_PLAN", option = "", default = true }
 
 [advisor.sw_rank]
-doc = "Plan and retry rules only, main session only: skip the block when the main model ranks equal or higher than the advisor model; a subagent or an unknown model keeps the guard on. Default off."
+doc = "Skip plan/retry block if main >= advisor."
 value = { section = "guards", key = "advisorRank", type = "boolean", env = "ANTIHALL_ADVISOR_RANK", option = "", default = false }
 
 [advisor.model_ranks]

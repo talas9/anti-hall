@@ -5594,7 +5594,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
 | `advisor.summary` | `Advisor sessions only: blocks once a plan written with no advisor call this t...` |  |  | One-line description of the advisor-guard check in the generated reference. |
 | `advisor.sw_plan` | `6 entries` |  |  | Blocks a plan written with no advisor call once. Default on, advisor sessions only. |
-| `advisor.sw_rank` | `6 entries` |  |  | Plan and retry rules only, main session only: skip the block when the main model ranks equal or higher than the advisor model; a subagent or an unknown model keeps the guard on. Default off. |
+| `advisor.sw_rank` | `6 entries` |  |  | Skip plan/retry block if main >= advisor. |
 | `advisor.sw_retry` | `6 entries` |  |  | Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only. |
 | `advisor.sw_review` | `6 entries` |  |  | Blocks a review agent on a non-flagship model once. Default on, advisor sessions only. |
 | `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn announcing an advisor call not made. Default on, advisor sessions only. |

@@ -883,7 +883,8 @@ fn switch_off_equal_main_blocked_as_today() {
     assert_eq!(code, 2, "{out}");
     assert!(!out.contains("is below advisor") && !out.contains("unranked"), "{out}");
     // the env override set to false is the same as the default
-    let (code, _) = run_out("advisor-guard", &[("ANTIHALL_ADVISOR_RANK", "false")], &tool("rk8b", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
+    let (code, _) =
+        run_out("advisor-guard", &[("ANTIHALL_ADVISOR_RANK", "false")], &tool("rk8b", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
     assert_eq!(code, 2);
 }
 
@@ -1174,8 +1175,10 @@ fn p1_1_opus_main_phase3_rules_still_apply_when_main_is_a_non_flagship_tier() {
 fn p1_2_subagent_opus_with_opus_advisor_plan_write_still_blocked_all_sidechain_transcript() {
     let tp = transcript("pr2", &[&opus_att(), USER, &main_model("claude-opus-5-5")]);
     let head = r#"{"type":"user","agentId":"s1","isSidechain":true,"message":{"role":"user","content":"write the plan"}}"#;
-    let side_att = r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"}}"#;
-    let side_opus = r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"sub"}]}}"#;
+    let side_att =
+        r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"}}"#;
+    let side_opus =
+        r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"sub"}]}}"#;
     sub_transcript("pr2", "s1", &[head, side_att, side_opus]);
     let p = json!({"session_id": "pr2", "agent_id": "s1", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md", "content": "x"}, "transcript_path": tp});
     let (code, out) = run_out("advisor-guard", &[ON], &p);
@@ -1186,12 +1189,14 @@ fn p1_2_subagent_opus_with_opus_advisor_plan_write_still_blocked_all_sidechain_t
 #[test]
 fn p1_3_sidechain_advisor_attachment_with_opus_never_sets_advisor_model() {
     // the main thread's advisor is Opus, a sidechain attachment names Haiku: the Sonnet main must stay blocked
-    let side_haiku = r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-haiku-5","toolChange":"add"}}"#;
+    let side_haiku =
+        r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-haiku-5","toolChange":"add"}}"#;
     let (code, out) = rank_plan("pr3", &[&opus_att(), USER, &main_model("claude-sonnet-5-5"), side_haiku], None);
     assert_eq!(code, 2, "a sidechain attachment must not lower the advisor model to haiku: {out}");
     assert!(out.contains("main claude-sonnet-5-5 is below advisor claude-opus-5-5."), "{out}");
     // and a sidechain Opus attachment must not raise a Haiku advisor
-    let side_opus = r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"}}"#;
+    let side_opus =
+        r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"}}"#;
     let (code, _) = rank_plan("pr3b", &[&attach_with(Some(HAIKU_ATT)), USER, &main_model("claude-sonnet-5-5"), side_opus], None);
     assert_eq!(code, 0, "sonnet main vs the main thread's haiku advisor stays skipped");
 }
