@@ -1739,11 +1739,16 @@ each call's hook results before the token cuts, counts at most one fire per kind
 its hooks run quiet `quiet_reset` times in a row (the condition cleared). A due kind adds one `decision: block` to the next
 main-session `Stop`: two lines, one emoji, the required action and the consequence. A Stop with `stop_hook_active` never gets
 a ladder block, and any internal failure (corrupt state, a write that fails, a panic) adds nothing and is counted
-(`nudge_ladder_state_error` by `op`: read, parse, write, facts). A Stop at which a counted-block guard (`count_blocks`) ran, let it
-pass and had blocked before, for example task-guard at its own block cap, gets no ladder block of any kind, and no count of passes lifts that;
-the guard's own next block or its fact ending does. A kind that declares a fact (`live_flags`: tracker signals up on the session's agents;
-`live_tasks`: an open task) has it read fresh at every Stop: a fact that is gone clears the kind's entry (`acted`) so it can never block
-again, one that cannot be read blocks nothing and is counted. All ladder settings are off by default: `nudges.enabled`
+(`nudge_ladder_state_error` by `op`: read, parse, write, facts, subject). The ladder is a state machine over entries (idle, counting,
+pending, shown), tested in every transition. A guard's pass is read from the guard's OWN record, not from the ladder's history of it: a kind
+that declares a `guard` (`nudges.kinds`: its hook, its switch, its state-file prefixes; `nudges.guard_state` says how they are read) holds
+every ladder block at a Stop that hook let pass when its state files count a block in this session (task-guard at its own cap, with the
+guard's kind switched off, with the ladder enabled after the cap, or with the ladder's state lost); no count of passes lifts that, only the
+guard's own next block, its fact ending (the tasks are done) or its switch being turned off. A guard record that cannot be read blocks nothing
+and is counted (`facts`). A kind that declares a fact (`live_flags`: a tracker signal on an agent; `live_tasks`: an open task) has it read
+fresh at every Stop. A `live_flags` kind is kept per agent (`nudges.subjects`): a reminder counts for the agent its queue row names (the lines
+`agent-reminders` took), and that agent's own signal ending (or the agent being gone, finished or dead) clears its entry (`acted`) whatever any
+other agent does; a fire that names no agent is not counted (`subject`). A fact that cannot be read blocks nothing and is counted. All ladder settings are off by default: `nudges.enabled`
 (master switch; also gates the folding below, `ANTIHALL_NUDGES`) and `nudges.kinds` in settings.json (per-kind class override, `off` to stop watching one). Telemetry: one `check`
 event per step, hook `nudge-<kind>`, event `fired`, `repeated`, `escalated`, `blocked`, `acted` or `ignored`: the compliance
 metric. With `nudges.enabled` on, a Stop block also carries the advisories of the other hooks in its reason (`dispatch.msg_stop_advisories`,

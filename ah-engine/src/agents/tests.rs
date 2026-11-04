@@ -3412,8 +3412,10 @@ fn live_flags_names_the_signals_up_on_the_session_and_its_descendants_only() {
         None,
     );
     let flags = live_flags(&h, "s1", "").expect("readable");
-    assert_eq!(flags.iter().map(String::as_str).collect::<Vec<_>>(), vec!["stalled", "underparallel"], "{flags:?}");
-    assert!(live_flags(&h, "other", "").unwrap().contains("false_claim") && !live_flags(&h, "other", "").unwrap().contains("stalled"));
+    let by_agent: Vec<(&str, Vec<&str>)> = flags.iter().map(|(a, f)| (a.as_str(), f.iter().map(String::as_str).collect())).collect();
+    assert_eq!(by_agent, vec![("w1", vec!["stalled"]), ("w2", vec!["underparallel"])], "each signal is listed under the agent it is up on: {flags:?}");
+    let other = live_flags(&h, "other", "").unwrap();
+    assert!(other.get("x1").is_some_and(|f| f.contains("false_claim")) && !other.contains_key("w1"));
     assert!(live_flags(&h, "nobody", "").unwrap().is_empty(), "a session with no agents has no signals up");
 }
 
@@ -3423,7 +3425,7 @@ fn live_flags_finds_the_session_by_its_transcript_and_says_nothing_it_cannot_rea
     let mut main = agent_with("m1", "", &[]);
     main.path = "/x/t.jsonl".into();
     put_state(&h, vec![main, agent_with("w1", "m1", &["stalled"])], None);
-    assert!(live_flags(&h, "unrelated-id", "/x/t.jsonl").unwrap().contains("stalled"), "the transcript names the session's agent");
+    assert!(live_flags(&h, "unrelated-id", "/x/t.jsonl").unwrap().get("w1").is_some_and(|f| f.contains("stalled")), "the transcript names the session's agent");
     assert!(live_flags(&h, "unrelated-id", "/x/other.jsonl").unwrap().is_empty());
     put_state(&h, vec![], Some("{not json"));
     assert!(live_flags(&h, "s1", "").is_none(), "state that is not valid is unreadable, not empty");
@@ -3432,4 +3434,54 @@ fn live_flags_finds_the_session_by_its_transcript_and_says_nothing_it_cannot_rea
     assert!(live_flags(&h, "s1", "").is_none(), "state over its size cap is unreadable");
     std::fs::remove_file(h.join(".anti-hall/agent-tracker/state.json")).unwrap();
     assert!(live_flags(&h, "s1", "").is_none(), "no state file: nothing can be said");
+}
+
+fn put_queue(h: &std::path::Path, key: &str, lines: &[&str], cursor: Option<&str>) {
+    let dir = h.join(".anti-hall/agent-tracker/reminders");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{key}.ndjson")), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+    if let Some(c) = cursor {
+        std::fs::write(dir.join(format!("{key}.ndjson.cursor")), c).unwrap();
+    }
+}
+
+fn qrow(agent: &str, signal: &str) -> String {
+    serde_json::json!({"id": "r", "signal": signal, "agent": agent, "text": format!("{agent} {signal}")}).to_string()
+}
+
+#[test]
+fn delivered_since_returns_the_rows_before_the_cursor_that_the_caller_has_not_seen() {
+    let h = home("delivered-since");
+    let (a, b, c, d) = (qrow("w1", "stalled"), qrow("w2", "stalled"), qrow("w3", "hung"), qrow("w4", "stalled"));
+    put_queue(&h, "s1", &[&a, &b, &c, &d], Some("3"));
+    let agents = |prev: Option<u64>, first: u64, most: u64| {
+        delivered_since(&h, "s1", prev, first, most, 1 << 20).map(|(cur, rows)| (cur, rows.into_iter().map(|r| r.agent).collect::<Vec<_>>()))
+    };
+    assert_eq!(agents(Some(1), 8, 8), Some((3, vec!["w2".into(), "w3".into()])), "rows 1..3: the fourth line is not delivered yet");
+    assert_eq!(agents(None, 2, 8), Some((3, vec!["w2".into(), "w3".into()])), "no earlier look: the last `first` delivered rows");
+    assert_eq!(agents(Some(0), 8, 2), Some((3, vec!["w2".into(), "w3".into()])), "and never more than `most` rows");
+    assert_eq!(agents(Some(3), 8, 8), Some((3, vec![])), "nothing new since the last look");
+    assert_eq!(
+        agents(Some(9), 8, 8),
+        Some((3, vec!["w1".into(), "w2".into(), "w3".into()])),
+        "a cursor that moved back (the queue was rebuilt) is read as no earlier look"
+    );
+    let row = delivered_since(&h, "s1", Some(0), 8, 8, 1 << 20).unwrap().1.remove(0);
+    assert_eq!((row.signal.as_str(), row.text.as_str()), ("stalled", "w1 stalled"));
+}
+
+#[test]
+fn delivered_since_says_nothing_it_cannot_read_and_nothing_for_a_queue_that_does_not_exist() {
+    let h = home("delivered-since-unreadable");
+    assert_eq!(delivered_since(&h, "s1", None, 4, 8, 1 << 20), Some((0, vec![])), "no queue: nothing was delivered");
+    put_queue(&h, "s1", &[&qrow("w1", "stalled"), "{not json", &qrow("w2", "stalled")], Some("3"));
+    let rows = delivered_since(&h, "s1", Some(0), 8, 8, 1 << 20).unwrap().1;
+    assert_eq!(rows.iter().map(|r| r.agent.as_str()).collect::<Vec<_>>(), vec!["w1", "w2"], "a line that is not a row is skipped, as the check skips it");
+    assert!(delivered_since(&h, "s1", Some(0), 8, 8, 10).is_none(), "a queue over the size cap cannot be attributed");
+    put_queue(&h, "s1", &[&qrow("w1", "stalled")], Some("garbage"));
+    assert_eq!(
+        delivered_since(&h, "s1", None, 4, 8, 1 << 20).map(|(c, r)| (c, r.len())),
+        Some((0, 0)),
+        "a cursor that is no number is zero, as the check reads it"
+    );
 }

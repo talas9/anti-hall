@@ -865,7 +865,7 @@ fn the_guards_cap_is_absolute_no_count_of_permitted_stops_turns_a_held_stall_int
     let rows = [("T-3 [Owner/blocked] wait", "pending")];
     tracker_state(&w, Some(true)); // the stall is real: only the guard's pass keeps the ladder from blocking
     two_stall_fires(&w, &rows, &ON);
-    assert!(ladder_state(&w).contains("\"stalled_agents\""), "the stall escalation is due: {}", ladder_state(&w));
+    assert!(ladder_state(&w).contains("stalled_agents|w1"), "the stall escalation is due: {}", ladder_state(&w));
     let mut passes = 0;
     for n in 1..=16 {
         let o = enforce_stop_env(&w, &rows, &ON);
@@ -884,7 +884,7 @@ fn a_resolved_stall_clears_its_entry_and_can_no_longer_block_a_stop() {
     let empty: [(&str, &str); 0] = [];
     tracker_state(&w, Some(true));
     two_stall_fires(&w, &empty, &ON);
-    assert!(ladder_state(&w).contains("\"stalled_agents\"") && ladder_state(&w).contains("\"pending\":true"), "due: {}", ladder_state(&w));
+    assert!(ladder_state(&w).contains("stalled_agents|w1") && ladder_state(&w).contains("\"pending\":true"), "due: {}", ladder_state(&w));
     tracker_state(&w, Some(false)); // the agent made progress: the stall is over
     let o = enforce_stop_env(&w, &empty, &ON);
     assert!(!o.contains("Required next") && !o.contains("\"decision\""), "a resolved stall blocks nothing: {o}");
@@ -943,4 +943,271 @@ fn with_the_ladder_forced_off_a_stall_is_never_kept_or_blocked() {
     let o = enforce_stop_env(&w, &empty, &off);
     assert!(!o.contains("Required next"), "{o}");
     assert!(!w.path("state/nudge-ladder").exists(), "the switch is off: no ladder state is written");
+}
+
+// ---- the ladder as a state machine over per-agent entries and the guard's own record (class fix round 3, GH #518) ----
+
+/// The tracker's persisted state: each `(id, parent, signals up)` an agent of session `s1` (a parent of `s1` is a child of the session,
+/// any other parent makes a grandchild).
+fn tracker_agents(w: &World, agents: &[(&str, &str, &[&str])]) {
+    let mut st = ah_engine::agents::State::default();
+    for (id, parent, flags) in agents {
+        let mut a = ah_engine::agents::Agent { id: (*id).into(), kind: "subagent".into(), parent: (*parent).into(), ..Default::default() };
+        for f in *flags {
+            a.flags.insert((*f).into(), ah_engine::agents::Flag::default());
+        }
+        st.agents.insert((*id).into(), a);
+    }
+    let path = w.path("home/.anti-hall/agent-tracker/state.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, serde_json::to_string(&st).unwrap()).unwrap();
+}
+
+/// One reminder row about `agent` in the session's queue. `named` false writes a row that names no agent.
+fn queue_reminder(w: &World, id: &str, agent: &str, named: bool) {
+    let dir = w.path("home/.anti-hall/agent-tracker/reminders");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = format!(
+        "agent tracker: subagent {agent} is STALLED: no observable change (transcript, tool calls, commits, files) for 16m. Message it, stop it, or re-dispatch it with a narrower brief."
+    );
+    let mut row = serde_json::json!({"id": id, "signal": "stalled", "text": text});
+    if named {
+        row["agent"] = agent.into();
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("s1.ndjson")).unwrap();
+    writeln!(f, "{row}").unwrap();
+}
+
+fn settings_json(w: &World, body: &str) {
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    std::fs::write(w.path("home/.anti-hall/settings.json"), body).unwrap();
+}
+
+const OPEN: [(&str, &str); 1] = [("T-3 [Owner/blocked] wait", "pending")];
+const DONE: [(&str, &str); 1] = [("T-3 [Owner/blocked] wait", "completed")];
+const OFF: [(&str, &str); 1] = [("ANTIHALL_NUDGES", "0")];
+
+/// Stop until task-guard's own blocks are spent (the idle block, then the priority-tag blocks): the number of Stops that blocked.
+fn run_to_the_cap(w: &World, rows: &[(&str, &str)], env: &[(&str, &str)]) -> usize {
+    let blocks = (0..8).filter(|_| enforce_stop_env(w, rows, env).contains("\"decision\":\"block\"")).count();
+    assert_eq!(blocks, 3, "task-guard blocks the idle set once and the priority tag twice, then lets the Stop pass");
+    blocks
+}
+
+/// `n` stalled-reminder deliveries about `agents` (one prompt each, a Stop in between ends the turn): the escalation of each is due
+/// after the second.
+fn remind_twice(w: &World, rows: &[(&str, &str)], agents: &[&str], env: &[(&str, &str)]) {
+    let prompt = stalled_prompt(w, rows);
+    for (round, ids) in [("r0", "a"), ("r1", "b")] {
+        for agent in agents {
+            queue_reminder(w, &format!("{round}{ids}{agent}"), agent, true);
+        }
+        prompt_run_env(w, &prompt, env);
+        if round == "r0" {
+            enforce_stop_env(w, rows, env);
+        }
+    }
+}
+
+fn required_next(out: &str) -> bool {
+    out.contains("Required next")
+}
+
+#[test]
+fn a_pending_stall_never_blocks_a_stop_task_guards_cap_lets_pass_with_the_idle_kind_switched_off() {
+    // round 2 finding 1: with the kind off the ladder keeps no history of task-guard, yet the cap still decides the Stop
+    let w = World::new("l3-kind-off");
+    settings_json(&w, r#"{"nudges":{"kinds":{"idle_open_tasks":"off"}}}"#);
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    run_to_the_cap(&w, &OPEN, &ON);
+    remind_twice(&w, &OPEN, &["w1"], &ON);
+    assert!(ladder_state(&w).contains("stalled_agents|w1") && ladder_state(&w).contains("\"pending\":true"), "due: {}", ladder_state(&w));
+    for n in 1..=12 {
+        let o = enforce_stop_env(&w, &OPEN, &ON);
+        assert!(!required_next(&o) && !o.contains("\"decision\""), "Stop {n}: the cap permits it: {o}");
+    }
+    assert!(enforce_stop_env(&w, &DONE, &ON).contains("Required next"), "positive control: with the tasks done the guard holds nothing and the stall is shown");
+}
+
+#[test]
+fn a_pending_stall_never_blocks_a_stop_a_cap_reached_before_the_ladder_was_enabled_lets_pass() {
+    // round 2 finding 1, second path: the ladder never saw task-guard block
+    let w = World::new("l3-late-enable");
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    run_to_the_cap(&w, &OPEN, &OFF);
+    assert!(!w.path("state/nudge-ladder").exists(), "the ladder was off: it kept nothing");
+    remind_twice(&w, &OPEN, &["w1"], &ON);
+    for n in 1..=12 {
+        let o = enforce_stop_env(&w, &OPEN, &ON);
+        assert!(!required_next(&o) && !o.contains("\"decision\""), "Stop {n}: {o}");
+    }
+    assert!(enforce_stop_env(&w, &DONE, &ON).contains("Required next"), "positive control");
+}
+
+#[test]
+fn the_guards_own_record_holds_after_the_ladders_state_is_lost() {
+    let w = World::new("l3-state-lost");
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    run_to_the_cap(&w, &OPEN, &ON);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(w.path("state/nudge-ladder"))); // pruned, or the session's file was removed
+    remind_twice(&w, &OPEN, &["w1"], &ON);
+    for n in 1..=6 {
+        let o = enforce_stop_env(&w, &OPEN, &ON);
+        assert!(!required_next(&o) && !o.contains("\"decision\""), "Stop {n}: {o}");
+    }
+}
+
+#[test]
+fn a_guard_that_is_switched_off_holds_nothing_even_with_its_old_record_on_disk() {
+    let w = World::new("l3-guard-off");
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    run_to_the_cap(&w, &OPEN, &ON);
+    remind_twice(&w, &OPEN, &["w1"], &ON);
+    assert!(!required_next(&enforce_stop_env(&w, &OPEN, &ON)), "held while task-guard is on");
+    settings_json(&w, r#"{"guards":{"taskGuard":false}}"#);
+    assert!(required_next(&enforce_stop_env(&w, &OPEN, &ON)), "task-guard is off: it permits nothing, so nothing is contradicted");
+}
+
+#[test]
+fn the_cap_holds_with_both_task_guard_block_kinds_counted_in_total() {
+    // N Stops: task-guard's three blocks, then the ladder adds none: the blocks of the whole run are exactly task-guard's
+    let w = World::new("l3-total");
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    let prompt = stalled_prompt(&w, &OPEN);
+    let mut blocks = 0;
+    for n in 0..20 {
+        if n == 1 || n == 3 {
+            queue_reminder(&w, &format!("r{n}"), "w1", true);
+            prompt_run_env(&w, &prompt, &ON);
+        }
+        let o = enforce_stop_env(&w, &OPEN, &ON);
+        blocks += usize::from(o.contains("\"decision\":\"block\""));
+        assert!(!required_next(&o), "Stop {n}: {o}");
+    }
+    assert_eq!(blocks, 3, "exactly task-guard's own three blocks over 20 Stops");
+}
+
+#[test]
+fn a_stop_hook_active_stop_never_carries_a_ladder_block_even_when_nothing_holds_it() {
+    let w = World::new("l3-active");
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    let empty: [(&str, &str); 0] = [];
+    remind_twice(&w, &empty, &["w1"], &ON);
+    std::fs::write(w.path("t.jsonl"), task_list(&empty)).unwrap();
+    let active = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "stop_hook_active": true, "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let (code, out, _) = stop_run_env(&w, "task-guard", &active, &ON);
+    assert_eq!((code, required_next(&out)), (0, false), "{out}");
+    assert!(ladder_state(&w).contains("\"pending\":true"), "held for the next Stop: {}", ladder_state(&w));
+    assert!(required_next(&enforce_stop_env(&w, &empty, &ON)), "and shown at the next one that may carry it");
+}
+
+#[test]
+fn a_resolved_workers_escalation_does_not_survive_through_another_worker() {
+    // round 2 finding 2: w1 was reminded twice and has since recovered; w2 stalls and has had no reminder
+    let w = World::new("l3-w1-w2");
+    let empty: [(&str, &str); 0] = [];
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    remind_twice(&w, &empty, &["w1"], &ON);
+    assert!(ladder_state(&w).contains("stalled_agents|w1"), "{}", ladder_state(&w));
+    tracker_agents(&w, &[("w1", "s1", &[]), ("w2", "s1", &["stalled"])]);
+    let o = enforce_stop_env(&w, &empty, &ON);
+    assert!(!required_next(&o) && !o.contains("\"decision\""), "w2 has had no reminder: {o}");
+    assert!(!ladder_state(&w).contains("stalled_agents"), "and w1's entry is gone: {}", ladder_state(&w));
+    let again = enforce_stop_env(&w, &empty, &ON);
+    assert!(!required_next(&again), "and stays gone: {again}");
+}
+
+#[test]
+fn a_worker_that_is_finished_dead_or_gone_ends_its_escalation_whatever_its_flags_say() {
+    for how in ["finished", "dead", "gone"] {
+        let w = World::new(&format!("l3-{how}"));
+        let empty: [(&str, &str); 0] = [];
+        tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+        remind_twice(&w, &empty, &["w1"], &ON);
+        let path = w.path("home/.anti-hall/agent-tracker/state.json");
+        let mut st: ah_engine::agents::State = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let a = st.agents.get_mut("w1").unwrap();
+        match how {
+            "finished" => a.finished = true,
+            "dead" => a.dead = true,
+            _ => a.gone = true,
+        }
+        std::fs::write(&path, serde_json::to_string(&st).unwrap()).unwrap();
+        assert!(!required_next(&enforce_stop_env(&w, &empty, &ON)), "{how}: its stale flag blocks nothing");
+        assert!(!ladder_state(&w).contains("stalled_agents"), "{how}: {}", ladder_state(&w));
+    }
+}
+
+#[test]
+fn two_workers_reminded_once_each_do_not_escalate_and_the_one_reminded_twice_does() {
+    let w = World::new("l3-once-each");
+    let empty: [(&str, &str); 0] = [];
+    tracker_agents(&w, &[("w1", "s1", &["stalled"]), ("w2", "s1", &["stalled"])]);
+    let prompt = stalled_prompt(&w, &empty);
+    queue_reminder(&w, "a1", "w1", true);
+    queue_reminder(&w, "a2", "w2", true);
+    prompt_run_env(&w, &prompt, &ON);
+    assert!(!required_next(&enforce_stop_env(&w, &empty, &ON)), "one reminder each: neither is due");
+    queue_reminder(&w, "b1", "w1", true);
+    prompt_run_env(&w, &prompt, &ON);
+    let st = ladder_state(&w);
+    assert!(st.contains("stalled_agents|w1") && st.contains("stalled_agents|w2"), "each worker has its own entry: {st}");
+    let o = enforce_stop_env(&w, &empty, &ON);
+    assert!(required_next(&o) && o.contains("Shown 2x"), "w1 was reminded twice: {o}");
+}
+
+#[test]
+fn a_worker_that_recovers_and_stalls_again_starts_counting_from_one() {
+    let w = World::new("l3-restall");
+    let empty: [(&str, &str); 0] = [];
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    remind_twice(&w, &empty, &["w1"], &ON);
+    tracker_agents(&w, &[("w1", "s1", &[])]);
+    assert!(!required_next(&enforce_stop_env(&w, &empty, &ON)), "recovered");
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    queue_reminder(&w, "c0", "w1", true);
+    prompt_run_env(&w, &stalled_prompt(&w, &empty), &ON);
+    assert!(!required_next(&enforce_stop_env(&w, &empty, &ON)), "one reminder of the new stall: not due");
+}
+
+#[test]
+fn a_stall_still_up_blocks_when_another_worker_that_was_also_reminded_twice_has_recovered() {
+    let w = World::new("l3-other-recovers");
+    let empty: [(&str, &str); 0] = [];
+    tracker_agents(&w, &[("w1", "s1", &["stalled"]), ("w2", "s1", &["stalled"])]);
+    remind_twice(&w, &empty, &["w1", "w2"], &ON);
+    tracker_agents(&w, &[("w1", "s1", &["stalled"]), ("w2", "s1", &[])]);
+    let o = enforce_stop_env(&w, &empty, &ON);
+    assert!(required_next(&o), "w1 is still stalled and was reminded twice: {o}");
+    let st = ladder_state(&w);
+    assert!(!st.contains("stalled_agents|w2") && st.contains("stalled_agents|w1"), "{st}");
+}
+
+#[test]
+fn a_grandchild_is_a_subject_too() {
+    let w = World::new("l3-grandchild");
+    let empty: [(&str, &str); 0] = [];
+    tracker_agents(&w, &[("w1", "s1", &[]), ("w3", "w1", &["stalled"])]);
+    remind_twice(&w, &empty, &["w3"], &ON);
+    assert!(required_next(&enforce_stop_env(&w, &empty, &ON)), "a stalled grandchild of the session escalates");
+    let w2 = World::new("l3-grandchild-done");
+    tracker_agents(&w2, &[("w1", "s1", &[]), ("w3", "w1", &["stalled"])]);
+    remind_twice(&w2, &empty, &["w3"], &ON);
+    tracker_agents(&w2, &[("w1", "s1", &["stalled"]), ("w3", "w1", &[])]);
+    assert!(!required_next(&enforce_stop_env(&w2, &empty, &ON)), "the grandchild recovered; its parent stalling is not its escalation");
+}
+
+#[test]
+fn a_reminder_that_names_no_worker_is_not_counted_and_blocks_nothing() {
+    let w = World::new("l3-unnamed");
+    let empty: [(&str, &str); 0] = [];
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    let prompt = stalled_prompt(&w, &empty);
+    for n in 0..4 {
+        queue_reminder(&w, &format!("n{n}"), "w1", false);
+        prompt_run_env(&w, &prompt, &ON);
+        let o = enforce_stop_env(&w, &empty, &ON);
+        assert!(!required_next(&o), "Stop {n}: {o}");
+    }
+    assert!(!ladder_state(&w).contains("stalled_agents"), "{}", ladder_state(&w));
 }

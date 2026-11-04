@@ -597,10 +597,16 @@ pub(crate) fn load_state(env: &Env) -> State {
     }
 }
 
-/// The signal names up now on the agents of one session (itself, its children and theirs; agents that are gone, finished or dead
-/// raise none), read from the tracker's persisted state for the nudge ladder's fact check. `None`: the file is absent, over its size
-/// cap or not valid state, so nothing can be said (the ladder then blocks nothing on a signal it cannot verify).
-pub(crate) fn live_flags(home: &std::path::Path, session: &str, transcript: &str) -> Option<std::collections::BTreeSet<String>> {
+/// The signal names up now, per agent id, on the agents of one session (itself, its children and theirs; agents that are gone,
+/// finished or dead raise none, and an agent with no signal up is not listed), read from the tracker's persisted state for the nudge
+/// ladder's fact check. The agent id is the subject a reminder names (`Reminder::agent`), so a fact is checked per agent, never over
+/// the union of them. `None`: the file is absent, over its size cap or not valid state, so nothing can be said (the ladder then
+/// blocks nothing on a signal it cannot verify).
+pub(crate) fn live_flags(
+    home: &std::path::Path,
+    session: &str,
+    transcript: &str,
+) -> Option<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>> {
     let p = home.join(pth("base")).join(pth("dir")).join(pth("state"));
     if std::fs::metadata(&p).ok()?.len() > lim("state_max_bytes") {
         return None;
@@ -616,7 +622,54 @@ pub(crate) fn live_flags(home: &std::path::Path, session: &str, transcript: &str
             break;
         }
     }
-    Some(st.agents.values().filter(|a| mine.contains(&a.id) && !(a.gone || a.finished || a.dead)).flat_map(|a| a.flags.keys().cloned()).collect())
+    Some(
+        st.agents
+            .values()
+            .filter(|a| mine.contains(&a.id) && !(a.gone || a.finished || a.dead) && !a.flags.is_empty())
+            .map(|a| (a.id.clone(), a.flags.keys().cloned().collect()))
+            .collect(),
+    )
+}
+
+/// One reminder row a hook event put in front of the agent that owns a queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivered {
+    /// The agent the reminder is about (`Reminder::agent`).
+    pub agent: String,
+    /// The signal that raised it.
+    pub signal: String,
+    /// The reminder's text.
+    pub text: String,
+}
+
+/// The reminders the `agent-reminders` check took from the queue of `key` (an agent or session id) since line `prev`, and the line the
+/// queue's cursor stands at now: `(cursor, rows)`. The check counts the non-empty lines of the queue file and keeps the number it
+/// took in `<queue>.cursor`, so the lines before the cursor are the delivered ones. With no `prev` (the caller never looked) the last
+/// `first` of them are returned; at most `most` rows are ever returned. `None`: the queue file is over `max_bytes` or cannot be
+/// read, so nothing can be said about who a reminder was about.
+pub(crate) fn delivered_since(home: &std::path::Path, key: &str, prev: Option<u64>, first: u64, most: u64, max_bytes: u64) -> Option<(u64, Vec<Delivered>)> {
+    let dir = home.join(pth("base")).join(pth("dir")).join(pth("reminders"));
+    let queue = dir.join(format!("{}{}", sinks::key_of(key), pth("queue_ext")));
+    let cursor_file = dir.join(format!("{}{}{}", sinks::key_of(key), pth("queue_ext"), pth("cursor_ext")));
+    let cursor: u64 = std::fs::read_to_string(&cursor_file).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+    let text = match std::fs::metadata(&queue) {
+        Ok(m) if m.len() > max_bytes => return None,
+        Ok(_) => std::fs::read_to_string(&queue).ok()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+    let lines: Vec<&str> = text.split('\n').filter(|l| !l.is_empty()).collect();
+    let end = cursor.min(lines.len() as u64);
+    let from = prev.filter(|p| *p <= end).map_or_else(|| end.saturating_sub(first), |p| p.max(end.saturating_sub(most)));
+    let field = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let rows = lines
+        .iter()
+        .skip(from as usize)
+        .take(end.saturating_sub(from) as usize)
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|v| Delivered { agent: field(&v, "agent"), signal: field(&v, "signal"), text: field(&v, "text") })
+        .collect();
+    Some((end, rows))
 }
 
 /// A child's launch identity for the guards: (the tool call id that launched it, its agent type), each "" when unknown. Both come
