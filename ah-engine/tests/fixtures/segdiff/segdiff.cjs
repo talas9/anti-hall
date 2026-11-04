@@ -20,6 +20,7 @@ const splitSegments = vm.runInContext('splitSegments', ctx);
 
 const NL = '\n', VT = '\v', CR = '\r', BS = '\\';
 // [name, source]; `\\`-free: backslashes are written with BS so the table reads as the shell text
+const generated = [];
 const cores = [
   // an ESCAPED break before `#` leaves the `#` literal, so the call after it is live (the P0)
   ['esc-space', 'echo a' + BS + ' #; @X'],
@@ -105,6 +106,15 @@ const cores = [
   ['arith-comment', 'echo $((1+2)) #@U' + NL + '@X'],
   ['dq-nested-quotes', 'echo "$(echo "#" )" #@U' + NL + '@X'],
   ['sq-in-subst', "x=$(echo '#'); @X"],
+  // arithmetic / expansion variants (third review pass): bash reads `#` inside `(( ))` as arithmetic text
+  ['arith-for-hash-live', 'for (( i=0 # ; i<1; i++ )); do :; done; @X; @X'],
+  ['arith-cmd-hash', '(( 1 # ))' + '; @X'],
+  ['arith-cmd-hash-tight', '((1#2)); @X'],
+  ['pid-then-quote', 'echo $$' + "'x" + BS + "'; @X; echo ''"],
+  ['dq-brace-then-comment', 'echo "${1}"' + NL + '# @C' + NL + '@X'],
+  ['dq-subst-then-comment', 'echo "$(true)"' + NL + '# @C' + NL + '@X'],
+  ['dq-bt-then-comment', 'echo "`true`"' + NL + '# @C' + NL + '@X'],
+  ['dq-brace-two-lines', 'echo "${1}" "${2}"' + NL + 'echo b' + NL + '# @C' + NL + '@X'],
   // heredocs
   ['heredoc-hash-body', 'cat <<EOF >/dev/null' + NL + '# @T' + NL + 'EOF' + NL + '@X'],
   ['heredoc-quoted-body', "cat <<'EOF' >/dev/null" + NL + '@T #' + NL + 'EOF' + NL + '@X'],
@@ -117,6 +127,17 @@ const cores = [
   ['eval-sq', "eval 'echo a #@T'; @X"],
   ['eval-esc', "eval 'echo a" + BS + ";#; @X'"],
 ];
+// generated combinations: every construct is glued to every tail; each tag is auto-classified by what bash really did
+// (executed => the guard must hold it live). No claim is made on tags bash did not run (the explicit table above covers those).
+const constructs = ['echo a', 'echo $$', 'echo $#', 'echo ${#x}', 'echo "${1}"', 'echo "$(true)"', 'echo "`true`"', '(( 1 ))', '(( 1 # ))', 'for (( i=0 # ; i<1; i++ )); do :; done',
+  'echo $(( 1 ))', 'echo $(( 1 # ))', 'echo $(true)', 'echo `true`', '(echo a)', '{ echo a; }', 'echo a' + BS, 'echo a' + BS + BS, "echo $'x'", "echo 'x'", 'echo "x"',
+  'cat <<E >/dev/null' + NL + 'b' + NL + 'E', 'echo a' + BS + NL + 'echo b', 'echo $$' + "'y'", 'echo ${x:-a}', 'echo "${x:-a}" "$(echo b)"'];
+const joiners = [' #', ';#', ' ;#', '&&#', ' && #', ' | #', NL + '#', NL + ' #', NL + NL + '#', '; #', ' #' + BS + NL + '#', CR + NL + '#', '#', ' # c' + NL];
+for (let ci = 0; ci < constructs.length; ci++) for (let ji = 0; ji < joiners.length; ji++) {
+  generated.push(['gen' + ci + '-' + ji, constructs[ci] + joiners[ji] + '@A' + NL + '@A']);
+  generated.push(['gen' + ci + '-' + ji + 'b', constructs[ci] + joiners[ji] + ' x; @A']);
+}
+cores.push(...generated);
 const prefixes = [['plain', ''], ['shebang', '#!/bin/bash' + NL], ['header-comment', '# header @C' + NL], ['tail-comment', 'echo start; # tail @C' + NL]];
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'segdiff-'));
@@ -131,7 +152,7 @@ for (const [pn, prefix] of prefixes) {
   for (const [cn, core] of cores) {
     let k = 0;
     const kinds = {};
-    const text = (prefix + core).replace(/@([XCUT])/g, (_, kind) => {
+    const text = (prefix + core).replace(/@([XCUTA])/g, (_, kind) => {
       const tag = kind.toLowerCase() + String(++k).padStart(3, '0');
       kinds[tag] = kind;
       return (k % 2 ? 'git commit -m ' : 'git push ') + tag;
@@ -144,13 +165,29 @@ for (const [pn, prefix] of prefixes) {
     const r = cp.spawnSync('/bin/bash', [script], { cwd: dir, env, timeout: 10000, encoding: 'utf8' });
     const ran = new Set((fs.readFileSync(log, 'utf8').match(/\b[xcut]\d{3}\b/g)) || []);
     const segs = splitSegments(text);
-    const live = (tag) => segs.some((s) => new RegExp('\\b' + tag + '\\b').test(s));
+    // @C premise: the tag must sit in comment text, not a quoted span. Swap each @C tag for an unbalanced quote pair: in a comment
+    // bash still runs every executed call; inside a quote / expansion it does not.
+    if (Object.values(kinds).includes('C')) {
+      let k3 = 0;
+      const alt = (prefix + core).replace(/@([XCUTA])/g, (_, kind) => { const tag = 'x' + String(++k3).padStart(3, '0'); return kind === 'C' ? "'\"" : (k3 % 2 ? 'git commit -m ' : 'git push ') + tag; });
+      fs.writeFileSync(log, '');
+      fs.writeFileSync(script, alt);
+      cp.spawnSync('/bin/bash', [script], { cwd: dir, env, timeout: 10000, encoding: 'utf8' });
+      const ran2 = fs.readFileSync(log, 'utf8');
+      for (const [tag, kind] of Object.entries(kinds)) if (kind === 'X' && ran.has(tag) && !new RegExp('\\b' + tag.replace(/^./, 'x') + '\\b').test(ran2)) fails.push(name + ': @C tag sits in a quoted span (bash behaves differently when it is replaced by quotes)\n    snippet=' + JSON.stringify(text));
+    }
+    const nested = /^(bash|sh|eval)-/.test(cn);
+    // live = a segment that STARTS with the git call holding the tag (a tag merely sitting inside some other segment's text, e.g. a
+    // quote the lexer wrongly left open, is not a call the guard can see). Nested-shell cases keep the looser contains-test.
+    const liveAny = (tag) => segs.some((s) => new RegExp('\\b' + tag + '\\b').test(s));
+    const live = (tag) => segs.some((s) => nested ? new RegExp('\\b' + tag + '\\b').test(s) : new RegExp('^\\s*git (commit -m|push) ' + tag + '\\b').test(s));
     for (const [tag, kind] of Object.entries(kinds)) {
       const bad = [];
       if (kind === 'X') { execCalls++; if (!ran.has(tag)) bad.push('premise: bash did not execute ' + tag + ' (bash status ' + r.status + ', stderr ' + JSON.stringify(r.stderr) + ')'); else if (!live(tag)) bad.push('BYPASS: bash executed ' + tag + ' but no live segment holds it'); }
+      else if (kind === 'A') { if (ran.has(tag) && !live(tag)) bad.push('BYPASS: bash executed generated ' + tag + ' but no live segment holds it'); }
       else {
         if (ran.has(tag)) bad.push('premise: bash executed ' + kind + ' tag ' + tag);
-        if (kind === 'C') { hidden++; if (live(tag)) bad.push('FALSE BLOCK: comment text ' + tag + ' is a live segment'); }
+        if (kind === 'C') { hidden++; if (liveAny(tag)) bad.push('FALSE BLOCK: comment text ' + tag + ' is a live segment'); }
       }
       if (bad.length) fails.push(name + ': ' + bad.join('; ') + '\n    snippet=' + JSON.stringify(text) + '\n    segments=' + JSON.stringify(segs));
     }
