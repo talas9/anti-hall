@@ -62,6 +62,7 @@ mod mesh_no_node_defers;
 mod no_compiled_config;
 mod no_hardcoded_tunables;
 mod nodeback;
+mod notice_turn_e2e;
 mod operator_parity;
 mod process_env_reads;
 mod prompt_emit_dispatch;

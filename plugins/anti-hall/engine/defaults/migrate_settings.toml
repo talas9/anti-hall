@@ -158,6 +158,7 @@ value = [
   "{\"section\":\"context\",\"key\":\"injectGateCommsEvery\",\"type\":\"number\",\"default\":30,\"min\":1,\"env\":\"ANTIHALL_INJECT_GATE_COMMS_EVERY\"}",
   "{\"section\":\"context\",\"key\":\"injectGateSwarm\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_INJECT_GATE_SWARM\"}",
   "{\"section\":\"context\",\"key\":\"injectGateSwarmEvery\",\"type\":\"number\",\"default\":20,\"min\":1,\"env\":\"ANTIHALL_INJECT_GATE_SWARM_EVERY\"}",
+  "{\"section\":\"context\",\"key\":\"injectGateNoticeTurns\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_NOTICE_TURNS\"}",
   "{\"section\":\"context\",\"key\":\"shrinkInline\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_CONTEXT_SHRINK\"}",
   "{\"section\":\"context\",\"key\":\"inlineHookChars\",\"type\":\"number\",\"default\":1500,\"min\":0,\"env\":\"ANTIHALL_CONTEXT_INLINE_HOOK\"}",
   "{\"section\":\"context\",\"key\":\"inlineEventChars\",\"type\":\"number\",\"default\":6000,\"min\":0,\"env\":\"ANTIHALL_CONTEXT_INLINE_EVENT\"}",
