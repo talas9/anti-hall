@@ -102,14 +102,16 @@ function prgScope(p, home, event) {
   return null;
 }
 
-// The open tasks of the session ([] with `.unreadable` when the list cannot be read exactly).
+// The open tasks of the session (null when the list cannot be read exactly: no transcript, an unreadable one or a tail read inexactly is
+// missing evidence, never "no open tasks").
 function prgOpenTasks(p, home) {
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string' || !home) return null;
   var given = p.session_id ? String(p.session_id) : '';
-  var tasks = tk.tasks(tp, home, given === '' ? undefined : given);
-  if (tasks.unsure) return null;
-  return tasks.filter(tk.isOpen);
+  var r = tk.tasksOf(home, given === '' ? undefined : given, tp, 'guard');
+  if (r.unsure) ah.unable('tasks:tail_unsure');
+  if (r.unsure || r.unreadable) return null;
+  return (r.tasks || []).filter(tk.isOpen);
 }
 
 // The launched agents of the transcript with their launch name and liveness: [{id, description, name, live}] (null when unreadable). Only
@@ -176,18 +178,19 @@ function prgStop(p, on, home) {
   var live = rows.filter(function (r) { return r.name !== '' && r.live === true; });
   var unknown = rows.filter(function (r) { return r.name !== '' && r.live === null; });
   if (unknown.length > 0) prgSuppressed('liveness_unknown', unknown.length);
-  var owned = open.filter(function (t) { return t.owner && !prgCoordinator(t.owner); });
+  var owned = open.filter(function (t) { return t.owner; });
   var paired = {}, loose = {}, f3 = [];
   owned.forEach(function (t) {
     var o = prgLc(t.owner), exact = -1, near = -1;
     live.forEach(function (r, i) {
       if (exact < 0 && prgLc(r.name) === o) exact = i;
-      else if (near < 0 && prgLooseOwner(t.owner, r)) near = i;
+      else if (near < 0 && !prgCoordinator(t.owner) && prgLooseOwner(t.owner, r)) near = i;
     });
     if (exact >= 0) { paired[exact] = true; return; }
-    if (near < 0) return;
+    // F3 speaks only for an in-progress task; a task in another open status that names the agent loosely does not attend it (F2 fires)
+    if (near < 0 || ah.cfg('taskstate.in_progress_statuses').indexOf(tk.statusLc(t)) < 0) return;
     loose[near] = true;
-    if (ah.cfg('taskstate.in_progress_statuses').indexOf(tk.statusLc(t)) >= 0) f3.push({ task: t, row: live[near] });
+    f3.push({ task: t, row: live[near] });
   });
   var f2 = [], seen = {};
   live.forEach(function (r, i) {

@@ -313,3 +313,39 @@ fn switch_off_stop_is_silent_and_counts_observed() {
     let o = w.stop(&t, false, serde_json::json!({}));
     assert!(!pair_text(&o), "switch off: nothing printed: {o:?}");
 }
+
+#[test]
+fn stop_pending_task_owned_by_description_is_not_a_bypass() {
+    // review fix: a loose description match used to suppress F2 while F3 only reads in-progress tasks, so a pending task escaped both
+    let w = World::new("stop-pending-loose");
+    w.track(&["port the wake"]);
+    let t = transcript(&[task(1, "pending", Some("port the wake"))], &[("port the wake", Some("wake-worker"))]);
+    let o = w.stop(&t, true, serde_json::json!({}));
+    assert!(o.1.contains(GUARD) && o.1.contains("agent \\\"wake-worker\\\" owns no task"), "the pending task does not pair the agent: {o:?}");
+    let off = w.stop(&t, false, serde_json::json!({}));
+    assert!(!pair_text(&off), "switch off: nothing printed: {off:?}");
+}
+
+#[test]
+fn stop_agent_named_main_pairs_with_the_task_owned_main() {
+    // review fix: the coordinator-owner filter ran before the exact pairing, so an agent literally named "main" was reported unpaired
+    let w = World::new("stop-main");
+    w.track(&["port the wake"]);
+    let t = transcript(&[task(1, "in_progress", Some("main"))], &[("port the wake", Some("main"))]);
+    let o = w.stop(&t, true, serde_json::json!({}));
+    assert!(!pair_text(&o), "owner main equals the launch name main: {o:?}");
+}
+
+#[test]
+fn post_unreadable_transcript_is_suppressed() {
+    // review fix: no task store and no readable transcript is missing evidence, not "no open task names the agent"
+    let w = World::new("post-unreadable");
+    let t = transcript(&[task(1, "in_progress", Some("someone-else"))], &[("port the wake", Some("wake-worker"))]);
+    let twin = w.post("wake-worker", &t, true);
+    assert!(pair_text(&twin), "the twin: a readable transcript with no owner match gets the advisory: {twin:?}");
+    let p = serde_json::json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("missing.jsonl"),
+        "tool_name": "Agent", "tool_input": {"description": "port the wake", "prompt": "do it", "name": "wake-worker", "run_in_background": true},
+        "tool_response": {"status": "async_launched", "agentId": "a000000000000001"}});
+    let o = w.hook("PostToolUse", "Agent", "claude", &p, true);
+    assert!(!pair_text(&o), "an unreadable transcript is missing evidence: {o:?}");
+}
