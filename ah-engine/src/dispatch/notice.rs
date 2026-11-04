@@ -4,14 +4,27 @@
 //! before they run, as a `when` predicate would (nothing is decided, nothing is lost).
 //!
 //! The kind of a prompt is counted whether or not the switch is on (`notice_turn_matched{kind}`), so the share of notice turns is
-//! measured before the switch is turned on; only the drop and `notice_turn_skipped{kind,check}` need the switch. Every pattern is
+//! measured before the switch is turned on; only the drop and `notice_turn_skipped{kind,check}` need the switch. The plan is made in
+//! the hook client, a process of its own, so the planner does not bump a counter there (it would die with the process): it notes what
+//! it saw in [`Seen`], the request carries that to the daemon (`Meta::notice`), and the daemon counts it ([`count`]). Every pattern is
 //! anchored at the start of the prompt, so a human sentence that merely mentions a notice never matches. The patterns, the events,
 //! the prompt window and the skipped checks are all in `defaults/notice_turn.toml`. Fails open: an unreadable pattern matches nothing.
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::settings::get_bool;
 use crate::defaults;
+use crate::metrics::Metrics;
 use crate::reqenv::RequestEnv;
 use serde_json::Value;
+
+/// What the planner saw of a notice turn: its kind and the dispatch entries it dropped (switch on). Rides the request to the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Seen {
+    /// The kind name (a key of `notice_turn.kinds`).
+    pub kind: String,
+    /// The ids of the entries dropped from the plan (a variant suffix may be on them).
+    #[serde(default)]
+    pub skipped: Vec<String>,
+}
 
 /// The compiled kind table: (kind name, pattern), in the table's order.
 fn kinds() -> std::sync::Arc<Vec<(&'static str, regex::Regex)>> {
@@ -35,17 +48,15 @@ fn base(id: &str) -> &str {
 }
 
 /// The kind of notice turn this occurrence is, when `event` is listed and the payload's prompt is a string; the first kind of the
-/// table whose pattern matches the first `notice_turn.prompt_chars` characters wins. Counts `notice_turn_matched{kind}` (both
-/// switch states). `None` for a human prompt, an unlisted event or a payload without a string prompt.
+/// table whose pattern matches the first `notice_turn.prompt_chars` characters wins (the caller records it in [`Seen`], whatever the
+/// switch says). `None` for a human prompt, an unlisted event or a payload without a string prompt.
 pub fn kind_of(event: &str, payload: &Value) -> Option<&'static str> {
     if !defaults::list("notice_turn.events").contains(&event) {
         return None;
     }
     let prompt = payload.get("prompt")?.as_str()?;
     let head: String = prompt.chars().take(defaults::num("notice_turn.prompt_chars") as usize).collect();
-    let kind = kinds().iter().find(|(_, re)| re.is_match(&head)).map(|(name, _)| *name)?;
-    crate::metrics::bump("notice_turn_matched", &[("kind", kind)]);
-    Some(kind)
+    kinds().iter().find(|(_, re)| re.is_match(&head)).map(|(name, _)| *name)
 }
 
 /// Whether `context.injectGateNoticeTurns` is on for this request.
@@ -58,9 +69,19 @@ pub fn skips(id: &str) -> bool {
     defaults::list("notice_turn.skip_checks").contains(&base(id))
 }
 
-/// Count one skipped check of a `kind` notice turn: `notice_turn_skipped{kind,check}`.
-pub fn count_skipped(kind: &str, id: &str) {
-    crate::metrics::bump("notice_turn_skipped", &[("kind", kind), ("check", base(id))]);
+/// The daemon's side: add one `notice_turn_matched{kind}` and one `notice_turn_skipped{kind,check}` per dropped check. Only a kind of
+/// `notice_turn.kinds` and a check of `notice_turn.skip_checks` is counted, so a request cannot make up a series.
+pub fn count(m: &mut Metrics, seen: &Seen) {
+    let Some(kind) = kinds().iter().map(|(name, _)| *name).find(|name| *name == seen.kind) else {
+        return;
+    };
+    m.inc("notice_turn_matched", &[("kind", kind)]);
+    let listed = defaults::list("notice_turn.skip_checks");
+    for id in &seen.skipped {
+        if let Some(check) = listed.iter().find(|c| **c == base(id)) {
+            m.inc("notice_turn_skipped", &[("kind", kind), ("check", check)]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -126,6 +147,20 @@ mod tests {
         }
         assert!(skips("verify-first") && skips("task-tracker#2") && skips("switch-notice:host=claude"));
         assert!(!skips("idle-agent-sweep") && !skips("agent-reminders") && !skips("devswarm-parent-inbox") && !skips("auto-handover"));
+    }
+
+    #[test]
+    fn notice_turn_the_daemon_counts_only_listed_kinds_and_checks() {
+        let seen = |kind: &str, skipped: &[&str]| Seen { kind: kind.into(), skipped: skipped.iter().map(|s| s.to_string()).collect() };
+        let mut m = Metrics::default();
+        count(&mut m, &seen("peer", &["verify-first", "task-tracker#2", "idle-agent-sweep", "made-up"]));
+        count(&mut m, &seen("not-a-kind", &["verify-first"]));
+        let v = |name: &str, l: &[(&str, &str)]| m.counter(name, l);
+        assert_eq!(v("notice_turn_matched", &[("kind", "peer")]), 1);
+        assert_eq!(v("notice_turn_skipped", &[("kind", "peer"), ("check", "verify-first")]), 1);
+        assert_eq!(v("notice_turn_skipped", &[("kind", "peer"), ("check", "task-tracker")]), 1, "a variant suffix is ignored");
+        assert_eq!(v("notice_turn_skipped", &[("kind", "peer"), ("check", "idle-agent-sweep")]), 0, "a check outside the list is not counted");
+        assert_eq!(v("notice_turn_matched", &[("kind", "not-a-kind")]) + v("notice_turn_skipped", &[("kind", "not-a-kind"), ("check", "verify-first")]), 0);
     }
 
     #[test]

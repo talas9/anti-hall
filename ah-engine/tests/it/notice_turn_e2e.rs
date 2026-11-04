@@ -5,8 +5,9 @@
 //!   verify-first and task-tracker reminders are not in the answer.
 //! * Switch on and a human prompt, or switch off and a notice: both are there, as they always were.
 //!
-//! The counters are checked in `src/dispatch/notice.rs` and `src/script/tests.rs` (a count made outside the daemon is dropped, so the
-//! in-process dispatcher cannot show them). Each test has its own HOME and state directory.
+//! The counters are checked through a real daemon in `dispatch_e2e.rs` (`notice_turn_counters_reach_the_daemons_metrics_...`): the plan
+//! is made in the client and the daemon counts it, so this in-process dispatcher cannot show them. Each test has its own HOME and
+//! state directory.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use serde_json::json;
