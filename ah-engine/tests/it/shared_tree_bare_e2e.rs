@@ -56,3 +56,25 @@ fn a_negation_in_the_clause_keeps_the_shared_tree_note_through_the_real_hook() {
         assert!(off.contains("another agent is already writing in this working tree"), "switch off keeps the note: {prompt}: {off}");
     }
 }
+
+/// The three P1 inputs of the round-2 review, byte for byte, plus the repeated affirmative: through the real hook, switch on keeps the
+/// note for the negated ones (as switch off does) and exempts the repeated affirmative statement.
+#[test]
+fn the_reviewed_class_inputs_keep_the_shared_tree_note_through_the_real_hook() {
+    let h = scratch("bare-class");
+    let warn = "another agent is already writing in this working tree";
+    for prompt in [
+        "Do not (e.g. after testing) use ~/x as the working copy; fix hooks/foo.js and commit.",
+        "Do not/never use ~/x as the working copy; fix hooks/foo.js and commit.",
+        "Don\u{2bc}t use ~/x as the working copy; fix hooks/foo.js and commit.",
+        "Use ~/x as the working copy\u{2014}avoid/work around shared state; fix hooks/foo.js and commit.",
+        "Use ~/x as the working copy\n- not even temporarily; fix hooks/foo.js and commit.",
+    ] {
+        let on = spawn_prompt(&h, true, prompt);
+        assert!(on.contains(warn), "switch on keeps the note: {prompt:?}: {on}");
+        assert_eq!(on, spawn_prompt(&h, false, prompt), "switch on equals switch off for a negated brief: {prompt:?}");
+    }
+    let dup = "Use ~/x as the working copy; use ~/x as the working copy; fix hooks/foo.js and commit.";
+    assert_eq!(spawn_prompt(&h, true, dup), "", "a repeated affirmative statement is exempt");
+    assert!(spawn_prompt(&h, false, dup).contains(warn), "switch off keeps the note");
+}
