@@ -85,10 +85,12 @@ fn fill_time(s: &str, now: f64) -> String {
     out
 }
 
-/// Does the case run at the pinned clock?
+/// Does the case run at the pinned clock? A case with time tokens or an `age_ms` file does; so does one that sets `"pin_clock": true`
+/// (a check whose answer depends on the calendar date, e.g. repo-self-drift's model-KB audit age, must not drift with the real clock).
+/// A pinned case may set `"now_ms": n` to run at that clock instead of [`NOW0`] (the stale model-KB advisory needs a date past the threshold).
 fn pinned(case: &Value) -> bool {
     let text = case.to_string();
-    !time_tokens(&text).is_empty() || text.contains("\"age_ms\"")
+    !time_tokens(&text).is_empty() || text.contains("\"age_ms\"") || case.get("pin_clock") == Some(&Value::Bool(true))
 }
 
 fn fill(s: &str, home: &str, real: &str, now: f64) -> String {
@@ -149,7 +151,7 @@ impl Drop for Laid {
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn lay(case: &Value) -> Laid {
-    if pinned(case) { lay_at(case, NOW0, true) } else { lay_at(case, crate::checks::replykit::io::now_ms(), false) }
+    if pinned(case) { lay_at(case, case.get("now_ms").and_then(Value::as_f64).unwrap_or(NOW0), true) } else { lay_at(case, crate::checks::replykit::io::now_ms(), false) }
 }
 
 /// Lay a case out at `now`; `pinned` says the script's clock is set to it when the case runs.
@@ -157,10 +159,13 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
     let mut times: Vec<(String, String)> = time_tokens(&case.to_string()).into_iter().map(|(tok, kind, off)| (time_text(&kind, now, off), tok)).collect();
     times.sort_by_key(|(t, _)| std::cmp::Reverse(t.len()));
     times.dedup();
-    // A request's temp root defaults to /tmp, and work under it is not counted as file-changing: a home inside /tmp (Linux) would
-    // silence every case that edits a file there, so it lives in /var/tmp instead.
+    // A request's temp roots (os.tmpdir() = /tmp by default, plus `command.tmp_fixed_roots`: /tmp and /private/tmp) are not counted as
+    // file-changing: a home inside one would silence every case that edits a file there (and let a background script through as a
+    // scratch script), so it lives in `command.golden_redirect_root` instead. This holds whatever TMPDIR the test run uses (a lane's TMPDIR sits under /private/tmp).
     let base = std::env::temp_dir();
-    let base = if base.starts_with("/tmp") && Path::new("/var/tmp").is_dir() { PathBuf::from("/var/tmp") } else { base };
+    let in_tmp_root = |b: &Path| defaults::list("command.tmp_fixed_roots").iter().any(|r| b.starts_with(r));
+    let redirect = PathBuf::from(defaults::text("command.golden_redirect_root"));
+    let base = if in_tmp_root(&base) && redirect.is_dir() { redirect } else { base };
     let home = base.join(format!("ah-golden-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
     crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(&home).unwrap();
