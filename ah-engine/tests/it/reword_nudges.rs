@@ -116,6 +116,20 @@ impl Plug {
     }
 
     fn hook_in(&self, home: &str, event: &str, host: &str, payload: &Value, env: &[(&str, &str)]) -> String {
+        self.hook_raw(home, event, host, &payload.to_string(), env)
+    }
+
+    /// Rewrites a whole defaults file (an owner edit that is not one text inside one `value` line).
+    fn rewrite(&self, file: &str, f: impl Fn(&str) -> String) {
+        let path = self.root.join("engine/defaults").join(file);
+        let src = std::fs::read_to_string(&path).unwrap();
+        let out = f(&src);
+        assert_ne!(src, out, "{file}: the rewrite changed nothing");
+        std::fs::write(&path, out).unwrap();
+    }
+
+    /// The same real hook call with the payload text as given (so a test can send duplicate keys, odd spacing and the like).
+    fn hook_raw(&self, home: &str, event: &str, host: &str, payload: &str, env: &[(&str, &str)]) -> String {
         self.runs.set(self.runs.get() + 1);
         let h = self.s.dir.join(home);
         std::fs::create_dir_all(h.join(".anti-hall")).unwrap();
@@ -123,7 +137,7 @@ impl Plug {
         let mut c = self.s.cmd(&["hook", "--event", event, "--host", host], env);
         c.env("HOME", &h).env("AH_ENGINE_PLUGIN_ROOT", &self.root).env("CLAUDE_PLUGIN_ROOT", &self.root);
         let mut ch = c.spawn().unwrap();
-        ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+        ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
         let err = String::from_utf8_lossy(&o.stderr).into_owned();
         assert_eq!(o.status.code(), Some(0), "{event}/{host}: {err}");
@@ -241,6 +255,121 @@ fn the_codex_main_seat_keeps_its_full_note_and_an_edited_codex_note_is_honoured_
         let out = edited.hook("SessionStart", "codex", &codex_start(), &env_of(ROLE_SW, sw, &[]));
         assert!(out.contains("EDITED GUIDE:"), "switch {sw}: {out}");
     }
+}
+
+// ---- role note: EVERY key the full note reads (not only msg_note and describe) keeps the full, edited note with the switch on and off ----
+
+/// Both switch positions give the same full note, which carries `needle`; the one-line note must not appear.
+fn full_note_either_way(p: &Plug, needle: &str) {
+    let off = p.hook("SubagentStart", "claude", &sub_start(), &env_of(ROLE_SW, "0", &[]));
+    let on = p.hook("SubagentStart", "claude", &sub_start(), &env_of(ROLE_SW, "1", &[]));
+    assert!(off.contains(needle) && off.contains(STOCK_NOTE_HEAD), "off: {off}");
+    assert_eq!(on, off, "the switch must not change an edited note");
+    assert!(!on.contains(SHORT_SUB), "{on}");
+    // the switch left unset (the shipped default, on) behaves like an explicit on
+    let unset = p.hook("SubagentStart", "claude", &sub_start(), &QUIET);
+    assert_eq!(unset, on, "switch unset: the default must honour the edit too");
+}
+
+#[test]
+fn an_edited_more_clause_is_used_with_the_switch_on_and_off() {
+    // the verb list is cut at 240 characters so the clause is printed; the clause alone is edited first (limit untouched), then with the limit
+    let p = Plug::new("rn-more", &[("roles.toml", "roles.msg_note_more", " (+{n} more, see the guide)", " OWNER-MORE-{n}")]);
+    full_note_either_way(&p, "Engine verbs you may run:");
+    let q = Plug::new(
+        "rn-more-cut",
+        &[("roles.toml", "roles.msg_note_more", " (+{n} more, see the guide)", " OWNER-MORE-{n}"), ("roles.toml", "roles.note_max", "900", "240")],
+    );
+    full_note_either_way(&q, "OWNER-MORE-");
+}
+
+#[test]
+fn an_edited_none_text_is_used_with_the_switch_on_and_off() {
+    let p = Plug::new("rn-none", &[("roles.toml", "roles.msg_none", "none", "OWNER-NONE")]);
+    full_note_either_way(&p, "Engine verbs you may run:");
+    // a matrix row set without the subagent role, as the review fixture did
+    p.rewrite("roles.toml", |s| s.replace("\"subagent\", ", ""));
+    full_note_either_way(&p, "Engine verbs you may run: OWNER-NONE.");
+}
+
+#[test]
+fn a_raised_note_limit_is_used_with_the_switch_on_and_off() {
+    let p = Plug::new("rn-raise", &[("roles.toml", "roles.note_max", "900", "1200")]);
+    full_note_either_way(&p, "(role: subagent)");
+}
+
+#[test]
+fn an_edited_skill_reference_is_used_with_the_switch_on_and_off() {
+    let host = Plug::new("rn-skillhost", &[("roles.toml", "roles.skill_host", "ref = \"/anti-hall:{skill}\"", "ref = \"/owner-ref:{skill}\"")]);
+    full_note_either_way(&host, "Full guide: /owner-ref:engine");
+    let name = Plug::new("rn-skillname", &[("roles.toml", "roles.main_skill", "{ name = \"engine\"", "{ name = \"owner-engine\"")]);
+    full_note_either_way(&name, "Full guide: /anti-hall:owner-engine");
+}
+
+#[test]
+fn an_edited_note_with_more_than_one_key_edited_is_used_with_the_switch_on_and_off() {
+    let p = Plug::new(
+        "rn-multi",
+        &[
+            ("roles.toml", "roles.msg_note", "anti-hall engine: you are", "OWNER: you are"),
+            ("roles.toml", "roles.msg_none", "none", "OWNER-NONE"),
+            ("roles.toml", "roles.msg_note_more", " (+{n} more, see the guide)", " OWNER-MORE-{n}"),
+        ],
+    );
+    full_note_either_way(&p, "OWNER: you are");
+}
+
+#[test]
+fn an_edited_more_clause_is_used_for_every_payload_shape_with_the_switch_on_and_off() {
+    let p = Plug::new(
+        "rn-shapes",
+        &[("roles.toml", "roles.msg_note_more", " (+{n} more, see the guide)", " OWNER-MORE-{n}"), ("roles.toml", "roles.note_max", "900", "240")],
+    );
+    let shapes = [
+        r#"{"agent_type":"Explore","agent_id":"nested-1","hook_event_name":"SubagentStart","session_id":"new-01","cwd":"/tmp"}"#,
+        r#"{ "session_id" : "new-02", "agent_id":"λ-2", "agent_type":"general-purpose", "hook_event_name":"SubagentStart", "cwd":"/tmp" }"#,
+        r#"{"session_id":"new-03","agent_id":"3","agent_type":"general-purpose","hook_event_name":"SubagentStart","input":{"note":{"prompt":"only carefully review"}}}"#,
+        r#"{"session_id":"new-04","agent_id":"4","agent_type":"general-purpose","hook_event_name":"SubagentStart","agent_id":"last-4"}"#,
+        r#"{"hook_event_name":"SubagentStart","session_id":"new-05","agent_type":"general-purpose","agent_id":"5","cwd":"/tmp","prompt":"Please très carefully check ⛄"}"#,
+        r#"{"session_id":"new-06","agent_id":"6","agent_type":"general-purpose","hook_event_name":"SubagentStart","extra":[{"prompt":"a"},{"prompt":"a"}]}"#,
+        r#"{"session_id":"new-07","agent_id":"7","agent_type":"general-purpose","hook_event_name":"SubagentStart","prompt":"\twith whitespace\n"}"#,
+        r#"{"session_id":"new-08","agent_id":"8","agent_type":"general-purpose","hook_event_name":"SubagentStart","prompt":"Do not silently skip custom notes."}"#,
+        r#"{"session_id":"new-09","agent_id":"9","agent_type":"general-purpose","hook_event_name":"SubagentStart","tool_input":{"prompt":"Please merely read README.md"}}"#,
+        r#"{"session_id":"new-10","agent_id":"10","agent_type":"general-purpose","hook_event_name":"SubagentStart","metadata":{"role":"main","agent_id":"inner"}}"#,
+        r#"{"session_id":"new-11","agent_id":"11","agent_type":"general-purpose","hook_event_name":"SubagentStart","agent_type":"general-purpose","prompt":"Repeated repeated"}"#,
+        "{\"session_id\":\"new-12\",\"agent_id\":\"12\",\"agent_type\":\"general-purpose\",\"hook_event_name\":\"SubagentStart\",\"prompt\":\"Observe em\u{2003}space non\u{a0}breaking\"}",
+    ];
+    for (i, raw) in shapes.iter().enumerate() {
+        let off = p.hook_raw(&format!("s{i}o"), "SubagentStart", "claude", raw, &env_of(ROLE_SW, "0", &[]));
+        let on = p.hook_raw(&format!("s{i}n"), "SubagentStart", "claude", raw, &env_of(ROLE_SW, "1", &[]));
+        assert!(off.contains("OWNER-MORE-"), "shape {i} off: {off}");
+        assert_eq!(on, off, "shape {i}: the switch must not change an edited note");
+    }
+    // the same payload five times in one session, per switch, keeps the customization on every call
+    let raw = r#"{"session_id":"rep","agent_id":"9","agent_type":"general-purpose","hook_event_name":"SubagentStart","tool_input":{"prompt":"Please merely read README.md"}}"#;
+    for sw in ["0", "1"] {
+        for n in 0..5 {
+            let out = p.hook_raw(&format!("rep-{sw}"), "SubagentStart", "claude", raw, &env_of(ROLE_SW, sw, &[]));
+            assert!(out.contains("OWNER-MORE-") && !out.contains(SHORT_SUB), "switch {sw} repeat {n}: {out}");
+        }
+    }
+}
+
+#[test]
+fn a_near_stock_role_text_counts_as_edited_with_the_switch_on_and_off() {
+    // one trailing space on a stock text is an owner edit, not the stock value
+    let p = Plug::new("rn-near", &[("roles.toml", "roles.msg_none", "\"none\"", "\"none \"")]);
+    full_note_either_way(&p, "Engine verbs you may run:");
+    let q = Plug::new("rn-near-more", &[("roles.toml", "roles.msg_note_more", "see the guide)", "see the guide) ")]);
+    full_note_either_way(&q, "Engine verbs you may run:");
+}
+
+#[test]
+fn the_one_line_note_needs_every_key_the_full_note_reads_to_be_stock() {
+    // unedited, on: one line (the default); each edit above flips it to the full note, so the stock table must equal the shipped values
+    let p = Plug::new("rn-stock", &[]);
+    let on = p.hook("SubagentStart", "claude", &sub_start(), &env_of(ROLE_SW, "1", &[]));
+    assert!(on.contains(SHORT_SUB), "{on}");
 }
 
 // ---- task tracker ----
@@ -417,6 +546,33 @@ fn an_edited_oldest_in_progress_tail_is_printed_with_the_switch_on_and_off() {
         let edit = [("task_tracker.toml", "task_tracker.subject_tail", "(oldest in_progress subject:", "(EDITED TAIL:")];
         let out = followup(&format!("tt-tail-ed{sw}"), &edit, sw);
         assert!(out.contains("(EDITED TAIL:") && !out.contains("oldest in_progress subject") && !out.contains("oldest in progress"), "switch {sw}: {out}");
+    }
+}
+
+#[test]
+fn an_edited_first_line_is_printed_with_the_switch_unset_too() {
+    let p = Plug::new("tt-unset", &[("task_tracker.toml", "task_tracker.what_full", "requests need tracking before work starts.", "custom unset directive.")]);
+    let home = p.home("h0");
+    let out = p.hook_in("h0", "UserPromptSubmit", "claude", &prompt_of("edited", &home, "do the thing"), &QUIET);
+    assert!(out.contains("💡 task tracker: custom unset directive.") && !out.contains("so none is lost"), "{out}");
+    // unedited with the switch unset: the shipped default is the terse wording
+    let q = Plug::new("tt-unset-stock", &[]);
+    let plain = q.hook_in("h0", "UserPromptSubmit", "claude", &prompt_of("edited", &q.home("h0"), "do the thing"), &QUIET);
+    assert!(plain.contains("so none is lost."), "{plain}");
+}
+
+#[test]
+fn a_near_stock_tracker_text_counts_as_edited_with_the_switch_on_and_off() {
+    for sw in ["0", "1"] {
+        let out = directive(
+            "tt-near",
+            "task_tracker.what_full",
+            "requests need tracking before work starts.",
+            "requests need tracking before work starts. (owner)",
+            sw,
+            "claude",
+        );
+        assert!(out.contains("requests need tracking before work starts. (owner)") && !out.contains("so none is lost"), "switch {sw}: {out}");
     }
 }
 
