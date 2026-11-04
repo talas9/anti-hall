@@ -36,17 +36,14 @@
 
 > **[UPDATE 2026-11-04 - model-KB re-audit; supersedes the lineup above.]** Verified against
 > Anthropic's docs (platform.claude.com/docs/en/models/{opus-5-5,sonnet-5-5,haiku-5-5}/overview, via
-> search extract; and the `claude-api` skill model catalog cached 2026-10-06):
+> search extract; and platform.claude.com/docs/en/about-claude/model-deprecations):
 > **Fable 5.1** `claude-fable-5-1` $10/$50, 1M ctx / 128k out, cache reads $0.25 (this resolves the
 > "pricing not verified" notes of 2026-09-03: unchanged from Fable 5); **Mythos 5.1** `claude-mythos-5-1`
-> (Project Glasswing only); **Opus 5.5** `claude-opus-5-5` (released 2026-09-22) $4/$20, 1M/128k,
+> (limited availability: organizations verified through Anthropic's verification programs, e.g. the Cyber Verification Program; same specs/pricing as Fable 5.1); **Opus 5.5** `claude-opus-5-5` (released 2026-09-22) $4/$20, 1M/128k,
 > thinking cannot be disabled, effort default `medium`; **Sonnet 5.5** `claude-sonnet-5-5` (released
 > 2026-09-28) $2/$10, 1M/128k; **Haiku 5.5** `claude-haiku-5-5` (released 2026-10-07) 1M/128k, $0.10/$0.50
 > for prompts up to 100K tokens ($0.50/$2.50 beyond). Opus 5 (`claude-opus-5`, $5/$25), Sonnet 5, Opus 4.8
-> and Haiku 4.5 (200k ctx, $1/$5) are still listed Active by the catalog; so the 2026-08-22 note that
-> Opus 4.8 is "DEPRECATED" is UNVERIFIED (no deprecation entry found; read it as superseded). Sonnet 4.5
-> retires 2026-11-30 (skill catalog). UNVERIFIED: Sonnet 5.5 cache-read price (sources disagree: $0.10 vs
-> $0.20), Haiku 5.5 cache pricing, 5.5-family rate limits. Routing is unchanged: tier tokens
+> and Haiku 4.5 (200k ctx, $1/$5) are still listed Active; the 2026-08-22 note that Opus 4.8 is "DEPRECATED" is WRONG: the deprecations page lists claude-opus-4-8 Active, retirement not sooner than 2027-05-28. Sonnet 4.5 retires 2026-11-30. Cache reads: Sonnet 5.5 $0.10 (5% of input), Haiku 5.5 $0.01 (<=100K) / $0.05 (over). UNVERIFIED: 5.5-family rate limits. Routing is unchanged: tier tokens
 > (`fable`/`opus`/`sonnet`/`haiku`) resolve to the newest in-family model; never pin an id.
 > Any "Opus 5 / Sonnet 5 / Haiku 4.5 is current" line above is historical.
 

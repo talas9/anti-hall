@@ -15,9 +15,7 @@
 > This is a primary read of the installed catalog. Prices (per 1M tokens, from search extracts of
 > developers.openai.com model pages, not read verbatim): gpt-6-astra $10/$50; gpt-6.1-sol and gpt-6-sol
 > $2/$10; gpt-6.1-terra $1/$5; gpt-6-luna $0.10/$0.50; GPT-5.6 Terra/Luna were cut on 2026-07-30 to
-> $2/$12 and $0.20/$1.20. UNVERIFIED: GPT-6 / 6.1 release dates, context windows (search extract says 1.05M,
-> the local catalog says 500k default / 872k max), and API availability of 6.1-sol/terra and 6-luna
-> (OpenAI's ChatGPT rate card says Codex/ChatGPT Work only). Routing is unchanged: resolve category to a
+> $2/$12 and $0.20/$1.20. UNVERIFIED: GPT-6 / 6.1 release dates. gpt-6.1-sol, gpt-6.1-terra and gpt-6-luna are listed on the API models page with API prices; 1.05M is the API context window, 500k/872k are the Codex CLI catalog windows. Routing is unchanged: resolve category to a
 > model from the live catalog (`codex debug models`), never from a slug in this doc.
 
 ## Confidence & provenance
