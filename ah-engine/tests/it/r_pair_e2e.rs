@@ -234,7 +234,7 @@ fn stop_live_named_agent_without_task_blocks_and_names_it() {
     let o = w.stop(&t, true, serde_json::json!({}));
     assert!(o.1.contains(GUARD) && o.1.contains("agent \\\"wake-worker\\\" owns no task"), "names the agent: {o:?}");
     assert!(
-        o.1.contains("TaskCreate or TaskUpdate a task owned by each listed agent"),
+        o.1.contains("TaskUpdate a task per listed agent to owner=its name (TaskCreate if none)"),
         "names the step that gives the agent a task, on the visible line: {o:?}"
     );
     assert!(!o.1.contains("follow the saved instructions"), "the step is short enough to be shown, not replaced by a pointer: {o:?}");

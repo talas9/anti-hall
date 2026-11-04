@@ -4819,7 +4819,10 @@ mod pair_rule_pairing {
         for (tag, tasks, agents) in cases {
             let (got, reason) = stop_with(&format!("pp-slot-{tag}"), &tasks, &agents, true);
             assert!(!got.f2.is_empty(), "{tag}: blocks: {reason}");
-            assert!(reason.contains("TaskCreate"), "{tag}: a missing task slot is cleared by creating a task, so the block names TaskCreate: {reason}");
+            assert!(
+                reason.contains("TaskCreate") && reason.contains("TaskUpdate"),
+                "{tag}: a missing task slot is cleared by creating a task and then setting its owner, so the block names both: {reason}"
+            );
             let fixed = apply(&tasks, &got);
             assert_eq!(fixed.len(), tasks.len() + got.f2.iter().map(|(_, n)| n).sum::<usize>(), "{tag}: the step adds one task per agent left");
             assert_eq!(stop(&format!("pp-slot-{tag}-fixed"), &fixed, &agents), clean(), "{tag}: the stated step clears it");
