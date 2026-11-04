@@ -4513,7 +4513,7 @@ mod r_style_counters {
         let quoted = |line: &str| format!("> ```\n{line}\n{}\n> ```", rows(25, |_| "> a".into()));
         all.push(("a deeper quote marker and a run in a quoted fence is code", quoted("> > ```"), false));
         all.push(("a list marker after the quote marker is code", quoted("> - ```"), false));
-        all.push(("an unquoted run inside a quoted fence stays code (lenient)", quoted("```"), false));
+        all.push(("an unquoted run after a quoted fence opens a new fence", quoted("```"), false));
         // an indented opener: the opener's own spaces do not widen the closer's allowance
         all.push(("3 spaces opener, a 6 space run is code", format!("   ```\n      ```\n{}\n   ```", a(25)), false));
         all.push(("3 spaces opener, an unindented run closes", format!("   ```\n{}\n```\n{prose}", a(10)), true));
@@ -4530,6 +4530,57 @@ mod r_style_counters {
         // controls: a proper closer still closes
         all.push(("a proper closer after a marker-like line closes", format!("```\n- ```\n{}\n```\n{prose}", a(10)), true));
         all.push(("a closer indented 3 columns after a quote marker closes", format!("> ```\n{}\n>    ```\n{prose}", rows(10, |_| "> a".into())), true));
+        // ---- round 3, the class: a closer is a fence run and nothing else; only spaces and tabs may follow it (CommonMark) ----
+        // each row is code the closer line must not end (25 lines stay inside the allowance); the control rows close and count the prose
+        let tail = |close: &str| format!("```text\n{close}\n{}\n```", a(25));
+        let after = [
+            ("NBSP after a closer does not close (U+00A0)", "```\u{00a0}"),
+            ("EM SPACE after a closer does not close (U+2003)", "```\u{2003}"),
+            ("IDEOGRAPHIC SPACE after a closer does not close (U+3000)", "```\u{3000}"),
+            ("NARROW NBSP after a closer does not close (U+202F)", "```\u{202f}"),
+            ("a form feed after a closer does not close", "```\u{000c}"),
+            ("a vertical tab after a closer does not close", "```\u{000b}"),
+            ("a next-line char after a closer does not close (U+0085)", "```\u{0085}"),
+            ("a NBSP between spaces after a closer does not close", "``` \u{00a0} "),
+            ("a NBSP before a closer does not close", "\u{00a0}```"),
+            ("an EM SPACE before a closer does not close", "\u{2003}```"),
+            ("a tilde run with a NBSP after it does not close a tilde fence", "~~~\u{00a0}"),
+        ];
+        for (name, line) in after {
+            let reply = if line.starts_with('~') { format!("~~~\n{line}\n{}\n~~~", a(25)) } else { tail(line) };
+            all.push((name, reply, false));
+        }
+        all.push(("a NBSP closer in a quoted fence does not close", format!("> ```\n> ```\u{00a0}\n{}\n> ```", rows(25, |_| "> a".into())), false));
+        all.push(("a NBSP closer in a list-opened fence does not close", format!("- ```\n  ```\u{00a0}\n{}\n  ```", rows(25, |_| "  a".into())), false));
+        all.push(("a NBSP after a longer closer does not close", format!("```\n```````\u{00a0}\n{}\n```", a(25)), false));
+        // controls: spaces, tabs and a mix of them after a closer do close
+        for (name, close) in [
+            ("a space after a closer closes", "``` "),
+            ("two tabs after a closer close", "```\t\t"),
+            ("spaces and tabs after a closer close", "```  \t "),
+            ("a CR after a closer closes", "```\r"),
+        ] {
+            all.push((name, format!("```\n{}\n{close}\n{prose}", a(10)), true));
+        }
+        // ---- round 3: a container that ends takes its fence with it (CommonMark: a line without the quote marker is not in the quote) ----
+        let quote_end = |between: &str| format!("> ```\n{}\n{between}", rows(5, |_| "> a".into()));
+        all.push(("a prose run after a quoted fence is counted (no closer)", quote_end(&prose), true));
+        all.push(("a blank line then prose ends a quoted fence", quote_end(&format!("\n{prose}")), true));
+        all.push(("a nested quote ends at its first short line", format!("> > ```\n{}\n> {}\n{prose}", rows(5, |_| "> > a".into()), "text"), true));
+        all.push((
+            "a quoted fence in a nested quote that drops one level ends",
+            format!("> > ```\n{}\n> still the outer quote\n{prose}", rows(5, |_| "> > a".into())),
+            true,
+        ));
+        all.push(("a list-opened fence inside a quote ends with the quote", format!("> - ```\n{}\n{prose}", rows(5, |_| ">   a".into())), true));
+        all.push(("a tilde fence in a quote ends with the quote", format!("> ~~~\n{}\n{prose}", rows(5, |_| "> a".into())), true));
+        all.push(("after the quote ends a new fence is read as a new fence", format!("> ```\n{}\n```\n{}\n```", rows(5, |_| "> a".into()), a(40)), false));
+        all.push(("a quote of the same depth keeps its fence", format!("> ```\n{}\n> ```\n{prose}", rows(10, |_| "> a".into())), true));
+        all.push(("an unquoted code-looking line ends a quoted fence", quote_end(&format!("code\n{prose}")), true));
+        // HTML starts another block: it ends a table (GFM)
+        all.push(("an HTML block ends a table", format!("a | b\n---|---\n<div>\n{prose}"), true));
+        all.push(("an HTML comment ends a table", format!("a | b\n---|---\n<!-- x -->\n{prose}"), true));
+        all.push(("an inline tag in a row is still a row", grid("a | b", "--- | ---", 30, &|i| format!("<b>{i}</b> | x")), false));
         // the table allowance is the survey's 30 rows
         let note = rows(18, |i| format!("note {i}"));
         all.push((

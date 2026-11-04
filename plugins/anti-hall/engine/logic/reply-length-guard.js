@@ -33,8 +33,18 @@ function rsOpener(prefix, run) {
   return { ch: run.charAt(0), len: run.length, q: prefix.split('>').length - 1, b: tail.trim() === '' ? 0 : rsWidth(tail.trimStart()) };
 }
 
+// The blockquote depth of a line: how many quote markers (reply_length.fence_quote_re) open it. A blank line has depth 0.
+function rsDepth(line) {
+  var quote = jx.re('reply_length.fence_quote_re', ''), rest = line, depth = 0, m;
+  while ((m = quote.exec(rest)) !== null) {
+    rest = rest.slice(m[0].length);
+    depth++;
+  }
+  return depth;
+}
+
 // True when `line` closes the fence `o`: the same blockquote depth, then (after whitespace only: no list marker, no text) a run of the
-// same character, at least as long, with nothing after it, indented at most reply_length.fence_close_indent past the list marker's
+// same character, at least as long, with only spaces and tabs after it, indented at most reply_length.fence_close_indent past the list marker's
 // content width. Anything else is code (a doubtful closer is never a closer).
 function rsCloses(line, o) {
   var quote = jx.re('reply_length.fence_quote_re', ''), rest = line, m, k;
@@ -49,7 +59,8 @@ function rsCloses(line, o) {
 
 // Classify every line of the reply: 'fence' (a fence marker line), 'code' (inside a fenced block), 'table' (a GFM table: header, delimiter
 // row and body rows), 'blank' or 'text' (prose). Fences follow CommonMark (backtick or tilde runs of 3 or more, an info string, a closer
-// of the same character and at least the same length with nothing after it; an unclosed fence runs to the end). A table is found by its
+// of the same character and at least the same length with only spaces and tabs after it; an unclosed fence runs to the end; a quote that
+// ends ends its fence). A table is found by its
 // DELIMITER ROW (outer pipes optional, alignment colons) whose cell count equals the header row's; its body runs to a blank line, a fence,
 // another block start (reply_length.table_break_re) or a change of quote depth.
 function rsClassify(lines) {
@@ -57,6 +68,9 @@ function rsClassify(lines) {
   var pipe = ah.cfg('reply_length.table_pipe'), quote = jx.re('reply_length.table_quote_re', '');
   var kind = [], open = null, i, fm;
   for (i = 0; i < lines.length; i++) {
+    // a line with fewer quote markers than the opener (a blank line included) is outside the quote: the quote and its fence end, and the
+    // line is read afresh below (CommonMark: a code fence is no paragraph, so there is no lazy continuation)
+    if (open && open.q > 0 && rsDepth(lines[i]) < open.q) open = null;
     if (open) {
       if (rsCloses(lines[i], open)) {
         open = null;
@@ -85,7 +99,8 @@ function rsClassify(lines) {
 
 // {chars, lines} of the visible text: fenced lines and table rows are counted apart and only their excess over the allowance adds to the size.
 function rsSize(reply) {
-  var lines = reply.split('\n'), kind = rsClassify(lines);
+  // a CRLF reply: the CR belongs to the line end, not to the line (a closer may be followed by spaces and tabs only)
+  var lines = reply.split('\n').map(function (l) { return l.charAt(l.length - 1) === '\r' ? l.slice(0, -1) : l; }), kind = rsClassify(lines);
   var chars = 0, rows = 0, codeChars = 0, codeRows = 0, tabChars = 0, tabRows = 0;
   for (var i = 0; i < lines.length; i++) {
     if (kind[i] === 'fence') continue;

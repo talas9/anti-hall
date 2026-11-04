@@ -271,6 +271,44 @@ fn a_list_marker_and_a_fence_run_inside_a_fence_do_not_close_it() {
     }
 }
 
+/// Round 3, the class: a closing fence is a fence run and nothing else, and only spaces and tabs may follow it (CommonMark). The exact
+/// replies of the reviews, through the real Stop payload on both hosts: a NBSP or an EM SPACE after a fence run is code, not a closer.
+#[test]
+fn only_spaces_and_tabs_may_follow_a_closing_fence_and_a_quote_that_ends_ends_its_fence() {
+    for host in HOSTS {
+        let rig = Rig::new(&format!("closer-{host}"));
+        for after in ["\u{00a0}", "\u{2003}", "\u{3000}", "\u{000c}"] {
+            let reply = format!("```text\n```{after}\n{}```", "x\n".repeat(25));
+            for on in [true, false] {
+                let r = rig.run(host, &rig.stop(host, "Apply the patch.", &reply), on);
+                assert_eq!(
+                    (r.0, r.1.as_str(), r.2.as_str()),
+                    (0, "", ""),
+                    "{host}, U+{:04X} after the run, switch {on}: still code: {r:?}",
+                    after.chars().next().unwrap() as u32
+                );
+            }
+        }
+        // spaces and tabs after the run do close it: the prose that follows is counted
+        for after in [" ", "\t", "  \t "] {
+            let reply = format!("```text\n```{after}\n{}", prose(40));
+            let r = rig.run(host, &rig.stop(host, "Apply the patch.", &reply), true);
+            assert!(said(&r).contains(MARKER), "{host}: {after:?} after the run closes the fence: {r:?}");
+        }
+        // a quote that ends takes its fence with it: the unquoted prose is counted
+        let quoted = format!("> ```\n> code\n{}", ["ordinary prose"; 20].join("\n"));
+        let r = rig.run(host, &rig.stop(host, "Apply the patch.", &quoted), true);
+        assert!(said(&r).contains(MARKER), "{host}: prose after a quoted fence is prose: {r:?}");
+        let nested = format!("> > ```\n> > code\n{}", ["ordinary prose"; 20].join("\n"));
+        let r = rig.run(host, &rig.stop(host, "Apply the patch.", &nested), true);
+        assert!(said(&r).contains(MARKER), "{host}: prose after a nested quoted fence is prose: {r:?}");
+        // an HTML block ends a table
+        let html = format!("a | b\n---|---\n<div>\n{}", ["ordinary prose"; 20].join("\n"));
+        let r = rig.run(host, &rig.stop(host, "Apply the patch.", &html), true);
+        assert!(said(&r).contains(MARKER), "{host}: prose after an HTML block is prose: {r:?}");
+    }
+}
+
 #[test]
 fn the_note_form_answers_with_a_system_message_only() {
     let rig = Rig::new("note").note_form();

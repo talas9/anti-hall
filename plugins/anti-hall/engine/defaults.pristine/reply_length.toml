@@ -5,7 +5,7 @@
 # Logic: engine/logic/reply-length-guard.js (reads the reply and the owner turn's text only). Every number, pattern and text is here.
 # With the switch off the answer is empty as on dev; only the reply_style_observed counter is bumped, so the problem rate is
 # measurable before the switch turns on. Regular expressions in detail_res / table_delim_re / table_break_re are Rust syntax (linear
-# time, no look-around); fence_re / table_quote_re / table_escape_re / table_edge_re are JavaScript patterns. The visible text is split
+# time, no look-around); fence_re / fence_close_re / fence_quote_re / table_quote_re / table_escape_re / table_edge_re are JavaScript patterns. The visible text is split
 # into blocks by a small line classifier (CommonMark fenced code, GFM tables found by their delimiter row), see the keys below.
 # Measured by reply_style_fired{again} and reply_style_observed (no delivery.act row: a shorter next reply is not a tool reaction).
 
@@ -80,12 +80,12 @@ doc = "A line that opens a fenced code block (CommonMark; JavaScript pattern, pe
 value = '^((?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])[ \t]))*[ \t]*)(`{3,}|~{3,})([^\n]*)$'
 
 [reply_length.fence_close_re]
-doc = "A line that can close a fence once its blockquote markers are removed (JavaScript pattern): group 1 the indent, group 2 the run, nothing after it. Text or a list marker before the run is not a closer. The run must be of the opener's character and at least as long."
-value = '^([ \t]*)(`{3,}|~{3,})\s*$'
+doc = "A line that can close a fence once its blockquote markers are removed (JavaScript pattern): group 1 the indent, group 2 the run, then only spaces and tabs (CommonMark: no other Unicode space, no form feed, no text). Text or a list marker before the run is not a closer. The run must be of the opener's character and at least as long."
+value = '^([ \t]*)(`{3,}|~{3,})[ \t]*$'
 
 [reply_length.fence_quote_re]
-doc = "One blockquote marker (JavaScript pattern), removed from a line once per quote level of the opener before the closer is read. A line with fewer markers than the opener closes nothing: it stays code (the unquoted run inside a quoted fence is code, not the spec's implicit close)."
-value = '^\s*>[ \t]?'
+doc = "One blockquote marker (JavaScript pattern: spaces and tabs, then the quote sign, then one optional space or tab), removed from a line once per quote level of the opener before the closer is read, and counted to find a line's quote depth. A line with fewer markers than the opener (a blank line included) is outside the quote: the quote and its fence end there (CommonMark), and the line is read afresh as prose or as a new fence."
+value = '^[ \t]*>[ \t]?'
 
 [reply_length.fence_close_indent]
 doc = "How many columns a closing fence may be indented past the content width of the opener's list marker (CommonMark: 3; the opener's own leading spaces do not count)."
@@ -120,8 +120,8 @@ doc = "The optional outer pipes of a table row (JavaScript pattern, global), rem
 value = '^\s*\||\|\s*$'
 
 [reply_length.table_break_re]
-doc = "A line that begins another block (Rust regular expression, run on the line without its quote markers): an ATX heading, a list item or a thematic break ends a table; a blank line, a fence or a quote depth change ends it too. Any other non-blank line after the delimiter row is a table row, with or without pipes (GFM)."
-value = '^\s*(?:#{1,6}(?:\s|$)|[-*+]\s|\d{1,9}[.)]\s|(?:[-*_][ \t]*){3,}$)'
+doc = "A line that begins another block (Rust regular expression, case-insensitive, run on the line without its quote markers): an ATX heading, a list item, a thematic break or an HTML block start (a block-level tag, a comment, a declaration or a processing instruction; an inline tag like <b> is not one) ends a table; a blank line, a fence or a quote depth change ends it too. Any other non-blank line after the delimiter row is a table row, with or without pipes (GFM)."
+value = '(?i)^\s*(?:#{1,6}(?:\s|$)|[-*+]\s|\d{1,9}[.)]\s|(?:[-*_][ \t]*){3,}$|<(?:/?(?:address|article|aside|blockquote|body|caption|center|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hr|html|iframe|legend|li|main|menu|nav|ol|optgroup|option|p|pre|script|section|style|summary|table|tbody|td|textarea|tfoot|th|thead|title|tr|ul)(?:\s|/?>|$)|!--|![a-z]|\?))'
 
 [reply_length.detail_res]
 doc = "Phrases in the user's last message that ask for detail, an explanation, a plan, a design, a specification, a roadmap or a report, in any form of explain and specify (a long reply is then allowed). Rust regular expressions, case-insensitive."
