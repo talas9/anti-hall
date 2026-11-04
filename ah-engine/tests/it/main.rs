@@ -59,6 +59,7 @@ mod mcp_reaper_parity;
 mod mem_guard;
 mod mem_restart_e2e;
 mod memory_soak;
+mod merge_gate_e2e;
 mod mesh_no_node_defers;
 mod no_compiled_config;
 mod no_hardcoded_tunables;

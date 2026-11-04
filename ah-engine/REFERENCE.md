@@ -2225,6 +2225,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `merge_gate.clear_step_setting` | `6 entries` |  |  | Where the switch for the clear-step block text is read from (guards.mergeGateClearStep, default off): on, the block uses msg_what_v2 and msg_instead_v2 (#538). |
 | `merge_gate.env_assign` | `^[A-Za-z_][A-Za-z0-9_]*=` |  |  | Regex source of a leading environment assignment the scan skips before the command word. |
 | `merge_gate.guard_name` | `merge-gate` |  |  | The guard id this check answers to in skip.json. |
 | `merge_gate.hedge_patterns` | `first[- ]pass, not pixel[- ]perfect` |  |  | Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output. |
@@ -2237,8 +2238,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `merge_gate.jev_true` | `unresolved hedge present` |  |  | The label for a true answer of the mergeGateHedge question. |
 | `merge_gate.merge_rules` | `2 entries, 3 entries, 4 entries, 2 entries, 2 entries` |  |  | The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target. |
 | `merge_gate.msg_instead` | `verify the agreed result before merging.` |  |  | The block message's alternative. |
+| `merge_gate.msg_instead_v2` | `owner replies: {resolutions}` |  |  | The block message's alternative with guards.mergeGateClearStep on; {resolutions} is the comma-joined merge_gate.resolutions list. Kept short on purpose: the visible instead is cut to the saved-instructions pointer past 115 characters (10-text.js message), which would hide the phrases. With the shipped list it renders to 112. |
 | `merge_gate.msg_override` | `tell the agent "skip merge-gate"` |  |  | The block message's override line. |
 | `merge_gate.msg_what` | `the merge is paused while recent work remains unverified.` |  |  | The block message's first line; {hedge} is the last hedge phrase found. |
+| `merge_gate.msg_what_v2` | `the merge is paused: your last message says "{hedge}" and no real user prompt...` |  |  | The block message's first line with guards.mergeGateClearStep on; {hedge} is the last hedge phrase found. |
 | `merge_gate.msg_why` | `Merging now could ship unfinished work.` |  |  | The block message's reason. |
 | `merge_gate.non_human_origins` | `human, user` |  |  | The origin kinds of a user record that still count as a human typing. |
 | `merge_gate.protected_target` | `^(main\|master\|develop\|origin\/(main\|master\|develop))$` |  |  | Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge. |
@@ -3167,19 +3170,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
 | `guard_rules.enum_digest_tier` | `7 entries` |  |  | Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget. |
 | `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
-| `guard_rules.exempt` | `42 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording. |
+| `guard_rules.exempt` | `43 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording. |
 | `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
 | `guard_rules.msg_no_heredoc` | `4 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
 | `guard_rules.msg_rm_rf_root` | `4 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
+| `guard_rules.no_step_allow` | `21 items` |  |  | Ratchet for the clear-step lint (#538): the ids of registered non-off rules that have no instead text today. The list may only shrink: a new rule needs an instead (the step that clears the block), and an id that gains one must be removed here (guard_rules.problem_stale_allow). |
 | `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
 | `guard_rules.problem_digest` | `{id}: missing from the generated digest` |  |  | Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}. |
 | `guard_rules.problem_id` | `rule id empty or duplicate: {id}` |  |  | Registry problem: a rule id that is empty or repeated. Placeholder: {id}. |
 | `guard_rules.problem_line` | `{id}: essential rule without a usable digest field for {host}` |  |  | Registry problem: an essential rule with no digest field for a host, or a digest line with a placeholder left in it. Placeholders: {id}, {host}. |
+| `guard_rules.problem_no_step` | `{id}: no instead text naming the step that clears it (add the instead key bes...` |  |  | Registry problem: a non-off rule has no instead text (the step that clears it) and is not in guard_rules.no_step_allow. Placeholder: {id}. |
 | `guard_rules.problem_setting` | `{id}: setting {setting} matches no settings entry` |  |  | Registry problem: a rule row's setting names no settings entry (section and key). Placeholders: {id}, {setting}. |
 | `guard_rules.problem_skill` | `{id}: missing from the generated skill` |  |  | Registry problem: a rule is missing from the generated rules skill. Placeholder: {id}. |
 | `guard_rules.problem_source` | `{id}: source {source} does not exist` |  |  | Registry problem: the source key of a rule does not exist. Placeholders: {id}, {source}. |
+| `guard_rules.problem_stale_allow` | `{id}: has an instead text now, remove it from guard_rules.no_step_allow` |  |  | Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
 | `guard_rules.rules` | `151 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
@@ -6007,7 +6013,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `398 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `399 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8425,7 +8431,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `404 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `405 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 

@@ -15,6 +15,7 @@ value = [
   "{\"section\":\"autoHandover\",\"key\":\"decisivePrompt\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"auto_handover_decisive_prompt\"}",
   "{\"section\":\"autoHandover\",\"key\":\"gateHousekeepingMarkers\",\"type\":\"csv\",\"default\":\"\"}",
   "{\"section\":\"guards\",\"key\":\"mergeGate\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_MERGE_GATE\",\"pluginOption\":\"guards_merge_gate\"}",
+  "{\"section\":\"guards\",\"key\":\"mergeGateClearStep\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_MERGE_GATE_CLEAR_STEP\"}",
   "{\"section\":\"guards\",\"key\":\"shipitGate\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_SHIPIT_GATE\",\"pluginOption\":\"guards_shipit_gate\"}",
   "{\"section\":\"guards\",\"key\":\"outputVerifyGuard\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_OUTPUT_VERIFY_GUARD\",\"pluginOption\":\"guards_output_verify_guard\"}",
   "{\"section\":\"guards\",\"key\":\"outputVerifyOncePerTurn\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_OUTPUT_VERIFY_ONCE_PER_TURN\"}",

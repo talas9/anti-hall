@@ -395,7 +395,8 @@ pub fn digest_text() -> String {
 }
 
 /// Problems in the rule registry: a rule without a valid tier, a source that does not exist, a duplicate id, an essential rule
-/// without a line, a non-off rule that is missing from the generated output, a block text neither registered nor exempt.
+/// without a line, a non-off rule that is missing from the generated output, a block text neither registered nor exempt, a non-off
+/// rule with no `instead` (a clear step) that is not in `guard_rules.no_step_allow`, an allowlisted id that has one or is unknown.
 pub fn rule_problems() -> Vec<String> {
     let mut p = Vec::new();
     let tiers = defaults::list("guard_rules.tiers");
@@ -404,6 +405,7 @@ pub fn rule_problems() -> Vec<String> {
     let digests: Vec<(&str, String)> = digest_hosts().into_iter().map(|h| (h, digest_file_for(h))).collect();
     let filler = defaults::text("guard_rules.placeholder");
     let skill = rules_section();
+    let allow: std::collections::BTreeSet<&str> = defaults::list("guard_rules.no_step_allow").into_iter().collect();
     for r in rules() {
         if r.id.is_empty() || !ids.insert(r.id) {
             p.push(defaults::render("guard_rules.problem_id", &[("id", &r.id)]));
@@ -413,6 +415,14 @@ pub fn rule_problems() -> Vec<String> {
         }
         if !defaults::has(r.source) {
             p.push(defaults::render("guard_rules.problem_source", &[("id", &r.id), ("source", &r.source)]));
+        }
+        if r.tier != "off" && defaults::has(r.source) {
+            let has_step = !rule_parts(r.source).2.trim().is_empty();
+            if !has_step && !allow.contains(r.id) {
+                p.push(defaults::render("guard_rules.problem_no_step", &[("id", &r.id)]));
+            } else if has_step && allow.contains(r.id) {
+                p.push(defaults::render("guard_rules.problem_stale_allow", &[("id", &r.id)]));
+            }
         }
         for s in r.settings() {
             if setting_entry(s).is_none() {
@@ -431,6 +441,9 @@ pub fn rule_problems() -> Vec<String> {
         if r.tier != "off" && !skill.contains(&format!("`{}`", r.id)) {
             p.push(defaults::render("guard_rules.problem_skill", &[("id", &r.id)]));
         }
+    }
+    for a in allow.iter().filter(|a| !ids.contains(**a)) {
+        p.push(defaults::render("guard_rules.problem_source", &[("id", a), ("source", a)]));
     }
     let exempt: std::collections::BTreeSet<&str> = defaults::list("guard_rules.exempt").into_iter().collect();
     for e in defaults::all().iter() {
