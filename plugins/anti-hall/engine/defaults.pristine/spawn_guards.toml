@@ -353,9 +353,21 @@ value = { section = "guards", key = "sharedTreeBareClone", type = "boolean", env
 doc = "Rust regex source (case-insensitive): a bare fresh-clone statement with no determiner (\"clone ~/x\", \"Clone fresh into ~/x\", \"use ~/x as the working copy\"), read after re_named_tree only when the sharedTreeBareClone switch is on. The leading start-or-punctuation anchor keeps \"git clone ~/src ~/dst\" (a source path) from matching."
 value = '''(?:^|[,;:.\n]\s*)(?:fresh(?:ly)?\s+)?clone\s+(?:fresh(?:ly)?\s+)?(?:(?:into|to|at|in)\s+)?[`'"]?(?:~|\$HOME)?/[^\s`'",;)]+|\buse\s+[`'"]?(?:~|\$HOME)?/[^\s`'",;)]+\s+as\s+(?:the\s+|your\s+|its\s+)?(?:working\s+)?(?:clone|copy|tree|checkout|dir(?:ectory)?)'''
 
-[swarm_guard.re_named_tree_bare_negated]
-doc = "Rust regex source (case-insensitive), tested on the text just before a bare fresh-clone match: a negation (\"do not\", \"don't\", \"never\", \"not\", \"no need to\") right before \"use ~/x as the working copy\" says the path is NOT this agent's tree, so the match is dropped. Read only when the sharedTreeBareClone switch is on."
-value = '''(?:\b(?:do|does|did|must|will|should|can|could|would)\s+not|\b(?:don|doesn|didn|won|shouldn|can|mustn)['\u2019]?t|\bnever|\bnot|\bno\s+need\s+to|\binstead\s+of)\s+(?:(?:ever|really|simply|just)\s+)*$'''
+[swarm_guard.re_named_tree_bare_negation]
+doc = "Rust regex source (case-insensitive), tested on the whole clause that holds a bare fresh-clone match (before or after it, any words between): a negation token (not, no, never, without, avoid, except, rather than, instead of, any n't contraction) says the path may NOT be this agent's tree, so the match is dropped and the shared-tree note stays. Read only when the sharedTreeBareClone switch is on."
+value = '''\b(?:not|no|never|nor|neither|none|nothing|nobody|cannot|without|avoid\w*|except\w*|unless|rather\s+than|instead\s+of|dont|doesnt|didnt|wont|cant|shouldnt|mustnt|couldnt|wouldnt|isnt|arent|wasnt|werent|havent|hasnt|hadnt|neednt)\b|\b\w+n['\u2019]t\b'''
+
+[swarm_guard.re_named_tree_bare_clause_break]
+doc = "Rust regex source (case-insensitive): where one clause ends and the next begins for the bare fresh-clone negation test: a semicolon, ! or ?, a full stop before white space or at the end, a blank line or a list bullet. Commas and colons are no break, so a negation near the phrase always counts."
+value = '''[;!?]|\.(?:\s|$)|\n[ \t]*\n|\n[ \t]*(?:[-*\u2022]|\d+[.)])[ \t]'''
+
+[swarm_guard.re_named_tree_bare_lead]
+doc = "Rust regex source: the punctuation anchor a re_named_tree_bare match may start with; the clause test starts after it."
+value = '''^[,;:.\n]\s*'''
+
+[swarm_guard.re_named_tree_bare_pathtok]
+doc = "JavaScript regex source: a word that holds a slash (a path), blanked before the negation test so a path such as ~/no-tree is no negation."
+value = '''\S*\/\S*'''
 
 [swarm_guard.re_scratch_negated]
 doc = "JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading."

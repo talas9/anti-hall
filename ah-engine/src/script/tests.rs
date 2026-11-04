@@ -992,7 +992,7 @@ mod swarm {
             "Fix hooks/foo.js and commit; clone ~/proj/sub for reference.",
             "Use ~/x as the working copy, but edit hooks/foo.js in place and commit.",
         ];
-        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0}}"#).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":false}}"#).unwrap();
         for p in bare {
             assert!(note(p).is_some(), "switch off keeps the note: {p}");
         }
@@ -1035,6 +1035,103 @@ mod swarm {
         crate::metrics::drain_pending(&mut m);
         assert_eq!(m.counter("named_tree_bare", &[]), 0, "a kept note is not an avoided warning");
         assert!(note("Use ~/x as the working copy, fix hooks/foo.js and commit.").is_none(), "the affirmative form still exempts");
+    }
+
+    // class fix of #487: a negation ANYWHERE in the clause that holds the isolation phrase keeps the note (a missed isolation costs one
+    // warning, a missed warning loses work). Each negated brief is paired with its affirmative twin, which the switch must still exempt, so a
+    // brief the bare matcher never reads cannot pass for the wrong reason.
+    #[test]
+    fn shared_tree_bare_clone_a_negation_anywhere_in_the_clause_keeps_the_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = swarm_home("sw-bare-clause");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            // dozens of spawns in one test: clear the spawn-rate window so the cap never answers instead of the note
+            crate::discard::harmless(std::fs::remove_file(format!("{h}/.anti-hall/swarm-spawns.log"))); // keep: the log may not exist yet
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        // (negated brief, affirmative twin)
+        let pairs = [
+            ("Do not actually use ~/x as the working copy; fix hooks/foo.js and commit.", "Actually use ~/x as the working copy; fix hooks/foo.js and commit."),
+            (
+                "Do not under any circumstances use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Under all circumstances use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Don't, under any circumstances, use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Do, under any circumstances, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "You shouldn\u{2019}t really, honestly use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "You should really, honestly use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Avoid having to use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Plan on having to use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            ("Never: clone into ~/x and build; fix hooks/foo.js and commit.", "Always: clone into ~/x and build; fix hooks/foo.js and commit."),
+            (
+                "Use ~/x as the working copy, not the session tree, then fix hooks/foo.js and commit.",
+                "Use ~/x as the working copy, the private one, then fix hooks/foo.js and commit.",
+            ),
+            (
+                "Use ~/x as the working copy rather than the session tree; fix hooks/foo.js and commit.",
+                "Use ~/x as the working copy, the private one; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Clone fresh into ~/x except for the lockfile; fix hooks/foo.js and commit.",
+                "Clone fresh into ~/x including the lockfile; fix hooks/foo.js and commit.",
+            ),
+            ("Clone ~/x without the history; fix hooks/foo.js and commit.", "Clone ~/x with the history; fix hooks/foo.js and commit."),
+            ("You cannot use ~/x as the working copy; fix hooks/foo.js and commit.", "You can use ~/x as the working copy; fix hooks/foo.js and commit."),
+            ("DO NOT use ~/x as the working copy; fix hooks/foo.js and commit.", "DO use ~/x as the working copy; fix hooks/foo.js and commit."),
+            ("Fix hooks/foo.js. Do not ever use ~/x as the working copy. Commit it.", "Fix hooks/foo.js. Do always use ~/x as the working copy. Commit it."),
+            (
+                "Instead of that, use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Beyond that, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "It is wrong to use ~/x as the working copy, nor should you; fix hooks/foo.js and commit.",
+                "It is right to use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+        ];
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        for (neg, _) in pairs {
+            assert!(note(neg).is_some(), "a negation in the clause keeps the note: {neg}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+        for (_, yes) in pairs {
+            assert!(note(yes).is_none(), "the affirmative twin is exempted: {yes}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), pairs.len() as u64, "one avoided warning per twin");
+        // the check is per clause, not per brief: a negation in ANOTHER sentence, bullet or paragraph leaves the affirmative clause exempt
+        for p in [
+            "Fix hooks/foo.js and do not push. Use ~/x as the working copy and commit.",
+            "Do not touch main. Clone ~/x and build; fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x. Don't edit the session repo; fix hooks/foo.js and commit.",
+            "Rules:\n- never push\n- use ~/x as the working copy\n- fix hooks/foo.js and commit",
+            "No pushes today.\n\nClone ~/x and build; fix hooks/foo.js and commit.",
+            "Use ~/no-tree/x as the working copy; fix hooks/foo.js and commit.",
+            "Do the note-taking first, then use ~/x as the working copy; fix hooks/foo.js and commit.",
+        ] {
+            assert!(note(p).is_none(), "an affirmative clause stays exempt: {p}");
+        }
+        // switch off: the first negated briefs keep the note, and so do their twins (each call waits out the script fingerprint cadence, so only a few)
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":false}}"#).unwrap();
+        for (neg, yes) in pairs.iter().take(3) {
+            assert!(note(neg).is_some() && note(yes).is_some(), "switch off keeps every note: {neg} / {yes}");
+        }
     }
 
     // review of #487: named_tree_bare counts only warnings the switch really avoided (another writer active, no quiet rule)

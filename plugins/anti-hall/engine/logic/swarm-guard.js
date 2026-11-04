@@ -71,13 +71,28 @@ function swgUnder(abs, dir) {
 // swgBareSpan is the matched text, blanked from the in-place check: "use ~/x as the working copy" would otherwise trip the in-place word "working copy".
 var swgBareHit = false, swgBareSpan = '';
 
+// Fail safe: any negation token ("not", "never", "without", "rather than", "n't" ...) anywhere in the clause that holds the bare statement,
+// before or after it and with any words between, keeps the shared-tree note. Only an unambiguous affirmative clause exempts the spawn.
+// The clause runs between sentence breaks (swarm_guard.re_named_tree_bare_clause_break); commas and colons do not end it. Path-like words
+// are blanked first so "~/no-tree" is no negation.
+function swgBareClauseNegated(t, from, to) {
+  var lead = ah.re.find(ah.cfg('swarm_guard.re_named_tree_bare_lead'), '', t.slice(from, to));
+  var at = from + (lead ? lead[1] : 0), brk = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_clause_break'), 'i', t), start = 0, end = t.length;
+  for (var i = 0; i < brk.length; i++) {
+    if (brk[i][1] <= at) start = brk[i][1];
+    else if (brk[i][0] >= at) { end = brk[i][0]; break; }
+  }
+  var clause = t.slice(start, end).replace(new RegExp(ah.cfg('swarm_guard.re_named_tree_bare_pathtok'), 'g'), ' ');
+  return ah.re.test(ah.cfg('swarm_guard.re_named_tree_bare_negation'), 'i', clause);
+}
+
 function swgNamedTreeOutside(t, tree, key, home, bare) {
   var hits = ah.re.findAll(ah.cfg(key), 'i', t);
   for (var i = 0; i < hits.length; i++) {
     var m = t.slice(hits[i][0], hits[i][1]), at = ah.re.find(ah.cfg('swarm_guard.re_named_tree_path'), '', m);
     if (!at) continue;
     // a negated bare statement ("do not use ~/x as the working copy") names no tree of this agent's
-    if (bare && ah.re.test(ah.cfg('swarm_guard.re_named_tree_bare_negated'), 'i', t.slice(0, hits[i][0]))) continue;
+    if (bare && swgBareClauseNegated(t, hits[i][0], hits[i][1])) continue;
     var raw = m.slice(at[0], at[1]), trim = ah.re.find(ah.cfg('swarm_guard.re_named_tree_trim'), '', raw);
     if (trim) raw = raw.slice(0, trim[0]);
     var tilde = ah.re.find(ah.cfg('swarm_guard.re_named_tree_home'), '', raw);

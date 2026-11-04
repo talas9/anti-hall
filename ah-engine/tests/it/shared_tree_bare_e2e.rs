@@ -1,0 +1,58 @@
+//! `guards.sharedTreeBareClone` (GH #487) through the real hook: `ah-engine hook --event PreToolUse --host claude` on a spawn payload.
+//! A bare "use ~/x as the working copy" exempts the shared-tree note; any negation in the same clause keeps it (fail safe).
+use super::spawn_budget::{put, scratch};
+use serde_json::json;
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+/// One spawn with `prompt` through the real hook: stdout. Another async writer is running in the transcript; the cap is off.
+fn spawn_prompt(home: &Path, switch: bool, prompt: &str) -> String {
+    let proj = home.join("proj");
+    put(&proj, ".git/HEAD", "ref: refs/heads/main\n");
+    put(home, ".anti-hall/settings.json", &format!(r#"{{"guards":{{"maxConcurrentAgents":0,"sharedTreeBareClone":{switch}}}}}"#));
+    let launch = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{"description":"lane","subagent_type":"general-purpose","prompt":"fix it"}}]}});
+    let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1",
+        "content":"Async agent launched successfully.\nagentId: a1b2c3d4e5f60718 (internal ID - do not mention to user)\noutput_file: /tmp/ah-none/a1b2c3d4e5f60718.output"}]}});
+    put(home, "t.jsonl", &format!("{launch}\n{result}\n"));
+    let payload = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":proj,"transcript_path":home.join("t.jsonl"),
+        "tool_input":{"subagent_type":"general-purpose","model":"sonnet","prompt":prompt}});
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["hook", "--event", "PreToolUse", "--host", "claude"])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("ANTIHALL_TEST_ISOLATION", "1")
+        .env("AH_ENGINE_DIR", home.join("engine-state"))
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
+        .current_dir(home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "an advisory never blocks: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+#[test]
+fn a_negation_in_the_clause_keeps_the_shared_tree_note_through_the_real_hook() {
+    let h = scratch("bare-neg");
+    for prompt in [
+        "Do not actually use ~/x as the working copy; fix hooks/foo.js and commit.",
+        "Do not under any circumstances use ~/x as the working copy; fix hooks/foo.js and commit.",
+        "Use ~/x as the working copy, not the session tree; fix hooks/foo.js and commit.",
+    ] {
+        let out = spawn_prompt(&h, true, prompt);
+        assert!(out.contains("another agent is already writing in this working tree"), "switch on, negated clause keeps the note: {prompt}: {out}");
+    }
+    for prompt in ["Use ~/x as the working copy; fix hooks/foo.js and commit.", "Do not push. Clone fresh into ~/x and build; fix hooks/foo.js and commit."] {
+        assert_eq!(spawn_prompt(&h, true, prompt), "", "switch on, an affirmative clause is exempt: {prompt}");
+        let off = spawn_prompt(&h, false, prompt);
+        assert!(off.contains("another agent is already writing in this working tree"), "switch off keeps the note: {prompt}: {off}");
+    }
+}
