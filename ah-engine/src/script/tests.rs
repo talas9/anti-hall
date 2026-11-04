@@ -4412,4 +4412,134 @@ mod r_style_counters {
             "again detection looks for the marker in the delivered text"
         );
     }
+
+    // ---- the block classifier: CommonMark fences and GFM tables, on a corpus of exact inputs ----
+
+    fn rows(n: usize, f: impl Fn(usize) -> String) -> String {
+        (0..n).map(f).collect::<Vec<_>>().join("\n")
+    }
+
+    /// `n` one-letter lines: 40 of them are over the line limit as prose and inside the code allowance as code.
+    fn a(n: usize) -> String {
+        rows(n, |_| "a".into())
+    }
+
+    /// Whether the guard holds `reply` for a user who typed `ask` (the switch on).
+    fn is_held(tag: &str, ask: &str, reply: &str) -> bool {
+        held(&stop(tag, &[prompt(ask)], Some(reply), json!({}), true))
+    }
+
+    /// The corpus: (name, reply, held). Each exempt row is over the limits when read as prose and inside the allowances when read as the
+    /// block it is; each held row is the sibling that must still count (a near miss of the same shape).
+    fn corpus() -> Vec<(&'static str, String, bool)> {
+        let prose = long();
+        let grid = |head: &str, delim: &str, n: usize, row: &dyn Fn(usize) -> String| format!("{head}\n{delim}\n{}", rows(n, row));
+        let wide = |i: usize| format!("row {i:02} description | {}", "a".repeat(45));
+        let nest = |open: &str, inner: &str, close: &str, body: String| format!("{open}\n{inner}\n{body}\n{inner}\n{close}");
+        vec![
+            // ---- GFM tables ----
+            ("table without outer pipes (the reported input)", grid("name | value", "--- | ---", 25, &wide), false),
+            ("table with outer pipes", grid("| name | n |", "|---|---|", 30, &|i| format!("| row {i} | {i} |")), false),
+            ("alignment colons, no outer pipes", grid("a | b | c", ":--- | ---: | :---:", 30, &|i| format!("{i} | x | y")), false),
+            ("alignment colons, outer pipes", grid("| a | b |", "|:--|--:|", 30, &|i| format!("| {i} | x |")), false),
+            ("leading pipe only", grid("| a | b", "|--- | ---", 30, &|i| format!("| {i} | x")), false),
+            ("trailing pipe only", grid("a | b |", "--- | ---|", 30, &|i| format!("{i} | x |")), false),
+            ("spaced delimiter row", grid("| a | b |", "| --- | --- |", 30, &|i| format!("| {i} | x |")), false),
+            ("one column table", grid("| a |", "|---|", 30, &|i| format!("| r{i} |")), false),
+            ("body rows without a pipe are rows (GFM)", grid("| a | b |", "|---|---|", 30, &|i| format!("r{i}")), false),
+            ("escaped pipe in the header", grid("a \\| b | c", "--- | ---", 30, &|i| format!("{i} | x")), false),
+            ("table in a blockquote", grid("> a | b", "> --- | ---", 30, &|i| format!("> {i} | x")), false),
+            ("table with CRLF line ends", grid("a | b", "--- | ---", 30, &|i| format!("{i} | x")).replace('\n', "\r\n"), false),
+            ("table after a paragraph line", format!("Results:\n{}", grid("k | v", "- | -", 30, &|i| format!("{i} | x"))), false),
+            ("header and delimiter cell counts differ", grid("a | b | c", "--- | ---", 30, &|i| format!("{i} | x")), true),
+            ("pipes without a delimiter row", rows(30, |i| format!("{i} | x")), true),
+            ("setext heading is not a table", format!("Title\n---\n{prose}"), true),
+            ("a thematic break is not a table", format!("a | b\n---\n{prose}"), true),
+            ("table excess over its allowance", grid("| a | b |", "|---|---|", 70, &|i| format!("| {i} | x |")), true),
+            ("prose after a table is counted", format!("{}\n\n{prose}", grid("a | b", "--- | ---", 5, &|i| format!("{i} | x"))), true),
+            ("a heading ends the table", format!("{}\n## Next\n{prose}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x"))), true),
+            ("list items end the table", format!("{}\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("- item {i}"))), true),
+            (
+                "quote lines end an unquoted table",
+                format!("{}\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("> note {i}"))),
+                true,
+            ),
+            (
+                "a blank line ends the table",
+                format!("{}\n\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("{i} | x"))),
+                true,
+            ),
+            // ---- CommonMark fences ----
+            ("backtick fence inside a longer backtick fence", nest("````markdown", "```", "````", a(40)), false),
+            ("the reported nested input", format!("````markdown\n```\n```\n{}", a(40)), false),
+            ("tilde fence", format!("~~~\n{}\n~~~", a(40)), false),
+            ("closer longer than the opener", format!("~~~\n{}\n~~~~~~", a(40)), false),
+            ("backtick info string with attributes", format!("```{{r, echo=FALSE}}\n{}\n```", a(40)), false),
+            ("tilde info string may hold a backtick", format!("~~~ a`b\n{}\n~~~", a(40)), false),
+            ("a shorter run does not close", format!("````\n{}\n```\n{}", a(10), a(40)), false),
+            ("a closer with an info string does not close", format!("```\n{}\n```rust\n{}\n```", a(10), a(40)), false),
+            ("a closer of the other character does not close", format!("```\n{}\n~~~\n{}\n```", a(10), a(40)), false),
+            ("tilde run does not close a longer tilde fence", format!("~~~~\n{}\n~~~\n{}", a(10), a(40)), false),
+            ("a closer indented 4 columns is content", format!("```\n{}\n    ```\n{}", a(10), a(40)), false),
+            ("an unclosed fence runs to the end", format!("```\n{prose}"), false),
+            ("closer with trailing spaces and CRLF", format!("```\r\n{}\r\n```  \r\n", a(40).replace('\n', "\r\n")), false),
+            ("fence under a list marker", format!("1. ```js\n{}\n   ```", a(40)), false),
+            ("fence indented under a list item", format!("- step\n  ```bash\n{}\n  ```", rows(40, |_| "  a".into())), false),
+            ("fence in a blockquote", format!("> ```\n{}\n> ```", rows(40, |_| "> a".into())), false),
+            ("a closer indented 3 columns closes", format!("```\n{}\n   ```\n{prose}", a(10)), true),
+            ("two backticks are not a fence", format!("``\n{prose}"), true),
+            ("a backtick info string with a backtick is not a fence", format!("``` a`b\n{prose}"), true),
+            ("prose after the real close is counted", format!("````\n```\n{}\n```\n````\n{prose}", a(10)), true),
+            ("code excess over its allowance", format!("```\n{}\n```", a(90)), true),
+        ]
+    }
+
+    #[test]
+    fn the_block_corpus_is_classified_by_the_markdown_rules() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let mut wrong = Vec::new();
+        for (name, reply, want) in corpus() {
+            let got = is_held("rs-corpus", "show the change", &reply);
+            if got != want {
+                wrong.push(format!("{name}: held={got}, want {want}"));
+            }
+        }
+        drained();
+        assert!(wrong.is_empty(), "misclassified: {wrong:#?}");
+    }
+
+    #[test]
+    fn every_form_of_explain_and_specify_asks_for_a_long_reply_and_near_words_do_not() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let reply = long();
+        let mut wrong = Vec::new();
+        for (ask, want) in [
+            ("Please explain this", false),
+            ("it explains itself, I want it explained", false),
+            ("keep explaining as you go", false),
+            ("write an explainer", false),
+            ("Give me an Explanation", false),
+            ("a few explanations please", false),
+            ("explanatory notes please", false),
+            ("write the spec", false),
+            ("update the specs", false),
+            ("SPECIFICATION needed", false),
+            ("write the specifications", false),
+            ("specify the API", false),
+            ("as specified earlier", false),
+            ("keep specifying the cases", false),
+            ("fix the specific failing test", true),
+            ("inspect the file", true),
+            ("this is special", true),
+            ("respect the order", true),
+            ("fix the failing test", true),
+        ] {
+            let got = is_held("rs-prompts", ask, &reply);
+            if got != want {
+                wrong.push(format!("{ask:?}: held={got}, want {want}"));
+            }
+        }
+        drained();
+        assert!(wrong.is_empty(), "misjudged prompts: {wrong:#?}");
+    }
 }

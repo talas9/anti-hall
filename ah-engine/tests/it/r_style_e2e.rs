@@ -228,6 +228,31 @@ fn a_fence_inside_a_longer_fence_does_not_end_it_and_prose_after_the_close_is_co
     assert!(!said(&r).contains(MARKER), "an unclosed fence runs to the end: {r:?}");
 }
 
+/// The reported inputs, through the real Stop payload on both hosts: a table found by its delimiter row (no outer pipes, so no line
+/// starts or ends with a pipe) is a table, and an unclosed outer fence keeps a shorter fence line and everything after it as code.
+#[test]
+fn a_table_without_outer_pipes_and_a_fence_nested_in_a_longer_one_are_not_prose() {
+    for host in HOSTS {
+        let rig = Rig::new(&format!("blocks-{host}"));
+        let rows = (0..25).map(|i| format!("row {i:02} description | {}", "a".repeat(45))).collect::<Vec<_>>().join("\n");
+        let bare = format!("name | value\n--- | ---\n{rows}");
+        let r = rig.run(host, &rig.stop(host, "fix the failing test", &bare), true);
+        assert!(!said(&r).contains(MARKER), "{host}: a table without outer pipes is a table: {r:?}");
+        // the same rows without a delimiter row are prose lines and are held
+        let plain = format!("name | value\n{rows}");
+        let r = rig.run(host, &rig.stop(host, "fix the failing test", &plain), true);
+        assert!(said(&r).contains(MARKER), "{host}: pipes alone do not make a table: {r:?}");
+        let body = (0..40).map(|_| "a").collect::<Vec<_>>().join("\n");
+        let nested = format!("````markdown\n```\n```\n{body}");
+        let r = rig.run(host, &rig.stop(host, "fix the failing test", &nested), true);
+        assert!(!said(&r).contains(MARKER), "{host}: a shorter fence line does not close a longer fence: {r:?}");
+        for ask in ["Explaining the behavior in the reply please", "Write up the specified change"] {
+            let r = rig.run(host, &rig.stop(host, ask, &prose(40)), true);
+            assert!(!said(&r).contains(MARKER), "{host}: {ask}: every form of explain and specify is exempt: {r:?}");
+        }
+    }
+}
+
 #[test]
 fn the_note_form_answers_with_a_system_message_only() {
     let rig = Rig::new("note").note_form();

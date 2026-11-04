@@ -9,24 +9,65 @@
 // Plan mode, subagents and a Codex payload with no reply text allow. Every number, pattern and text: reply_length.toml.
 'use strict';
 
-// {chars, lines} of the visible text: fenced lines and table rows are counted apart and only their excess over the allowance adds to the size.
-function rsSize(reply) {
-  var fence = jx.re('reply_length.fence_re', ''), tableRe = ah.cfg('reply_length.table_line_re'), lines = reply.split('\n'), inCode = false, open = '';
-  var chars = 0, rows = 0, codeChars = 0, codeRows = 0, tabChars = 0, tabRows = 0;
-  for (var i = 0; i < lines.length; i++) {
-    var l = lines[i];
-    var fm = fence.exec(l);
+// The number of cells of a table row (GFM): escaped characters do not split, the outer pipes are optional.
+function rsCells(row) {
+  var t = row.replace(jx.re('reply_length.table_quote_re', ''), '').replace(jx.re('reply_length.table_escape_re', 'g'), 'x').replace(jx.re('reply_length.table_edge_re', 'g'), '');
+  return t.split(ah.cfg('reply_length.table_pipe')).length;
+}
+
+// The quote depth of a line (its blockquote markers).
+function rsQuote(line) {
+  var m = jx.re('reply_length.table_quote_re', '').exec(line);
+  return m ? m[0].split('>').length - 1 : 0;
+}
+
+// Classify every line of the reply: 'fence' (a fence marker line), 'code' (inside a fenced block), 'table' (a GFM table: header, delimiter
+// row and body rows), 'blank' or 'text' (prose). Fences follow CommonMark (backtick or tilde runs of 3 or more, an info string, a closer
+// of the same character and at least the same length with nothing after it; an unclosed fence runs to the end). A table is found by its
+// DELIMITER ROW (outer pipes optional, alignment colons) whose cell count equals the header row's; its body runs to a blank line, a fence,
+// another block start (reply_length.table_break_re) or a change of quote depth.
+function rsClassify(lines) {
+  var fence = jx.re('reply_length.fence_re', ''), delim = ah.cfg('reply_length.table_delim_re'), brk = ah.cfg('reply_length.table_break_re');
+  var pipe = ah.cfg('reply_length.table_pipe'), quote = jx.re('reply_length.table_quote_re', ''), slack = ah.cfgNum('reply_length.fence_close_indent');
+  var kind = [], inCode = false, run = '', prefixLen = 0, i, fm;
+  for (i = 0; i < lines.length; i++) {
+    fm = fence.exec(lines[i]);
     if (inCode) {
       // a fence closes only on a run of the same character, at least as long as the opener, with nothing after it
-      if (fm && fm[1].charAt(0) === open.charAt(0) && fm[1].length >= open.length && fm[2].trim() === '') inCode = false;
-      else { codeChars += Array.from(l).length; if (l.trim() !== '') codeRows++; }
-      continue;
-    }
-    if (fm && !(fm[1].charAt(0) === '`' && fm[2].indexOf('`') >= 0)) { inCode = true; open = fm[1]; continue; }
-    var n = Array.from(l).length;
-    if (l.trim() !== '' && ah.re.find(tableRe, '', l)) { tabChars += n; tabRows++; continue; }
-    chars += n;
-    if (l.trim() !== '') rows++;
+      if (fm && fm[2].charAt(0) === run.charAt(0) && fm[2].length >= run.length && fm[3].trim() === '' && fm[1].length <= prefixLen + slack) {
+        inCode = false;
+        kind.push('fence');
+      } else kind.push('code');
+    } else if (fm && !(fm[2].charAt(0) === '`' && fm[3].indexOf('`') >= 0)) {
+      inCode = true;
+      run = fm[2];
+      prefixLen = fm[1].length;
+      kind.push('fence');
+    } else kind.push(lines[i].trim() === '' ? 'blank' : 'text');
+  }
+  for (i = 1; i < lines.length; i++) {
+    if (kind[i] !== 'text' || kind[i - 1] !== 'text') continue;
+    var row = lines[i].replace(quote, '');
+    if (row.indexOf(pipe) < 0 || !ah.re.find(delim, '', row) || rsCells(lines[i - 1]) !== rsCells(lines[i])) continue;
+    var depth = rsQuote(lines[i - 1]);
+    if (rsQuote(lines[i]) !== depth) continue;
+    kind[i - 1] = kind[i] = 'table';
+    for (i = i + 1; i < lines.length && kind[i] === 'text' && rsQuote(lines[i]) === depth && !ah.re.find(brk, '', lines[i].replace(quote, '')); i++) kind[i] = 'table';
+    i--;
+  }
+  return kind;
+}
+
+// {chars, lines} of the visible text: fenced lines and table rows are counted apart and only their excess over the allowance adds to the size.
+function rsSize(reply) {
+  var lines = reply.split('\n'), kind = rsClassify(lines);
+  var chars = 0, rows = 0, codeChars = 0, codeRows = 0, tabChars = 0, tabRows = 0;
+  for (var i = 0; i < lines.length; i++) {
+    if (kind[i] === 'fence') continue;
+    var l = lines[i], n = Array.from(l).length, filled = l.trim() !== '';
+    if (kind[i] === 'code') { codeChars += n; if (filled) codeRows++; }
+    else if (kind[i] === 'table') { tabChars += n; tabRows++; }
+    else { chars += n; if (filled) rows++; }
   }
   return {
     chars: chars + Math.max(0, codeChars - ah.cfgNum('reply_length.code_allow_chars')) + Math.max(0, tabChars - ah.cfgNum('reply_length.table_allow_chars')),
