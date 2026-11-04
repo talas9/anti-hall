@@ -85,10 +85,11 @@ fn fill_time(s: &str, now: f64) -> String {
     out
 }
 
-/// Does the case run at the pinned clock?
+/// Does the case run at the pinned clock? A case with time tokens or an `age_ms` file does; so does one that sets `"pin_clock": true`
+/// (a check whose answer depends on the calendar date, e.g. repo-self-drift's model-KB audit age, must not drift with the real clock).
 fn pinned(case: &Value) -> bool {
     let text = case.to_string();
-    !time_tokens(&text).is_empty() || text.contains("\"age_ms\"")
+    !time_tokens(&text).is_empty() || text.contains("\"age_ms\"") || case.get("pin_clock") == Some(&Value::Bool(true))
 }
 
 fn fill(s: &str, home: &str, real: &str, now: f64) -> String {
@@ -157,10 +158,12 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
     let mut times: Vec<(String, String)> = time_tokens(&case.to_string()).into_iter().map(|(tok, kind, off)| (time_text(&kind, now, off), tok)).collect();
     times.sort_by_key(|(t, _)| std::cmp::Reverse(t.len()));
     times.dedup();
-    // A request's temp root defaults to /tmp, and work under it is not counted as file-changing: a home inside /tmp (Linux) would
-    // silence every case that edits a file there, so it lives in /var/tmp instead.
+    // A request's temp roots (os.tmpdir() = /tmp by default, plus `command.tmp_fixed_roots`: /tmp and /private/tmp) are not counted as
+    // file-changing: a home inside one would silence every case that edits a file there (and let a background script through as a
+    // scratch script), so it lives in /var/tmp instead. This holds whatever TMPDIR the test run uses (a lane's TMPDIR sits under /private/tmp).
     let base = std::env::temp_dir();
-    let base = if base.starts_with("/tmp") && Path::new("/var/tmp").is_dir() { PathBuf::from("/var/tmp") } else { base };
+    let in_tmp_root = |b: &Path| b.starts_with("/tmp") || defaults::list("command.tmp_fixed_roots").iter().any(|r| b.starts_with(r));
+    let base = if in_tmp_root(&base) && Path::new("/var/tmp").is_dir() { PathBuf::from("/var/tmp") } else { base };
     let home = base.join(format!("ah-golden-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
     crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(&home).unwrap();
