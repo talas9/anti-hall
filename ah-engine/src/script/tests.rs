@@ -968,6 +968,7 @@ mod swarm {
     // issue #487: a bare fresh-clone statement ("clone ~/x", "use ~/x as the working copy") names a tree, behind guards.sharedTreeBareClone
     #[test]
     fn shared_tree_bare_clone_phrasings_name_their_own_tree_only_when_the_switch_is_on() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
         let h = swarm_home("sw-bare");
         let proj = format!("{h}/proj");
         std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
@@ -1003,6 +1004,76 @@ mod swarm {
             assert!(note(p).is_some(), "switch on still notes: {p}");
         }
         assert!(note("fix hooks/foo.js and commit it.").is_some(), "two spawns on the real session tree still note");
+    }
+
+    // review of #487: a NEGATED bare statement ("do not use ~/x as the working copy") names no tree; the switch must not exempt it
+    #[test]
+    fn shared_tree_bare_clone_negated_phrasings_keep_the_note_with_the_switch_on() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = swarm_home("sw-bare-neg");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        for p in [
+            "Do not use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Don't use ~/x as the working copy, fix hooks/foo.js and commit.",
+            "Please never use ~/x as the clone. Fix hooks/foo.js and commit.",
+            "You must not use ~/x as the checkout; fix hooks/foo.js and commit.",
+        ] {
+            assert!(note(p).is_some(), "a negated statement keeps the note: {p}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "a kept note is not an avoided warning");
+        assert!(note("Use ~/x as the working copy, fix hooks/foo.js and commit.").is_none(), "the affirmative form still exempts");
+    }
+
+    // review of #487: named_tree_bare counts only warnings the switch really avoided (another writer active, no quiet rule)
+    #[test]
+    fn named_tree_bare_counts_only_the_warnings_the_switch_avoided() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = || {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("named_tree_bare", &[])
+        };
+        let h = swarm_home("sw-bare-cnt");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut run = |prompt: &str, tp: Option<&str>| {
+            n += 1;
+            let mut p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "cwd": proj});
+            if let Some(tp) = tp {
+                p["transcript_path"] = json!(tp);
+            }
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        let bare = "clone ~/x and fix hooks/foo.js and commit.";
+        count();
+        assert!(run(bare, None).is_none());
+        assert_eq!(count(), 0, "no transcript: nothing was running, no warning was avoided");
+        let idle = format!("{h}/idle.jsonl");
+        std::fs::write(&idle, "").unwrap();
+        assert!(run(bare, Some(&idle)).is_none());
+        assert_eq!(count(), 0, "no other writer running: no warning was avoided");
+        assert!(run(bare, Some(&busy)).is_none());
+        assert_eq!(count(), 1, "another writer is active: the switch avoided one warning");
+        std::fs::write(format!("{proj}/CLAUDE.md"), "Rules: no worktrees here.\n").unwrap();
+        assert!(run(bare, Some(&busy)).is_none());
+        assert_eq!(count(), 0, "a no-worktrees rule already silenced the warning");
     }
 
     #[test]

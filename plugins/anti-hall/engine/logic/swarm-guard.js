@@ -76,6 +76,8 @@ function swgNamedTreeOutside(t, tree, key, home, bare) {
   for (var i = 0; i < hits.length; i++) {
     var m = t.slice(hits[i][0], hits[i][1]), at = ah.re.find(ah.cfg('swarm_guard.re_named_tree_path'), '', m);
     if (!at) continue;
+    // a negated bare statement ("do not use ~/x as the working copy") names no tree of this agent's
+    if (bare && ah.re.test(ah.cfg('swarm_guard.re_named_tree_bare_negated'), 'i', t.slice(0, hits[i][0]))) continue;
     var raw = m.slice(at[0], at[1]), trim = ah.re.find(ah.cfg('swarm_guard.re_named_tree_trim'), '', raw);
     if (trim) raw = raw.slice(0, trim[0]);
     var tilde = ah.re.find(ah.cfg('swarm_guard.re_named_tree_home'), '', raw);
@@ -167,9 +169,11 @@ function swgSharedTreeNote(p) {
   var tree = swgTree(p.cwd);
   if (tree === 'unsure') return null;
   swgBareHit = false;
+  // exempt only by the bare matcher: counted below, once the warning is known to have been due; later scans clobber swgBareHit
+  var bareExempt = false;
   if (!inp || !swgSharesTree(inp, tree)) {
-    if (swgBareHit) { ah.advisory('swarm_guard_fp', 'named_tree_bare'); ah.metric('named_tree_bare', []); }
-    return '';
+    if (!swgBareHit) return '';
+    bareExempt = true;
   }
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string') return '';
@@ -185,6 +189,7 @@ function swgSharedTreeNote(p) {
   if (ah.settings.bool('swarm_guard.quiet_no_worktrees_setting')) { // a rule that says main-only / no worktrees makes the hint moot
     if (noWt || swgMemoryNoWorktrees(String(p.cwd))) return '';
   }
+  if (bareExempt) { ah.advisory('swarm_guard_fp', 'named_tree_bare'); ah.metric('named_tree_bare', []); return ''; }
   return text.message('warn', ah.cfg('swarm_guard.shared_tree_label'), {
     what: ah.cfg('swarm_guard.msg_shared_what'), why: ah.cfg('swarm_guard.msg_shared_why'),
     instead: ah.cfg(noWt ? 'swarm_guard.msg_shared_instead_no_worktrees' : 'swarm_guard.msg_shared_instead'),
