@@ -73,6 +73,7 @@ mod r_inline_e2e;
 mod read_only_verbs;
 mod reference;
 mod reliability;
+mod reword_nudges;
 mod schedule;
 mod session_e2e;
 mod settings_overflow;

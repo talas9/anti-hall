@@ -4299,3 +4299,46 @@ mod idle_rule_counters {
         assert_eq!(m.counter("idle_rule_age_unknown", &[("kind", "open")]), 0);
     }
 }
+
+// ---- role note and task tracker wording (context.roleNoteShort, context.taskTrackerTerse): their counters ----
+
+mod reword_counters {
+    use super::*;
+
+    fn counted(check: &str, event: &str, payload: Value, pairs: Vec<(String, String)>) -> crate::metrics::Metrics {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let v = super::super::run_forced(check, &payload, &Value::Null, event, &RequestEnv::from_pairs(pairs));
+        assert!(matches!(v, Some(Some(_))), "{check}: {v:?}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    #[test]
+    fn each_role_note_form_is_counted_under_its_own_label() {
+        for (on, form) in [(false, "emitted_full"), (true, "emitted_short")] {
+            let h = home(&format!("rn-cnt-{on}"));
+            let mut pairs = vec![("HOME".to_string(), h.clone())];
+            if on {
+                pairs.push(("ANTIHALL_ROLE_NOTE_SHORT".into(), "1".into()));
+            }
+            let p = json!({"session_id": "s1", "cwd": h, "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"});
+            let m = counted("engine-role-note", "SubagentStart", p, pairs);
+            let other = if on { "emitted_full" } else { "emitted_short" };
+            assert_eq!(m.counter("role_note_emitted", &[("form", form)]), 1, "on={on}: the {form} note is counted");
+            assert_eq!(m.counter("role_note_emitted", &[("form", other)]), 0, "on={on}: the other form is not");
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
+    }
+
+    #[test]
+    fn the_full_task_directive_is_counted_when_sent() {
+        let h = home("tt-cnt");
+        let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_TASK_TRACKER_TERSE".to_string(), "1".to_string())];
+        let p = json!({"session_id": "tt-cnt", "cwd": h, "hook_event_name": "UserPromptSubmit", "prompt": "do the thing"});
+        let m = counted("task-tracker", "UserPromptSubmit", p, pairs);
+        assert_eq!(m.counter("task_tracker_emitted", &[("form", "full_emitted")]), 1, "the full directive is counted");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+}
