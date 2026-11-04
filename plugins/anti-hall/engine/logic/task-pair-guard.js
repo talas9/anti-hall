@@ -20,7 +20,9 @@ function prgFired(event, kind) { ah.metric('pair_rule_fired', ['event', event, '
 
 function prgIsObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
 function prgCoordinator(owner) { return new RegExp(ah.cfg('task_guard.coordinator_owner_re'), 'i').test(owner); }
-function prgLc(s) { return String(s === undefined || s === null ? '' : s).trim().toLowerCase(); }
+// The pairing key of an owner or an agent name: control characters and white space runs read as one space (the way every message shows them,
+// so the text a block quotes is the text that pairs), trimmed, case-insensitive.
+function prgLc(s) { return tk.oneLine(String(s === undefined || s === null ? '' : s), Number.MAX_SAFE_INTEGER).toLowerCase(); }
 
 // The event the payload names; a payload without the name is read by its shape (a tool response: after, a tool name: before, else a turn end).
 function prgEvent(p) {
@@ -171,52 +173,112 @@ function prgLooseOwner(owner, row) {
   return o === id || (d !== '' && o === d) || (o.length >= ah.cfgNum('task_guard.owner_match_min') && d.indexOf(o) >= 0);
 }
 
+// ---- the pairing: a pure function of (tasks, agents) ----
+// Pairing is by agent NAME, as a multiset: an open task owned by a name pairs with ONE live agent of that name and a live agent with ONE
+// task of its name (a name's pairs = min(tasks owned by it, live agents launched with it); tasks and agents are matched one to one, the
+// surplus of either side is the unpaired rest). A name is compared by prgLc. What is left over:
+//   f2: per name, the live agents with no task of their name left (n of them), after the loose attendance below;
+//   f3: the in-progress tasks whose owner is not any named agent's name but loosely names a live agent (its id or description): the owner
+//       must become that agent's name. A task that names an agent of its launch name (live or not, whatever its liveness) is never f3;
+//       a coordinator-like owner never matches loosely (an agent literally named like it pairs by name, above).
+// An f3 task attends an unpaired agent (fixing the task pairs it), by a maximum matching of the f3 tasks onto the unpaired agents, so a
+// block's stated step (TaskUpdate owner to the listed name, TaskCreate/TaskUpdate one task per listed agent) always clears it: the next
+// Stop over the fixed list is clean. Open tasks with no owner, surplus tasks and owners naming no live agent are not this check's facts.
+// tasks: [{id, owner, status}] (open tasks); agents: [{id, description, name, live}] (live: true | false | null = unknown);
+// rules: {coordinator(owner), loose(owner, row), inProgress(task)}. Returns {f2: [{name, n}], f3: [{task, row}]}.
+function prgPair(tasks, agents, rules) {
+  var seenId = {}, rows = [], known = {}, live = [];
+  agents.forEach(function (r) {
+    if (r.name === '') return; // an unnamed agent cannot be paired (the spawn check's fact)
+    if (r.id !== '') { if (seenId[r.id] === true) return; seenId[r.id] = true; } // one agent seen twice is one agent
+    rows.push(r);
+    known[prgLc(r.name)] = true;
+    if (r.live === true) live.push(r);
+  });
+  var taskCount = {}, byName = {}, names = [];
+  tasks.forEach(function (t) { var k = prgLc(t.owner); if (k !== '') taskCount[k] = (taskCount[k] || 0) + 1; });
+  live.forEach(function (r) {
+    var k = prgLc(r.name);
+    if (byName[k] === undefined) { byName[k] = []; names.push(k); }
+    byName[k].push(r);
+  });
+  var slots = []; // one per unpaired agent: the name key it belongs to
+  names.forEach(function (k) { for (var i = byName[k].length - (taskCount[k] || 0); i > 0; i--) slots.push(k); });
+  var cand = []; // the f3 tasks with the names of the live agents each loosely names
+  tasks.forEach(function (t) {
+    var o = prgLc(t.owner);
+    if (o === '' || known[o] === true || rules.coordinator(t.owner) || !rules.inProgress(t)) return;
+    var near = live.filter(function (r) { return rules.loose(t.owner, r); });
+    if (near.length > 0) cand.push({ task: t, near: near });
+  });
+  var slotOf = []; // slot -> index of the f3 task attending it (-1 free)
+  slots.forEach(function () { slotOf.push(-1); });
+  function attend(ci, seen) {
+    for (var si = 0; si < slots.length; si++) {
+      if (seen[si] === true || !cand[ci].near.some(function (r) { return prgLc(r.name) === slots[si]; })) continue;
+      seen[si] = true;
+      if (slotOf[si] < 0 || attend(slotOf[si], seen)) { slotOf[si] = ci; return true; }
+    }
+    return false;
+  }
+  cand.forEach(function (c, ci) { attend(ci, {}); });
+  var left = {}, f3 = [];
+  slots.forEach(function (k, si) { if (slotOf[si] < 0) left[k] = (left[k] || 0) + 1; });
+  cand.forEach(function (c, ci) {
+    var row = c.near[0]; // listed with the agent it attends; an unattending one (its agents are paired) with the first it names
+    for (var si = 0; si < slots.length; si++) {
+      if (slotOf[si] !== ci) continue;
+      for (var j = 0; j < c.near.length; j++) if (prgLc(c.near[j].name) === slots[si]) { row = c.near[j]; break; }
+      break;
+    }
+    f3.push({ task: c.task, row: row });
+  });
+  var f2 = [];
+  names.forEach(function (k) { if (left[k] > 0) f2.push({ name: byName[k][0].name, n: left[k] }); });
+  return { f2: f2, f3: f3 };
+}
+
 function prgStop(p, on, home) {
   var event = ah.cfg('pair_rule.event_stop');
   var open = prgOpenTasks(p, home), rows = open === null ? null : prgAgents(p);
   if (open === null || rows === null) { prgSuppressed('no_rows'); return 'allow'; }
-  var live = rows.filter(function (r) { return r.name !== '' && r.live === true; });
   var unknown = rows.filter(function (r) { return r.name !== '' && r.live === null; });
   if (unknown.length > 0) prgSuppressed('liveness_unknown', unknown.length);
-  var owned = open.filter(function (t) { return t.owner; });
-  var paired = {}, loose = {}, f3 = [];
-  owned.forEach(function (t) {
-    var o = prgLc(t.owner), exact = -1, near = -1;
-    live.forEach(function (r, i) {
-      if (exact < 0 && prgLc(r.name) === o) exact = i;
-      else if (near < 0 && !prgCoordinator(t.owner) && prgLooseOwner(t.owner, r)) near = i;
-    });
-    if (exact >= 0) { paired[exact] = true; return; }
+  var inProgress = ah.cfg('taskstate.in_progress_statuses');
+  var res = prgPair(open, rows, {
+    coordinator: prgCoordinator, loose: prgLooseOwner,
     // F3 speaks only for an in-progress task; a task in another open status that names the agent loosely does not attend it (F2 fires)
-    if (near < 0 || ah.cfg('taskstate.in_progress_statuses').indexOf(tk.statusLc(t)) < 0) return;
-    loose[near] = true;
-    f3.push({ task: t, row: live[near] });
+    inProgress: function (t) { return inProgress.indexOf(tk.statusLc(t)) >= 0; },
   });
-  var f2 = [], seen = {};
-  live.forEach(function (r, i) {
-    var k = prgLc(r.name);
-    if (paired[i] || loose[i] || seen[k] === true) return;
-    seen[k] = true;
-    f2.push(r);
-  });
+  var f2 = res.f2, f3 = res.f3;
   var result = f2.length > 0 ? 'agent_without_task' : f3.length > 0 ? 'inexact_owner' : 'clean';
   prgObserved(event, result);
   if (result === 'clean' || !on) return 'allow';
   if (f2.length > 0) prgFired(event, 'agent_without_task');
   if (f3.length > 0) prgFired(event, 'inexact_owner');
   var max = ah.cfgNum('pair_rule.ids_max'), nameMax = ah.cfgNum('pair_rule.name_max'), items = [], full = [];
-  f2.forEach(function (r) {
-    items.push(text.render(ah.cfg('pair_rule.item_agent'), { name: tk.oneLine(r.name, nameMax) }));
-    full.push(text.render(ah.cfg('pair_rule.detail_agent'), { name: r.name }));
+  f2.forEach(function (a) {
+    var many = a.n > 1;
+    items.push(text.render(ah.cfg(many ? 'pair_rule.item_agent_many' : 'pair_rule.item_agent'), { name: tk.oneLine(a.name, nameMax), n: a.n }));
+    full.push(text.render(ah.cfg(many ? 'pair_rule.detail_agent_many' : 'pair_rule.detail_agent'), { name: a.name, n: a.n }));
   });
   f3.forEach(function (x) {
     items.push(text.render(ah.cfg('pair_rule.item_task'), { id: x.task.id, owner: tk.oneLine(x.task.owner, nameMax), name: tk.oneLine(x.row.name, nameMax) }));
     full.push(text.render(ah.cfg('pair_rule.detail_task'), { id: x.task.id, owner: x.task.owner, name: x.row.name }));
   });
-  var more = items.length > max ? text.render(ah.cfg('pair_rule.more'), { n: items.length - max }) : '';
+  // The visible line is cut near pair_rule.what_budget units, and the cut must never hide the "(+n more)" tail: items are taken while the
+  // line fits (at most ids_max, at least one), the rest is counted, and the saved details (the whole list) are linked when any is left out.
+  function whatOf(k) {
+    var left = items.length - k;
+    return text.render(ah.cfg('pair_rule.msg_stop_what'), {
+      n: items.length, items: items.slice(0, k).join(ah.cfg('pair_rule.item_sep')),
+      more: left > 0 ? text.render(ah.cfg('pair_rule.more'), { n: left }) : '',
+    });
+  }
+  var k = Math.min(items.length, max);
+  while (k > 1 && text.plain(whatOf(k)).length > ah.cfgNum(k < items.length ? 'pair_rule.what_budget_more' : 'pair_rule.what_budget')) k--;
   var reason = text.message('block', ah.cfg('pair_rule.guard_name'), {
-    what: text.render(ah.cfg('pair_rule.msg_stop_what'), { n: items.length, items: items.slice(0, max).join(ah.cfg('pair_rule.item_sep')), more: more }),
-    why: ah.cfg('pair_rule.msg_stop_why'), instead: ah.cfg('pair_rule.msg_stop_instead'), extra: full,
+    what: whatOf(k), why: ah.cfg('pair_rule.msg_stop_why'), instead: ah.cfg('pair_rule.msg_stop_instead'), extra: full, details: k < items.length,
   });
   return { exact: { code: 0, out: text.blockJson(reason), err: '' } };
 }

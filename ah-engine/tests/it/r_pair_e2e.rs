@@ -349,3 +349,44 @@ fn post_unreadable_transcript_is_suppressed() {
     let o = w.hook("PostToolUse", "Agent", "claude", &p, true);
     assert!(!pair_text(&o), "an unreadable transcript is missing evidence: {o:?}");
 }
+
+#[test]
+fn stop_two_live_agents_with_one_name_pair_with_two_tasks_of_that_owner() {
+    // class fix: pairing is by name as a multiset; the second agent of a name used to be reported as owning no task, a block that
+    // setting the owner to "worker" (what the task already had) could not clear
+    let w = World::new("stop-dup-names");
+    w.track(&["first job", "second job"]);
+    let agents = [("first job", Some("worker")), ("second job", Some("worker"))];
+    let two = transcript(&[task(1, "in_progress", Some("worker")), task(2, "in_progress", Some("worker"))], &agents);
+    let o = w.stop(&two, true, serde_json::json!({}));
+    assert!(!pair_text(&o), "two tasks owned 'worker' pair with the two live agents named 'worker': {o:?}");
+    // the twin: one task for two agents of the name leaves one agent without a task, and the block names a step that clears it
+    let one = transcript(&[task(1, "in_progress", Some("worker"))], &agents);
+    let o = w.stop(&one, true, serde_json::json!({}));
+    assert!(o.1.contains(GUARD) && o.1.contains("agent \\\"worker\\\" owns no task"), "one agent is left without a task: {o:?}");
+    let fixed = transcript(&[task(1, "in_progress", Some("worker")), task(2, "in_progress", Some("worker"))], &agents);
+    assert!(!pair_text(&w.stop(&fixed, true, serde_json::json!({}))), "TaskCreate owner=worker clears it");
+    // more tasks than agents of the name is not a pairing fact
+    let surplus = transcript(&[task(1, "pending", Some("worker")), task(2, "pending", Some("worker")), task(3, "pending", Some("worker"))], &agents);
+    assert!(!pair_text(&w.stop(&surplus, true, serde_json::json!({}))), "a surplus of tasks is not an unpaired agent");
+}
+
+#[test]
+fn stop_three_agents_of_one_name_with_one_task_names_how_many_are_left() {
+    let w = World::new("stop-dup-three");
+    w.track(&["a job", "b job", "c job"]);
+    let t = transcript(&[task(1, "in_progress", Some("worker"))], &[("a job", Some("worker")), ("b job", Some("worker")), ("c job", Some("worker"))]);
+    let o = w.stop(&t, true, serde_json::json!({}));
+    assert!(o.1.contains("2 agents named \\\"worker\\\" own no task"), "{o:?}");
+}
+
+#[test]
+fn stop_loose_owner_attends_the_surplus_agent_of_a_shared_name() {
+    let w = World::new("stop-dup-loose");
+    w.track(&["first job", "second job"]);
+    let agents = [("first job", Some("worker")), ("second job", Some("worker"))];
+    let t = transcript(&[task(1, "in_progress", Some("worker")), task(2, "in_progress", Some("second job"))], &agents);
+    let o = w.stop(&t, true, serde_json::json!({}));
+    assert!(o.1.contains("#2 owner \\\"second job\\\" -> \\\"worker\\\""), "the description owner is asked for the launch name: {o:?}");
+    assert!(!o.1.contains("owns no task"), "and it attends the second agent, so no agent item: {o:?}");
+}

@@ -16,9 +16,19 @@ doc = "The guard id this check answers to in skip.json and in its messages."
 value = "task-pair-guard"
 
 [pair_rule.ids_max]
-doc = "Most items (agents and tasks) the Stop block lists on its visible line; the rest are counted ({more}) and all are listed in the saved details."
+doc = "Most items (agents and tasks) the Stop block lists on its visible line (fewer when they do not fit pair_rule.what_budget); the rest are counted ({more}) and all are listed in the saved details."
 value = 8
 min = 1
+
+[pair_rule.what_budget]
+doc = "Most characters of the Stop block's visible line (the host cuts it near 115 units) when every item fits on it."
+value = 115
+min = 40
+
+[pair_rule.what_budget_more]
+doc = "Most characters of the Stop block's visible line when some items are left out and the saved-details link takes room on the next line: the shown items shrink until the line with its `(+n more)` tail fits."
+value = 70
+min = 20
 
 [pair_rule.name_min_chars]
 doc = "Fewest characters an Agent or Task call's `name` needs to count as a name; a shorter or missing one is an unnamed spawn."
@@ -79,7 +89,7 @@ doc = "The advisory: the step that clears it; `{name}` is the agent's name."
 value = "TaskUpdate the task it works on with owner \"{name}\" (or TaskCreate one with that owner)."
 
 [pair_rule.msg_stop_what]
-doc = "The Stop block: what is unpaired; `{n}` items, `{items}` the first ones, `{more}` the tail. Kept short: the visible line is cut near 115 units."
+doc = "The Stop block: what is unpaired; `{n}` items, `{items}` the first ones, `{more}` the tail. Kept short: see pair_rule.what_budget."
 value = "{n} agent/task pairs are off: {items}{more}."
 
 [pair_rule.msg_stop_why]
@@ -101,6 +111,14 @@ value = "#{id} owner \"{owner}\" -> \"{name}\""
 [pair_rule.detail_agent]
 doc = "The saved-details line for a live agent that owns no open task: names the step. `{name}` is its launch name."
 value = "agent \"{name}\" owns no open task: TaskUpdate the task it works on with owner=\"{name}\"."
+
+[pair_rule.item_agent_many]
+doc = "A visible item for several live agents sharing one launch name that own fewer open tasks than there are agents: pairing is by name as a multiset (one task of the name per agent); `{name}` is the launch name, `{n}` how many of these agents have no task left."
+value = "{n} agents named \"{name}\" own no task"
+
+[pair_rule.detail_agent_many]
+doc = "The saved-details line for the item_agent_many case: names the step. `{name}` is the launch name, `{n}` the agents left without a task."
+value = "{n} live agents named \"{name}\" own no open task (one open task per agent): TaskUpdate or TaskCreate until each has a task with owner=\"{name}\"."
 
 [pair_rule.detail_task]
 doc = "The saved-details line for an in-progress task whose owner is an agent's id or description. `{id}`, `{owner}`, `{name}` as in item_task."
