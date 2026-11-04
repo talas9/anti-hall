@@ -7,6 +7,19 @@
 > pass against OpenAI's own developer docs, and a local check of the installed
 > Codex CLI on this machine.
 
+> **[UPDATE 2026-11-04 - GPT-5.6 is no longer the newest Codex generation.]** The local Codex CLI
+> (v0.166.0) catalog `~/.codex/models_cache.json`, fetched 2026-11-04, lists: `gpt-6.1-sol` (priority 1,
+> "latest workhorse model for coding and everyday work"), `gpt-6-astra` ("frontier intelligence for the
+> most demanding work"), `gpt-6.1-terra`, `gpt-6-sol` ("previous generation workhorse"), `gpt-6-luna`,
+> and `gpt-5.6-sol/terra/luna` ("older generation"); hidden: `gpt-reserve`, `codex-auto-review`.
+> This is a primary read of the installed catalog. Prices (per 1M tokens, from search extracts of
+> developers.openai.com model pages, not read verbatim): gpt-6-astra $10/$50; gpt-6.1-sol and gpt-6-sol
+> $2/$10; gpt-6.1-terra $1/$5; gpt-6-luna $0.10/$0.50; GPT-5.6 Terra/Luna were cut on 2026-07-30 to
+> $2/$12 and $0.20/$1.20. UNVERIFIED: GPT-6 / 6.1 release dates, context windows (search extract says 1.05M,
+> the local catalog says 500k default / 872k max), and API availability of 6.1-sol/terra and 6-luna
+> (OpenAI's ChatGPT rate card says Codex/ChatGPT Work only). Routing is unchanged: resolve category to a
+> model from the live catalog (`codex debug models`), never from a slug in this doc.
+
 ## Confidence & provenance
 
 Three confidence bands are used throughout this doc — read them literally, they are

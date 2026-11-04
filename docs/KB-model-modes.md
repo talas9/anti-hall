@@ -33,6 +33,35 @@
 > verified here — see `KB-fable-5.md`'s 2026-09-03 update. `fable` tier-token routing is
 > unaffected.]**
 
+> **[UPDATE 2026-11-04 - model-KB re-audit; supersedes the lineup above.]** Verified against
+> Anthropic's docs (platform.claude.com/docs/en/models/{opus-5-5,sonnet-5-5,haiku-5-5}/overview, via
+> search extract; and the `claude-api` skill model catalog cached 2026-10-06):
+> **Fable 5.1** `claude-fable-5-1` $10/$50, 1M ctx / 128k out, cache reads $0.25 (this resolves the
+> "pricing not verified" notes of 2026-09-03: unchanged from Fable 5); **Mythos 5.1** `claude-mythos-5-1`
+> (Project Glasswing only); **Opus 5.5** `claude-opus-5-5` (released 2026-09-22) $4/$20, 1M/128k,
+> thinking cannot be disabled, effort default `medium`; **Sonnet 5.5** `claude-sonnet-5-5` (released
+> 2026-09-28) $2/$10, 1M/128k; **Haiku 5.5** `claude-haiku-5-5` (released 2026-10-07) 1M/128k, $0.10/$0.50
+> for prompts up to 100K tokens ($0.50/$2.50 beyond). Opus 5 (`claude-opus-5`, $5/$25), Sonnet 5, Opus 4.8
+> and Haiku 4.5 (200k ctx, $1/$5) are still listed Active by the catalog; so the 2026-08-22 note that
+> Opus 4.8 is "DEPRECATED" is UNVERIFIED (no deprecation entry found; read it as superseded). Sonnet 4.5
+> retires 2026-11-30 (skill catalog). UNVERIFIED: Sonnet 5.5 cache-read price (sources disagree: $0.10 vs
+> $0.20), Haiku 5.5 cache pricing, 5.5-family rate limits. Routing is unchanged: tier tokens
+> (`fable`/`opus`/`sonnet`/`haiku`) resolve to the newest in-family model; never pin an id.
+> Any "Opus 5 / Sonnet 5 / Haiku 4.5 is current" line above is historical.
+
+> **[UPDATE 2026-11-04 - GPT-5.6 is no longer the newest Codex generation.]** The local Codex CLI
+> (v0.166.0) catalog `~/.codex/models_cache.json`, fetched 2026-11-04, lists: `gpt-6.1-sol` (priority 1,
+> "latest workhorse model for coding and everyday work"), `gpt-6-astra` ("frontier intelligence for the
+> most demanding work"), `gpt-6.1-terra`, `gpt-6-sol` ("previous generation workhorse"), `gpt-6-luna`,
+> and `gpt-5.6-sol/terra/luna` ("older generation"); hidden: `gpt-reserve`, `codex-auto-review`.
+> This is a primary read of the installed catalog. Prices (per 1M tokens, from search extracts of
+> developers.openai.com model pages, not read verbatim): gpt-6-astra $10/$50; gpt-6.1-sol and gpt-6-sol
+> $2/$10; gpt-6.1-terra $1/$5; gpt-6-luna $0.10/$0.50; GPT-5.6 Terra/Luna were cut on 2026-07-30 to
+> $2/$12 and $0.20/$1.20. UNVERIFIED: GPT-6 / 6.1 release dates, context windows (search extract says 1.05M,
+> the local catalog says 500k default / 872k max), and API availability of 6.1-sol/terra and 6-luna
+> (OpenAI's ChatGPT rate card says Codex/ChatGPT Work only). Routing is unchanged: resolve category to a
+> model from the live catalog (`codex debug models`), never from a slug in this doc.
+
 ## Coverage note (verification integrity)
 
 Every source below was independently fetched by parallel research agents, then a sample of 6
