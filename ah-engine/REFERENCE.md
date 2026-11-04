@@ -1404,6 +1404,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.git_status_timeout_ms` | `2000` |  | ms | How long the `git status` question about a script file may take (command-guard.js gitCleanTracked: 2000 ms). |
 | `command.git_tag_value_flags` | `10 items` |  |  | git tag options that take a value. |
 | `command.git_timeout_ms` | `5000` |  | ms | How long a git question of the plain-push carve-out may take (command-guard.js: 5000 ms). |
+| `command.golden_redirect_root` | `/var/tmp` |  |  | Test harness only: the directory a golden case's home is laid out in when the temp dir sits inside a command.tmp_fixed_roots root (a home in a tmp root would silence every file-changing case). |
 | `command.guard_name` | `command-guard` |  |  | The guard id command-guard answers to in skip.json and in its messages. |
 | `command.heavy_default_label` | `heavy` |  |  | The category label when a heavy command has no classification. |
 | `command.heavy_pattern_label` | `heavy-pattern` |  |  | The category label of a heavy command found by a pattern. |
