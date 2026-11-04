@@ -1743,3 +1743,19 @@ fn segmentation_matches_real_bash_on_comment_and_escape_snippets() {
     let cases: usize = text.split("cases=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(0);
     assert!(cases >= 150, "too few differential cases ran: {text}");
 }
+
+/// GH #591 fail-safe: ~55 hand-picked snippets under real `bash -c` with a stub `git`; every git call bash executed must be held by a
+/// live segment (comment text kept live when the lexer is unsure is allowed, a hidden executed call is not).
+#[test]
+fn every_git_call_real_bash_executes_is_a_live_segment() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = Command::new("node")
+        .arg(root.join("tests/fixtures/segdiff/bashdiff.cjs"))
+        .arg(root.join("../plugins/anti-hall"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
+    let n: usize = text.split("snippets=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(n >= 40, "too few bashdiff snippets ran: {text}");
+}
