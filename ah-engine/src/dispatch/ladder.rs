@@ -863,6 +863,7 @@ mod tests {
         let other_block = HookResult { id: "other".into(), code: Some(0), out: json!({"decision": "block", "reason": "r"}).to_string(), err: String::new() };
         // (start, event, phase after, steps, blocked, unverified)
         #[rustfmt::skip]
+        #[allow(clippy::type_complexity)]
         let rows: Vec<(Option<Track>, Ev, Phase, Vec<&str>, bool, u64)> = vec![
             (None,                         Ev::Fire,           Phase::Counting, vec!["fired"],                false, 0),
             (Some(track(1, false, 0, 0)),  Ev::Fire,           Phase::Pending,  vec!["repeated"],             false, 0),
