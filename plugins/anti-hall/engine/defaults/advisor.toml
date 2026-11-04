@@ -27,7 +27,7 @@ doc = "Blocks a plan written with no advisor call once. Default on, advisor sess
 value = { section = "guards", key = "advisorPlan", type = "boolean", env = "ANTIHALL_ADVISOR_PLAN", option = "", default = true }
 
 [advisor.sw_rank]
-doc = "Skip plan/retry block if main >= advisor."
+doc = "Ranking."
 value = { section = "guards", key = "advisorRank", type = "boolean", env = "ANTIHALL_ADVISOR_RANK", option = "", default = false }
 
 [advisor.model_ranks]
@@ -179,7 +179,7 @@ value = "A plan is being written with no advisor call since the task began."
 
 [advisor.msg_plan_instead]
 doc = "What to do instead for the plan rule."
-value = "Call the advisor tool once on this plan first, then write it."
+value = "Call the advisor on this plan first, then write it."
 
 [advisor.msg_retry_what]
 doc = "Block text of the retry rule. Placeholder: {file}."
@@ -208,11 +208,11 @@ value = "the inherited {model} session tier"
 # not see). What was seen is folded into the per-agent state (offsets, "advisor seen"), so the rules do not depend on the tail window.
 
 [advisor.sw_thinking]
-doc = "Nudges, then blocks once, thinking work sent by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only."
+doc = "Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorThinking", type = "boolean", env = "ANTIHALL_ADVISOR_THINKING", option = "", default = true }
 
 [advisor.sw_say_do]
-doc = "Blocks a Stop once per turn announcing an advisor call not made. Default on, advisor sessions only."
+doc = "Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only."
 value = { section = "guards", key = "advisorSayDo", type = "boolean", env = "ANTIHALL_ADVISOR_SAY_DO", option = "", default = true }
 
 [advisor.result_types]

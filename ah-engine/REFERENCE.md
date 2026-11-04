@@ -5554,7 +5554,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.metric_latency_gt_tpl` | `latency_gt_{s}s` |  |  | Counter name of a consult latency past the last bucket. Placeholder: {s}. |
 | `advisor.metric_latency_le_tpl` | `latency_le_{s}s` |  |  | Counter name of a consult-latency bucket. Placeholder: {s}. |
 | `advisor.model_ranks` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Model family ranks, matched case-insensitively as a substring of the model id (so a version bump needs no edit); the highest rank is the strongest model. The advisor model comes only from the newest non-sidechain advisor_tool attachment (advisor.attachment.model_key); the settings file never stands in. No match, or a name that matches more than one family (sonnet-opus), = unknown rank = the guard stays on. The main and advisor model count only when read in the current read window: any discarded input (a gap, an oversized or unparsable line, a truncated tail) makes both unknown until a fresh entry is read; sidechain entries never set the main model. |
-| `advisor.msg_plan_instead` | `Call the advisor tool once on this plan first, then write it.` |  |  | What to do instead for the plan rule. |
+| `advisor.msg_plan_instead` | `Call the advisor on this plan first, then write it.` |  |  | What to do instead for the plan rule. |
 | `advisor.msg_plan_what` | `A plan is being written with no advisor call since the task began.` |  |  | Block text of the plan rule. |
 | `advisor.msg_plan_what_lower` | `Plan written with no advisor call: main {model} is below advisor {advisor}.` |  |  | Block text of the plan rule when the main model ranks below the advisor model (the fact and what was done; the hook's line is capped near 115 characters). Placeholders: {model}, {advisor}. |
 | `advisor.msg_plan_what_unknown` | `Plan written with no advisor call: main {model} or advisor {advisor} unranked.` |  |  | Block text of the plan rule when the main or advisor model could not be ranked, so the guard stays on. Placeholders: {model}, {advisor} (a label when unknown). |
@@ -5594,11 +5594,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
 | `advisor.summary` | `Advisor sessions only: blocks once a plan written with no advisor call this t...` |  |  | One-line description of the advisor-guard check in the generated reference. |
 | `advisor.sw_plan` | `6 entries` |  |  | Blocks a plan written with no advisor call once. Default on, advisor sessions only. |
-| `advisor.sw_rank` | `6 entries` |  |  | Skip plan/retry block if main >= advisor. |
+| `advisor.sw_rank` | `6 entries` |  |  | Ranking. |
 | `advisor.sw_retry` | `6 entries` |  |  | Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only. |
 | `advisor.sw_review` | `6 entries` |  |  | Blocks a review agent on a non-flagship model once. Default on, advisor sessions only. |
-| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn announcing an advisor call not made. Default on, advisor sessions only. |
-| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking work sent by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only. |
+| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only. |
+| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only. |
 | `advisor.tasks_max` | `32` |  |  | Most tasks (owner messages) and issue keys one agent's state keeps (the oldest go first). |
 | `advisor.test_cmd_re` | `\b(?:cargo\s+(?:\+\S+\s+)?(?:test\|nextest\|build\|check\|clippy)\|npm\s+(?:run\s+...` |  |  | Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run. |
 | `advisor.test_file_re` | `(?i)(?:^\|/)(?:tests?\|__tests__\|specs?)/\|[._-](?:test\|spec)\.[A-Za-z0-9]+$\|_te...` |  |  | Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run). |

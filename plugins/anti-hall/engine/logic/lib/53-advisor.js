@@ -134,7 +134,7 @@ var advisorKit = {
         if (e[ah.cfg('advisor.sidechain_key')] !== true) tx.advisorModel = typeof a[att.model_key] === 'string' && a[att.model_key] !== '' ? a[att.model_key] : null;
         continue;
       }
-      if (e.type === 'assistant' && !jx.isObj(e.message)) { tx.mainModel = null; continue; }
+      if (e.type === 'assistant' && !jx.isObj(e.message)) { if (e[ah.cfg('advisor.sidechain_key')] !== true) tx.mainModel = null; continue; } // a malformed sidechain row never touches the main model
       if (!jx.isObj(e.message)) continue;
       var c = e.message.content;
       if (e.type === 'user') {
@@ -178,10 +178,11 @@ var advisorKit = {
   // missing attachment proves nothing), an advisor model configured in the Claude Code settings (advisor.settings_files). Else
   // unknown: silent (fail open), counted.
   present: function (p, scan, view) {
+    // a read cut at advisor.max_lines saw a stale model and owner message: nothing decides on it, whatever the payload's tool list says
+    if (view && view.behind === true) { advisorKit.silence('behind'); return false; }
     var names = ah.cfg('advisor.tool_names'), listed = advisorKit.payloadTools(p);
     for (var i = 0; i < listed.length; i++) if (names.indexOf(listed[i]) >= 0) return true;
     if (!view) { advisorKit.silence('unknown'); return false; }
-    if (view.behind === true) { advisorKit.silence('behind'); return false; }
     if (view.avail === false) { advisorKit.silence('off'); return false; }
     if (view.avail === true || view.seen) return true;
     if (!view.full && advisorKit.configured(p)) { advisorKit.silence('settings_only'); return true; }

@@ -852,7 +852,7 @@ fn rank_lower_main_is_blocked_with_the_fact_and_the_clear_step() {
         let (code, out) = plan_write(s, m, &[]);
         assert_eq!(code, 2, "{m}: {out}");
         assert!(out.contains(&format!("Plan written with no advisor call: main {m} is below advisor claude-opus-5-5.")), "{out}");
-        assert!(out.contains("Call the advisor tool once on this plan first, then write it."), "{out}");
+        assert!(out.contains("Call the advisor on this plan first, then write it."), "{out}");
     }
 }
 
@@ -882,6 +882,7 @@ fn switch_off_equal_main_blocked_as_today() {
     let (code, out) = run_out("advisor-guard", &[], &tool("rk8", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
     assert_eq!(code, 2, "{out}");
     assert!(!out.contains("is below advisor") && !out.contains("unranked"), "{out}");
+    assert!(out.contains("Do instead: Call the advisor on this plan first, then write it."), "the switch-off clearing step is the base text: {out}");
     // the env override set to false is the same as the default
     let (code, _) =
         run_out("advisor-guard", &[("ANTIHALL_ADVISOR_RANK", "false")], &tool("rk8b", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
@@ -1270,4 +1271,80 @@ fn n99999_appended_lines_plan_write_blocks_or_counts_silent_behind() {
     let counters = std::fs::read_to_string(state.join("obs-counters.log")).unwrap_or_default();
     // blocked (exit 2) or, when the read stopped at advisor.max_lines with bytes left, silent and counted
     assert!(code == 2 || (code == 0 && counters.contains("silent_behind")), "code {code}, counters {counters}, out {out}");
+}
+
+// Review round 1 (P1): a read that stopped at advisor.max_lines with bytes left saw only a stale model (the newest entry is past the
+// cap), so the payload's own tool list must not make the advisor "present" before that is checked. Same input through the check and
+// through the real hook; the rank switch is irrelevant (default off and on both stay silent).
+fn behind_transcript(name: &str) -> String {
+    let fill = r#"{"type":"progress","n":1}"#;
+    let opus = main_model("claude-opus-5-5");
+    let sonnet = main_model("claude-sonnet-5-5");
+    let mut lines: Vec<&str> = vec![RANK_ATTACH, USER_FIX, &sonnet];
+    lines.extend(std::iter::repeat_n(fill, 40_010));
+    lines.push(&opus);
+    transcript(name, &lines)
+}
+const USER_FIX: &str = r#"{"type":"user","message":{"role":"user","content":"fix parser"}}"#;
+
+fn behind_payload(session: &str, tp: &str) -> Value {
+    json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent",
+        "tool_input": {"description": "Fix the parser bug in ISSUE-42", "prompt": "do the work", "subagent_type": "general-purpose", "model": "opus"},
+        "transcript_path": tp, "tools": ["advisor", "Agent", "Task", "Write", "Edit", "Bash"]})
+}
+
+#[test]
+fn behind_read_with_the_payload_tool_list_stays_silent_for_phase3_dispatch() {
+    for (s, env) in [("bh1", vec![]), ("bh2", vec![ON])] {
+        let tp = behind_transcript(s);
+        let state = dir().join(format!("{s}-state"));
+        std::fs::create_dir_all(&state).unwrap();
+        let mut e = env;
+        e.push(("AH_ENGINE_DIR", state.to_str().unwrap()));
+        for call in 0..2 {
+            let (code, out) = run_out("advisor-guard", &e, &behind_payload(s, &tp));
+            assert_eq!((code, out.as_str()), (0, ""), "{s} call {call}: a read cut at advisor.max_lines must not dispatch on a stale model");
+        }
+        let counters = std::fs::read_to_string(state.join("obs-counters.log")).unwrap_or_default();
+        assert!(counters.contains("silent_behind"), "{s}: counted, not dropped: {counters}");
+    }
+}
+
+#[test]
+fn behind_read_through_the_real_hook_allows_both_calls_with_the_tool_list() {
+    let state = dir().join("bh3-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let tp = behind_transcript("bh3");
+    for call in 0..2 {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        c.args(["hook", "--event", "PreToolUse", "--host", "claude"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", dir().join("home"))
+            .env("AH_ENGINE_DIR", &state)
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+            .env("AH_ENGINE_SCRIPT_TIME_MS", "2000")
+            .env("ANTIHALL_EDIT_GUARD", "0")
+            .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+            .current_dir(dir())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut ch = c.spawn().unwrap();
+        ch.stdin.take().unwrap().write_all(behind_payload("bh3", &tp).to_string().as_bytes()).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "call {call}: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(o.stdout.is_empty(), "call {call}: {}", String::from_utf8_lossy(&o.stdout));
+    }
+}
+
+// Review round 1 (P2): a sidechain assistant row without a message object must not clear the MAIN model.
+#[test]
+fn rank_malformed_sidechain_assistant_row_keeps_the_main_model() {
+    let att = attach_with(Some(OPUS_ATT));
+    let bad = r#"{"type":"assistant","isSidechain":true,"content":"no message object"}"#;
+    assert_eq!(rank_plan("rkm1", &[&att, USER, &main_model("claude-opus-5-5"), bad], None), (0, String::new()), "sidechain row ignored");
+    let bad_main = r#"{"type":"assistant","content":"no message object"}"#;
+    assert_eq!(rank_plan("rkm2", &[&att, USER, &main_model("claude-opus-5-5"), bad_main], None).0, 2, "a main-thread row still clears");
 }
