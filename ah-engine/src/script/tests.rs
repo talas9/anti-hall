@@ -4319,10 +4319,8 @@ mod reword_counters {
     fn each_role_note_form_is_counted_under_its_own_label() {
         for (on, form) in [(false, "emitted_full"), (true, "emitted_short")] {
             let h = home(&format!("rn-cnt-{on}"));
-            let mut pairs = vec![("HOME".to_string(), h.clone())];
-            if on {
-                pairs.push(("ANTIHALL_ROLE_NOTE_SHORT".into(), "1".into()));
-            }
+            // the switch is set explicitly: it ships on
+            let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_ROLE_NOTE_SHORT".to_string(), if on { "1" } else { "0" }.to_string())];
             let p = json!({"session_id": "s1", "cwd": h, "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"});
             let m = counted("engine-role-note", "SubagentStart", p, pairs);
             let other = if on { "emitted_full" } else { "emitted_short" };

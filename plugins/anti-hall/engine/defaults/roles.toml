@@ -21,8 +21,8 @@ doc = "Switch context.roleNote (default on): off stops the SessionStart / Subage
 value = { section = "context", key = "roleNote", env = "ANTIHALL_ROLE_NOTE", option = "", default = true }
 
 [roles.sw_note_short]
-doc = "Switch context.roleNoteShort (default off): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while roles.msg_note and that role's roles.describe entry still hold their stock values (roles.stock_msg_note, roles.stock_describe) and the line fits roles.note_max; an edited note text, role description or limit keeps the full, edited note. Off gives every role the full note."
-value = { section = "context", key = "roleNoteShort", env = "ANTIHALL_ROLE_NOTE_SHORT", option = "", default = false }
+doc = "Switch context.roleNoteShort (default on): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while roles.msg_note and that role's roles.describe entry still hold their stock values (roles.stock_msg_note, roles.stock_describe) and the line fits roles.note_max; an edited note text, role description or limit keeps the full, edited note. Off gives every role the full note (the earlier behaviour)."
+value = { section = "context", key = "roleNoteShort", env = "ANTIHALL_ROLE_NOTE_SHORT", option = "", default = true }
 
 [roles.describe_short]
 doc = "What a role is, in a few words, for the one-line role note. Only the roles listed here get the one-line note (the others keep the full note)."

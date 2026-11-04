@@ -215,6 +215,8 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
         ("ANTIHALL_TASKLIST_CARRY_PROGRESS", "0"),
         ("ANTIHALL_TASKLIST_NAME_COUNTED", "0"),
         ("ANTIHALL_COMMAND_NAME_SEGMENT", "0"),
+        ("ANTIHALL_TASK_TRACKER_TERSE", "0"),
+        ("ANTIHALL_ROLE_NOTE_SHORT", "0"),
     ] {
         if !env.iter().any(|(ek, _)| ek == k) {
             env.push((k.to_string(), v.to_string()));

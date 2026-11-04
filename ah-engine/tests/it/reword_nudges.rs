@@ -267,7 +267,7 @@ fn an_edited_first_line_of_the_directive_is_printed_with_the_switch_on_and_off()
     // the reported input: ANTIHALL_TASK_TRACKER_TERSE=0 printed the stock first line instead of the edited one
     for sw in ["0", "1"] {
         let out = directive("tt-full", "task_tracker.what_full", "requests need tracking before work starts.", "custom tracking directive.", sw, "claude");
-        assert!(out.contains("task tracker: custom tracking directive."), "switch {sw}: {out}");
+        assert!(out.contains("💡 task tracker: custom tracking directive."), "switch {sw}: {out}");
         assert!(!out.contains("requests need tracking") && !out.contains("so none is lost"), "switch {sw}: {out}");
     }
 }

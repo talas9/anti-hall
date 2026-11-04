@@ -5486,7 +5486,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.summary_note` | `SessionStart and SubagentStart context: tells the session its role, the engin...` |  |  | One-line description of the engine-role-note check in the generated reference. |
 | `roles.sw_guard` | `5 entries` |  |  | Switch context.roleGuard (default on): off lets every role run every engine verb (the PreToolUse Bash check and the command-line check step aside). |
 | `roles.sw_note` | `5 entries` |  |  | Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note. |
-| `roles.sw_note_short` | `5 entries` |  |  | Switch context.roleNoteShort (default off): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while roles.msg_note and that role's roles.describe entry still hold their stock values (roles.stock_msg_note, roles.stock_describe) and the line fits roles.note_max; an edited note text, role description or limit keeps the full, edited note. Off gives every role the full note. |
+| `roles.sw_note_short` | `5 entries` |  |  | Switch context.roleNoteShort (default on): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while roles.msg_note and that role's roles.describe entry still hold their stock values (roles.stock_msg_note, roles.stock_describe) and the line fits roles.note_max; an edited note text, role description or limit keeps the full, edited note. Off gives every role the full note (the earlier behaviour). |
 
 ### lane_waste.toml / lane_test
 
@@ -8413,7 +8413,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.subject_tail` | ` (oldest in_progress subject: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
 | `task_tracker.subject_unknown` | `(subject unknown)` |  |  | What stands for a subject that was never learned. |
 | `task_tracker.summary` | `UserPromptSubmit task-list discipline: the full directive or the short remind...` |  |  | One-line description of the task-tracker check in the generated reference. |
-| `task_tracker.terse_setting` | `6 entries` |  |  | Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default off): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off. |
+| `task_tracker.terse_setting` | `6 entries` |  |  | Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off. |
 | `task_tracker.terse_texts` | `6 entries` |  |  | The factual wording used for an unedited text (see stock_texts) while context.taskTrackerTerse is on, by key. Same placeholders as the stock text of that key. |
 | `task_tracker.tier_arrow` | `→ ` |  |  | What starts a tier annotation. |
 | `task_tracker.tier_conf` | ` ({conf})` |  |  | The confidence part of a tier annotation; `{conf}` is the confidence rounded to two decimals. |

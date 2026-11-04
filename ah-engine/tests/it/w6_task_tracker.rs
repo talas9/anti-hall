@@ -32,6 +32,7 @@ fn context(tag: &str, last_full_ago_ms: u64) -> String {
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", &home)
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
+        .env("ANTIHALL_TASK_TRACKER_TERSE", "0") // the earlier wording these assertions read: the terse wording ships on
         .env("AH_ENGINE_DIR", dir.join("state"))
         .env("AH_ENGINE_NOSPAWN", "1")
         .env("AH_ENGINE_PLUGIN_ROOT", plugin())
@@ -97,6 +98,7 @@ fn prompt_context(home: &std::path::Path, dir: &std::path::Path, sid: &str, tran
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", home)
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
+        .env("ANTIHALL_TASK_TRACKER_TERSE", "0") // the earlier wording these assertions read: the terse wording ships on
         .env("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", prune_after)
         .env("AH_ENGINE_DIR", dir.join("state"))
         .env("AH_ENGINE_NOSPAWN", "1")
@@ -223,6 +225,7 @@ fn the_prune_advisory_survives_the_prompt_digest_inline() {
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", &home)
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
+        .env("ANTIHALL_TASK_TRACKER_TERSE", "0") // the earlier wording these assertions read: the terse wording ships on
         .env("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", "10")
         .env("ANTIHALL_PROMPT_DIGEST_MIN", "2") // the verify-first reminder and the tracker are two digestible advisories
         .env("AH_ENGINE_DIR", dir.join("state"))

@@ -451,8 +451,8 @@ doc = "Short reminder speaks only on list change. Where the switch is read from 
 value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
 
 [task_tracker.terse_setting]
-doc = "Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default off): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off."
-value = { section = "context", key = "taskTrackerTerse", env = "ANTIHALL_TASK_TRACKER_TERSE", aliases = [], option = "", default = false }
+doc = "Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off."
+value = { section = "context", key = "taskTrackerTerse", env = "ANTIHALL_TASK_TRACKER_TERSE", aliases = [], option = "", default = true }
 
 [task_tracker.stock_texts]
 doc = "The stock value of each text that context.taskTrackerTerse can reword, by key (the shipped value of that key). A key whose current value equals its entry here is unedited, so the switch may swap in terse_texts; any other value is the owner's own and stays."
