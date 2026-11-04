@@ -1722,3 +1722,24 @@ fn comment_text_naming_a_commit_and_a_push_is_not_a_commit_and_a_push() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// GH #591 class fix: comment detection follows bash's lexical rules. The guard's `splitSegments` is run against REAL bash over
+/// 350+ generated snippets (escaped space/tab/vertical tab/semicolon/ampersand/pipe/paren, continuation lines, quotes, `$'..'`,
+/// `${..}`, `$#`, backticks, heredocs, CRLF, nested shells); `git` is a stub that logs its argv. Every call bash executed must be a
+/// live segment (a hidden one is a guard bypass) and comment text bash skips must not be (the false block).
+#[test]
+fn segmentation_matches_real_bash_on_comment_and_escape_snippets() {
+    for tool in ["node", "bash"] {
+        assert!(Command::new(tool).arg("--version").output().is_ok(), "{tool} is required for the differential segmentation test");
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = Command::new("node")
+        .arg(root.join("tests/fixtures/segdiff/segdiff.cjs"))
+        .arg(root.join("../plugins/anti-hall"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
+    let cases: usize = text.split("cases=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(cases >= 150, "too few differential cases ran: {text}");
+}
