@@ -104,8 +104,8 @@ doc = "Transcript entry field that is true for a subagent (sidechain) entry; suc
 value = "isSidechain"
 
 [advisor.max_lines]
-doc = "Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time)."
-value = 100000
+doc = "Most transcript lines one incremental read parses (the byte window advisor.window_bytes is the main bound; a read that stops here continues from that line next time; the rules stay silent for that call, counted silent_behind). Kept low: a read of ~100000 lines made the script fail with 'quickjs: Null' (GH #558)."
+value = 20000
 min = 10
 
 [advisor.review_signals]
@@ -395,8 +395,8 @@ doc = "Advisory kind (counters) of why the advisor rules stayed silent or how av
 value = "advisor_availability"
 
 [advisor.silence_metrics]
-doc = "Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides), line_discarded (a transcript line was skipped as oversized, unparsable or still being written: the main and advisor model become unknown)."
-value = { unknown = "silent_unknown", off = "silent_off", settings_only = "source_settings", model_unknown = "silent_model_unknown", no_agent_transcript = "silent_no_agent_transcript", agent_mismatch = "silent_agent_mismatch", state_unwritable = "allow_state_unwritable", lock_busy = "allow_lock_busy", rotated = "transcript_rewritten", gap_skipped = "gap_skipped", line_discarded = "line_discarded" }
+doc = "Counter names of advisor.kind_availability: unknown (no signal of an advisor tool: silent), off (an attachment took it out), settings_only (available only by the settings fallback), model_unknown (no known main model), no_agent_transcript and agent_mismatch (a subagent whose own transcript is missing or names another agent), state_unwritable (a block or nudge turned into allow because its cap could not be saved), lock_busy (the state lock could not be taken: allow), rotated (the transcript was rewritten in place: read afresh), gap_skipped (more than the read window was appended since the last read: what was known about availability is dropped and only the window decides), line_discarded (a transcript line was skipped as oversized, unparsable or still being written: the main and advisor model become unknown), behind (a read stopped at advisor.max_lines with bytes left: the advisor rules stay silent for that call)."
+value = { unknown = "silent_unknown", off = "silent_off", settings_only = "source_settings", model_unknown = "silent_model_unknown", no_agent_transcript = "silent_no_agent_transcript", agent_mismatch = "silent_agent_mismatch", state_unwritable = "allow_state_unwritable", lock_busy = "allow_lock_busy", rotated = "transcript_rewritten", gap_skipped = "gap_skipped", line_discarded = "line_discarded", behind = "silent_behind" }
 
 [advisor.agent_subdirs]
 doc = "Subdirectories of a session's subagents directory that hold one more directory level of agent transcripts (Claude Code puts workflow agents in subagents/workflows/<run>/agent-<id>.jsonl)."

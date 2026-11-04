@@ -1245,3 +1245,24 @@ fn rank_counters_include_the_subagent_verdict_and_the_metric() {
     let v: Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["advisory"]["advisor_guard"]["applied_subagent_unranked"].as_u64(), Some(1), "{v}");
 }
+
+// GH #558: a transcript far longer than advisor.max_lines made the script fail ('quickjs: Null') and the call passed. Now one read
+// stops at advisor.max_lines, the rules stay silent for that call (counted silent_behind) and later reads catch up.
+#[test]
+fn n99999_appended_lines_plan_write_blocks_or_counts_silent_behind() {
+    let fill = r#"{"type":"progress","n":1}"#;
+    let mut lines: Vec<&str> = vec![USER];
+    lines.extend(std::iter::repeat_n(fill, 99_999));
+    let sonnet = main_model("claude-sonnet-5-5");
+    lines.push(&sonnet);
+    let tp = transcript("pb1", &lines);
+    let state = dir().join("pb1-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let p = tool("pb1", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md", "content": "x"}));
+    let (code, out) = run_out("advisor-guard", &[("AH_ENGINE_DIR", state.to_str().unwrap())], &p);
+    let log = std::fs::read_to_string(state.join("ah-engine.log")).unwrap_or_default();
+    assert!(!log.contains("script_error") && !log.contains("quickjs"), "the hook must not crash: {log}\n{out}");
+    let counters = std::fs::read_to_string(state.join("obs-counters.log")).unwrap_or_default();
+    // blocked (exit 2) or, when the read stopped at advisor.max_lines with bytes left, silent and counted
+    assert!(code == 2 || (code == 0 && counters.contains("silent_behind")), "code {code}, counters {counters}, out {out}");
+}

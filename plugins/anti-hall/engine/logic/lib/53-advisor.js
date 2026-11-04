@@ -162,12 +162,14 @@ var advisorKit = {
     }
     // a last line still being written (unread bytes remain though the read was not cut by max_lines): nothing derived is trusted yet
     if (typeof r.next === 'number' && typeof r.size === 'number' && r.next < r.size && r.lines.length < ah.cfgNum('advisor.max_lines')) { advisorKit.forget(tx); advisorKit.silence('line_discarded'); }
+    // the read stopped at advisor.max_lines with bytes left (GH #558): what it saw is not the end of the transcript, so present() is false (silent, counted) for this call
+    var behind = typeof r.next === 'number' && typeof r.size === 'number' && r.next < r.size && r.lines.length >= ah.cfgNum('advisor.max_lines');
     tx.pos = typeof r.next === 'number' ? r.next : tx.pos;
     if (r.lines.length > 0) { var last = r.lines[r.lines.length - 1]; tx.lastOff = last[0]; tx.lastSig = ah.sha1(JSON.stringify(last[1])); }
     tx.read = r.read; tx.peak = r.peak; // the last read's bytes and largest line buffer: the latency test reads them
     st.tx = tx;
     advisorKit.consults(st, { calls: calls }); // counted where read: a call is read once, by whichever rule folds first
-    return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, avail: tx.avail, full: tx.full, model: tx.model, mainModel: typeof tx.mainModel === 'string' ? tx.mainModel : null, sayAt: tx.sayAt, advisorModel: typeof tx.advisorModel === 'string' ? tx.advisorModel : null,
+    return { lastAdvisor: tx.lastAdvisor, lastUser: tx.lastUser, seen: tx.seen, avail: tx.avail, full: tx.full, behind: behind, model: tx.model, mainModel: typeof tx.mainModel === 'string' ? tx.mainModel : null, sayAt: tx.sayAt, advisorModel: typeof tx.advisorModel === 'string' ? tx.advisorModel : null,
       scan: { calls: calls, size: r.size, read: r.read, peak: r.peak } };
   },
   // Does the session have an advisor tool? Signals that need no earlier advisor use come first: the payload's tool list, then the
@@ -179,6 +181,7 @@ var advisorKit = {
     var names = ah.cfg('advisor.tool_names'), listed = advisorKit.payloadTools(p);
     for (var i = 0; i < listed.length; i++) if (names.indexOf(listed[i]) >= 0) return true;
     if (!view) { advisorKit.silence('unknown'); return false; }
+    if (view.behind === true) { advisorKit.silence('behind'); return false; }
     if (view.avail === false) { advisorKit.silence('off'); return false; }
     if (view.avail === true || view.seen) return true;
     if (!view.full && advisorKit.configured(p)) { advisorKit.silence('settings_only'); return true; }
