@@ -1211,3 +1211,242 @@ fn a_reminder_that_names_no_worker_is_not_counted_and_blocks_nothing() {
     }
     assert!(!ladder_state(&w).contains("stalled_agents"), "{}", ladder_state(&w));
 }
+
+// ---- the ladder never blocks a Stop task-guard's cap permits, whichever store holds the open tasks (class fix round 4, GH #518) ----
+//
+// task-guard reads Claude Code's own task store first and the transcript only when the session has no readable store. The ladder
+// must read the same list, or it takes a list the guard still sees as open for "done" and lifts the hold over the guard's cap.
+
+/// Where the Stop's `transcript_path` points.
+#[derive(Clone, Copy)]
+enum Tx {
+    /// A transcript that creates these tasks (subject, status).
+    Rows(&'static [(&'static str, &'static str)]),
+    /// A path no file is at.
+    Missing,
+    /// No `transcript_path` in the payload.
+    Omitted,
+    /// A transcript that creates these tasks and then runs on for this many bytes of other conversation: the creates are further back
+    /// than the tasklist gate's scan window and inside task-guard's tail.
+    Deep(&'static [(&'static str, &'static str)], usize),
+}
+
+const NO_ROWS: Tx = Tx::Rows(&[]);
+
+fn tx_payload(w: &World, event: &str, tx: Tx) -> serde_json::Value {
+    let mut p = serde_json::json!({"hook_event_name": event, "session_id": "s1", "cwd": w.path("proj")});
+    match tx {
+        Tx::Rows(rows) => {
+            std::fs::write(w.path("t.jsonl"), task_list(rows)).unwrap();
+            p["transcript_path"] = w.path("t.jsonl").to_string_lossy().into_owned().into();
+        }
+        Tx::Deep(rows, pad) => {
+            let filler = serde_json::json!({"type": "user", "message": {"role": "user", "content": "x".repeat(900)}}).to_string();
+            let mut body = task_list(rows);
+            while body.len() < pad {
+                body.push_str(&filler);
+                body.push('\n');
+            }
+            std::fs::write(w.path("t.jsonl"), body).unwrap();
+            p["transcript_path"] = w.path("t.jsonl").to_string_lossy().into_owned().into();
+        }
+        Tx::Missing => p["transcript_path"] = w.path("no-such-transcript.jsonl").to_string_lossy().into_owned().into(),
+        Tx::Omitted => {}
+    }
+    p
+}
+
+fn stop_tx(w: &World, tx: Tx) -> String {
+    let (code, out, err) = stop_run_env(w, "task-guard", &tx_payload(w, "Stop", tx).to_string(), &ON);
+    assert_eq!(code, 0, "the engine answers; the Node hook must not run: {err}");
+    out
+}
+
+fn prompt_tx(w: &World, tx: Tx) {
+    let mut p = tx_payload(w, "UserPromptSubmit", tx);
+    p["prompt"] = "go".into();
+    prompt_run_env(w, &p.to_string(), &ON);
+}
+
+/// A task file in the session's store directory `dir` (`<home>/.claude/tasks/<dir>/<file>`).
+fn store_put(w: &World, dir: &str, file: &str, body: &str) {
+    let d = w.path("home/.claude/tasks").join(dir);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(file), body).unwrap();
+}
+
+fn store_task(w: &World, dir: &str, n: u32, status: &str) {
+    let rec =
+        serde_json::json!({"id": n.to_string(), "subject": "T-3 [Owner/blocked] wait", "description": "d", "status": status, "blocks": [], "blockedBy": []});
+    store_put(w, dir, &format!("{n}.json"), &rec.to_string());
+}
+
+/// The whole flow: task-guard blocks until its cap is spent (`first` transcript), a stall escalation falls due, and every Stop after
+/// that (`later` transcript) passes with no ladder block for as long as the store holds an open task; then `finish` ends the tasks
+/// and the stall is shown (the positive control: the ladder is not just muted).
+fn the_ladder_leaves_a_capped_stop_alone(name: &str, first: Tx, later: Tx, seed: impl Fn(&World), finish: impl Fn(&World)) {
+    the_ladder_leaves_a_capped_stop_alone_then(name, first, later, later, seed, finish);
+}
+
+/// [`the_ladder_leaves_a_capped_stop_alone`] with the transcript of the control Stop (after `finish`) given.
+fn the_ladder_leaves_a_capped_stop_alone_then(name: &str, first: Tx, later: Tx, control: Tx, seed: impl Fn(&World), finish: impl Fn(&World)) {
+    let w = World::new(name);
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    seed(&w);
+    let blocks = (0..8).filter(|_| stop_tx(&w, first).contains("\"decision\":\"block\"")).count();
+    assert_eq!(blocks, 3, "{name}: task-guard blocks the idle set once and the priority tag twice, then its cap lets the Stop pass");
+    for (round, id) in ["a", "b"].iter().enumerate() {
+        queue_reminder(&w, &format!("r{id}"), "w1", true);
+        prompt_tx(&w, first);
+        if round == 0 {
+            stop_tx(&w, first); // the turn ends: the next reminder is a new fire
+        }
+    }
+    assert!(ladder_state(&w).contains("stalled_agents|w1") && ladder_state(&w).contains("\"pending\":true"), "{name}: due: {}", ladder_state(&w));
+    for n in 1..=12 {
+        let o = stop_tx(&w, later);
+        assert!(!required_next(&o) && !o.contains("\"decision\""), "{name}: Stop {n}: the cap permits it and the ladder adds nothing: {o}");
+    }
+    finish(&w);
+    let o = stop_tx(&w, control);
+    assert!(required_next(&o), "{name}: positive control, the tasks are done and the stall is shown: {o}");
+}
+
+fn finish_store(dir: &'static str) -> impl Fn(&World) {
+    move |w| store_task(w, dir, 1, "completed")
+}
+
+#[test]
+fn the_cap_holds_when_the_open_task_is_only_in_the_task_store_and_the_transcript_is_empty() {
+    // review round 2, A1
+    the_ladder_leaves_a_capped_stop_alone("s4-a1", NO_ROWS, NO_ROWS, |w| store_task(w, "session-s1", 1, "pending"), finish_store("session-s1"));
+}
+
+#[test]
+fn the_cap_holds_when_the_store_says_open_and_the_transcript_says_completed() {
+    // review round 2, A2: the store is the list, an old transcript tail disagrees with it
+    let done: Tx = Tx::Rows(&[("T-3 [Owner/blocked] wait", "completed")]);
+    the_ladder_leaves_a_capped_stop_alone("s4-a2", done, done, |w| store_task(w, "session-s1", 1, "pending"), finish_store("session-s1"));
+}
+
+#[test]
+fn the_cap_holds_when_the_transcript_file_is_gone_and_the_store_still_has_the_task() {
+    the_ladder_leaves_a_capped_stop_alone("s4-missing", NO_ROWS, Tx::Missing, |w| store_task(w, "session-s1", 1, "pending"), finish_store("session-s1"));
+}
+
+#[test]
+fn the_cap_holds_when_the_stop_payload_names_no_transcript() {
+    the_ladder_leaves_a_capped_stop_alone("s4-omitted", NO_ROWS, Tx::Omitted, |w| store_task(w, "session-s1", 1, "pending"), finish_store("session-s1"));
+}
+
+#[test]
+fn the_cap_holds_for_a_store_kept_under_the_full_session_id() {
+    // the second candidate directory name (`{sid}`) of taskstate.store_dir_names
+    the_ladder_leaves_a_capped_stop_alone("s4-sid-dir", NO_ROWS, NO_ROWS, |w| store_task(w, "s1", 1, "pending"), finish_store("s1"));
+}
+
+#[test]
+fn the_cap_holds_for_a_status_in_any_letter_case() {
+    the_ladder_leaves_a_capped_stop_alone(
+        "s4-case",
+        NO_ROWS,
+        NO_ROWS,
+        |w| store_task(w, "session-s1", 1, "Pending"),
+        |w| store_task(w, "session-s1", 1, "COMPLETED"),
+    );
+}
+
+#[test]
+fn the_cap_holds_when_one_of_several_store_tasks_is_open() {
+    the_ladder_leaves_a_capped_stop_alone(
+        "s4-mixed",
+        NO_ROWS,
+        NO_ROWS,
+        |w| {
+            store_task(w, "session-s1", 1, "completed");
+            store_task(w, "session-s1", 2, "pending");
+            store_task(w, "session-s1", 3, "cancelled");
+        },
+        |w| store_task(w, "session-s1", 2, "completed"),
+    );
+}
+
+#[test]
+fn the_cap_holds_when_the_store_has_files_that_are_not_tasks_next_to_the_open_one() {
+    the_ladder_leaves_a_capped_stop_alone(
+        "s4-junk",
+        NO_ROWS,
+        NO_ROWS,
+        |w| {
+            store_task(w, "session-s1", 1, "pending");
+            store_put(w, "session-s1", "2.json", "{not json");
+            store_put(w, "session-s1", "3.json", r#"{"id":"3","subject":"x","status":7}"#);
+            store_put(w, "session-s1", "4.json", "[1,2]");
+            store_put(w, "session-s1", ".lock", "");
+            store_put(w, "session-s1", ".highwatermark", "9");
+            store_put(w, "session-s1", "5.json.tmp", r#"{"id":"5","subject":"x","status":"completed"}"#);
+        },
+        finish_store("session-s1"),
+    );
+}
+
+#[test]
+fn the_cap_holds_for_a_store_task_with_a_numeric_id() {
+    the_ladder_leaves_a_capped_stop_alone(
+        "s4-numeric",
+        NO_ROWS,
+        NO_ROWS,
+        |w| store_put(w, "session-s1", "1.json", r#"{"id":1,"subject":"T-3 [Owner/blocked] wait","status":"pending"}"#),
+        |w| store_put(w, "session-s1", "1.json", r#"{"id":1,"subject":"T-3 [Owner/blocked] wait","status":"completed"}"#),
+    );
+}
+
+#[test]
+fn a_stall_is_shown_when_the_stores_tasks_are_all_done_even_if_the_transcript_still_lists_one_open() {
+    // the store is the list: a transcript task the store lacks (or has completed) is not open
+    let w = World::new("s4-store-done");
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    store_task(&w, "session-s1", 1, "completed");
+    let open: Tx = Tx::Rows(&[("T-3 [Owner/blocked] wait", "pending")]);
+    for (round, id) in ["a", "b"].iter().enumerate() {
+        queue_reminder(&w, &format!("r{id}"), "w1", true);
+        prompt_tx(&w, open);
+        if round == 0 {
+            stop_tx(&w, open);
+        }
+    }
+    let o = stop_tx(&w, open);
+    assert!(required_next(&o), "nothing holds the Stop and the stall is real: {o}");
+}
+
+#[test]
+fn another_sessions_store_holds_nothing_here() {
+    let w = World::new("s4-other-session");
+    tracker_agents(&w, &[("w1", "s1", &["stalled"])]);
+    store_task(&w, "session-zzzzzzzz", 1, "pending");
+    store_task(&w, "other", 1, "pending");
+    for (round, id) in ["a", "b"].iter().enumerate() {
+        queue_reminder(&w, &format!("r{id}"), "w1", true);
+        prompt_tx(&w, NO_ROWS);
+        if round == 0 {
+            stop_tx(&w, NO_ROWS);
+        }
+    }
+    assert!(required_next(&stop_tx(&w, NO_ROWS)), "the session has no open task of its own");
+}
+
+const DEEP: usize = 700 * 1024;
+const ONE_OPEN: &[(&str, &str)] = &[("T-3 [Owner/blocked] wait", "pending")];
+const ONE_DONE: &[(&str, &str)] = &[("T-3 [Owner/blocked] wait", "completed")];
+
+#[test]
+fn the_cap_holds_when_the_open_task_was_created_further_back_than_the_tasklist_gates_window() {
+    // no store: the list is the transcript's, read over task-guard's tail (1.5 MiB), not over the tasklist gate's scan window (512 KiB)
+    the_ladder_leaves_a_capped_stop_alone_then("s4-deep", Tx::Deep(ONE_OPEN, DEEP), Tx::Deep(ONE_OPEN, DEEP), Tx::Deep(ONE_DONE, DEEP), |_| {}, |_| {});
+}
+
+#[test]
+fn the_cap_holds_for_a_task_only_the_transcript_knows_when_the_tasks_are_in_progress() {
+    const IN_PROGRESS: &[(&str, &str)] = &[("T-3 [Owner/blocked] wait", "in_progress")];
+    the_ladder_leaves_a_capped_stop_alone_then("s4-inprog", Tx::Rows(IN_PROGRESS), Tx::Rows(IN_PROGRESS), Tx::Rows(ONE_DONE), |_| {}, |_| {});
+}

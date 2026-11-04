@@ -20,6 +20,9 @@
 //! says it has blocked in this session. That holds with the guard's kind switched off, with the ladder enabled after the guard's cap was
 //! reached, and with the ladder's own state lost; it lifts only when the guard's fact ends (its tasks are done) or the guard blocks
 //! again. A guard record that cannot be read blocks nothing and is counted.
+//! "Its tasks are done" is read from the list the guard reads (the task store first, else the transcript tail as the guard rebuilds it:
+//! [`crate::checks::taskstate::store::session_has_open`]); a second reader of the open tasks could call them done while the guard still
+//! sees them open, and lift the hold over the guard's cap.
 //!
 //! The ladder observes the hook results BEFORE the token cuts (`inject`, `digest`, `shrink`) blank repeated advisories, and its
 //! block is appended after them. It fails open: no session, an unreadable or corrupt state file, a state write that fails, a fact
@@ -782,14 +785,12 @@ pub fn enabled(env: &RequestEnv) -> bool {
     get_bool(&Settings::from_env(env), defaults::raw("nudges.sw_enabled"))
 }
 
-/// Whether the session has an open task, read from the transcript the way the task guards do (`None`: no readable transcript, or a
-/// scan that is not sure).
-fn open_tasks(p: &Value) -> Option<bool> {
-    let path = p.get("transcript_path").and_then(Value::as_str).filter(|t| !t.is_empty())?;
-    std::fs::metadata(path).ok()?;
-    let (window, wide) = (defaults::num("tasklist_guard.window_bytes"), defaults::num("tasklist_guard.wide_window_bytes"));
-    let scan = crate::checks::taskstate::scanview::scan_tasks(path, window, wide).ok().flatten().filter(|s| !s.unsure)?;
-    Some(!scan.open_task_ids.is_empty())
+/// Whether the session has an open task, in the list the task guards read ([`crate::checks::taskstate::store::session_has_open`]: the
+/// task store first, then the transcript tail as task-guard reconstructs it). A fact read from another list than the guard's would
+/// call open tasks done (or the reverse) and lift, or keep, a hold the guard's own cap decided.
+fn open_tasks(st: &Settings, p: &Value) -> Option<bool> {
+    let field = |k: &str| p.get(k).and_then(Value::as_str);
+    crate::checks::taskstate::store::session_has_open(&st.home, field("session_id"), field("transcript_path"))
 }
 
 /// Whether `v` holds the counter `field` above zero, in itself or in a nested object up to `depth` levels down.
@@ -840,7 +841,7 @@ fn live_facts(st: &Settings, p: &Value, kinds: &[Kind]) -> Live {
     let any = |f: &dyn Fn(&Kind) -> bool| kinds.iter().any(f);
     Live {
         flags: if any(&|k| k.per_subject()) { crate::agents::live_flags(Path::new(&st.home), session, transcript) } else { None },
-        open_tasks: if any(&|k| k.live_tasks) { open_tasks(p) } else { None },
+        open_tasks: if any(&|k| k.live_tasks) { open_tasks(st, p) } else { None },
         guards: kinds.iter().filter_map(|k| k.guard.as_ref().map(|g| (k.name.clone(), guard_mark_of(st, session, g)))).collect(),
     }
 }
@@ -1869,6 +1870,93 @@ mod tests {
             "a guard that is switched off permits nothing it did not block"
         );
         assert_eq!(mark(&[("last-stop-taskset-other", r#"{"blocks":3}"#)], None, "gm-other"), Mark::Never, "another session's record is not this one's");
+    }
+
+    // ---- the open-task fact is read from the list the task guards read: the task store first, the transcript only without one ----
+
+    /// A transcript that creates one task (#1) and sets it to `status`.
+    fn transcript_with(home: &Path, status: &str) -> String {
+        let line = |v: Value| format!("{v}\n");
+        let t = [
+            line(json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "t"}}]}})),
+            line(json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: t"}]}})),
+            line(json!({"type": "assistant", "message": {"id": "u1", "role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": status}}]}})),
+        ]
+        .concat();
+        let path = home.join(format!("t-{status}.jsonl"));
+        std::fs::write(&path, t).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+    fn store_task(home: &Path, dir: &str, file: &str, body: &str) {
+        let d = home.join(".claude/tasks").join(dir);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(file), body).unwrap();
+    }
+    fn store_rec(status: &str) -> String {
+        format!(r#"{{"id":"1","subject":"t","status":"{status}"}}"#)
+    }
+    fn open_of(home: &Settings, session: &str, transcript: Option<&str>) -> Option<bool> {
+        let mut p = json!({"session_id": session});
+        if let Some(t) = transcript {
+            p["transcript_path"] = t.into();
+        }
+        open_tasks(home, &p)
+    }
+
+    #[test]
+    fn the_open_task_fact_is_the_stores_whatever_the_transcript_says() {
+        let st = guard_home("ot-store", &[], None);
+        let h = Path::new(&st.home);
+        let (open_t, done_t) = (transcript_with(h, "pending"), transcript_with(h, "completed"));
+        // no store: the transcript decides, as the guards do
+        assert_eq!(open_of(&st, "s1", Some(&open_t)), Some(true));
+        assert_eq!(open_of(&st, "s1", Some(&done_t)), Some(false));
+        assert_eq!(open_of(&st, "s1", None), None, "no store and no transcript: unknown");
+        assert_eq!(open_of(&st, "s1", Some("/nonexistent/t.jsonl")), None, "no store and no transcript file: unknown");
+        // a store open: open, with the transcript done, empty, absent or gone (the review's A1 and A2)
+        store_task(h, "session-s1", "1.json", &store_rec("pending"));
+        for t in [Some(done_t.as_str()), Some(open_t.as_str()), None, Some("/nonexistent/t.jsonl"), Some("")] {
+            assert_eq!(open_of(&st, "s1", t), Some(true), "store open, transcript {t:?}");
+        }
+        assert_eq!(open_of(&st, "s1", Some("/dev/null")), Some(true), "an empty transcript");
+        // a store done: done, whatever an old transcript tail lists
+        store_task(h, "session-s1", "1.json", &store_rec("completed"));
+        for t in [Some(open_t.as_str()), Some(done_t.as_str()), None, Some("/nonexistent/t.jsonl")] {
+            assert_eq!(open_of(&st, "s1", t), Some(false), "store done, transcript {t:?}");
+        }
+        // another session's store is not this session's
+        assert_eq!(open_of(&st, "s2", Some(&open_t)), Some(true));
+        assert_eq!(open_of(&st, "s2", None), None);
+    }
+
+    #[test]
+    fn a_store_that_is_no_list_leaves_the_transcript_to_decide() {
+        let st = guard_home("ot-fallback", &[], None);
+        let h = Path::new(&st.home);
+        let open_t = transcript_with(h, "in_progress");
+        store_task(h, "session-s1", "1.json", "{not json");
+        store_task(h, "session-s1", "2.json", r#"{"id":"2","status":false}"#);
+        assert_eq!(open_of(&st, "s1", Some(&open_t)), Some(true), "only junk in the store");
+        assert_eq!(open_of(&st, "s1", None), None);
+        // a session id the guards do not look up in the store is read from the transcript
+        store_task(h, "session-s.1", "1.json", &store_rec("completed"));
+        store_task(h, "s.1", "1.json", &store_rec("completed"));
+        assert_eq!(open_of(&st, "s.1", Some(&open_t)), Some(true));
+        let none = json!({"transcript_path": open_t});
+        assert_eq!(open_tasks(&st, &none), Some(true), "no session id: the transcript");
+    }
+
+    #[test]
+    fn the_live_facts_of_a_guard_kind_use_the_task_stores_list() {
+        let st = guard_home("ot-live", &[], None);
+        let h = Path::new(&st.home);
+        store_task(h, "session-s1", "1.json", &store_rec("pending"));
+        let p = json!({"session_id": "s1", "transcript_path": transcript_with(h, "completed")});
+        let ks = kinds(&serde_json::Map::new());
+        let live = live_facts(&st, &p, &ks);
+        assert_eq!(live.open_tasks, Some(true), "the transcript says done, the store says open");
+        let idle = ks.iter().find(|k| k.live_tasks).expect("the shipped table has a kind whose fact is an open task");
+        assert_eq!(live.fact(idle, ""), Fact::Holds);
     }
 
     #[test]

@@ -1756,7 +1756,8 @@ every ladder block at a Stop that hook let pass when its state files count a blo
 guard's kind switched off, with the ladder enabled after the cap, or with the ladder's state lost); no count of passes lifts that, only the
 guard's own next block, its fact ending (the tasks are done) or its switch being turned off. A guard record that cannot be read blocks nothing
 and is counted (`facts`). A kind that declares a fact (`live_flags`: a tracker signal on an agent; `live_tasks`: an open task) has it read
-fresh at every Stop. A `live_flags` kind is kept per agent (`nudges.subjects`): a reminder counts for the agent its queue row names (the lines
+fresh at every Stop; the open-task fact is read from the list task-guard reads (Claude Code's task store first, `taskstate.store_*`, else the
+transcript tail as task-guard reconstructs it, `taskstate.tail_bytes`), so the ladder never calls a task open or done that the guard's cap decided otherwise. A `live_flags` kind is kept per agent (`nudges.subjects`): a reminder counts for the agent its queue row names (the lines
 `agent-reminders` took), and that agent's own signal ending (or the agent being gone, finished or dead) clears its entry (`acted`) whatever any
 other agent does; a fire that names no agent is not counted (`subject`). A fact that cannot be read blocks nothing and is counted. All ladder settings are off by default: `nudges.enabled`
 (master switch; also gates the folding below, `ANTIHALL_NUDGES`) and `nudges.kinds` in settings.json (per-kind class override, `off` to stop watching one). Telemetry: one `check`
