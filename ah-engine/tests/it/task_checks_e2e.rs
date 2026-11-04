@@ -1450,3 +1450,34 @@ fn the_cap_holds_for_a_task_only_the_transcript_knows_when_the_tasks_are_in_prog
     const IN_PROGRESS: &[(&str, &str)] = &[("T-3 [Owner/blocked] wait", "in_progress")];
     the_ladder_leaves_a_capped_stop_alone_then("s4-inprog", Tx::Rows(IN_PROGRESS), Tx::Rows(IN_PROGRESS), Tx::Rows(ONE_DONE), |_| {}, |_| {});
 }
+
+#[test]
+fn the_stall_block_names_the_stalled_worker_its_stall_kind_and_the_clearing_step() {
+    // BUILDER rule: a block text names its fact and its clearing step. Two reminders separated by a Stop, then a Stop.
+    let w = World::new("ladder-block-names-fact");
+    let empty: [(&str, &str); 0] = [];
+    tracker_state(&w, Some(true));
+    two_stall_fires(&w, &empty, &ON);
+    let o = enforce_stop_env(&w, &empty, &ON);
+    let want = "{\"decision\":\"block\",\"reason\":\"\u{26d4} Required next: message the stalled agent, stop it, or re-dispatch it with a narrower brief \
+(seen: agent tracker: subagent w1 is STALLED: no observable change (transcript, tool calls, commits, files) for 16m (running 40m)).\\n\
+Shown 2x with no change: this Stop is blocked until it is done or the stall is acknowledged; the block is shown once, then the cap lets a later Stop pass.\"}";
+    assert_eq!(o.trim(), want, "the block names the worker, how it stalled and what clears it");
+    let again = enforce_stop_env(&w, &empty, &ON);
+    assert!(!again.contains("Required next"), "the next Stop passes, as the text says: {again}");
+}
+
+#[test]
+fn with_the_ladder_off_the_two_reminders_then_stop_output_is_the_base_output() {
+    let off = [("ANTIHALL_NUDGES", "0")];
+    let w = World::new("ladder-names-fact-off");
+    let base = World::new("ladder-names-fact-base");
+    let empty: [(&str, &str); 0] = [];
+    for x in [&w, &base] {
+        tracker_state(x, Some(true));
+    }
+    two_stall_fires(&w, &empty, &off);
+    two_stall_fires(&base, &empty, &[]);
+    assert_eq!(enforce_stop_env(&w, &empty, &off), enforce_stop_env(&base, &empty, &[]), "switch off equals the base output");
+    assert!(!w.path("state/nudge-ladder").exists());
+}

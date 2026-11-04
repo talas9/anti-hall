@@ -201,7 +201,11 @@ pub fn observe(k: &Kind, results: &[HookResult]) -> Seen {
         let text = advisory_text(r).or_else(|| if k.count_blocks { block_text(r) } else { None });
         if let Some(t) = text.filter(|t| k.matches.is_empty() || k.matches.iter().any(|m| t.contains(m.as_str()))) {
             let max = defaults::num("nudges.headline_chars") as usize;
-            let first = t.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+            // the line that carries the fact (the one holding a match phrase: which worker, how it stalled), else the first line (a digest header)
+            let lines = || t.lines().map(str::trim).filter(|l| !l.is_empty());
+            let first = lines().find(|l| k.matches.iter().any(|m| l.contains(m.as_str()))).or_else(|| lines().next()).unwrap_or("");
+            let end = defaults::text("nudges.headline_end");
+            let first = first.split_once(&*end).map_or(first, |(head, _)| head);
             let ascii: String = first.chars().filter(char::is_ascii).collect::<String>().trim().chars().take(max).collect();
             return Seen::Fired(ascii);
         }

@@ -3055,7 +3055,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nudges.events` | `PreToolUse, PostToolUse, UserPromptSubmit, Stop` |  |  | Events on which the ladder counts advisories. |
 | `nudges.every` | `2` |  |  | Default further fires between two blocks of one kind (a kind's own `every` wins). |
 | `nudges.guard_state` | `3 entries` |  |  | How a guard's own state file is read (a kind's `guard.state`): blocks_field (the counter that says the guard blocked), depth (levels of nested objects searched), max_bytes (a larger file is unreadable). |
-| `nudges.headline_chars` | `120` |  |  | Most characters of the advisory's first line the block quotes as its detail (ASCII only, so the block keeps one emoji). |
+| `nudges.headline_chars` | `160` |  |  | Most characters of the advisory line the block quotes as its detail (ASCII only, so the block keeps one emoji). The line is the one holding a nudges.kinds match phrase (it names the worker and how it stalled), else the first line. |
+| `nudges.headline_end` | `. ` |  |  | Where the quoted advisory line is cut when it holds this text (the fact sentence ends there; what follows, such as the last progress lines, is left out). |
 | `nudges.hook_id` | `nudge-ladder` |  |  | The id the ladder's own block carries among the hook results of a call. |
 | `nudges.idle_wake` | `13 entries` |  |  | Idle wake: idle_ms of a main session with open unblocked unassigned tasks and no agent running before the wake row; claim_ms of an idle teammate whose last line claims running work with no call in flight, background task or output. The task list: tasks_dir/<session>/*task_ext, a task open when its status is in open_statuses, assigned with an owner, blocked while a blocker is not in closed_statuses. tasks_shown: most task subjects named. |
 | `nudges.idle_wake_claims` | `9 items` |  |  | Phrases (case-insensitive) that make a teammate's last line a claim of running or background work. |
@@ -3063,7 +3064,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nudges.max_chars` | `1200` |  |  | Most characters of the ladder's whole block reason (several due kinds are joined with dispatch.reason_joiner and cut here). |
 | `nudges.metric` | `8 entries` |  |  | The counter of the tracker-side nudge signals (GH #515/#517/#518): its name, its label, and the label values (sampled: a stall sample taken; stalled; claim_checked; claim_flagged; idle_wake; parallel). |
 | `nudges.msg_detail` | ` (seen: {text})` |  |  | How the advisory's first line is quoted in a block reason (empty headline: nothing). Placeholders: {text}. |
-| `nudges.msg_escalated` | `⛔ Required next: {action}{detail}.\nShown {n}x with no change: every Stop sta...` |  |  | Block reason of an escalate kind that is due. Two lines, one emoji. Placeholders: {action}, {detail}, {n} (fires without action). |
+| `nudges.msg_escalated` | `⛔ Required next: {action}{detail}.\nShown {n}x with no change: this Stop is b...` |  |  | Block reason of an escalate kind that is due. Two lines, one emoji. Placeholders: {action}, {detail}, {n} (fires without action). |
 | `nudges.msg_fail_open` | `nudge ladder failed open: {why}` |  |  | Event-log detail when the ladder failed internally and added nothing (fail open). |
 | `nudges.msg_first_fire` | `⛔ Required next: {action}{detail}.\nP0 rule, blocked at first fire: the Stop ...` |  |  | Block reason of a block (P0) kind. Two lines, one emoji. Placeholders: {action}, {detail}, {n}. |
 | `nudges.override_key` | `kinds` |  |  | The key in the nudges section of settings.json that holds the per-kind class override: an object of kind name to class word (advisory, escalate, block, off), e.g. {"nudges": {"kinds": {"model_routing": "escalate"}}}. |

@@ -85,8 +85,12 @@ value = 65536
 min = 1024
 
 [nudges.headline_chars]
-doc = "Most characters of the advisory's first line the block quotes as its detail (ASCII only, so the block keeps one emoji)."
-value = 120
+doc = "Most characters of the advisory line the block quotes as its detail (ASCII only, so the block keeps one emoji). The line is the one holding a nudges.kinds match phrase (it names the worker and how it stalled), else the first line."
+value = 160
+
+[nudges.headline_end]
+doc = "Where the quoted advisory line is cut when it holds this text (the fact sentence ends there; what follows, such as the last progress lines, is left out)."
+value = ". "
 
 [nudges.max_chars]
 doc = "Most characters of the ladder's whole block reason (several due kinds are joined with dispatch.reason_joiner and cut here)."
@@ -94,7 +98,7 @@ value = 1200
 
 [nudges.msg_escalated]
 doc = "Block reason of an escalate kind that is due. Two lines, one emoji. Placeholders: {action}, {detail}, {n} (fires without action)."
-value = "⛔ Required next: {action}{detail}.\nShown {n}x with no change: every Stop stays blocked until it is done."
+value = "⛔ Required next: {action}{detail}.\nShown {n}x with no change: this Stop is blocked until it is done or the stall is acknowledged; the block is shown once, then the cap lets a later Stop pass."
 
 [nudges.msg_first_fire]
 doc = "Block reason of a block (P0) kind. Two lines, one emoji. Placeholders: {action}, {detail}, {n}."
