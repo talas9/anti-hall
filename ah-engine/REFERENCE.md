@@ -5663,11 +5663,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `advisor.state_prefix` | `advisor-retry` |  |  | File-name prefix of the per-session retry state. |
 | `advisor.summary` | `Advisor sessions only: blocks once a plan written with no advisor call this t...` |  |  | One-line description of the advisor-guard check in the generated reference. |
 | `advisor.sw_plan` | `6 entries` |  |  | Blocks a plan written with no advisor call once. Default on, advisor sessions only. |
-| `advisor.sw_rank` | `6 entries` |  |  | Ranking. |
+| `advisor.sw_rank` | `6 entries` |  |  | Skips plan/retry blocks for an equal/higher main. Default off, advisor sessions only. |
 | `advisor.sw_retry` | `6 entries` |  |  | Blocks a re-edit after a failed run with no advisor call once. Default on, advisor sessions only. |
-| `advisor.sw_review` | `6 entries` |  |  | Blocks a review agent on a non-flagship model once. Default on, advisor sessions only. |
-| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows. Default on, advisor sessions only. |
-| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call since the owner's last message. Default on, advisor sessions only. |
+| `advisor.sw_review` | `6 entries` |  |  | Blocks a non-flagship review agent once. Default on, advisor sessions only. |
+| `advisor.sw_say_do` | `6 entries` |  |  | Blocks a Stop once per turn that promises an advisor call. Default on, advisor sessions only. |
+| `advisor.sw_thinking` | `6 entries` |  |  | Nudges, then blocks once, thinking dispatch by a non-flagship main. Default on, advisor sessions only. |
 | `advisor.tasks_max` | `32` |  |  | Most tasks (owner messages) and issue keys one agent's state keeps (the oldest go first). |
 | `advisor.test_cmd_re` | `\b(?:cargo\s+(?:\+\S+\s+)?(?:test\|nextest\|build\|check\|clippy)\|npm\s+(?:run\s+...` |  |  | Regular expression (Rust syntax) of a Bash command whose failure arms the retry rule: a test, build or lint run. |
 | `advisor.test_file_re` | `(?i)(?:^\|/)(?:tests?\|__tests__\|specs?)/\|[._-](?:test\|spec)\.[A-Za-z0-9]+$\|_te...` |  |  | Regular expression (Rust syntax) of a test file path. An edit of a test file never arms or trips the retry rule (the red step of test-first work edits the test before and after a failing run). |
