@@ -1134,6 +1134,10 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             let cfg = if meta.cfg.is_empty() { defaults::text("hooks.cfg_default_label") } else { meta.cfg.as_str() };
             m.inc("dispatch_entries", &[("event", meta.event.as_str()), ("entry", id.as_str()), ("outcome", outcome.as_str()), ("cfg", cfg)]);
         }
+        // a notice turn the client's plan found, with the reminders it dropped (counted here: the client's own counters die with it)
+        if let Some(seen) = &meta.notice {
+            crate::dispatch::notice::count(m, seen);
+        }
     });
     let checks_us = std::cell::Cell::new(0u64);
     crate::load::set_transcript_size(
@@ -2775,6 +2779,7 @@ mod tests {
                     cfg: String::new(),
                     payload_sha1: None,
                     deadline_ms: None,
+                    notice: None,
                 };
                 let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
                 let rows: Vec<serde_json::Value> = serde_json::from_str(ok(&handle_request(d.as_bytes(), &sh).0)).unwrap();

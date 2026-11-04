@@ -158,12 +158,17 @@ value = [
 ]
 
 [guard_rules.exempt]
-doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording."
+doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry)."
 value = [
+  "advisor.msg_plan_what_lower",
+  "advisor.msg_plan_what_unknown",
+  "advisor.msg_retry_what_lower",
+  "advisor.msg_retry_what_unknown",
   "msg.client_what_timeout",
   "jev.what_read_requests",
   "jev.what_read_texts",
   "jev.what_create_dir",
+  "merge_gate.msg_what_v2",
   "mesh_write.what_store_dir",
   "mesh_write.what_store",
   "mesh_write.what_registry",
@@ -385,6 +390,40 @@ value = { what = "`rm -rf` on / or the home directory.", why = "Deleting data ca
 [guard_rules.msg_no_heredoc]
 doc = "Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread."
 value = { what = "a file written through a Bash heredoc.", why = "The git and command guards scan the heredoc body as shell, so file content gets blocked or misread.", instead = "write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.", digest = "Write files with the edit tools, never a Bash heredoc." }
+
+[guard_rules.no_step_allow]
+doc = "Ratchet for the clear-step lint (#538): the ids of registered non-off rules that have no instead text today. The list may only shrink: a new rule needs an instead (the step that clears the block), and an id that gains one must be removed here (guard_rules.problem_stale_allow)."
+value = [
+  "broad_kill.pattern",
+  "broad_kill.everyone",
+  "broad_kill.lookup",
+  "burn.waste",
+  "command.heavy",
+  "command.dsread_monitor",
+  "command.dsread_rm",
+  "ctxbudget.ah_tokens",
+  "ctxbudget.ah_pct",
+  "edit_guard.msg",
+  "inference.msg",
+  "queued_wait.loop",
+  "resource_watch.proc",
+  "speculation_guard.jev",
+  "standdown.msg",
+  "model_routing.row1_research",
+  "devswarm_comms.main",
+  "devswarm_comms.ok",
+  "tasklist_guard.no_tasks",
+  "task_tracker.full",
+  "task_tracker.short",
+]
+
+[guard_rules.problem_no_step]
+doc = "Registry problem: a non-off rule has no instead text (the step that clears it) and is not in guard_rules.no_step_allow. Placeholder: {id}."
+value = "{id}: no instead text naming the step that clears it (add the instead key beside its what, or, for an existing rule, list it in guard_rules.no_step_allow)"
+
+[guard_rules.problem_stale_allow]
+doc = "Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}."
+value = "{id}: has an instead text now, remove it from guard_rules.no_step_allow"
 
 [guard_rules.problem_id]
 doc = "Registry problem: a rule id that is empty or repeated. Placeholder: {id}."
