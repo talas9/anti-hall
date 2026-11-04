@@ -78,3 +78,26 @@ fn the_reviewed_class_inputs_keep_the_shared_tree_note_through_the_real_hook() {
     assert_eq!(spawn_prompt(&h, true, dup), "", "a repeated affirmative statement is exempt");
     assert!(spawn_prompt(&h, false, dup).contains(warn), "switch off keeps the note");
 }
+
+/// Round 3 of the review: a stop, ! or ? inside a single quote, emphasis, a hyphen dash or after a semicolon is no sure sentence end, so the
+/// negation before it still reaches the isolation phrase. The reported input first, byte for byte; the switch-on answer equals the switch-off
+/// answer (the warning), and the affirmative twin of each is exempt.
+#[test]
+fn an_uncertain_sentence_boundary_keeps_the_negated_shared_tree_note_through_the_real_hook() {
+    let h = scratch("bare-bound");
+    let warn = "another agent is already writing in this working tree";
+    let pairs = [
+        ("Do not 'especially! Really' use ~/x as the working copy", "Do 'especially! Really' use ~/x as the working copy"),
+        ("Do not **especially! Really** use ~/x as the working copy", "Do **especially! Really** use ~/x as the working copy"),
+        ("Do not - especially! Really - use ~/x as the working copy", "Do - especially! Really - use ~/x as the working copy"),
+        ("Do not; Really use ~/x as the working copy", "Do; Really use ~/x as the working copy"),
+    ];
+    for (neg, yes) in pairs {
+        let prompt = format!("{neg}; fix hooks/foo.js and commit.");
+        let on = spawn_prompt(&h, true, &prompt);
+        assert!(on.contains(warn), "switch on keeps the note: {prompt:?}: {on}");
+        assert_eq!(on, spawn_prompt(&h, false, &prompt), "switch on equals switch off for a negated brief: {prompt:?}");
+        let twin = format!("{yes}; fix hooks/foo.js and commit.");
+        assert_eq!(spawn_prompt(&h, true, &twin), "", "the affirmative twin is exempt: {twin:?}");
+    }
+}

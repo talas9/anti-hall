@@ -358,24 +358,44 @@ doc = "Rust regex source (read with the r flag; (?i) inside), tested on the whol
 value = '''(?i)\b(?:not|no|never|nor|neither|none|nothing|nobody|nowhere|cannot|without|avoid\w*|except\w*|unless|exclud\w*|ban(?:s|ned|ning)?|refus\w*|den(?:y|ies|ied)|reject\w*|sans|barring|w/o|forbid\w*|prohibit\w*|disallow\w*|refrain\w*|rather\s+than|instead\s+of|dont|doesnt|didnt|wont|cant|shouldnt|mustnt|couldnt|wouldnt|isnt|arent|wasnt|werent|havent|hasnt|hadnt|neednt)\b|\b\w*n(?:[^\s\p{L}\p{N}]|[\p{Lm}\p{Sk}])t\b'''
 
 [swarm_guard.re_named_tree_bare_clause_break]
-doc = "Rust regex source (read with the r flag, case-sensitive), read on the text with brackets, quotes, abbreviations and ellipses masked: where one clause ends for the bare fresh-clone negation test: a full stop, !, ? or semicolon before white space and a capital letter. Blank lines, lists, newlines, commas and colons are no break."
-value = '''[.!?;]\s+\p{Lu}'''
+doc = "Rust regex source (read with the r flag, case-sensitive), read on the text with brackets, quotes, dashes, emphasis, abbreviations and ellipses masked: where one sentence ends for the bare fresh-clone negation test, and the only sentence ends that count: a full stop, ! or ? before white space and a capital letter. A semicolon, a blank line, a list, a newline, a comma or a colon is no break; whatever is uncertain keeps the text one sentence, so a negation earlier in it keeps the shared-tree note."
+value = '''[.!?]\s+\p{Lu}'''
 
 [swarm_guard.re_named_tree_bare_mask]
-doc = "Rust regex source (read with the r flag; (?i) inside): text whose full stops are no clause break (abbreviations such as e.g. or U.S., titles, a lone letter or digit word before a stop (a path ending in one letter is no abbreviation), an ellipsis); masked before the clause break is read."
-value = '''(?i)\b(?:e\.g|i\.e|etc|vs|cf|approx|incl|viz|resp|nr|fig|inc|ltd|mr|mrs|ms|dr|st|no|prof|sr|jr|gen|mt|rev|sen|gov|col|capt|lt|sgt|hon|co|dept|est|ca)\.|(?:\b[a-z]{1,3}\.){2,}|(?:^|\s)[a-z0-9]\.(?:\s|$)|\.{2,}|\u2026'''
+doc = "Rust regex source (read with the r flag; (?i) inside): text whose full stops are no clause break (abbreviations such as e.g. or U.S., titles, a lone letter or digit word before a stop (a path ending in one letter is no abbreviation), an ellipsis, also one with spaces between its dots); masked before the clause break is read."
+value = '''(?i)\b(?:e\.g|i\.e|etc|vs|cf|approx|incl|viz|resp|nr|fig|inc|ltd|mr|mrs|ms|dr|st|no|prof|sr|jr|gen|mt|rev|sen|gov|col|capt|lt|sgt|hon|co|dept|est|ca|al|eq|sec|ch|pp|vol|ibid|corp|bros|ft|ave|blvd|rd|esq|ex|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\.|(?:\b[a-z]{1,3}\.){2,}|(?:^|\s)[a-z0-9]\.(?:\s|$)|\.{2,}|\.(?:[ \t\u00A0]+\.){2,}|\u2026'''
 
 [swarm_guard.bare_nest_open]
-doc = "Characters that open a nested span in a brief (brackets, quotes): a clause break inside one is masked; an unclosed one masks the rest."
-value = "([{\u201C\u00AB\u2039"
+doc = "Characters that open a nested span in a brief (brackets, angle brackets, CJK brackets, curly and low quotes): a sentence break inside one is masked; an unclosed one masks the rest."
+value = "([{<\u201C\u00AB\u2039\u201E\u3010\u300C\u300E\u300A\u3008\uFF08\uFF3B\uFF5B\uFF62"
 
 [swarm_guard.bare_nest_close]
 doc = "Characters that close a nested span opened by bare_nest_open, in the same order."
-value = ")]}\u201D\u00BB\u203A"
+value = ")]}>\u201D\u00BB\u203A\u201C\u3011\u300D\u300F\u300B\u3009\uFF09\uFF3D\uFF5D\uFF63"
 
 [swarm_guard.bare_nest_toggle]
-doc = "Characters that open a nested span when closed and close it when open (straight quote, code tick, em and en dash)."
-value = "\"`\u2014\u2013"
+doc = "Characters that open a nested span when closed and close it when open (straight quote, code tick, em, en, figure and horizontal-bar dash)."
+value = "\"`\u2014\u2013\u2012\u2015"
+
+[swarm_guard.bare_nest_toggle_pairs]
+doc = "Space separated two-character marks that open a nested span when closed and close it when open (markdown strikethrough); a single such character, as in a ~/ path, is no mark."
+value = "~~"
+
+[swarm_guard.bare_mark_groups]
+doc = "Space separated groups of marks that open or close a nested span only by their place in the text: single quotes (an apostrophe is none), markdown emphasis. A mark opens after white space, an opener or the start and before a non-space; it closes after a non-space and before a non-word character, and only a mark of its own group. A span left open masks the rest."
+value = "'\u2018\u2019\u201A * _"
+
+[swarm_guard.bare_mark_word]
+doc = "JavaScript regex source (u flag): one word character; a mark between two of them is an apostrophe or an underscore inside a word, and closes nothing."
+value = '''[\p{L}\p{N}]'''
+
+[swarm_guard.bare_mark_before]
+doc = "JavaScript regex source (u flag): the one character before a mark that may open a span (empty at the start of the text): white space, an opener, another mark, a dash, a colon, a comma, a semicolon, = or |. A mark after a letter, a digit or a path character opens nothing."
+value = '''^(?:[\s(\[{<"'`\u2018\u2019\u201A\u201C\u201E\u00AB\u2039*_\u2014\u2013:;,>=|-]|)$'''
+
+[swarm_guard.re_named_tree_bare_dash]
+doc = "Rust regex source: a dash written with one or two hyphens between spaces after a word (not a list bullet, which follows a line break); each toggles a nested span like an em dash, so a sentence break between a pair is masked."
+value = '''[^\s][ \t\u00A0]-{1,2}[ \t\u00A0]'''
 
 [swarm_guard.re_named_tree_bare_lead]
 doc = "Rust regex source: the punctuation anchor a re_named_tree_bare match may start with; the clause test starts after it."

@@ -1269,6 +1269,75 @@ mod swarm {
         assert!(note(rules).is_some(), "bullets share one clause: {rules:?}");
     }
 
+    // class fix of #487 (round 3): a sentence boundary is certain only at a stop, ! or ? followed by white space and a capital, outside
+    // every quote, bracket, dash and emphasis mark and not after an abbreviation. A semicolon is never one. Whatever is uncertain keeps the
+    // text one sentence, so a negation earlier in it keeps the note. Each negated brief has an affirmative twin the switch must exempt.
+    #[test]
+    fn shared_tree_bare_clone_an_uncertain_sentence_boundary_keeps_the_negated_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (_h, mut note) = bare_class_note("sw-bare-bound", true);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let pairs = [
+            // the reported input: a single-quoted span holds the stop, the clause is still negated
+            ("Do not 'especially! Really' use ~/x as the working copy", "Do 'especially! Really' use ~/x as the working copy"),
+            ("Do not \u{2018}especially! Really\u{2019} use ~/x as the working copy", "Do \u{2018}especially! Really\u{2019} use ~/x as the working copy"),
+            ("Do not 'why? Because it is shared' use ~/x as the working copy", "Do 'why? Because it is shared' use ~/x as the working copy"),
+            ("Do not 'really. Truly' use ~/x as the working copy", "Do 'really. Truly' use ~/x as the working copy"),
+            // an apostrophe earlier in the sentence is no quote and must not shift which span is quoted
+            (
+                "Do not say users' things 'especially! Really' and use ~/x as the working copy",
+                "Do say users' things 'especially! Really' and use ~/x as the working copy",
+            ),
+            ("Don't 'especially! Really' use ~/x as the working copy", "Do 'especially! Really' use ~/x as the working copy"),
+            // emphasis marks
+            ("Do not **especially! Really** use ~/x as the working copy", "Do **especially! Really** use ~/x as the working copy"),
+            ("Do not *especially? Really* use ~/x as the working copy", "Do *especially? Really* use ~/x as the working copy"),
+            ("Do not _especially! Really_ use ~/x as the working copy", "Do _especially! Really_ use ~/x as the working copy"),
+            // other brackets and quotes
+            ("Do not <especially! Really> use ~/x as the working copy", "Do <especially! Really> use ~/x as the working copy"),
+            ("Do not \u{3010}especially! Really\u{3011} use ~/x as the working copy", "Do \u{3010}especially! Really\u{3011} use ~/x as the working copy"),
+            ("Do not \u{300c}especially! Really\u{300d} use ~/x as the working copy", "Do \u{300c}especially! Really\u{300d} use ~/x as the working copy"),
+            ("Do not \u{201e}especially! Really\u{201c} use ~/x as the working copy", "Do \u{201e}especially! Really\u{201c} use ~/x as the working copy"),
+            // dashes written as hyphens
+            ("Do not - especially! Really - use ~/x as the working copy", "Do - especially! Really - use ~/x as the working copy"),
+            ("Do not -- especially! Really -- use ~/x as the working copy", "Do -- especially! Really -- use ~/x as the working copy"),
+            ("Do not \u{201a}especially! Really\u{2018} use ~/x as the working copy", "Do \u{201a}especially! Really\u{2018} use ~/x as the working copy"),
+            ("Do not ~~especially! Really~~ use ~/x as the working copy", "Do ~~especially! Really~~ use ~/x as the working copy"),
+            ("Do not \u{2015} especially! Really \u{2015} use ~/x as the working copy", "Do \u{2015} especially! Really \u{2015} use ~/x as the working copy"),
+            // an abbreviation before a capital is no sure sentence end
+            ("Do not do it on Sat. Really use ~/x as the working copy", "Do it on Sat. Really use ~/x as the working copy"),
+            // a spaced ellipsis is no stop
+            ("Do not . . . Really use ~/x as the working copy", "Do . . . Really use ~/x as the working copy"),
+            // a semicolon is never a certain boundary
+            ("Do not; Really use ~/x as the working copy", "Do; Really use ~/x as the working copy"),
+            ("Never push to main; Clone fresh into ~/x", "Always push to main; Clone fresh into ~/x"),
+        ];
+        for (neg, _) in pairs {
+            let prompt = format!("{neg}{BARE_TAIL}");
+            assert!(note(&prompt).is_some(), "an uncertain boundary keeps the negated note: {prompt:?}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+        for (_, yes) in pairs {
+            let prompt = format!("{yes}{BARE_TAIL}");
+            assert!(note(&prompt).is_none(), "the affirmative twin is exempted: {prompt:?}");
+        }
+        // a certain boundary still separates the sentences, so the marks above do not widen every clause
+        let certain = [
+            "Do not especially! Really use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push 'x'. Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push the **big** button! Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push - ever - ok. Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push. It's the user's call! Really, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Never push to main! Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push (ask 'why? Because'). Use ~/x as the working copy; fix hooks/foo.js and commit.",
+        ];
+        for p in certain {
+            assert!(note(p).is_none(), "a certain boundary leaves the affirmative sentence exempt: {p:?}");
+        }
+    }
+
     // review round 2 (P2): two affirmative statements are both blanked from the in-place check, whatever their case
     #[test]
     fn shared_tree_bare_clone_a_repeated_affirmative_statement_stays_exempt() {

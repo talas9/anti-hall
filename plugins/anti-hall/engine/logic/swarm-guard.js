@@ -70,22 +70,36 @@ function swgUnder(abs, dir) {
 // swgBareHit tells the shared-tree note that the bare matcher alone made the difference, so it can count the exemption once per spawn.
 var swgBareHit = false, swgBareSpans = [], swgBareAvoided = false;
 
-// Fail safe: any negation token ("not", "never", "without", "rather than", "n't" ...) anywhere in the clause that holds the bare statement,
-// before or after it and with any words between, keeps the shared-tree note. Only an unambiguous affirmative clause exempts the spawn.
-// Whatever is ambiguous WIDENS the clause, never narrows it: a clause ends only at a stop, !, ? or semicolon before a capital letter, and
-// never inside brackets, quotes, code ticks or dashes (an unclosed one runs to the end), after an abbreviation, a lone letter or digit, or
-// in an ellipsis. The negation test then reads the unmasked clause, with path words blanked ("~/no-tree" is no negation).
-// The clause breaks of a text are found once per text (swgBareBreaks), not once per hit.
+// Fail safe: any negation token ("not", "never", "without", "rather than", "n't" ...) anywhere in the sentence that holds the bare statement,
+// before or after it and with any words between, keeps the shared-tree note. Only an unambiguous affirmative sentence exempts the spawn.
+// Whatever is uncertain WIDENS the sentence, never narrows it: a sentence ends only at a stop, ! or ? before white space and a capital
+// letter (never a semicolon), and never inside brackets, quotes, code ticks, emphasis or dashes (an unclosed one runs to the end), after
+// an abbreviation, a lone letter or digit, or in an ellipsis. A single quote or emphasis mark opens a span only by its place in the text
+// (swarm_guard.bare_mark_groups): an apostrophe in a word opens nothing. The negation test then reads the unmasked sentence, with path
+// words blanked ("~/no-tree" is no negation). The breaks of a text are found once per text (swgBareBreaks), not once per hit.
 function swgBareMask(t) {
-  var m = t.split(''), spans = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_mask'), 'r', t), i, k;
+  var m = t.split(''), spans = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_mask'), 'r', t), i, j, k;
   for (i = 0; i < spans.length; i++) for (k = spans[i][0]; k < spans[i][1] && k < m.length; k++) m[k] = '_';
   var open = ah.cfg('swarm_guard.bare_nest_open'), close = ah.cfg('swarm_guard.bare_nest_close'), toggle = ah.cfg('swarm_guard.bare_nest_toggle');
-  var stack = [], tog = {}, togOpen = 0;
+  var groups = ah.cfg('swarm_guard.bare_mark_groups').split(' '), word = new RegExp(ah.cfg('swarm_guard.bare_mark_word'), 'u');
+  var before = new RegExp(ah.cfg('swarm_guard.bare_mark_before'), 'u'), dash = {}, dashes = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_dash'), 'r', t);
+  for (i = 0; i < dashes.length; i++) dash[dashes[i][0] + t.slice(dashes[i][0], dashes[i][1]).indexOf('-')] = true;
+  var pairs = ah.cfg('swarm_guard.bare_nest_toggle_pairs').split(' '), stack = [], tog = {}, togOpen = 0;
   for (i = 0; i < m.length; i++) {
-    var c = t.charAt(i), o = open.indexOf(c), inside = stack.length > 0 || togOpen > 0;
-    if (o >= 0) { inside = true; stack.push(close.charAt(o)); }
-    else if (toggle.indexOf(c) >= 0) { inside = true; if (tog[c]) { tog[c] = false; togOpen--; } else { tog[c] = true; togOpen++; } }
+    var c = t.charAt(i), o = open.indexOf(c), inside = stack.length > 0 || togOpen > 0, g = -1;
+    for (j = 0; j < groups.length; j++) if (groups[j].indexOf(c) >= 0) g = j;
+    if (pairs.indexOf(t.substr(i, 2)) >= 0 && (i === 0 || t.charAt(i - 1) !== c)) {
+      inside = true; if (tog[c + c]) { tog[c + c] = false; togOpen--; } else { tog[c + c] = true; togOpen++; }
+      m[i++] = '_';
+    } else if (dash[i]) { inside = true; if (tog['-']) { tog['-'] = false; togOpen--; } else { tog['-'] = true; togOpen++; } }
     else if (stack.length && c === stack[stack.length - 1]) stack.pop();
+    else if (o >= 0) { inside = true; stack.push(close.charAt(o)); }
+    else if (toggle.indexOf(c) >= 0) { inside = true; if (tog[c]) { tog[c] = false; togOpen--; } else { tog[c] = true; togOpen++; } }
+    else if (g >= 0) {
+      var prev = i > 0 ? t.charAt(i - 1) : '', next = i + 1 < t.length ? t.charAt(i + 1) : '', tok = '\u0001' + g;
+      if (stack.length && stack[stack.length - 1] === tok && prev !== '' && !/\s/.test(prev) && !word.test(next)) stack.pop();
+      else if (before.test(prev) && next !== '' && !/\s/.test(next)) { inside = true; stack.push(tok); }
+    }
     if (inside) m[i] = '_';
   }
   return m.join('');
@@ -96,7 +110,7 @@ function swgBareBreaks(t) { return ah.re.findAll(ah.cfg('swarm_guard.re_named_tr
 function swgBareClauseNegated(t, from, to, brk) {
   var lead = ah.re.find(ah.cfg('swarm_guard.re_named_tree_bare_lead'), '', t.slice(from, to));
   var at = from + (lead ? lead[1] : 0), start = 0, end = t.length;
-  // a break's own match opens with its stop or semicolon and ends on the next clause's first letter: both bounds use its start
+  // a break's own match opens with its stop and ends on the next sentence's first letter: both bounds use its start
   for (var i = 0; i < brk.length; i++) {
     if (brk[i][0] < at) start = brk[i][0];
     else { end = brk[i][0]; break; }
