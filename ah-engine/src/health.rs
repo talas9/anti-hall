@@ -149,8 +149,13 @@ pub fn start_log_thread() {
     if LOG_QUEUE.set(tx).is_err() {
         return;
     }
+    crate::discard::logged("log_thread_spawn", spawn_log_writer(rx).map(drop));
+}
+
+/// Start the thread that drains `rx` into the event log (the daemon's, and the tests' own).
+fn spawn_log_writer(rx: std::sync::mpsc::Receiver<LogMsg>) -> std::io::Result<std::thread::JoinHandle<()>> {
     let batch_max = defaults::num("health.log_batch") as usize;
-    let spawned = std::thread::Builder::new().name("ah-log".into()).spawn(move || {
+    std::thread::Builder::new().name("ah-log".into()).spawn(move || {
         let mut acks: Vec<std::sync::mpsc::Sender<()>> = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut text = String::new();
@@ -176,21 +181,47 @@ pub fn start_log_thread() {
                 crate::discard::harmless(a.send(())); // keep: the waiter may have given up
             }
         }
-    });
-    crate::discard::logged("log_thread_spawn", spawned.map(drop));
+    })
 }
 
 /// Wait (bounded) until every line queued so far is on disk: for the daemon's exit and for a reader that must see its own lines.
 pub fn flush_log() {
     let Some(tx) = LOG_QUEUE.get() else { return };
-    if !flush_via(tx, defaults::millis("health.log_flush_ms")) {
-        crate::discard::note("log_flush_skipped", defaults::text("health.msg_flush_skipped"));
+    flush_queue(tx, defaults::millis("health.log_flush_ms"), defaults::millis("health.log_flush_poll_ms"));
+}
+
+/// [`flush_via`], and when it gave up the exit says so in the log without waiting for it: a stuck writer means the log lock or
+/// the disk is stuck, and a direct append would wait on the very thing the flush just gave up on.
+fn flush_queue(tx: &std::sync::mpsc::SyncSender<LogMsg>, wait: std::time::Duration, poll: std::time::Duration) {
+    if !flush_via(tx, wait, poll) {
+        log_event_detached(defaults::text("discard.log_kind"), "log_flush_skipped", defaults::text("health.msg_flush_skipped"));
     }
 }
 
-/// Ask the log writer behind `tx` to acknowledge a flush, never blocking past `wait`: the request is retried while the queue is full
-/// (a healthy writer drains it), then the ack is awaited for the time left. False when the queue stayed full or the writer is gone.
-fn flush_via(tx: &std::sync::mpsc::SyncSender<LogMsg>, wait: std::time::Duration) -> bool {
+/// [`log_event`] from a thread of its own, so the caller never waits for the log. At most one such thread lives at a time and a
+/// request made while one is waiting is dropped (the log is stuck then, and one line about it is enough); when the process ends
+/// first the line is lost, which is the price of an exit that cannot hang.
+fn log_event_detached(kind: &'static str, code: &'static str, detail: &'static str) {
+    use std::sync::atomic::Ordering;
+    if DETACHED_LOG_BUSY.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("ah-log-note".into()).spawn(move || {
+        log_event(kind, code, detail);
+        DETACHED_LOG_BUSY.store(false, Ordering::Release);
+    });
+    if spawned.is_err() {
+        DETACHED_LOG_BUSY.store(false, Ordering::Release); // no thread, no line: logging from here is what must not block
+    }
+}
+
+/// True while a [`log_event_detached`] thread has not yet written its line.
+static DETACHED_LOG_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask the log writer behind `tx` to acknowledge a flush, never blocking past `wait`: the request is retried every `poll` (or the
+/// time left, if shorter) while the queue is full (a healthy writer drains it), then the ack is awaited for the time left. False
+/// when the queue stayed full or the writer is gone.
+fn flush_via(tx: &std::sync::mpsc::SyncSender<LogMsg>, wait: std::time::Duration, poll: std::time::Duration) -> bool {
     use std::sync::mpsc::TrySendError;
     let deadline = std::time::Instant::now() + wait;
     let (ack, done) = std::sync::mpsc::channel();
@@ -202,11 +233,12 @@ fn flush_via(tx: &std::sync::mpsc::SyncSender<LogMsg>, wait: std::time::Duration
                 return true;
             }
             Err(TrySendError::Full(m)) => {
-                if std::time::Instant::now() >= deadline {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
                     return false;
                 }
                 msg = m;
-                std::thread::sleep(defaults::millis("health.log_flush_poll_ms"));
+                std::thread::sleep(poll.min(left));
             }
             Err(TrySendError::Disconnected(_)) => return false,
         }
@@ -1197,20 +1229,245 @@ mod tests {
         assert_eq!(fnv("a"), 0xaf63_dc4c_8601_ec8c);
     }
 
+    // ---- F572: the exit flush of the event log never blocks ----
+
+    use std::sync::mpsc::{SyncSender, sync_channel};
+    use std::time::Instant;
+
+    /// A state directory of its own (the log and its lock file), for the tests that stall the log writer on the log lock. The
+    /// environment is process-wide, so these tests take turns.
+    struct StuckLog {
+        dir: PathBuf,
+        held: Option<std::fs::File>,
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl StuckLog {
+        fn new(name: &str) -> StuckLog {
+            static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!("ah-health-flush-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `TURN` first.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            StuckLog { dir, held: None, _turn: turn }
+        }
+
+        fn log(&self) -> PathBuf {
+            file(log_name())
+        }
+
+        /// Stall every append of the log writer: hold the log's lock exclusively, as a trim in another process would.
+        fn hold_lock(&mut self) {
+            let lock = log_lock(&self.log()).expect("the lock file");
+            assert!(flock(&lock, libc::LOCK_EX | libc::LOCK_NB));
+            self.held = Some(lock);
+        }
+
+        fn release_lock(&mut self) {
+            self.held = None;
+        }
+
+        /// The real log writer on a queue of `cap` lines.
+        fn writer(&self, cap: usize) -> (SyncSender<LogMsg>, std::thread::JoinHandle<()>) {
+            let (tx, rx) = sync_channel::<LogMsg>(cap);
+            (tx, spawn_log_writer(rx).unwrap())
+        }
+
+        /// Queue one line (the writer takes it and blocks on the lock), then fill the queue to its capacity.
+        fn stall_and_fill(tx: &SyncSender<LogMsg>, cap: usize) {
+            tx.send(LogMsg::Line("1\tk\tc\tfirst\n".into())).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            for _ in 0..cap {
+                tx.try_send(LogMsg::Line("1\tk\tc\tfill\n".into())).expect("the queue holds its capacity");
+            }
+        }
+
+        /// Release the lock and wait until the exit diagnostic is in the log and its thread is done.
+        fn diagnostic_lands(&mut self) -> bool {
+            self.release_lock();
+            let until = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < until {
+                let written = std::fs::read_to_string(self.log()).is_ok_and(|t| t.contains("log_flush_skipped"));
+                if written && !DETACHED_LOG_BUSY.load(std::sync::atomic::Ordering::Acquire) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        }
+    }
+
+    impl Drop for StuckLog {
+        fn drop(&mut self) {
+            self.held = None;
+            // SAFETY: as in `new`.
+            unsafe { std::env::remove_var("AH_ENGINE_DIR") };
+            crate::discard::harmless(std::fs::remove_dir_all(&self.dir)); // keep: cleanup that raced; an absent dir is the goal state
+        }
+    }
+
+    /// Run `flush_queue` the way the exit does and measure it. A flush still stuck after `limit` fails the test (the lock is
+    /// released first, so the stuck thread ends).
+    fn timed_flush(stuck: &mut StuckLog, tx: &SyncSender<LogMsg>, wait: Duration, poll: Duration, limit: Duration) -> Duration {
+        let (done, took) = std::sync::mpsc::channel();
+        let tx = tx.clone();
+        let t = Instant::now();
+        std::thread::spawn(move || {
+            flush_queue(&tx, wait, poll);
+            crate::discard::harmless(done.send(t.elapsed())); // keep: the test may have given up
+        });
+        match took.recv_timeout(limit) {
+            Ok(d) => d,
+            Err(_) => {
+                stuck.release_lock();
+                panic!("the flush was still stuck after {limit:?} (wait {wait:?}, poll {poll:?})");
+            }
+        }
+    }
+
+    /// F572 (verifier input): the shipped queue size and bounds, a writer stuck on the log lock, a full queue. The flush gives up at
+    /// its bound, and its own diagnostic does not wait on the lock the writer is stuck on.
+    #[test]
+    fn the_exit_flush_returns_when_the_writer_is_stuck_on_the_log_lock() {
+        let mut stuck = StuckLog::new("exact");
+        stuck.hold_lock();
+        let cap = defaults::num("health.log_queue") as usize;
+        let (tx, writer) = stuck.writer(cap);
+        StuckLog::stall_and_fill(&tx, cap);
+        let wait = defaults::millis("health.log_flush_ms");
+        let took = timed_flush(&mut stuck, &tx, wait, defaults::millis("health.log_flush_poll_ms"), wait + Duration::from_secs(5));
+        assert!(took < wait + Duration::from_millis(1500), "took {took:?}");
+        assert!(stuck.diagnostic_lands(), "the diagnostic reaches the log once the lock is free");
+        drop(tx);
+        writer.join().unwrap();
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Stall {
+        /// The real writer, stuck on the log lock, with a full queue.
+        LockedWriterFullQueue,
+        /// The real writer, stuck on the log lock, with room in the queue: the request is taken and never acknowledged.
+        LockedWriterRoomInQueue,
+        /// No writer ever drains the queue, and it is full (no lock involved).
+        UndrainedFullQueue,
+        /// The writer is gone (nobody receives), the lock is held.
+        WriterGone,
+    }
+
+    /// The class: whatever stalls the log, the exit flush returns within its bound plus slack, and what it has to say about giving
+    /// up goes to a thread of its own.
+    #[test]
+    fn the_exit_flush_is_bounded_whatever_stalls_the_log() {
+        use Stall::*;
+        let ms = Duration::from_millis;
+        // (stall, queue size, wait, poll, the flush gives up)
+        let cases = [
+            (LockedWriterFullQueue, 1, ms(100), ms(5), true),
+            (LockedWriterFullQueue, 16, ms(50), ms(500), true),
+            (LockedWriterFullQueue, 16, ms(1), ms(5), true),
+            (LockedWriterFullQueue, 16, ms(0), ms(5), true),
+            (LockedWriterFullQueue, 64, ms(300), ms(1000), true),
+            (LockedWriterFullQueue, 4096, ms(200), ms(5), true),
+            (LockedWriterRoomInQueue, 16, ms(150), ms(5), false),
+            (UndrainedFullQueue, 8, ms(100), ms(5), true),
+            (UndrainedFullQueue, 8, ms(10), ms(500), true),
+            (WriterGone, 16, ms(100), ms(5), true),
+            (WriterGone, 4096, ms(100), ms(300), true),
+        ];
+        for (stall, cap, wait, poll, gives_up) in cases {
+            let mut stuck = StuckLog::new("class");
+            let (tx, mut writer, _undrained) = match stall {
+                LockedWriterFullQueue | LockedWriterRoomInQueue => {
+                    stuck.hold_lock();
+                    let (tx, writer) = stuck.writer(cap);
+                    if matches!(stall, LockedWriterFullQueue) {
+                        StuckLog::stall_and_fill(&tx, cap);
+                    }
+                    (tx, Some(writer), None)
+                }
+                UndrainedFullQueue => {
+                    let (tx, rx) = sync_channel::<LogMsg>(cap);
+                    for _ in 0..cap {
+                        tx.try_send(LogMsg::Line("1\tk\tc\tfill\n".into())).unwrap();
+                    }
+                    (tx, None, Some(rx))
+                }
+                WriterGone => {
+                    stuck.hold_lock();
+                    let (tx, rx) = sync_channel::<LogMsg>(cap);
+                    drop(rx);
+                    (tx, None, None)
+                }
+            };
+            let took = timed_flush(&mut stuck, &tx, wait, poll, wait + Duration::from_secs(5));
+            assert!(took < wait + Duration::from_millis(1500), "{stall:?} cap {cap} wait {wait:?} poll {poll:?}: took {took:?}");
+            if gives_up {
+                assert!(stuck.diagnostic_lands(), "{stall:?} cap {cap}: the diagnostic reaches the log");
+            }
+            stuck.release_lock();
+            drop(tx);
+            if let Some(w) = writer.take() {
+                w.join().unwrap();
+            }
+        }
+    }
+
+    /// Repeated and simultaneous exit flushes against a stuck log: each is bounded, and they do not pile diagnostic threads on the lock.
+    #[test]
+    fn repeated_and_concurrent_exit_flushes_stay_bounded_on_a_stuck_log() {
+        let mut stuck = StuckLog::new("repeat");
+        stuck.hold_lock();
+        let (tx, writer) = stuck.writer(8);
+        StuckLog::stall_and_fill(&tx, 8);
+        let wait = Duration::from_millis(100);
+        for round in 0..3 {
+            let took = timed_flush(&mut stuck, &tx, wait, Duration::from_millis(5), wait + Duration::from_secs(5));
+            assert!(took < wait + Duration::from_millis(1500), "round {round}: took {took:?}");
+        }
+        let t = Instant::now();
+        let flushers: Vec<_> = (0..4)
+            .map(|_| {
+                let tx = tx.clone();
+                std::thread::spawn(move || flush_queue(&tx, wait, Duration::from_millis(5)))
+            })
+            .collect();
+        for f in flushers {
+            f.join().unwrap();
+        }
+        assert!(t.elapsed() < wait + Duration::from_millis(1500), "four at once took {:?}", t.elapsed());
+        assert!(stuck.diagnostic_lands());
+        drop(tx);
+        writer.join().unwrap();
+    }
+
+    /// The retry pause never outlasts the time left: a full queue returns at `wait` however long the poll.
+    #[test]
+    fn the_flush_retry_sleep_stays_inside_the_deadline() {
+        let ms = Duration::from_millis;
+        let (tx, _rx) = sync_channel::<LogMsg>(1);
+        tx.try_send(LogMsg::Line(String::new())).unwrap();
+        for (wait, poll) in [(10, 500), (1, 1000), (20, 5000), (50, 800), (5, 600), (30, 2000), (0, 700), (100, 100)] {
+            let t = Instant::now();
+            assert!(!flush_via(&tx, ms(wait), ms(poll)));
+            assert!(t.elapsed() < ms(wait + 350), "wait {wait} ms, poll {poll} ms: took {:?}", t.elapsed());
+        }
+    }
+
     /// F572: a full queue with a stuck writer must not hold the exit flush past its bound.
     #[test]
     fn a_stuck_log_writer_does_not_hold_the_flush() {
-        let (tx, _rx) = std::sync::mpsc::sync_channel::<LogMsg>(1);
+        let (tx, _rx) = sync_channel::<LogMsg>(1);
         tx.try_send(LogMsg::Line(String::new())).unwrap();
         let wait = defaults::millis("health.log_flush_ms");
-        let t = std::time::Instant::now();
-        assert!(!flush_via(&tx, wait));
+        let t = Instant::now();
+        assert!(!flush_via(&tx, wait, defaults::millis("health.log_flush_poll_ms")));
         assert!(t.elapsed() < wait * 3, "the flush took {:?}", t.elapsed());
     }
 
     #[test]
     fn a_healthy_log_writer_acks_the_flush() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<LogMsg>(4);
+        let (tx, rx) = sync_channel::<LogMsg>(4);
         let h = std::thread::spawn(move || {
             while let Ok(m) = rx.recv() {
                 if let LogMsg::Flush(a) = m {
@@ -1218,7 +1475,7 @@ mod tests {
                 }
             }
         });
-        assert!(flush_via(&tx, defaults::millis("health.log_flush_ms")));
+        assert!(flush_via(&tx, defaults::millis("health.log_flush_ms"), defaults::millis("health.log_flush_poll_ms")));
         drop(tx);
         h.join().unwrap();
     }
