@@ -374,6 +374,16 @@ once a day. The updater's only network requests are the GitHub release API and d
 updated with the script by hand). The scheduler job `engine_update` (defaults file `engine_update.toml`) runs `engine-update --auto`
 every 6 hours; the script does nothing unless `engine.autoUpdate` is set and limits itself to one check a day.
 
+Engine currency (issue #541, defaults file `engine_currency.toml`). The scheduler job `engine_currency` (hourly) tells you when the running
+engine lags the source checkout it came from. It only reports: it never fetches, rebuilds or deploys. It compares the commit in the engine's
+build version with the tip of `engine_currency.branch` (`refs/remotes/origin/<branch>`, then `refs/heads/<branch>`) in the checkout named by
+the setting `diagnostics.engineCurrencyCheckout`, and, when the commits are equal, the git blob ids of the compared files
+(`engine_currency.hash_paths`) at that tip with those of the files the running engine reads. Only git objects are read, never the checkout's working tree.
+The result is `ok`, `behind`, `files_differ` or `unreadable`; it is counted in the metric `engine_currency_check` (label `result`), written once per
+`engine_currency.log_interval_ms` as an event-log line of kind `currency` that names both commits and the step that clears it, and shown as the
+`currency` field of `ah-engine status --json` (`live_sha`, `dev_head`, `files_live_hash`, `files_dev_hash`). The switch `diagnostics.engineCurrency`
+(env `ANTIHALL_ENGINE_CURRENCY`) is on by default; with no checkout set (the default, because the path is local) the job does nothing.
+
 Memory diagnostics (issue #21, defaults file `diagnostics.toml`). With `diagnostics.mem_log` on (default) the daemon appends one NDJSON line
 per served request to `mem.ndjson` in the state directory (rotated at `diagnostics.mem_log_max_bytes`): the request kind and event, the checks
 that ran, the resident set, the allocator's allocated and resident bytes and the counted heap before and after, and the size of the

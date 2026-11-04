@@ -43,6 +43,7 @@ mod dssup_ingest;
 mod dssup_telemetry;
 mod durability;
 mod e2e;
+mod engine_currency;
 mod engine_update;
 mod fail_closed_matrix;
 mod flip_parity;

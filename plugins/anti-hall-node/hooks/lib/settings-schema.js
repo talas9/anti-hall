@@ -589,6 +589,15 @@ const SECTIONS = [
     ],
   },
   {
+    key: 'diagnostics',
+    label: 'Diagnostics',
+    description: 'Engine self-checks that only report.',
+    settings: [
+      { key: 'engineCurrency', type: 'boolean', default: true, env: 'ANTIHALL_ENGINE_CURRENCY', description: 'Engine currency (default on; the kill switch): a scheduled job compares the running engine\'s commit and plugin files with the branch tip of the checkout named by diagnostics.engineCurrencyCheckout and reports the difference (event log kind currency, counter engine_currency_check, the currency field of `ah-engine status --json`). Report only: it never fetches, deploys or rebuilds, and it does nothing until the checkout is set. [read by: ah-engine src/currency.rs]' },
+      { key: 'engineCurrencyCheckout', type: 'string', default: '', env: 'ANTIHALL_ENGINE_CURRENCY_CHECKOUT', description: 'The git checkout the engine currency job compares against (a local path; empty = the job does nothing). Only its branch ref and committed files are read, never its working tree. [read by: ah-engine src/currency.rs]' },
+    ],
+  },
+  {
     key: 'defects',
     label: 'Defects',
     description: 'The two-way defect-reporting channel.',

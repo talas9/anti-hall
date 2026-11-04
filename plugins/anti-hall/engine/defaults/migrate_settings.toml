@@ -404,5 +404,7 @@ value = [
   "{\"section\":\"diskWatch\",\"key\":\"blockAtCritical\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_DISK_WATCH_BLOCK\"}",
   "{\"section\":\"engine\",\"key\":\"bootstrap\",\"type\":\"boolean\",\"default\":false,\"env\":\"AH_ENGINE_BOOTSTRAP\"}",
   "{\"section\":\"engine\",\"key\":\"autoUpdate\",\"type\":\"enum\",\"default\":\"off\",\"values\":[\"off\",\"stable\",\"dev\"],\"env\":\"AH_ENGINE_AUTO_UPDATE\"}",
+  "{\"section\":\"diagnostics\",\"key\":\"engineCurrency\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ENGINE_CURRENCY\"}",
+  "{\"section\":\"diagnostics\",\"key\":\"engineCurrencyCheckout\",\"type\":\"string\",\"default\":\"\",\"env\":\"ANTIHALL_ENGINE_CURRENCY_CHECKOUT\"}",
   "{\"section\":\"defects\",\"key\":\"defaultProj\",\"type\":\"string\",\"default\":\"\",\"env\":\"ANTIHALL_DEFECT_PROJ\",\"pluginOption\":\"defects_default_proj\"}",
 ]
