@@ -4299,3 +4299,141 @@ mod idle_rule_counters {
         assert_eq!(m.counter("idle_rule_age_unknown", &[("kind", "open")]), 0);
     }
 }
+
+// ---- task-pair-guard (R-pair, guards.pairRule): its counters ----
+
+mod pair_rule_counters {
+    use super::*;
+
+    /// A transcript with one in-progress task owned by `owner` and one background `Agent` launch (description "port the wake", launch name `name`).
+    fn transcript(owner: &str, name: Option<&str>) -> String {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let create = json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "[P1] one", "description": ""}}]}, "timestamp": ts});
+        let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: one"}]}, "timestamp": ts});
+        let update = json!({"type": "assistant", "message": {"id": "u1", "role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": "in_progress", "owner": owner}}]}, "timestamp": ts});
+        let mut input = json!({"description": "port the wake", "prompt": "p", "run_in_background": true});
+        if let Some(n) = name {
+            input["name"] = json!(n);
+        }
+        let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_ag0", "name": "Agent", "input": input}]}, "timestamp": ts});
+        let text = "Async agent launched successfully. (internal metadata)\nagentId: a000000000000001 (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/a000000000000001.output\n";
+        let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_ag0", "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+        format!("{create}\n{result}\n{update}\n{launch}\n{res}\n")
+    }
+
+    /// The tracker's proof that the one agent of `transcript` is live (a fresh subagent transcript and a retained tracker row).
+    fn track(h: &str, tag: &str) {
+        let id = "a000000000000001";
+        let rel = format!("{h}/.claude/projects/p/{tag}/subagents/agent-{id}.jsonl");
+        std::fs::create_dir_all(std::path::Path::new(&rel).parent().unwrap()).unwrap();
+        std::fs::write(&rel, format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+        let mut st = crate::agents::State::default();
+        st.agents.insert(
+            id.into(),
+            crate::agents::Agent {
+                id: id.into(),
+                kind: "subagent".into(),
+                parent: tag.into(),
+                name: "port the wake".into(),
+                cwd: h.into(),
+                path: rel,
+                ..Default::default()
+            },
+        );
+        std::fs::create_dir_all(format!("{h}/.anti-hall/agent-tracker")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+
+    fn run(tag: &str, body: &str, event: &str, mut p: Value, on: bool) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), body).unwrap();
+        if !tag.starts_with("pr-unk") {
+            track(&h, tag);
+        }
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        if on {
+            pairs.push(("ANTIHALL_PAIR_RULE".into(), "1".into()));
+        }
+        p["hook_event_name"] = json!(event);
+        p["session_id"] = json!(tag);
+        p["cwd"] = json!(h);
+        if p.get("transcript_path").is_none() {
+            p["transcript_path"] = json!(format!("{h}/t.jsonl"));
+        }
+        super::super::run_forced("task-pair-guard", &p, &Value::Null, event, &RequestEnv::from_pairs(pairs))
+    }
+
+    fn drain() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn unnamed_spawn() -> Value {
+        json!({"tool_name": "Agent", "tool_input": {"description": "d", "prompt": "p"}})
+    }
+
+    #[test]
+    fn pre_switch_off_counts_unnamed_and_prints_nothing_and_on_counts_fired() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drain();
+        let v = run("pr-pre-off", "", "PreToolUse", unnamed_spawn(), false);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "off: nothing printed: {v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 0, "off: nothing fired");
+        let named = json!({"tool_name": "Agent", "tool_input": {"description": "d", "prompt": "p", "name": "wake-worker"}});
+        run("pr-pre-named", "", "PreToolUse", named, false);
+        assert_eq!(drain().counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "named")]), 1);
+        let v = run("pr-pre-on", "", "PreToolUse", unnamed_spawn(), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("has no name")), "{v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 1);
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed")]), 1);
+    }
+
+    #[test]
+    fn stop_switch_off_counts_observed_and_on_counts_fired_and_a_step_aside_counts_its_reason() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let unpaired = transcript("someone-else", Some("wake-worker"));
+        drain();
+        let v = run("pr-stop-off", &unpaired, "Stop", json!({}), false);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "off: nothing printed: {v:?}");
+        let m = drain();
+        assert_eq!(
+            m.counter("pair_rule_observed", &[("event", "Stop"), ("result", "agent_without_task")]),
+            1,
+            "{:?}",
+            m.counter("pair_rule_suppressed", &[("reason", "liveness_unknown")])
+        );
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0);
+        let v = run("pr-stop-on", &unpaired, "Stop", json!({}), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("\"decision\":\"block\"") && x.out.contains("wake-worker")), "{v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 1);
+        // the loose owner: the task is owned by the agent's description, not its launch name
+        run("pr-stop-loose", &transcript("port the wake", Some("wake-worker")), "Stop", json!({}), true);
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "Stop"), ("result", "inexact_owner")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "inexact_owner")]), 1);
+        // paired
+        run("pr-stop-clean", &transcript("wake-worker", Some("wake-worker")), "Stop", json!({}), true);
+        assert_eq!(drain().counter("pair_rule_observed", &[("event", "Stop"), ("result", "clean")]), 1);
+        // liveness no source tells (no tracker row): never a block, counted per agent
+        let v = run("pr-unk-live", &unpaired, "Stop", json!({}), true);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "unknown liveness never blocks: {v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_suppressed", &[("reason", "liveness_unknown")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0);
+        // steps aside, each counted under its reason
+        run("pr-sub", &unpaired, "Stop", json!({"agent_id": "ag-1"}), true);
+        run("pr-plan", &unpaired, "Stop", json!({"permission_mode": "plan"}), true);
+        run("pr-active", &unpaired, "Stop", json!({"stop_hook_active": true}), true);
+        run("pr-norows", &unpaired, "Stop", json!({"transcript_path": "/nonexistent/t.jsonl"}), true);
+        let m = drain();
+        for reason in ["subagent", "plan_mode", "stop_hook_active", "no_rows"] {
+            assert_eq!(m.counter("pair_rule_suppressed", &[("reason", reason)]), 1, "{reason}");
+        }
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0, "a step aside fires nothing");
+    }
+}

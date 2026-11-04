@@ -1,0 +1,127 @@
+# R-pair (plan v3 L11, GH #589): every task is paired with the named agent working on it. Check `task-pair-guard`
+# (PreToolUse and PostToolUse on Agent and Task, Stop; Claude, engine-only, no Node twin). Logic: engine/logic/task-pair-guard.js. Every
+# switch, number, label and text is here (D88). The task keys it reuses (owner name key, OMC step-aside, open statuses, coordinator owner)
+# stay in task_guards.toml. With the switch off the facts are computed and counted (pair_rule_observed) and nothing is printed.
+
+[pair_rule.sw]
+doc = "Switch guards.pairRule (default off). On: an Agent or Task spawn without a name is denied, a named agent no open task names as owner gets an advisory, and a Stop with a live named agent that owns no open task (or an in-progress task owned by the agent's id or description instead of its launch name) is blocked. Off: the facts are only counted."
+value = { section = "guards", key = "pairRule", type = "boolean", env = "ANTIHALL_PAIR_RULE", option = "", default = false }
+
+[pair_rule.summary]
+doc = "One-line summary of the task-pair-guard check."
+value = "Pairs every task with the named agent working on it: an unnamed spawn is denied, an agent no task names gets an advisory, a Stop with an unpaired live agent is blocked (guards.pairRule)."
+
+[pair_rule.guard_name]
+doc = "The guard id this check answers to in skip.json and in its messages."
+value = "task-pair-guard"
+
+[pair_rule.ids_max]
+doc = "Most items (agents and tasks) the Stop block lists on its visible line; the rest are counted ({more}) and all are listed in the saved details."
+value = 8
+min = 1
+
+[pair_rule.name_min_chars]
+doc = "Fewest characters an Agent or Task call's `name` needs to count as a name; a shorter or missing one is an unnamed spawn."
+value = 2
+min = 1
+
+[pair_rule.name_max]
+doc = "Most characters of an agent name or task owner shown on the visible line of a message (the saved details carry it whole)."
+value = 24
+min = 4
+
+[pair_rule.tools]
+doc = "The tools whose PreToolUse and PostToolUse the check reads: the ones that launch an agent."
+value = ["Agent", "Task"]
+
+[pair_rule.event_pre]
+doc = "The hook event name of the spawn check (and of its counter label)."
+value = "PreToolUse"
+
+[pair_rule.event_post]
+doc = "The hook event name of the advisory (and of its counter label)."
+value = "PostToolUse"
+
+[pair_rule.event_stop]
+doc = "The hook event name of the turn-end block (and of its counter label)."
+value = "Stop"
+
+[pair_rule.error_re]
+doc = "JavaScript regex source (case-insensitive) of a tool response string that is an error: the spawn started nothing, so there is no agent to pair. An object response is an error when is_error is true or error is a non-empty string."
+value = '^\s*error\b'
+
+[pair_rule.labels]
+doc = "The text of each counter label value: results of pair_rule_observed (named, unnamed, paired, unpaired, clean, agent_without_task, inexact_owner), kinds of pair_rule_fired (unnamed, unpaired, agent_without_task, inexact_owner) and reasons of pair_rule_suppressed (subagent, codex, plan_mode, stop_hook_active, omc, no_rows, liveness_unknown)."
+value = { named = "named", unnamed = "unnamed", paired = "paired", unpaired = "unpaired", clean = "clean", agent_without_task = "agent_without_task", inexact_owner = "inexact_owner", subagent = "subagent", codex = "codex", plan_mode = "plan_mode", stop_hook_active = "stop_hook_active", omc = "omc", no_rows = "no_rows", liveness_unknown = "liveness_unknown" }
+
+[pair_rule.msg_pre_what]
+doc = "The spawn denial: what happened."
+value = "this agent has no name, so its task cannot be paired with it."
+
+[pair_rule.msg_pre_why]
+doc = "The spawn denial: why (saved details)."
+value = "An unnamed agent cannot be addressed by SendMessage and cannot be shown as the owner of a task."
+
+[pair_rule.msg_pre_instead]
+doc = "The spawn denial: the one step that clears it."
+value = "add name: \"<short-name>\" to the Agent call (the name you will set as the task owner), then spawn again."
+
+[pair_rule.msg_post_what]
+doc = "The advisory after a named spawn that no open task names; `{name}` is the agent's name."
+value = "agent \"{name}\" is running but no open task names it as owner."
+
+[pair_rule.msg_post_why]
+doc = "The advisory: why (saved details)."
+value = "A task owned by the agent's name shows who works on it and the agent's live activity in the task panel."
+
+[pair_rule.msg_post_instead]
+doc = "The advisory: the step that clears it; `{name}` is the agent's name."
+value = "TaskUpdate the task it works on with owner \"{name}\" (or TaskCreate one with that owner)."
+
+[pair_rule.msg_stop_what]
+doc = "The Stop block: what is unpaired; `{n}` items, `{items}` the first ones, `{more}` the tail. Kept short: the visible line is cut near 115 units."
+value = "{n} agent/task pairs are off: {items}{more}."
+
+[pair_rule.msg_stop_why]
+doc = "The Stop block: why (saved details)."
+value = "Each task should be owned by the name of the agent working on it, so the task panel pairs them."
+
+[pair_rule.msg_stop_instead]
+doc = "The Stop block: the step that clears it."
+value = "set each task's owner to its agent's name (TaskUpdate owner), then stop again."
+
+[pair_rule.item_agent]
+doc = "A visible item for a live agent that owns no open task; `{name}` is its launch name."
+value = "agent \"{name}\" owns no task"
+
+[pair_rule.item_task]
+doc = "A visible item for an in-progress task owned by an agent's id or description; `{id}` the task id, `{owner}` its owner, `{name}` the agent's launch name."
+value = "#{id} owner \"{owner}\" -> \"{name}\""
+
+[pair_rule.detail_agent]
+doc = "The saved-details line for a live agent that owns no open task: names the step. `{name}` is its launch name."
+value = "agent \"{name}\" owns no open task: TaskUpdate the task it works on with owner=\"{name}\"."
+
+[pair_rule.detail_task]
+doc = "The saved-details line for an in-progress task whose owner is an agent's id or description. `{id}`, `{owner}`, `{name}` as in item_task."
+value = "task #{id} owner \"{owner}\" is agent \"{name}\": TaskUpdate #{id} owner=\"{name}\"."
+
+[pair_rule.item_sep]
+doc = "Separator between the items of the visible Stop line."
+value = "; "
+
+[pair_rule.more]
+doc = "Tail of the item list when more than pair_rule.ids_max items are off; `{n}` is how many were left out."
+value = " (+{n} more)"
+
+[metric.pair_rule_observed]
+doc = "Facts the R-pair check computed, by hook event and result (PreToolUse: named, unnamed; PostToolUse: paired, unpaired; Stop: clean, agent_without_task, inexact_owner), counted with the switch on or off. Unnamed-spawn rate = unnamed / all PreToolUse; unpaired-stop rate = (agent_without_task + inexact_owner) / all Stop."
+value = { kind = "counter", unit = "calls", labels = ["event", "result"] }
+
+[metric.pair_rule_fired]
+doc = "Answers R-pair delivered (switch on), by hook event and kind (unnamed, unpaired, agent_without_task, inexact_owner)."
+value = { kind = "counter", unit = "calls", labels = ["event", "kind"] }
+
+[metric.pair_rule_suppressed]
+doc = "Calls R-pair stepped aside on, by reason (subagent, codex, plan_mode, stop_hook_active, omc, no_rows = tasks or agents unreadable, liveness_unknown = an agent whose liveness no source tells; counted per agent)."
+value = { kind = "counter", unit = "calls", labels = ["reason"] }
