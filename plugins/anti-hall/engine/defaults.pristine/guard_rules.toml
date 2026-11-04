@@ -147,8 +147,9 @@ value = [
   { id = "tasklist_guard.stalled", setting = "", tier = "skill", source = "tasklist_guard.what_stalled" },
   { id = "tasklist_guard.progress", setting = "", tier = "skill", source = "tasklist_guard.what_progress" },
   { id = "tasklist_guard.reduced", setting = "", tier = "skill", source = "tasklist_guard.what_reduced" },
-  { id = "task_tracker.full", setting = "", tier = "skill", source = "task_tracker.what_full" },
-  { id = "task_tracker.short", setting = "", tier = "skill", source = "task_tracker.what_short" },
+  { id = "task_tracker.full", setting = "context.taskTracker", tier = "skill", source = "task_tracker.what_full" },
+  { id = "task_tracker.short", setting = "context.taskTracker", tier = "skill", source = "task_tracker.what_short" },
+  { id = "roles.note_short", setting = "context.roleNoteShort", tier = "skill", source = "roles.note_short_what" },
   { id = "task_tracker.primary", setting = "", tier = "skill", source = "task_tracker.primary_what" },
   { id = "uncommitted.msg", setting = "", tier = "skill", source = "uncommitted.msg_what" },
   { id = "fable_availability.msg", setting = "", hosts = ["claude"], tier = "skill", source = "fable_availability.msg_what" },
@@ -412,6 +413,7 @@ value = [
   "tasklist_guard.no_tasks",
   "task_tracker.full",
   "task_tracker.short",
+  "roles.note_short",
 ]
 
 [guard_rules.problem_no_step]

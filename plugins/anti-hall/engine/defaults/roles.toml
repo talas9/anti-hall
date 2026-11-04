@@ -144,7 +144,11 @@ value = "anti-hall engine: you are {what} (role: {role}). Engine verbs you may r
 
 [roles.msg_note_short]
 doc = "The one-line role note for a role listed in roles.describe_short. Placeholders: {role}, {what}, {skill}."
-value = "anti-hall engine: role {role} ({what}). Verbs your role may run: {skill}."
+value = "anti-hall engine: role {role} ({what}). Engine guide: {skill}."
+
+[roles.note_short_what]
+doc = "The registry text of the one-line role note (guard_rules.rules, roles.note_short): what it tells a subagent."
+value = "a subagent is told its role and where the engine guide is, in one line, not the verb list."
 
 [roles.msg_note_more]
 doc = "Added to the note when the verb list was shortened. Placeholder: {n}."

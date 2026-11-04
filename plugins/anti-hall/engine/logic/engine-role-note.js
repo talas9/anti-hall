@@ -3,6 +3,11 @@
 // note is capped at roles.note_max characters. Texts, the matrix and the switch: roles.toml.
 'use strict';
 
+// A key added after the released pristine copy is missing when the engine answers from that fallback (an edited roles.toml that does not parse):
+// the one-line note then stays off and the full note is sent, as before the switch existed.
+function optCfg(key) { try { return ah.cfg(key); } catch (e) { return undefined; } }
+function optSwitch(key) { try { return ah.settings.bool(key); } catch (e) { return false; } }
+
 function decide(p, opts) {
   if (!ah.settings.bool('roles.sw_note') || ah.settings.skipped(ah.cfg('roles.guard_name'))) return 'allow';
   var host = (opts && opts.host === 'codex') || coordinator.payloadIsCodex(p) ? 'codex' : 'claude';
@@ -11,10 +16,13 @@ function decide(p, opts) {
   var skill = ah.cfg('roles.skill_host')[host].ref.replace('{skill}', ah.cfg('roles.main_skill').name);
   var what = ah.cfg('roles.describe')[role];
   var event = p && typeof p.hook_event_name === 'string' && p.hook_event_name !== '' ? p.hook_event_name : 'SessionStart';
-  var brief = ah.cfg('roles.describe_short')[role];
-  if (ah.settings.bool('roles.sw_note_short') && typeof brief === 'string' && brief !== '') {
-    ah.metric('role_note_emitted', ['form', ah.cfg('roles.event_emitted_short')]);
-    return { advisory: text.advisoryJson(event, text.render(ah.cfg('roles.msg_note_short'), { role: role, what: brief, skill: skill })) };
+  var shortMsg = optSwitch('roles.sw_note_short') ? optCfg('roles.msg_note_short') : undefined;
+  var shortWhat = typeof shortMsg === 'string' ? optCfg('roles.describe_short') : undefined;
+  var brief = shortWhat && typeof shortWhat === 'object' ? shortWhat[role] : undefined;
+  if (typeof brief === 'string' && brief !== '') {
+    var evShort = optCfg('roles.event_emitted_short');
+    if (typeof evShort === 'string') ah.metric('role_note_emitted', ['form', evShort]);
+    return { advisory: text.advisoryJson(event, text.render(shortMsg, { role: role, what: brief, skill: skill })) };
   }
   var shown = verbs.slice();
   function build() {
@@ -25,6 +33,7 @@ function decide(p, opts) {
   }
   var t = build();
   while (t.length > max && shown.length > 0) { shown.pop(); t = build(); }
-  ah.metric('role_note_emitted', ['form', ah.cfg('roles.event_emitted_full')]);
+  var evFull = optCfg('roles.event_emitted_full');
+  if (typeof evFull === 'string') ah.metric('role_note_emitted', ['form', evFull]);
   return { advisory: text.advisoryJson(event, t) };
 }

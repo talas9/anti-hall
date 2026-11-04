@@ -81,7 +81,7 @@ fn a_subagent_gets_the_full_note_by_default_and_one_factual_line_when_the_switch
     let off = s.context("engine-role-note", sub_start(), &[]);
     assert!(off.contains("(role: subagent)") && off.contains("Engine verbs you may run:"), "the default keeps the full note: {off}");
     let sub = s.context("engine-role-note", sub_start(), &[ROLE_ON]);
-    assert_eq!(sub, "anti-hall engine: role subagent (one assigned job, report back). Verbs your role may run: /anti-hall:engine.");
+    assert_eq!(sub, "anti-hall engine: role subagent (one assigned job, report back). Engine guide: /anti-hall:engine.");
     assert!(sub.len() <= 140, "{} bytes", sub.len());
     let main = s.context("engine-role-note", json!({"session_id": "s1", "cwd": "/tmp", "hook_event_name": "SessionStart"}), &[ROLE_ON]);
     assert!(main.contains("(role: main)") && main.contains("Engine verbs you may run:"), "the main session keeps its note: {main}");
@@ -101,4 +101,53 @@ fn the_task_tracker_keeps_its_earlier_wording_by_default_and_words_it_factually_
     assert!(!tail.chars().any(char::is_uppercase), "no capitals or intensifiers in the wording: {tail}");
     let short = s.context("task-tracker", prompt(&home), &[TT_ON]);
     assert!(short.is_empty() || (short.contains("not in the task list yet") && short.lines().count() <= 2), "{short}");
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let (p, q) = (e.path(), to.join(e.file_name()));
+        if p.is_dir() {
+            copy_tree(&p, &q);
+        } else {
+            std::fs::copy(&p, &q).unwrap();
+        }
+    }
+}
+
+/// One real hook call (`ah-engine hook`, in process) against a plugin copy whose edited roles.toml is broken, so the engine
+/// answers from the released pristine copy, which has none of the role-note keys added since.
+fn broken_roles_hook(tag: &str, event: &str, host: &str, payload: Value, env: &[(&str, &str)]) -> (i32, String, String) {
+    let s = Scratch::new(tag);
+    let plugin_copy = s.dir.join("plugin");
+    copy_tree(&plugin().join("engine"), &plugin_copy.join("engine"));
+    copy_tree(&plugin().join("hooks"), &plugin_copy.join("hooks"));
+    std::fs::write(plugin_copy.join("engine/defaults/roles.toml"), "not valid TOML = [\n").unwrap();
+    let mut c = s.cmd(&["hook", "--event", event, "--host", host], env);
+    c.env("AH_ENGINE_PLUGIN_ROOT", &plugin_copy).env("CLAUDE_PLUGIN_ROOT", &plugin_copy).env("AH_ENGINE_DISPATCH_IN_PROCESS", "1");
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
+}
+
+#[test]
+fn the_role_note_keeps_the_full_note_when_the_pristine_fallback_lacks_the_short_note_keys() {
+    let quiet = [("ANTIHALL_INJECT_GATE", "0"), ("ANTIHALL_PROMPT_DIGEST", "0")];
+    for (tag, event, host, payload) in [
+        ("fb-claude-sub", "SubagentStart", "claude", sub_start()),
+        ("fb-codex-start", "SessionStart", "codex", json!({"session_id": "s1", "cwd": "/tmp", "hook_event_name": "SessionStart"})),
+    ] {
+        for switch in ["0", "1"] {
+            let mut env = quiet.to_vec();
+            env.push(("ANTIHALL_ROLE_NOTE_SHORT", switch));
+            let (code, out, err) = broken_roles_hook(tag, event, host, payload.clone(), &env);
+            assert_eq!(code, 0, "{tag} switch {switch}: {err}");
+            // other guards may fail on the same fallback (rule-digest reads roles.digest_budget, outside this switch); the role note must not
+            assert!(!out.contains("engine-role-note guard could not run"), "{tag} switch {switch}: the role-note guard must not fail: {out}");
+            if host == "claude" {
+                assert!(out.contains("Engine verbs you may run:"), "{tag} switch {switch}: the full note answers from the fallback: {out}");
+            }
+        }
+    }
 }
