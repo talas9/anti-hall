@@ -160,6 +160,7 @@ fn classify(v: &Value, event: &str) -> Line {
 
 /// One transcript line as a JSON object with a string `type`; anything else is not a line of a known shape.
 fn parse_line(seg: &[u8]) -> Option<Value> {
+    let seg = seg.strip_suffix(b"\r").unwrap_or(seg); // a CRLF transcript
     let v: Value = serde_json::from_str(std::str::from_utf8(seg).ok()?).ok()?;
     (v.is_object() && v.get("type").and_then(Value::as_str).is_some()).then_some(v)
 }
@@ -172,8 +173,9 @@ fn has_marker(seg: &[u8]) -> bool {
 
 /// The continuations counted in a window of the transcript, newest line first, up to the last human prompt. `Ok(None)`: the window
 /// starts inside the file and holds no human prompt, so it proves nothing (read a bigger one). A line that is not UTF-8 JSON of a
-/// known shape is `Err`, with two exceptions for the NEWEST line (the host may be writing it): an unfinished one is skipped, and
-/// one that holds the attachment marker counts as one own continuation (the host's write lag must not let a chain run one past K).
+/// known shape is `Err`, with two exceptions for the NEWEST line while it is still UNFINISHED (no newline yet: the host may be
+/// writing it): it is skipped, or, when it holds the attachment marker, counted as one own continuation (the host's write lag must not
+/// let a chain run one past K). A finished line that cannot be parsed is `Err`, marker or not.
 fn scan(buf: &[u8], partial_first: bool, event: &str) -> Result<Option<Chain>, ()> {
     let segs: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
     let ended = buf.last() == Some(&b'\n');
@@ -188,7 +190,7 @@ fn scan(buf: &[u8], partial_first: bool, event: &str) -> Result<Option<Chain>, (
         }
         let is_newest = std::mem::replace(&mut newest, false);
         let Some(v) = parse_line(seg) else {
-            if is_newest && has_marker(seg) {
+            if is_newest && !ended && has_marker(seg) {
                 found.own = found.own.saturating_add(1);
                 continue;
             }
@@ -519,12 +521,31 @@ mod tests {
         assert_eq!(scan(&half, false, "Stop"), chain(2, 0), "the marker is there: counted");
         let mut ended = lines(&[human()]);
         ended.extend_from_slice(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\n");
-        assert_eq!(scan(&ended, false, "Stop"), chain(1, 0), "a finished but unparsable newest line with the marker counts too");
+        assert_eq!(scan(&ended, false, "Stop"), Err(()), "a FINISHED unparsable newest line is unreadable, never an own continuation (#568)");
         let mut older = lines(&[human()]);
         older.extend_from_slice(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\n");
         older.extend_from_slice(attached().as_bytes());
         older.push(b'\n');
         assert_eq!(scan(&older, false, "Stop"), Err(()), "only the NEWEST line gets the allowance");
+    }
+
+    /// #568: a transcript written with CRLF line ends counts exactly like an LF one.
+    #[test]
+    fn a_crlf_transcript_counts_like_an_lf_one() {
+        let t = [human(), attached(), feedback(), attached()];
+        let crlf = format!("{}\r\n", t.join("\r\n")).into_bytes();
+        assert_eq!(scan(&crlf, false, "Stop"), chain(2, 1));
+        let mut half = crlf.clone();
+        half.extend_from_slice(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\"hookEv");
+        assert_eq!(scan(&half, false, "Stop"), chain(3, 1), "a half-written marker line after CRLF lines still counts");
+        assert_eq!(parse_line(format!("{}\r", human()).as_bytes()).is_some(), true, "a trailing CR is not part of the JSON");
+    }
+
+    /// #568 (#566 item 5): a slash-command line carries no origin/promptSource, so it is `Other` and does not restart the count.
+    #[test]
+    fn a_slash_command_line_does_not_restart_the_count() {
+        let slash = json!({"type": "user", "message": {"role": "user", "content": "<command-name>/foo</command-name>"}}).to_string();
+        assert_eq!(scan(&lines(&[human(), attached(), slash, attached()]), false, "Stop"), chain(2, 0));
     }
 
     // ---- apply() on synthetic results ----
