@@ -4902,4 +4902,103 @@ mod pair_rule_pairing {
             assert!(saved.contains(&format!("agent \"{n}\" owns no open task")), "{n} is in the saved details: {saved}");
         }
     }
+    /// One Stop (switch on): the visible block (no saved details) and the saved details apart; `None` when it printed nothing.
+    fn stop_split(tag: &str, tasks: &[(String, &str)], agents: &[Ag]) -> Option<(String, String)> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), transcript(tasks, agents)).unwrap();
+        track(&h, agents);
+        let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())];
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        let saved = saved_details(&h);
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+        match v {
+            Some(Some(Verdict::Allow)) => None,
+            Some(Some(Verdict::Exact(x))) => Some((serde_json::from_str::<Value>(&x.out).unwrap()["reason"].as_str().unwrap().to_string(), saved)),
+            other => panic!("{tag}: unexpected verdict {other:?}"),
+        }
+    }
+
+    const LONG: &str = "delta-diagnostics-maintainer-omega";
+
+    /// The class: a step is only as good as the name it carries. The visible line shows a name cut (longer than pair_rule.name_max) or cleaned
+    /// (backticks, emoji and symbols are dropped by the message cleaning), so such a name must never be the owner a step asks for. The steps
+    /// and the saved details hold it whole, the visible step points at them, and doing what they say clears the block. A name the line shows
+    /// exactly needs no pointer.
+    #[test]
+    fn a_step_never_asks_for_a_name_the_visible_line_shows_inexactly() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let exact24 = "abcdefghijklmnopqrstuvwx";
+        let exact25 = "abcdefghijklmnopqrstuvwxy";
+        // (tag, tasks, agents, the tasks the stated steps leave, the names that must be whole in the saved details, the line is exact)
+        type NameCase = (&'static str, Vec<(String, &'static str)>, Vec<Ag>, Vec<(String, &'static str)>, Vec<&'static str>, bool);
+        let two_long = vec![wk("first job", LONG), wk("second job", LONG)];
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        let huge = leak("x".repeat(5000));
+        let pair_cut = leak(format!("{}\u{1F600}\u{1F600}tail", "a".repeat(23))); // the cut at 24 units falls inside a surrogate pair
+        let cases: Vec<NameCase> = vec![
+            // the reviewed failing input: a loose owner, a long launch name
+            ("f3-reviewed", owned(&[("inspect module", ip)]), vec![wk("inspect module delta-diagnostics", LONG)], owned(&[(LONG, ip)]), vec![LONG], false),
+            ("f2-long-none", vec![], vec![wk("a job", LONG)], owned(&[(LONG, ip)]), vec![LONG], false),
+            ("f2-25-chars", vec![], vec![wk("a job", exact25)], owned(&[(exact25, ip)]), vec![exact25], false),
+            ("f2-24-chars-is-exact", vec![], vec![wk("a job", exact24)], owned(&[(exact24, ip)]), vec![exact24], true),
+            ("f2-long-many", vec![], two_long.clone(), owned(&[(LONG, ip), (LONG, ip)]), vec![LONG], false),
+            ("f2-long-share", owned(&[(LONG, ip)]), two_long, owned(&[(LONG, ip), (LONG, ip)]), vec![LONG], false),
+            ("f2-backtick", vec![], vec![wk("a job", "wake`worker")], owned(&[("wake`worker", ip)]), vec!["wake`worker"], false),
+            ("f2-emoji", vec![], vec![wk("a job", "build\u{1F680}bot")], owned(&[("build\u{1F680}bot", ip)]), vec!["build\u{1F680}bot"], false),
+            ("f2-symbol", vec![], vec![wk("a job", "\u{2705}checker")], owned(&[("\u{2705}checker", ip)]), vec!["\u{2705}checker"], false),
+            ("f2-very-long", vec![], vec![wk("a job", huge)], owned(&[(huge, ip)]), vec![huge], false),
+            ("f2-cut-inside-a-surrogate-pair", vec![], vec![wk("a job", pair_cut)], owned(&[(pair_cut, ip)]), vec![pair_cut], false),
+            ("f2-plain-is-exact", vec![], vec![wk("a job", "wake-worker")], owned(&[("wake-worker", ip)]), vec!["wake-worker"], true),
+            (
+                "f3-long-owner-short-name",
+                owned(&[("implement the extremely long running migration job", ip)]),
+                vec![wk("implement the extremely long running migration job", "migrator")],
+                owned(&[("migrator", ip)]),
+                vec!["migrator", "implement the extremely long running migration job"],
+                false,
+            ),
+            (
+                "mixed-short-and-long",
+                vec![],
+                vec![wk("a job", "short-one"), wk("b job", LONG)],
+                owned(&[("short-one", ip), (LONG, ip)]),
+                vec!["short-one", LONG],
+                false,
+            ),
+        ];
+        for (tag, tasks, agents, fixed, names, exact) in cases {
+            let (vis, saved) = stop_split(&format!("pp-name-{tag}"), &tasks, &agents).unwrap_or_else(|| panic!("{tag}: no block"));
+            for n in &names {
+                assert!(saved.contains(&format!("\"{n}\"")), "{tag}: the saved details hold {n:?} whole: {saved}");
+            }
+            let instead = vis.lines().find(|l| l.contains("Do instead:")).unwrap_or_else(|| panic!("{tag}: no step line: {vis}"));
+            assert!(!instead.contains('\u{2026}'), "{tag}: the step carries no cut name: {instead}");
+            if exact {
+                assert!(vis.contains(&format!("\"{}\"", names[0])), "{tag}: an exact name is on the visible line whole: {vis}");
+                assert!(!vis.contains("details:"), "{tag}: an exact name needs no pointer: {vis}");
+            } else {
+                assert!(vis.contains("details:") && instead.contains("saved details"), "{tag}: the step points at the whole names: {vis}");
+            }
+            // the step, done with the whole names the saved details hold, clears the block
+            assert!(stop_split(&format!("pp-name-{tag}-fixed"), &fixed, &agents).is_none(), "{tag}: the stated step clears it");
+            // and the same input with the switch off prints nothing
+            assert_eq!(stop_with(&format!("pp-name-{tag}-off"), &tasks, &agents, false).1, "", "{tag}: switch off is silent");
+        }
+    }
+
+    #[test]
+    fn a_long_list_of_long_names_is_linked_and_whole_in_the_details() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let names: Vec<String> = (0..9).map(|i| format!("long-launch-name-number-{i}-worker")).collect();
+        let agents: Vec<Ag> = names.iter().map(|n| ("job", Box::leak(n.clone().into_boxed_str()) as &'static str, true)).collect();
+        let (vis, saved) = stop_split("pp-name-nine", &[], &agents).unwrap();
+        assert!(vis.contains("9 agent/task pairs are off") && vis.contains("more)") && vis.contains("details:"), "{vis}");
+        for n in &names {
+            assert!(saved.contains(&format!("agent \"{n}\" owns no open task")), "{n}: {saved}");
+        }
+        let fixed: Vec<(String, &str)> = names.iter().map(|n| (n.clone(), "in_progress")).collect();
+        assert!(stop_split("pp-name-nine-fixed", &fixed, &agents).is_none(), "the whole list clears it");
+    }
 }

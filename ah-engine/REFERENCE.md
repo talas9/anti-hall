@@ -5201,12 +5201,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `pair_rule.labels` | `14 entries` |  |  | The text of each counter label value: results of pair_rule_observed (named, unnamed, paired, unpaired, clean, agent_without_task, inexact_owner), kinds of pair_rule_fired (unnamed, unpaired, agent_without_task, inexact_owner) and reasons of pair_rule_suppressed (subagent, codex, plan_mode, stop_hook_active, omc, no_rows, liveness_unknown). |
 | `pair_rule.more` | ` (+{n} more)` |  |  | Tail of the item list when more than pair_rule.ids_max items are off; `{n}` is how many were left out. |
 | `pair_rule.msg_post_instead` | `TaskUpdate the task it works on with owner "{name}" (TaskCreate one first if ...` |  |  | The advisory: the step that clears it; `{name}` is the agent's name. |
+| `pair_rule.msg_post_instead_full` | `TaskCreate or TaskUpdate a task with owner = the exact agent name in the save...` |  |  | The advisory's step when the visible line cannot show the agent's name exactly (longer than pair_rule.name_max, or with backticks, emoji or symbols the message cleaning drops): the exact name is only in the saved details, and the step points there. |
 | `pair_rule.msg_post_what` | `agent "{name}" is running but no open task names it as owner.` |  |  | The advisory after a named spawn that no open task names; `{name}` is the agent's name. |
 | `pair_rule.msg_post_why` | `A task owned by the agent's name shows who works on it and the agent's live a...` |  |  | The advisory: why (saved details). |
 | `pair_rule.msg_pre_instead` | `add name: "<short-name>" to the Agent call (the name you will set as the task...` |  |  | The spawn denial: the one step that clears it. |
 | `pair_rule.msg_pre_what` | `this agent has no name, so its task cannot be paired with it.` |  |  | The spawn denial: what happened. |
 | `pair_rule.msg_pre_why` | `An unnamed agent cannot be addressed by SendMessage and cannot be shown as th...` |  |  | The spawn denial: why (saved details). |
 | `pair_rule.msg_stop_instead` | `TaskUpdate a task per listed agent to owner=its name (TaskCreate if none).` |  |  | The Stop block: the step that clears it, at most 115 characters (a longer one is shown as a pointer to the saved details) and about 78 so the visible line keeps its `(+n more)` tail. An agent short of a task needs a NEW task (changing the owner of a task the name already owns cannot add one); a task owned by an agent's id or description gets the launch name as owner (the listed item shows it). |
+| `pair_rule.msg_stop_instead_full` | `TaskCreate or TaskUpdate owner=the exact names in the saved details.` |  |  | The Stop block's step when any listed name is shown cut or cleaned on the visible line, or is left off it (see pair_rule.msg_post_instead_full): the exact names are only in the saved details, which the message links, and the step says to use those. |
 | `pair_rule.msg_stop_what` | `{n} agent/task pairs are off: {items}{more}.` |  |  | The Stop block: what is unpaired; `{n}` items, `{items}` the first ones, `{more}` the tail. Kept short: see pair_rule.what_budget. |
 | `pair_rule.msg_stop_why` | `Each task should be owned by the name of the agent working on it, so the task...` |  |  | The Stop block: why (saved details). |
 | `pair_rule.name_max` | `24` |  |  | Most characters of an agent name or task owner shown on the visible line of a message (the saved details carry it whole). |
@@ -6072,7 +6074,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `401 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `402 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8490,7 +8492,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `407 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `408 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 

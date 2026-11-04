@@ -451,3 +451,63 @@ fn pre_a_name_of_control_characters_or_white_space_is_no_name() {
     let o = w.pre(Some("wake\u{1}worker"), true);
     assert!(!pair_text(&o), "a name with a control character inside is still a name: {o:?}");
 }
+
+/// The saved details of the guard (its file name carries the session, which the check does not pass), concatenated.
+fn saved_details(w: &World) -> String {
+    let mut out = String::new();
+    for e in std::fs::read_dir(w.path("home/.anti-hall/block-details")).into_iter().flatten().flatten() {
+        if e.file_name().to_string_lossy().starts_with("task-pair-guard") {
+            out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+        }
+    }
+    out
+}
+
+#[test]
+fn stop_long_launch_name_is_never_the_cut_name_a_step_asks_for() {
+    // review finding: the block asked for owner "delta-diagnostics-mainta…" (the visible line cuts a long name), and setting exactly that left Stop blocked
+    let w = World::new("stop-long-name");
+    let long = "delta-diagnostics-maintainer-omega";
+    w.track(&["inspect module delta-diagnostics"]);
+    let agents = [("inspect module delta-diagnostics", Some(long))];
+    let o = w.stop(&transcript(&[task(1, "in_progress", Some("inspect module"))], &agents), true, serde_json::json!({}));
+    assert!(o.1.contains(GUARD), "blocks: {o:?}");
+    assert!(o.1.contains("saved details") && o.1.contains("details:"), "the step points at the whole name: {o:?}");
+    assert!(!o.1.contains("owner=\\\"delta-diagnostics-mainta"), "no step carries the cut name: {o:?}");
+    let saved = saved_details(&w);
+    assert!(saved.contains(&format!("TaskUpdate #1 owner=\"{long}\"")), "the saved details hold the whole name in the step: {saved}");
+    // the step, done with the name the saved details hold, clears it; the cut name as the owner would not
+    let cut = w.stop(&transcript(&[task(1, "in_progress", Some("delta-diagnostics-mainta\u{2026}"))], &agents), true, serde_json::json!({}));
+    assert!(pair_text(&cut), "the twin: the cut name is not the launch name: {cut:?}");
+    let ok = w.stop(&transcript(&[task(1, "in_progress", Some(long))], &agents), true, serde_json::json!({}));
+    assert!(!pair_text(&ok), "the whole name clears it: {ok:?}");
+    // the same input with the switch off prints nothing
+    let off = w.stop(&transcript(&[task(1, "in_progress", Some("inspect module"))], &agents), false, serde_json::json!({}));
+    assert!(!pair_text(&off), "{off:?}");
+}
+
+#[test]
+fn post_advisory_step_carries_the_whole_name_or_points_at_it() {
+    let long = "delta-diagnostics-maintainer-omega";
+    // a name the line shows whole: the step has it
+    let w = World::new("post-name-exact");
+    let t = transcript(&[task(1, "in_progress", Some("someone-else"))], &[("port the wake", Some("wake-worker"))]);
+    let o = w.post("wake-worker", &t, true);
+    assert!(pair_text(&o) && o.1.contains("owner \\\"wake-worker\\\""), "the step names the agent whole: {o:?}");
+    assert!(!o.1.contains("details:"), "an exact name needs no pointer: {o:?}");
+    // a long name: the step is the pointer, the saved details hold the whole name, and that name pairs
+    let w = World::new("post-name-long");
+    let t = transcript(&[task(1, "in_progress", Some("someone-else"))], &[("port the wake", Some(long))]);
+    let o = w.post(long, &t, true);
+    assert!(pair_text(&o) && o.1.contains("details:"), "the step points at the saved details: {o:?}");
+    assert!(!o.1.contains("delta-diagnostics-maintainer-omega\\\"."), "{o:?}");
+    assert!(saved_details(&w).contains(&format!("owner \"{long}\"")), "the whole name is in the saved details: {}", saved_details(&w));
+    let t = transcript(&[task(1, "in_progress", Some(long))], &[("port the wake", Some(long))]);
+    assert!(!pair_text(&w.post(long, &t, true)), "the whole name pairs");
+    // a name the message cleaning would change (a backtick): same
+    let w = World::new("post-name-tick");
+    let t = transcript(&[task(1, "in_progress", Some("someone-else"))], &[("port the wake", Some("wake`worker"))]);
+    let o = w.post("wake`worker", &t, true);
+    assert!(pair_text(&o) && o.1.contains("details:"), "{o:?}");
+    assert!(saved_details(&w).contains("owner \"wake`worker\""), "{}", saved_details(&w));
+}

@@ -41,6 +41,10 @@ function prgInputName(inp) {
   return typeof v === 'string' ? tk.oneLine(v, Number.MAX_SAFE_INTEGER) : '';
 }
 
+// True when a name cannot be shown exactly on the visible line of a message: it is longer than pair_rule.name_max (shown cut) or text.message
+// would clean it (backticks, emoji and symbols are dropped, white space is collapsed). Such a name is never put in a step on that line.
+function prgInexact(s) { return tk.oneLine(s, ah.cfgNum('pair_rule.name_max')) !== s || text.plain(s) !== s; }
+
 // ---- an OMC autonomous loop (task-guard tgOmcActive, same keys): R-pair steps aside like task-guard does ----
 function prgSmallJson(path, max) {
   var size = ah.fs.size(path);
@@ -161,10 +165,13 @@ function prgPost(p, on, home) {
   prgObserved(event, paired ? 'paired' : 'unpaired');
   if (paired || !on) return 'allow';
   prgFired(event, 'unpaired');
-  var shown = tk.oneLine(name, ah.cfgNum('pair_rule.name_max'));
+  // The visible line may show the name shortened or without its marks (prgInexact): that text only tells what is off. The step that clears it
+  // always carries the FULL name, or, when the visible line cannot carry it exactly, points at the saved details that do.
+  var shown = tk.oneLine(name, ah.cfgNum('pair_rule.name_max')), step = text.render(ah.cfg('pair_rule.msg_post_instead'), { name: name });
+  var inexact = prgInexact(name);
   var note = text.message('warn', ah.cfg('pair_rule.guard_name'), {
     what: text.render(ah.cfg('pair_rule.msg_post_what'), { name: shown }), why: ah.cfg('pair_rule.msg_post_why'),
-    instead: text.render(ah.cfg('pair_rule.msg_post_instead'), { name: shown }),
+    instead: inexact ? ah.cfg('pair_rule.msg_post_instead_full') : step, extra: inexact ? [step] : [], details: inexact,
   });
   return { advisory: text.advisoryJson(event, note) };
 }
@@ -263,19 +270,23 @@ function prgStop(p, on, home) {
   if (result === 'clean' || !on) return 'allow';
   if (f2.length > 0) prgFired(event, 'agent_without_task');
   if (f3.length > 0) prgFired(event, 'inexact_owner');
-  var max = ah.cfgNum('pair_rule.ids_max'), nameMax = ah.cfgNum('pair_rule.name_max'), items = [], full = [];
+  var max = ah.cfgNum('pair_rule.ids_max'), nameMax = ah.cfgNum('pair_rule.name_max'), items = [], full = [], inexact = [];
   f2.forEach(function (a) {
     // the name owns no task at all: one agent (item_agent) or several (item_agent_many); it owns some, but fewer than its agents: item_agent_share
     var share = a.owned > 0, many = !share && a.n > 1, args = { name: a.name, n: a.n, agents: a.agents, owned: a.owned };
     items.push(text.render(ah.cfg(share ? 'pair_rule.item_agent_share' : many ? 'pair_rule.item_agent_many' : 'pair_rule.item_agent'), { name: tk.oneLine(a.name, nameMax), n: a.n, agents: a.agents, owned: a.owned }));
     full.push(text.render(ah.cfg(share ? 'pair_rule.detail_agent_share' : many ? 'pair_rule.detail_agent_many' : 'pair_rule.detail_agent'), args));
+    inexact.push(prgInexact(a.name));
   });
   f3.forEach(function (x) {
     items.push(text.render(ah.cfg('pair_rule.item_task'), { id: x.task.id, owner: tk.oneLine(x.task.owner, nameMax), name: tk.oneLine(x.row.name, nameMax) }));
     full.push(text.render(ah.cfg('pair_rule.detail_task'), { id: x.task.id, owner: x.task.owner, name: x.row.name }));
+    inexact.push(prgInexact(x.row.name) || prgInexact(x.task.owner));
   });
   // The visible line is cut near pair_rule.what_budget units, and the cut must never hide the "(+n more)" tail: items are taken while the
-  // line fits (at most ids_max, at least one), the rest is counted, and the saved details (the whole list) are linked when any is left out.
+  // line fits (at most ids_max, at least one), the rest is counted, and the saved details (the whole list, every name whole) are linked when any
+  // is left out. They are also linked, and the step says to use them, when a shown item has a name the line shows inexactly: a step must
+  // never ask for an owner that is not the name that pairs.
   function whatOf(k) {
     var left = items.length - k;
     return text.render(ah.cfg('pair_rule.msg_stop_what'), {
@@ -283,10 +294,13 @@ function prgStop(p, on, home) {
       more: left > 0 ? text.render(ah.cfg('pair_rule.more'), { n: left }) : '',
     });
   }
+  // (an item left off the line is linked anyway: the step says to use the saved details whenever ANY item's name is inexact)
+  function linked(k) { return k < items.length || inexact.slice(0, k).some(function (b) { return b; }); }
   var k = Math.min(items.length, max);
-  while (k > 1 && text.plain(whatOf(k)).length > ah.cfgNum(k < items.length ? 'pair_rule.what_budget_more' : 'pair_rule.what_budget')) k--;
+  while (k > 1 && text.plain(whatOf(k)).length > ah.cfgNum(linked(k) ? 'pair_rule.what_budget_more' : 'pair_rule.what_budget')) k--;
   var reason = text.message('block', ah.cfg('pair_rule.guard_name'), {
-    what: whatOf(k), why: ah.cfg('pair_rule.msg_stop_why'), instead: ah.cfg('pair_rule.msg_stop_instead'), extra: full, details: k < items.length,
+    what: whatOf(k), why: ah.cfg('pair_rule.msg_stop_why'), instead: ah.cfg(inexact.some(function (b) { return b; }) ? 'pair_rule.msg_stop_instead_full' : 'pair_rule.msg_stop_instead'),
+    extra: full, details: linked(k),
   });
   return { exact: { code: 0, out: text.blockJson(reason), err: '' } };
 }
