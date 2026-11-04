@@ -3369,3 +3369,67 @@ fn an_idle_coordinator_under_the_cap_with_reply_gaps_not_in_the_task_list_is_tol
     let t = q[0]["text"].as_str().unwrap();
     assert!(t.contains("wire the codex port") && !t.contains("add the docs page") && t.contains("only 1 agent(s) running") && t.contains("in parallel"), "{t}");
 }
+
+// ---- the signals up now on one session's agents (the nudge ladder's fact check) ----
+
+fn put_state(h: &Path, agents: Vec<Agent>, raw: Option<&str>) {
+    let mut st = State::default();
+    for a in agents {
+        st.agents.insert(a.id.clone(), a);
+    }
+    let dir = h.join(".anti-hall/agent-tracker");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("state.json"), raw.map_or_else(|| serde_json::to_string(&st).unwrap(), str::to_string)).unwrap();
+}
+
+fn agent_with(id: &str, parent: &str, flags: &[&str]) -> Agent {
+    let mut a = Agent { id: id.into(), parent: parent.into(), kind: "subagent".into(), ..Default::default() };
+    for f in flags {
+        a.flags.insert((*f).to_string(), Flag::default());
+    }
+    a
+}
+
+#[test]
+fn live_flags_names_the_signals_up_on_the_session_and_its_descendants_only() {
+    let h = home("live-flags");
+    let mut gone = agent_with("g1", "s1", &["stalled"]);
+    gone.gone = true;
+    let mut finished = agent_with("f1", "s1", &["hung"]);
+    finished.finished = true;
+    let mut dead = agent_with("d1", "s1", &["looping"]);
+    dead.dead = true;
+    put_state(
+        &h,
+        vec![
+            agent_with("w1", "s1", &["stalled"]),
+            agent_with("w2", "w1", &["underparallel"]),  // a child of a child
+            agent_with("x1", "other", &["false_claim"]), // another session's agent
+            gone,
+            finished,
+            dead,
+        ],
+        None,
+    );
+    let flags = live_flags(&h, "s1", "").expect("readable");
+    assert_eq!(flags.iter().map(String::as_str).collect::<Vec<_>>(), vec!["stalled", "underparallel"], "{flags:?}");
+    assert!(live_flags(&h, "other", "").unwrap().contains("false_claim") && !live_flags(&h, "other", "").unwrap().contains("stalled"));
+    assert!(live_flags(&h, "nobody", "").unwrap().is_empty(), "a session with no agents has no signals up");
+}
+
+#[test]
+fn live_flags_finds_the_session_by_its_transcript_and_says_nothing_it_cannot_read() {
+    let h = home("live-flags-path");
+    let mut main = agent_with("m1", "", &[]);
+    main.path = "/x/t.jsonl".into();
+    put_state(&h, vec![main, agent_with("w1", "m1", &["stalled"])], None);
+    assert!(live_flags(&h, "unrelated-id", "/x/t.jsonl").unwrap().contains("stalled"), "the transcript names the session's agent");
+    assert!(live_flags(&h, "unrelated-id", "/x/other.jsonl").unwrap().is_empty());
+    put_state(&h, vec![], Some("{not json"));
+    assert!(live_flags(&h, "s1", "").is_none(), "state that is not valid is unreadable, not empty");
+    let big = format!("{{\"cli_version\":\"{}\"}}", "y".repeat(lim("state_max_bytes") as usize));
+    put_state(&h, vec![], Some(&big));
+    assert!(live_flags(&h, "s1", "").is_none(), "state over its size cap is unreadable");
+    std::fs::remove_file(h.join(".anti-hall/agent-tracker/state.json")).unwrap();
+    assert!(live_flags(&h, "s1", "").is_none(), "no state file: nothing can be said");
+}

@@ -597,6 +597,28 @@ pub(crate) fn load_state(env: &Env) -> State {
     }
 }
 
+/// The signal names up now on the agents of one session (itself, its children and theirs; agents that are gone, finished or dead
+/// raise none), read from the tracker's persisted state for the nudge ladder's fact check. `None`: the file is absent, over its size
+/// cap or not valid state, so nothing can be said (the ladder then blocks nothing on a signal it cannot verify).
+pub(crate) fn live_flags(home: &std::path::Path, session: &str, transcript: &str) -> Option<std::collections::BTreeSet<String>> {
+    let p = home.join(pth("base")).join(pth("dir")).join(pth("state"));
+    if std::fs::metadata(&p).ok()?.len() > lim("state_max_bytes") {
+        return None;
+    }
+    let st: State = serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()?;
+    let owner = st.agents.values().find(|a| !transcript.is_empty() && a.path == transcript).map_or_else(|| session.to_string(), |a| a.id.clone());
+    let mut mine: std::collections::BTreeSet<String> = std::collections::BTreeSet::from([owner]);
+    loop {
+        let before = mine.len();
+        let more: Vec<String> = st.agents.values().filter(|a| mine.contains(&a.parent)).map(|a| a.id.clone()).collect();
+        mine.extend(more);
+        if mine.len() == before {
+            break;
+        }
+    }
+    Some(st.agents.values().filter(|a| mine.contains(&a.id) && !(a.gone || a.finished || a.dead)).flat_map(|a| a.flags.keys().cloned()).collect())
+}
+
 /// A child's launch identity for the guards: (the tool call id that launched it, its agent type), each "" when unknown. Both come
 /// from the host's meta file (`agent_tracker.meta` tool_use_id, `agent_tracker.no_work` agent_type_fields); a child the tracker
 /// knows as a Codex rescue wrapper has the rescue type even when its meta names none (hosts that keep the type in the launch input).
