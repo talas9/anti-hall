@@ -64,6 +64,9 @@ struct Cand {
 
 /// Replace the over-cap contexts of `results` (an event in `context_size.events`) with summary plus file pointer, in place.
 pub fn apply(event: &str, env: &RequestEnv, results: &mut [HookResult]) {
+    if super::ctxkeep::covers(event, env) {
+        return; // context.injectGateNoSpill: the event budget replaces the shrink and its file
+    }
     if !defaults::list("context_size.events").contains(&event) {
         return;
     }

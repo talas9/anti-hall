@@ -506,6 +506,10 @@ value = "/tmp"
 doc = "The tmp roots added after os.tmpdir()."
 value = ["/tmp", "/private/tmp"]
 
+[command.golden_redirect_root]
+doc = "Test harness only: the directory a golden case's home is laid out in when the temp dir sits inside a command.tmp_fixed_roots root (a home in a tmp root would silence every file-changing case)."
+value = "/var/tmp"
+
 [command.scratch_uid_prefix]
 doc = "Prefix of the per-user directory under a tmp root that holds session scratchpads."
 value = "claude-"

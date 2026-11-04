@@ -138,6 +138,43 @@ pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
     g.entry(key).or_insert_with(|| (name.to_string(), labels.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect(), 0)).2 += by;
 }
 
+/// [`bump_by`] for code that runs in the hook dispatcher as well as in the daemon. The dispatcher is a short-lived process of its own
+/// (`PENDING` dies with it, and the daemon's snapshots drain the daemon's table), so there the count goes to the telemetry inbox as a
+/// `counter` event and the daemon adds it to its registry when it reads the inbox ([`add_from_event`]). In the daemon it is [`bump_by`].
+pub fn bump_by_shared(name: &str, labels: &[(&str, &str)], by: u64) {
+    if crate::telemetry::emit::in_daemon() {
+        return bump_by(name, labels, by);
+    }
+    if by == 0 || !is_registered(name) {
+        return;
+    }
+    #[cfg(test)]
+    THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(series(name, labels)).or_insert(0) += by);
+    crate::telemetry::emit::queue(crate::telemetry::emit::counter(name, labels, by));
+}
+
+/// [`bump_by_shared`] with a count of one.
+pub fn bump_shared(name: &str, labels: &[(&str, &str)]) {
+    bump_by_shared(name, labels, 1);
+}
+
+/// Add the counts of a `counter` event (`emit::counter`) to `m`: `values` are the label values joined by `/`. False when the metric is
+/// not registered or the number of values differs from its labels (the event is refused and nothing is added).
+pub fn add_from_event(m: &mut Metrics, name: &str, values: &str, by: u64) -> bool {
+    let key = format!("metric.{name}");
+    if !defaults::has(&key) {
+        return false;
+    }
+    let names = defaults::raw(&key).get("labels").map(defaults::V::strings).unwrap_or_default();
+    let vals: Vec<&str> = if names.is_empty() { Vec::new() } else { values.split('/').collect() };
+    if vals.len() != names.len() {
+        return false;
+    }
+    let labels: Vec<(&str, &str)> = names.into_iter().zip(vals).collect();
+    m.add(name, &labels, by);
+    true
+}
+
 /// Whether the telemetry of the recent fixes (config cache, newest-tail reads, served requests, SIGINT drains) is on (`recent_tel.enabled`).
 pub fn recent_on() -> bool {
     defaults::num("recent_tel.enabled") != 0

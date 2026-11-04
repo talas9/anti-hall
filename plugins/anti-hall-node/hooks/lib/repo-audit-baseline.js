@@ -39,7 +39,7 @@
 // re-verified this pass, no evidence found to disturb the 2026-08-22 findings
 // on those. MODEL-POLICY.md (both variants) needed no change — already routes
 // by tier token, resolved at call time.
-const MODEL_KB_AUDIT_DATE = '2026-09-03';
+const MODEL_KB_AUDIT_DATE = '2026-11-04';
 const STALENESS_THRESHOLD_DAYS = 60;
 
 module.exports = { MODEL_KB_AUDIT_DATE, STALENESS_THRESHOLD_DAYS };
