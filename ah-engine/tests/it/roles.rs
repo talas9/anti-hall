@@ -244,7 +244,10 @@ fn payload(event: &str, extra: Value) -> String {
 }
 
 fn note(extra: Value, env_pairs: &[(&str, &str)], event: &str) -> String {
-    let (code, out, err) = run(&["check", "engine-role-note"], env_pairs, &payload(event, extra));
+    // the full note under test: the one-line form (context.roleNoteShort) ships on, so it is switched off here
+    let mut env = env_pairs.to_vec();
+    env.push(("ANTIHALL_ROLE_NOTE_SHORT", "0"));
+    let (code, out, err) = run(&["check", "engine-role-note"], &env, &payload(event, extra));
     assert_eq!(code, 0, "{err}");
     let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("no note: {out:?} {err}"));
     v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string()

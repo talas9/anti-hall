@@ -20,6 +20,30 @@ value = { section = "context", key = "roleGuard", env = "ANTIHALL_ROLE_GUARD", o
 doc = "Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note."
 value = { section = "context", key = "roleNote", env = "ANTIHALL_ROLE_NOTE", option = "", default = true }
 
+[roles.sw_note_short]
+doc = "Switch context.roleNoteShort (default on): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while every text and limit the full note reads (roles.msg_note, msg_note_more, msg_none, note_max, the skill reference, and that role's roles.describe entry) still holds its stock value (roles.stock_texts, roles.stock_describe); an edit of any of them keeps the full, edited note. Off gives every role the full note (the earlier behaviour)."
+value = { section = "context", key = "roleNoteShort", env = "ANTIHALL_ROLE_NOTE_SHORT", option = "", default = true }
+
+[roles.describe_short]
+doc = "What a role is, in a few words, for the one-line role note. Only the roles listed here get the one-line note (the others keep the full note)."
+value = { subagent = "one assigned job, report back" }
+
+[roles.stock_texts]
+doc = "The stock value of every other text or limit the full role note reads: msg_note, msg_note_more, msg_none, note_max and the rendered skill reference per host (from skill_host and main_skill). The one-line role note replaces the full note only while ALL of these still hold their stock values (and the role's roles.describe entry equals roles.stock_describe); an edit of any of them keeps the full, edited note."
+value = { msg_note = "anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {verbs}.{more} Full guide: {skill}", msg_note_more = " (+{n} more, see the guide)", msg_none = "none", note_max = 900, skill = { claude = "/anti-hall:engine", codex = "$anti-hall-engine" } }
+
+[roles.stock_describe]
+doc = "The stock value of roles.describe, by role. The one-line role note replaces the full note for a role only while that role's roles.describe entry still equals its entry here; an edited description always wins."
+value = { main = "the main session (Primary / coordinator): owns the repo, the settings and the other agents", workspace = "a DevSwarm workspace child: works on its own task and reports through the mesh", subagent = "a subagent or background task: does one assigned job and reports back", codex = "a Codex top-level session: the main seat on that platform" }
+
+[roles.event_emitted_short]
+doc = "Counter event: the one-line role note was sent."
+value = "emitted_short"
+
+[roles.event_emitted_full]
+doc = "Counter event: the full role note (with the verb list) was sent."
+value = "emitted_full"
+
 [roles.summary_guard]
 doc = "One-line description of the engine-role-guard check in the generated reference."
 value = "PreToolUse on Bash: refuses an ah-engine command the caller's role may not run, per the roles.matrix (subagent from the payload, workspace child from the environment)."
@@ -126,6 +150,14 @@ value = "anti-hall engine: `{verb}` from a workspace child may only act on itsel
 doc = "The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}."
 value = "anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {verbs}.{more} Full guide: {skill}"
 
+[roles.msg_note_short]
+doc = "The one-line role note for a role listed in roles.describe_short. Placeholders: {role}, {what}, {skill}."
+value = "anti-hall engine: role {role} ({what}). Engine guide: {skill}."
+
+[roles.note_short_what]
+doc = "The registry text of the one-line role note (guard_rules.rules, roles.note_short): what it tells a subagent."
+value = "a subagent is told its role and where the engine guide is, in one line, not the verb list."
+
 [roles.msg_note_more]
 doc = "Added to the note when the verb list was shortened. Placeholder: {n}."
 value = " (+{n} more, see the guide)"
@@ -141,3 +173,7 @@ value = "---\nname: {name}\ndescription: \"{description}\"\n---\n\n"
 [roles.skill_labels]
 doc = "Labels the generated skills use. `roles_head` heads the role table, `verbs_head` the verb table, `guards_head` the guard list, `settings_head` the switches, `none` marks an empty cell, `yes` an allowed role, `self` a self-only role."
 value = { roles_head = "Roles", verbs_head = "Verbs", guards_head = "Guards", settings_head = "Switches", areas_head = "Feature areas", none = "-", table_head = "| Verb | What it does | Roles |\n|---|---|---|", yes = "yes", self_only = "self only", owner = "owner args", generated = "Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand.", roles_note = "Your role is in the note injected at session start. A role marked `*` in a Roles cell may only name its own workspace; owner args need the main session (or the Codex main seat).", more = "Details: the area skills above; the full reference is `ah-engine docs`." }
+
+[metric.role_note_emitted]
+doc = "Role notes sent, by form (emitted_short: the one-line note; emitted_full: the full note with the verb list)."
+value = { kind = "counter", unit = "notes", labels = ["form"] }

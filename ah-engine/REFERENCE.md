@@ -3179,7 +3179,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
 | `guard_rules.msg_no_heredoc` | `4 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
 | `guard_rules.msg_rm_rf_root` | `4 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
-| `guard_rules.no_step_allow` | `21 items` |  |  | Ratchet for the clear-step lint (#538): the ids of registered non-off rules that have no instead text today. The list may only shrink: a new rule needs an instead (the step that clears the block), and an id that gains one must be removed here (guard_rules.problem_stale_allow). |
+| `guard_rules.no_step_allow` | `22 items` |  |  | Ratchet for the clear-step lint (#538): the ids of registered non-off rules that have no instead text today. The list may only shrink: a new rule needs an instead (the step that clears the block), and an id that gains one must be removed here (guard_rules.problem_stale_allow). |
 | `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
 | `guard_rules.problem_digest` | `{id}: missing from the generated digest` |  |  | Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}. |
 | `guard_rules.problem_id` | `rule id empty or duplicate: {id}` |  |  | Registry problem: a rule id that is empty or repeated. Placeholder: {id}. |
@@ -3191,7 +3191,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.problem_stale_allow` | `{id}: has an instead text now, remove it from guard_rules.no_step_allow` |  |  | Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
-| `guard_rules.rules` | `151 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `152 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
 | `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
 | `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
@@ -5463,8 +5463,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.cli_cmd` | `ah-engine {verb}` |  |  | How a verb is typed, for the skills. |
 | `roles.declared_env` | `ANTIHALL_ROLE` |  |  | Environment variable a wrapper may set to declare the caller's role on the command line (a role name from roles.names). It can only narrow what the environment says is possible, never name a role the detection ruled out: a workspace child stays a workspace child. |
 | `roles.describe` | `4 entries` |  |  | What each role is, in one line (shown in the role note and the engine skill). |
+| `roles.describe_short` | `1 entries` |  |  | What a role is, in a few words, for the one-line role note. Only the roles listed here get the one-line note (the others keep the full note). |
 | `roles.digest_budget` | `1400` |  | bytes | Size limit of the rule digest in bytes (the essentials injected at session start and after compaction). A test fails when the generated digest is over it. |
 | `roles.engine_bin` | `ah-engine` |  |  | The engine's executable name, as an agent types it in a Bash command. |
+| `roles.event_emitted_full` | `emitted_full` |  |  | Counter event: the full role note (with the verb list) was sent. |
+| `roles.event_emitted_short` | `emitted_short` |  |  | Counter event: the one-line role note was sent. |
 | `roles.groups` | `13 entries` |  |  | The feature areas, in skill order. `skill` is the sub-skill name (the main skill is `engine`), `title` its heading, `brief` the one line the main skill shows, `use_when` the sentence that makes the host load the sub-skill (a skill's description is what triggers loading), `prefixes` the engine checks (guards) it covers by name prefix and `settings_prefixes` the switches it lists by `section.key` prefix (first area that matches wins; the rest go to `guards`). |
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
 | `roles.line_max` | `100` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
@@ -5473,12 +5476,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.msg_none` | `none` |  |  | The verb list in the note when the role may run none. |
 | `roles.msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}. |
 | `roles.msg_note_more` | ` (+{n} more, see the guide)` |  |  | Added to the note when the verb list was shortened. Placeholder: {n}. |
+| `roles.msg_note_short` | `anti-hall engine: role {role} ({what}). Engine guide: {skill}.` |  |  | The one-line role note for a role listed in roles.describe_short. Placeholders: {role}, {what}, {skill}. |
 | `roles.msg_refuse` | `anti-hall engine: `{verb}` is not available to {role} sessions. Who may run i...` |  |  | Refusal when the caller's role may not run a verb. Placeholders: {verb}, {role}, {allowed}, {why}. |
 | `roles.msg_refuse_self` | `anti-hall engine: `{verb}` from a workspace child may only act on itself ({se...` |  |  | Refusal when a workspace child names another workspace. Placeholders: {verb}, {target}, {self}. |
 | `roles.msg_why_other` | `This role is not on the verb's list in roles.matrix.` |  |  | The reason in msg_refuse when the role is simply not on the verb's list. |
 | `roles.msg_why_owner` | `It changes or removes state, so it is reserved for the main session; ask it t...` |  |  | The reason in msg_refuse when the verb or argument is owner-level. |
 | `roles.names` | `subagent, workspace, codex, main` |  |  | The caller roles, most specific first when two apply (a workspace child that is a Codex session is a workspace child). |
 | `roles.note_max` | `900` |  |  | Longest role note, in characters; the verb list is shortened to fit. |
+| `roles.note_short_what` | `a subagent is told its role and where the engine guide is, in one line, not t...` |  |  | The registry text of the one-line role note (guard_rules.rules, roles.note_short): what it tells a subagent. |
 | `roles.owner_roles` | `codex, main` |  |  | The roles allowed to run a verb with one of its owner_args. |
 | `roles.refuse_exit` | `77` |  |  | Exit status of the command line when the caller's role may not run the verb. |
 | `roles.script_words` | `eval` |  |  | Commands besides the shells of git.shell_verbs whose quoted argument is itself a script, so an engine call quoted there still counts for the role guard; any other quoted engine name (a commit message, an echo) is text. |
@@ -5487,10 +5492,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.skill_frontmatter` | `---\nname: {name}\ndescription: "{description}"\n---\n\n` |  |  | Front matter of a generated skill. Placeholders: {name}, {description}. |
 | `roles.skill_host` | `2 entries` |  |  | Per host: where the generated skill files go under the plugin root, the skill folder name prefix, the command that names a skill in prose and the front matter name prefix. Codex skills are folders named anti-hall-<skill>. |
 | `roles.skill_labels` | `13 entries` |  |  | Labels the generated skills use. `roles_head` heads the role table, `verbs_head` the verb table, `guards_head` the guard list, `settings_head` the switches, `none` marks an empty cell, `yes` an allowed role, `self` a self-only role. |
+| `roles.stock_describe` | `4 entries` |  |  | The stock value of roles.describe, by role. The one-line role note replaces the full note for a role only while that role's roles.describe entry still equals its entry here; an edited description always wins. |
+| `roles.stock_texts` | `5 entries` |  |  | The stock value of every other text or limit the full role note reads: msg_note, msg_note_more, msg_none, note_max and the rendered skill reference per host (from skill_host and main_skill). The one-line role note replaces the full note only while ALL of these still hold their stock values (and the role's roles.describe entry equals roles.stock_describe); an edit of any of them keeps the full, edited note. |
 | `roles.summary_guard` | `PreToolUse on Bash: refuses an ah-engine command the caller's role may not ru...` |  |  | One-line description of the engine-role-guard check in the generated reference. |
 | `roles.summary_note` | `SessionStart and SubagentStart context: tells the session its role, the engin...` |  |  | One-line description of the engine-role-note check in the generated reference. |
 | `roles.sw_guard` | `5 entries` |  |  | Switch context.roleGuard (default on): off lets every role run every engine verb (the PreToolUse Bash check and the command-line check step aside). |
 | `roles.sw_note` | `5 entries` |  |  | Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note. |
+| `roles.sw_note_short` | `5 entries` |  |  | Switch context.roleNoteShort (default on): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while every text and limit the full note reads (roles.msg_note, msg_note_more, msg_none, note_max, the skill reference, and that role's roles.describe entry) still holds its stock value (roles.stock_texts, roles.stock_describe); an edit of any of them keeps the full, edited note. Off gives every role the full note (the earlier behaviour). |
 
 ### lane_waste.toml / lane_test
 
@@ -6035,7 +6043,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `403 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `405 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8360,6 +8368,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.done_statuses` | `completed, done, cancelled, canceled` |  |  | Statuses (lowercase) that mean a task no longer blocks the ones waiting on it. |
 | `task_tracker.ellipsis` | `…` |  |  | What ends a subject that was cut. |
 | `task_tracker.event` | `UserPromptSubmit` |  |  | The hook event name in the output. |
+| `task_tracker.event_full` | `full_emitted` |  |  | Counter event: the full directive was sent. |
+| `task_tracker.event_short` | `short_emitted` |  |  | Counter event: the short reminder was sent. |
+| `task_tracker.event_short_same` | `short_suppressed_same_state` |  |  | Counter event: the short reminder was withheld because the task list is in the state the agent was already told (unchanged list, or the dedupe store holds the text). |
 | `task_tracker.file_token_re` | `(?:[\w.-]+/)+[\w.-]+\.\w+\|[\w-]+\.(?:rs\|js\|ts\|tsx\|toml\|md\|json\|py\|sh\|yml\|yaml...` |  |  | JavaScript regex source (global) of the words of a task that name a file: a path with a directory, or a name with a known extension. |
 | `task_tracker.footer_joiner` | ` ` |  |  | What stands between the demand line and the Jev footer. |
 | `task_tracker.freshness_joiner` | ` ` |  |  | What stands between the demand block and the open-tasks line. |
@@ -8408,11 +8419,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.spawn_names` | `Agent, Task, Workflow` |  |  | The tools that spawn an agent. |
 | `task_tracker.state_prefix` | `task-tracker-` |  |  | Prefix of the per-session state file that remembers when the full directive was last injected. |
 | `task_tracker.state_suffix` | `.json` |  |  | Suffix of the per-session state file. |
+| `task_tracker.stock_texts` | `6 entries` |  |  | The stock value of each text that context.taskTrackerTerse can reword, by key (the shipped value of that key). A key whose current value equals its entry here is unedited, so the switch may swap in terse_texts; any other value is the owner's own and stays. |
 | `task_tracker.stop_setting` | `6 entries` |  |  | Quiets DISPATCH NOW during the spawn stop. Where the switch is read from that silences the DISPATCH NOW line while the weekly-usage spawn stop is active (guards.dispatchQuietSpawnStop, default on). |
 | `task_tracker.subject_max` | `50` |  |  | The longest subject the open-tasks line quotes, in UTF-16 units. |
 | `task_tracker.subject_tail` | ` (oldest in_progress subject: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
 | `task_tracker.subject_unknown` | `(subject unknown)` |  |  | What stands for a subject that was never learned. |
 | `task_tracker.summary` | `UserPromptSubmit task-list discipline: the full directive or the short remind...` |  |  | One-line description of the task-tracker check in the generated reference. |
+| `task_tracker.terse_setting` | `6 entries` |  |  | Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off. |
+| `task_tracker.terse_texts` | `6 entries` |  |  | The factual wording used for an unedited text (see stock_texts) while context.taskTrackerTerse is on, by key. Same placeholders as the stock text of that key. |
 | `task_tracker.tier_arrow` | `→ ` |  |  | What starts a tier annotation. |
 | `task_tracker.tier_conf` | ` ({conf})` |  |  | The confidence part of a tier annotation; `{conf}` is the confidence rounded to two decimals. |
 | `task_tracker.tier_conf_floor` | `0.6` |  |  | A workspace or workflow verdict below this confidence (a decimal, written as text) is shown as the default tier. |
@@ -8453,7 +8467,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `409 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `411 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `21 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14863,6 +14877,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `devswarm_parent_gate_suppressed` | counter | passes | reason | Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send). |
 | `mesh_noise_lookalike_kept` | counter | rows | kind | Rows or lines that start with a system prefix (poke, wake) but carry a mail provenance (an mtype, or a non-Primary sender), so they were counted as unread mail, by kind. |
 | `mesh_unread_position_unknown` | counter | counts | site | Unread counts reported unknown because the saved store read position was past the partition's message count, by site (count_for, union_of, shared_unread). |
+| `role_note_emitted` | counter | notes | form | Role notes sent, by form (emitted_short: the one-line note; emitted_full: the full note with the verb list). |
 | `advisor_rank` | counter | verdicts | result | Verdicts of the advisor rank rule (guards.advisorRank, GH #500) at each plan or retry block decision: skipped (main ranks equal or higher: no block), applied (main ranks lower), applied_unknown (main or advisor model unknown), applied_subagent (subagent: never exempted). |
 | `burn_breaker_bypass` | counter | calls | kind | Tool calls the burn-breaker check let through while the breaker held, by kind (commit: a commit or push, per call, never a lift (PR #472); restore: the restore class; report: a report write; send: a mesh send; tool: an always-allowed tool; inspect: another allowed command; doubt: an error while judging, allowed) (GH #458). |
 | `burn_breaker_paused` | counter | calls | reason | Tool calls the burn-breaker check paused, by reason (burn: the token line; waste: the waste sensor's hard mark) (GH #458). |
@@ -14882,6 +14897,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rt_edges` | counter | edges |  | Workspace state changes emitted. |
 | `rt_reconcile_repairs` | counter | edges |  | Changes a full reconcile found that the event path had not already applied: the health measure of the realtime event layer (close to 0 is healthy). |
 | `rt_shadow_mismatches` | counter | mismatches |  | Differences between the engine's workspace state and the Node witness's. |
+| `task_tracker_emitted` | counter | messages | form | Task tracker messages, by form (full_emitted: the full directive was sent; short_emitted: the short reminder was sent; short_suppressed_same_state: the short reminder was withheld because the agent was already told this state). |
 | `agent_outcome_kind` | counter | outcomes | kind | Outcomes the agent tracker counted of the kinds GH #458 added, by kind (shell_file, check, probe): soft outcomes: they never reset the burn or waste counts, they may only hold off the pause (burn.soft_hold). |
 | `agent_nudge_delivery_failed` | counter | deliveries | where | Nudge deliveries that failed, by where: queue (the session's reminder queue could not be written), wake (its wake feed could not be written) or owner_file (the owner notices file could not be written). A failed delivery is not counted in agent_nudge_sent or agent_nudge_to_owner. |
 | `agent_nudge_done_hold_released` | counter | holds |  | Done holds released early because the held child produced new output after the verdict (a hold that simply ran out is not counted). |

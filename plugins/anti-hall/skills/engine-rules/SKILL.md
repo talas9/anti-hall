@@ -154,8 +154,9 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `tasklist_guard.stalled` (skill): ... tasks are marked in progress with no active agent. Why: They are stalled, not running in parallel. Instead: assign an agent to each stalled task.
 - `tasklist_guard.progress` (skill): ... files changed but progress is missing or stale. Why: The progress file must record what was done. Instead: update the progress file, then stop again.
 - `tasklist_guard.reduced` (skill): ... files changed but no work tracked. Why: Untracked work gets lost. Instead: list the open tasks and their status in your reply, priority first.
-- `task_tracker.full` (skill): requests need tracking before work starts.
-- `task_tracker.short` (skill): capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
+- `task_tracker.full` (skill, switch `context.taskTracker`): requests need tracking before work starts.
+- `task_tracker.short` (skill, switch `context.taskTracker`): capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
+- `roles.note_short` (skill, switch `context.roleNoteShort`): a subagent is told its role and where the engine guide is, in one line, not the verb list.
 - `task_tracker.primary` (skill): workspace-sized work needs a child workspace. Instead: assign the feature, fix or deploy to a child workspace.
 - `uncommitted.msg` (skill): this edit is paused: ... lines are uncommitted (limit ...). Why: Large unsaved changes are harder to review and resume. Instead: Commit the working changes, then continue editing.
 - `fable_availability.msg` (skill): Fable is available this session (per ~/.claude.json). Why: Fable routing is re-enabled per MODEL-POLICY.md (2026-07-12); revisit if Fable's track record regresses. Instead: pass args.fableAvailable=true to the review workflow.
