@@ -538,7 +538,7 @@ mod tests {
         let mut half = crlf.clone();
         half.extend_from_slice(b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\"hookEv");
         assert_eq!(scan(&half, false, "Stop"), chain(3, 1), "a half-written marker line after CRLF lines still counts");
-        assert_eq!(parse_line(format!("{}\r", human()).as_bytes()).is_some(), true, "a trailing CR is not part of the JSON");
+        assert!(parse_line(format!("{}\r", human()).as_bytes()).is_some(), "a trailing CR is not part of the JSON");
     }
 
     /// #568 (#566 item 5): a slash-command line carries no origin/promptSource, so it is `Other` and does not restart the count.
