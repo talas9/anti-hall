@@ -9,6 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use crate::common;
+use crate::soak_math::{other_kb, slope_kb_per_kcall};
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -193,6 +194,8 @@ fn a_long_mixed_run_stays_under_the_default_cap_and_flat_with_zero_restarts() {
                     std::fs::read_to_string(s.dir.join("state/starts")).ok()
                 );
             }
+            let mut st = st;
+            st["calls"] = serde_json::json!(i + 1);
             samples.push(st);
         }
     }
@@ -213,4 +216,19 @@ fn a_long_mixed_run_stays_under_the_default_cap_and_flat_with_zero_restarts() {
     assert!(l <= w + allowed, "live heap grew from {w} KB at call {warm} to {l} KB at call {total}: {}", last["memory"]);
     let (rw, rl) = (at_warm["memory"]["rss_kb"].as_u64().unwrap(), last["memory"]["rss_kb"].as_u64().unwrap());
     assert!(rl <= rw + rw / 2 + 8192, "RSS grew from {rw} KB at call {warm} to {rl} KB at call {total}");
+    // issue #471: the heap no registered holder names (`other` in `status --memory`) must not follow the call count either. A
+    // structure outside the memory registry that keeps something per call shows up here as a slope, even while the total heap
+    // stays inside the band above (holders that evict under their soft limit can hide it there).
+    let series: Vec<(f64, f64)> = samples.iter().filter_map(|st| Some((st["calls"].as_f64()?, other_kb(st)?))).collect();
+    assert!(series.len() >= 3, "too few samples with a holder breakdown: {}", last["memory"]);
+    let slope = slope_kb_per_kcall(&series);
+    let band = soak_budget("other_kb_per_kcalls");
+    assert!(slope <= band, "the unattributed heap grew {slope:.0} KB per 1000 calls after warm-up (band {band} KB): {series:?}");
+}
+
+/// A `[memory_soak]` budget from tests/budgets.toml.
+fn soak_budget(key: &str) -> f64 {
+    let b: toml::Table = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/budgets.toml")).unwrap().parse().unwrap();
+    let v = &b["memory_soak"][key];
+    v.as_float().unwrap_or_else(|| v.as_integer().unwrap() as f64)
 }

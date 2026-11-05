@@ -84,6 +84,7 @@ mod session_e2e;
 mod settings_overflow;
 mod shared_tree_bare_e2e;
 mod sibling_sweep_reload;
+mod soak_math;
 mod spawn_budget;
 mod spool;
 mod stop_channel_e2e;
