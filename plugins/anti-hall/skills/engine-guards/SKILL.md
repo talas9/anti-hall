@@ -96,8 +96,8 @@ What the automatic guards check and how to read a block.
 - `statusline.devswarm.max_chars` = 40: The segment is cut to this many characters (an ellipsis marks the cut)
 - `statusline.devswarm.stale_ms` = 180000: Data older than this shows as `?`, not a guess
 - `guards.handoverHygiene` = true: Where the on/off switch is read from (guards.handoverHygiene, default on)
-- `devswarm_sup.dryRun.retention` = false: Dry run of retention: plans and logs what it would tombstone, writes nothing
-- `devswarm_sup.dryRun.verdicts` = false: Dry run of the liveness sweep: computes verdicts, reports them, writes nothing
+- `devswarm_sup.dryRun.retention` = false: Retention dry run (writes nothing)
+- `devswarm_sup.dryRun.verdicts` = false: Liveness sweep dry run (writes nothing)
 - `devswarm_sup_env.retention_budget_ms` = 5000: Time budget of one store's tombstoning batches (environment only, as in Node:...
 - `devswarm_sup.retention.capAlone` = false: Owner-gated (OFF by default)
 - `devswarm_sup.retention.foldAlone` = false: Owner-gated (OFF by default)

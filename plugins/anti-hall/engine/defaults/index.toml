@@ -27,6 +27,7 @@ files = [
     "jev_sweep.toml",
     "jev_arrival.toml",
     "dispatch.toml",
+    "nudges.toml",
     "hooks.toml",
     "verify_first.toml",
     "guard_rules.toml",
