@@ -109,16 +109,16 @@ doc = "The Stop block's step when any listed name is shown cut or cleaned on the
 value = "TaskCreate or TaskUpdate owner=the exact names in the saved details."
 
 [pair_rule.msg_stop_instead_create]
-doc = "The Stop block's step when only agents are short of a task (no task owner to correct): a missing task slot is supplied only by a NEW task, because changing the owner of a task adds none. At most 115 characters."
-value = "TaskCreate a new task per listed agent, owner = its full name (TaskUpdate cannot add one)."
+doc = "The Stop block's step when only agents are short of a task (no task owner to correct): a missing task slot is supplied only by a NEW task, because changing the owner of a task adds none. At most 66 characters (see msg_stop_instead)."
+value = "TaskCreate (not TaskUpdate) a task per agent, owner = full name."
 
 [pair_rule.msg_stop_instead_create_full]
 doc = "The create step when any listed name is shown cut or cleaned on the visible line, or is left off it (see pair_rule.msg_stop_instead_full): the exact names are only in the saved details."
-value = "TaskCreate a new task per listed agent, owner = its exact full name in the saved details."
+value = "TaskCreate per agent, owner = exact names in the saved details."
 
 [pair_rule.msg_stop_instead_mixed]
 doc = "The Stop block's step when agents are short of a task AND tasks are owned by an agent's id or description: create for the former, correct the owner of the latter."
-value = "TaskCreate a new task (owner = full name) per agent owning none; TaskUpdate owner on each listed #task."
+value = "TaskCreate per agent owning none, TaskUpdate owner of each #task."
 
 [pair_rule.item_agent]
 doc = "A visible item for a live agent that owns no open task; `{name}` is its launch name."

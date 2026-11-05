@@ -5727,6 +5727,17 @@ mod pair_rule_pairing {
     }
 
     #[test]
+    fn every_visible_step_leaves_room_on_the_line_for_the_tail() {
+        // The block is cut at 250 units: icon and name (19), the saved-details link (66), the label "Do instead: " and its newline (13) leave
+        // 152 minus the step for the visible line. The shortest line that keeps the `(+n more)` tail (one item with a name cut at
+        // pair_rule.name_max) is 85 units, so a step used with an agent item (an agent short of a task) is at most 66.
+        for key in ["pair_rule.msg_stop_instead_create", "pair_rule.msg_stop_instead_create_full", "pair_rule.msg_stop_instead_mixed"] {
+            let step = crate::defaults::text(key);
+            assert!(step.encode_utf16().count() <= 66, "{key} is {} units, over 66: {step}", step.encode_utf16().count());
+        }
+    }
+
+    #[test]
     fn a_long_list_never_hides_its_tail_and_links_the_whole_list() {
         let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
         let agents: Vec<Ag> =
