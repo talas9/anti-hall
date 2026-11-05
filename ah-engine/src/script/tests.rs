@@ -5144,3 +5144,706 @@ mod reword_counters {
         crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
     }
 }
+
+// ---- task-pair-guard (R-pair, guards.pairRule): its counters ----
+
+mod pair_rule_counters {
+    use super::*;
+
+    /// A transcript with one in-progress task owned by `owner` and one background `Agent` launch (description "port the wake", launch name `name`).
+    fn transcript(owner: &str, name: Option<&str>) -> String {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let create = json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "[P1] one", "description": ""}}]}, "timestamp": ts});
+        let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: one"}]}, "timestamp": ts});
+        let update = json!({"type": "assistant", "message": {"id": "u1", "role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": "in_progress", "owner": owner}}]}, "timestamp": ts});
+        let mut input = json!({"description": "port the wake", "prompt": "p", "run_in_background": true});
+        if let Some(n) = name {
+            input["name"] = json!(n);
+        }
+        let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_ag0", "name": "Agent", "input": input}]}, "timestamp": ts});
+        let text = "Async agent launched successfully. (internal metadata)\nagentId: a000000000000001 (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/a000000000000001.output\n";
+        let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_ag0", "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+        format!("{create}\n{result}\n{update}\n{launch}\n{res}\n")
+    }
+
+    /// The tracker's proof that the one agent of `transcript` is live (a fresh subagent transcript and a retained tracker row).
+    fn track(h: &str, tag: &str) {
+        let id = "a000000000000001";
+        let rel = format!("{h}/.claude/projects/p/{tag}/subagents/agent-{id}.jsonl");
+        std::fs::create_dir_all(std::path::Path::new(&rel).parent().unwrap()).unwrap();
+        std::fs::write(&rel, format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+        let mut st = crate::agents::State::default();
+        st.agents.insert(
+            id.into(),
+            crate::agents::Agent {
+                id: id.into(),
+                kind: "subagent".into(),
+                parent: tag.into(),
+                name: "port the wake".into(),
+                cwd: h.into(),
+                path: rel,
+                ..Default::default()
+            },
+        );
+        std::fs::create_dir_all(format!("{h}/.anti-hall/agent-tracker")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+
+    fn run(tag: &str, body: &str, event: &str, mut p: Value, on: bool) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), body).unwrap();
+        if !tag.starts_with("pr-unk") {
+            track(&h, tag);
+        }
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        // the switch defaults to on: an "off" case forces it off explicitly
+        pairs.push(("ANTIHALL_PAIR_RULE".into(), if on { "1" } else { "0" }.into()));
+        p["hook_event_name"] = json!(event);
+        p["session_id"] = json!(tag);
+        p["cwd"] = json!(h);
+        if p.get("transcript_path").is_none() {
+            p["transcript_path"] = json!(format!("{h}/t.jsonl"));
+        }
+        super::super::run_forced("task-pair-guard", &p, &Value::Null, event, &RequestEnv::from_pairs(pairs))
+    }
+
+    fn drain() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn unnamed_spawn() -> Value {
+        json!({"tool_name": "Agent", "tool_input": {"description": "d", "prompt": "p"}})
+    }
+
+    #[test]
+    fn pre_switch_off_counts_unnamed_and_prints_nothing_and_on_counts_fired() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drain();
+        let v = run("pr-pre-off", "", "PreToolUse", unnamed_spawn(), false);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "off: nothing printed: {v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 0, "off: nothing fired");
+        let named = json!({"tool_name": "Agent", "tool_input": {"description": "d", "prompt": "p", "name": "wake-worker"}});
+        run("pr-pre-named", "", "PreToolUse", named, false);
+        assert_eq!(drain().counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "named")]), 1);
+        let v = run("pr-pre-on", "", "PreToolUse", unnamed_spawn(), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("has no name")), "{v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 1);
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed")]), 1);
+    }
+
+    #[test]
+    fn stop_switch_off_counts_observed_and_on_counts_fired_and_a_step_aside_counts_its_reason() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let unpaired = transcript("someone-else", Some("wake-worker"));
+        drain();
+        let v = run("pr-stop-off", &unpaired, "Stop", json!({}), false);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "off: nothing printed: {v:?}");
+        let m = drain();
+        assert_eq!(
+            m.counter("pair_rule_observed", &[("event", "Stop"), ("result", "agent_without_task")]),
+            1,
+            "{:?}",
+            m.counter("pair_rule_suppressed", &[("reason", "liveness_unknown")])
+        );
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0);
+        let v = run("pr-stop-on", &unpaired, "Stop", json!({}), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("\"decision\":\"block\"") && x.out.contains("wake-worker")), "{v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 1);
+        // the loose owner: the task is owned by the agent's description, not its launch name
+        run("pr-stop-loose", &transcript("port the wake", Some("wake-worker")), "Stop", json!({}), true);
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "Stop"), ("result", "inexact_owner")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "inexact_owner")]), 1);
+        // paired
+        run("pr-stop-clean", &transcript("wake-worker", Some("wake-worker")), "Stop", json!({}), true);
+        assert_eq!(drain().counter("pair_rule_observed", &[("event", "Stop"), ("result", "clean")]), 1);
+        // liveness no source tells (no tracker row): never a block, counted per agent
+        let v = run("pr-unk-live", &unpaired, "Stop", json!({}), true);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "unknown liveness never blocks: {v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_suppressed", &[("reason", "liveness_unknown")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0);
+        // steps aside, each counted under its reason
+        run("pr-sub", &unpaired, "Stop", json!({"agent_id": "ag-1"}), true);
+        run("pr-plan", &unpaired, "Stop", json!({"permission_mode": "plan"}), true);
+        run("pr-active", &unpaired, "Stop", json!({"stop_hook_active": true}), true);
+        run("pr-norows", &unpaired, "Stop", json!({"transcript_path": "/nonexistent/t.jsonl"}), true);
+        let m = drain();
+        for reason in ["subagent", "plan_mode", "stop_hook_active", "no_rows"] {
+            assert_eq!(m.counter("pair_rule_suppressed", &[("reason", reason)]), 1, "{reason}");
+        }
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0, "a step aside fires nothing");
+    }
+}
+
+// ---- task-pair-guard (R-pair): the pairing is by agent NAME as a multiset (GH #589) ----
+// Every case is a (tasks, live agents) pair read through the real Stop path; a block is parsed back into the steps it states and those
+// steps are applied: the next Stop over the fixed list must be clean (a block whose stated step cannot clear it is the defect).
+
+mod pair_rule_pairing {
+    use super::*;
+
+    /// An agent of a case: (description, launch name, tracked live).
+    type Ag = (&'static str, &'static str, bool);
+
+    /// One case: (tag, tasks (owner, status), agents, the answer wanted).
+    type Case = (&'static str, Vec<(String, &'static str)>, Vec<Ag>, Out);
+
+    /// What the Stop answered: the F2 items `(name, n)` and the F3 items `(task id, owner, agent name)`; empty both = no block.
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Out {
+        f2: Vec<(String, usize)>,
+        f3: Vec<(String, String)>,
+    }
+
+    fn transcript(tasks: &[(String, &str)], agents: &[Ag]) -> String {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let mut out = String::new();
+        for (i, (owner, status)) in tasks.iter().enumerate() {
+            let n = i + 1;
+            let create = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("[P1] task {n}"), "description": ""}}]}, "timestamp": ts});
+            let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: task {n}")}]}, "timestamp": ts});
+            let mut input = json!({"taskId": n.to_string(), "status": status});
+            if !owner.is_empty() {
+                input["owner"] = json!(owner);
+            }
+            let update = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": input}]}, "timestamp": ts});
+            out.push_str(&format!("{create}\n{result}\n{update}\n"));
+        }
+        for (i, (description, name, _)) in agents.iter().enumerate() {
+            let agent = format!("a{:015x}", i + 1);
+            let mut input = json!({"description": description, "prompt": "p", "run_in_background": true});
+            if !name.is_empty() {
+                input["name"] = json!(name);
+            }
+            let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_ag{i}"), "name": "Agent", "input": input}]}, "timestamp": ts});
+            let text = format!(
+                "Async agent launched successfully. (internal metadata)\nagentId: {agent} (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/{agent}.output\n"
+            );
+            let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": format!("toolu_ag{i}"), "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+            out.push_str(&format!("{launch}\n{res}\n"));
+        }
+        out
+    }
+
+    /// The tracker's proof that the `live` agents are live (a fresh subagent transcript and a retained row each); the others stay unknown.
+    fn track(h: &str, agents: &[Ag]) {
+        let mut st = crate::agents::State::default();
+        for (i, (description, _, live)) in agents.iter().enumerate() {
+            if !live {
+                continue;
+            }
+            let id = format!("a{:015x}", i + 1);
+            let rel = format!("{h}/.claude/projects/p/s1/subagents/agent-{id}.jsonl");
+            std::fs::create_dir_all(std::path::Path::new(&rel).parent().unwrap()).unwrap();
+            std::fs::write(&rel, format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+            st.agents.insert(
+                id.clone(),
+                crate::agents::Agent {
+                    id,
+                    kind: "subagent".into(),
+                    parent: "s1".into(),
+                    name: (*description).into(),
+                    cwd: h.into(),
+                    path: rel,
+                    ..Default::default()
+                },
+            );
+        }
+        std::fs::create_dir_all(format!("{h}/.anti-hall/agent-tracker")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+
+    /// One Stop over `tasks` (owner, status) and `agents`, the switch on or off: what it asked for and the whole text it said (visible line,
+    /// steps and saved details; empty when it printed nothing).
+    fn stop_with(tag: &str, tasks: &[(String, &str)], agents: &[Ag], on: bool) -> (Out, String) {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), transcript(tasks, agents)).unwrap();
+        track(&h, agents);
+        let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        pairs.push(("ANTIHALL_PAIR_RULE".to_string(), if on { "1" } else { "0" }.to_string()));
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        // the saved details hold the whole list (the visible line may leave items out and says so)
+        let saved = saved_details(&h);
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+        match v {
+            Some(Some(Verdict::Allow)) => (Out { f2: vec![], f3: vec![] }, String::new()),
+            Some(Some(Verdict::Exact(x))) => {
+                let reason = serde_json::from_str::<Value>(&x.out).unwrap()["reason"].as_str().unwrap().to_string() + "\n" + &saved;
+                let many = regex::Regex::new(r#"(\d+) (?:live )?agents named "([^"]*)" own no (?:open )?task"#).unwrap();
+                let share = regex::Regex::new(r#"(\d+) of the (?:\d+ live )?agents (?:named|called) "([^"]*)" own no (?:open )?task"#).unwrap();
+                let one = regex::Regex::new(r#"agent "([^"]*)" owns no (?:open )?task"#).unwrap();
+                let task = regex::Regex::new(r#"#(\d+) owner "([^"]*)"(?: -> | is agent )"([^"]*)""#).unwrap();
+                let mut f2: Vec<(String, usize)> = many.captures_iter(&reason).map(|c| (c[2].to_string(), c[1].parse().unwrap())).collect();
+                f2.extend(share.captures_iter(&reason).map(|c| (c[2].to_string(), c[1].parse().unwrap())));
+                f2.extend(one.captures_iter(&reason).map(|c| (c[1].to_string(), 1)));
+                f2.sort();
+                f2.dedup();
+                let mut f3: Vec<(String, String)> = task.captures_iter(&reason).map(|c| (c[1].to_string(), c[3].to_string())).collect();
+                f3.sort();
+                f3.dedup();
+                (Out { f2, f3 }, reason)
+            }
+            // a guard that could not run is the defect: no verdict at all, or an error
+            other => panic!("{tag}: unexpected verdict {other:?}"),
+        }
+    }
+
+    /// One Stop (switch on).
+    fn stop(tag: &str, tasks: &[(String, &str)], agents: &[Ag]) -> Out {
+        stop_with(tag, tasks, agents, true).0
+    }
+
+    /// The saved-details file(s) of the guard (its name carries the session, which the check does not pass), concatenated.
+    fn saved_details(h: &str) -> String {
+        let dir = format!("{h}/.anti-hall/block-details");
+        let mut out = String::new();
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if e.file_name().to_string_lossy().starts_with("task-pair-guard") {
+                out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+            }
+        }
+        out
+    }
+
+    fn owned(rows: &[(&str, &'static str)]) -> Vec<(String, &'static str)> {
+        rows.iter().map(|(o, s)| (o.to_string(), *s)).collect()
+    }
+
+    fn wk(desc: &'static str, name: &'static str) -> Ag {
+        (desc, name, true)
+    }
+
+    fn clean() -> Out {
+        Out { f2: vec![], f3: vec![] }
+    }
+
+    /// Apply the stated steps: an F3 item sets that task's owner to the agent's name; an F2 item adds one in-progress task per agent left.
+    fn apply(tasks: &[(String, &'static str)], out: &Out) -> Vec<(String, &'static str)> {
+        let mut t = tasks.to_vec();
+        for (id, name) in &out.f3 {
+            t[id.parse::<usize>().unwrap() - 1].0 = name.clone();
+        }
+        for (name, n) in &out.f2 {
+            for _ in 0..*n {
+                t.push((name.clone(), "in_progress"));
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn the_pairing_is_by_name_as_a_multiset() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let two = [wk("first job", "worker"), wk("second job", "worker")];
+        let cases: Vec<Case> = vec![
+            // the reported finding: two tasks owned by 'worker', two live agents named 'worker'
+            ("two-two", owned(&[("worker", ip), ("worker", ip)]), two.to_vec(), clean()),
+            // siblings
+            ("two-agents-one-task", owned(&[("worker", ip)]), two.to_vec(), Out { f2: vec![("worker".into(), 1)], f3: vec![] }),
+            (
+                "three-agents-one-task",
+                owned(&[("worker", ip)]),
+                vec![wk("a job", "worker"), wk("b job", "worker"), wk("c job", "worker")],
+                Out { f2: vec![("worker".into(), 2)], f3: vec![] },
+            ),
+            ("one-agent-two-tasks", owned(&[("worker", ip), ("worker", ip)]), vec![wk("a job", "worker")], clean()),
+            ("case-and-space", owned(&[("Worker", ip), ("  worker ", ip)]), two.to_vec(), clean()),
+            ("inner-space-runs", owned(&[("wake worker", ip)]), vec![wk("job", "wake   worker")], clean()),
+            ("pending-pairs", owned(&[("worker", "pending"), ("worker", "pending")]), two.to_vec(), clean()),
+            ("two-names", owned(&[("worker", ip), ("other", ip)]), vec![wk("a job", "worker"), wk("b job", "other")], clean()),
+            (
+                "one-name-short",
+                owned(&[("worker", ip), ("worker", ip)]),
+                vec![wk("a job", "worker"), wk("b job", "worker"), wk("c job", "other")],
+                Out { f2: vec![("other".into(), 1)], f3: vec![] },
+            ),
+            ("coordinator-named-agents", owned(&[("main", ip), ("main", ip)]), vec![wk("a job", "main"), wk("b job", "main")], clean()),
+            ("no-owner-task-pairs-nobody", owned(&[("", ip), ("", ip)]), two.to_vec(), Out { f2: vec![("worker".into(), 2)], f3: vec![] }),
+            ("completed-task-pairs-nobody", owned(&[("worker", "completed")]), vec![wk("a job", "worker")], Out { f2: vec![("worker".into(), 1)], f3: vec![] }),
+            // the loose owners: never a bypass, never a false block
+            (
+                "loose-in-progress-attends-the-second-agent",
+                owned(&[("worker", ip), ("second job", ip)]),
+                two.to_vec(),
+                Out { f2: vec![], f3: vec![("2".into(), "worker".into())] },
+            ),
+            (
+                "loose-pending-is-no-bypass",
+                owned(&[("worker", ip), ("second job", "pending")]),
+                two.to_vec(),
+                Out { f2: vec![("worker".into(), 1)], f3: vec![] },
+            ),
+            (
+                "loose-attending-needs-a-maximum-matching",
+                // owner "beta" names both agents, owner "alpha" only the first: a greedy first-fit leaves the second agent unattended
+                owned(&[("beta", ip), ("alpha", ip)]),
+                vec![wk("alpha beta", "a-agent"), wk("beta gamma", "b-agent")],
+                Out { f2: vec![], f3: vec![("1".into(), "b-agent".into()), ("2".into(), "a-agent".into())] },
+            ),
+            (
+                "loose-owner-that-is-an-unknown-agents-name",
+                // "beta" is the launch name of an agent whose liveness is unknown: a name owner, not a description owner of the live one
+                owned(&[("beta", ip)]),
+                vec![wk("the beta port", "a-agent"), ("elsewhere", "beta", false)],
+                Out { f2: vec![("a-agent".into(), 1)], f3: vec![] },
+            ),
+            (
+                "loose-owner-already-paired-agent",
+                owned(&[("worker", ip), ("first job", ip)]),
+                vec![wk("first job", "worker")],
+                Out { f2: vec![], f3: vec![("2".into(), "worker".into())] },
+            ),
+            ("unknown-liveness-never-blocks", owned(&[("other", ip)]), vec![("a job", "worker", false)], clean()),
+        ];
+        for (tag, tasks, agents, want) in cases {
+            let got = stop(&format!("pp-{tag}"), &tasks, &agents);
+            assert_eq!(got, want, "{tag}");
+            let again = stop(&format!("pp-{tag}-fixed"), &apply(&tasks, &got), &agents);
+            assert_eq!(again, clean(), "{tag}: the stated steps must clear the block");
+        }
+    }
+
+    /// A deterministic generator (an LCG): the cases below are a fixed sample of the whole input space, so a failure reproduces.
+    struct Lcg(u64);
+    impl Lcg {
+        fn pick(&mut self, n: usize) -> usize {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as usize) % n
+        }
+    }
+
+    #[test]
+    fn a_block_is_never_one_its_own_steps_cannot_clear_and_a_surplus_of_tasks_never_blocks() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let owners = ["worker", "Worker ", "other", "", "alpha job", "beta job", "ALPHA", "main", "a000000000000002", "__proto__", "constructor"];
+        let statuses = ["in_progress", "pending", "completed"];
+        let names = [
+            ("alpha job", "worker"),
+            ("beta job", "worker"),
+            ("beta job", "other"),
+            ("alpha job", "main"),
+            ("gamma", "other"),
+            ("gamma", "__proto__"),
+            ("gamma", "constructor"),
+        ];
+        let mut g = Lcg(0x5eed);
+        let mut blocked = 0;
+        for case in 0..160 {
+            let tasks: Vec<(String, &str)> = (0..g.pick(5)).map(|_| (owners[g.pick(owners.len())].to_string(), statuses[g.pick(statuses.len())])).collect();
+            let agents: Vec<Ag> = (0..1 + g.pick(4))
+                .map(|_| {
+                    let (d, n) = names[g.pick(names.len())];
+                    (d, n, g.pick(5) != 0)
+                })
+                .collect();
+            let got = stop(&format!("pp-rand-{case}"), &tasks, &agents);
+            // an agent name with at least as many open tasks of that name as live agents is never reported
+            let open = |o: &str| tasks.iter().filter(|(t, s)| *s != "completed" && t.trim().eq_ignore_ascii_case(o)).count();
+            for (name, _) in &got.f2 {
+                let live = agents.iter().filter(|(_, n, l)| *l && n == name).count();
+                assert!(
+                    open(name) < live,
+                    "case {case}: {name} has {} tasks for {live} live agents but was reported: {got:?} {tasks:?} {agents:?}",
+                    open(name)
+                );
+            }
+            if got != clean() {
+                blocked += 1;
+            }
+            let again = stop(&format!("pp-rand-{case}-fixed"), &apply(&tasks, &got), &agents);
+            assert_eq!(again, clean(), "case {case}: the stated steps must clear the block: {got:?} tasks={tasks:?} agents={agents:?}");
+        }
+        assert!(blocked > 20 && blocked < 150, "the sample exercises both sides: {blocked} blocked of 160");
+    }
+
+    /// Names that are inherited keys of a plain object, and that case-folds onto one (`__PROTO__`): a name is data, never a key of the code.
+    const OBJECT_KEY_NAMES: [&str; 12] = [
+        "__proto__",
+        "constructor",
+        "toString",
+        "hasOwnProperty",
+        "valueOf",
+        "__defineGetter__",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "__lookupSetter__",
+        "prototype",
+        "__PROTO__",
+        "Constructor",
+    ];
+
+    #[test]
+    fn an_agent_name_that_is_an_object_key_pairs_like_any_other_name() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        for (i, name) in OBJECT_KEY_NAMES.iter().enumerate() {
+            let tag = |k: &str| format!("pp-key{i}-{k}");
+            let agent = |d: &'static str| (d, *name, true);
+            // the reviewed failing input: one live agent, no task (the guard used to throw, with the switch off too)
+            let (got, _) = stop_with(&tag("none"), &[], &[agent("a job")], true);
+            assert_eq!(got.f2, vec![(name.to_string(), 1)], "{name}: no task");
+            assert_eq!(stop_with(&tag("none-off"), &[], &[agent("a job")], false).0, clean(), "{name}: switch off prints nothing");
+            // the reviewed failing input: the task owner is that name
+            assert_eq!(stop(&tag("paired"), &owned(&[(name, ip)]), &[agent("a job")]), clean(), "{name}: paired");
+            assert_eq!(stop_with(&tag("paired-off"), &owned(&[(name, ip)]), &[agent("a job")], false).0, clean(), "{name}: paired, switch off");
+            // a multiset of that name: three agents, one task
+            let three = [agent("a job"), agent("b job"), agent("c job")];
+            assert_eq!(stop(&tag("three"), &owned(&[(name, ip)]), &three).f2, vec![(name.to_string(), 2)], "{name}: three agents, one task");
+            assert_eq!(stop(&tag("three-ok"), &owned(&[(name, ip), (name, ip), (name, "pending")]), &three), clean(), "{name}: three and three");
+            // a task of another name does not pair it, and the name does not pair another agent
+            let mixed = [agent("a job"), wk("b job", "worker")];
+            assert_eq!(stop(&tag("mixed"), &owned(&[("worker", ip)]), &mixed).f2, vec![(name.to_string(), 1)], "{name}: beside a plain name");
+            // a loose owner (the agent's description) is told the launch name, whatever the name is
+            let loose = stop(&tag("loose"), &owned(&[("the long job", ip)]), &[("the long job", *name, true)]);
+            assert_eq!(loose.f3, vec![("1".to_string(), name.to_string())], "{name}: loose owner");
+        }
+    }
+
+    #[test]
+    fn a_name_is_compared_the_way_it_is_shown_so_a_block_can_always_be_cleared() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        // a name of nothing but control characters or white space is no name: it can never be set as an owner, so it is never a block
+        for (i, name) in ["\u{1}\u{1}", "\t\t", "  ", "\n\n", "\u{7f}\u{1b}", "\u{1}"].iter().enumerate() {
+            let got = stop_with(&format!("pp-ctl{i}-none"), &[], &[("a job", *name, true)], true);
+            assert_eq!(got.0, clean(), "{name:?}: an unnamed agent is not a pairing fact: {}", got.1);
+        }
+        // control characters and white space inside a name read as one space: the owner a block quotes is the owner that pairs
+        for (i, name) in ["wake\u{1}worker", "wake\tworker", "wake \n worker", " Wake  Worker ", "wake\u{7f}worker"].iter().enumerate() {
+            let none = stop_with(&format!("pp-ctl-in{i}-none"), &[], &[("a job", *name, true)], true);
+            assert_eq!(none.0.f2.len(), 1, "{name:?}: blocks: {}", none.1);
+            assert!(none.0.f2[0].0.eq_ignore_ascii_case("wake worker"), "{name:?}: the block quotes the name as it pairs: {:?}", none.0);
+            let fixed = stop(&format!("pp-ctl-in{i}-fixed"), &apply(&[], &none.0), &[("a job", *name, true)]);
+            assert_eq!(fixed, clean(), "{name:?}: the quoted owner clears it");
+            assert_eq!(stop(&format!("pp-ctl-in{i}-owned"), &owned(&[("wake worker", ip)]), &[("a job", *name, true)]), clean(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn two_object_key_names_never_pair_each_other() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let agents = [wk("a job", "__proto__"), wk("b job", "constructor")];
+        assert_eq!(stop("pp-key-two-a", &owned(&[("__proto__", ip), ("constructor", ip)]), &agents), clean());
+        let got = stop("pp-key-two-b", &owned(&[("__proto__", ip)]), &agents);
+        assert_eq!(got.f2, vec![("constructor".to_string(), 1)]);
+        let got = stop("pp-key-two-c", &owned(&[("toString", ip)]), &agents);
+        assert_eq!(got.f2, vec![("__proto__".to_string(), 1), ("constructor".to_string(), 1)]);
+    }
+
+    /// One missing-slot case: (tag, tasks (owner, status), agents).
+    type SlotCase = (&'static str, Vec<(String, &'static str)>, Vec<Ag>);
+
+    #[test]
+    fn a_missing_task_slot_is_cleared_by_creating_a_task_and_the_block_says_so() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let two = [wk("job 1", "reviewer-2"), wk("job 2", "reviewer-2")];
+        // the reviewed failing inputs: the owner is already set on the one task (TaskUpdate owner cannot add a task), and no task at all
+        let cases: Vec<SlotCase> = vec![
+            ("owner-already-set", owned(&[("reviewer-2", ip)]), two.to_vec()),
+            ("no-task-at-all", vec![], vec![wk("a job", "fresh-worker")]),
+            ("two-agents-no-task", vec![], two.to_vec()),
+            ("other-owner-only", owned(&[("someone", ip)]), vec![wk("a job", "fresh-worker")]),
+            ("completed-task-only", owned(&[("fresh-worker", "completed")]), vec![wk("a job", "fresh-worker")]),
+            (
+                "three-agents-two-tasks",
+                owned(&[("reviewer-2", ip), ("reviewer-2", "pending")]),
+                vec![wk("a", "reviewer-2"), wk("b", "reviewer-2"), wk("c", "reviewer-2")],
+            ),
+        ];
+        for (tag, tasks, agents) in cases {
+            let (got, reason) = stop_with(&format!("pp-slot-{tag}"), &tasks, &agents, true);
+            assert!(!got.f2.is_empty(), "{tag}: blocks: {reason}");
+            assert!(
+                reason.contains("TaskCreate") && reason.contains("TaskUpdate"),
+                "{tag}: a missing task slot is cleared by creating a task and then setting its owner, so the block names both: {reason}"
+            );
+            let fixed = apply(&tasks, &got);
+            assert_eq!(fixed.len(), tasks.len() + got.f2.iter().map(|(_, n)| n).sum::<usize>(), "{tag}: the step adds one task per agent left");
+            assert_eq!(stop(&format!("pp-slot-{tag}-fixed"), &fixed, &agents), clean(), "{tag}: the stated step clears it");
+        }
+        // an owner fix alone never clears a missing slot: setting the owner of the one task again changes nothing
+        let tasks = owned(&[("reviewer-2", ip)]);
+        let again = stop("pp-slot-owner-only", &tasks, &two);
+        assert_eq!(again.f2, vec![("reviewer-2".to_string(), 1)], "the same owner again does not clear it");
+        // a task-owner step (f3 only) says TaskUpdate and no agent is named as task-less
+        let (got, reason) = stop_with("pp-slot-f3", &owned(&[("the long job", ip)]), &[("the long job", "worker", true)], true);
+        assert!(got.f2.is_empty() && !got.f3.is_empty() && reason.contains("TaskUpdate"), "{reason}");
+    }
+
+    /// Every ordered list of up to 3 agents over two names and up to 3 open tasks over two owners and "no owner", checked against the multiset
+    /// oracle: per name, the agents left over are `max(0, agents of the name - open tasks owned by it)`; nothing else is ever reported.
+    #[test]
+    fn the_whole_small_domain_agrees_with_the_multiset_oracle_and_every_block_clears() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let names = ["a", "__proto__"];
+        let owners = ["a", "__proto__", ""];
+        fn lists<T: Copy>(items: &[T], max: usize) -> Vec<Vec<T>> {
+            let mut all: Vec<Vec<T>> = vec![vec![]];
+            let mut layer: Vec<Vec<T>> = vec![vec![]];
+            for _ in 0..max {
+                layer = layer.iter().flat_map(|l| items.iter().map(move |i| l.iter().copied().chain([*i]).collect())).collect();
+                all.extend(layer.clone());
+            }
+            all
+        }
+        let mut checked = 0;
+        let mut blocked = 0;
+        for (ai, ag) in lists(&names, 3).iter().enumerate() {
+            let agents: Vec<Ag> = ag.iter().map(|n| ("a job", *n, true)).collect();
+            for (ti, tk) in lists(&owners, 3).iter().enumerate() {
+                let tasks: Vec<(String, &str)> = tk.iter().map(|o| (o.to_string(), "in_progress")).collect();
+                let mut want: Vec<(String, usize)> = names
+                    .iter()
+                    .filter_map(|n| {
+                        let live = ag.iter().filter(|x| *x == n).count();
+                        let open = tk.iter().filter(|o| *o == n).count();
+                        (live > open).then(|| (n.to_string(), live - open))
+                    })
+                    .collect();
+                want.sort();
+                let (got, reason) = stop_with(&format!("pp-dom-{ai}-{ti}"), &tasks, &agents, true);
+                assert_eq!(got, Out { f2: want.clone(), f3: vec![] }, "agents {ag:?} tasks {tk:?}: {reason}");
+                if !want.is_empty() {
+                    blocked += 1;
+                    assert!(reason.contains("TaskCreate"), "agents {ag:?} tasks {tk:?}: {reason}");
+                    assert_eq!(stop(&format!("pp-dom-{ai}-{ti}-fixed"), &apply(&tasks, &got), &agents), clean(), "agents {ag:?} tasks {tk:?} must clear");
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 15 * 40, "the whole domain");
+        assert!(blocked > 100, "{blocked} blocked");
+    }
+
+    #[test]
+    fn a_long_list_never_hides_its_tail_and_links_the_whole_list() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let agents: Vec<Ag> =
+            ["alpha-worker", "beta-worker", "gamma-worker", "delta-worker", "epsilon-worker", "zeta-worker"].iter().map(|n| ("job", *n, true)).collect();
+        let h = home("pp-long");
+        std::fs::write(format!("{h}/t.jsonl"), transcript(&[], &agents)).unwrap();
+        track(&h, &agents);
+        let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())];
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        let Some(Some(Verdict::Exact(x))) = v else { panic!("{v:?}") };
+        let reason = serde_json::from_str::<Value>(&x.out).unwrap()["reason"].as_str().unwrap().to_string();
+        let saved = saved_details(&h);
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+        assert!(reason.contains("6 agent/task pairs are off") && reason.contains("more)"), "the tail count is visible: {reason}");
+        assert!(reason.contains("details:"), "the whole list is linked: {reason}");
+        for n in ["alpha-worker", "zeta-worker"] {
+            assert!(saved.contains(&format!("agent \"{n}\" owns no open task")), "{n} is in the saved details: {saved}");
+        }
+    }
+    /// One Stop (switch on): the visible block (no saved details) and the saved details apart; `None` when it printed nothing.
+    fn stop_split(tag: &str, tasks: &[(String, &str)], agents: &[Ag]) -> Option<(String, String)> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), transcript(tasks, agents)).unwrap();
+        track(&h, agents);
+        let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())];
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        let saved = saved_details(&h);
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+        match v {
+            Some(Some(Verdict::Allow)) => None,
+            Some(Some(Verdict::Exact(x))) => Some((serde_json::from_str::<Value>(&x.out).unwrap()["reason"].as_str().unwrap().to_string(), saved)),
+            other => panic!("{tag}: unexpected verdict {other:?}"),
+        }
+    }
+
+    const LONG: &str = "delta-diagnostics-maintainer-omega";
+
+    /// The class: a step is only as good as the name it carries. The visible line shows a name cut (longer than pair_rule.name_max) or cleaned
+    /// (backticks, emoji and symbols are dropped by the message cleaning), so such a name must never be the owner a step asks for. The steps
+    /// and the saved details hold it whole, the visible step points at them, and doing what they say clears the block. A name the line shows
+    /// exactly needs no pointer.
+    #[test]
+    fn a_step_never_asks_for_a_name_the_visible_line_shows_inexactly() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let exact24 = "abcdefghijklmnopqrstuvwx";
+        let exact25 = "abcdefghijklmnopqrstuvwxy";
+        // (tag, tasks, agents, the tasks the stated steps leave, the names that must be whole in the saved details, the line is exact)
+        type NameCase = (&'static str, Vec<(String, &'static str)>, Vec<Ag>, Vec<(String, &'static str)>, Vec<&'static str>, bool);
+        let two_long = vec![wk("first job", LONG), wk("second job", LONG)];
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        let huge = leak("x".repeat(5000));
+        let pair_cut = leak(format!("{}\u{1F600}\u{1F600}tail", "a".repeat(23))); // the cut at 24 units falls inside a surrogate pair
+        let cases: Vec<NameCase> = vec![
+            // the reviewed failing input: a loose owner, a long launch name
+            ("f3-reviewed", owned(&[("inspect module", ip)]), vec![wk("inspect module delta-diagnostics", LONG)], owned(&[(LONG, ip)]), vec![LONG], false),
+            ("f2-long-none", vec![], vec![wk("a job", LONG)], owned(&[(LONG, ip)]), vec![LONG], false),
+            ("f2-25-chars", vec![], vec![wk("a job", exact25)], owned(&[(exact25, ip)]), vec![exact25], false),
+            ("f2-24-chars-is-exact", vec![], vec![wk("a job", exact24)], owned(&[(exact24, ip)]), vec![exact24], true),
+            ("f2-long-many", vec![], two_long.clone(), owned(&[(LONG, ip), (LONG, ip)]), vec![LONG], false),
+            ("f2-long-share", owned(&[(LONG, ip)]), two_long, owned(&[(LONG, ip), (LONG, ip)]), vec![LONG], false),
+            ("f2-backtick", vec![], vec![wk("a job", "wake`worker")], owned(&[("wake`worker", ip)]), vec!["wake`worker"], false),
+            ("f2-emoji", vec![], vec![wk("a job", "build\u{1F680}bot")], owned(&[("build\u{1F680}bot", ip)]), vec!["build\u{1F680}bot"], false),
+            ("f2-symbol", vec![], vec![wk("a job", "\u{2705}checker")], owned(&[("\u{2705}checker", ip)]), vec!["\u{2705}checker"], false),
+            ("f2-very-long", vec![], vec![wk("a job", huge)], owned(&[(huge, ip)]), vec![huge], false),
+            ("f2-cut-inside-a-surrogate-pair", vec![], vec![wk("a job", pair_cut)], owned(&[(pair_cut, ip)]), vec![pair_cut], false),
+            ("f2-plain-is-exact", vec![], vec![wk("a job", "wake-worker")], owned(&[("wake-worker", ip)]), vec!["wake-worker"], true),
+            (
+                "f3-long-owner-short-name",
+                owned(&[("implement the extremely long running migration job", ip)]),
+                vec![wk("implement the extremely long running migration job", "migrator")],
+                owned(&[("migrator", ip)]),
+                vec!["migrator", "implement the extremely long running migration job"],
+                false,
+            ),
+            (
+                "mixed-short-and-long",
+                vec![],
+                vec![wk("a job", "short-one"), wk("b job", LONG)],
+                owned(&[("short-one", ip), (LONG, ip)]),
+                vec!["short-one", LONG],
+                false,
+            ),
+        ];
+        for (tag, tasks, agents, fixed, names, exact) in cases {
+            let (vis, saved) = stop_split(&format!("pp-name-{tag}"), &tasks, &agents).unwrap_or_else(|| panic!("{tag}: no block"));
+            for n in &names {
+                assert!(saved.contains(&format!("\"{n}\"")), "{tag}: the saved details hold {n:?} whole: {saved}");
+            }
+            let instead = vis.lines().find(|l| l.contains("Do instead:")).unwrap_or_else(|| panic!("{tag}: no step line: {vis}"));
+            assert!(!instead.contains('\u{2026}'), "{tag}: the step carries no cut name: {instead}");
+            if exact {
+                assert!(vis.contains(&format!("\"{}\"", names[0])), "{tag}: an exact name is on the visible line whole: {vis}");
+                assert!(!vis.contains("details:"), "{tag}: an exact name needs no pointer: {vis}");
+            } else {
+                assert!(vis.contains("details:") && instead.contains("saved details"), "{tag}: the step points at the whole names: {vis}");
+            }
+            // the step, done with the whole names the saved details hold, clears the block
+            assert!(stop_split(&format!("pp-name-{tag}-fixed"), &fixed, &agents).is_none(), "{tag}: the stated step clears it");
+            // and the same input with the switch off prints nothing
+            assert_eq!(stop_with(&format!("pp-name-{tag}-off"), &tasks, &agents, false).1, "", "{tag}: switch off is silent");
+        }
+    }
+
+    #[test]
+    fn a_long_list_of_long_names_is_linked_and_whole_in_the_details() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let names: Vec<String> = (0..9).map(|i| format!("long-launch-name-number-{i}-worker")).collect();
+        let agents: Vec<Ag> = names.iter().map(|n| ("job", Box::leak(n.clone().into_boxed_str()) as &'static str, true)).collect();
+        let (vis, saved) = stop_split("pp-name-nine", &[], &agents).unwrap();
+        assert!(vis.contains("9 agent/task pairs are off") && vis.contains("more)") && vis.contains("details:"), "{vis}");
+        for n in &names {
+            assert!(saved.contains(&format!("agent \"{n}\" owns no open task")), "{n}: {saved}");
+        }
+        let fixed: Vec<(String, &str)> = names.iter().map(|n| (n.clone(), "in_progress")).collect();
+        assert!(stop_split("pp-name-nine-fixed", &fixed, &agents).is_none(), "the whole list clears it");
+    }
+}

@@ -138,6 +138,9 @@ resource_watch.sw_enabled	- resource_watch.msg: Resource use is high: ....
 	- spawn_ceiling.cap: ... agents are running (limit ..., your guards.maxConcurrentAgents cap): .......
 	- spawn_usage.soft: the ... usage limit is at ...% (...).
 	- task_guard.generic: open tasks remain unfinished.
+pair_rule.sw	- pair_rule.pre: this agent has no name, so its task cannot be paired with it.
+pair_rule.sw	- pair_rule.post: agent "..." is running but no open task names it as owner.
+pair_rule.sw	- pair_rule.stop: ... agent/task pairs are off: .......
 	- tasklist_guard.reset: the task list was lost during session restore.
 	- tasklist_guard.stalled: ... tasks are marked in progress with no active agent.
 	- tasklist_guard.progress: ... files changed but progress is missing or stale.

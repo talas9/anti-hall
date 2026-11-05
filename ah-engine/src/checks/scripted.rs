@@ -102,6 +102,9 @@ pub static SILENT_AGENT_NUDGE: Scripted = Scripted::new("silent-agent-nudge", "s
 /// `task-guard`.
 pub static TASK_GUARD: Scripted = Scripted::new("task-guard", "task_guard.summary");
 
+/// `task-pair-guard` (PreToolUse and PostToolUse on Agent and Task, Stop; engine-only; R-pair, GH #589): every task is paired with the named agent working on it.
+pub static TASK_PAIR_GUARD: Scripted = Scripted::new("task-pair-guard", "pair_rule.summary");
+
 /// `tasklist-guard`.
 pub static TASKLIST_GUARD: Scripted = Scripted::new("tasklist-guard", "tasklist_guard.summary");
 

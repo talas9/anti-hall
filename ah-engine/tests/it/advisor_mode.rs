@@ -1326,6 +1326,7 @@ fn behind_read_through_the_real_hook_allows_both_calls_with_the_tool_list() {
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
             .env("AH_ENGINE_SCRIPT_TIME_MS", "2000")
             .env("ANTIHALL_EDIT_GUARD", "0")
+            .env("ANTIHALL_PAIR_RULE", "0") // R-pair defaults to on and denies an unnamed spawn: this test is about the advisor guard alone
             .env("AH_ENGINE_PLUGIN_ROOT", plugin())
             .current_dir(dir())
             .stdin(Stdio::piped())

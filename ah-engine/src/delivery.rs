@@ -435,6 +435,31 @@ mod tests {
         }
     }
 
+    /// R-pair (plan v3 L11): the funnel counts `task-pair-guard` under its dispatch check name, and a task change or an agent spawn after its
+    /// block is acted on (the owner it asks for, or the named respawn).
+    #[test]
+    fn funnel_row_counts_task_pair_guard() {
+        let check = "task-pair-guard";
+        for (event, tool) in [("PreToolUse", "Agent"), ("PostToolUse", "Agent"), ("Stop", "")] {
+            let payload = serde_json::json!({"hook_event_name": event, "tool_name": tool});
+            let found = crate::dispatch::table::select("claude", event, &payload, if tool.is_empty() { None } else { Some(tool) })
+                .into_iter()
+                .any(|e| e.check.as_deref() == Some(check));
+            assert!(found, "the claude {event} table has a {check} entry");
+        }
+        assert!(defaults::raw("delivery.act").get(check).is_some(), "delivery.act has a row for `{check}`");
+        let t = Telemetry::new();
+        deliver(&t, "s-pair", check);
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_decided"), 1);
+        observe_tool(&t, "s-pair", "TaskUpdate");
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1, "a TaskUpdate after the block is acted on");
+        deliver(&t, "s-pair2", check);
+        for _ in 0..3 {
+            observe(&t, "s-pair2", defaults::text("delivery.react_event"), "Read");
+        }
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_ignored"), 1, "three other tool calls end the window unmet");
+    }
+
     #[test]
     fn the_essential_reminders_are_never_shed_and_their_grace_stays_under_the_cap() {
         for c in ["task-tracker", "tasklist-guard", "devswarm-parent-inbox", "devswarm-child-gate", "verify-first"] {
