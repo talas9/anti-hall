@@ -134,6 +134,16 @@ fn bool_token(s: &str) -> Option<bool> {
     }
 }
 
+/// `coerce_value` for a value read from the settings STORE (`settings.json`): a string is not a whole number, so a whole-number entry
+/// ignores it, exactly as the runtime reader does (`checks/guardkit/settings.rs`); the env tiers keep `coerce_value` (strings are all
+/// they hold).
+pub(crate) fn coerce_stored(entry: &Entry, raw: Option<&J>) -> Option<J> {
+    if entry.integer && matches!(raw, Some(J::Str(_))) {
+        return None;
+    }
+    coerce_value(entry, raw)
+}
+
 /// `coerceValue(entry, raw)`: the typed value, or `None` when `raw` cannot be read as the entry's type.
 pub(crate) fn coerce_value(entry: &Entry, raw: Option<&J>) -> Option<J> {
     let raw = raw?;
@@ -286,7 +296,7 @@ pub(crate) fn get(ctx: &Ctx, entry: &Entry, dflt: Option<&J>) -> Option<J> {
         return Some(v);
     }
     let store = load(ctx);
-    if let Some(v) = coerce_value(entry, lookup(store.get(&entry.section), &entry.key)) {
+    if let Some(v) = coerce_stored(entry, lookup(store.get(&entry.section), &entry.key)) {
         return Some(v);
     }
     below_file(ctx, entry, dflt)
@@ -478,7 +488,7 @@ pub(crate) fn source(ctx: &Ctx, entry: &Entry) -> &'static str {
         return "env";
     }
     let store = load(ctx);
-    if coerce_value(entry, lookup(store.get(&entry.section), &entry.key)).is_some() {
+    if coerce_stored(entry, lookup(store.get(&entry.section), &entry.key)).is_some() {
         return "file";
     }
     let legacy_first = entry.legacy_file.is_some() && !migration_stamped(ctx);
@@ -510,6 +520,9 @@ pub(crate) fn validate_msg(entry: &Entry, value: &J) -> Result<J, String> {
             let n = j_number(value);
             if !n.is_finite() {
                 return Err(defaults::render("ops.set_err_number", &[("got", &got())]));
+            }
+            if entry.integer && n.fract() != 0.0 {
+                return Err(defaults::render("ops.set_err_integer", &[("got", &got())]));
             }
             if let Some(m) = entry.min.filter(|m| n < *m) {
                 return Err(defaults::render("ops.set_err_min", &[("bound", &num::to_js_string(m))]));
@@ -957,7 +970,14 @@ mod tests {
         for key in ["stopContinuationLimit", "stopTotalContinuationLimit"] {
             let e = find("context", key).expect("entry");
             assert_eq!((e.min, e.max, e.integer, e.reject_below_min), (Some(0.0), Some(8.0), true, true), "{key}");
-            assert_eq!(coerce_value(e, Some(&J::Str("100".into()))), Some(J::Num(8.0)), "{key}: above the cap is lowered to it");
+            assert_eq!(coerce_value(e, Some(&J::Str("100".into()))), Some(J::Num(8.0)), "{key}: an env string above the cap is lowered to it");
+            assert_eq!(coerce_stored(e, Some(&J::Str("100".into()))), None, "{key}: a STORED string is ignored, as the runtime ignores it (#568)");
+            assert_eq!(coerce_stored(e, Some(&J::Num(100.0))), Some(J::Num(8.0)), "{key}: a stored number above the cap is lowered");
+            assert_eq!(coerce_stored(e, Some(&J::Num(5.0))), Some(J::Num(5.0)), "{key}");
+            assert!(validate_msg(e, &J::Str("3.5".into())).is_err(), "{key}: set rejects a fraction");
+            assert!(validate_msg(e, &J::Str("-1".into())).is_err(), "{key}: set rejects a negative");
+            assert!(validate_msg(e, &J::Str("9".into())).is_err(), "{key}: set rejects above the cap");
+            assert_eq!(validate_msg(e, &J::Str("3".into())), Ok(J::Num(3.0)), "{key}");
             assert_eq!(coerce_value(e, Some(&J::Num(1e18))), Some(J::Num(8.0)), "{key}");
             assert_eq!(coerce_value(e, Some(&J::Str("3.5".into()))), None, "{key}: a fraction is rejected");
             assert_eq!(coerce_value(e, Some(&J::Str("-1".into()))), None, "{key}: a negative is rejected");
