@@ -771,3 +771,111 @@ fn an_attachment_without_a_hook_event_is_not_a_continuation() {
     r.transcript(&[human(), reply(), bare.clone(), bare.clone(), bare, reply()]);
     assert_eq!(r.stop_out(), soft(), "three attachments with no hookEvent: none counts");
 }
+
+// ---- GH #568: the bounds, second pass ----
+
+/// A FINISHED newest line (it ends in a newline) that cannot be parsed is unreadable, never "one more own continuation": the
+/// allowance is for a line the host is still writing.
+#[test]
+fn a_finished_unparsable_newest_line_with_the_marker_keeps_the_note_where_it_was() {
+    let r = Rig::new("finished-bad");
+    r.on();
+    r.transcript(&chain_of(1));
+    r.append(&["{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_additional_context\",\"hookEvent\":\"Stop\",".to_string()]);
+    assert_eq!(r.stop_out(), "", "a finished line the reader cannot parse proves nothing: the note stays on its old channel");
+    assert_eq!(r.counted("transcript_unreadable/tasklist-guard"), 1, "{:?}", r.counters());
+    assert_eq!(r.counted("over_k/tasklist-guard"), 0, "it was not counted as a continuation: {:?}", r.counters());
+}
+
+/// A transcript written with CRLF line ends counts like an LF one: K=3 continuations end the chain.
+#[test]
+fn a_crlf_transcript_counts_like_an_lf_one() {
+    let r = Rig::new("crlf");
+    r.on();
+    let t = chain_of(3);
+    std::fs::write(r.t(), format!("{}\r\n", t.join("\r\n"))).unwrap();
+    assert_eq!(r.stop_out(), "", "3 continuations in a CRLF file = K");
+    assert_eq!(r.counted("over_k/tasklist-guard"), 1, "{:?}", r.counters());
+    let t = chain_of(2);
+    std::fs::write(r.t(), format!("{}\r\n", t.join("\r\n"))).unwrap();
+    assert_eq!(r.stop_out(), soft(), "2 continuations in a CRLF file: still room");
+}
+
+/// A slash-command line carries no origin, so it is not a human prompt and does not restart the count.
+#[test]
+fn a_slash_command_line_does_not_restart_the_count() {
+    let r = Rig::new("slash");
+    r.on();
+    let slash = json!({"type": "user", "message": {"role": "user", "content": "<command-name>/foo</command-name>"}}).to_string();
+    r.transcript(&[human(), reply(), attached(), reply(), slash, attached(), reply(), attached(), reply()]);
+    assert_eq!(r.stop_out(), "", "3 continuations around a slash-command line = K: it did not restart the count");
+}
+
+/// The count is stateless, so a continuation the host has not written yet is invisible: with the host one line behind, a chain
+/// runs ONE past K (K+1), and the other limit M=K does not change that. The host's own cap of 8 is the last stop.
+#[test]
+fn under_a_one_line_write_lag_the_chain_is_bounded_by_k_plus_one() {
+    let r = Rig::new("lag-bound");
+    knobs(&r, json!({"stopContinuationLimit": 3, "stopTotalContinuationLimit": 3}));
+    r.fresh();
+    let mut emitted = 0;
+    let mut unwritten: Vec<String> = vec![];
+    for _ in 0..10 {
+        r.no_advisory_layer();
+        if r.stop_with(&r.stop()).is_empty() {
+            break;
+        }
+        emitted += 1;
+        r.append(&unwritten); // the previous continuation lands only now
+        unwritten = vec![attached(), reply()];
+    }
+    assert_eq!(emitted, 4, "K=3, M=3, host one line behind: K+1");
+}
+
+/// `settings set` refuses a fraction for a whole-number key and writes nothing; a whole number is stored.
+#[test]
+fn settings_set_rejects_a_fraction_for_a_whole_number_limit() {
+    let r = Rig::new("set-frac");
+    let file = r.home().join(".anti-hall/settings.json");
+    let set = |v: &str| {
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(["settings", "set", "context.stopContinuationLimit", v])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", r.home())
+            .env("AH_ENGINE_DIR", r.state())
+            .output()
+            .unwrap();
+        format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    };
+    let out = set("3.5");
+    assert!(out.contains("expected a whole number, got \"3.5\""), "{out}");
+    assert!(!file.exists() || !std::fs::read_to_string(&file).unwrap().contains("stopContinuationLimit"), "nothing written");
+    let out = set("3");
+    assert!(!out.contains("expected a whole number"), "{out}");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("\"stopContinuationLimit\""), "a whole number is stored");
+}
+
+/// A STORED string for a whole-number limit is ignored (the runtime reader ignores it), so `settings get` shows the default and
+/// does not claim a value from the file; the env tiers still accept a string.
+#[test]
+fn a_stored_string_limit_is_ignored_by_settings_get() {
+    let r = Rig::new("stored-str");
+    r.settings(Some(json!({"stopContinuationLimit": "100"})));
+    let get = |env: &[(&str, &str)]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(["settings", "get", "context.stopContinuationLimit"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", r.home())
+            .env("AH_ENGINE_DIR", r.state())
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let out = get(&[]);
+    assert!(out.contains("= 3 (source: default"), "{out}");
+    let out = get(&[("ANTIHALL_STOP_CONTINUATION_LIMIT", "5")]);
+    assert!(out.contains("= 5 (source: env"), "{out}");
+}
