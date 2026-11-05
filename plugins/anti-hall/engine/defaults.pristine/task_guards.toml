@@ -330,6 +330,12 @@ value = 262144
 min = 1024
 unit = "bytes"
 
+[taskstate.snapshot_gap_max_bytes]
+doc = "Most bytes read to catch a snapshot up when the transcript tail starts after the snapshot's size (bytes nobody has read since the snapshot was written, which can hold a TaskUpdate that finished a task the snapshot still lists as open). The rebuild then reads back to the snapshot's size instead of taskstate.tail_bytes. A gap over this is not read: the snapshot is not trusted for that rebuild (discarded, reason gap) and the tail alone answers, so no Stop blocks on a list that may be stale."
+value = 8388608
+min = 1
+unit = "bytes"
+
 [taskstate.snapshot_refresh_bytes]
 doc = "A snapshot whose tasks did not change is rewritten only after the transcript grew by this much since the last write (the recorded size is what tells a replaced, smaller transcript from the one the snapshot belongs to)."
 value = 262144
@@ -1667,8 +1673,12 @@ value = { kind = "counter", unit = "files", labels = [] }
 doc = "Tasks a rebuild recovered from the session's snapshot because the transcript tail no longer showed them."
 value = { kind = "counter", unit = "tasks", labels = [] }
 
+[metric.snapshot_gap]
+doc = "Rebuilds whose transcript tail started after the snapshot's size, by result (caught_up: the bytes between were read, so a completion in them is seen; too_big: the gap is over taskstate.snapshot_gap_max_bytes; unread: the wider read could not be made exactly). too_big and unread discard the snapshot (snapshot_discarded reason gap): the Stop answers from the tail alone."
+value = { kind = "counter", unit = "rebuilds", labels = ["result"] }
+
 [metric.snapshot_discarded]
-doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; renumbered: the tail holds a TaskCreate for a number the snapshot holds whose tool-use id is not the one the snapshot recorded for it, so a new list began (subjects play no part); format: another snapshot version; session: the snapshot names another transcript path or session id; replaced: the transcript bytes at the fingerprinted places differ, so another file lies under the path). A discarded snapshot is replaced by the new list, never deleted."
+doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; renumbered: the tail holds a TaskCreate for a number the snapshot holds whose tool-use id is not the one the snapshot recorded for it, so a new list began (subjects play no part); format: another snapshot version; session: the snapshot names another transcript path or session id; replaced: the transcript bytes at the fingerprinted places differ, so another file lies under the path; gap: the bytes between the snapshot's size and the tail's start could not be read, so the snapshot may be stale). A discarded snapshot is replaced by the new list, never deleted."
 value = { kind = "counter", unit = "snapshots", labels = ["reason"] }
 
 [metric.snapshot_identity_unknown]

@@ -10,7 +10,7 @@ right and this document gets a fix.
 
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 332 in 20 sections | `plugins/anti-hall/engine/defaults/settings_cli.toml` |
+| Settings keys | 333 in 21 sections | `plugins/anti-hall/engine/defaults/settings_cli.toml` |
 | `ah-hook mesh` verbs | 47 | `ah-hook mesh` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
 | Hook scripts | 62 (70 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
@@ -46,8 +46,9 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `diskWatch` | Disk watch | 7 | |
 | `engine` | Engine | 2 | |
 | `defects` | Defects | 1 | |
+| `taskstate` | Task list | 1 | |
 
-Of the 332 keys: 175 are `advanced` (hidden from `settings.js show` without `--all`), 253
+Of the 333 keys: 176 are `advanced` (hidden from `settings.js show` without `--all`), 253
 have an env override, 14 are `locked` (safety keys), 3 are `homeOnly`. The full list with
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.

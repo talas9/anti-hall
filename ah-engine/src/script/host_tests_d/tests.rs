@@ -360,6 +360,28 @@ fn a_task_list_whose_creates_left_the_tail_window_is_still_read_through_its_snap
     assert_eq!(snap_files(&h).len(), 1, "one snapshot file for the session, rewritten in place: {:?}", snap_files(&h));
 }
 
+/// Round 4: the snapshot was written before the tasks were finished and no rebuild ran until a burst pushed the finishing out of the tail
+/// window; the bytes between the snapshot's size and the tail's start are read, so the snapshot never answers with a stale list.
+#[test]
+fn a_completion_in_the_gap_between_the_snapshot_and_the_tail_is_read_not_missed() {
+    let h = home("snap-gap-read");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    let upd = assistant_tool("u2", "TaskUpdate", json!({"taskId": "2", "status": "completed"}), "2026-10-06T20:00:00.000Z") + &result("u2", "Updated task #2");
+    append(&t, &upd);
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let got = snap_rebuild(&h, &t, "b");
+    assert_eq!(
+        snap_rows(&got),
+        vec![row("1", "first", "in_progress", "w1"), row("2", "second", "completed", ""), row("3", "third", "pending", "")],
+        "the completion lies between the snapshot's size and the tail's start: the rebuild reads it, task 1 and 3 stay open from the snapshot"
+    );
+    assert_eq!(bumped("snapshot_gap", "result", "caught_up"), 1);
+    assert_eq!(bumped("snapshot_discarded", "reason", "gap"), 0);
+}
+
 #[test]
 fn a_tail_that_only_touches_one_task_keeps_the_others_and_the_fields_it_does_not_state() {
     let h = home("snap-update");

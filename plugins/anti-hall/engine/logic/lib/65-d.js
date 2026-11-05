@@ -101,6 +101,15 @@ var taskSnap = {
     if (unknown && !fresh) taskSnap.count('snapshot_identity_unknown');
     return fresh;
   },
+  // The rebuild over the last `need` bytes (the gap between a snapshot's size and the tail's start, plus the tail), or null when that is
+  // over taskstate.snapshot_gap_max_bytes or cannot be read exactly. Counted under snapshot_gap by result.
+  catchUp: function (p, variant, need) {
+    if (need > ah.cfgNum('taskstate.snapshot_gap_max_bytes')) { taskSnap.count('snapshot_gap', { result: 'too_big' }); return null; }
+    var w = JSON.parse(ahHost.transcriptTasks(p, variant, need + 1, 0)); // one byte more than the gap: the tail drops its first (cut) line, which must be the line break before the gap
+    if (w.unsure || w.unreadable || !Array.isArray(w.tasks)) { taskSnap.count('snapshot_gap', { result: 'unread' }); return null; }
+    taskSnap.count('snapshot_gap', { result: 'caught_up' });
+    return w;
+  },
   // `r` (the tail's rebuild) over the session's snapshot; `sid` the hook payload's session id (or none), `win` the tail window in bytes.
   // Any failure, and a snapshot that cannot be written, leave `r` as it is.
   apply: function (p, variant, r, sid, win) {
@@ -130,8 +139,16 @@ var taskSnap = {
       else if (doc.path !== p || (sid !== null && typeof doc.session === 'string' && doc.session !== sid)) why = 'session';
       else if (sec !== null && size < sec.size) why = 'shrunk';
       else if (!taskSnap.sameFile(p, doc.gen)) why = 'replaced';
-      else if (r.windowReset) why = 'reset';
-      else if (sec !== null && taskSnap.renumbered(sec, r, tailStart)) why = 'renumbered';
+      // Bytes between the snapshot's size and the tail's start were read by nobody: a TaskUpdate in them is unseen, so the snapshot's
+      // list may name as open a task that was finished there. Read them (the tail widened back to the snapshot's size); when that
+      // cannot be done the snapshot is not trusted (fail-open: the tail alone, never a block on a list that may be stale).
+      if (why === null && sec !== null && r.truncated && tailStart > sec.size) {
+        var wide = taskSnap.catchUp(p, variant, size - sec.size);
+        if (wide === null) why = 'gap';
+        else { r = wide; win = size - sec.size + 1; tasks = r.tasks; tailStart = sec.size; } // the one byte before it is a line break the tail drops as its cut first line
+      }
+      if (why === null && r.windowReset) why = 'reset';
+      if (why === null && sec !== null && taskSnap.renumbered(sec, r, tailStart)) why = 'renumbered';
       if (why !== null) {
         // any reason retires the whole file's sections: another transcript, or a list that ended, leaves none of them true
         if (sec !== null || why === 'format' || why === 'session' || why === 'replaced') taskSnap.count('snapshot_discarded', { reason: why });

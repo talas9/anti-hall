@@ -622,6 +622,14 @@ const SECTIONS = [
       { key: 'defaultProj', type: 'string', pluginOption: 'defects_default_proj', pluginOptionLegacy: true, default: '', env: 'ANTIHALL_DEFECT_PROJ', description: 'Default project tag used when filing an anti-hall defect (max 64 chars).' },
     ],
   },
+  {
+    key: 'taskstate',
+    label: 'Task list',
+    description: 'How the task guards read the session task list.',
+    settings: [
+      { key: 'snapshot_enabled', type: 'boolean', default: true, advanced: true, description: 'Keep one snapshot of each session\'s rebuilt task list and lay the transcript-tail result over it, so the task guards still see tasks whose TaskCreate left the last 1.5 MiB of the transcript. Off = the tail alone (the earlier behaviour). Also settable in the engine\'s config.toml as [taskstate] snapshot_enabled. [read by: ah-engine task-guard, task-tracker, dispatch-tier]' },
+    ],
+  },
 ];
 
 // NOT_TOGGLEABLE — parts of anti-hall that deliberately have NO on/off switch,
