@@ -25,6 +25,7 @@ fn spawn_prompt(home: &Path, switch: bool, prompt: &str) -> String {
         .env("USERPROFILE", home)
         .env("ANTIHALL_TEST_ISOLATION", "1")
         .env("AH_ENGINE_DIR", home.join("engine-state"))
+        .env("ANTIHALL_PAIR_RULE", "0") // R-pair defaults to on and denies an unnamed spawn: this test is about the shared-tree advisory alone
         .env("AH_ENGINE_NOSPAWN", "1")
         .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
         .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
