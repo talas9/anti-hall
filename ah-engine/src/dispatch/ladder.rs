@@ -205,7 +205,7 @@ pub fn observe(k: &Kind, results: &[HookResult]) -> Seen {
             let lines = || t.lines().map(str::trim).filter(|l| !l.is_empty());
             let first = lines().find(|l| k.matches.iter().any(|m| l.contains(m.as_str()))).or_else(|| lines().next()).unwrap_or("");
             let end = defaults::text("nudges.headline_end");
-            let first = first.split_once(&*end).map_or(first, |(head, _)| head);
+            let first = first.split_once(end).map_or(first, |(head, _)| head);
             let ascii: String = first.chars().filter(char::is_ascii).collect::<String>().trim().chars().take(max).collect();
             return Seen::Fired(ascii);
         }
