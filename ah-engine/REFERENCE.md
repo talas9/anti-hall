@@ -4376,6 +4376,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `swarm_guard.agent_type_fields` | `subagent_type, agentType, agent_type` |  |  | Spawn input fields that name the agent type, first non-empty one wins (the trip log label). |
 | `swarm_guard.allow_fields` | `tools, allowed_tools, allowedTools` |  |  | Spawn input fields that list the tools an agent may use, first non-empty one wins. |
+| `swarm_guard.bare_mark_before` | `^(?:[\s(\[{<"'`\u2018\u2019\u201A\u201C\u201E\u00AB\u2039*_\u2014\u2013:;,>=\|...` |  |  | JavaScript regex source (u flag): the one character before a mark that may open a span (empty at the start of the text): white space, an opener, another mark, a dash, a colon, a comma, a semicolon, = or \|. A mark after a letter, a digit or a path character opens nothing. |
+| `swarm_guard.bare_mark_groups` | `'‘’‚ * _` |  |  | Space separated groups of marks that open or close a nested span only by their place in the text: single quotes (an apostrophe is none), markdown emphasis. A mark opens after white space, an opener or the start and before a non-space; it closes after a non-space and before a non-word character, and only a mark of its own group. A span left open masks the rest. |
+| `swarm_guard.bare_mark_word` | `[\p{L}\p{N}]` |  |  | JavaScript regex source (u flag): one word character; a mark between two of them is an apostrophe or an underscore inside a word, and closes nothing. |
+| `swarm_guard.bare_nest_close` | `)]}>”»›“】」』》〉）］｝｣` |  |  | Characters that close a nested span opened by bare_nest_open, in the same order. |
+| `swarm_guard.bare_nest_open` | `([{<“«‹„【「『《〈（［｛｢` |  |  | Characters that open a nested span in a brief (brackets, angle brackets, CJK brackets, curly and low quotes): a sentence break inside one is masked; an unclosed one masks the rest. |
+| `swarm_guard.bare_nest_toggle` | `"`—–‒―` |  |  | Characters that open a nested span when closed and close it when open (straight quote, code tick, em, en, figure and horizontal-bar dash). |
+| `swarm_guard.bare_nest_toggle_pairs` | `~~` |  |  | Space separated two-character marks that open a nested span when closed and close it when open (markdown strikethrough); a single such character, as in a ~/ path, is no mark. |
 | `swarm_guard.deny_fields` | `disallowedTools, disallowed_tools` |  |  | Spawn input fields that list the tools an agent may not use, first non-empty one wins. |
 | `swarm_guard.exact_int_limit` | `9007199254740992` |  |  | The largest integer a JavaScript number prints exactly in decimal (2 to the 53rd); a spawn log holding a larger entry is left to the Node hook. |
 | `swarm_guard.guard_name` | `swarm-guard` |  |  | Guard name in the block message and the skip file. |
@@ -4405,12 +4412,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.msg_shared_instead_no_worktrees` | `serialize them or give each its own scratch clone.` |  |  | What to do instead, when the repo forbids worktrees. |
 | `swarm_guard.msg_shared_what` | `another agent is already writing in this working tree.` |  |  | What the shared-tree advisory says. |
 | `swarm_guard.msg_shared_why` | `Two such agents can stage and commit each other's uncommitted changes.` |  |  | Why the shared-tree advisory applies. |
+| `swarm_guard.named_tree_bare_setting` | `6 entries` |  |  | Bare fresh-clone statements name a tree. Where the switch is read from that makes a brief such as "clone ~/x and build" or "use ~/x as the working copy" count as naming its own tree (guards.sharedTreeBareClone, default off). |
 | `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
 | `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
 | `swarm_guard.quiet_no_worktrees_setting` | `6 entries` |  |  | Quiets the shared-tree note when worktrees are forbidden. Where the switch is read from that silences the shared-tree advisory when a CLAUDE.md, AGENTS.md or memory rule forbids worktrees (guards.sharedTreeQuietNoWorktrees, default on). |
 | `swarm_guard.re_api_only` | `\b(?:gh\|github)[- ](?:api\|cli)[- ]only\b\|\bonly\s+(?:calls?\|uses?\|runs?\|via)\...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn only calls the GitHub API or gh CLI and edits no checkout (gh-API-only, only calls the GitHub API, no checkout, do not touch the working tree). Such a spawn shares no working tree, so the shared-tree advisory does not apply; an in-place statement still cancels it. |
 | `swarm_guard.re_in_place` | `\bin\s+place\b\|\bin\s+(?:the\s+)?(?:session\s+)?repo\b\|\brepo\s+files\b\|\b(?:...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading. |
 | `swarm_guard.re_named_tree` | `\b(?:(?:a\|an\|the\|your\|its\|their\|own\|scratch\|separate\|fresh\|lane)\s+(?:clone\|w...` |  |  | JavaScript regex source (case-insensitive): a statement that names the spawn's own working tree ("a\|your\|its\|scratch… clone", worktree, checkout, cd, cwd or work-in target; a bare "git clone <src>" names a source, not a tree) followed by an absolute, ~ or $HOME path. When that path lies outside the session's git tree (and outside its cwd), the spawn works in another checkout and shares no tree; the scratch negation and in-place statements still cancel it. |
+| `swarm_guard.re_named_tree_bare` | `(?:^\|[,;:.\n]\s*)(?:fresh(?:ly)?\s+)?clone\s+(?:fresh(?:ly)?\s+)?(?:(?:into\|t...` |  |  | Rust regex source (case-insensitive): a bare fresh-clone statement with no determiner ("clone ~/x", "Clone fresh into ~/x", "use ~/x as the working copy"), read after re_named_tree only when the sharedTreeBareClone switch is on. The leading start-or-punctuation anchor keeps "git clone ~/src ~/dst" (a source path) from matching. |
+| `swarm_guard.re_named_tree_bare_clause_break` | `[.!?]\s+\p{Lu}` |  |  | Rust regex source (read with the r flag, case-sensitive), read on the text with brackets, quotes, dashes, emphasis, abbreviations and ellipses masked: where one sentence ends for the bare fresh-clone negation test, and the only sentence ends that count: a full stop, ! or ? before white space and a capital letter. A semicolon, a blank line, a list, a newline, a comma or a colon is no break; whatever is uncertain keeps the text one sentence, so a negation earlier in it keeps the shared-tree note. |
+| `swarm_guard.re_named_tree_bare_dash` | `[^\s][ \t\u00A0]-{1,2}[ \t\u00A0]` |  |  | Rust regex source: a dash written with one or two hyphens between spaces after a word (not a list bullet, which follows a line break); each toggles a nested span like an em dash, so a sentence break between a pair is masked. |
+| `swarm_guard.re_named_tree_bare_invisible` | `[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]` |  |  | JavaScript regex source: invisible format characters (soft hyphen, zero-width, bidi marks), removed from the clause before the negation test so ne<ZWSP>ver is still never. |
+| `swarm_guard.re_named_tree_bare_lead` | `^[,;:.\n]\s*` |  |  | Rust regex source: the punctuation anchor a re_named_tree_bare match may start with; the clause test starts after it. |
+| `swarm_guard.re_named_tree_bare_mask` | `(?i)\b(?:e\.g\|i\.e\|etc\|vs\|cf\|approx\|incl\|viz\|resp\|nr\|fig\|inc\|ltd\|mr\|mrs\|ms\|dr...` |  |  | Rust regex source (read with the r flag; (?i) inside): text whose full stops are no clause break (abbreviations such as e.g. or U.S., titles, a lone letter or digit word before a stop (a path ending in one letter is no abbreviation), an ellipsis, also one with spaces between its dots); masked before the clause break is read. |
+| `swarm_guard.re_named_tree_bare_negation` | `(?i)\b(?:not\|no\|never\|nor\|neither\|none\|nothing\|nobody\|nowhere\|cannot\|without\|...` |  |  | Rust regex source (read with the r flag; (?i) inside), tested on the whole clause holding a bare fresh-clone match, any words between: a negation token (not, no, never, without, avoid, except, rather than, instead of, any n't contraction whatever its apostrophe) keeps the shared-tree note. Read only when sharedTreeBareClone is on. |
+| `swarm_guard.re_named_tree_bare_pathtok` | `(^\|[\s(\[{"'`\u201C\u2018])(?:~\|\$HOME\|\$\{HOME\}\|\.{1,2})?\/[\w.~\/$@+\-]*` |  |  | JavaScript regex source: a path word (it starts with ~/, $HOME/, /, ./ or ../ and runs over path characters only), blanked before the negation test so ~/no-tree is no negation while not/never and ~/x(not stay. |
 | `swarm_guard.re_named_tree_home` | `^(?:~\|\$HOME)` |  |  | JavaScript regex source: the home prefix of a named-tree path (~ or $HOME), replaced by the user's home directory. |
 | `swarm_guard.re_named_tree_path` | `(?:~\|\$HOME)?\/[^\s\x60'",;)]+` |  |  | JavaScript regex source: the path inside a re_named_tree match (the first absolute, ~ or $HOME path). |
 | `swarm_guard.re_named_tree_trim` | `[.:]+$` |  |  | JavaScript regex source: trailing sentence punctuation cut from a named-tree path. |
@@ -6043,7 +6059,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `405 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `406 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8467,7 +8483,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `411 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `412 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `21 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14860,6 +14876,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `runtime_escalation_stop_unrecorded` | counter | stops |  | Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap). |
 | `silent_agent_nudge_acked` | counter | stops |  | Stop nudges of silent-agent-nudge withheld because this exact set of agents was acked for the session (silent_nudge.ack_*). |
 | `silent_agent_nudge_fired` | counter | stops |  | Stop nudges said by silent-agent-nudge for a background agent or heartbeat quiet for guards.silentAgentNudgeMin minutes (#519). |
+| `named_tree_bare` | counter | spawns |  | Spawns the shared-tree note exempted only because of a bare fresh-clone statement (guards.sharedTreeBareClone): the false-positive count of the old, narrower matcher. |
 | `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided). |
 | `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `idle_rule_age_unknown` | counter | blocks | kind | Delivered R-idle blocks whose listed tasks had no known start time (a task list read from the store carries none), so idle_slot_minutes got nothing from them. |
