@@ -4147,3 +4147,99 @@ fn two_quiet_subagents_below_one_busy_session_are_both_stalled() {
     assert!(agent(&st, "w2").flags.contains_key("stalled"), "w2: nor its work");
     assert_eq!((agent(&st, "w1").stall_cpu_at, agent(&st, "w2").stall_cpu_at), (0, 0));
 }
+
+// ---- R-stuck review round 2: a stamp from the future has no age and is never evidence ---------------------------------------------
+
+#[test]
+fn a_stamp_from_the_future_is_never_evidence_of_a_current_wait() {
+    let q = "gh pr view 123 --json state";
+    let w = "gh run watch 5 --exit-status";
+    let before = exempt_count("future_ts_ignored");
+    for off in [1, 65 * MIN, 120 * MIN] {
+        // 1. a CI command stamped later than now
+        assert!(
+            stalled_after(&format!("fut-ci-{off}"), move |a, at| a.recent = vec![("k".into(), format!("Bash {q}"), false, at + off)]),
+            "a CI call +{off} ms ahead is history of nothing, not a wait"
+        );
+        // 2. the same as the watch the agent started
+        assert!(stalled_after(&format!("fut-w-{off}"), move |a, at| a.recent = vec![("k".into(), format!("Bash {w}"), false, at + off)]), "+{off}: watch");
+        // 3. a background CI task stamped later than now
+        assert!(
+            stalled_after(&format!("fut-bg-{off}"), move |a, at| {
+                a.bg_ids.insert("bgci".into(), at + off);
+                a.bg_ci.push("bgci".into());
+            }),
+            "a background CI task +{off} ms ahead"
+        );
+        // 4. a background build stamped later than now
+        assert!(
+            stalled_after(&format!("fut-build-{off}"), move |a, at| {
+                a.bg_ids.insert("bgb".into(), at + off);
+                a.bg_builds.push("bgb".into());
+            }),
+            "a background build +{off} ms ahead"
+        );
+        // 5. a CPU credit stamped later than now
+        assert!(
+            stalled_after(&format!("fut-cpu-{off}"), move |a, at| {
+                a.stall_cpu = Some(1);
+                a.stall_cpu_at = at + off;
+            }),
+            "a CPU move +{off} ms ahead"
+        );
+        // 6. a future CI stamp beside a real, current one: only the real one counts
+        assert!(
+            !stalled_after(&format!("fut-mix-{off}"), move |a, at| {
+                a.recent = vec![call(q, 2 * MIN, at), ("k".into(), format!("Bash {q}"), false, at + off)];
+            }),
+            "a current poll still exempts beside a future-stamped one"
+        );
+        // 7. a future stamp on an old chain does not extend it
+        assert!(
+            stalled_after(&format!("fut-old-{off}"), move |a, at| {
+                a.recent = vec![call(q, 70 * MIN, at), ("k".into(), format!("Bash {q}"), false, at + off)];
+            }),
+            "an old query plus a future one"
+        );
+    }
+    assert!(exempt_count("future_ts_ignored") > before, "and the ignored stamps are counted");
+    // the boundary: a stamp equal to now is a call this very tick, so it still exempts; one millisecond later does not
+    assert!(!stalled_after("fut-eq-ci", move |a, at| a.recent = vec![("k".into(), format!("Bash {q}"), false, at)]), "now == ts: a poll this tick");
+    assert!(
+        !stalled_after("fut-eq-bg", |a, at| {
+            a.bg_ids.insert("bgci".into(), at);
+            a.bg_ci.push("bgci".into());
+        }),
+        "now == ts: a background CI task started this tick"
+    );
+    assert!(
+        !stalled_after("fut-eq-build", |a, at| {
+            a.bg_ids.insert("bgb".into(), at);
+            a.bg_builds.push("bgb".into());
+        }),
+        "now == ts: a background build started this tick"
+    );
+}
+
+#[test]
+fn a_rewound_clock_restarts_the_windows_and_the_stall_comes_back() {
+    let n = now0();
+    let sleeper = Sleeper::spawn();
+    let h = stall_home("rewound", sleeper.0.id(), n);
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    assert!(stalled_flag(&st));
+    // the clock steps back 16 minutes: the stamps the tracker kept from the later time stand in the future
+    st.agents.get_mut("w1").unwrap().flags.clear();
+    let back = n + MIN;
+    st.agents.get_mut("w1").unwrap().said_since = n + 17 * MIN;
+    let before = exempt_count("future_ts_ignored");
+    ticks(&h, &mut st, &[back]);
+    let a = agent(&st, "w1");
+    assert!(!stalled_flag(&st), "a window that began 'in the future' is not a stall");
+    assert!(a.stall_since <= back && a.said_since <= back, "both windows restart at the rewound now: {} {}", a.stall_since, a.said_since);
+    assert!(exempt_count("future_ts_ignored") > before, "and it is counted");
+    // the quiet stretch then runs from there: a full window later the agent is flagged again
+    ticks(&h, &mut st, &[back + 16 * MIN, back + 16 * MIN + 30_000]);
+    assert!(stalled_flag(&st), "a rewound clock does not hide a stall for ever");
+}

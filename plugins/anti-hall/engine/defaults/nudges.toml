@@ -142,11 +142,11 @@ doc = "Stalled-agent detection: a running agent (no call in flight, not hung) wh
 value = { quiet_ms = 900000, repeat_ms = 2700000, cpu_probe_pct = 50, cpu_step_ms = 5000, ci_wait_fresh_ms = 600000, ci_wait_max_ms = 3600000, lines_kept = 4, lines_shown = 2, line_chars = 120, joiner = " / ", quote = "\"{line}\"", none = "none" }
 
 [nudges.stall_exempt]
-doc = "The counter of the agents the stalled signal left alone and why (#518, R-stuck): its name, its label, and the label values (building: a background build is running; ci_wait: the agent waits on CI; cpu: the CPU below the agent moved by a step (counted when the move is read, and on a tick the repeat path withheld); cpu_unread: the process table could not be read, so the CPU term stayed silent)."
-value = { name = "stall_exempt", label = "reason", building = "building", ci_wait = "ci_wait", cpu = "cpu", cpu_unread = "cpu_unread" }
+doc = "The counter of the agents the stalled signal left alone and why (#518, R-stuck): its name, its label, and the label values (building: a background build is running; ci_wait: the agent waits on CI; cpu: the CPU below the agent moved by a step (counted when the move is read, and on a tick the repeat path withheld); cpu_unread: the process table could not be read, so the CPU term stayed silent; future_ts_ignored: a stamp the exemptions read was later than the clock (skew or a rewound clock), so it counted as no evidence and its window restarted)."
+value = { name = "stall_exempt", label = "reason", building = "building", ci_wait = "ci_wait", cpu = "cpu", cpu_unread = "cpu_unread", future_ts_ignored = "future_ts_ignored" }
 
 [metric.stall_exempt]
-doc = "Times the stalled signal left an agent alone, by reason: building, ci_wait (a tick whose finding was withheld), cpu (a CPU move restarted the quiet window, or a withheld repeat finding), cpu_unread (the CPU read failed)."
+doc = "Times the stalled signal left an agent alone, by reason: building, ci_wait (a tick whose finding was withheld), cpu (a CPU move restarted the quiet window, or a withheld repeat finding), cpu_unread (the CPU read failed), future_ts_ignored (a stamp later than the clock was ignored)."
 value = { kind = "counter", unit = "ticks", labels = ["reason"] }
 
 [nudges.stall_words]

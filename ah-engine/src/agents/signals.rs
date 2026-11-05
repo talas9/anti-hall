@@ -160,6 +160,25 @@ pub(crate) fn waiting_on_ci(a: &Agent) -> bool {
     a.recent.iter().rev().take(lim("ci_wait_calls") as usize).any(|r| re.is_match(&r.1))
 }
 
+/// Whether `ts` is an age of at most `span` ms at `now`. A stamp later than `now` has no age: it is NOT within any span (a skewed or
+/// rewound clock must never make evidence look current for ever).
+pub(crate) fn age_within(now: u64, ts: u64, span: u64) -> bool {
+    now.checked_sub(ts).is_some_and(|d| d <= span)
+}
+
+/// Whether any stamp the stall exemptions read stands later than `now`: a CI call, a background CI or build task, a call in flight, the
+/// CPU move or the quiet-window and repeat-line starts. They are ignored (never exempt, restart their window), and a tick that met one is
+/// counted `future_ts_ignored`.
+fn future_stamp(a: &Agent, now: u64) -> bool {
+    let mut tasks = a.bg_ci.iter().chain(a.bg_builds.iter()).filter_map(|id| a.bg_ids.get(id));
+    a.recent.iter().any(|r| r.3 > now)
+        || tasks.any(|t| *t > now)
+        || a.pending.values().any(|p| p.ts > now)
+        || a.stall_cpu_at > now
+        || a.stall_since > now
+        || a.said_since > now
+}
+
 /// Whether the agent waits on CI NOW (the stall exemption, #518 review round): a background command that checks or watches CI and has
 /// no end notice yet (`bg_ci`), started within `ci_wait_max_ms`; or a CI command issued within `ci_wait_fresh_ms`, where CI calls no
 /// further apart than that make one wait and the wait began within `ci_wait_max_ms`. A CI command in the call history is no wait. The
@@ -172,7 +191,7 @@ pub(crate) fn ci_wait_current(a: &Agent, now: u64) -> bool {
     if fresh == 0 || max == 0 {
         return false;
     }
-    if a.bg_ci.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| now.saturating_sub(*t) <= max)) {
+    if a.bg_ci.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| age_within(now, *t, max))) {
         return true;
     }
     let Some(re) = defaults::raw("agent_tracker.patterns")
@@ -182,7 +201,8 @@ pub(crate) fn ci_wait_current(a: &Agent, now: u64) -> bool {
     else {
         return false;
     };
-    let mut hits: Vec<u64> = a.recent.iter().filter(|r| re.is_match(&r.1)).map(|r| r.3).collect();
+    // a stamp later than `now` (clock skew, a rewound clock) has no age: it is no evidence of a wait that is current
+    let mut hits: Vec<u64> = a.recent.iter().filter(|r| r.3 <= now && re.is_match(&r.1)).map(|r| r.3).collect();
     hits.sort_unstable_by(|x, y| y.cmp(x));
     let Some(newest) = hits.first().copied() else { return false };
     if now.saturating_sub(newest) > fresh {
@@ -195,7 +215,7 @@ pub(crate) fn ci_wait_current(a: &Agent, now: u64) -> bool {
         }
         start = *t;
     }
-    let oldest = a.recent.iter().map(|r| r.3).min().unwrap_or(start);
+    let oldest = a.recent.iter().map(|r| r.3).filter(|t| *t <= now).min().unwrap_or(start);
     let cut = a.recent.len() as u64 >= lim("loop_window") && oldest >= start.saturating_sub(fresh);
     !cut && now.saturating_sub(start) <= max
 }
@@ -295,6 +315,15 @@ pub(crate) fn building(a: &Agent, now: u64) -> bool {
     let from = now.saturating_sub(doubt.get("max_ms").and_then(V::as_integer).unwrap_or(0).max(0) as u64);
     a.pending.values().any(|p| p.ts >= from && classes.iter().any(|c| *c == p.class))
         || a.bg_builds.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| *t >= from))
+}
+
+/// [`building`] for the stall exemption: the same background build or call in flight, but a stamp later than `now` is no build in flight.
+fn building_now(a: &Agent, now: u64) -> bool {
+    let doubt = defaults::raw("burn.doubt");
+    let classes = doubt.get("classes").map(V::strings).unwrap_or_default();
+    let max = doubt.get("max_ms").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    a.pending.values().any(|p| age_within(now, p.ts, max) && classes.iter().any(|c| *c == p.class))
+        || a.bg_builds.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| age_within(now, *t, max)))
 }
 
 /// Remove markers older than `burn.marker_ttl_ms` (an agent that left the state without clearing its flag).
@@ -498,6 +527,18 @@ fn stall_sample(env: &Env, a: &mut Agent, root: (u32, bool), table: &mut Option<
         (a.stall_since, a.stall_cpu, a.stall_cpu_at) = (0, None, 0);
         return;
     }
+    if future_stamp(a, now) {
+        // a stamp from the future (clock skew, a rewound clock) has no age: the windows it starts restart now, the CPU credit is
+        // dropped, and the exemptions ignore the rest (`ci_wait_current`, `building_now`)
+        if env.act {
+            exempt("future_ts_ignored");
+        }
+        a.stall_since = a.stall_since.min(now);
+        a.said_since = a.said_since.min(now);
+        if a.stall_cpu_at > now {
+            (a.stall_cpu, a.stall_cpu_at) = (None, 0);
+        }
+    }
     let obs = vec![a.offset, a.tools, a.commits, a.changes, a.progress, a.edits, a.said_since];
     if a.stall_obs != obs || a.stall_since == 0 {
         a.stall_obs = obs;
@@ -530,11 +571,11 @@ fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
         return None;
     };
     // work the transcript does not show: a build or CI wait in flight, or CPU used within the quiet window (#518 FP rubric)
-    let busy = if building(a, now) {
+    let busy = if building_now(a, now) {
         Some("building")
     } else if ci_wait_current(a, now) {
         Some("ci_wait")
-    } else if a.stall_cpu_at > 0 && now.saturating_sub(a.stall_cpu_at) < num(c, "quiet_ms") {
+    } else if a.stall_cpu_at > 0 && now.checked_sub(a.stall_cpu_at).is_some_and(|d| d < num(c, "quiet_ms")) {
         Some("cpu")
     } else {
         None
