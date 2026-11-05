@@ -104,14 +104,14 @@ min = 50
 unit = "ms"
 
 [telemetry.block_keep_days]
-doc = "How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the first line of the message."
+doc = "How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the message."
 value = 14
 min = 1
 unit = "days"
 
 [telemetry.block_reason_chars]
-doc = "How many characters of a guard block's message (its first non-empty line) are kept with the block."
-value = 200
+doc = "How many characters of a guard block's full message are kept with the block (`ah-engine query guard_blocks`), so the block can be judged afterwards; the text is the one the host gave the model (a JSON block's reason, else the stderr of an exit 2)."
+value = 2048
 min = 20
 unit = "chars"
 

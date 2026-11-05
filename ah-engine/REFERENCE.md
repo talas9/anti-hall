@@ -1574,8 +1574,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `telemetry.block_keep_days` | `14` |  | days | How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the first line of the message. |
-| `telemetry.block_reason_chars` | `200` |  | chars | How many characters of a guard block's message (its first non-empty line) are kept with the block. |
+| `telemetry.block_keep_days` | `14` |  | days | How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the message. |
+| `telemetry.block_reason_chars` | `2048` |  | chars | How many characters of a guard block's full message are kept with the block (`ah-engine query guard_blocks`), so the block can be judged afterwards; the text is the one the host gave the model (a JSON block's reason, else the stderr of an exit 2). |
 | `telemetry.byte_buckets_bytes` | `8 items` |  | bytes | Upper bounds of the byte histogram buckets (the per-call memory histograms `check_mem_peak_bytes` and `check_mem_alloc_bytes`); a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate. |
 | `telemetry.byte_unit` | `bytes` |  |  | The metric unit that makes a histogram use the byte buckets (`telemetry.byte_buckets_bytes`) instead of the latency buckets. |
 | `telemetry.bytes_per_token` | `4` |  | bytes | Bytes of injected context counted as one token when `impact` estimates what injection costs. |
@@ -8521,7 +8521,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `webapi.source_checks` | `4 entries` |  |  | Per-check fire counts, decision outcomes and latency percentiles over a window (from telemetry summary). |
 | `webapi.source_counters` | `4 entries` |  |  | The daemon's metrics counters (needs a running daemon). |
 | `webapi.source_events` | `4 entries` |  |  | Telemetry events (routing, spawn, Jev, spill and the rest), newest first, optionally one kind. |
-| `webapi.source_guard_blocks` | `4 entries` |  |  | Every guard block, newest first: time, guard (check), rule id, hook event, session, subagent, tool, project hash and the first line of the message. Kept telemetry.block_keep_days. |
+| `webapi.source_guard_blocks` | `4 entries` |  |  | Every guard block, newest first: time, guard (check), rule id, hook event, session, subagent, tool, project hash and the message (up to telemetry.block_reason_chars characters). Kept telemetry.block_keep_days. |
 | `webapi.source_health` | `4 entries` |  |  | The engine's status: version, uptime, memory, breaker and crash-loop state, counters (one row; the full document is in meta). |
 | `webapi.source_history` | `4 entries` |  |  | The config history log, newest first. |
 | `webapi.source_kinds` | `4 entries` |  |  | Telemetry totals by event kind over a window. |

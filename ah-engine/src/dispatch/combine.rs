@@ -323,7 +323,7 @@ fn decision_blocks(d: Option<&Ordered>) -> bool {
 
 /// The text the host gives the model for one blocking result: a JSON block's reason (the host takes it over stderr even on
 /// exit 2), else the stderr of the exit 2, without its trailing newlines.
-fn block_reason(r: &HookResult) -> String {
+pub(crate) fn block_reason(r: &HookResult) -> String {
     let text = match parse_object(&r.out).filter(|_| json_blocks(&r.out)) {
         Some(v) if decision_blocks(v.get(TOP_DECISION)) => v.get(TOP_REASON).and_then(Ordered::as_str).unwrap_or_default().to_string(),
         Some(v) => v.get(HSO_KEY).and_then(|h| h.get(HSO_REASON)).and_then(Ordered::as_str).unwrap_or_default().to_string(),

@@ -395,7 +395,7 @@ impl Telemetry {
         }
         if let Some(text) = block_text(verdict) {
             let cap = defaults::num("telemetry.block_reason_chars") as usize;
-            let reason: String = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(cap).collect();
+            let reason: String = text.trim().chars().take(cap).collect();
             self.sink(Staged::Block(crate::storage::BlockRow {
                 ts_ms: now_ms(),
                 guard: check.into(),
@@ -905,6 +905,55 @@ mod tests {
         let d = &t.telemetry_json("summary", "1d", "", 10)["detail"]["daemon"];
         assert_eq!(d["snapshots"], 2);
         assert_eq!((d["latest"]["rss_kb"].as_u64(), d["latest"]["degraded"].as_u64(), d["latest"]["saturated"].as_u64()), (Some(95_000), Some(1), Some(1)));
+    }
+
+    /// A store that keeps the block rows it is given (the real one writes them to hot.db).
+    struct Blocks(MemStore, std::sync::Arc<Mutex<Vec<crate::storage::BlockRow>>>);
+
+    impl Store for Blocks {
+        fn record_impact(&self, e: ImpactEvent) {
+            self.0.record_impact(e)
+        }
+        fn record_block(&self, row: crate::storage::BlockRow) {
+            self.1.lock().unwrap_or_else(|e| e.into_inner()).push(row);
+        }
+        fn impact_counts(&self, f: &ImpactFilter) -> Vec<crate::storage::ImpactCount> {
+            self.0.impact_counts(f)
+        }
+        fn recent_impact(&self, f: &ImpactFilter, limit: usize) -> Vec<ImpactEvent> {
+            self.0.recent_impact(f, limit)
+        }
+        fn held_events(&self) -> usize {
+            self.0.held_events()
+        }
+        fn save_metrics(&self, ts: u64, b: &serde_json::Value) -> bool {
+            self.0.save_metrics(ts, b)
+        }
+        fn load_metrics(&self) -> Option<(u64, serde_json::Value)> {
+            self.0.load_metrics()
+        }
+        fn rollups(&self, r: &str, since: u64) -> Vec<serde_json::Value> {
+            self.0.rollups(r, since)
+        }
+    }
+
+    #[test]
+    fn a_block_row_keeps_the_whole_message_up_to_the_configured_cap_and_names_its_check() {
+        // the labelling run found reasons cut to the first line / 200 chars, so a block could not be judged afterwards
+        let kept = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let t = Telemetry::with_store(Box::new(Blocks(MemStore::new(8, 8, "other"), kept.clone())));
+        let cap = defaults::num("telemetry.block_reason_chars") as usize;
+        assert!(cap >= 1024, "the default keeps a whole message, not one line ({cap})");
+        let long = format!("first line\nsecond line {}", "x".repeat(cap * 2));
+        t.observe_check_who("Stop", "tasklist-guard", "tasklist-guard", &Verdict::Block(long), 1, "p", &Who::default());
+        t.observe_check_who("Stop", "edit-guard", "edit-guard", &Verdict::Block("short\nmessage\n".into()), 1, "p", &Who::default());
+        let rows = kept.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(rows.len(), 2);
+        let (a, b) = (rows.first().cloned().unwrap_or_default(), rows.get(1).cloned().unwrap_or_default());
+        assert_eq!((a.guard.as_str(), b.guard.as_str()), ("tasklist-guard", "edit-guard"), "each row names its check");
+        assert!(a.reason.starts_with("first line\nsecond line "), "{}", a.reason);
+        assert_eq!(a.reason.chars().count(), cap, "cut at the configured cap, not at one line");
+        assert_eq!(b.reason, "short\nmessage", "a short message is kept whole");
     }
 
     #[test]
