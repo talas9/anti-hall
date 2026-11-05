@@ -1263,12 +1263,27 @@ mod tests {
     #[test]
     fn no_shipped_key_is_a_path_the_node_settings_store_owns() {
         let mut paths = std::collections::BTreeSet::new();
+        // One setting registered on both sides is not a collision: the Node store documents the engine's own key at its own path
+        // (same `section.key`, same type, same default), so the owner's `settings.json` value IS the engine setting (e.g. the task
+        // snapshot kill switch). A collision is a path the engine ships with a different meaning, told apart by its default.
+        let mut shared = std::collections::BTreeSet::new();
         for e in crate::migrate::settings::entries() {
             paths_of(&e.section, &json!({ e.key.as_str(): {} }), &mut paths);
+            let path = format!("{}.{}", e.section, e.key);
+            let node_default = match &e.default {
+                Some(crate::checks::jsport::json::J::Bool(b)) => Some(json!(b)),
+                Some(crate::checks::jsport::json::J::Num(n)) => serde_json::Number::from_f64(*n).map(Json::Number),
+                Some(crate::checks::jsport::json::J::Str(s)) => Some(json!(s)),
+                _ => None,
+            };
+            if node_default.is_some() && defaults::get(&path).map(|s| s.value.to_json()) == node_default {
+                shared.insert(path);
+            }
         }
+        assert!(shared.contains("taskstate.snapshot_enabled"), "the shared-setting case this exemption exists for is gone: {shared:?}");
         let old = format!("{}.{}", defaults::text("migrate.settings_section_jev"), defaults::text("migrate.integrations_key_prefix").trim_end_matches('.'));
         paths.insert(old);
-        let hit: Vec<&String> = paths.iter().filter(|p| defaults::get(p).is_some()).collect();
+        let hit: Vec<&String> = paths.iter().filter(|p| !shared.contains(*p) && defaults::get(p).is_some()).collect();
         assert!(hit.is_empty(), "shipped keys named like Node settings.json paths: {hit:?}");
         // the behaviour behind it: the old per-integration form changes nothing the engine resolves
         let l = layers(json!({"jev": {"integrations": {"newRequest": "on"}}}), "");
