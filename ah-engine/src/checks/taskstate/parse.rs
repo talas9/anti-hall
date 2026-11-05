@@ -34,6 +34,9 @@ pub struct Facts {
     pub deleted: Vec<String>,
     /// The task numbers the window's `TaskCreate` results named (after the last list reset), in order, each once.
     pub created: Vec<String>,
+    /// For each number in `created`, the tool-use id of the `TaskCreate` that made it (the first met, as `created` is): the identity of
+    /// that create. A re-read of the same transcript bytes names the same tool-use id; a new list numbered from one again names another.
+    pub created_by: Vec<(String, String)>,
 }
 
 struct Res {
@@ -420,12 +423,14 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         }
     }
     let mut created: Vec<String> = Vec::new();
-    for (_, digits) in &result_ids {
+    let mut created_by: Vec<(String, String)> = Vec::new();
+    for (use_id, digits) in &result_ids {
         if !created.contains(digits) {
             created.push(digits.clone());
+            created_by.push((digits.clone(), use_id.clone()));
         }
     }
-    Ok(Facts { tasks, window_reset, first_created, unsure, deleted, created })
+    Ok(Facts { tasks, window_reset, first_created, unsure, deleted, created, created_by })
 }
 
 /// `todo.blockedOn` as the TodoWrite record reads it: `todo.metadata.blockedOn` when not null, else `todo.blockedOn`.

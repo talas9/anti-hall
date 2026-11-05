@@ -634,3 +634,203 @@ fn the_guard_and_state_variants_do_not_lose_each_others_section() {
     assert_eq!(snap_ids(&doc, "guard"), ["1", "2", "3"], "the guard section is current");
     assert_eq!(snap_ids(&doc, "state"), ["1", "2", "3"], "the state section filed during the guard's read survived the guard's write: {doc}");
 }
+
+// ---- #390 fix round 3: a task's identity is the tool-use id of its TaskCreate, never its subject ----
+
+/// A `TaskCreate` of task `n` under the tool-use id `use_id` (a number that is made again by a new list gets another id).
+fn snap_create_as(n: u32, subject: &str, use_id: &str) -> String {
+    assistant_tool(use_id, "TaskCreate", json!({"subject": subject, "description": format!("why {n}")}), "2026-10-06T12:00:00.000Z")
+        + &result(use_id, &format!("Task #{n} created successfully: {subject}"))
+}
+
+fn snap_update(use_id: &str, input: Value) -> String {
+    assistant_tool(use_id, "TaskUpdate", input, "2026-10-06T12:05:00.000Z") + &result(use_id, "Updated task")
+}
+
+/// The ids the snapshot recorded for a variant: `{task number: tool-use id}`.
+fn snap_created_ids(doc: &Value, variant: &str) -> Value {
+    doc["variants"][variant]["ids"].clone()
+}
+
+#[test]
+fn renaming_a_task_created_inside_an_overlapping_tail_does_not_drop_the_older_pending_task() {
+    // reviewer P1-A: the snapshot holds pending #1; the tail creates #2, renames it and completes it. A rename is not a new list.
+    let h = home("snap-id-rename-create");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "genuine open task 1")).unwrap();
+    pad(&t, 800_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    append(&t, &snap_create(2, "original task 2"));
+    snap_rebuild(&h, &t, "b");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2"]);
+    pad(&t, 600_000); // #1's create left the tail window; #2's create (after the snapshot's #1) is still inside it
+    append(&t, &(snap_update("r2", json!({"taskId": "2", "subject": "renamed task 2"})) + &snap_update("d2", json!({"taskId": "2", "status": "completed"}))));
+    let got = snap_rows(&snap_rebuild(&h, &t, "c"));
+    assert_eq!(got, vec![row("1", "genuine open task 1", "pending", ""), row("2", "renamed task 2", "completed", "")], "the pending #1 is still listed");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+    assert_eq!(snap_created_ids(&snap_doc(&h), "guard"), json!({"1": "c1", "2": "c2"}), "the identities are the create tool-use ids");
+}
+
+#[test]
+fn a_rename_of_a_snapshot_task_inside_an_overlapping_tail_is_not_a_new_list() {
+    let h = home("snap-id-rename-snapshot-task");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first")).unwrap();
+    pad(&t, 500_000);
+    append(&t, &snap_create(2, "original second"));
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    append(&t, &snap_update("r2", json!({"taskId": "2", "subject": "renamed second"})));
+    pad(&t, 700_000); // #2's create and its rename are inside the tail, #1's create is not
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got, vec![row("1", "first", "pending", ""), row("2", "renamed second", "pending", "")], "{got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+}
+
+#[test]
+fn a_new_task_one_with_the_same_subject_as_the_old_one_is_a_new_list_and_drops_the_obsolete_tasks() {
+    // reviewer P1-B: equal subjects defeated the old rule; the tool-use id tells the new #1 from the one the snapshot holds.
+    let h = home("snap-id-same-subject");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "same") + &snap_create(2, "obsolete task 2")).unwrap();
+    pad(&t, 800_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2"]);
+    pad(&t, 500_000); // the old creates left the window; the snapshot (800 KB) still overlaps it
+    append(&t, &(snap_create_as(1, "same", "new-c1") + &snap_update("d1", json!({"taskId": "1", "status": "completed"}))));
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got, vec![row("1", "same", "completed", "")], "the obsolete #2 belongs to the list the new #1 replaced: {got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 1);
+    assert_eq!(snap_created_ids(&snap_doc(&h), "guard"), json!({"1": "new-c1"}));
+}
+
+#[test]
+fn the_same_create_seen_in_two_overlapping_tails_is_never_a_new_list() {
+    let h = home("snap-id-seen-twice");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first")).unwrap();
+    pad(&t, 500_000);
+    append(&t, &snap_create(2, "second"));
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, 400_000);
+    let b = snap_rows(&snap_rebuild(&h, &t, "b"));
+    pad(&t, 400_000); // #2's create is inside every tail from here on; #1's left the window
+    let c = snap_rows(&snap_rebuild(&h, &t, "c"));
+    for (tag, got) in [("b", b), ("c", c)] {
+        assert_eq!(got.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["1", "2"], "{tag}: {got:?}");
+    }
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_identity_unknown", &[]), 0);
+}
+
+#[test]
+fn a_create_the_tail_cannot_name_leaves_the_snapshot_alone() {
+    // a TaskCreate line with no tool-use id makes no task in the rebuild: nothing says a new list began
+    let h = home("snap-id-create-without-id");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first") + &snap_create(2, "second")).unwrap();
+    pad(&t, 800_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, 500_000);
+    append(
+        &t,
+        &(line(
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "TaskCreate", "input": {"subject": "first"}}]}}),
+        ) + &result("nobody", "Task #1 created successfully: first")),
+    );
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["1", "2"], "{got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+}
+
+#[test]
+fn a_snapshot_task_with_no_recorded_create_cannot_be_told_from_a_new_one_and_the_snapshot_is_kept_and_counted() {
+    let h = home("snap-id-unrecorded");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first") + &snap_create(2, "second")).unwrap();
+    pad(&t, 800_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    let file = format!("{h}/.anti-hall/{}/{}", defaults::text("taskstate.snapshot_dir"), snap_files(&h)[0]);
+    let mut doc = snap_doc(&h);
+    doc["variants"]["guard"].as_object_mut().unwrap().remove("ids");
+    std::fs::write(&file, doc.to_string()).unwrap();
+    pad(&t, 500_000);
+    append(&t, &snap_create_as(1, "first", "someone-else"));
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["1", "2"], "the snapshot's #2 is kept: {got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_identity_unknown", &[]), 1, "fail-open to the snapshot is counted");
+    assert_eq!(snap_created_ids(&snap_doc(&h), "guard"), json!({"1": "someone-else"}), "the id the tail names is recorded");
+}
+
+#[test]
+fn a_list_made_by_todowrite_has_no_create_ids_and_is_still_kept_and_still_replaced_by_a_new_list() {
+    let h = home("snap-id-todowrite");
+    let t = format!("{h}/t.jsonl");
+    let todos = json!({"todos": [{"id": "1", "content": "alpha", "status": "pending"}, {"id": "2", "content": "beta", "status": "in_progress"}]});
+    std::fs::write(&t, assistant_tool("tw", "TodoWrite", todos, "2026-10-06T12:00:00.000Z")).unwrap();
+    snap_probe(&h);
+    let first = snap_rows(&snap_rebuild(&h, &t, "a"));
+    assert_eq!(first.len(), 2, "{first:?}");
+    pad(&t, 1_700_000);
+    let night = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(night, first, "the todo list left the tail window: the snapshot answers");
+    assert_eq!(snap_created_ids(&snap_doc(&h), "guard"), json!({}), "no TaskCreate made them");
+    pad(&t, 1_100_000); // the tail now starts past the snapshot's bytes, so a create in it is certainly a later one
+    append(&t, &snap_create(1, "fresh list"));
+    let got = snap_rows(&snap_rebuild(&h, &t, "c"));
+    assert_eq!(got, vec![row("1", "fresh list", "pending", "")], "a create after the snapshot's bytes is a new list");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 1);
+}
+
+#[test]
+fn a_snapshot_over_the_size_cap_is_a_damaged_file_and_is_replaced_even_when_its_tasks_are_unchanged() {
+    let h = home("snap-oversize");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    let file = format!("{h}/.anti-hall/{}/{}", defaults::text("taskstate.snapshot_dir"), snap_files(&h)[0]);
+    let mut doc = snap_doc(&h);
+    let mut tasks = doc["variants"]["guard"]["tasks"].as_array().unwrap().clone();
+    for i in 4..2504 {
+        tasks.push(json!({"id": i.to_string(), "content": format!("stale task {i} {}", "x".repeat(120)), "description": "", "status": "pending", "owner": "", "blockedBy": [], "priority": null, "subjectUpdated": false, "unknown": null, "blockUnknown": false, "sinceMs": null}));
+    }
+    doc["variants"]["guard"]["tasks"] = json!(tasks);
+    let big = doc.to_string();
+    assert!(big.len() > defaults::num("taskstate.snapshot_max_bytes") as usize, "the file is over the cap: {}", big.len());
+    std::fs::write(&file, big).unwrap();
+    let got = snap_rebuild(&h, &t, "b");
+    assert_eq!(snap_rows(&got).len(), 3, "the oversized snapshot lays nothing over the tail: {}", snap_rows(&got).len());
+    assert_eq!(bumped("snapshot_error", "kind", "big"), 1);
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the file was replaced by the rebuilt list");
+    assert!(std::fs::metadata(&file).unwrap().len() <= defaults::num("taskstate.snapshot_max_bytes"));
+}
+
+#[test]
+fn a_rebuild_that_cannot_take_the_snapshot_lock_writes_nothing_and_answers_as_before() {
+    let h = home("snap-lock-busy");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    put_override(
+        &h,
+        "zz-snap-lock",
+        "function decide(p){ var lk = ah.state.lock(taskSnap.rel(p.t) + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), 5); \
+         var r = ah.transcript.tasks(p.t, 'guard', p.w, 0, ''); ah.state.unlock(lk); \
+         ah.state.writeAtomic('.anti-hall/out-lock.json', JSON.stringify({held: lk !== null, n: r.tasks.length})); return 'allow'; }",
+    );
+    assert_eq!(run("zz-snap-lock", &json!({"t": t, "w": SNAP_WINDOW}), &env(&h)), Some(Some(Verdict::Allow)));
+    let out: Value = serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-lock.json")).unwrap()).unwrap();
+    assert_eq!(out, json!({"held": true, "n": 3}), "the rebuild still answers");
+    assert_eq!(bumped("snapshot_error", "kind", "lock"), 1, "the busy lock is counted");
+    assert!(snap_files(&h).iter().all(|f| !f.ends_with(".json")), "no snapshot was written under a lock held by another: {:?}", snap_files(&h));
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "free");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the next rebuild writes");
+    assert_eq!(snap_files(&h).iter().filter(|f| f.ends_with(".lock")).count(), 0, "a released lock leaves no file: {:?}", snap_files(&h));
+}

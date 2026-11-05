@@ -337,9 +337,23 @@ min = 1
 unit = "bytes"
 
 [taskstate.snapshot_format]
-doc = "Version stamped in a snapshot; a snapshot with another number is read as absent (counted as discarded, reason `format`) and replaced. 2 added the session id and the file fingerprint."
-value = 2
+doc = "Version stamped in a snapshot; a snapshot with another number is read as absent (counted as discarded, reason `format`) and replaced. 2 added the session id and the file fingerprint; 3 added, per task, the tool-use id of the TaskCreate that made it (a task's identity: the subject is not one)."
+value = 3
 min = 1
+
+[taskstate.snapshot_lock_suffix]
+doc = "Suffix of the lock file a rebuild holds while it merges and rewrites a session's snapshot (next to the snapshot, never counted against taskstate.snapshot_max_files). Without a lock two hooks that rebuild at the same instant could each rewrite the whole file and lose the other's section."
+value = ".lock"
+
+[taskstate.snapshot_lock_group]
+doc = "The defaults group whose `lock_*` keys (stale, step, reclaim, release) time the snapshot lock; the wait is taskstate.snapshot_lock_wait_ms."
+value = "advisor"
+
+[taskstate.snapshot_lock_wait_ms]
+doc = "How long a rebuild waits for the snapshot lock. A rebuild that cannot take it writes no snapshot this time (its answer is unchanged; counted as snapshot_error kind `lock`) and the next rebuild writes."
+value = 250
+unit = "ms"
+min = 0
 
 [taskstate.snapshot_fingerprint_bytes]
 doc = "Bytes hashed for the transcript fingerprint kept in a snapshot: the first bytes of the file, and the same number of bytes just before the tail window as it stood when the snapshot was written (read back at that fixed offset, so appends do not move it). A transcript whose bytes there differ is another file under the same path: the snapshot is discarded (reason `replaced`). Two reads of this size per rebuild."
@@ -1654,9 +1668,13 @@ doc = "Tasks a rebuild recovered from the session's snapshot because the transcr
 value = { kind = "counter", unit = "tasks", labels = [] }
 
 [metric.snapshot_discarded]
-doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; renumbered: the tail created a task under a number the snapshot already holds, so a new list began; format: another snapshot version; session: the snapshot names another transcript path or session id; replaced: the transcript bytes at the fingerprinted places differ, so another file lies under the path). A discarded snapshot is replaced by the new list, never deleted."
+doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; renumbered: the tail holds a TaskCreate for a number the snapshot holds whose tool-use id is not the one the snapshot recorded for it, so a new list began (subjects play no part); format: another snapshot version; session: the snapshot names another transcript path or session id; replaced: the transcript bytes at the fingerprinted places differ, so another file lies under the path). A discarded snapshot is replaced by the new list, never deleted."
 value = { kind = "counter", unit = "snapshots", labels = ["reason"] }
 
+[metric.snapshot_identity_unknown]
+doc = "Rebuilds whose tail holds a TaskCreate for a number the snapshot holds, over bytes the snapshot already covers, where the create's tool-use id or the snapshot's recorded one is missing (a task no create was recorded for, as a TodoWrite makes). Which list it belongs to cannot be told: the snapshot is kept (fail-open to the snapshot)."
+value = { kind = "counter", unit = "rebuilds", labels = [] }
+
 [metric.snapshot_error]
-doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, shape: a section with a malformed task, write, big: over taskstate.snapshot_max_bytes, cap: taskstate.snapshot_max_files reached, home: no usable home)."
+doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, shape: a section with a malformed task, write, big: over taskstate.snapshot_max_bytes (on a read, the file is replaced), lock: the snapshot lock was busy, cap: taskstate.snapshot_max_files reached, home: no usable home)."
 value = { kind = "counter", unit = "errors", labels = ["kind"] }

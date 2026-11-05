@@ -4,6 +4,8 @@
 // The task snapshot (#390): a transcript tail of taskstate.tail_bytes cannot show a task list whose creates lie further back, so a
 // session's last rebuilt list is kept in one file (taskstate.snapshot_*) and the tail's result is laid over it. Every failure leaves the
 // rebuild as the tail alone gives it, counted under snapshot_error; the engine never deletes a snapshot file.
+// A task's identity is the tool-use id of the TaskCreate that made it (kept per section as `ids`), never its subject: subjects are renamed
+// and repeated, a tool-use id is neither.
 var taskSnap = {
   count: function (name, labels, by) { ah.metric(name, labels || {}, by); },
   // `<base_dir>/<snapshot_dir>/<file>` for a transcript path.
@@ -36,7 +38,7 @@ var taskSnap = {
   // The snapshot's tasks, then the tail's tasks the snapshot does not hold, each tail task laid over its snapshot twin. A snapshot task the
   // tail found "not found" (`deleted`) is gone: only what the tail itself holds of that id is listed.
   overlay: function (snap, tail, deleted) {
-    var byId = {}, seen = {}, gone = {}, out = [];
+    var byId = Object.create(null), seen = Object.create(null), gone = Object.create(null), out = [];
     tail.forEach(function (t) { byId[t.id] = t; });
     deleted.forEach(function (id) { gone[id] = true; });
     snap.forEach(function (s) {
@@ -52,7 +54,19 @@ var taskSnap = {
     return t !== null && typeof t === 'object' && typeof t.id === 'string' && t.id !== '' && (t.status === null || t.status === undefined || typeof t.status === 'string');
   },
   soundSection: function (sec) {
-    return sec !== null && typeof sec === 'object' && Array.isArray(sec.tasks) && typeof sec.size === 'number' && sec.tasks.every(taskSnap.sound);
+    return sec !== null && typeof sec === 'object' && Array.isArray(sec.tasks) && typeof sec.size === 'number' && sec.tasks.every(taskSnap.sound) &&
+      (sec.ids === undefined || (sec.ids !== null && typeof sec.ids === 'object' && !Array.isArray(sec.ids) && Object.keys(sec.ids).every(function (k) { return typeof sec.ids[k] === 'string' && sec.ids[k] !== ''; })));
+  },
+  // The create identities a section keeps: for each task of `tasks`, the tool-use id of the TaskCreate that made it. The tail's own
+  // creates win over what the section had (a create the tail shows is the latest word on its number); a task no create was ever seen for
+  // has none, which `renumbered` reads as "cannot tell".
+  idsOf: function (tasks, old, by) {
+    var out = {};
+    tasks.forEach(function (t) {
+      if (old && Object.prototype.hasOwnProperty.call(old, t.id)) out[t.id] = old[t.id];
+      if (by && Object.prototype.hasOwnProperty.call(by, t.id) && typeof by[t.id] === 'string' && by[t.id] !== '') out[t.id] = by[t.id];
+    });
+    return out;
   },
   // The fingerprint of the transcript's generation: a hash of its first bytes and of the same number of bytes just before the tail
   // window as it stands now, read back later at that fixed offset (a transcript only grows at its end). null when it cannot be read.
@@ -69,21 +83,23 @@ var taskSnap = {
     return h !== null && m !== null && h.length === g.headLen * 2 && m.length === g.midLen * 2 && ah.sha1(h) === g.head && ah.sha1(m) === g.mid;
   },
   // Whether the tail began a new list under numbers the snapshot already holds. A TaskCreate the tail shows for a number the snapshot
-  // holds is either a create the snapshot already saw (the tail reaches back over the bytes the snapshot was written from) or a new
-  // list numbered from one again. When the tail starts at or after the snapshot's size every create in it is new; when they overlap, a
-  // create counts as new only when the task it made differs from the snapshot's task of that number (an unrenamed subject on both
-  // sides; a renamed one cannot tell, and then the snapshot is kept).
+  // holds is either the create the snapshot already saw (the tail reaches back over the bytes the snapshot was written from) or a new
+  // list numbered from one again. When the tail starts at or after the snapshot's size every create in it is new. When they overlap, the
+  // create is new iff its tool-use id differs from the one the snapshot recorded for that number (the same bytes name the same id).
+  // When either id is unknown (a snapshot task no create was recorded for) it cannot be told: the snapshot is kept, and that is counted.
   renumbered: function (sec, r, tailStart) {
     if (!Array.isArray(r.created) || r.created.length === 0) return false;
-    var snapBy = {}, tailBy = {}, clean = tailStart >= sec.size;
-    sec.tasks.forEach(function (t) { snapBy[t.id] = t; });
-    r.tasks.forEach(function (t) { tailBy[t.id] = t; });
-    return r.created.some(function (id) {
-      var s = snapBy[id], t = tailBy[id];
-      if (!s) return false;
-      if (clean) return true;
-      return !!t && !t.subjectUpdated && !s.subjectUpdated && t.content !== s.content;
+    var own = Object.prototype.hasOwnProperty, held = Object.create(null), clean = tailStart >= sec.size, unknown = false, fresh = false;
+    sec.tasks.forEach(function (t) { held[t.id] = true; });
+    r.created.forEach(function (id) {
+      if (!held[id]) return;
+      if (clean) { fresh = true; return; }
+      var rec = sec.ids && own.call(sec.ids, id) ? sec.ids[id] : undefined, use = r.createdBy && own.call(r.createdBy, id) ? r.createdBy[id] : undefined;
+      if (typeof rec !== 'string' || rec === '' || typeof use !== 'string' || use === '') unknown = true;
+      else if (rec !== use) fresh = true;
     });
+    if (unknown && !fresh) taskSnap.count('snapshot_identity_unknown');
+    return fresh;
   },
   // `r` (the tail's rebuild) over the session's snapshot; `sid` the hook payload's session id (or none), `win` the tail window in bytes.
   // Any failure, and a snapshot that cannot be written, leave `r` as it is.
@@ -98,7 +114,9 @@ var taskSnap = {
     var rel = taskSnap.rel(p), size = ah.fs.size(p), doc = null, sec = null, raw = null, fmt = ah.cfgNum('taskstate.snapshot_format');
     if (size === null) { taskSnap.count('snapshot_error', { kind: 'read' }); return r; }
     try { raw = ah.state.readText(rel); } catch (e) { taskSnap.count('snapshot_error', { kind: 'read' }); return r; }
-    if (raw !== null) {
+    var max = ah.cfgNum('taskstate.snapshot_max_bytes');
+    if (raw !== null && raw.length > max) { taskSnap.count('snapshot_error', { kind: 'big' }); raw = ''; } // a file over the cap is damaged: it is replaced, never trusted
+    if (raw !== null && raw !== '') {
       try { doc = JSON.parse(raw); } catch (e) { doc = null; taskSnap.count('snapshot_error', { kind: 'parse' }); }
       if (doc === null || typeof doc !== 'object' || doc.variants === null || typeof doc.variants !== 'object') doc = null;
     }
@@ -122,33 +140,45 @@ var taskSnap = {
     }
     if (sec !== null) {
       tasks = taskSnap.overlay(sec.tasks, r.tasks, Array.isArray(r.deleted) ? r.deleted : []);
-      var tailIds = {};
+      var tailIds = Object.create(null);
       r.tasks.forEach(function (t) { tailIds[t.id] = true; });
       recovered = tasks.filter(function (t) { return !tailIds[t.id]; }).length;
     }
     var out = sec !== null ? Object.assign({}, r, { tasks: tasks }) : r;
+    var ids = taskSnap.idsOf(tasks, sec !== null ? sec.ids : null, r.createdBy);
     try {
-      var same = sec !== null && JSON.stringify(sec.tasks) === JSON.stringify(tasks);
+      var same = sec !== null && JSON.stringify(sec.tasks) === JSON.stringify(tasks) && JSON.stringify(sec.ids || {}) === JSON.stringify(ids);
       if (same && size - sec.size < ah.cfgNum('taskstate.snapshot_refresh_bytes')) return taskSnap.counted(out, recovered);
       if (tasks.length === 0 && !existed) return r;
       if (!existed) {
         var dir = g.home + '/' + ah.cfg('paths.base_dir') + '/' + ah.cfg('taskstate.snapshot_dir');
-        var names = ah.fs.isDir(dir) ? ah.fs.readdir(dir) : [];
+        var names = ah.fs.isDir(dir) ? ah.fs.readdir(dir) : [], lockEnd = ah.cfg('taskstate.snapshot_lock_suffix');
+        if (names !== null) names = names.filter(function (n) { return n.slice(-lockEnd.length) !== lockEnd; }); // a lock file is no snapshot
         if (names === null || names.length >= ah.cfgNum('taskstate.snapshot_max_files')) { taskSnap.count('snapshot_error', { kind: 'cap' }); return r; }
       }
       var fp = taskSnap.fingerprint(p, size, win);
       if (fp === null) { taskSnap.count('snapshot_error', { kind: 'read' }); return r; }
-      var body = doc === null ? { format: fmt, path: p, variants: {} } : doc;
-      body.format = fmt; body.path = p; body.gen = fp;
-      body.session = sid !== null ? sid : (typeof body.session === 'string' ? body.session : null);
-      if (!discarded) taskSnap.mergeOthers(rel, body, variant, p, fmt);
-      var max = ah.cfgNum('taskstate.snapshot_max_bytes'), done = ah.cfg('taskstate.done_statuses');
-      var put = function (list) { body.variants[variant] = { size: size, ms: ah.clock.now(), tasks: list }; return JSON.stringify(body); };
-      var text1 = put(tasks);
-      if (text1.length > max) text1 = put(tasks.filter(function (t) { return done.indexOf((t.status || '').toLowerCase()) < 0; }));
-      if (text1.length > max) { taskSnap.count('snapshot_error', { kind: 'big' }); return r; }
-      if (!ah.state.writeAtomic(rel, text1)) { taskSnap.count('snapshot_error', { kind: 'write' }); return r; }
-      taskSnap.count('snapshot_written');
+      // The file is read, merged and rewritten whole by every hook that rebuilds a list, so the last step runs under one lock per file:
+      // a hook that cannot take it in taskstate.snapshot_lock_wait_ms writes nothing (its answer is the same; the next rebuild writes)
+      // and is counted under snapshot_error kind `lock`. Without the lock two hooks in the same instant could still lose one section.
+      var lk = null;
+      try { lk = ah.state.lock(rel + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = null; }
+      // null: the lock is held by another (its file is there: write nothing) or cannot be made at all (an unwritable directory: no file, and
+      // the write below fails and is counted as such, as it always was)
+      if (lk === null && ah.fs.isFile(g.home + '/' + rel + ah.cfg('taskstate.snapshot_lock_suffix'))) { taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
+      try {
+        var body = doc === null ? { format: fmt, path: p, variants: {} } : doc;
+        body.format = fmt; body.path = p; body.gen = fp;
+        body.session = sid !== null ? sid : (typeof body.session === 'string' ? body.session : null);
+        if (!discarded) taskSnap.mergeOthers(rel, body, variant, p, fmt, max);
+        var done = ah.cfg('taskstate.done_statuses');
+        var put = function (list) { body.variants[variant] = { size: size, ms: ah.clock.now(), tasks: list, ids: taskSnap.idsOf(list, ids) }; return JSON.stringify(body); };
+        var text1 = put(tasks);
+        if (text1.length > max) text1 = put(tasks.filter(function (t) { return done.indexOf((t.status || '').toLowerCase()) < 0; }));
+        if (text1.length > max) { taskSnap.count('snapshot_error', { kind: 'big' }); return r; }
+        if (!ah.state.writeAtomic(rel, text1)) { taskSnap.count('snapshot_error', { kind: 'write' }); return r; }
+        taskSnap.count('snapshot_written');
+      } finally { if (lk !== null) ah.state.unlock(lk); }
     } catch (e) { taskSnap.count('snapshot_error', { kind: 'write' }); return r; }
     return taskSnap.counted(out, recovered);
   },
@@ -156,9 +186,11 @@ var taskSnap = {
   // The guard and the state variants share one file and each rewrites it whole: read it again just before the write and take the other
   // variants' sections from what is there now, so a section filed since this call's first read is not lost. A file that is not this
   // session's, or no longer this transcript's, adds nothing.
-  mergeOthers: function (rel, body, variant, p, fmt) {
-    var fresh = null;
-    try { fresh = JSON.parse(ah.state.readText(rel)); } catch (e) { return; }
+  mergeOthers: function (rel, body, variant, p, fmt, max) {
+    var fresh = null, raw = null;
+    try { raw = ah.state.readText(rel); } catch (e) { return; }
+    if (typeof raw !== 'string' || raw.length > max) return; // a file over the cap is replaced, not merged
+    try { fresh = JSON.parse(raw); } catch (e) { return; }
     if (fresh === null || typeof fresh !== 'object' || fresh.format !== fmt || fresh.path !== p || fresh.variants === null || typeof fresh.variants !== 'object') return;
     if (typeof body.session === 'string' && typeof fresh.session === 'string' && body.session !== fresh.session) return;
     if (!taskSnap.sameFile(p, fresh.gen)) return;

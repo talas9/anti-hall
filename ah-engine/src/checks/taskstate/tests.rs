@@ -389,4 +389,15 @@ mod snapshot_facts {
         lines.extend(create_as(1, "again")); // the numbering restarted: only the new list counts
         assert_eq!(facts_of(&lines).created, ["1"]);
     }
+
+    #[test]
+    fn each_created_number_is_exported_with_the_tool_use_id_of_its_create() {
+        let mut lines = Vec::new();
+        lines.extend(create(1));
+        lines.extend(create(2));
+        let by = |f: &super::super::parse::Facts| f.created_by.iter().map(|(n, u)| format!("{n}={u}")).collect::<Vec<_>>();
+        assert_eq!(by(&facts_of(&lines)), ["1=c1", "2=c2"]);
+        lines.extend(create_as(1, "again")); // a new list numbered from one: the old ids are gone, the new create is named by its own id
+        assert_eq!(by(&facts_of(&lines)), ["1=again1"]);
+    }
 }

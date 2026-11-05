@@ -71,8 +71,8 @@ fn task_json(t: &Task) -> Value {
 /// `unsure`). `wide` is only read by `scan`: the widened window searched for task activity when a cut tail holds none.
 ///
 /// - `guard` and `state`: `{"tasks":[...], "windowReset":bool, "firstCreated":number|null, "deleted":[id], "created":[id],
-///   "truncated":bool}` (`deleted`: the ids a call in the window found "not found"; `created`: the numbers its `TaskCreate` results
-///   named) in the order a JavaScript `Map` would hold them, or `{"tasks":[],"unreadable":true}` when the file cannot be read;
+///   "createdBy":{id: toolUseId}, "truncated":bool}` (`deleted`: the ids a call in the window found "not found"; `created`: the numbers
+///   its `TaskCreate` results named; `createdBy`: the tool-use id of the create that made each) in the order a JavaScript `Map` would hold them, or `{"tasks":[],"unreadable":true}` when the file cannot be read;
 /// - `scan`: `{"sawTaskActivity", "taskStoreReset", "inProgressCount", "openTaskIds":[...]}`, or `{"quiet":true}` when the Node
 ///   hook would end silently (a JSON `null` entry makes it throw), or `{"unreadable":true}` when the file cannot be read;
 /// - any variant: `{"unsure":true}` when a record or value only JavaScript could read exactly was met.
@@ -120,6 +120,7 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
         "firstCreated": if facts.first_created.is_finite() { json!(facts.first_created) } else { Value::Null },
         "deleted": facts.deleted,
         "created": facts.created,
+        "createdBy": facts.created_by.iter().map(|(n, u)| (n.clone(), json!(u))).collect::<serde_json::Map<String, Value>>(),
         "truncated": truncated,
     })
     .to_string()
