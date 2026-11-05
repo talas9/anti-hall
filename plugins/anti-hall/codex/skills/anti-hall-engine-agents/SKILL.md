@@ -61,6 +61,7 @@ Subagent, delegation and routing guards.
 - `guards.silentAgentNudgeMin` = 20: Silence threshold in minutes
 - `guards.silentAgentNudge` = true: Where the on/off switch is read from (guards.silentAgentNudge, default on)
 - `guards.staleAgentStopNote` = true: Where the on/off switch is read from (guards.staleAgentStopNote, default on)
+- `guards.sharedTreeBareClone` = false: Bare fresh-clone statements name a tree
 - `guards.sharedTreeQuietNoWorktrees` = true: Quiets the shared-tree note when worktrees are forbidden
 - `guards.sharedTreeScratchOnly` = true: Report-only agents share no tree
 - `safety.swarmGuard` = true: The switch safety.swarmGuard (on by default); off makes the guard a no-op

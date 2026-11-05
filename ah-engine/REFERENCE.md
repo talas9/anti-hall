@@ -691,8 +691,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.log_batch` | `256` |  |  | Most queued lines the daemon's log thread writes in one append. |
 | `health.log_cap` | `65536` |  | bytes | Event log size above which it is trimmed to its last log_keep_lines lines. |
 | `health.log_flush_ms` | `1000` |  | ms | Longest the daemon waits at exit for its queued event-log lines to reach the file. |
+| `health.log_flush_poll_ms` | `5` |  | ms | How often the exit flush retries handing its request to the event-log queue while that queue is full. |
 | `health.log_keep_lines` | `200` |  |  | Lines kept when the event log is trimmed. |
 | `health.log_queue` | `4096` |  |  | Lines the daemon's log thread can hold before a worker appends its line itself. The daemon queues every event-log line to one thread that writes them in batches (the per-line stat, lock, open and write were where the four workers waited under load); other processes still append directly. |
+| `health.msg_flush_skipped` | `event log not flushed at exit: its queue was full or its writer gone` |  |  | Event-log detail when the exit flush gave up: the log queue stayed full or its writer was gone. |
 | `health.pid_probe` | `ps, -p, {pid}, -o, command=` |  |  | Command used to read a process's command line when checking whether a pid is a live engine: the program, then its arguments with `{pid}` substituted. |
 | `health.probe_poll_ms` | `2` |  | ms | How often a running probe command is checked for completion. |
 | `health.probe_timeout_ms` | `1000` |  | ms | Longest a pid or memory probe command (health.pid_probe, health.rss_probe) may run; it runs on the hook path, so a wedged one is cut off and reads as no answer. |
@@ -1872,7 +1874,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `schedule.action_args` | `4 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `17 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.actions` | `18 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.cpu_backoff_ms` | `60000` |  | ms | How long scheduled jobs pause after the daemon sustained-CPU self-check warns; 0 logs only. |
@@ -3178,7 +3180,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
 | `guard_rules.msg_no_heredoc` | `4 entries` |  |  | Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread. |
 | `guard_rules.msg_rm_rf_root` | `4 entries` |  |  | Rule text of the rules.json rule rm-rf-root-or-home (a warning on `rm -rf` aimed at / or the home directory); rules.json names it by message_ref. |
-| `guard_rules.no_step_allow` | `21 items` |  |  | Ratchet for the clear-step lint (#538): the ids of registered non-off rules that have no instead text today. The list may only shrink: a new rule needs an instead (the step that clears the block), and an id that gains one must be removed here (guard_rules.problem_stale_allow). |
+| `guard_rules.no_step_allow` | `22 items` |  |  | Ratchet for the clear-step lint (#538): the ids of registered non-off rules that have no instead text today. The list may only shrink: a new rule needs an instead (the step that clears the block), and an id that gains one must be removed here (guard_rules.problem_stale_allow). |
 | `guard_rules.placeholder` | `...` |  |  | What a {placeholder} in a rule text becomes in the skill and the digest, where no value is known. |
 | `guard_rules.problem_digest` | `{id}: missing from the generated digest` |  |  | Registry problem: an essential rule is missing from the generated digest. Placeholder: {id}. |
 | `guard_rules.problem_id` | `rule id empty or duplicate: {id}` |  |  | Registry problem: a rule id that is empty or repeated. Placeholder: {id}. |
@@ -3190,7 +3192,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.problem_stale_allow` | `{id}: has an instead text now, remove it from guard_rules.no_step_allow` |  |  | Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
-| `guard_rules.rules` | `152 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `153 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
 | `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
 | `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
@@ -4412,6 +4414,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `swarm_guard.agent_type_fields` | `subagent_type, agentType, agent_type` |  |  | Spawn input fields that name the agent type, first non-empty one wins (the trip log label). |
 | `swarm_guard.allow_fields` | `tools, allowed_tools, allowedTools` |  |  | Spawn input fields that list the tools an agent may use, first non-empty one wins. |
+| `swarm_guard.bare_mark_before` | `^(?:[\s(\[{<"'`\u2018\u2019\u201A\u201C\u201E\u00AB\u2039*_\u2014\u2013:;,>=\|...` |  |  | JavaScript regex source (u flag): the one character before a mark that may open a span (empty at the start of the text): white space, an opener, another mark, a dash, a colon, a comma, a semicolon, = or \|. A mark after a letter, a digit or a path character opens nothing. |
+| `swarm_guard.bare_mark_groups` | `'‘’‚ * _` |  |  | Space separated groups of marks that open or close a nested span only by their place in the text: single quotes (an apostrophe is none), markdown emphasis. A mark opens after white space, an opener or the start and before a non-space; it closes after a non-space and before a non-word character, and only a mark of its own group. A span left open masks the rest. |
+| `swarm_guard.bare_mark_word` | `[\p{L}\p{N}]` |  |  | JavaScript regex source (u flag): one word character; a mark between two of them is an apostrophe or an underscore inside a word, and closes nothing. |
+| `swarm_guard.bare_nest_close` | `)]}>”»›“】」』》〉）］｝｣` |  |  | Characters that close a nested span opened by bare_nest_open, in the same order. |
+| `swarm_guard.bare_nest_open` | `([{<“«‹„【「『《〈（［｛｢` |  |  | Characters that open a nested span in a brief (brackets, angle brackets, CJK brackets, curly and low quotes): a sentence break inside one is masked; an unclosed one masks the rest. |
+| `swarm_guard.bare_nest_toggle` | `"`—–‒―` |  |  | Characters that open a nested span when closed and close it when open (straight quote, code tick, em, en, figure and horizontal-bar dash). |
+| `swarm_guard.bare_nest_toggle_pairs` | `~~` |  |  | Space separated two-character marks that open a nested span when closed and close it when open (markdown strikethrough); a single such character, as in a ~/ path, is no mark. |
 | `swarm_guard.deny_fields` | `disallowedTools, disallowed_tools` |  |  | Spawn input fields that list the tools an agent may not use, first non-empty one wins. |
 | `swarm_guard.exact_int_limit` | `9007199254740992` |  |  | The largest integer a JavaScript number prints exactly in decimal (2 to the 53rd); a spawn log holding a larger entry is left to the Node hook. |
 | `swarm_guard.guard_name` | `swarm-guard` |  |  | Guard name in the block message and the skip file. |
@@ -4441,12 +4450,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.msg_shared_instead_no_worktrees` | `serialize them or give each its own scratch clone.` |  |  | What to do instead, when the repo forbids worktrees. |
 | `swarm_guard.msg_shared_what` | `another agent is already writing in this working tree.` |  |  | What the shared-tree advisory says. |
 | `swarm_guard.msg_shared_why` | `Two such agents can stage and commit each other's uncommitted changes.` |  |  | Why the shared-tree advisory applies. |
+| `swarm_guard.named_tree_bare_setting` | `6 entries` |  |  | Bare fresh-clone statements name a tree. Where the switch is read from that makes a brief such as "clone ~/x and build" or "use ~/x as the working copy" count as naming its own tree (guards.sharedTreeBareClone, default off). |
 | `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
 | `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
 | `swarm_guard.quiet_no_worktrees_setting` | `6 entries` |  |  | Quiets the shared-tree note when worktrees are forbidden. Where the switch is read from that silences the shared-tree advisory when a CLAUDE.md, AGENTS.md or memory rule forbids worktrees (guards.sharedTreeQuietNoWorktrees, default on). |
 | `swarm_guard.re_api_only` | `\b(?:gh\|github)[- ](?:api\|cli)[- ]only\b\|\bonly\s+(?:calls?\|uses?\|runs?\|via)\...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn only calls the GitHub API or gh CLI and edits no checkout (gh-API-only, only calls the GitHub API, no checkout, do not touch the working tree). Such a spawn shares no working tree, so the shared-tree advisory does not apply; an in-place statement still cancels it. |
 | `swarm_guard.re_in_place` | `\bin\s+place\b\|\bin\s+(?:the\s+)?(?:session\s+)?repo\b\|\brepo\s+files\b\|\b(?:...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading. |
 | `swarm_guard.re_named_tree` | `\b(?:(?:a\|an\|the\|your\|its\|their\|own\|scratch\|separate\|fresh\|lane)\s+(?:clone\|w...` |  |  | JavaScript regex source (case-insensitive): a statement that names the spawn's own working tree ("a\|your\|its\|scratch… clone", worktree, checkout, cd, cwd or work-in target; a bare "git clone <src>" names a source, not a tree) followed by an absolute, ~ or $HOME path. When that path lies outside the session's git tree (and outside its cwd), the spawn works in another checkout and shares no tree; the scratch negation and in-place statements still cancel it. |
+| `swarm_guard.re_named_tree_bare` | `(?:^\|[,;:.\n]\s*)(?:fresh(?:ly)?\s+)?clone\s+(?:fresh(?:ly)?\s+)?(?:(?:into\|t...` |  |  | Rust regex source (case-insensitive): a bare fresh-clone statement with no determiner ("clone ~/x", "Clone fresh into ~/x", "use ~/x as the working copy"), read after re_named_tree only when the sharedTreeBareClone switch is on. The leading start-or-punctuation anchor keeps "git clone ~/src ~/dst" (a source path) from matching. |
+| `swarm_guard.re_named_tree_bare_clause_break` | `[.!?]\s+\p{Lu}` |  |  | Rust regex source (read with the r flag, case-sensitive), read on the text with brackets, quotes, dashes, emphasis, abbreviations and ellipses masked: where one sentence ends for the bare fresh-clone negation test, and the only sentence ends that count: a full stop, ! or ? before white space and a capital letter. A semicolon, a blank line, a list, a newline, a comma or a colon is no break; whatever is uncertain keeps the text one sentence, so a negation earlier in it keeps the shared-tree note. |
+| `swarm_guard.re_named_tree_bare_dash` | `[^\s][ \t\u00A0]-{1,2}[ \t\u00A0]` |  |  | Rust regex source: a dash written with one or two hyphens between spaces after a word (not a list bullet, which follows a line break); each toggles a nested span like an em dash, so a sentence break between a pair is masked. |
+| `swarm_guard.re_named_tree_bare_invisible` | `[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]` |  |  | JavaScript regex source: invisible format characters (soft hyphen, zero-width, bidi marks), removed from the clause before the negation test so ne<ZWSP>ver is still never. |
+| `swarm_guard.re_named_tree_bare_lead` | `^[,;:.\n]\s*` |  |  | Rust regex source: the punctuation anchor a re_named_tree_bare match may start with; the clause test starts after it. |
+| `swarm_guard.re_named_tree_bare_mask` | `(?i)\b(?:e\.g\|i\.e\|etc\|vs\|cf\|approx\|incl\|viz\|resp\|nr\|fig\|inc\|ltd\|mr\|mrs\|ms\|dr...` |  |  | Rust regex source (read with the r flag; (?i) inside): text whose full stops are no clause break (abbreviations such as e.g. or U.S., titles, a lone letter or digit word before a stop (a path ending in one letter is no abbreviation), an ellipsis, also one with spaces between its dots); masked before the clause break is read. |
+| `swarm_guard.re_named_tree_bare_negation` | `(?i)\b(?:not\|no\|never\|nor\|neither\|none\|nothing\|nobody\|nowhere\|cannot\|without\|...` |  |  | Rust regex source (read with the r flag; (?i) inside), tested on the whole clause holding a bare fresh-clone match, any words between: a negation token (not, no, never, without, avoid, except, rather than, instead of, any n't contraction whatever its apostrophe) keeps the shared-tree note. Read only when sharedTreeBareClone is on. |
+| `swarm_guard.re_named_tree_bare_pathtok` | `(^\|[\s(\[{"'`\u201C\u2018])(?:~\|\$HOME\|\$\{HOME\}\|\.{1,2})?\/[\w.~\/$@+\-]*` |  |  | JavaScript regex source: a path word (it starts with ~/, $HOME/, /, ./ or ../ and runs over path characters only), blanked before the negation test so ~/no-tree is no negation while not/never and ~/x(not stay. |
 | `swarm_guard.re_named_tree_home` | `^(?:~\|\$HOME)` |  |  | JavaScript regex source: the home prefix of a named-tree path (~ or $HOME), replaced by the user's home directory. |
 | `swarm_guard.re_named_tree_path` | `(?:~\|\$HOME)?\/[^\s\x60'",;)]+` |  |  | JavaScript regex source: the path inside a re_named_tree match (the first absolute, ~ or $HOME path). |
 | `swarm_guard.re_named_tree_trim` | `[.:]+$` |  |  | JavaScript regex source: trailing sentence punctuation cut from a named-tree path. |
@@ -5499,8 +5517,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.cli_cmd` | `ah-engine {verb}` |  |  | How a verb is typed, for the skills. |
 | `roles.declared_env` | `ANTIHALL_ROLE` |  |  | Environment variable a wrapper may set to declare the caller's role on the command line (a role name from roles.names). It can only narrow what the environment says is possible, never name a role the detection ruled out: a workspace child stays a workspace child. |
 | `roles.describe` | `4 entries` |  |  | What each role is, in one line (shown in the role note and the engine skill). |
+| `roles.describe_short` | `1 entries` |  |  | What a role is, in a few words, for the one-line role note. Only the roles listed here get the one-line note (the others keep the full note). |
 | `roles.digest_budget` | `1400` |  | bytes | Size limit of the rule digest in bytes (the essentials injected at session start and after compaction). A test fails when the generated digest is over it. |
 | `roles.engine_bin` | `ah-engine` |  |  | The engine's executable name, as an agent types it in a Bash command. |
+| `roles.event_emitted_full` | `emitted_full` |  |  | Counter event: the full role note (with the verb list) was sent. |
+| `roles.event_emitted_short` | `emitted_short` |  |  | Counter event: the one-line role note was sent. |
 | `roles.groups` | `14 entries` |  |  | The feature areas, in skill order. `skill` is the sub-skill name (the main skill is `engine`), `title` its heading, `brief` the one line the main skill shows, `use_when` the sentence that makes the host load the sub-skill (a skill's description is what triggers loading), `prefixes` the engine checks (guards) it covers by name prefix and `settings_prefixes` the switches it lists by `section.key` prefix (first area that matches wins; the rest go to `guards`). |
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
 | `roles.line_max` | `100` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
@@ -5509,12 +5530,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.msg_none` | `none` |  |  | The verb list in the note when the role may run none. |
 | `roles.msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}. |
 | `roles.msg_note_more` | ` (+{n} more, see the guide)` |  |  | Added to the note when the verb list was shortened. Placeholder: {n}. |
+| `roles.msg_note_short` | `anti-hall engine: role {role} ({what}). Engine guide: {skill}.` |  |  | The one-line role note for a role listed in roles.describe_short. Placeholders: {role}, {what}, {skill}. |
 | `roles.msg_refuse` | `anti-hall engine: `{verb}` is not available to {role} sessions. Who may run i...` |  |  | Refusal when the caller's role may not run a verb. Placeholders: {verb}, {role}, {allowed}, {why}. |
 | `roles.msg_refuse_self` | `anti-hall engine: `{verb}` from a workspace child may only act on itself ({se...` |  |  | Refusal when a workspace child names another workspace. Placeholders: {verb}, {target}, {self}. |
 | `roles.msg_why_other` | `This role is not on the verb's list in roles.matrix.` |  |  | The reason in msg_refuse when the role is simply not on the verb's list. |
 | `roles.msg_why_owner` | `It changes or removes state, so it is reserved for the main session; ask it t...` |  |  | The reason in msg_refuse when the verb or argument is owner-level. |
 | `roles.names` | `subagent, workspace, codex, main` |  |  | The caller roles, most specific first when two apply (a workspace child that is a Codex session is a workspace child). |
 | `roles.note_max` | `900` |  |  | Longest role note, in characters; the verb list is shortened to fit. |
+| `roles.note_short_what` | `a subagent is told its role and where the engine guide is, in one line, not t...` |  |  | The registry text of the one-line role note (guard_rules.rules, roles.note_short): what it tells a subagent. |
 | `roles.owner_roles` | `codex, main` |  |  | The roles allowed to run a verb with one of its owner_args. |
 | `roles.refuse_exit` | `77` |  |  | Exit status of the command line when the caller's role may not run the verb. |
 | `roles.script_words` | `eval` |  |  | Commands besides the shells of git.shell_verbs whose quoted argument is itself a script, so an engine call quoted there still counts for the role guard; any other quoted engine name (a commit message, an echo) is text. |
@@ -5523,10 +5546,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.skill_frontmatter` | `---\nname: {name}\ndescription: "{description}"\n---\n\n` |  |  | Front matter of a generated skill. Placeholders: {name}, {description}. |
 | `roles.skill_host` | `2 entries` |  |  | Per host: where the generated skill files go under the plugin root, the skill folder name prefix, the command that names a skill in prose and the front matter name prefix. Codex skills are folders named anti-hall-<skill>. |
 | `roles.skill_labels` | `13 entries` |  |  | Labels the generated skills use. `roles_head` heads the role table, `verbs_head` the verb table, `guards_head` the guard list, `settings_head` the switches, `none` marks an empty cell, `yes` an allowed role, `self` a self-only role. |
+| `roles.stock_describe` | `4 entries` |  |  | The stock value of roles.describe, by role. The one-line role note replaces the full note for a role only while that role's roles.describe entry still equals its entry here; an edited description always wins. |
+| `roles.stock_texts` | `5 entries` |  |  | The stock value of every other text or limit the full role note reads: msg_note, msg_note_more, msg_none, note_max and the rendered skill reference per host (from skill_host and main_skill). The one-line role note replaces the full note only while ALL of these still hold their stock values (and the role's roles.describe entry equals roles.stock_describe); an edit of any of them keeps the full, edited note. |
 | `roles.summary_guard` | `PreToolUse on Bash: refuses an ah-engine command the caller's role may not ru...` |  |  | One-line description of the engine-role-guard check in the generated reference. |
 | `roles.summary_note` | `SessionStart and SubagentStart context: tells the session its role, the engin...` |  |  | One-line description of the engine-role-note check in the generated reference. |
 | `roles.sw_guard` | `5 entries` |  |  | Switch context.roleGuard (default on): off lets every role run every engine verb (the PreToolUse Bash check and the command-line check step aside). |
 | `roles.sw_note` | `5 entries` |  |  | Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note. |
+| `roles.sw_note_short` | `5 entries` |  |  | Switch context.roleNoteShort (default on): a role listed in roles.describe_short gets the one-line role note (roles.msg_note_short) instead of the full note with the verb list, but only while every text and limit the full note reads (roles.msg_note, msg_note_more, msg_none, note_max, the skill reference, and that role's roles.describe entry) still holds its stock value (roles.stock_texts, roles.stock_describe); an edit of any of them keeps the full, edited note. Off gives every role the full note (the earlier behaviour). |
 
 ### lane_waste.toml / lane_test
 
@@ -6071,7 +6097,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `404 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `409 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8396,6 +8422,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.done_statuses` | `completed, done, cancelled, canceled` |  |  | Statuses (lowercase) that mean a task no longer blocks the ones waiting on it. |
 | `task_tracker.ellipsis` | `…` |  |  | What ends a subject that was cut. |
 | `task_tracker.event` | `UserPromptSubmit` |  |  | The hook event name in the output. |
+| `task_tracker.event_full` | `full_emitted` |  |  | Counter event: the full directive was sent. |
+| `task_tracker.event_short` | `short_emitted` |  |  | Counter event: the short reminder was sent. |
+| `task_tracker.event_short_same` | `short_suppressed_same_state` |  |  | Counter event: the short reminder was withheld because the task list is in the state the agent was already told (unchanged list, or the dedupe store holds the text). |
 | `task_tracker.file_token_re` | `(?:[\w.-]+/)+[\w.-]+\.\w+\|[\w-]+\.(?:rs\|js\|ts\|tsx\|toml\|md\|json\|py\|sh\|yml\|yaml...` |  |  | JavaScript regex source (global) of the words of a task that name a file: a path with a directory, or a name with a known extension. |
 | `task_tracker.footer_joiner` | ` ` |  |  | What stands between the demand line and the Jev footer. |
 | `task_tracker.freshness_joiner` | ` ` |  |  | What stands between the demand block and the open-tasks line. |
@@ -8444,11 +8473,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.spawn_names` | `Agent, Task, Workflow` |  |  | The tools that spawn an agent. |
 | `task_tracker.state_prefix` | `task-tracker-` |  |  | Prefix of the per-session state file that remembers when the full directive was last injected. |
 | `task_tracker.state_suffix` | `.json` |  |  | Suffix of the per-session state file. |
+| `task_tracker.stock_texts` | `6 entries` |  |  | The stock value of each text that context.taskTrackerTerse can reword, by key (the shipped value of that key). A key whose current value equals its entry here is unedited, so the switch may swap in terse_texts; any other value is the owner's own and stays. |
 | `task_tracker.stop_setting` | `6 entries` |  |  | Quiets DISPATCH NOW during the spawn stop. Where the switch is read from that silences the DISPATCH NOW line while the weekly-usage spawn stop is active (guards.dispatchQuietSpawnStop, default on). |
 | `task_tracker.subject_max` | `50` |  |  | The longest subject the open-tasks line quotes, in UTF-16 units. |
 | `task_tracker.subject_tail` | ` (oldest in_progress subject: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
 | `task_tracker.subject_unknown` | `(subject unknown)` |  |  | What stands for a subject that was never learned. |
 | `task_tracker.summary` | `UserPromptSubmit task-list discipline: the full directive or the short remind...` |  |  | One-line description of the task-tracker check in the generated reference. |
+| `task_tracker.terse_setting` | `6 entries` |  |  | Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off. |
+| `task_tracker.terse_texts` | `6 entries` |  |  | The factual wording used for an unedited text (see stock_texts) while context.taskTrackerTerse is on, by key. Same placeholders as the stock text of that key. |
 | `task_tracker.tier_arrow` | `→ ` |  |  | What starts a tier annotation. |
 | `task_tracker.tier_conf` | ` ({conf})` |  |  | The confidence part of a tier annotation; `{conf}` is the confidence rounded to two decimals. |
 | `task_tracker.tier_conf_floor` | `0.6` |  |  | A workspace or workflow verdict below this confidence (a decimal, written as text) is shown as the default tier. |
@@ -8489,9 +8521,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `410 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `415 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
-| `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
+| `settings_cli.sections` | `21 items` |  |  | The settings sections in display order: key, label, description. |
 
 ### webapi.toml / webapi
 
@@ -12810,6 +12842,49 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `job.engine_update` | `11 entries` |  |  | Automatic engine update check: runs `ah-engine engine-update --auto --json` as a subprocess. A no-op unless the setting engine.autoUpdate is stable or dev; the script limits itself to one check a day. Off when engine_update.every_ms is 0. |
 
+### engine_currency.toml / engine_currency
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `engine_currency.branch` | `dev` |  |  | The branch whose tip the running engine is compared with; it replaces {branch} in engine_currency.refs. |
+| `engine_currency.every_ms` | `3600000` |  | ms | How often the currency job runs; 0 turns it off. |
+| `engine_currency.git_program` | `git` |  |  | The git program the job runs (resolved through PATH). |
+| `engine_currency.git_timeout_ms` | `10000` |  | ms | Longest one git subprocess may run; its process group is killed at the limit and the result is unreadable. |
+| `engine_currency.hash_chars` | `12` |  | chars | How many characters of the files digest the status field and the log line show. |
+| `engine_currency.hash_object_args` | `-C, {checkout}, hash-object, --no-filters, --` |  |  | Arguments of the git call that gives the blob id of each live file, one line per file in order (the files are appended after the last argument). {checkout} is replaced; the filters are off so the id is the id of the bytes. |
+| `engine_currency.hash_paths` | `plugins/anti-hall/engine/defaults, plugins/anti-hall/engine/logic` |  |  | Paths (relative to the repository root and to the live plugin tree) whose files are compared by git blob id. |
+| `engine_currency.live_suffix` | `plugins/anti-hall` |  |  | What the engine's plugin root (the directory that holds engine/defaults) ends with inside a checkout-shaped tree; stripping it gives the live tree root that hash_paths are read from. A root that does not end with it is unreadable. |
+| `engine_currency.log_interval_ms` | `21600000` |  | ms | Least time before the same result for the same pair of commits and digests is logged again. |
+| `engine_currency.log_kind` | `currency` |  |  | The event-log kind of the lines the job writes. |
+| `engine_currency.ls_tree_args` | `7 items` |  |  | Arguments of the git call that lists the blob ids of hash_paths at a commit (the paths are appended after the last argument). {checkout} and {sha} are replaced. |
+| `engine_currency.max_files` | `2000` |  | files | Most live files read per run; a tree with more is unreadable (the walk is bounded). |
+| `engine_currency.msg_behind` | `engine is behind the checkout: live={live} branch_tip={dev} files={files}. Re...` |  |  | Event-log detail when the engine lags the branch tip. Placeholders: {live}, {dev}, {files}. |
+| `engine_currency.msg_files_differ` | `engine files differ from the checkout at the same commit: live={live} branch_...` |  |  | Event-log detail when the commit matches but files differ. Placeholders: {live}, {dev}, {files}. |
+| `engine_currency.msg_unreadable` | `engine currency not checked: {reason}` |  |  | Event-log detail when the comparison could not be made. Placeholders: {reason}. |
+| `engine_currency.poll_ms` | `20` |  | ms | How often the bounded runner checks whether a git subprocess has finished. |
+| `engine_currency.reason_no_checkout` | `checkout is not a directory` |  |  | Unreadable reason: the configured checkout is not a directory. |
+| `engine_currency.reason_no_files` | `live files unreadable` |  |  | Unreadable reason: the live files could not be listed or hashed (too many, none, or git failed). |
+| `engine_currency.reason_no_ref` | `no branch ref resolves` |  |  | Unreadable reason: none of engine_currency.refs resolves in the checkout (or git did not answer in time). |
+| `engine_currency.reason_no_root` | `plugin root is not inside a checkout-shaped tree` |  |  | Unreadable reason: the engine's plugin root is not inside a checkout-shaped tree (it does not end with engine_currency.live_suffix). |
+| `engine_currency.reason_no_sha` | `no build commit` |  |  | Unreadable reason: the engine's build version carries no commit. |
+| `engine_currency.reason_no_tree` | `branch tip tree unreadable` |  |  | Unreadable reason: git did not list the compared paths at the branch tip. |
+| `engine_currency.refs` | `refs/remotes/origin/{branch}, refs/heads/{branch}` |  |  | Refs tried in order for the branch tip. The local branch can be stale because deploys build from the remote-tracking ref, so that one comes first. {branch} is engine_currency.branch. |
+| `engine_currency.result_behind` | `behind` |  |  | Result label: the branch tip is not the engine's commit. |
+| `engine_currency.result_files_differ` | `files_differ` |  |  | Result label: the commit matches but a compared file differs. |
+| `engine_currency.result_ok` | `ok` |  |  | Result label (metric.engine_currency_check): the engine is the checkout's branch tip and every compared file matches. |
+| `engine_currency.result_unreadable` | `unreadable` |  |  | Result label: the comparison could not be made; the reason is in engine_currency.reason_*. |
+| `engine_currency.rev_parse_args` | `-C, {checkout}, rev-parse, --verify, --quiet, {ref}^{commit}` |  |  | Arguments of the git call that resolves a ref to a commit. {checkout} and {ref} are replaced. |
+| `engine_currency.sha_re` | `[+.]([0-9a-f]{7,40})(?:-dirty)?$` |  |  | Pattern that takes the commit out of the engine's build version (`0.2.1+d7e7b094`, `0.2.1+branch.d7e7b094-dirty`). Group 1 is the commit. |
+| `engine_currency.skip_names` | `.DS_Store` |  |  | File and directory names the live walk skips (files the operating system adds that git never holds). |
+| `engine_currency.source_checkout` | `6 entries` |  |  | Checkout the currency job compares with. |
+| `engine_currency.switch` | `6 entries` |  |  | Engine currency job on or off (kill switch). |
+
+### engine_currency.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.engine_currency` | `11 entries` |  |  | Engine currency: compare the running engine's commit and plugin files with the branch tip of the checkout named by diagnostics.engineCurrencyCheckout and report the difference. Report only: never fetches, deploys or rebuilds. Does nothing until the checkout is set. |
+
 ### post_update.toml / post_update
 
 | Key | Default | Env override | Unit | What it is |
@@ -14842,6 +14917,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `runtime_escalation_stop_unrecorded` | counter | stops |  | Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap). |
 | `silent_agent_nudge_acked` | counter | stops |  | Stop nudges of silent-agent-nudge withheld because this exact set of agents was acked for the session (silent_nudge.ack_*). |
 | `silent_agent_nudge_fired` | counter | stops |  | Stop nudges said by silent-agent-nudge for a background agent or heartbeat quiet for guards.silentAgentNudgeMin minutes (#519). |
+| `named_tree_bare` | counter | spawns |  | Spawns the shared-tree note exempted only because of a bare fresh-clone statement (guards.sharedTreeBareClone): the false-positive count of the old, narrower matcher. |
 | `spawn_reservations` | counter | spawns | outcome | Concurrent-cap reservation outcomes of allowed spawns (GH #494): reserved, foreground (allowed, no slot held), excluded_type (guards.cap_excluded_agent_types), write_failed (allowed unreserved), lock_busy (the unlocked count decided). |
 | `spawns_denied_over_cap` | counter | spawns |  | Agent spawns denied because the owner's concurrent-agent cap (guards.maxConcurrentAgents) was reached. |
 | `idle_rule_age_unknown` | counter | blocks | kind | Delivered R-idle blocks whose listed tasks had no known start time (a task list read from the store carries none), so idle_slot_minutes got nothing from them. |
@@ -14859,6 +14935,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `devswarm_parent_gate_suppressed` | counter | passes | reason | Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send). |
 | `mesh_noise_lookalike_kept` | counter | rows | kind | Rows or lines that start with a system prefix (poke, wake) but carry a mail provenance (an mtype, or a non-Primary sender), so they were counted as unread mail, by kind. |
 | `mesh_unread_position_unknown` | counter | counts | site | Unread counts reported unknown because the saved store read position was past the partition's message count, by site (count_for, union_of, shared_unread). |
+| `role_note_emitted` | counter | notes | form | Role notes sent, by form (emitted_short: the one-line note; emitted_full: the full note with the verb list). |
 | `advisor_rank` | counter | verdicts | result | Verdicts of the advisor rank rule (guards.advisorRank, GH #500) at each plan or retry block decision: skipped (main ranks equal or higher: no block), applied (main ranks lower), applied_unknown (main or advisor model unknown), applied_subagent (subagent: never exempted). |
 | `burn_breaker_bypass` | counter | calls | kind | Tool calls the burn-breaker check let through while the breaker held, by kind (commit: a commit or push, per call, never a lift (PR #472); restore: the restore class; report: a report write; send: a mesh send; tool: an always-allowed tool; inspect: another allowed command; doubt: an error while judging, allowed) (GH #458). |
 | `burn_breaker_paused` | counter | calls | reason | Tool calls the burn-breaker check paused, by reason (burn: the token line; waste: the waste sensor's hard mark) (GH #458). |
@@ -14878,6 +14955,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rt_edges` | counter | edges |  | Workspace state changes emitted. |
 | `rt_reconcile_repairs` | counter | edges |  | Changes a full reconcile found that the event path had not already applied: the health measure of the realtime event layer (close to 0 is healthy). |
 | `rt_shadow_mismatches` | counter | mismatches |  | Differences between the engine's workspace state and the Node witness's. |
+| `task_tracker_emitted` | counter | messages | form | Task tracker messages, by form (full_emitted: the full directive was sent; short_emitted: the short reminder was sent; short_suppressed_same_state: the short reminder was withheld because the agent was already told this state). |
 | `agent_outcome_kind` | counter | outcomes | kind | Outcomes the agent tracker counted of the kinds GH #458 added, by kind (shell_file, check, probe): soft outcomes: they never reset the burn or waste counts, they may only hold off the pause (burn.soft_hold). |
 | `agent_nudge_delivery_failed` | counter | deliveries | where | Nudge deliveries that failed, by where: queue (the session's reminder queue could not be written), wake (its wake feed could not be written) or owner_file (the owner notices file could not be written). A failed delivery is not counted in agent_nudge_sent or agent_nudge_to_owner. |
 | `agent_nudge_done_hold_released` | counter | holds |  | Done holds released early because the held child produced new output after the verdict (a hold that simply ran out is not counted). |
@@ -14907,6 +14985,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dswire_standdown` | counter | sweeps | kind | Action sweeps the engine skipped because the action's executor is not the engine. |
 | `dssup_appdb_date_unread` | counter | dates |  | Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full). |
 | `ingest_drops` | counter | paths | reason | Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason. |
+| `engine_currency_check` | counter | checks | result | Engine currency checks (diagnostics.engineCurrency on, a checkout set), by result: ok, behind, files_differ, unreadable. |
 | `devswarm_archived_child_kept` | counter | workspaces | reason | Marker-archived children still named by a nudge because the marker is no proof (devswarm.skipArchivedChildren on), by reason (descriptor_newer: both without a session id and the descriptor was written after the marker; session_unknown: the session ids differ or only one side has one). |
 | `devswarm_archived_child_skipped` | counter | workspaces | check, reason | Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker). |
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |

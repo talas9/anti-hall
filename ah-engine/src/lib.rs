@@ -21,6 +21,7 @@ pub mod client;
 pub mod compat;
 pub mod config;
 pub mod crash;
+pub mod currency;
 pub mod daemon;
 pub mod daemonenv;
 pub mod db;
