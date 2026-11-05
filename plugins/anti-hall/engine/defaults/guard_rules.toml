@@ -287,12 +287,12 @@ doc = "When the session summary is shown to the user (ui.sessionSummary, default
 value = { section = "ui", key = "sessionSummary", env = "ANTIHALL_UI_SESSION_SUMMARY", aliases = [], option = "", default = "end", values = ["off", "end"] }
 
 [guard_rules.banner_text]
-doc = "The session banner. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause."
-value = "anti-hall {version} active: {rules} rules enforced{last}."
+doc = "The session banner; the host shows it as \"SessionStart says: ...\", so it states it is info. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause."
+value = "ℹ️ anti-hall {version} OK (info, not an error) · {rules} rules on{last}"
 
 [guard_rules.banner_last]
 doc = "The last-session clause of the banner when blocks were recorded. Placeholders: {blocks}."
-value = "; last session {blocks} blocks"
+value = " · {blocks} guard blocks last session"
 
 [guard_rules.summary_text]
 doc = "The session summary. Placeholders: {blocks} blocks in this session, {top} the most frequent rules."
