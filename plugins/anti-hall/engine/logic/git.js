@@ -217,6 +217,15 @@ function splitSegmentsUncached(cmd) {
   const segments = [];
   let cur = '', i = 0, inSingle = false, inDouble = false;
   const n = cmd.length;
+  // GH #591 comment lexing. A `#` is a shell comment only at the start of a word: `lastBreak` is the index just past the last
+  // UNESCAPED, UNQUOTED word break (space, tab, newline, `;` `&` `|` `(`) the scan consumed, so an escaped break (`a\ #`, `a\;#`)
+  // or a vertical tab / carriage return never counts. `ansi` marks an open `$'...'` (backslash escapes a quote there), `braceDepth`
+  // an open `${...}` (a `#` in it is text), `btOpen` an open backtick body (its comment ends at the closing backtick, not the line),
+  // `unsure` a construct this scan only approximates (`$(`, a backtick, `${` or `$((` inside double quotes, `$((`): from there on no
+  // `#` hides anything. Every doubt keeps the text live.
+  let lastBreak = 0, ansi = false, dollarEnd = -1, braceDepth = 0, btOpen = false, unsure = false, arithDepth = 0;
+  // `arithDepth`: open parens of an unquoted `((..))` / `$((..))` (bash reads its body as arithmetic text, never as a comment). `unsure`
+  // is dropped at an unquoted newline once nothing is open, so one `"${x}"` earlier in a wrapper does not keep every later comment live.
   function flush() { if (cur.trim().length) segments.push(cur); cur = ''; }
   function flushWithSubst() { cur += ' ' + CMDSUBST_SENTINEL + ' '; flush(); }
   // the pending heredoc whose body starts after its opener line: the body is text for its consumer, never a command of this chain
@@ -226,6 +235,7 @@ function splitSegmentsUncached(cmd) {
     if (heredoc && i >= heredoc.lineEnd) {
       flush();
       i = Math.max(i, heredoc.end);
+      lastBreak = i;
       heredoc = null;
       inSingle = false;
       inDouble = false;
@@ -233,19 +243,40 @@ function splitSegmentsUncached(cmd) {
     }
     const c = cmd[i];
     const c2 = i + 1 < n ? cmd[i + 1] : '';
-    if (inSingle) { cur += c; if (c === "'") inSingle = false; i++; continue; }
+    if (inSingle) {
+      if (ansi && c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+      cur += c;
+      if (c === "'") inSingle = false;
+      i++;
+      continue;
+    }
     if (inDouble) {
       if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+      if ((c === '$' && c2 === '(') || c === '`' || (c === '$' && c2 === '{')) unsure = true;
       if ((c === '$' && c2 === '(') || c === '`') { cur += ' ' + CMDSUBST_SENTINEL + ' '; i += (c === '$') ? 2 : 1; continue; }
       cur += c;
       if (c === '"') inDouble = false;
       i++;
       continue;
     }
-    if (c === "'") { inSingle = true; cur += c; i++; continue; }
+    if (c === "'") { inSingle = true; ansi = dollarEnd === i; cur += c; i++; continue; }
     if (c === '"') { inDouble = true; cur += c; i++; continue; }
-    // backslash-newline line continuation outside quotes: one logical command
-    if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) { cur += ' '; i += (c2 === '\r') ? 3 : 2; continue; }
+    // GH #591: a `#` at the start of a word (lastBreak: right after an unescaped unquoted break) comments out the rest of its line, so an
+    // operator or quote inside the comment never opens a segment or quote. Any other `#` (`a#b`, `$#`, `a\ #`, `)#`, `>#`) stays text.
+    if (c === '#' && i === lastBreak && !unsure && !btOpen && braceDepth === 0 && arithDepth === 0) {
+      const nl = cmd.indexOf('\n', i);
+      i = nl < 0 ? n : nl;
+      continue;
+    }
+    if (c === ' ' || c === '\t') { cur += c; i++; lastBreak = i; continue; }
+    // backslash-newline line continuation outside quotes: one logical command (a break before it stays a break after it)
+    if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) {
+      const wasBreak = lastBreak === i;
+      cur += ' ';
+      i += (c2 === '\r') ? 3 : 2;
+      if (wasBreak) lastBreak = i;
+      continue;
+    }
     // a backslash outside quotes makes the NEXT character literal: never an operator boundary
     if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
     // the operator word stays on the current segment and the rest of the opener line is split as usual (`cat <<EOF | git commit -F -`
@@ -259,30 +290,42 @@ function splitSegmentsUncached(cmd) {
         continue;
       }
     }
-    if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
-    if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
+    if (c === '&' && c2 === '&') { flush(); i += 2; lastBreak = i; continue; }
+    if (c === '|' && c2 === '|') { flush(); i += 2; lastBreak = i; continue; }
     if (c === '|') {
       const prev = cur.length ? cur[cur.length - 1] : '';
       let precedingBackslashes = 0;
       if (prev === '>') for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
       if (prev === '>' && precedingBackslashes % 2 === 0) { cur += c; i++; continue; } // `>|` clobber redirect
-      flush(); i++; continue;
+      flush(); i++; lastBreak = i; continue;
     }
-    if (c === ';') { flush(); i++; continue; }
+    if (c === ';') { flush(); i++; lastBreak = i; continue; }
     if (c === '&' && c2 === '>') { cur += c; i++; continue; } // `&>` redirect-both
     if (c === '&') {
       const prev = cur.length ? cur[cur.length - 1] : '';
       let precedingBackslashes = 0;
       if (prev === '>' || prev === '<') for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
       if ((prev === '>' || prev === '<') && precedingBackslashes % 2 === 0) { cur += c; i++; continue; } // `2>&1`, `>&2`
-      flush(); i++; continue;
+      flush(); i++; lastBreak = i; continue;
     }
-    if (c === '\n') { flush(); i++; continue; }
-    if (c === ')') { flush(); i++; continue; }
+    if (c === '\n') { flush(); i++; lastBreak = i; if (arithDepth === 0 && !btOpen && braceDepth === 0) unsure = false; continue; }
+    if (c === ')') { if (arithDepth > 0) arithDepth--; flush(); i++; continue; }
+    if (c === '}' && braceDepth > 0) { braceDepth--; cur += c; i++; continue; }
     if ((c === '{' || c === '}') && isBraceGroupWord(cur, c, c2)) { flush(); i++; continue; }
-    if (c === '(') { flush(); i++; continue; }
-    if (c === '$' && c2 === '(') { flushWithSubst(); i += 2; continue; }
-    if (c === '`') { flushWithSubst(); i++; continue; }
+    if (c === '(') {
+      if (arithDepth > 0) arithDepth++;
+      else if (c2 === '(') { arithDepth = 2; flush(); i += 2; continue; }
+      flush(); i++; lastBreak = i; continue;
+    }
+    if (c === '$' && c2 === '(') {
+      if (arithDepth > 0) arithDepth++;
+      else if (cmd[i + 2] === '(') { arithDepth = 2; flushWithSubst(); i += 3; continue; }
+      flushWithSubst(); i += 2; continue;
+    }
+    if (c === '$' && c2 === '$') { cur += '$$'; i += 2; continue; } // the pid parameter: its 2nd `$` must not arm an ANSI-C `$'`
+    if (c === '$' && c2 === '{') { braceDepth++; cur += '${'; i += 2; continue; }
+    if (c === '`') { btOpen = !btOpen; flushWithSubst(); i++; continue; }
+    if (c === '$') dollarEnd = i + 1;
     cur += c;
     i++;
   }
