@@ -864,6 +864,25 @@ struct DaemonObserver<'a> {
     who: telemetry::Who,
 }
 
+/// The text of one blocking result, for the block log: what the host gives the model (a JSON block's reason, else the stderr of
+/// an exit 2). A block whose JSON carries no reason falls back to its stderr, so a Stop guard's exit-0 JSON block is never logged
+/// empty. An exit 2 that carries a JSON reason AND a different stderr message keeps both channels, joined with
+/// `telemetry.block_channel_joiner` (the JSON reason first); when one contains the other only the longer is kept.
+pub(crate) fn block_text_of(r: &crate::dispatch::combine::HookResult) -> String {
+    let text = crate::dispatch::combine::block_reason(r);
+    let err = r.err.trim_end();
+    if text.trim().is_empty() {
+        return err.to_string();
+    }
+    if r.code != Some(2) || err.trim().is_empty() || text.contains(err) {
+        return text;
+    }
+    if err.contains(text.as_str()) {
+        return err.to_string();
+    }
+    format!("{text}{}{err}", defaults::text("telemetry.block_channel_joiner"))
+}
+
 /// What a check that just finished read and noted (task #66 step 0): its transcript bytes and latency by transcript size class,
 /// and the counted events it noted (a kept-walk hit or the reason it missed).
 pub fn observe_check_cost_in(t: &Telemetry, event: &str, check: &str, micros: u64) {
@@ -1155,7 +1174,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             Answer::Defer => Verdict::Defer,
             // a block is exit 2, or exit 0 with a blocking JSON decision (the Stop guards answer that way)
             Answer::Decided(r, routes) if r.code == Some(2) || (r.code == Some(0) && crate::dispatch::combine::json_blocks(&r.out)) => {
-                Verdict::Routed(Box::new(Verdict::Block(r.err.trim_end().to_string())), routes.clone())
+                Verdict::Routed(Box::new(Verdict::Block(block_text_of(r))), routes.clone())
             }
             Answer::Decided(r, routes) if !r.out.is_empty() => Verdict::Routed(Box::new(Verdict::Advisory(r.out.trim_end().to_string())), routes.clone()),
             Answer::Decided(_, routes) => Verdict::Routed(Box::new(Verdict::Allow), routes.clone()),
@@ -2667,6 +2686,28 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hook(code: i32, out: &str, err: &str) -> crate::dispatch::combine::HookResult {
+        crate::dispatch::combine::HookResult { id: "g".into(), code: Some(code), out: out.into(), err: err.into() }
+    }
+
+    #[test]
+    fn a_block_is_logged_with_the_text_the_host_gives_the_model_whatever_channel_carried_it() {
+        // a Stop guard blocks with exit 0 and a JSON reason on stdout: its stderr is empty, and it used to be logged as ""
+        let json = r#"{"decision":"block","reason":"claim evidence guard: x has no matching check.\nDo instead: run it."}"#;
+        assert_eq!(block_text_of(&hook(0, json, "")), "claim evidence guard: x has no matching check.\nDo instead: run it.");
+        // a PreToolUse deny
+        let deny = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"no edits here"}}"#;
+        assert_eq!(block_text_of(&hook(0, deny, "")), "no edits here");
+        // exit 2 with stderr
+        assert_eq!(block_text_of(&hook(2, "", "stopped: reason\n")), "stopped: reason");
+        // a JSON block with no reason falls back to stderr
+        assert_eq!(block_text_of(&hook(0, r#"{"decision":"block"}"#, "why on stderr\n")), "why on stderr");
+        // exit 2 with a JSON reason and a different stderr: both channels are kept; a stderr that repeats the reason is not doubled
+        let both = block_text_of(&hook(2, r#"{"decision":"block","reason":"json says"}"#, "stderr says\n"));
+        assert_eq!(both, format!("json says{}stderr says", defaults::text("telemetry.block_channel_joiner")));
+        assert_eq!(block_text_of(&hook(2, r#"{"decision":"block","reason":"same"}"#, "same\n")), "same");
+    }
 
     #[test]
     fn the_watchdog_judges_startup_and_shutdown_by_their_own_clocks_not_the_loops() {
