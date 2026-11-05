@@ -13,6 +13,7 @@
 pub mod backfill;
 pub mod parse;
 pub mod scanview;
+pub mod store;
 pub mod tail;
 pub mod unknown;
 

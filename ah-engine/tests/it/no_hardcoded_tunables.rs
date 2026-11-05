@@ -67,6 +67,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the in-band mark of the task reconstruction for a status that is not a string (an internal sentinel character of the scan, never shown, never configured, and a string status that starts with it is treated as unsure)",
     ),
     (
+        "src/checks/taskstate/store.rs",
+        "take(8)",
+        "`{sid8}` of `taskstate.store_dir_names` is by its name the first 8 characters of the session id, the list-id naming convention of Claude Code's task store that task-guard's script applies too: the placeholder's meaning, not a limit anyone tunes",
+    ),
+    (
         "src/diag.rs",
         "",
         "the `diag heap` developer report (`--features diag`, absent from every release build): its table layout and usage text are the tool's own output format, not engine messages or tunables",

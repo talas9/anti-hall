@@ -1399,6 +1399,8 @@ Files:
 | `realtime.toml` | the realtime watch facility: backend, poll interval, debounce and ceiling, queue and directory caps, the filesystem types that are polled, SQLite side-file suffixes, the mount-table path, and the latency and CPU targets |
 | `judge.toml` | the judge calls the engine makes itself: the local Claude CLI client, the speculation-judge prompts and evidence limits, the mesh-triage worker's prompts and budgets, and the Jev-first cascade (thresholds, prompts, telemetry words) |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
+| `nudges.toml` | the nudge escalation ladder (#516): the severity class table (`nudges.kinds`), thresholds, the master switch (`nudges.enabled`, `ANTIHALL_NUDGES`), state path, block texts and telemetry step words |
+- **Nudge signals (GH #515, #517, #518).** The agent tracker raises four more signals; each reaches the ladder through `agent-reminders` and has its own kind. `stalled`: a running child agent with no call in flight and not hung, whose transcript offset, tool calls, commits, changes, edits and progress line did not change for `nudges.stall_limits.quiet_ms`, or whose progress line repeated with no outcome for `repeat_ms`; the reminder names the agent, its age and its last 2 distinct progress lines (kind `stalled_agents`). `idle_no_agents`: an idle main session with open, unblocked, unassigned tasks (the host task list, `nudges.idle_wake`) and no agent running for `idle_ms`, sent as a wake row to the session itself. `false_claim`: an idle child whose last line claims running work (`nudges.idle_wake_claims`) with no call in flight, no build or background shell and no output for `claim_ms`. `underparallel`: an idle main session under the agent cap with unassigned tasks while an agent runs, or gap lines of its last reply (`nudges.parallel_gap_phrases`) that no task covers: "dispatch them in parallel" (kind `parallel_dispatch`). Switches: settings `nudges.stall`, `nudges.idleWake`, `nudges.parallel`. Counter `nudge_signal` by `step` (sampled, stalled, claim_checked, claim_flagged, idle_wake, parallel); the tracker's `signal` events count each raise and its resolve (acted on). Kind hooks were checked against the hooks' real texts: a kind with `count_blocks` also counts its hooks' blocks (the cap and routing denies, task-guard's idle Stop block), and a Stop another hook blocks holds the ladder block to the next Stop.
 | `inject_gate.toml` | the injection gate: its settings (`context.injectGate*`), what it recognises in the hooks' output, its state bounds and wire words |
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
 | `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
@@ -1751,6 +1753,30 @@ fails open (exit 0, a note on stderr, `dispatch_stop_open` in the log), and so d
 when the guards run fine again). For an over-cap payload the engine does not decide from a capped prefix: Node's Stop
 hooks receive the full bytes first, and the cap applies only if they cannot run or make no decision. A hook's own block is
 never affected.
+
+**Nudges escalate (#516).** Advisories that repeat with no change stop being advisory. `nudges.toml` holds a severity class
+table: per kind the hook ids it watches, a class (`advisory` counted only, `escalate` blocks after `after` fires then every
+`every`, `block` = P0, blocks at the first fire) and the one required next action. The dispatcher (`dispatch/ladder.rs`) reads
+each call's hook results before the token cuts, counts at most one fire per kind per turn and session, and resets a kind when
+its hooks run quiet `quiet_reset` times in a row (the condition cleared). A due kind adds one `decision: block` to the next
+main-session `Stop`: two lines, one emoji, the required action and the consequence. A Stop with `stop_hook_active` never gets
+a ladder block, and any internal failure (corrupt state, a write that fails, a panic) adds nothing and is counted
+(`nudge_ladder_state_error` by `op`: read, parse, write, facts, subject). The ladder is a state machine over entries (idle, counting,
+pending, shown), tested in every transition. A guard's pass is read from the guard's OWN record, not from the ladder's history of it: a kind
+that declares a `guard` (`nudges.kinds`: its hook, its switch, its state-file prefixes; `nudges.guard_state` says how they are read) holds
+every ladder block at a Stop that hook let pass when its state files count a block in this session (task-guard at its own cap, with the
+guard's kind switched off, with the ladder enabled after the cap, or with the ladder's state lost); no count of passes lifts that, only the
+guard's own next block, its fact ending (the tasks are done) or its switch being turned off. A guard record that cannot be read blocks nothing
+and is counted (`facts`). A kind that declares a fact (`live_flags`: a tracker signal on an agent; `live_tasks`: an open task) has it read
+fresh at every Stop; the open-task fact is read from the list task-guard reads (Claude Code's task store first, `taskstate.store_*`, else the
+transcript tail as task-guard reconstructs it, `taskstate.tail_bytes`), so the ladder never calls a task open or done that the guard's cap decided otherwise. A `live_flags` kind is kept per agent (`nudges.subjects`): a reminder counts for the agent its queue row names (the lines
+`agent-reminders` took), and that agent's own signal ending (or the agent being gone, finished or dead) clears its entry (`acted`) whatever any
+other agent does; a fire that names no agent is not counted (`subject`). A fact that cannot be read blocks nothing and is counted. All ladder settings are off by default: `nudges.enabled`
+(master switch; also gates the folding below, `ANTIHALL_NUDGES`) and `nudges.kinds` in settings.json (per-kind class override, `off` to stop watching one). Telemetry: one `check`
+event per step, hook `nudge-<kind>`, event `fired`, `repeated`, `escalated`, `blocked`, `acted` or `ignored`: the compliance
+metric. With `nudges.enabled` on, a Stop block also carries the advisories of the other hooks in its reason (`dispatch.msg_stop_advisories`,
+cut at a word at `dispatch.stop_advisory_chars`, `0` = nothing folded), because the model reads only the reason there; off, the
+reason is the blocks' own.
 
 **Guards fail closed (D74).** The guard events (`dispatch.guard_events`: `PreToolUse`, `PermissionRequest`, `Stop`,
 `SubagentStop`) never turn a failure into a silent allow. The call answers exit 2 with `dispatch.msg_fail_closed` on stderr
