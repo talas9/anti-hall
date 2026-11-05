@@ -5189,7 +5189,12 @@ mod pair_rule_counters {
         std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
     }
 
-    fn run(tag: &str, body: &str, event: &str, mut p: Value, on: bool) -> Option<Option<Verdict>> {
+    fn run(tag: &str, body: &str, event: &str, p: Value, on: bool) -> Option<Option<Verdict>> {
+        run_with(tag, body, event, p, on, &[])
+    }
+
+    /// `run` with extra environment pairs (a test forces the spawn-by-task-id switch off with `ANTIHALL_PAIR_RULE_BY_TASK_ID=0`).
+    fn run_with(tag: &str, body: &str, event: &str, mut p: Value, on: bool, extra: &[(&str, &str)]) -> Option<Option<Verdict>> {
         let h = home(tag);
         std::fs::write(format!("{h}/t.jsonl"), body).unwrap();
         if !tag.starts_with("pr-unk") {
@@ -5198,6 +5203,7 @@ mod pair_rule_counters {
         let mut pairs = vec![("HOME".to_string(), h.clone())];
         // the switch defaults to on: an "off" case forces it off explicitly
         pairs.push(("ANTIHALL_PAIR_RULE".into(), if on { "1" } else { "0" }.into()));
+        pairs.extend(extra.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())));
         p["hook_event_name"] = json!(event);
         p["session_id"] = json!(tag);
         p["cwd"] = json!(h);
@@ -5221,7 +5227,8 @@ mod pair_rule_counters {
     fn pre_switch_off_counts_unnamed_and_prints_nothing_and_on_counts_fired() {
         let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
         drain();
-        let v = run("pr-pre-off", "", "PreToolUse", unnamed_spawn(), false);
+        let off_id = [("ANTIHALL_PAIR_RULE_BY_TASK_ID", "0")];
+        let v = run_with("pr-pre-off", "", "PreToolUse", unnamed_spawn(), false, &off_id);
         assert!(matches!(v, Some(Some(Verdict::Allow))), "off: nothing printed: {v:?}");
         let m = drain();
         assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed")]), 1);
@@ -5229,7 +5236,7 @@ mod pair_rule_counters {
         let named = json!({"tool_name": "Agent", "tool_input": {"description": "d", "prompt": "p", "name": "wake-worker"}});
         run("pr-pre-named", "", "PreToolUse", named, false);
         assert_eq!(drain().counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "named")]), 1);
-        let v = run("pr-pre-on", "", "PreToolUse", unnamed_spawn(), true);
+        let v = run_with("pr-pre-on", "", "PreToolUse", unnamed_spawn(), true, &off_id);
         assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("has no name")), "{v:?}");
         let m = drain();
         assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 1);
@@ -5279,6 +5286,66 @@ mod pair_rule_counters {
             assert_eq!(m.counter("pair_rule_suppressed", &[("reason", reason)]), 1, "{reason}");
         }
         assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0, "a step aside fires nothing");
+    }
+
+    /// A transcript whose task list is #400 in progress and #401 completed (and no agent).
+    fn tasks_400_401() -> String {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let mut out = String::new();
+        for (n, st) in [(400, "in_progress"), (401, "completed")] {
+            let create = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("[P1] t{n}"), "description": ""}}]}, "timestamp": ts});
+            let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}, "timestamp": ts});
+            let update = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": st}}]}, "timestamp": ts});
+            out.push_str(&format!("{create}\n{result}\n{update}\n"));
+        }
+        out
+    }
+
+    fn spawn_described(d: &str) -> Value {
+        json!({"tool_name": "Agent", "tool_input": {"description": d, "prompt": "p"}})
+    }
+
+    #[test]
+    fn pre_by_task_id_counts_its_result_and_fires_only_on_a_denial() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let list = tasks_400_401();
+        let obs = |m: &crate::metrics::Metrics, r: &str| m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", r)]);
+        let fired = |m: &crate::metrics::Metrics| m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]);
+        drain();
+        let v = run("pr-id-ok", &list, "PreToolUse", spawn_described("#400 gate"), true);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "an open task id pairs the spawn: {v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "paired_by_task_id"), obs(&m, "unnamed"), fired(&m)), (1, 0, 0));
+        let v = run("pr-id-none", &list, "PreToolUse", spawn_described("gate"), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("#<task id>")), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_no_task"), fired(&m)), (1, 1));
+        let v = run("pr-id-missing", &list, "PreToolUse", spawn_described("#999 gate"), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_no_task"), fired(&m)), (1, 1), "a missing task is no task");
+        let v = run("pr-id-closed", &list, "PreToolUse", spawn_described("#401 gate"), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_closed_task"), obs(&m, "unnamed_no_task"), fired(&m)), (1, 0, 1));
+        // unreadable evidence with a ref: accepted and counted
+        let mut p = spawn_described("#400 gate");
+        p["transcript_path"] = json!("/nonexistent/t.jsonl");
+        let v = run("pr-id-unread", &list, "PreToolUse", p, true);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "paired_unverified"), fired(&m)), (1, 0));
+        // pairRule off: the facts are counted, nothing is fired or printed
+        let v = run("pr-id-off", &list, "PreToolUse", spawn_described("#401 gate"), false);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_closed_task"), fired(&m)), (1, 0));
+        // by-id switch off: the base result label, whatever the description
+        let off_id = [("ANTIHALL_PAIR_RULE_BY_TASK_ID", "0")];
+        let v = run_with("pr-id-sw-off", &list, "PreToolUse", spawn_described("#400 gate"), true, &off_id);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && !x.out.contains("#<task id>")), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed"), obs(&m, "paired_by_task_id"), fired(&m)), (1, 0, 1));
     }
 }
 
@@ -5369,6 +5436,9 @@ mod pair_rule_pairing {
         let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
         let mut pairs = vec![("HOME".to_string(), h.clone())];
         pairs.push(("ANTIHALL_PAIR_RULE".to_string(), if on { "1" } else { "0" }.to_string()));
+        // this domain names its agents with one character, below pair_rule.name_min_chars: the by-task-id switch (which reads such a name as no
+        // name) is pinned off so the multiset pairing itself is what is measured
+        pairs.push(("ANTIHALL_PAIR_RULE_BY_TASK_ID".to_string(), "0".to_string()));
         let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
         // the saved details hold the whole list (the visible line may leave items out and says so)
         let saved = saved_details(&h);

@@ -109,6 +109,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"replyMaxChars\",\"type\":\"number\",\"default\":1200,\"min\":100,\"max\":100000,\"env\":\"ANTIHALL_REPLY_MAX_CHARS\"}",
   "{\"section\":\"guards\",\"key\":\"replyMaxLines\",\"type\":\"number\",\"default\":18,\"min\":3,\"max\":1000,\"env\":\"ANTIHALL_REPLY_MAX_LINES\"}",
   "{\"section\":\"guards\",\"key\":\"pairRule\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PAIR_RULE\"}",
+  "{\"section\":\"guards\",\"key\":\"pairRuleByTaskId\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PAIR_RULE_BY_TASK_ID\"}",
   "{\"section\":\"guards\",\"key\":\"pushedNotDone\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PUSHED_NOT_DONE\"}",
   "{\"section\":\"guards\",\"key\":\"claimLedger\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_claim_ledger\"}",
   "{\"section\":\"guards\",\"key\":\"pruneStopBlock\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PRUNE_STOP_BLOCK\"}",

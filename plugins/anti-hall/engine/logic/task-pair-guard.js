@@ -1,7 +1,11 @@
 // check = "task-pair-guard" (PreToolUse and PostToolUse on Agent and Task, Stop; Claude, engine-only, no Node twin; R-pair, switch guards.pairRule,
 // on by default). Every task is paired with the named agent working on it: spawn the agent with a `name`, then `TaskUpdate owner=<name>`, so
 // the task panel shows the owner and its live activity. Three facts, one per event:
-//   PreToolUse Agent/Task: the spawn has no usable `name` (shorter than pair_rule.name_min_chars): denied, with the step that clears it.
+//   PreToolUse Agent/Task: the spawn has no usable `name` (shorter than pair_rule.name_min_chars): denied, with the step that clears it,
+//   unless (switch guards.pairRuleByTaskId, on by default) its description names `#<id>` of an open task of the session's list: such an unnamed
+//   agent is paired by the task id, the pairing the Stop idle-task guard already accepts (task_guard.task_ref_re over the description). A named
+//   teammate's SendMessage reports do not reach the coordinator, so the coordinator's real spawn shape is an unnamed agent with the id in its
+//   description. Evidence that cannot be read (no transcript, an unreadable or inexactly read one) never stalls a spawn that names an id.
 //   PostToolUse Agent/Task: the named agent is running but no open task names it as owner: an advisory.
 //   Stop: (F2) a live agent with a launch name that no open task names as owner, or (F3) an in-progress task whose owner is that agent's id or
 //   description and not its launch name: blocked, listing at most pair_rule.ids_max items.
@@ -115,13 +119,19 @@ function prgScope(p, home, event) {
 // The open tasks of the session (null when the list cannot be read exactly: no transcript, an unreadable one or a tail read inexactly is
 // missing evidence, never "no open tasks").
 function prgOpenTasks(p, home) {
+  var all = prgAllTasks(p, home);
+  return all === null ? null : all.filter(tk.isOpen);
+}
+
+// Every task of the session's list, open or not (null when it cannot be read exactly, as above).
+function prgAllTasks(p, home) {
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string' || !home) return null;
   var given = p.session_id ? String(p.session_id) : '';
   var r = tk.tasksOf(home, given === '' ? undefined : given, tp, 'guard');
   if (r.unsure) ah.unable('tasks:tail_unsure');
   if (r.unsure || r.unreadable) return null;
-  return (r.tasks || []).filter(tk.isOpen);
+  return r.tasks || [];
 }
 
 // The launched agents of the transcript with their launch name and liveness: [{id, description, name, live}] (null when unreadable). Only
@@ -140,13 +150,45 @@ function prgAgents(p) {
 }
 
 // ---- PreToolUse ----
-function prgPre(p, on) {
+// The task numbers an Agent/Task call's description names: task-guard's parse (task_guard.task_ref_re over the description, as tk.evaluate and
+// the idle-task rule read an agent), each number once, at most pair_rule.id_refs_max of them.
+function prgInputRefs(inp) {
+  var d = prgIsObj(inp) && typeof inp.description === 'string' ? inp.description : '';
+  var re = new RegExp(ah.cfg('task_guard.task_ref_re'), 'g'), refs = [], m, max = ah.cfgNum('pair_rule.id_refs_max');
+  while (refs.length < max && (m = re.exec(d)) !== null) { if (refs.indexOf(m[1]) < 0) refs.push(m[1]); if (m[0].length === 0) re.lastIndex++; }
+  return refs;
+}
+
+// How an unnamed spawn stands against the task list: paired_by_task_id (its description names an open task), paired_unverified (it names a
+// number and the list cannot be read: missing evidence is never a stall), unnamed_closed_task (it names only tasks that exist but are not open),
+// unnamed_no_task (it names no task, or only numbers no task has). A result is a key of pair_rule.labels.
+function prgByTaskId(p, home) {
+  var refs = prgInputRefs(p.tool_input);
+  if (refs.length === 0) return 'unnamed_no_task';
+  var all = prgAllTasks(p, home);
+  if (all === null) return 'paired_unverified';
+  var open = {}, known = {};
+  all.forEach(function (t) { known['id:' + t.id] = true; if (tk.isOpen(t)) open['id:' + t.id] = true; });
+  if (refs.some(function (r) { return open['id:' + r] === true; })) return 'paired_by_task_id';
+  return refs.some(function (r) { return known['id:' + r] === true; }) ? 'unnamed_closed_task' : 'unnamed_no_task';
+}
+
+function prgPre(p, on, home) {
   var event = ah.cfg('pair_rule.event_pre'), name = prgInputName(p.tool_input);
   var unnamed = name.length < ah.cfgNum('pair_rule.name_min_chars');
-  prgObserved(event, unnamed ? 'unnamed' : 'named');
+  var byId = unnamed && ah.settings.bool('pair_rule.sw_by_id');
+  var result = !unnamed ? 'named' : 'unnamed';
+  if (byId) {
+    result = prgByTaskId(p, home);
+    prgObserved(event, result);
+    if (result === 'paired_by_task_id' || result === 'paired_unverified') return 'allow';
+  } else prgObserved(event, result);
   if (!unnamed || !on) return 'allow';
   prgFired(event, 'unnamed');
-  var reason = text.message('block', ah.cfg('pair_rule.guard_name'), { what: ah.cfg('pair_rule.msg_pre_what'), why: ah.cfg('pair_rule.msg_pre_why'), instead: ah.cfg('pair_rule.msg_pre_instead') });
+  var reason = text.message('block', ah.cfg('pair_rule.guard_name'), {
+    what: ah.cfg('pair_rule.msg_pre_what'), why: ah.cfg(byId ? 'pair_rule.msg_pre_why_id' : 'pair_rule.msg_pre_why'),
+    instead: ah.cfg(byId ? 'pair_rule.msg_pre_instead_id' : 'pair_rule.msg_pre_instead'),
+  });
   return { exact: { code: 2, out: text.blockJson(reason), err: '' } };
 }
 
@@ -159,6 +201,8 @@ function prgErrorResponse(tr) {
 function prgPost(p, on, home) {
   var event = ah.cfg('pair_rule.event_post'), name = prgInputName(p.tool_input);
   if (name === '' || prgErrorResponse(p.tool_response)) return 'allow'; // an unnamed spawn is the Pre fact; a failed spawn started nothing
+  // a name below pair_rule.name_min_chars is no name (the Pre fact too): with the by-id switch on there is no name to look for
+  if (name.length < ah.cfgNum('pair_rule.name_min_chars') && ah.settings.bool('pair_rule.sw_by_id')) return 'allow';
   var open = prgOpenTasks(p, home);
   if (open === null) { prgSuppressed('no_rows'); return 'allow'; }
   var lc = prgLc(name), paired = open.some(function (t) { return prgLc(t.owner) === lc; });
@@ -256,6 +300,8 @@ function prgStop(p, on, home) {
   var event = ah.cfg('pair_rule.event_stop');
   var open = prgOpenTasks(p, home), rows = open === null ? null : prgAgents(p);
   if (open === null || rows === null) { prgSuppressed('no_rows'); return 'allow'; }
+  // a launch name below pair_rule.name_min_chars is no name (the spawn check lets such an agent through when its description names a task id)
+  if (ah.settings.bool('pair_rule.sw_by_id')) rows.forEach(function (r) { if (r.name.length < ah.cfgNum('pair_rule.name_min_chars')) r.name = ''; });
   var unknown = rows.filter(function (r) { return r.name !== '' && r.live === null; });
   if (unknown.length > 0) prgSuppressed('liveness_unknown', unknown.length);
   var inProgress = ah.cfg('taskstate.in_progress_statuses');
@@ -328,7 +374,7 @@ function decide(p) {
   var why = prgScope(p, home, event);
   if (why !== null) { prgSuppressed(why); return 'allow'; }
   var on = ah.settings.bool('pair_rule.sw');
-  if (event === ah.cfg('pair_rule.event_pre')) return prgPre(p, on);
+  if (event === ah.cfg('pair_rule.event_pre')) return prgPre(p, on, home);
   if (!home) { prgSuppressed('no_rows'); return 'allow'; }
   return event === ah.cfg('pair_rule.event_post') ? prgPost(p, on, home) : prgStop(p, on, home);
 }

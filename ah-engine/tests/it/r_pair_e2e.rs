@@ -14,6 +14,8 @@ const GUARD: &str = "task pair guard";
 
 struct World {
     dir: PathBuf,
+    /// Set by a test to force the spawn-by-task-id switch off (`ANTIHALL_PAIR_RULE_BY_TASK_ID=0`); it defaults to on.
+    by_id_off: std::cell::Cell<bool>,
 }
 
 impl World {
@@ -22,7 +24,7 @@ impl World {
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         std::fs::create_dir_all(dir.join("proj/.git")).unwrap();
-        World { dir }
+        World { dir, by_id_off: std::cell::Cell::new(false) }
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -58,6 +60,11 @@ impl World {
             .stderr(Stdio::piped());
         // the switch defaults to on: an "off" case forces it off explicitly
         c.env("ANTIHALL_PAIR_RULE", if on { "1" } else { "0" });
+        // a spawn that is accepted is recorded by the spawn ceiling: lift it so a long table of accepted spawns is not stopped by it
+        c.env("ANTIHALL_MAX_CONCURRENT_AGENTS", "0");
+        if self.by_id_off.get() {
+            c.env("ANTIHALL_PAIR_RULE_BY_TASK_ID", "0");
+        }
         let mut ch = c.spawn().unwrap();
         ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
@@ -518,4 +525,237 @@ fn post_advisory_step_carries_the_whole_name_or_points_at_it() {
     let o = w.post("wake`worker", &t, true);
     assert!(pair_text(&o) && o.1.contains("details:"), "{o:?}");
     assert!(saved_details(&w).contains("owner \"wake`worker\""), "{}", saved_details(&w));
+}
+
+// ---- an unnamed spawn paired by `#<task id>` in its description (guards.pairRuleByTaskId, task #401 / issue #595) ----
+
+/// The task list of the by-id cases: #400 open, #401 completed, #402 open and owned by someone else, #403 pending.
+fn by_id_tasks() -> String {
+    transcript(&[task(400, "in_progress", None), task(401, "completed", None), task(402, "in_progress", Some("someone-else")), task(403, "pending", None)], &[])
+}
+
+impl World {
+    /// An `Agent` PreToolUse payload with a given `name` (None leaves it out) and `description` (None leaves it out) over the transcript `t`
+    /// (None: the payload carries no `transcript_path`).
+    fn pre_ref(&self, name: Option<&str>, description: Option<&str>, t: Option<&str>) -> (i32, String, String) {
+        let mut input = serde_json::json!({"prompt": "do it", "run_in_background": true, "subagent_type": "general-purpose"});
+        if let Some(n) = name {
+            input["name"] = n.into();
+        }
+        if let Some(d) = description {
+            input["description"] = d.into();
+        }
+        let mut p =
+            serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": self.path("proj"), "tool_name": "Agent", "tool_input": input});
+        if let Some(t) = t {
+            std::fs::write(self.path("t.jsonl"), t).unwrap();
+            p["transcript_path"] = self.path("t.jsonl").to_string_lossy().into_owned().into();
+        }
+        self.hook("PreToolUse", "Agent", "claude", &p, true)
+    }
+}
+
+fn denied(o: &(i32, String, String)) -> bool {
+    o.0 == 2 && (o.1.contains("has no name") || o.2.contains("has no name"))
+}
+
+#[test]
+fn pre_unnamed_spawn_with_an_open_task_id_in_the_description_is_accepted() {
+    let w = World::new("byid-table");
+    let t = by_id_tasks();
+    // (description, accepted) over the list: #400 open, #401 completed, #402 open and owned by someone else, #403 pending
+    let long_ref = format!("{} #400", "x".repeat(50_000));
+    let long_none = "x".repeat(50_000);
+    let table: Vec<(String, bool)> = vec![
+        ("#400 gate probe".into(), true),
+        ("gate probe #400".into(), true),
+        ("fix #400".into(), true),
+        ("ISSUE #400 GATE".into(), true),
+        ("[#400] gate".into(), true),
+        ("(#400)".into(), true),
+        ("#400,#401".into(), true),
+        ("#401,#400".into(), true),
+        ("#400#401".into(), true),
+        ("#402 gate".into(), true),
+        ("#403 gate".into(), true),
+        (long_ref, true),
+        ("#4000 gate".into(), false),
+        ("#40 gate".into(), false),
+        ("# 400 gate".into(), false),
+        ("#400a gate".into(), false),
+        ("#0400 gate".into(), false),
+        ("#\u{664}\u{660}\u{660} gate".into(), false),
+        ("\u{ff03}400 gate".into(), false),
+        ("task 400".into(), false),
+        ("#401 gate".into(), false),
+        ("#999 gate".into(), false),
+        ("#401,#999".into(), false),
+        ("".into(), false),
+        (long_none, false),
+    ];
+    for (d, accepted) in &table {
+        let o = w.pre_ref(None, Some(d), Some(&t));
+        let short: String = d.chars().take(40).collect();
+        if *accepted {
+            assert!(!pair_text(&o) && o.0 != 2, "{short:?} names an open task: accepted: {o:?}");
+        } else {
+            assert!(denied(&o), "{short:?} names no open task: denied: {o:?}");
+        }
+    }
+    let o = w.pre_ref(None, None, Some(&t));
+    assert!(denied(&o), "no description at all: denied: {o:?}");
+}
+
+#[test]
+fn pre_denial_names_the_extra_clearing_step_when_the_switch_is_on_and_the_old_text_when_off() {
+    let w = World::new("byid-text");
+    let t = by_id_tasks();
+    let on = w.pre_ref(None, Some("no ref here"), Some(&t));
+    assert!(denied(&on), "{on:?}");
+    assert!(on.1.contains("add name: \\\"<short-name>\\\" to the Agent call"), "keeps the name step: {on:?}");
+    assert!(on.1.contains("#<task id> of an open task in the description"), "adds the task id step: {on:?}");
+    w.by_id_off.set(true);
+    let off = w.pre_ref(None, Some("no ref here"), Some(&t));
+    assert!(denied(&off) && !off.1.contains("#<task id>"), "switch off: the base text: {off:?}");
+    assert!(off.1.contains("add name: \\\"<short-name>\\\" to the Agent call (the name you will set as the task owner), then spawn again."), "{off:?}");
+}
+
+#[test]
+fn pre_switch_off_denies_every_unnamed_spawn_whatever_the_description_and_prints_the_same_bytes() {
+    // the base behaviour: the description is not read, so every payload gets the one denial
+    let w = World::new("byid-off");
+    w.by_id_off.set(true);
+    let t = by_id_tasks();
+    let base = w.pre_ref(None, Some("no ref"), Some(&t));
+    assert!(denied(&base), "{base:?}");
+    for d in ["#400 gate", "gate #400", "[#400]", "#400,#401", "#402 x"] {
+        let o = w.pre_ref(None, Some(d), Some(&t));
+        assert_eq!(o, base, "{d:?}: switch off equals the base byte for byte");
+    }
+    assert_eq!(w.pre_ref(None, Some("#400 gate"), None), base, "no transcript: the same");
+}
+
+#[test]
+fn pre_named_spawn_with_or_without_a_ref_is_not_r_pairs() {
+    let w = World::new("byid-named");
+    let t = by_id_tasks();
+    for d in [Some("#400 gate"), Some("no ref"), Some("#999 gate"), None] {
+        let o = w.pre_ref(Some("gate-worker"), d, Some(&t));
+        assert!(!pair_text(&o) && o.0 != 2, "{d:?}: a named spawn is allowed: {o:?}");
+    }
+}
+
+#[test]
+fn pre_a_name_below_the_minimum_is_unnamed_and_a_ref_pairs_it() {
+    let w = World::new("byid-shortname");
+    let t = by_id_tasks();
+    for name in ["", " ", "  ", "x", "\t\t", "\u{1}\u{1}"] {
+        assert!(!pair_text(&w.pre_ref(Some(name), Some("#400 gate"), Some(&t))), "{name:?} + an open ref: accepted");
+        assert!(denied(&w.pre_ref(Some(name), Some("gate"), Some(&t))), "{name:?} + no ref: denied");
+        assert!(denied(&w.pre_ref(Some(name), Some("#401 gate"), Some(&t))), "{name:?} + a closed ref: denied");
+    }
+}
+
+#[test]
+fn pre_unreadable_task_list_accepts_a_spawn_that_names_a_task_id_and_still_denies_one_that_names_none() {
+    // missing evidence is never a stall: with a ref present and no readable list, the spawn is accepted (counted paired_unverified)
+    let w = World::new("byid-unreadable");
+    assert!(!pair_text(&w.pre_ref(None, Some("#400 gate"), None)), "no transcript_path: accepted");
+    let p = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("missing.jsonl"),
+        "tool_name": "Agent", "tool_input": {"description": "#400 gate", "prompt": "p"}});
+    let o = w.hook("PreToolUse", "Agent", "claude", &p, true);
+    assert!(!pair_text(&o) && o.0 != 2, "a transcript that does not exist: accepted: {o:?}");
+    assert!(denied(&w.pre_ref(None, Some("no ref"), None)), "no ref: the list does not matter: denied");
+    let p2 = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("missing.jsonl"),
+        "tool_name": "Agent", "tool_input": {"description": "no ref", "prompt": "p"}});
+    assert!(denied(&w.hook("PreToolUse", "Agent", "claude", &p2, true)), "an unreadable transcript and no ref: denied");
+}
+
+#[test]
+fn pre_switch_pair_rule_off_prints_nothing_for_an_unnamed_spawn_whatever_its_ref() {
+    let w = World::new("byid-pairrule-off");
+    let t = by_id_tasks();
+    std::fs::write(w.path("t.jsonl"), &t).unwrap();
+    for d in ["#400 gate", "no ref", "#401 x"] {
+        let p = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl"),
+            "tool_name": "Agent", "tool_input": {"description": d, "prompt": "p"}});
+        let o = w.hook("PreToolUse", "Agent", "claude", &p, false);
+        assert!(!pair_text(&o) && o.0 != 2, "{d:?}: pairRule off: {o:?}");
+    }
+}
+
+#[test]
+fn pre_steps_aside_for_codex_subagent_and_plan_mode_whatever_the_ref() {
+    let w = World::new("byid-scope");
+    let t = by_id_tasks();
+    std::fs::write(w.path("t.jsonl"), &t).unwrap();
+    let base = |d: &str| {
+        serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl"),
+        "tool_name": "Agent", "tool_input": {"description": d, "prompt": "p"}})
+    };
+    for d in ["#400 gate", "no ref", "#401 gate"] {
+        let mut sub = base(d);
+        sub["agent_id"] = "ag-1".into();
+        assert!(!pair_text(&w.hook("PreToolUse", "Agent", "claude", &sub, true)), "{d:?}: subagent payload");
+        let mut plan = base(d);
+        plan["permission_mode"] = "plan".into();
+        assert!(!pair_text(&w.hook("PreToolUse", "Agent", "claude", &plan, true)), "{d:?}: plan mode");
+        let mut codex = base(d);
+        codex["turn_id"] = "t-1".into();
+        codex["model"] = "gpt-5".into();
+        assert!(!pair_text(&w.hook("PreToolUse", "Agent", "codex", &codex, true)), "{d:?}: codex host");
+    }
+    // the twin: the same no-ref payload in scope is denied
+    assert!(denied(&w.hook("PreToolUse", "Agent", "claude", &base("no ref"), true)));
+}
+
+#[test]
+fn post_unnamed_spawn_paired_by_task_id_gets_no_advisory_and_a_short_name_is_no_name() {
+    let w = World::new("byid-post");
+    let t = by_id_tasks();
+    let o = {
+        std::fs::write(w.path("t.jsonl"), &t).unwrap();
+        let p = serde_json::json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl"),
+            "tool_name": "Agent", "tool_input": {"description": "#400 gate", "prompt": "p", "run_in_background": true},
+            "tool_response": {"status": "async_launched", "agentId": "a000000000000001"}});
+        w.hook("PostToolUse", "Agent", "claude", &p, true)
+    };
+    assert!(!pair_text(&o), "an unnamed agent has no name to check: {o:?}");
+    // a one-character name: the base printed the advisory; with the switch on it is no name (the Pre fact), so nothing
+    let short_post = |w: &World| {
+        let p = serde_json::json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl"),
+            "tool_name": "Agent", "tool_input": {"description": "#400 gate", "prompt": "p", "name": "x", "run_in_background": true},
+            "tool_response": {"status": "async_launched", "agentId": "a000000000000001"}});
+        w.hook("PostToolUse", "Agent", "claude", &p, true)
+    };
+    assert!(!pair_text(&short_post(&w)), "switch on: a one-character name is no name");
+    w.by_id_off.set(true);
+    assert!(pair_text(&short_post(&w)), "switch off: the base advisory");
+}
+
+#[test]
+fn stop_unnamed_agent_paired_by_task_id_is_not_blocked_and_a_short_launch_name_is_unnamed() {
+    let w = World::new("byid-stop");
+    w.track(&["#400 gate"]);
+    // the unnamed agent's task: owned by nobody / by its id / by its description
+    for owner in [None, Some("a000000000000001"), Some("#400 gate")] {
+        let t = transcript(&[task(400, "in_progress", owner)], &[("#400 gate", None)]);
+        let o = w.stop(&t, true, serde_json::json!({}));
+        assert!(!pair_text(&o), "{owner:?}: an unnamed agent is paired by the task id: {o:?}");
+    }
+    // a one-character launch name is no name when the switch is on; off, the base blocks the agent
+    let t = transcript(&[task(400, "in_progress", Some("someone-else"))], &[("#400 gate", Some("x"))]);
+    assert!(!pair_text(&w.stop(&t, true, serde_json::json!({}))), "switch on: a short launch name is unnamed");
+    w.by_id_off.set(true);
+    let off = w.stop(&t, true, serde_json::json!({}));
+    assert!(pair_text(&off) && off.1.contains("agent \\\"x\\\" owns no task"), "switch off: the base block: {off:?}");
+}
+
+#[test]
+fn stop_hook_active_and_named_agents_keep_their_behaviour_with_the_new_switch_on() {
+    let w = World::new("byid-stop-named");
+    w.track(&["#400 gate"]);
+    let t = transcript(&[task(400, "in_progress", Some("someone-else"))], &[("#400 gate", Some("gate-worker"))]);
+    assert!(pair_text(&w.stop(&t, true, serde_json::json!({}))), "a named agent that owns no task is still blocked, whatever its description says");
+    assert!(!pair_text(&w.stop(&t, true, serde_json::json!({"stop_hook_active": true}))), "stop_hook_active allows");
 }

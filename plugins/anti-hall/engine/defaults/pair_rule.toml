@@ -1,4 +1,4 @@
-# R-pair (plan v3 L11, GH #589): every task is paired with the named agent working on it. Check `task-pair-guard`
+# R-pair (plan v3 L11, GH #589; task-id pairing: task #401, issue #595): every task is paired with the agent working on it. Check `task-pair-guard`
 # (PreToolUse and PostToolUse on Agent and Task, Stop; Claude, engine-only, no Node twin). Logic: engine/logic/task-pair-guard.js. Every
 # switch, number, label and text is here (D88). The task keys it reuses (owner name key, OMC step-aside, open statuses, coordinator owner)
 # stay in task_guards.toml. With the switch off the facts are computed and counted (pair_rule_observed) and nothing is printed.
@@ -7,9 +7,13 @@
 doc = "Switch guards.pairRule (default on). On: an Agent or Task spawn without a name is denied, a named agent no open task names as owner gets an advisory, and a Stop with a live named agent that owns no open task (or an in-progress task owned by the agent's id or description instead of its launch name) is blocked. Off: the facts are only counted."
 value = { section = "guards", key = "pairRule", type = "boolean", env = "ANTIHALL_PAIR_RULE", option = "", default = true }
 
+[pair_rule.sw_by_id]
+doc = "Switch guards.pairRuleByTaskId (default on, kill switch). On: an Agent or Task spawn without a name is not denied when its description names `#<id>` of an open task of the session's list (the parse is task_guard.task_ref_re, the one the Stop idle-task guard reads), because a named teammate's reports do not reach the coordinator and the unnamed agent is paired by that task id; the PostToolUse advisory and the Stop block treat a name shorter than pair_rule.name_min_chars as no name. Needs guards.pairRule on to print anything. Off: every unnamed spawn is denied, as before."
+value = { section = "guards", key = "pairRuleByTaskId", type = "boolean", env = "ANTIHALL_PAIR_RULE_BY_TASK_ID", option = "", default = true }
+
 [pair_rule.summary]
 doc = "One-line summary of the task-pair-guard check."
-value = "Pairs every task with the named agent working on it: an unnamed spawn is denied, an agent no task names gets an advisory, a Stop with an unpaired live agent is blocked (guards.pairRule)."
+value = "Pairs every task with the agent working on it: an unnamed spawn is denied unless its description names an open task id (guards.pairRuleByTaskId), an agent no task names gets an advisory, a Stop with an unpaired live agent is blocked (guards.pairRule)."
 
 [pair_rule.guard_name]
 doc = "The guard id this check answers to in skip.json and in its messages."
@@ -33,6 +37,11 @@ min = 20
 [pair_rule.name_min_chars]
 doc = "Fewest characters an Agent or Task call's `name` needs to count as a name; a shorter or missing one is an unnamed spawn."
 value = 2
+min = 1
+
+[pair_rule.id_refs_max]
+doc = "Most distinct task numbers read from an unnamed spawn's description (task_guard.task_ref_re): a longer list is cut here, so a huge description cannot cost more than this many lookups."
+value = 64
 min = 1
 
 [pair_rule.name_max]
@@ -61,8 +70,8 @@ doc = "JavaScript regex source (case-insensitive) of a tool response string that
 value = '^\s*error\b'
 
 [pair_rule.labels]
-doc = "The text of each counter label value: results of pair_rule_observed (named, unnamed, paired, unpaired, clean, agent_without_task, inexact_owner), kinds of pair_rule_fired (unnamed, unpaired, agent_without_task, inexact_owner) and reasons of pair_rule_suppressed (subagent, codex, plan_mode, stop_hook_active, omc, no_rows, liveness_unknown)."
-value = { named = "named", unnamed = "unnamed", paired = "paired", unpaired = "unpaired", clean = "clean", agent_without_task = "agent_without_task", inexact_owner = "inexact_owner", subagent = "subagent", codex = "codex", plan_mode = "plan_mode", stop_hook_active = "stop_hook_active", omc = "omc", no_rows = "no_rows", liveness_unknown = "liveness_unknown" }
+doc = "The text of each counter label value: results of pair_rule_observed (named, unnamed, paired_by_task_id, paired_unverified, unnamed_no_task, unnamed_closed_task, paired, unpaired, clean, agent_without_task, inexact_owner), kinds of pair_rule_fired (unnamed, unpaired, agent_without_task, inexact_owner) and reasons of pair_rule_suppressed (subagent, codex, plan_mode, stop_hook_active, omc, no_rows, liveness_unknown)."
+value = { named = "named", unnamed = "unnamed", paired_by_task_id = "paired_by_task_id", paired_unverified = "paired_unverified", unnamed_no_task = "unnamed_no_task", unnamed_closed_task = "unnamed_closed_task", paired = "paired", unpaired = "unpaired", clean = "clean", agent_without_task = "agent_without_task", inexact_owner = "inexact_owner", subagent = "subagent", codex = "codex", plan_mode = "plan_mode", stop_hook_active = "stop_hook_active", omc = "omc", no_rows = "no_rows", liveness_unknown = "liveness_unknown" }
 
 [pair_rule.msg_pre_what]
 doc = "The spawn denial: what happened."
@@ -75,6 +84,14 @@ value = "An unnamed agent cannot be addressed by SendMessage and cannot be shown
 [pair_rule.msg_pre_instead]
 doc = "The spawn denial: the one step that clears it."
 value = "add name: \"<short-name>\" to the Agent call (the name you will set as the task owner), then spawn again."
+
+[pair_rule.msg_pre_why_id]
+doc = "The spawn denial when guards.pairRuleByTaskId is on: why (saved details)."
+value = "An unnamed agent cannot be addressed by SendMessage and cannot be shown as the owner of a task. An agent whose description names an open task (#<task id>) is paired with that task."
+
+[pair_rule.msg_pre_instead_id]
+doc = "The spawn denial when guards.pairRuleByTaskId is on: the steps that clear it (the base step plus the task id one), at most 115 characters."
+value = "add name: \"<short-name>\" to the Agent call, or put #<task id> of an open task in the description, then spawn again."
 
 [pair_rule.msg_post_what]
 doc = "The advisory after a named spawn that no open task names; `{name}` is the agent's name."
@@ -161,11 +178,11 @@ doc = "Tail of the item list when more than pair_rule.ids_max items are off; `{n
 value = " (+{n} more)"
 
 [metric.pair_rule_observed]
-doc = "Facts the R-pair check computed, by hook event and result (PreToolUse: named, unnamed; PostToolUse: paired, unpaired; Stop: clean, agent_without_task, inexact_owner), counted with the switch on or off. Unnamed-spawn rate = unnamed / all PreToolUse; unpaired-stop rate = (agent_without_task + inexact_owner) / all Stop."
+doc = "Facts the R-pair check computed, by hook event and result (PreToolUse: named, unnamed; with guards.pairRuleByTaskId on an unnamed spawn is counted instead as paired_by_task_id = its description names an open task, paired_unverified = it names a number and the task list is unreadable, unnamed_closed_task = it names only tasks that are not open, unnamed_no_task = it names no existing task; PostToolUse: paired, unpaired; Stop: clean, agent_without_task, inexact_owner), counted with the switch on or off. Unnamed-spawn rate = (unnamed + unnamed_no_task + unnamed_closed_task + paired_by_task_id + paired_unverified) / all PreToolUse; unpaired-stop rate = (agent_without_task + inexact_owner) / all Stop."
 value = { kind = "counter", unit = "calls", labels = ["event", "result"] }
 
 [metric.pair_rule_fired]
-doc = "Answers R-pair delivered (switch on), by hook event and kind (unnamed, unpaired, agent_without_task, inexact_owner)."
+doc = "Answers R-pair delivered (switch on), by hook event and kind (unnamed = a spawn denied, unpaired, agent_without_task, inexact_owner)."
 value = { kind = "counter", unit = "calls", labels = ["event", "kind"] }
 
 [metric.pair_rule_suppressed]
