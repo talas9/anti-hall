@@ -162,6 +162,7 @@ impl Env {
             .env("AH_ENGINE_VERSION", "arch-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
             .env("ANTIHALL_DEVSWARM_SUPERVISOR", "on")
+            .env("ANTIHALL_TASK_TRACKER_TERSE", "0") // the earlier tracker wording the golden file records: the terse wording ships on
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
             .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .current_dir(&self.repo)
