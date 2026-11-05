@@ -276,7 +276,9 @@ fn snap_create(n: u32, subject: &str) -> String {
 
 /// The overnight shape: three tasks at the head, task 1 taken (owner w1, in progress).
 fn snap_head() -> String {
-    snap_create(1, "first") + &snap_create(2, "second") + &snap_create(3, "third")
+    snap_create(1, "first")
+        + &snap_create(2, "second")
+        + &snap_create(3, "third")
         + &assistant_tool("u1", "TaskUpdate", json!({"taskId": "1", "status": "in_progress", "owner": "w1"}), "2026-10-06T12:02:00.000Z")
         + &result("u1", "Updated task #1")
 }
@@ -299,11 +301,17 @@ fn snap_rebuild(h: &str, t: &str, n: &str) -> Value {
 }
 
 fn snap_rows(v: &Value) -> Vec<(String, String, String, String)> {
-    v["rows"].as_array().unwrap().iter().map(|r| (r[0].as_str().unwrap().into(), r[1].as_str().unwrap().into(), r[2].as_str().unwrap().into(), r[3].as_str().unwrap().into())).collect()
+    v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r[0].as_str().unwrap().into(), r[1].as_str().unwrap().into(), r[2].as_str().unwrap().into(), r[3].as_str().unwrap().into()))
+        .collect()
 }
 
 fn snap_files(h: &str) -> Vec<String> {
-    std::fs::read_dir(format!("{h}/.anti-hall/{}", defaults::text("taskstate.snapshot_dir"))).map_or_else(|_| Vec::new(), |d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+    std::fs::read_dir(format!("{h}/.anti-hall/{}", defaults::text("taskstate.snapshot_dir")))
+        .map_or_else(|_| Vec::new(), |d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
 }
 
 fn row(id: &str, content: &str, status: &str, owner: &str) -> (String, String, String, String) {

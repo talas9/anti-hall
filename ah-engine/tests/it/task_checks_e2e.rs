@@ -710,7 +710,8 @@ fn idle_rule_does_not_treat_actionable_text_as_clock_waiting_or_blocked() {
 
 /// `bytes` of transcript lines that name no task, appended to `path`.
 fn snap_pad(path: &Path, bytes: usize) {
-    let one = format!("{}\n", serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "x".repeat(900)}]}}));
+    let one =
+        format!("{}\n", serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "x".repeat(900)}]}}));
     let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
     for _ in 0..bytes / one.len() + 1 {
         f.write_all(one.as_bytes()).unwrap();
