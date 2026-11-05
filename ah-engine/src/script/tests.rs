@@ -965,6 +965,468 @@ mod swarm {
         assert!(note("fix it", &other).is_none(), "the running agent works in another clone");
     }
 
+    // issue #487: a bare fresh-clone statement ("clone ~/x", "use ~/x as the working copy") names a tree, behind guards.sharedTreeBareClone
+    #[test]
+    fn shared_tree_bare_clone_phrasings_name_their_own_tree_only_when_the_switch_is_on() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = swarm_home("sw-bare");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        let bare = [
+            "Do the build: clone ~/x and build it, then fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x then test, fix hooks/foo.js and commit.",
+            "Fix hooks/foo.js. clone into ~/x and commit there.",
+            "Use ~/x as the working copy, fix hooks/foo.js and commit.",
+        ];
+        let still = [
+            "git clone ~/src ~/dst, then fix hooks/foo.js and commit.",
+            "Use ~/x/script to fix hooks/foo.js and commit.",
+            "Fix hooks/foo.js and commit; clone ~/proj/sub for reference.",
+            "Use ~/x as the working copy, but edit hooks/foo.js in place and commit.",
+        ];
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":false}}"#).unwrap();
+        for p in bare {
+            assert!(note(p).is_some(), "switch off keeps the note: {p}");
+        }
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        for p in bare {
+            assert!(note(p).is_none(), "switch on exempts: {p}");
+        }
+        for p in still {
+            assert!(note(p).is_some(), "switch on still notes: {p}");
+        }
+        assert!(note("fix hooks/foo.js and commit it.").is_some(), "two spawns on the real session tree still note");
+    }
+
+    // review of #487: a NEGATED bare statement ("do not use ~/x as the working copy") names no tree; the switch must not exempt it
+    #[test]
+    fn shared_tree_bare_clone_negated_phrasings_keep_the_note_with_the_switch_on() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = swarm_home("sw-bare-neg");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        for p in [
+            "Do not use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Don't use ~/x as the working copy, fix hooks/foo.js and commit.",
+            "Please never use ~/x as the clone. Fix hooks/foo.js and commit.",
+            "You must not use ~/x as the checkout; fix hooks/foo.js and commit.",
+        ] {
+            assert!(note(p).is_some(), "a negated statement keeps the note: {p}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "a kept note is not an avoided warning");
+        assert!(note("Use ~/x as the working copy, fix hooks/foo.js and commit.").is_none(), "the affirmative form still exempts");
+    }
+
+    // class fix of #487: a negation ANYWHERE in the clause that holds the isolation phrase keeps the note (a missed isolation costs one
+    // warning, a missed warning loses work). Each negated brief is paired with its affirmative twin, which the switch must still exempt, so a
+    // brief the bare matcher never reads cannot pass for the wrong reason.
+    #[test]
+    fn shared_tree_bare_clone_a_negation_anywhere_in_the_clause_keeps_the_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = swarm_home("sw-bare-clause");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            // dozens of spawns in one test: clear the spawn-rate window so the cap never answers instead of the note
+            crate::discard::harmless(std::fs::remove_file(format!("{h}/.anti-hall/swarm-spawns.log"))); // keep: the log may not exist yet
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        // (negated brief, affirmative twin)
+        let pairs = [
+            ("Do not actually use ~/x as the working copy; fix hooks/foo.js and commit.", "Actually use ~/x as the working copy; fix hooks/foo.js and commit."),
+            (
+                "Do not under any circumstances use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Under all circumstances use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Don't, under any circumstances, use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Do, under any circumstances, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "You shouldn\u{2019}t really, honestly use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "You should really, honestly use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Avoid having to use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Plan on having to use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            ("Never: clone into ~/x and build; fix hooks/foo.js and commit.", "Always: clone into ~/x and build; fix hooks/foo.js and commit."),
+            (
+                "Use ~/x as the working copy, not the session tree, then fix hooks/foo.js and commit.",
+                "Use ~/x as the working copy, the private one, then fix hooks/foo.js and commit.",
+            ),
+            (
+                "Use ~/x as the working copy rather than the session tree; fix hooks/foo.js and commit.",
+                "Use ~/x as the working copy, the private one; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Clone fresh into ~/x except for the lockfile; fix hooks/foo.js and commit.",
+                "Clone fresh into ~/x including the lockfile; fix hooks/foo.js and commit.",
+            ),
+            ("Clone ~/x without the history; fix hooks/foo.js and commit.", "Clone ~/x with the history; fix hooks/foo.js and commit."),
+            ("You cannot use ~/x as the working copy; fix hooks/foo.js and commit.", "You can use ~/x as the working copy; fix hooks/foo.js and commit."),
+            ("DO NOT use ~/x as the working copy; fix hooks/foo.js and commit.", "DO use ~/x as the working copy; fix hooks/foo.js and commit."),
+            ("Fix hooks/foo.js. Do not ever use ~/x as the working copy. Commit it.", "Fix hooks/foo.js. Do always use ~/x as the working copy. Commit it."),
+            (
+                "Instead of that, use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Beyond that, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "It is wrong to use ~/x as the working copy, nor should you; fix hooks/foo.js and commit.",
+                "It is right to use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+        ];
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        for (neg, _) in pairs {
+            assert!(note(neg).is_some(), "a negation in the clause keeps the note: {neg}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+        for (_, yes) in pairs {
+            assert!(note(yes).is_none(), "the affirmative twin is exempted: {yes}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), pairs.len() as u64, "one avoided warning per twin");
+        // the check is per clause, not per brief: a negation in ANOTHER sentence, bullet or paragraph leaves the affirmative clause exempt
+        for p in [
+            "Fix hooks/foo.js and do not push. Use ~/x as the working copy and commit.",
+            "Do not touch main. Clone ~/x and build; fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x. Don't edit the session repo; fix hooks/foo.js and commit.",
+            "No pushes today.\n\nClone ~/x and build; fix hooks/foo.js and commit.",
+            "Use ~/no-tree/x as the working copy; fix hooks/foo.js and commit.",
+            "Do the note-taking first, then use ~/x as the working copy; fix hooks/foo.js and commit.",
+        ] {
+            assert!(note(p).is_none(), "an affirmative clause stays exempt: {p}");
+        }
+        // switch off: the first negated briefs keep the note, and so do their twins (each call waits out the script fingerprint cadence, so only a few)
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":false}}"#).unwrap();
+        for (neg, yes) in pairs.iter().take(3) {
+            assert!(note(neg).is_some() && note(yes).is_some(), "switch off keeps every note: {neg} / {yes}");
+        }
+    }
+
+    // Shared harness of the class tests below: a project with another writer running, the bare switch on, the spawn log cleared per call.
+    fn bare_class_note(tag: &str, switch: bool) -> (String, impl FnMut(&str) -> Option<String>) {
+        let h = swarm_home(tag);
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), format!(r#"{{"guards":{{"maxConcurrentAgents":0,"sharedTreeBareClone":{switch}}}}}"#)).unwrap();
+        let hh = h.clone();
+        let mut n = 0u64;
+        (h, move |prompt: &str| {
+            n += 1;
+            crate::discard::harmless(std::fs::remove_file(format!("{hh}/.anti-hall/swarm-spawns.log"))); // keep: the log may not exist yet
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&hh, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        })
+    }
+
+    // class fix of #487 (round 2 review): the exact inputs the review reported, each ending "; fix hooks/foo.js and commit."
+    const BARE_TAIL: &str = "; fix hooks/foo.js and commit.";
+
+    #[test]
+    fn shared_tree_bare_clone_every_reviewed_negated_input_keeps_the_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (_h, mut note) = bare_class_note("sw-bare-rev", true);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let fragments = [
+            "Do not, even after carefully checking every setting, use ~/x as the working copy",
+            "Do not (e.g. after testing) use ~/x as the working copy",
+            "Do not, e.g. when rushed, use ~/x as the working copy",
+            "Do not (really! ever) use ~/x as the working copy",
+            "Please never (why? because it is shared) use ~/x as the working copy",
+            "Do not/never use ~/x as the working copy",
+            "Please don't/ever use ~/x as the working copy",
+            "Use ~/x as the working copy, not/never the shared checkout",
+            "Do NOT\u{a0}under any conceivable scenario\u{a0}use ~/x as the working copy",
+            "You mustn\u{2019}t, even (once), use ~/x as the working copy",
+            "Without\n\tany exceptions at all, use ~/x as the working copy",
+            "Rather\tthan blindly agreeing, use ~/x as the working copy",
+            "Use ~/x as the working copy, except when prohibited, use ~/x as the working copy",
+            "Do not (item 1. ever) use ~/x as the working copy",
+            "Do not/use ~/x as the working copy",
+            "Use ~/x as the working copy, avoiding further shared writes",
+            "Do not (e.g.\nany more) use ~/x as the working copy",
+            "Use ~/x as the working copy\n- not even temporarily",
+            "Clone fresh into ~/x, never under the current constraints",
+            "Use ~/x as the working copy, with no possibility of isolation",
+            "Don\u{2bc}t use ~/x as the working copy",
+            "Use ~/x as the working copy\u{2014}avoid/work around shared state",
+        ];
+        for f in fragments {
+            let prompt = format!("{f}{BARE_TAIL}");
+            assert!(note(&prompt).is_some(), "a negation in the clause keeps the note: {prompt:?}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+    }
+
+    // siblings of the same class: whatever is ambiguous widens the clause (brackets, quotes, abbreviations, ellipses, lists, every
+    // apostrophe) and a negation inside it still keeps the note
+    #[test]
+    fn shared_tree_bare_clone_sibling_negation_forms_keep_the_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (_h, mut note) = bare_class_note("sw-bare-sib", true);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let fragments = [
+            "Do not [see item 2.] use ~/x as the working copy",
+            "Do not see v 2. Use ~/x as the working copy",
+            "Never -- really! -- use ~/x as the working copy",
+            "Do not, e.g. When rushed, use ~/x as the working copy",
+            "Do not, per Dr. Smith, use ~/x as the working copy",
+            "Do not... Use ~/x as the working copy",
+            "Do not \u{2026} Use ~/x as the working copy",
+            "Do not (use ~/x as the working copy",
+            "Do not \"really; ever\" use ~/x as the working copy",
+            "Do not `a; b. C` use ~/x as the working copy",
+            "Do not \u{201c}ever. Really.\u{201d} use ~/x as the working copy",
+            "Don\u{b4}t use ~/x as the working copy",
+            "Don`t use ~/x as the working copy",
+            "Don\u{ff07}t use ~/x as the working copy",
+            "Don\u{2032}t use ~/x as the working copy",
+            "Don\u{2b9}t use ~/x as the working copy",
+            "Won\u{2018}t you use ~/x as the working copy",
+            "Do not:\n- use ~/x as the working copy",
+            "Do not:\n1. use ~/x as the working copy",
+            "Use ~/x as the working copy, see no-op/x.js",
+            "Use ~/x as the working copy (don't/won't share it)",
+            "Use ~/x as the working copy and/or not the shared one",
+            "Forbidden: use ~/x as the working copy",
+            "Do not push, nor use ~/x as the working copy",
+            "Refrain, and use ~/x as the working copy",
+            "Clone fresh into ~/x(not the session tree)",
+            "Clone fresh into ~/x\u{2014}not the shared tree",
+            "Do not:\n\n- use ~/x as the working copy",
+            "Please never \u{2014} why? Because it is shared \u{2014} use ~/x as the working copy",
+            "Please never \u{2013} why. Because it is shared \u{2013} use ~/x as the working copy",
+            "Use ~/x as the working copy; not even temporarily",
+            "Use ~/x as the working copy; do not push",
+            "Do not, per Prof. Smith, use ~/x as the working copy",
+            "Do not, per the U.S. Department, use ~/x as the working copy",
+            "Do not, at 5 p.m. Monday, use ~/x as the working copy",
+            "Do not, said the Ph.D. Student, use ~/x as the working copy",
+            "Please ne\u{200b}ver use ~/x as the working copy",
+            "Please do n't use ~/x as the working copy",
+            "Please refuse to use ~/x as the working copy",
+            "Please do n\u{ad}ot use ~/x as the working copy",
+            "Use ~/x as the working copy w/o sharing it",
+            "Use ~/x as the working copy, excluding the shared checkout",
+        ];
+        for f in fragments {
+            let prompt = format!("{f}{BARE_TAIL}");
+            assert!(note(&prompt).is_some(), "a negation in the clause keeps the note: {prompt:?}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+        // the masks must not widen a clause past a real sentence end: these stay exempt
+        for p in [
+            "Do not push (e.g. now). Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Use ~/x as the working copy, e.g. the cleaner one; fix hooks/foo.js and commit.",
+            "Never push to main! Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Why share it? Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Rules:\n\nNo pushes.\n\nUse ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Use ~/no-tree/x as the working copy; fix hooks/foo.js and commit.",
+            "Use ~/x as the working copy. Never push. Fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x. Do not touch main; fix hooks/foo.js and commit.",
+            "Use ~/x as the working copy. Never edit the session repo.",
+        ] {
+            assert!(note(p).is_none(), "an affirmative clause stays exempt: {p:?}");
+        }
+        // a list heading negation reaches its bullets; a negation in an earlier bullet reaches the next (fail safe)
+        let rules = "Rules:\n- never push\n- use ~/x as the working copy\n- fix hooks/foo.js and commit";
+        assert!(note(rules).is_some(), "bullets share one clause: {rules:?}");
+    }
+
+    // class fix of #487 (round 3): a sentence boundary is certain only at a stop, ! or ? followed by white space and a capital, outside
+    // every quote, bracket, dash and emphasis mark and not after an abbreviation. A semicolon is never one. Whatever is uncertain keeps the
+    // text one sentence, so a negation earlier in it keeps the note. Each negated brief has an affirmative twin the switch must exempt.
+    #[test]
+    fn shared_tree_bare_clone_an_uncertain_sentence_boundary_keeps_the_negated_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (_h, mut note) = bare_class_note("sw-bare-bound", true);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let pairs = [
+            // the reported input: a single-quoted span holds the stop, the clause is still negated
+            ("Do not 'especially! Really' use ~/x as the working copy", "Do 'especially! Really' use ~/x as the working copy"),
+            ("Do not \u{2018}especially! Really\u{2019} use ~/x as the working copy", "Do \u{2018}especially! Really\u{2019} use ~/x as the working copy"),
+            ("Do not 'why? Because it is shared' use ~/x as the working copy", "Do 'why? Because it is shared' use ~/x as the working copy"),
+            ("Do not 'really. Truly' use ~/x as the working copy", "Do 'really. Truly' use ~/x as the working copy"),
+            // an apostrophe earlier in the sentence is no quote and must not shift which span is quoted
+            (
+                "Do not say users' things 'especially! Really' and use ~/x as the working copy",
+                "Do say users' things 'especially! Really' and use ~/x as the working copy",
+            ),
+            ("Don't 'especially! Really' use ~/x as the working copy", "Do 'especially! Really' use ~/x as the working copy"),
+            // emphasis marks
+            ("Do not **especially! Really** use ~/x as the working copy", "Do **especially! Really** use ~/x as the working copy"),
+            ("Do not *especially? Really* use ~/x as the working copy", "Do *especially? Really* use ~/x as the working copy"),
+            ("Do not _especially! Really_ use ~/x as the working copy", "Do _especially! Really_ use ~/x as the working copy"),
+            // other brackets and quotes
+            ("Do not <especially! Really> use ~/x as the working copy", "Do <especially! Really> use ~/x as the working copy"),
+            ("Do not \u{3010}especially! Really\u{3011} use ~/x as the working copy", "Do \u{3010}especially! Really\u{3011} use ~/x as the working copy"),
+            ("Do not \u{300c}especially! Really\u{300d} use ~/x as the working copy", "Do \u{300c}especially! Really\u{300d} use ~/x as the working copy"),
+            ("Do not \u{201e}especially! Really\u{201c} use ~/x as the working copy", "Do \u{201e}especially! Really\u{201c} use ~/x as the working copy"),
+            // dashes written as hyphens
+            ("Do not - especially! Really - use ~/x as the working copy", "Do - especially! Really - use ~/x as the working copy"),
+            ("Do not -- especially! Really -- use ~/x as the working copy", "Do -- especially! Really -- use ~/x as the working copy"),
+            ("Do not \u{201a}especially! Really\u{2018} use ~/x as the working copy", "Do \u{201a}especially! Really\u{2018} use ~/x as the working copy"),
+            ("Do not ~~especially! Really~~ use ~/x as the working copy", "Do ~~especially! Really~~ use ~/x as the working copy"),
+            ("Do not \u{2015} especially! Really \u{2015} use ~/x as the working copy", "Do \u{2015} especially! Really \u{2015} use ~/x as the working copy"),
+            // an abbreviation before a capital is no sure sentence end
+            ("Do not do it on Sat. Really use ~/x as the working copy", "Do it on Sat. Really use ~/x as the working copy"),
+            // a spaced ellipsis is no stop
+            ("Do not . . . Really use ~/x as the working copy", "Do . . . Really use ~/x as the working copy"),
+            // a semicolon is never a certain boundary
+            ("Do not; Really use ~/x as the working copy", "Do; Really use ~/x as the working copy"),
+            ("Never push to main; Clone fresh into ~/x", "Always push to main; Clone fresh into ~/x"),
+        ];
+        for (neg, _) in pairs {
+            let prompt = format!("{neg}{BARE_TAIL}");
+            assert!(note(&prompt).is_some(), "an uncertain boundary keeps the negated note: {prompt:?}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+        for (_, yes) in pairs {
+            let prompt = format!("{yes}{BARE_TAIL}");
+            assert!(note(&prompt).is_none(), "the affirmative twin is exempted: {prompt:?}");
+        }
+        // a certain boundary still separates the sentences, so the marks above do not widen every clause
+        let certain = [
+            "Do not especially! Really use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push 'x'. Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push the **big** button! Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push - ever - ok. Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push. It's the user's call! Really, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Never push to main! Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push (ask 'why? Because'). Use ~/x as the working copy; fix hooks/foo.js and commit.",
+        ];
+        for p in certain {
+            assert!(note(p).is_none(), "a certain boundary leaves the affirmative sentence exempt: {p:?}");
+        }
+    }
+
+    // review round 2 (P2): two affirmative statements are both blanked from the in-place check, whatever their case
+    #[test]
+    fn shared_tree_bare_clone_a_repeated_affirmative_statement_stays_exempt() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (h, mut note) = bare_class_note("sw-bare-dup", true);
+        for p in [
+            "Use ~/x as the working copy; use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Use ~/x as the working copy. USE ~/y AS THE WORKING COPY. Fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x, and use ~/x as the working copy; fix hooks/foo.js and commit.",
+        ] {
+            assert!(note(p).is_none(), "every affirmative statement is blanked: {p:?}");
+        }
+        // a repeat that names the session tree itself still notes
+        let proj = format!("{h}/proj");
+        let p = format!("Use ~/x as the working copy; use {proj} as the working copy; fix hooks/foo.js and commit.");
+        assert!(note(&p).is_some(), "an in-tree statement keeps the note: {p:?}");
+    }
+
+    // review round 2 (P2): named_tree_bare counts the warning only when the spawn is allowed; a rate block shows no note on any path
+    #[test]
+    fn named_tree_bare_is_not_counted_on_a_rate_blocked_spawn() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = || {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("named_tree_bare", &[])
+        };
+        let h = swarm_home("sw-bare-rate");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let log = format!("{h}/.anti-hall/swarm-spawns.log");
+        // the window is full: twenty spawns a moment ago
+        std::fs::write(&log, (0..20).map(|i| (T0 + i).to_string() + "\n").collect::<String>()).unwrap();
+        let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": "Use ~/x as the working copy; fix hooks/foo.js and commit."},
+            "transcript_path": busy, "cwd": proj});
+        count();
+        for i in 0..5 {
+            let v = call(&h, &p, T0 + 100 + i, Some(8.0 * GB), 16.0 * GB);
+            assert!(text_of(&v).contains("spawn limit reached"), "blocked by the rate cap: {v:?}");
+        }
+        assert_eq!(count(), 0, "five blocked attempts avoided no warning");
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 20, "a block is not recorded");
+        // a minute later the window has moved on: the same spawn is allowed and the avoided warning counts once
+        assert!(advisory(call(&h, &p, T0 + 70_000, Some(8.0 * GB), 16.0 * GB)).is_none());
+        assert_eq!(count(), 1, "an allowed spawn counts its avoided warning");
+    }
+
+    // review of #487: named_tree_bare counts only warnings the switch really avoided (another writer active, no quiet rule)
+    #[test]
+    fn named_tree_bare_counts_only_the_warnings_the_switch_avoided() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = || {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("named_tree_bare", &[])
+        };
+        let h = swarm_home("sw-bare-cnt");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut run = |prompt: &str, tp: Option<&str>| {
+            n += 1;
+            let mut p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "cwd": proj});
+            if let Some(tp) = tp {
+                p["transcript_path"] = json!(tp);
+            }
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        let bare = "clone ~/x and fix hooks/foo.js and commit.";
+        count();
+        assert!(run(bare, None).is_none());
+        assert_eq!(count(), 0, "no transcript: nothing was running, no warning was avoided");
+        let idle = format!("{h}/idle.jsonl");
+        std::fs::write(&idle, "").unwrap();
+        assert!(run(bare, Some(&idle)).is_none());
+        assert_eq!(count(), 0, "no other writer running: no warning was avoided");
+        assert!(run(bare, Some(&busy)).is_none());
+        assert_eq!(count(), 1, "another writer is active: the switch avoided one warning");
+        std::fs::write(format!("{proj}/CLAUDE.md"), "Rules: no worktrees here.\n").unwrap();
+        assert!(run(bare, Some(&busy)).is_none());
+        assert_eq!(count(), 0, "a no-worktrees rule already silenced the warning");
+    }
+
     #[test]
     fn what_the_script_cannot_reproduce_defers_before_the_spawn_is_recorded() {
         let h = swarm_home("sw-defer");
