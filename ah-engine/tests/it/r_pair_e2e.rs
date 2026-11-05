@@ -566,19 +566,28 @@ fn pre_unnamed_spawn_with_an_open_task_id_in_the_description_is_accepted() {
     // (description, accepted) over the list: #400 open, #401 completed, #402 open and owned by someone else, #403 pending
     let long_ref = format!("{} #400", "x".repeat(50_000));
     let long_none = "x".repeat(50_000);
+    // a reference is `#N` leading the description or right after `task ` / `(` / `[` (pair_rule.task_ref_re); a `#N` mid-sentence is not one
     let table: Vec<(String, bool)> = vec![
         ("#400 gate probe".into(), true),
-        ("gate probe #400".into(), true),
-        ("fix #400".into(), true),
-        ("ISSUE #400 GATE".into(), true),
+        ("#400: work".into(), true),
+        ("#400 work".into(), true),
+        ("  #400 gate".into(), true),
+        ("task #400".into(), true),
+        ("Task #400 gate".into(), true),
         ("[#400] gate".into(), true),
         ("(#400)".into(), true),
+        ("gate (#400)".into(), true),
         ("#400,#401".into(), true),
-        ("#401,#400".into(), true),
         ("#400#401".into(), true),
         ("#402 gate".into(), true),
         ("#403 gate".into(), true),
-        (long_ref, true),
+        ("Use background color #400".into(), false),
+        ("fix issue #400 in css".into(), false),
+        ("gate probe #400".into(), false),
+        ("fix #400".into(), false),
+        ("ISSUE #400 GATE".into(), false),
+        ("#401,#400".into(), false),
+        (long_ref, false),
         ("#4000 gate".into(), false),
         ("#40 gate".into(), false),
         ("# 400 gate".into(), false),
@@ -607,13 +616,27 @@ fn pre_unnamed_spawn_with_an_open_task_id_in_the_description_is_accepted() {
 }
 
 #[test]
+fn pre_a_malformed_store_file_beside_a_valid_one_does_not_hide_an_open_task_the_transcript_shows() {
+    let w = World::new("byid-badstore");
+    let store = w.path("home").join(".claude/tasks/s1");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("400.json"), "{bad").unwrap();
+    std::fs::write(store.join("401.json"), r#"{"id":"401","subject":"done","status":"completed"}"#).unwrap();
+    let t = by_id_tasks();
+    let o = w.pre_ref(None, Some("#400 work"), Some(&t));
+    assert!(!pair_text(&o) && o.0 != 2, "the store is incomplete: the transcript's open #400 pairs: {o:?}");
+    let o = w.pre_ref(None, Some("no ref"), Some(&t));
+    assert!(denied(&o), "no ref still denied: {o:?}");
+}
+
+#[test]
 fn pre_denial_names_the_extra_clearing_step_when_the_switch_is_on_and_the_old_text_when_off() {
     let w = World::new("byid-text");
     let t = by_id_tasks();
     let on = w.pre_ref(None, Some("no ref here"), Some(&t));
     assert!(denied(&on), "{on:?}");
     assert!(on.1.contains("add name: \\\"<short-name>\\\" to the Agent call"), "keeps the name step: {on:?}");
-    assert!(on.1.contains("#<task id> of an open task in the description"), "adds the task id step: {on:?}");
+    assert!(on.1.contains("start the description with #<open task id>"), "adds the task id step: {on:?}");
     w.by_id_off.set(true);
     let off = w.pre_ref(None, Some("no ref here"), Some(&t));
     assert!(denied(&off) && !off.1.contains("#<task id>"), "switch off: the base text: {off:?}");
@@ -628,7 +651,7 @@ fn pre_switch_off_denies_every_unnamed_spawn_whatever_the_description_and_prints
     let t = by_id_tasks();
     let base = w.pre_ref(None, Some("no ref"), Some(&t));
     assert!(denied(&base), "{base:?}");
-    for d in ["#400 gate", "gate #400", "[#400]", "#400,#401", "#402 x"] {
+    for d in ["#400 gate", "gate #400", "[#400]", "#400,#401", "#402 x", "Use background color #400"] {
         let o = w.pre_ref(None, Some(d), Some(&t));
         assert_eq!(o, base, "{d:?}: switch off equals the base byte for byte");
     }

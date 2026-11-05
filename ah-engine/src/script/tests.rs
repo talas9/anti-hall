@@ -5317,7 +5317,7 @@ mod pair_rule_counters {
         let m = drain();
         assert_eq!((obs(&m, "paired_by_task_id"), obs(&m, "unnamed"), fired(&m)), (1, 0, 0));
         let v = run("pr-id-none", &list, "PreToolUse", spawn_described("gate"), true);
-        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("#<task id>")), "{v:?}");
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("#<open task id>")), "{v:?}");
         let m = drain();
         assert_eq!((obs(&m, "unnamed_no_task"), fired(&m)), (1, 1));
         let v = run("pr-id-missing", &list, "PreToolUse", spawn_described("#999 gate"), true);
@@ -5343,7 +5343,7 @@ mod pair_rule_counters {
         // by-id switch off: the base result label, whatever the description
         let off_id = [("ANTIHALL_PAIR_RULE_BY_TASK_ID", "0")];
         let v = run_with("pr-id-sw-off", &list, "PreToolUse", spawn_described("#400 gate"), true, &off_id);
-        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && !x.out.contains("#<task id>")), "{v:?}");
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && !x.out.contains("#<open task id>")), "{v:?}");
         let m = drain();
         assert_eq!((obs(&m, "unnamed"), obs(&m, "paired_by_task_id"), fired(&m)), (1, 0, 1));
     }

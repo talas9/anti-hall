@@ -8,7 +8,7 @@ doc = "Switch guards.pairRule (default on). On: an Agent or Task spawn without a
 value = { section = "guards", key = "pairRule", type = "boolean", env = "ANTIHALL_PAIR_RULE", option = "", default = true }
 
 [pair_rule.sw_by_id]
-doc = "Switch guards.pairRuleByTaskId (default on, kill switch). On: an Agent or Task spawn without a name is not denied when its description names `#<id>` of an open task of the session's list (the parse is task_guard.task_ref_re, the one the Stop idle-task guard reads), because a named teammate's reports do not reach the coordinator and the unnamed agent is paired by that task id; the PostToolUse advisory and the Stop block treat a name shorter than pair_rule.name_min_chars as no name. Needs guards.pairRule on to print anything. Off: every unnamed spawn is denied, as before."
+doc = "Switch guards.pairRuleByTaskId (default on, kill switch). On: an Agent or Task spawn without a name is not denied when its description names `#<id>` of an open task of the session's list (the parse is pair_rule.task_ref_re: `#<id>` leading the description, or after `task ` / `(` / `[`), because a named teammate's reports do not reach the coordinator and the unnamed agent is paired by that task id; the PostToolUse advisory and the Stop block treat a name shorter than pair_rule.name_min_chars as no name. Needs guards.pairRule on to print anything. Off: every unnamed spawn is denied, as before."
 value = { section = "guards", key = "pairRuleByTaskId", type = "boolean", env = "ANTIHALL_PAIR_RULE_BY_TASK_ID", option = "", default = true }
 
 [pair_rule.summary]
@@ -39,8 +39,12 @@ doc = "Fewest characters an Agent or Task call's `name` needs to count as a name
 value = 2
 min = 1
 
+[pair_rule.task_ref_re]
+doc = "JavaScript regex source of a task reference in an unnamed spawn's description that pairs the agent with that task (capture 1 is the number): `#N` at the start of the description, or right after `task ` or an opening `(` or `[`. A `#N` elsewhere (`background color #400`, `fix issue #400`) is not a reference. Deliberately stricter than task_guard.task_ref_re, which the Stop idle-task guard reads."
+value = '(?:^\s*|\b[Tt]ask\s+|[(\[])#(\d+)\b'
+
 [pair_rule.id_refs_max]
-doc = "Most distinct task numbers read from an unnamed spawn's description (task_guard.task_ref_re): a longer list is cut here, so a huge description cannot cost more than this many lookups."
+doc = "Most distinct task references (pair_rule.task_ref_re) read from an unnamed spawn's description; the spawn pairs when ANY of them is an open task. A longer list is cut here, so a huge description cannot cost more than this many lookups (the Stop idle-task guard reads task_guard.task_ref_re with no cap)."
 value = 64
 min = 1
 
@@ -91,7 +95,7 @@ value = "An unnamed agent cannot be addressed by SendMessage and cannot be shown
 
 [pair_rule.msg_pre_instead_id]
 doc = "The spawn denial when guards.pairRuleByTaskId is on: the steps that clear it (the base step plus the task id one), at most 115 characters."
-value = "add name: \"<short-name>\" to the Agent call, or put #<task id> of an open task in the description, then spawn again."
+value = "add name: \"<short-name>\" to the Agent call, or start the description with #<open task id>, then spawn again."
 
 [pair_rule.msg_post_what]
 doc = "The advisory after a named spawn that no open task names; `{name}` is the agent's name."

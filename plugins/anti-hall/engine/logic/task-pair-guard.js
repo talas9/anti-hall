@@ -2,8 +2,8 @@
 // on by default). Every task is paired with the named agent working on it: spawn the agent with a `name`, then `TaskUpdate owner=<name>`, so
 // the task panel shows the owner and its live activity. Three facts, one per event:
 //   PreToolUse Agent/Task: the spawn has no usable `name` (shorter than pair_rule.name_min_chars): denied, with the step that clears it,
-//   unless (switch guards.pairRuleByTaskId, on by default) its description names `#<id>` of an open task of the session's list: such an unnamed
-//   agent is paired by the task id, the pairing the Stop idle-task guard already accepts (task_guard.task_ref_re over the description). A named
+//   unless (switch guards.pairRuleByTaskId, on by default) its description names `#<id>` of an open task of the session's list as a task reference
+//   (pair_rule.task_ref_re: leading the description or after `task ` / `(` / `[`; `color #400` is not one): such an unnamed agent is paired by the id. A named
 //   teammate's SendMessage reports do not reach the coordinator, so the coordinator's real spawn shape is an unnamed agent with the id in its
 //   description. Evidence that cannot be read (no transcript, an unreadable or inexactly read one) never stalls a spawn that names an id.
 //   PostToolUse Agent/Task: the named agent is running but no open task names it as owner: an advisory.
@@ -131,7 +131,18 @@ function prgAllTasks(p, home) {
   var r = tk.tasksOf(home, given === '' ? undefined : given, tp, 'guard');
   if (r.unsure) ah.unable('tasks:tail_unsure');
   if (r.unsure || r.unreadable) return null;
-  return r.tasks || [];
+  var out = r.tasks || [];
+  out.fromStore = r.store === true;
+  return out;
+}
+
+// The tasks the transcript lists (empty when it cannot be read exactly). The task store is the list, but a store file that cannot be read is
+// skipped and its task would read as gone: the by-id pairing also trusts the transcript's open tasks the store does not carry.
+function prgTranscriptTasks(p) {
+  var tp = p.transcript_path;
+  if (!tp || typeof tp !== 'string') return [];
+  var r = ah.transcript.tasks(tp, 'guard', ah.cfgNum('taskstate.tail_bytes'), 0, p.session_id ? String(p.session_id) : undefined);
+  return r.unsure || r.unreadable ? [] : (r.tasks || []);
 }
 
 // The launched agents of the transcript with their launch name and liveness: [{id, description, name, live}] (null when unreadable). Only
@@ -150,11 +161,11 @@ function prgAgents(p) {
 }
 
 // ---- PreToolUse ----
-// The task numbers an Agent/Task call's description names: task-guard's parse (task_guard.task_ref_re over the description, as tk.evaluate and
-// the idle-task rule read an agent), each number once, at most pair_rule.id_refs_max of them.
+// The task numbers an Agent/Task call's description names as a task reference (pair_rule.task_ref_re: anchored, so `background color #400` is
+// not one), each number once, at most pair_rule.id_refs_max of them.
 function prgInputRefs(inp) {
   var d = prgIsObj(inp) && typeof inp.description === 'string' ? inp.description : '';
-  var re = new RegExp(ah.cfg('task_guard.task_ref_re'), 'g'), refs = [], m, max = ah.cfgNum('pair_rule.id_refs_max');
+  var re = new RegExp(ah.cfg('pair_rule.task_ref_re'), 'g'), refs = [], m, max = ah.cfgNum('pair_rule.id_refs_max');
   while (refs.length < max && (m = re.exec(d)) !== null) { if (refs.indexOf(m[1]) < 0) refs.push(m[1]); if (m[0].length === 0) re.lastIndex++; }
   return refs;
 }
@@ -169,6 +180,7 @@ function prgByTaskId(p, home) {
   if (all === null) return 'paired_unverified';
   var open = {}, known = {};
   all.forEach(function (t) { known['id:' + t.id] = true; if (tk.isOpen(t)) open['id:' + t.id] = true; });
+  if (all.fromStore) prgTranscriptTasks(p).forEach(function (t) { if (known['id:' + t.id] !== true) { known['id:' + t.id] = true; if (tk.isOpen(t)) open['id:' + t.id] = true; } });
   if (refs.some(function (r) { return open['id:' + r] === true; })) return 'paired_by_task_id';
   return refs.some(function (r) { return known['id:' + r] === true; }) ? 'unnamed_closed_task' : 'unnamed_no_task';
 }
