@@ -731,7 +731,7 @@ fn snap_stop(w: &World) -> Option<String> {
 }
 
 /// The overnight shape through the real dispatcher: two idle tasks are announced by one Stop, a burst of transcript lines then pushes
-/// their creates out of the tail window, and a later Stop that sees only a status change on one of them must still name both.
+/// their creates out of the tail window, and a later Stop that sees only the finishing of one of them must still name the other.
 #[test]
 fn snapshot_keeps_every_open_task_in_the_idle_block_after_the_creates_leave_the_tail() {
     let w = World::new("snap-stop");
@@ -742,11 +742,11 @@ fn snapshot_keeps_every_open_task_in_the_idle_block_after_the_creates_leave_the_
     assert!(first.contains("#21") && first.contains("#22"), "{first}");
     assert!(snap_stop(&w).is_none(), "the same set is not announced twice");
     snap_pad(&w.path("t.jsonl"), 1_700_000);
-    let update = serde_json::json!({"type": "assistant", "message": {"id": "u21", "role": "assistant", "content": [{"type": "tool_use", "id": "t21b", "name": "TaskUpdate", "input": {"taskId": "21", "status": "in_progress"}}]}, "timestamp": "2999-01-01T00:00:01.000Z"});
+    let update = serde_json::json!({"type": "assistant", "message": {"id": "u21", "role": "assistant", "content": [{"type": "tool_use", "id": "t21b", "name": "TaskUpdate", "input": {"taskId": "21", "status": "completed"}}]}, "timestamp": "2999-01-01T00:00:01.000Z"});
     let mut f = std::fs::OpenOptions::new().append(true).open(w.path("t.jsonl")).unwrap();
     writeln!(f, "{update}").unwrap();
     let second = snap_stop(&w).expect("the changed set is announced: the idle block on the second Stop");
-    assert!(second.contains("#21") && second.contains("#22"), "task #22 left the tail window but is still open: {second}");
+    assert!(second.contains("#22") && !second.contains("#21"), "task #22 left the tail window but is still open, #21 is finished: {second}");
     let dir = w.path("home/.anti-hall/ah-engine/task-snapshots");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "one snapshot file under the isolated home");
 }
