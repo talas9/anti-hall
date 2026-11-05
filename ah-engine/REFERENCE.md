@@ -3200,8 +3200,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `guard_rules.area` | `rules` |  |  | The key of the feature area (roles.groups) whose skill lists the rules. |
-| `guard_rules.banner_last` | `; last session {blocks} blocks` |  |  | The last-session clause of the banner when blocks were recorded. Placeholders: {blocks}. |
-| `guard_rules.banner_text` | `anti-hall {version} active: {rules} rules enforced{last}.` |  |  | The session banner. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause. |
+| `guard_rules.banner_last` | ` · {blocks} guard blocks last session` |  |  | The last-session clause of the banner when blocks were recorded. Placeholders: {blocks}. |
+| `guard_rules.banner_text` | `ℹ️ anti-hall {version} OK (info, not an error) · {rules} rules on{last}` |  |  | The session banner; the host shows it as "SessionStart says: ...", so it states it is info. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause. |
 | `guard_rules.blocks_limit` | `2000` |  |  | How many recorded blocks the banner and summary read at most. |
 | `guard_rules.blocks_window_days` | `14` |  | days | How many days of recorded blocks the banner and summary look back over to find a session. |
 | `guard_rules.cohort_labels` | `4 entries` |  |  | Label values of the #462 counters: the digest state of a session (on, off) in rule_digest_calls, and the result of the next call of a check after it blocked (compliant: not blocked again; repeat: blocked again) in rule_retry_compliant. |
