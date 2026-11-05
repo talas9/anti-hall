@@ -559,101 +559,148 @@ fn denied(o: &(i32, String, String)) -> bool {
     o.0 == 2 && (o.1.contains("has no name") || o.2.contains("has no name"))
 }
 
-#[test]
-fn pre_unnamed_spawn_with_an_open_task_id_in_the_description_is_accepted() {
-    let w = World::new("byid-table");
-    let t = by_id_tasks();
-    // (description, accepted) over the list: #400 open, #401 completed, #402 open and owned by someone else, #403 pending
-    let long_ref = format!("{} #400", "x".repeat(50_000));
-    let long_none = "x".repeat(50_000);
-    // a reference is `#N` as the leading token of the description (pair_rule.task_ref_re); any later `#N` is prose
-    let table: Vec<(String, bool)> = vec![
-        ("#400 gate probe".into(), true),
-        ("#400: work".into(), true),
-        ("#400 work".into(), true),
-        ("  #400 gate".into(), true),
-        ("#402 gate".into(), true),
-        ("#403 gate".into(), true),
-        ("task #400".into(), false),
-        ("Task #400 gate".into(), false),
-        ("[#400] gate".into(), false),
-        ("(#400)".into(), false),
-        ("gate (#400)".into(), false),
-        ("#400,#401".into(), false),
-        ("#400#401".into(), false),
-        ("do not task #400: unrelated work".into(), false),
-        ("Use background color (#400) in CSS".into(), false),
-        ("Use background color [#400] in CSS".into(), false),
-        ("unrelated task\n#400 prose".into(), false),
-        (format!("{}x", " ".repeat(1_000_000)), false),
-        (format!("{}#400 work", " ".repeat(1_000_000)), false),
-        ("Use background color #400".into(), false),
-        ("fix issue #400 in css".into(), false),
-        ("gate probe #400".into(), false),
-        ("fix #400".into(), false),
-        ("ISSUE #400 GATE".into(), false),
-        ("#401,#400".into(), false),
-        (long_ref, false),
-        ("#4000 gate".into(), false),
-        ("#40 gate".into(), false),
-        ("# 400 gate".into(), false),
-        ("#400a gate".into(), false),
-        ("#0400 gate".into(), false),
-        ("#\u{664}\u{660}\u{660} gate".into(), false),
-        ("\u{ff03}400 gate".into(), false),
-        ("task 400".into(), false),
-        ("#401 gate".into(), false),
-        ("#999 gate".into(), false),
-        ("#401,#999".into(), false),
-        ("".into(), false),
-        (long_none, false),
-    ];
-    for (d, accepted) in &table {
-        let o = w.pre_ref(None, Some(d), Some(&t));
-        let short: String = d.chars().take(40).collect();
-        if *accepted {
-            assert!(!pair_text(&o) && o.0 != 2, "{short:?} names an open task: accepted: {o:?}");
-        } else {
-            assert!(denied(&o), "{short:?} names no open task: denied: {o:?}");
+/// What the session offers as evidence for a by-id row.
+#[derive(Clone, Copy, Debug)]
+enum Ev {
+    /// The transcript list (`by_id_tasks`), no task store.
+    List,
+    /// A transcript list, but the payload has no `transcript_path`.
+    NoPath,
+    /// `transcript_path` names a file that does not exist.
+    MissingFile,
+    /// An EMPTY task-store directory beside a transcript that lists #400 open: the existing directory is the list (empty), not the transcript.
+    EmptyStore,
+    /// A store directory with only an invalid file, beside the same transcript.
+    BadStore,
+    /// A valid store (#405 open) beside the same transcript (#400 open): the store is the list.
+    Store,
+}
+
+impl World {
+    /// One by-id row: an unnamed spawn with `description` (None: no field) over the evidence `ev`.
+    fn by_id_row(&self, description: Option<&str>, ev: Ev) -> (i32, String, String) {
+        let store = self.path("home").join(".claude/tasks/s1");
+        match ev {
+            Ev::EmptyStore => std::fs::create_dir_all(&store).unwrap(),
+            Ev::BadStore => {
+                std::fs::create_dir_all(&store).unwrap();
+                std::fs::write(store.join("400.json"), "{bad").unwrap();
+            }
+            Ev::Store => {
+                std::fs::create_dir_all(&store).unwrap();
+                std::fs::write(store.join("405.json"), r#"{"id":"405","subject":"live","status":"in_progress"}"#).unwrap();
+            }
+            _ => ah_engine::discard::harmless(std::fs::remove_dir_all(&store)),
+        }
+        match ev {
+            Ev::NoPath => self.pre_ref(None, description, None),
+            Ev::MissingFile => {
+                let mut input = serde_json::json!({"prompt": "p"});
+                if let Some(d) = description {
+                    input["description"] = d.into();
+                }
+                let p = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": self.path("proj"),
+                    "transcript_path": self.path("missing.jsonl"), "tool_name": "Agent", "tool_input": input});
+                self.hook("PreToolUse", "Agent", "claude", &p, true)
+            }
+            _ => self.pre_ref(None, description, Some(&by_id_tasks())),
         }
     }
-    let o = w.pre_ref(None, None, Some(&t));
-    assert!(denied(&o), "no description at all: denied: {o:?}");
 }
 
+/// PRINCIPLE (the by-id path): allow ONLY on positive proof, every other branch denies (exit 2, counted). Proof = the description's LEADING
+/// token is `#<digits>` read exactly (within pair_rule.description_scan_max, ending at white space, `:` or the end of the whole description),
+/// the task list was read exactly (an existing task-store directory is the list, even empty; the transcript only when it is absent), and that
+/// task is open and unowned. Rows below: every missing or ambiguous evidence row expects exit 2; the positive rows exit 0.
 #[test]
-fn pre_a_readable_store_is_the_list_whatever_the_transcript_shows_and_a_bad_file_is_skipped() {
-    let w = World::new("byid-badstore");
-    let store = w.path("home").join(".claude/tasks/s1");
-    std::fs::create_dir_all(&store).unwrap();
-    std::fs::write(store.join("400.json"), "{bad").unwrap();
-    std::fs::write(store.join("401.json"), r#"{"id":"401","subject":"done","status":"completed"}"#).unwrap();
-    std::fs::write(store.join("402.json"), r#"{"id":"402","subject":"live","status":"in_progress"}"#).unwrap();
-    // the transcript lists #400 open, but the readable store is authoritative: #400 is not in it, so it does not pair
-    let t = by_id_tasks();
-    let o = w.pre_ref(None, Some("#400 work"), Some(&t));
-    assert!(denied(&o), "the store (not the transcript) is the list: #400 is not in it: {o:?}");
-    let o = w.pre_ref(None, Some("#401 work"), Some(&t));
-    assert!(denied(&o), "#401 is completed in the store: {o:?}");
-    let o = w.pre_ref(None, Some("#402 work"), Some(&t));
-    assert!(!pair_text(&o) && o.0 != 2, "#402 is open in the store: {o:?}");
-}
-
-#[test]
-fn pre_with_no_store_the_transcript_is_the_list_and_a_huge_description_is_denied_not_failed_open() {
-    let w = World::new("byid-nostore");
-    let t = by_id_tasks();
-    for d in ["#400 work", "#400: work", "  #400 work"] {
-        let o = w.pre_ref(None, Some(d), Some(&t));
-        assert!(!pair_text(&o) && o.0 != 2, "{d:?}: #400 is open: {o:?}");
+fn r_pair_e2e_by_id_allows_only_on_positive_proof() {
+    let w = World::new("byid-table");
+    let long_ref = format!("{} #400", "x".repeat(50_000));
+    let spaces = |n: usize| " ".repeat(n);
+    // (description, evidence, accepted). The list: #400 open, #401 completed, #402 open owned by someone else, #403 pending.
+    let table: Vec<(String, Ev, bool)> = vec![
+        // positive proof
+        ("#400 work".into(), Ev::List, true),
+        ("#400: work".into(), Ev::List, true),
+        ("  #400 work".into(), Ev::List, true),
+        ("#400".into(), Ev::List, true),
+        ("#400 gate probe".into(), Ev::List, true),
+        ("#403 gate".into(), Ev::List, true),
+        ("\n#400 work".into(), Ev::List, true),
+        ("#405 work".into(), Ev::Store, true),
+        // an open task another agent owns is not proof
+        ("#402 gate".into(), Ev::List, false),
+        ("#402".into(), Ev::List, false),
+        // closed or unknown task
+        ("#401 gate".into(), Ev::List, false),
+        ("#999 gate".into(), Ev::List, false),
+        ("#401,#999".into(), Ev::List, false),
+        // truncation and the scan limit (description_scan_max = 512)
+        (format!("{}#4000 work", spaces(508)), Ev::List, false),
+        (format!("{}#400 work", spaces(508)), Ev::List, false),
+        (format!("{}#400 work", spaces(600)), Ev::List, false),
+        (format!("{}x", spaces(1_000_000)), Ev::List, false),
+        (format!("{}#400 work", spaces(1_000_000)), Ev::List, false),
+        (long_ref, Ev::List, false),
+        // malformed or lookalike references
+        ("#400a unrelated".into(), Ev::List, false),
+        ("#4000 gate".into(), Ev::List, false),
+        ("#40 gate".into(), Ev::List, false),
+        ("#0400 gate".into(), Ev::List, false),
+        ("# 400 gate".into(), Ev::List, false),
+        ("#400,#401".into(), Ev::List, false),
+        ("#400#401".into(), Ev::List, false),
+        ("#\u{664}\u{660}\u{660} gate".into(), Ev::List, false),
+        ("\u{ff03}400 gate".into(), Ev::List, false),
+        // leading BOM, no-break space, zero-width: no reference (denied, documented), and after the digits too
+        ("\u{feff}#400 work".into(), Ev::List, false),
+        ("\u{a0}#400 work".into(), Ev::List, false),
+        ("\u{200b}#400 work".into(), Ev::List, false),
+        ("#400\u{a0}work".into(), Ev::List, false),
+        // prose forms
+        ("task #400".into(), Ev::List, false),
+        ("Task #400 gate".into(), Ev::List, false),
+        ("[#400] gate".into(), Ev::List, false),
+        ("(#400)".into(), Ev::List, false),
+        ("gate (#400)".into(), Ev::List, false),
+        ("do not task #400: unrelated work".into(), Ev::List, false),
+        ("Use background color (#400) in CSS".into(), Ev::List, false),
+        ("Use background color #400".into(), Ev::List, false),
+        ("unrelated task\n#400 prose".into(), Ev::List, false),
+        ("fix issue #400 in css".into(), Ev::List, false),
+        ("gate probe #400".into(), Ev::List, false),
+        ("fix #400".into(), Ev::List, false),
+        ("ISSUE #400 GATE".into(), Ev::List, false),
+        ("#401,#400".into(), Ev::List, false),
+        ("task 400".into(), Ev::List, false),
+        ("".into(), Ev::List, false),
+        ("x".repeat(50_000), Ev::List, false),
+        // the task store directory is authoritative whenever it exists
+        ("#400 work".into(), Ev::EmptyStore, false),
+        ("#400".into(), Ev::EmptyStore, false),
+        ("#400 work".into(), Ev::BadStore, false),
+        ("#400 work".into(), Ev::Store, false),
+        // missing or unreadable transcript evidence (no store): never proof
+        ("#400 work".into(), Ev::NoPath, false),
+        ("#401 work".into(), Ev::NoPath, false),
+        ("#999 work".into(), Ev::NoPath, false),
+        ("#400 work".into(), Ev::MissingFile, false),
+        ("#401 work".into(), Ev::MissingFile, false),
+        ("#999 work".into(), Ev::MissingFile, false),
+        ("no ref".into(), Ev::MissingFile, false),
+    ];
+    for (d, ev, accepted) in &table {
+        let o = w.by_id_row(Some(d), *ev);
+        let short: String = d.chars().take(40).collect();
+        if *accepted {
+            assert!(!pair_text(&o) && o.0 != 2, "{short:?} over {ev:?} is positive proof: accepted: {o:?}");
+        } else {
+            assert!(denied(&o), "{short:?} over {ev:?} is not positive proof: denied: {o:?}");
+        }
     }
-    for d in ["#401 work", "#999 work"] {
-        let o = w.pre_ref(None, Some(d), Some(&t));
-        assert!(denied(&o), "{d:?}: closed or nonexistent: {o:?}");
+    for ev in [Ev::List, Ev::NoPath, Ev::MissingFile, Ev::EmptyStore] {
+        assert!(denied(&w.by_id_row(None, ev)), "no description at all over {ev:?}: denied");
     }
-    let huge = format!("{}x", " ".repeat(1_000_000));
-    let o = w.pre_ref(None, Some(&huge), Some(&t));
-    assert_eq!(o.0, 2, "1M spaces + x: denied (exit 2), never fail-open: {o:?}");
 }
 
 #[test]
@@ -704,21 +751,6 @@ fn pre_a_name_below_the_minimum_is_unnamed_and_a_ref_pairs_it() {
         assert!(denied(&w.pre_ref(Some(name), Some("gate"), Some(&t))), "{name:?} + no ref: denied");
         assert!(denied(&w.pre_ref(Some(name), Some("#401 gate"), Some(&t))), "{name:?} + a closed ref: denied");
     }
-}
-
-#[test]
-fn pre_unreadable_task_list_accepts_a_spawn_that_names_a_task_id_and_still_denies_one_that_names_none() {
-    // missing evidence is never a stall: with a ref present and no readable list, the spawn is accepted (counted paired_unverified)
-    let w = World::new("byid-unreadable");
-    assert!(!pair_text(&w.pre_ref(None, Some("#400 gate"), None)), "no transcript_path: accepted");
-    let p = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("missing.jsonl"),
-        "tool_name": "Agent", "tool_input": {"description": "#400 gate", "prompt": "p"}});
-    let o = w.hook("PreToolUse", "Agent", "claude", &p, true);
-    assert!(!pair_text(&o) && o.0 != 2, "a transcript that does not exist: accepted: {o:?}");
-    assert!(denied(&w.pre_ref(None, Some("no ref"), None)), "no ref: the list does not matter: denied");
-    let p2 = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("missing.jsonl"),
-        "tool_name": "Agent", "tool_input": {"description": "no ref", "prompt": "p"}});
-    assert!(denied(&w.hook("PreToolUse", "Agent", "claude", &p2, true)), "an unreadable transcript and no ref: denied");
 }
 
 #[test]

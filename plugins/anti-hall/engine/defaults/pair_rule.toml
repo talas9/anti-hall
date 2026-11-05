@@ -8,7 +8,7 @@ doc = "Switch guards.pairRule (default on). On: an Agent or Task spawn without a
 value = { section = "guards", key = "pairRule", type = "boolean", env = "ANTIHALL_PAIR_RULE", option = "", default = true }
 
 [pair_rule.sw_by_id]
-doc = "Switch guards.pairRuleByTaskId (default on, kill switch). On: an Agent or Task spawn without a name is not denied when its description names `#<id>` of an open task of the session's list (the parse is pair_rule.task_ref_re: `#<id>` as the leading token of the description, within its first pair_rule.description_scan_max characters), because a named teammate's reports do not reach the coordinator and the unnamed agent is paired by that task id; the PostToolUse advisory and the Stop block treat a name shorter than pair_rule.name_min_chars as no name. Needs guards.pairRule on to print anything. Off: every unnamed spawn is denied, as before."
+doc = "Switch guards.pairRuleByTaskId (default on, kill switch). On: an Agent or Task spawn without a name is not denied when its description starts with `#<id>` of an open task of the session's list that no other agent owns (the leading token only, a bounded linear scan within its first pair_rule.description_scan_max characters; allow only on positive proof, so an unreadable task list, an unclear reference or a task another agent owns is denied), because a named teammate's reports do not reach the coordinator and the unnamed agent is paired by that task id; the PostToolUse advisory and the Stop block treat a name shorter than pair_rule.name_min_chars as no name. Needs guards.pairRule on to print anything. Off: every unnamed spawn is denied, as before."
 value = { section = "guards", key = "pairRuleByTaskId", type = "boolean", env = "ANTIHALL_PAIR_RULE_BY_TASK_ID", option = "", default = true }
 
 [pair_rule.summary]
@@ -39,19 +39,22 @@ doc = "Fewest characters an Agent or Task call's `name` needs to count as a name
 value = 2
 min = 1
 
-[pair_rule.task_ref_re]
-doc = "JavaScript regex source of the task reference in an unnamed spawn's description that pairs the agent with that task (capture 1 is the number): `#N` as the LEADING token of the description (optional leading white space, then `#N` followed by white space, `:` or the end), nothing else. A `#N` anywhere later (`do not task #400`, `background color (#400)`, `[#400]`, a second line) is prose, not a reference. This is the pair-rule's own stricter, start-anchored regex (no multiline flag); it is NOT the parse of the Stop idle-task guard, which reads task_guard.task_ref_re (`#N` anywhere)."
-value = '^\s*#(\d+)(?:\s|:|$)'
-
 [pair_rule.description_scan_max]
-doc = "Most characters of an unnamed spawn's description examined for the task reference, cut before any regex runs (the reference must start within them; a description of mostly white space cannot cost the regex engine its memory). A spawn whose reference lies beyond is unnamed."
+doc = "Most characters of an unnamed spawn's description the reference scan reads (a bounded linear scan, no regex). Allow only on positive proof: a first token at or after this limit, or a digit run that reaches it, is unclear and denied."
 value = 512
 min = 1
 
-[pair_rule.id_refs_max]
-doc = "Most distinct task references (pair_rule.task_ref_re) read from an unnamed spawn's description; the spawn pairs when ANY of them is an open task. A longer list is cut here (the Stop idle-task guard reads task_guard.task_ref_re with no cap)."
-value = 64
-min = 1
+[pair_rule.ref_lead_chars]
+doc = "Characters the reference scan skips before the reference (ASCII white space). A no-break space, byte order mark or zero-width character is not one: a description that starts with it has no reference and is denied."
+value = " \t\n\r"
+
+[pair_rule.ref_sigil]
+doc = "The character that starts a task reference in an unnamed spawn's description (`#` + digits)."
+value = "#"
+
+[pair_rule.ref_end_chars]
+doc = "Characters that may follow the digits of the task reference (ASCII white space and `:`), besides the end of the whole description. Anything else (`#400a`, `#400,#401`, `#400#401`) is unclear and denied."
+value = " \t\n\r:"
 
 [pair_rule.name_max]
 doc = "Most characters of an agent name or task owner shown on the visible line of a message (the saved details carry it whole)."
@@ -79,8 +82,8 @@ doc = "JavaScript regex source (case-insensitive) of a tool response string that
 value = '^\s*error\b'
 
 [pair_rule.labels]
-doc = "The text of each counter label value: results of pair_rule_observed (named, unnamed, paired_by_task_id, paired_unverified, unnamed_no_task, unnamed_closed_task, paired, unpaired, clean, agent_without_task, inexact_owner), kinds of pair_rule_fired (unnamed, unpaired, agent_without_task, inexact_owner) and reasons of pair_rule_suppressed (subagent, codex, plan_mode, stop_hook_active, omc, no_rows, liveness_unknown)."
-value = { named = "named", unnamed = "unnamed", paired_by_task_id = "paired_by_task_id", paired_unverified = "paired_unverified", unnamed_no_task = "unnamed_no_task", unnamed_closed_task = "unnamed_closed_task", paired = "paired", unpaired = "unpaired", clean = "clean", agent_without_task = "agent_without_task", inexact_owner = "inexact_owner", subagent = "subagent", codex = "codex", plan_mode = "plan_mode", stop_hook_active = "stop_hook_active", omc = "omc", no_rows = "no_rows", liveness_unknown = "liveness_unknown" }
+doc = "The text of each counter label value: results of pair_rule_observed (named, unnamed, paired_by_task_id, unnamed_no_task, unnamed_ref_unclear, unnamed_closed_task, unnamed_other_owner, unnamed_unverified, paired, unpaired, clean, agent_without_task, inexact_owner), kinds of pair_rule_fired (unnamed, unpaired, agent_without_task, inexact_owner) and reasons of pair_rule_suppressed (subagent, codex, plan_mode, stop_hook_active, omc, no_rows, liveness_unknown)."
+value = { named = "named", unnamed = "unnamed", paired_by_task_id = "paired_by_task_id", unnamed_no_task = "unnamed_no_task", unnamed_ref_unclear = "unnamed_ref_unclear", unnamed_closed_task = "unnamed_closed_task", unnamed_other_owner = "unnamed_other_owner", unnamed_unverified = "unnamed_unverified", paired = "paired", unpaired = "unpaired", clean = "clean", agent_without_task = "agent_without_task", inexact_owner = "inexact_owner", subagent = "subagent", codex = "codex", plan_mode = "plan_mode", stop_hook_active = "stop_hook_active", omc = "omc", no_rows = "no_rows", liveness_unknown = "liveness_unknown" }
 
 [pair_rule.msg_pre_what]
 doc = "The spawn denial: what happened."
@@ -187,7 +190,7 @@ doc = "Tail of the item list when more than pair_rule.ids_max items are off; `{n
 value = " (+{n} more)"
 
 [metric.pair_rule_observed]
-doc = "Facts the R-pair check computed, by hook event and result (PreToolUse: named, unnamed; with guards.pairRuleByTaskId on an unnamed spawn is counted instead as paired_by_task_id = its description names an open task, paired_unverified = it names a number and the task list is unreadable, unnamed_closed_task = it names only tasks that are not open, unnamed_no_task = it names no existing task; PostToolUse: paired, unpaired; Stop: clean, agent_without_task, inexact_owner), counted with the switch on or off. Unnamed-spawn rate = (unnamed + unnamed_no_task + unnamed_closed_task + paired_by_task_id + paired_unverified) / all PreToolUse; unpaired-stop rate = (agent_without_task + inexact_owner) / all Stop."
+doc = "Facts the R-pair check computed, by hook event and result (PreToolUse: named, unnamed; with guards.pairRuleByTaskId on an unnamed spawn is counted instead as paired_by_task_id = its description names an open task, unnamed_unverified = it names a number and the task list is unreadable (denied), unnamed_ref_unclear = its leading reference cannot be read exactly (denied), unnamed_other_owner = the task is open but another agent owns it (denied), unnamed_closed_task = the task is not open, unnamed_no_task = it names no existing task; PostToolUse: paired, unpaired; Stop: clean, agent_without_task, inexact_owner), counted with the switch on or off. Unnamed-spawn rate = (unnamed + unnamed_no_task + unnamed_ref_unclear + unnamed_closed_task + unnamed_other_owner + unnamed_unverified + paired_by_task_id) / all PreToolUse; unpaired-stop rate = (agent_without_task + inexact_owner) / all Stop."
 value = { kind = "counter", unit = "calls", labels = ["event", "result"] }
 
 [metric.pair_rule_fired]

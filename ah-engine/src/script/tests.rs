@@ -5305,6 +5305,39 @@ mod pair_rule_counters {
         json!({"tool_name": "Agent", "tool_input": {"description": d, "prompt": "p"}})
     }
 
+    /// The by-id path fails CLOSED: a throw inside it (a fault injected by a logic override that makes the task reader throw, so the real
+    /// try/catch of the shipped script runs) denies the spawn and is counted `by_id_failed`; it is never an accept.
+    #[test]
+    fn pre_by_task_id_failure_denies_and_counts_by_id_failed() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        crate::discard::harmless(std::fs::create_dir_all(crate::paths::dir())); // keep: the scratch state dir of this test run
+        let list = tasks_400_401();
+        let tag = "pr-id-throw";
+        let h = home(tag);
+        let shipped = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall/engine/logic/task-pair-guard.js")).unwrap();
+        std::fs::write(
+            format!("{h}/.anti-hall/logic/task-pair-guard.js"),
+            format!("{shipped}\ntk.tasksOf = function () {{ throw new Error('injected'); }};\n"),
+        )
+        .unwrap();
+        std::fs::write(format!("{h}/t.jsonl"), &list).unwrap();
+        let mut p = spawn_described("#400 gate");
+        p["hook_event_name"] = json!("PreToolUse");
+        p["session_id"] = json!(tag);
+        p["cwd"] = json!(h);
+        p["transcript_path"] = json!(format!("{h}/t.jsonl"));
+        let site = format!("{}task-pair-guard:by_id_failed", defaults::text("script.unable_prefix"));
+        let before = handbacks("stand_in", &site);
+        drain();
+        let e = RequestEnv::from_pairs([("HOME".to_string(), h.clone()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())]);
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "PreToolUse", &e);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("has no name")), "a throw denies: {v:?}");
+        assert_eq!(handbacks("stand_in", &site), before + 1, "by_id_failed is counted");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed_unverified")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 1);
+    }
+
     #[test]
     fn pre_by_task_id_counts_its_result_and_fires_only_on_a_denial() {
         let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
@@ -5328,13 +5361,18 @@ mod pair_rule_counters {
         assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
         let m = drain();
         assert_eq!((obs(&m, "unnamed_closed_task"), obs(&m, "unnamed_no_task"), fired(&m)), (1, 0, 1));
-        // unreadable evidence with a ref: accepted and counted
+        // unreadable evidence with a ref is no proof: denied and counted
         let mut p = spawn_described("#400 gate");
         p["transcript_path"] = json!("/nonexistent/t.jsonl");
         let v = run("pr-id-unread", &list, "PreToolUse", p, true);
-        assert!(matches!(v, Some(Some(Verdict::Allow))), "{v:?}");
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
         let m = drain();
-        assert_eq!((obs(&m, "paired_unverified"), fired(&m)), (1, 0));
+        assert_eq!((obs(&m, "unnamed_unverified"), obs(&m, "paired_by_task_id"), fired(&m)), (1, 0, 1));
+        // an unclear reference (the digits touch the scan window) is denied and counted
+        let v = run("pr-id-unclear", &list, "PreToolUse", spawn_described(&format!("#{}", "4".repeat(600))), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_ref_unclear"), fired(&m)), (1, 1));
         // pairRule off: the facts are counted, nothing is fired or printed
         let v = run("pr-id-off", &list, "PreToolUse", spawn_described("#401 gate"), false);
         assert!(matches!(v, Some(Some(Verdict::Allow))), "{v:?}");

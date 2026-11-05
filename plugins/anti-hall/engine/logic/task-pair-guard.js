@@ -2,10 +2,10 @@
 // on by default). Every task is paired with the named agent working on it: spawn the agent with a `name`, then `TaskUpdate owner=<name>`, so
 // the task panel shows the owner and its live activity. Three facts, one per event:
 //   PreToolUse Agent/Task: the spawn has no usable `name` (shorter than pair_rule.name_min_chars): denied, with the step that clears it,
-//   unless (switch guards.pairRuleByTaskId, on by default) its description names `#<id>` of an open task of the session's list as a task reference
-//   (pair_rule.task_ref_re: the LEADING token of the description; any later `#400` is prose): such an unnamed agent is paired by the id. A named
-//   teammate's SendMessage reports do not reach the coordinator, so the coordinator's real spawn shape is an unnamed agent with the id in its
-//   description. Evidence that cannot be read (no transcript, an unreadable or inexactly read one) never stalls a spawn that names an id.
+//   unless (switch guards.pairRuleByTaskId, on by default) its description starts with `#<id>` of an open, unowned task of the session's list
+//   (the LEADING token only, read by a bounded linear scan, pair_rule.ref_*; any later `#400` is prose): such an unnamed agent is paired by the
+//   id. A named teammate's SendMessage reports do not reach the coordinator, so the coordinator's real spawn shape is an unnamed agent with the
+//   id in its description. Allow ONLY on positive proof: evidence that cannot be read, an unclear reference or a task another agent owns denies.
 //   PostToolUse Agent/Task: the named agent is running but no open task names it as owner: an advisory.
 //   Stop: (F2) a live agent with a launch name that no open task names as owner, or (F3) an in-progress task whose owner is that agent's id or
 //   description and not its launch name: blocked, listing at most pair_rule.ids_max items.
@@ -151,28 +151,64 @@ function prgAgents(p) {
 }
 
 // ---- PreToolUse ----
-// The task numbers an Agent/Task call's description names as a task reference (pair_rule.task_ref_re: anchored, so `background color #400` is
-// not one), each number once, at most pair_rule.id_refs_max of them.
-function prgInputRefs(inp) {
+// PRINCIPLE: the by-id path allows ONLY on positive proof. The proof is: the description's LEADING token is `#<digits>` read exactly, the
+// task list was read exactly, and that task is open and unowned (or owned by this spawn's own name). Every other branch (no reference, an
+// unclear one, a closed or unknown task, a task owned by another agent, a list that cannot be read) denies and is counted under its result.
+//
+// The reference of an Agent/Task call's description (a bounded LINEAR scan, no regex): skip leading characters of pair_rule.ref_lead_chars,
+// then pair_rule.ref_sigil, then a run of ASCII digits, then the end of the FULL description or a character of pair_rule.ref_end_chars.
+// Only the first pair_rule.description_scan_max characters are read. {id} the digits; {none: true} the description has no leading reference;
+// {unclear: true} it starts like one but the scan cannot be sure (the first token lies at or after the scan limit, the digits touch the end
+// of the scan window so a cut may have made them, or anything but the end/a delimiter follows them): denied. A leading no-break space, byte
+// order mark or zero-width character is not in ref_lead_chars: such a description has no reference (denied), never a guessed one.
+function prgRef(inp) {
   var d = prgIsObj(inp) && typeof inp.description === 'string' ? inp.description : '';
-  d = d.slice(0, ah.cfgNum('pair_rule.description_scan_max')); // cut BEFORE any regex: a huge description must not cost the regex engine its memory
-  var re = new RegExp(ah.cfg('pair_rule.task_ref_re'), 'g'), refs = [], m, max = ah.cfgNum('pair_rule.id_refs_max');
-  while (refs.length < max && (m = re.exec(d)) !== null) { if (refs.indexOf(m[1]) < 0) refs.push(m[1]); if (m[0].length === 0) re.lastIndex++; }
-  return refs;
+  var cap = ah.cfgNum('pair_rule.description_scan_max'), lead = ah.cfg('pair_rule.ref_lead_chars'), sigil = ah.cfg('pair_rule.ref_sigil');
+  var ends = ah.cfg('pair_rule.ref_end_chars'), len = d.length, win = Math.min(len, cap), i = 0;
+  while (i < win && lead.indexOf(d.charAt(i)) >= 0) i++;
+  if (i >= len) return { none: true }; // nothing but leading characters
+  if (i >= cap) return { unclear: true }; // the first token lies beyond what is scanned
+  if (d.charAt(i) !== sigil) return { none: true };
+  var j = i + 1;
+  while (j < win && d.charCodeAt(j) >= 48 && d.charCodeAt(j) <= 57) j++;
+  if (j === i + 1) return { none: true }; // a sigil with no digits
+  if (j >= cap && j < len) return { unclear: true }; // the digit run reaches the end of the window: more digits may follow
+  if (j < len && ends.indexOf(d.charAt(j)) < 0) return { unclear: true }; // `#400a`, `#400,#401`, `#400#401`
+  return { id: d.slice(i + 1, j) };
 }
 
-// How an unnamed spawn stands against the task list: paired_by_task_id (its description names an open task), paired_unverified (it names a
-// number and the list cannot be read: missing evidence is never a stall), unnamed_closed_task (it names only tasks that exist but are not open),
-// unnamed_no_task (it names no task, or only numbers no task has). A result is a key of pair_rule.labels.
+// How an unnamed spawn stands against the task list: paired_by_task_id (the ONLY allow: positive proof, see above), unnamed_no_task (no
+// reference, or a number no task has), unnamed_ref_unclear (a reference the scan cannot read exactly), unnamed_closed_task (the task exists
+// but is not open), unnamed_other_owner (it is open but another agent owns it), unnamed_unverified (the list cannot be read). A result is a key of
+// pair_rule.labels.
 function prgByTaskId(p, home) {
-  var refs = prgInputRefs(p.tool_input);
-  if (refs.length === 0) return 'unnamed_no_task';
-  var all = prgAllTasks(p, home);
-  if (all === null) return 'paired_unverified';
-  var open = {}, known = {};
-  all.forEach(function (t) { known['id:' + t.id] = true; if (tk.isOpen(t)) open['id:' + t.id] = true; });
-  if (refs.some(function (r) { return open['id:' + r] === true; })) return 'paired_by_task_id';
-  return refs.some(function (r) { return known['id:' + r] === true; }) ? 'unnamed_closed_task' : 'unnamed_no_task';
+  var ref = prgRef(p.tool_input);
+  if (ref.unclear === true) return 'unnamed_ref_unclear';
+  if (ref.id === undefined) return 'unnamed_no_task';
+  var all = prgByIdTasks(p, home);
+  if (all === null) return 'unnamed_unverified';
+  var t = null;
+  all.forEach(function (x) { if (x.id === ref.id) t = x; });
+  if (t === null) return 'unnamed_no_task';
+  if (!tk.isOpen(t)) return 'unnamed_closed_task';
+  var owner = prgLc(t.owner), name = prgLc(prgInputName(p.tool_input));
+  return owner === '' || (name !== '' && owner === name) ? 'paired_by_task_id' : 'unnamed_other_owner';
+}
+
+// The task list the by-id proof reads: when the session's task store DIRECTORY exists it is the list, even when empty or holding nothing
+// valid (the transcript tail is then never consulted: it may hold stale or foreign tasks); only when the directory is absent is the
+// transcript the list. null: no readable list (denied).
+function prgByIdTasks(p, home) {
+  var sid = p.session_id ? String(p.session_id) : '';
+  if (home && sid !== '' && !/[^A-Za-z0-9_-]/.test(sid)) {
+    var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
+    for (var i = 0; i < names.length; i++) {
+      if (!ah.fs.isDir(base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) }))) continue;
+      var st = tk.storeTasks(home, sid);
+      return st === null ? [] : tk.withStore([], st);
+    }
+  }
+  return prgAllTasks(p, home);
 }
 
 function prgPre(p, on, home) {
@@ -181,10 +217,10 @@ function prgPre(p, on, home) {
   var byId = unnamed && ah.settings.bool('pair_rule.sw_by_id');
   var result = !unnamed ? 'named' : 'unnamed';
   if (byId) {
-    // a script failure here (the regex engine out of memory, a throw) denies, as the base does: it is never an accept
-    try { result = prgByTaskId(p, home); } catch (e) { result = 'unnamed_no_task'; ah.unable('task-pair-guard:by_id_failed'); }
+    // a script failure here (a throw) denies, as the base does: it is never an accept
+    try { result = prgByTaskId(p, home); } catch (e) { result = 'unnamed_unverified'; ah.unable('task-pair-guard:by_id_failed'); }
     prgObserved(event, result);
-    if (result === 'paired_by_task_id' || result === 'paired_unverified') return 'allow';
+    if (result === 'paired_by_task_id') return 'allow';
   } else prgObserved(event, result);
   if (!unnamed || !on) return 'allow';
   prgFired(event, 'unnamed');
