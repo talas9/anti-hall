@@ -378,17 +378,63 @@ fn metric(step: &str) {
     crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(step))]);
 }
 
-/// The stall sample: the observable fingerprint and since when it holds (only while the agent runs).
-fn stall_sample(env: &Env, a: &mut Agent, now: u64) {
+/// Whether the CPU of a process tree moved by at least `step` ms since its baseline (`None`: nothing to compare yet, so no). A
+/// step of 0 turns the term off.
+pub(crate) fn cpu_moved(base: Option<u64>, cur: u64, step: u64) -> bool {
+    step > 0 && base.is_some_and(|b| b.abs_diff(cur) >= step)
+}
+
+fn exempt(reason: &str) {
+    let m = defaults::raw("nudges.stall_exempt");
+    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(reason))]);
+}
+
+/// The CPU term of the stall sample (#535): an agent whose process tree below `root` used CPU is working, whatever its transcript
+/// shows. Read only once the agent was quiet for `cpu_probe_pct` percent of `quiet_ms` (a healthy tick never spawns `ps`), and the
+/// table is read at most once per tick (`table`). A rise of `cpu_step_ms` restarts the quiet window.
+pub(crate) fn cpu_probe(env: &Env, a: &mut Agent, root: u32, table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
+    if root == 0 || !(super::is_child(a) || a.kind == kind_name("workspace")) {
+        return;
+    }
+    let c = defaults::raw("nudges.stall_limits");
+    let (quiet, step) = (num(c, "quiet_ms"), num(c, "cpu_step_ms"));
+    let after = quiet.saturating_mul(num(c, "cpu_probe_pct")) / fmtn("pct").max(1);
+    if quiet == 0 || step == 0 || now.saturating_sub(a.stall_since) < after {
+        return;
+    }
+    let t = table.get_or_insert_with(super::procs::snapshot);
+    if t.is_empty() {
+        if env.act {
+            exempt("cpu_unread"); // `ps` gave nothing: the term is silent, the quiet window stands
+        }
+        return;
+    }
+    let kids: Vec<_> = super::procs::tree(t, root).into_iter().filter(|q| q.pid != root).collect();
+    let cur = super::procs::cpu_of(&kids).0;
+    if cpu_moved(a.stall_cpu, cur, step) {
+        (a.stall_cpu, a.stall_cpu_at, a.stall_since) = (Some(cur), now, now);
+        if env.act {
+            exempt("cpu");
+        }
+    } else if a.stall_cpu.is_none() {
+        a.stall_cpu = Some(cur);
+    }
+}
+
+/// The stall sample: the observable fingerprint and since when it holds (only while the agent runs). `root` is the pid whose process
+/// tree is the agent's CPU (its own session, else its parent's; 0: unknown).
+fn stall_sample(env: &Env, a: &mut Agent, root: u32, table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
     if !env.switch("agent_tracker.stall_sw") || !running(a) {
-        a.stall_since = 0;
+        (a.stall_since, a.stall_cpu, a.stall_cpu_at) = (0, None, 0);
         return;
     }
     let obs = vec![a.offset, a.tools, a.commits, a.changes, a.progress, a.edits, a.said_since];
     if a.stall_obs != obs || a.stall_since == 0 {
         a.stall_obs = obs;
         a.stall_since = now;
+        (a.stall_cpu, a.stall_cpu_at) = (None, 0); // progress: the CPU used while it worked is no part of the next quiet stretch
     }
+    cpu_probe(env, a, root, table, now);
     if env.act {
         metric("sampled");
     }
@@ -413,6 +459,22 @@ fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
     } else {
         return None;
     };
+    // work the transcript does not show: a build or CI wait in flight, or CPU used within the quiet window (#518 FP rubric)
+    let busy = if building(a, now) {
+        Some("building")
+    } else if waiting_on_ci(a) {
+        Some("ci_wait")
+    } else if a.stall_cpu_at > 0 && now.saturating_sub(a.stall_cpu_at) < num(c, "quiet_ms") {
+        Some("cpu")
+    } else {
+        None
+    };
+    if let Some(reason) = busy {
+        if env.act {
+            exempt(reason);
+        }
+        return None;
+    }
     if env.act {
         metric("stalled");
     }
@@ -1000,12 +1062,14 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
     let mut queued = 0;
     let mut judge_budget = super::waste::judge_budget();
     let ids: Vec<String> = st.agents.keys().cloned().collect();
+    let mut procs_table: Option<Vec<super::procs::Proc>> = None; // the process table, read at most once a tick and only when a quiet agent needs it
     for id in ids {
         let Some(mut a) = st.agents.remove(&id) else { continue };
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
         super::waste::note_head(env, &mut a);
         sample(&mut a, now);
-        stall_sample(env, &mut a, now);
+        let root = if a.pid != 0 { a.pid } else { st.agents.get(&a.parent).map_or(0, |p| p.pid) };
+        stall_sample(env, &mut a, root, &mut procs_table, now);
         super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
         mark_breaker(env, &a, raised.get("burn_hard"));

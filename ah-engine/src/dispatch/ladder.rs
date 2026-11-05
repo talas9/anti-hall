@@ -90,6 +90,9 @@ pub struct Kind {
     pub after: u64,
     /// Further fires between two blocks.
     pub every: u64,
+    /// The most blocks one episode (the entry's life until its condition clears) may show (0: no bound). Past it a due block is
+    /// counted `capped` and not shown, so an agent that cannot act on a persistent condition is not blocked for ever.
+    pub max_blocks: u64,
     /// Consecutive quiet runs that reset the count (0: never).
     pub quiet_reset: u64,
     /// The required next action.
@@ -133,6 +136,7 @@ pub fn kinds(overrides: &serde_json::Map<String, Value>) -> Vec<Kind> {
                 matches: strings(row.get("match")),
                 after: int(row.get("after"), after).max(1),
                 every: int(row.get("every"), every).max(1),
+                max_blocks: int(row.get("max_blocks"), defaults::num("nudges.max_blocks")),
                 quiet_reset: int(row.get("quiet_reset"), quiet),
                 action: row.str_field("action").to_string(),
                 count_blocks: row.get("count_blocks").and_then(V::as_bool).unwrap_or(false),
@@ -428,7 +432,11 @@ pub fn count(st: &mut State, kinds: &[Kind], seen: &[Obs]) -> Vec<Step> {
                         steps.push((name.clone(), "ignored", false));
                     }
                     if due(k, t.count) {
-                        t.pending = true;
+                        if k.max_blocks > 0 && t.shown >= k.max_blocks {
+                            steps.push((name.clone(), "capped", false));
+                        } else {
+                            t.pending = true;
+                        }
                     }
                 }
             }
@@ -892,6 +900,7 @@ mod tests {
             matches: vec![],
             after: 3,
             every: 2,
+            max_blocks: 0,
             quiet_reset,
             action: "do the thing".into(),
             count_blocks: false,

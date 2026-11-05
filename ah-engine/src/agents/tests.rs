@@ -28,7 +28,7 @@ fn env(h: &Path, now: u64) -> Env {
         plugin_root: None,
         use_cli: false,
         // These are plain reminder routing cases; the nudge loop has its own tests. The ladder's signal switches (stall, idle wake,
-        // parallel) are off by default (GH #518 #515 #517): the signal tests turn them on here, and the off case drops one.
+        // parallel) are set here as the signal tests need them (stall defaults to on, GH #518; the others are off by default, #515 #517).
         settings: Settings {
             home: h.to_string_lossy().to_string(),
             env: HashMap::from([
@@ -3283,10 +3283,10 @@ fn a_subagent_that_keeps_working_is_never_stalled_and_the_off_switch_holds_it() 
     let mut st2 = State::default();
     for at in [n, n + 16 * MIN, n + 17 * MIN] {
         let mut off = env(&h2, at);
-        off.settings.env.remove("ANTIHALL_NUDGES_STALL"); // the shipped default: off
+        off.settings.env.insert("ANTIHALL_NUDGES_STALL".into(), "false".into()); // forced off: the shipped default is on
         tick(&off, &mut st2);
     }
-    assert!(!agent(&st2, "w1").flags.contains_key("stalled"), "nudges.stall is off by default");
+    assert!(!agent(&st2, "w1").flags.contains_key("stalled"), "nudges.stall off holds the signal");
 }
 
 #[test]
@@ -3484,4 +3484,304 @@ fn delivered_since_says_nothing_it_cannot_read_and_nothing_for_a_queue_that_does
         Some((0, 0)),
         "a cursor that is no number is zero, as the check reads it"
     );
+}
+
+// ---- R-stuck (GH #518, #535): the stalled signal counts CPU and leaves builds and CI waits alone -----------------------------------
+
+fn stall_cfg(k: &str) -> u64 {
+    crate::defaults::raw("nudges.stall_limits").get(k).and_then(crate::defaults::V::as_integer).unwrap_or(0).max(0) as u64
+}
+
+/// A session registered with `pid` and one subagent that has been quiet since `n - 2 min`.
+fn stall_home(tag: &str, pid: u32, n: u64) -> PathBuf {
+    let h = home(tag);
+    register(&h, pid, "parent", "idle", n);
+    write(&sess(&h, "parent"), &[prompt(n - 90 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
+    running_sub(&h, "parent", n, 2);
+    h
+}
+
+/// The ticks of the stalled case: a first sample, then two ticks past `quiet_ms`.
+fn stall_ticks(h: &Path, st: &mut State, n: u64) {
+    ticks(h, st, &[n, n + 16 * MIN, n + 17 * MIN]);
+}
+
+fn stalled_flag(st: &State) -> bool {
+    agent(st, "w1").flags.contains_key("stalled")
+}
+
+fn exempt_count(reason: &str) -> u64 {
+    crate::metrics::bumped_on_this_thread("stall_exempt", &[("reason", reason)])
+}
+
+/// A process tree for the CPU case: a root shell with `busy` spinning children (finite loops, so a leak ends by itself). Dropping it
+/// kills exactly the pids found below the root.
+struct Tree {
+    root: std::process::Child,
+}
+
+impl Tree {
+    fn spawn(busy: usize) -> Tree {
+        let spin = "(i=0; while [ $i -lt 40000000 ]; do i=$((i+1)); done) &";
+        let script = format!("{} wait", spin.repeat(busy));
+        Tree {
+            root: std::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        }
+    }
+
+    fn kids_cpu(&self) -> u64 {
+        let t = procs::snapshot();
+        let kids: Vec<_> = procs::tree(&t, self.root.id()).into_iter().filter(|p| p.pid != self.root.id()).collect();
+        procs::cpu_of(&kids).0
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let t = procs::snapshot();
+        let pids: Vec<u32> = procs::tree(&t, self.root.id()).into_iter().map(|p| p.pid).collect();
+        for pid in pids {
+            crate::discard::harmless(std::process::Command::new("kill").arg(pid.to_string()).output()); // keep: only the pids this test started
+        }
+        crate::discard::harmless(self.root.kill()); // keep: already gone is the goal state
+        crate::discard::harmless(self.root.wait()); // keep: reaped either way
+    }
+}
+
+#[test]
+fn stalled_cpu_rising_is_not_stalled() {
+    let tree = Tree::spawn(4);
+    let n = now0();
+    let h = stall_home("stall-cpu", tree.root.id(), n);
+    let step = stall_cfg("cpu_step_ms");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + 8 * MIN]); // past cpu_probe_pct of quiet_ms: the first read seeds the baseline
+    let seeded = tree.kids_cpu();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while tree.kids_cpu() < seeded + step + step / 5 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(tree.kids_cpu() >= seeded + step + step / 5, "the children used cpu_step_ms of CPU");
+    ticks(&h, &mut st, &[n + 16 * MIN, n + 17 * MIN]);
+    assert!(!stalled_flag(&st), "the process tree below the session used CPU: the agent works, whatever its transcript shows");
+    assert!(agent(&st, "w1").stall_cpu_at > 0, "the rise restarted the quiet window");
+    assert!(exempt_count("cpu") >= 1, "and the move is counted");
+}
+
+/// Progress clears the CPU baseline: the CPU an agent used while it worked must not restart the next quiet stretch at its probe point.
+#[test]
+fn progress_clears_the_cpu_baseline_so_a_later_stall_is_not_delayed() {
+    let n = now0();
+    let h = stall_home("stall-progress", std::process::id(), n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + 8 * MIN]);
+    assert_eq!(agent(&st, "w1").stall_cpu, Some(0), "the probe seeded the baseline");
+    append(&sub_path(&h, "parent"), &[tool(n + 9 * MIN, "sp1", 5, "pp1", "Bash", json!({"command": "ls"})), result(n + 9 * MIN + 500, "pp1", "ok", false)]);
+    ticks(&h, &mut st, &[n + 10 * MIN]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.stall_cpu, a.stall_cpu_at), (None, 0), "progress dropped the baseline");
+}
+
+#[test]
+fn stalled_without_cpu_is_still_stalled_so_the_cpu_term_is_no_blanket_exemption() {
+    let mut idle = std::process::Command::new("sleep").arg("120").spawn().unwrap();
+    let n = now0();
+    let h = stall_home("stall-nocpu", idle.id(), n);
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    crate::discard::harmless(idle.kill()); // keep: the sleep this test started
+    crate::discard::harmless(idle.wait()); // keep: reaped either way
+    assert!(stalled_flag(&st), "a quiet process tree is no work");
+    assert_eq!(agent(&st, "w1").stall_cpu_at, 0);
+}
+
+fn build_lines(n: u64, ago_min: u64, cmd: &str) -> Vec<String> {
+    let t = n - ago_min * MIN;
+    vec![
+        tool(t, "sb1", 5, "bb1", "Bash", json!({"command": cmd, "run_in_background": true})),
+        result(t + 500, "bb1", "Command running in background with ID: bgx1. Output is being written to: /tmp/x", false),
+    ]
+}
+
+#[test]
+fn stalled_building_is_exempt() {
+    let n = now0();
+    let h = stall_home("stall-build", std::process::id(), n);
+    append(&sub_path(&h, "parent"), &build_lines(n, 1, "cargo build --release -j4"));
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    assert!(!stalled_flag(&st), "a background build is in flight: the quiet transcript is the build");
+    assert!(exempt_count("building") >= 1, "and the exemption is counted");
+}
+
+#[test]
+fn stalled_ci_wait_is_exempt() {
+    let n = now0();
+    let h = stall_home("stall-ci", std::process::id(), n);
+    append(
+        &sub_path(&h, "parent"),
+        &[tool(n - MIN, "sc1", 5, "cc1", "Bash", json!({"command": "gh run watch 12345 --exit-status"})), result(n - MIN + 500, "cc1", "queued", false)],
+    );
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    assert!(!stalled_flag(&st), "the agent waits on CI");
+    assert!(exempt_count("ci_wait") >= 1);
+}
+
+#[test]
+fn the_stall_signal_is_on_by_default_and_its_kill_switch_holds() {
+    let n = now0();
+    let h = stall_home("stall-default", std::process::id(), n);
+    let mut st = State::default();
+    for at in [n, n + 16 * MIN, n + 17 * MIN] {
+        let mut shipped = env(&h, at);
+        shipped.settings.env.remove("ANTIHALL_NUDGES_STALL"); // the shipped default
+        tick(&shipped, &mut st);
+    }
+    assert!(stalled_flag(&st), "nudges.stall defaults to on");
+    let h2 = stall_home("stall-killed", std::process::id(), n);
+    let mut st2 = State::default();
+    for at in [n, n + 16 * MIN, n + 17 * MIN] {
+        let mut off = env(&h2, at);
+        off.settings.env.insert("ANTIHALL_NUDGES_STALL".into(), "false".into());
+        tick(&off, &mut st2);
+    }
+    assert!(!stalled_flag(&st2), "the kill switch holds it");
+    assert_eq!(agent(&st2, "w1").stall_since, 0, "and no sample is kept");
+}
+
+// ---- class: the CPU term over every shape of process table (a table of inputs, no real process) --------------------------------------
+
+fn proc_row(pid: u32, ppid: u32, cpu_ms: u64) -> procs::Proc {
+    procs::Proc { pid, ppid, pcpu_pm: 0, cpu_ms, cmd: format!("p{pid}") }
+}
+
+fn probe_agent(kind: &str, since: u64) -> Agent {
+    Agent { kind: kind_name(kind).to_string(), stall_since: since, ..Agent::default() }
+}
+
+/// One probe of a fresh subagent quiet since `since`, at `now`, over `table`; returns the agent and whether the table was read.
+fn probe(a: &mut Agent, root: u32, table: Option<Vec<procs::Proc>>, now: u64) -> bool {
+    let mut t = table;
+    let e = env(&home("probe"), now);
+    signals::cpu_probe(&e, a, root, &mut t, now);
+    t.is_some()
+}
+
+#[test]
+fn the_cpu_term_decides_on_every_shape_of_process_table() {
+    let (quiet, step) = (stall_cfg("quiet_ms"), stall_cfg("cpu_step_ms"));
+    let after = quiet * stall_cfg("cpu_probe_pct") / 100;
+    let (t0, now) = (1_000_000u64, 1_000_000 + after);
+    let tree = |cpu: u64| vec![proc_row(10, 1, 999_999), proc_row(11, 10, cpu), proc_row(12, 11, 0)];
+    // 1. before the probe point the table is never read (`ps` is not spawned for a healthy agent)
+    let mut a = probe_agent("subagent", t0);
+    let mut t = None;
+    signals::cpu_probe(&env(&home("probe1"), now), &mut a, 10, &mut t, now - 1);
+    assert!(t.is_none() && a.stall_cpu.is_none(), "too early: nothing read");
+    // 2. no root (the pid is unknown): nothing read
+    let mut a = probe_agent("subagent", t0);
+    let mut t = None;
+    signals::cpu_probe(&env(&home("probe2"), now), &mut a, 0, &mut t, now);
+    assert!(t.is_none(), "no root pid");
+    // 3. a main session is not a candidate for the stalled signal: no read
+    let mut a = probe_agent("main", t0);
+    let mut t = None;
+    signals::cpu_probe(&env(&home("probe3"), now), &mut a, 10, &mut t, now);
+    assert!(t.is_none(), "only children and workspaces are probed");
+    // 4. a workspace is probed
+    let mut a = probe_agent("workspace", t0);
+    assert!(probe(&mut a, 10, Some(tree(100)), now));
+    assert_eq!(a.stall_cpu, Some(100));
+    // 5. the first read seeds the baseline and restarts nothing
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(tree(40_000)), now);
+    assert_eq!((a.stall_cpu, a.stall_since, a.stall_cpu_at), (Some(40_000), t0, 0));
+    // 6. the same CPU on the next read: no move
+    probe(&mut a, 10, Some(tree(40_000)), now + 1000);
+    assert_eq!((a.stall_since, a.stall_cpu_at), (t0, 0));
+    // 7. one ms short of a step: no move, and the baseline stays (a trickle adds up)
+    probe(&mut a, 10, Some(tree(40_000 + step - 1)), now + 2000);
+    assert_eq!((a.stall_cpu, a.stall_since), (Some(40_000), t0));
+    // 8. the trickle reaches a step: moved, the quiet window restarts at this tick
+    probe(&mut a, 10, Some(tree(40_000 + step)), now + 3000);
+    assert_eq!((a.stall_cpu, a.stall_since, a.stall_cpu_at), (Some(40_000 + step), now + 3000, now + 3000));
+    // 9. a child that ended (the tree shrank by a step or more) is activity too
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(tree(90_000)), now);
+    probe(&mut a, 10, Some(tree(90_000 - step)), now + 1000);
+    assert_eq!(a.stall_since, now + 1000, "a drop of a step moves the window");
+    // 10. a smaller drop does not
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(tree(90_000)), now);
+    probe(&mut a, 10, Some(tree(90_000 - step + 1)), now + 1000);
+    assert_eq!(a.stall_since, t0);
+    // 11. the root's own CPU (the session process) is not the agent's work
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 5), proc_row(11, 10, 7)]), now);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 5_000_000), proc_row(11, 10, 7)]), now + 1000);
+    assert_eq!((a.stall_cpu, a.stall_since), (Some(7), t0), "the root burned CPU, its children did not");
+    // 12. a process outside the tree is not the agent's work
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(50, 1, 0)]), now);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(50, 1, 9_999_999)]), now + 1000);
+    assert_eq!(a.stall_since, t0, "an unrelated process");
+    // 13. grandchildren count
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(11, 10, 0), proc_row(12, 11, 0)]), now);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(11, 10, 0), proc_row(12, 11, step)]), now + 1000);
+    assert_eq!(a.stall_since, now + 1000);
+    // 14. a table with a process that is its own parent, and a cycle: no hang, no panic
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 10, 0), proc_row(11, 12, 3), proc_row(12, 11, 4)]), now);
+    assert_eq!(a.stall_cpu, Some(0), "the cycle hangs below no root");
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(11, 10, 3), proc_row(12, 11, 4), proc_row(11, 12, 3)]), now);
+    assert_eq!(a.stall_cpu, Some(7), "duplicate pid rows and a cycle below the root are counted once each, never forever");
+    // 15. enormous CPU figures: no overflow
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(11, 10, u64::MAX / 2), proc_row(12, 10, u64::MAX / 2)]), now);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0)]), now + 1000);
+    assert_eq!(a.stall_since, now + 1000, "the figure fell to zero");
+    // 16. an unreadable table (empty): counted, the window stands, the baseline is untouched
+    let mut a = probe_agent("subagent", t0);
+    a.stall_cpu = Some(123);
+    let before = exempt_count("cpu_unread");
+    probe(&mut a, 10, Some(Vec::new()), now);
+    assert_eq!((a.stall_cpu, a.stall_since), (Some(123), t0));
+    assert_eq!(exempt_count("cpu_unread"), before + 1);
+    // 17. two agents in one tick read the table once: the second reuses what the first read
+    let (mut a, mut b) = (probe_agent("subagent", t0), probe_agent("subagent", t0));
+    let mut t = Some(tree(5));
+    let e = env(&home("probe17"), now);
+    signals::cpu_probe(&e, &mut a, 10, &mut t, now);
+    let first = t.clone().unwrap().len();
+    signals::cpu_probe(&e, &mut b, 10, &mut t, now);
+    assert_eq!((a.stall_cpu, b.stall_cpu, t.unwrap().len()), (Some(5), Some(5), first));
+}
+
+#[test]
+fn cpu_moved_is_exact_at_its_edges() {
+    for (base, cur, step, want) in [
+        (None, 0, 5000, false),
+        (None, 9_999_999, 5000, false),
+        (Some(0), 4999, 5000, false),
+        (Some(0), 5000, 5000, true),
+        (Some(5000), 0, 5000, true),
+        (Some(5000), 1, 5000, false),
+        (Some(7), 7, 5000, false),
+        (Some(0), u64::MAX, 5000, true),
+        (Some(u64::MAX), 0, 5000, true),
+        (Some(0), 1_000_000, 0, false), // a step of 0 turns the term off
+        (Some(1), 1, 0, false),
+        (Some(0), 1, 1, true),
+    ] {
+        assert_eq!(signals::cpu_moved(base, cur, step), want, "base {base:?} cur {cur} step {step}");
+    }
 }

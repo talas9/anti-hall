@@ -242,7 +242,7 @@ value = "agent tracker: {kind} {agent} has been idle for {idle} with its task st
 
 [agent_tracker.stall_sw]
 doc = "Stall nudge on/off (#518)."
-value = { section = "nudges", key = "stall", env = "ANTIHALL_NUDGES_STALL", aliases = [], option = "", default = false }
+value = { section = "nudges", key = "stall", env = "ANTIHALL_NUDGES_STALL", aliases = [], option = "", default = true }
 
 [agent_tracker.idle_wake_sw]
 doc = "Idle wake on/off (#515)."

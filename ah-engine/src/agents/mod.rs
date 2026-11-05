@@ -486,6 +486,12 @@ pub struct Agent {
     /// Since when `stall_obs` holds.
     #[serde(default)]
     pub stall_since: u64,
+    /// The CPU (ms) of the process tree below the agent's session the last time it moved by `cpu_step_ms` (`None`: not read yet).
+    #[serde(default)]
+    pub stall_cpu: Option<u64>,
+    /// When that CPU last moved (0: never): the agent was doing work no transcript line shows.
+    #[serde(default)]
+    pub stall_cpu_at: u64,
     /// When each signal was last reminded.
     pub last_sent: BTreeMap<String, u64>,
     /// Reminders queued (signal, time), for the daily cap.

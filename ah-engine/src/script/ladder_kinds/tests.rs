@@ -238,3 +238,99 @@ fn an_unrelated_tracker_reminder_is_no_stuck_or_stalled_fire() {
         assert_eq!(ladder::observe(k, std::slice::from_ref(&r)), ladder::Seen::Quiet, "{}: a background exit notice is not its condition", k.name);
     }
 }
+
+// ---- R-stuck (GH #518) class: the words the stalled_agents kind reads, in every shape the tracker's text can arrive in ----
+
+fn tracker_result(out: Value) -> HookResult {
+    HookResult { id: "agent-reminders".into(), code: Some(0), out: out.to_string(), err: String::new() }
+}
+
+fn tracker_text(text: &str) -> HookResult {
+    tracker_result(json!({ "systemMessage": text }))
+}
+
+fn stalled_kind() -> Kind {
+    all().into_iter().find(|k| k.name == "stalled_agents").expect("kind stalled_agents")
+}
+
+fn seen(r: &HookResult) -> ladder::Seen {
+    ladder::observe(&stalled_kind(), std::slice::from_ref(r))
+}
+
+#[test]
+fn the_stalled_agents_kind_fires_on_every_shape_of_the_real_reminder() {
+    let real = render("msg.agent_stalled", &[("agent", &"w1"), ("kind", &"subagent"), ("what", &"x"), ("idle", &"16m"), ("age", &"40m"), ("lines", &"\"a\"")]);
+    let other = "agent tracker: subagent w9 has produced no output for 22m (last tool Bash).";
+    let fired = |r: HookResult, why: &str| match seen(&r) {
+        ladder::Seen::Fired(head) => head,
+        s => panic!("{why}: {s:?}"),
+    };
+    // the real text, as the tracker renders it
+    assert!(fired(tracker_text(&real), "real").contains("w1"));
+    // ordering: the stalled line after another reminder, before it, and between two
+    assert!(fired(tracker_text(&format!("{other}\n{real}")), "after another reminder").contains("w1"), "the headline is the matching line, not the first");
+    assert!(fired(tracker_text(&format!("{real}\n{other}")), "before another reminder").contains("w1"));
+    assert!(fired(tracker_text(&format!("{other}\n{real}\n{other}")), "between").contains("w1"));
+    // duplicates: the same line twice, and two agents stalled in one text, is one fire of the kind
+    assert!(fired(tracker_text(&format!("{real}\n{real}")), "duplicate line").contains("w1"));
+    let w2 = real.replace("w1", "w2");
+    assert!(fired(tracker_text(&format!("{real}\n{w2}")), "two agents").contains("w1"), "the first matching line");
+    // whitespace: leading blank lines, tabs, trailing spaces, CRLF
+    assert!(fired(tracker_text(&format!("\n\n   {real}   \n")), "padded").contains("w1"));
+    assert!(fired(tracker_text(&format!("\t{real}\r\n{other}\r\n")), "tabs and CRLF").contains("w1"));
+    // unicode: an agent name with accents or CJK keeps the match; the headline keeps only ASCII
+    let uni = real.replace("w1", "wörker-é 工人");
+    let head = fired(tracker_text(&uni), "unicode name");
+    assert!(head.is_ascii() && head.contains("STALLED"), "{head}");
+    // the channel: additionalContext, and plain text on stdout
+    let ctx = json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": real}});
+    assert!(fired(tracker_result(ctx), "additionalContext").contains("w1"));
+    let plain = HookResult { id: "agent-reminders".into(), code: Some(0), out: real.clone(), err: String::new() };
+    assert!(fired(plain, "plain stdout").contains("w1"));
+}
+
+#[test]
+fn the_stalled_agents_kind_stays_quiet_on_text_that_is_not_the_reminder() {
+    let quiet = |r: HookResult, why: &str| assert_eq!(seen(&r), ladder::Seen::Quiet, "{why}");
+    quiet(tracker_text("agent tracker: subagent w1 is stalled: no observable change"), "another case: the tracker writes STALLED");
+    quiet(tracker_text("the build is STALLED waiting for the lock"), "no 'is STALLED:' with the colon");
+    quiet(tracker_text("agent tracker: subagent w1 is STALLED"), "no colon");
+    quiet(tracker_text("agent tracker: subagent w9 has produced no output for 22m"), "a hung reminder is the stuck kind's");
+    quiet(tracker_text("agent tracker: subagent w1 is  STALLED : x"), "padding inside the phrase is another phrase");
+    quiet(tracker_text(""), "empty text");
+    quiet(tracker_text("   \n\t "), "whitespace only");
+    quiet(tracker_result(json!({})), "an empty answer");
+    quiet(tracker_result(json!({"systemMessage": 7})), "a text that is no string");
+    // a result with a non-zero exit is a block, and this kind does not count blocks
+    let blocked = HookResult { id: "agent-reminders".into(), code: Some(2), out: String::new(), err: "subagent w1 is STALLED: x".into() };
+    quiet(blocked, "exit 2");
+    // a result of another hook is not this kind's, even with the words in it
+    let foreign =
+        HookResult { id: "task-guard".into(), code: Some(0), out: json!({"systemMessage": "subagent w1 is STALLED: x"}).to_string(), err: String::new() };
+    assert_eq!(seen(&foreign), ladder::Seen::Absent, "another hook's text");
+    assert_eq!(ladder::observe(&stalled_kind(), &[]), ladder::Seen::Absent, "no results at all");
+}
+
+#[test]
+fn a_stalled_reminder_that_keeps_coming_blocks_at_most_three_stops_and_a_legitimate_stop_passes() {
+    let real = render("msg.agent_stalled", &[("agent", &"w1"), ("kind", &"subagent"), ("what", &"x"), ("idle", &"16m"), ("age", &"40m"), ("lines", &"\"a\"")]);
+    let dir = state_dir("stall-repeat");
+    let ks = all();
+    let payload = json!({"hook_event_name": "Stop", "session_id": "s-stall-class", "stop_hook_active": false});
+    let mut blocks = 0;
+    for _ in 0..14 {
+        if ladder::run_in(&dir, "Stop", &payload, &ks, &[tracker_text(&real)]).is_some() {
+            blocks += 1;
+        }
+    }
+    assert!((1..=3).contains(&blocks), "a persistent stall blocks a Stop a bounded number of times, got {blocks} of 14");
+    // a Stop the hook itself already blocked, and a Stop with no stalled reminder at all, are never blocked by the ladder
+    let active = json!({"hook_event_name": "Stop", "session_id": "s-stall-class-2", "stop_hook_active": true});
+    for _ in 0..4 {
+        assert!(ladder::run_in(&dir, "Stop", &active, &ks, &[tracker_text(&real)]).is_none(), "stop_hook_active");
+    }
+    let calm = json!({"hook_event_name": "Stop", "session_id": "s-stall-class-3", "stop_hook_active": false});
+    for _ in 0..4 {
+        assert!(ladder::run_in(&dir, "Stop", &calm, &ks, &[]).is_none(), "nothing stalled");
+    }
+}
