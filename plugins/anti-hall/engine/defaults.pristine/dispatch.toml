@@ -115,6 +115,15 @@ value = ["UserPromptSubmit", "UserPromptExpansion", "SessionStart", "PostModelSw
 doc = "Text placed between the block reasons of several hooks that block the same event, when they are joined into the one block the dispatcher answers (the host shows the model every hook's block reason; Claude Code gives each Stop/SubagentStop block its own message)."
 value = "\n\n"
 
+[dispatch.stop_advisory_chars]
+doc = "Most characters of the other hooks' advisories folded into a Stop or SubagentStop block reason (#516): the model reads only the reason there, never a systemMessage or context. Folds only while nudges.enabled is on. The text is cut at a word; 0 = nothing is folded, not even the header."
+value = 2000
+min = 0
+
+[dispatch.msg_stop_advisories]
+doc = "The part of a Stop or SubagentStop block reason that carries the advisories of the hooks that did not block. Placeholders: {text}."
+value = "Also from other hooks:\n{text}"
+
 [dispatch.message_joiner]
 doc = "Text placed between the systemMessage values of several hooks when they are joined into one."
 value = "\n"
@@ -551,6 +560,7 @@ value = [
   { id = "speculation-judge", matcher = "", timeout = 30, check = "speculation-judge" },
   { id = "claim-ledger", matcher = "", timeout = 30, check = "claim-ledger" },
   { id = "claim-evidence-guard", matcher = "", timeout = 30, check = "claim-evidence-guard" },
+  { id = "reply-length-guard", matcher = "", timeout = 30, check = "reply-length-guard" },
   { id = "codex-nudge", matcher = "", timeout = 30, check = "codex-nudge" },
   { id = "devswarm-parent-gate", matcher = "", timeout = 30, check = "devswarm-parent-gate", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { all = [ { setting = "devswarm.supervisorMode", exists = true }, { not = { all = [ { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentGate" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } } ] } } ] } },
   { id = "devswarm-child-gate", matcher = "", timeout = 30, check = "devswarm-child-gate" },
@@ -717,6 +727,7 @@ value = [
   { id = "speculation-guard", matcher = "", timeout = 30, check = "speculation-guard" },
   { id = "speculation-judge", matcher = "", timeout = 30, check = "speculation-judge" },
   { id = "claim-ledger", matcher = "", timeout = 30, check = "claim-ledger" },
+  { id = "reply-length-guard", matcher = "", timeout = 30, check = "reply-length-guard" },
   { id = "devswarm-parent-gate", matcher = "", timeout = 30, check = "devswarm-parent-gate", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { all = [ { setting = "devswarm.supervisorMode", exists = true }, { not = { all = [ { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentGate" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } } ] } } ] } },
   { id = "devswarm-child-gate", matcher = "", timeout = 30, check = "devswarm-child-gate" },
   { id = "auto-handover-pause-nag", matcher = "", timeout = 30, check = "auto-handover-pause-nag" },

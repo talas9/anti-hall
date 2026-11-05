@@ -107,19 +107,11 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
         };
     }
     let v = if variant == "state" { Variant::State } else { Variant::Guard };
-    // the reconstruction of the task lines kept since the last call when there are any, else the window read afresh
-    let kept_facts = if kept { super::tasks_cache::facts(path, window, v) } else { None };
-    let (built, truncated) = match kept_facts {
-        Some((facts, truncated)) => (facts, truncated),
-        None => {
-            let Some((data, truncated)) = read_tail(path, window) else { return json!({"tasks": [], "unreadable": true}).to_string() };
-            (reconstruct(&lines_of(&data, truncated), v), truncated)
-        }
+    let (facts, truncated) = match task_facts(path, window, v, kept) {
+        Ok(f) => f,
+        Err(Unreadable::File) => return json!({"tasks": [], "unreadable": true}).to_string(),
+        Err(Unreadable::Unsure) => return unsure(),
     };
-    let Ok(mut facts) = built else { return unsure() };
-    if truncated && backfill(&mut facts, path, window).is_err() {
-        facts.unsure = true;
-    }
     json!({
         "unsure": facts.unsure,
         "tasks": facts.tasks.values().map(task_json).collect::<Vec<_>>(),
@@ -128,6 +120,41 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
         "truncated": truncated,
     })
     .to_string()
+}
+
+/// Why a task list could not be rebuilt from a transcript tail.
+enum Unreadable {
+    /// The file cannot be read.
+    File,
+    /// A record or value only JavaScript could read exactly was met.
+    Unsure,
+}
+
+/// The `guard` or `state` reconstruction of the tail of `path`: the task lines kept since the last call when there are any, else the
+/// window read afresh; a cut tail is completed from before the window. The one read [`tasks_of`] answers from and [`guard_open_tasks`]
+/// reads, so a reader beside task-guard sees the list task-guard sees.
+fn task_facts(path: &str, window: u64, v: Variant, kept: bool) -> Result<(crate::checks::taskstate::parse::Facts, bool), Unreadable> {
+    let kept_facts = if kept { super::tasks_cache::facts(path, window, v) } else { None };
+    let (built, truncated) = match kept_facts {
+        Some((facts, truncated)) => (facts, truncated),
+        None => {
+            let Some((data, truncated)) = read_tail(path, window) else { return Err(Unreadable::File) };
+            (reconstruct(&lines_of(&data, truncated), v), truncated)
+        }
+    };
+    let Ok(mut facts) = built else { return Err(Unreadable::Unsure) };
+    if truncated && backfill(&mut facts, path, window).is_err() {
+        facts.unsure = true;
+    }
+    Ok((facts, truncated))
+}
+
+/// Whether the transcript tail at `path` shows an open task, in the list task-guard reconstructs (`guard` variant, `window` bytes):
+/// `None` when the file cannot be read, or when the reconstruction is not sure and shows no open task (it could be hiding one).
+pub fn guard_open_tasks(path: &str, window: u64) -> Option<bool> {
+    let (facts, _) = task_facts(path, window, Variant::Guard, true).ok()?;
+    let open = facts.tasks.values().any(Task::is_open);
+    (open || !facts.unsure).then_some(open)
 }
 
 /// One launched agent as JSON (`NaN` times are `null`).

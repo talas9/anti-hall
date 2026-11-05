@@ -27,6 +27,7 @@ pub mod combine;
 pub mod ctxkeep;
 pub mod digest;
 pub mod inject;
+pub mod ladder;
 pub mod native;
 pub mod node;
 pub mod notice;
@@ -964,6 +965,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     }
     crate::nodeback::shadow::note(&entries, &results, &shadow); // what the engine decided per check (a no-op unless the shadow follows this call)
     let mut results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    // #516: the ladder reads the advisories before the token cuts below blank the repeated ones; its block is added after them
+    let ladder_block = parsed.as_ref().and_then(|_| ladder::apply(&args.event, &p, &req_env, &results));
     if parsed.is_some() {
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
     }
@@ -975,12 +978,14 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     if let Some(pl) = parsed.as_ref() {
         stopchan::apply(&args.host, &args.event, pl, &req_env, &mut results); // GH #540: the Stop note's channel (stateless bounds)
     }
+    results.extend(ladder_block);
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     let keep_advisories = defaults::list("dispatch.stop_events").iter().any(|e| *e == args.event);
     if !guard {
         spill::order_by_priority(&mut results); // #311: blocks and decisions are never reordered below advisories; context is highest priority first
     }
-    match combine::combine_for(&results, keep_advisories) {
+    let fold = keep_advisories && ladder::enabled(&req_env); // #516: a Stop block also carries the other hooks' advisories, only with the ladder on
+    match combine::combine_with(&results, keep_advisories, fold) {
         combine::Combined::Answer(mut o) => {
             o.err = format!("{}{}", pre_err, o.err);
             // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper

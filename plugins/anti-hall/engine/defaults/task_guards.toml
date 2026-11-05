@@ -190,6 +190,10 @@ doc = "Largest task file read; a bigger one is skipped."
 value = 65536
 min = 1
 
+[taskstate.store_fields]
+doc = "Field names of a task file in the store that a reader needs: `id` (a string or a number) and `status` (a string). A file without both is not a task. The ladder reads the open-task fact from the store with them, as the task guards do."
+value = { id = "id", status = "status" }
+
 [taskstate.re_created]
 doc = "JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number."
 value = '^Task\s+#(\d+)\s+created\s+successfully'
