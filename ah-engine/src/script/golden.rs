@@ -151,7 +151,11 @@ impl Drop for Laid {
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn lay(case: &Value) -> Laid {
-    if pinned(case) { lay_at(case, case.get("now_ms").and_then(Value::as_f64).unwrap_or(NOW0), true) } else { lay_at(case, crate::checks::replykit::io::now_ms(), false) }
+    if pinned(case) {
+        lay_at(case, case.get("now_ms").and_then(Value::as_f64).unwrap_or(NOW0), true)
+    } else {
+        lay_at(case, crate::checks::replykit::io::now_ms(), false)
+    }
 }
 
 /// Lay a case out at `now`; `pinned` says the script's clock is set to it when the case runs.
