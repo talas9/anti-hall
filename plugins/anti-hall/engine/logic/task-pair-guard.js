@@ -179,34 +179,72 @@ function prgRef(inp) {
 
 // How an unnamed spawn stands against the task list: paired_by_task_id (the ONLY allow: positive proof, see above), unnamed_no_task (no
 // reference, or a number no task has), unnamed_ref_unclear (a reference the scan cannot read exactly), unnamed_closed_task (the task exists
-// but is not open), unnamed_other_owner (it is open but another agent owns it), unnamed_unverified (the list cannot be read). A result is a key of
-// pair_rule.labels.
+// but is not open), unnamed_other_owner (it is open but another agent owns it), unnamed_duplicate_task (two store files carry its id: which
+// one is live is unknown), unnamed_owner_unverified (its owner field is not text), unnamed_unverified (the list cannot be read). A result is a
+// key of pair_rule.labels. Returns {result, task}: `task` is the referenced task (the owner a denial names).
 function prgByTaskId(p, home) {
   var ref = prgRef(p.tool_input);
-  if (ref.unclear === true) return 'unnamed_ref_unclear';
-  if (ref.id === undefined) return 'unnamed_no_task';
+  if (ref.unclear === true) return { result: 'unnamed_ref_unclear' };
+  if (ref.id === undefined) return { result: 'unnamed_no_task' };
   var all = prgByIdTasks(p, home);
-  if (all === null) return 'unnamed_unverified';
-  var t = null;
-  all.forEach(function (x) { if (x.id === ref.id) t = x; });
-  if (t === null) return 'unnamed_no_task';
-  if (!tk.isOpen(t)) return 'unnamed_closed_task';
+  if (all === null) return { result: 'unnamed_unverified' };
+  var hits = all.filter(function (x) { return x.id === ref.id; });
+  if (hits.length === 0) return { result: 'unnamed_no_task' };
+  if (hits.length > 1) return { result: 'unnamed_duplicate_task' }; // never "the last file wins"
+  var t = hits[0];
+  if (!tk.isOpen(t)) return { result: 'unnamed_closed_task' };
+  // an owner that is present but not text (a number, an object) cannot be compared: unverified, never "unowned"
+  if (t.owner !== undefined && t.owner !== null && typeof t.owner !== 'string') return { result: 'unnamed_owner_unverified' };
   var owner = prgLc(t.owner), name = prgLc(prgInputName(p.tool_input));
-  return owner === '' || (name !== '' && owner === name) ? 'paired_by_task_id' : 'unnamed_other_owner';
+  if (owner === '' || (name !== '' && owner === name)) return { result: 'paired_by_task_id' };
+  return { result: 'unnamed_other_owner', task: t };
 }
 
-// The task list the by-id proof reads: when the session's task store DIRECTORY exists it is the list, even when empty or holding nothing
-// valid (the transcript tail is then never consulted: it may hold stale or foreign tasks); only when the directory is absent is the
-// transcript the list. null: no readable list (denied).
+// The task files of one store directory as raw records [{id, status, owner}] (owner as the file holds it: a non-text owner is kept so the
+// caller can refuse it; a duplicate id is kept so the caller can refuse it). null: the directory cannot be read within the bounds (more than
+// taskstate.store_max_files task files). A file that is not valid JSON, has no string status or no string/number id is skipped (as
+// tk.storeTasks does).
+function prgDirRecords(dir) {
+  var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
+  var files = ah.fs.readdir(dir);
+  if (files === null) return null;
+  files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
+  if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
+  var out = [];
+  files.forEach(function (f) {
+    var raw = ah.fs.readText(dir + '/' + f, maxBytes), rec;
+    if (raw === null) return;
+    try { rec = JSON.parse(raw); } catch (e) { return; }
+    if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') return;
+    out.push({ id: String(rec.id), status: rec.status, owner: typeof rec.owner === 'string' ? rec.owner.trim() : rec.owner });
+  });
+  return out;
+}
+
+// The task list the by-id proof reads, in this order; the first that applies is THE list:
+//   1. the NAMED list: the variable taskstate.list_id_env (Claude Code's own list selector) holds a valid id and its store directory exists.
+//      Claude Code then keeps the session's tasks only there and leaves `session-<8>` empty, so the named directory is the list, even when it
+//      is empty (the transcript is never consulted: it may hold stale or foreign tasks).
+//   2. the session's own store directory (taskstate.store_dir_names: the first that holds a task, else any that exists): the list, even when
+//      empty or holding nothing valid, for the same reason.
+//   3. no store directory at all: the transcript's reconstruction.
+// null: no readable list (denied).
 function prgByIdTasks(p, home) {
+  var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/';
+  var listId = home ? ah.env.get(ah.cfg('taskstate.list_id_env')) : null;
+  if (typeof listId === 'string' && new RegExp(ah.cfg('taskstate.list_id_re')).test(listId) && ah.fs.isDir(base + listId)) return prgDirRecords(base + listId);
   var sid = p.session_id ? String(p.session_id) : '';
   if (home && sid !== '' && !/[^A-Za-z0-9_-]/.test(sid)) {
-    var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
+    var names = ah.cfg('taskstate.store_dir_names'), seen = false;
     for (var i = 0; i < names.length; i++) {
-      if (!ah.fs.isDir(base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) }))) continue;
-      var st = tk.storeTasks(home, sid);
-      return st === null ? [] : tk.withStore([], st);
+      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
+      if (!ah.fs.isDir(dir)) continue;
+      seen = true;
+      var recs = prgDirRecords(dir);
+      if (recs === null) return null;
+      if (recs.length > 0) return recs;
     }
+    if (seen) return [];
   }
   return prgAllTasks(p, home);
 }
@@ -214,19 +252,24 @@ function prgByIdTasks(p, home) {
 function prgPre(p, on, home) {
   var event = ah.cfg('pair_rule.event_pre'), name = prgInputName(p.tool_input);
   var unnamed = name.length < ah.cfgNum('pair_rule.name_min_chars');
-  var byId = unnamed && ah.settings.bool('pair_rule.sw_by_id');
+  var byId = unnamed && ah.settings.bool('pair_rule.sw_by_id'), verdict = { result: 'unnamed' };
   var result = !unnamed ? 'named' : 'unnamed';
   if (byId) {
     // a script failure here (a throw) denies, as the base does: it is never an accept
-    try { result = prgByTaskId(p, home); } catch (e) { result = 'unnamed_unverified'; ah.unable('task-pair-guard:by_id_failed'); }
+    try { verdict = prgByTaskId(p, home); } catch (e) { verdict = { result: 'unnamed_unverified' }; ah.unable('task-pair-guard:by_id_failed'); }
+    result = verdict.result;
     prgObserved(event, result);
     if (result === 'paired_by_task_id') return 'allow';
   } else prgObserved(event, result);
   if (!unnamed || !on) return 'allow';
   prgFired(event, 'unnamed');
+  // an open task another agent owns: the denial names the owner and the two ways out
+  var other = byId && result === 'unnamed_other_owner' && verdict.task !== undefined, t = verdict.task;
   var reason = text.message('block', ah.cfg('pair_rule.guard_name'), {
-    what: ah.cfg('pair_rule.msg_pre_what'), why: ah.cfg(byId ? 'pair_rule.msg_pre_why_id' : 'pair_rule.msg_pre_why'),
-    instead: ah.cfg(byId ? 'pair_rule.msg_pre_instead_id' : 'pair_rule.msg_pre_instead'),
+    what: ah.cfg('pair_rule.msg_pre_what'),
+    why: other ? text.render(ah.cfg('pair_rule.msg_pre_why_owner'), { id: t.id, owner: t.owner }) : ah.cfg(byId ? 'pair_rule.msg_pre_why_id' : 'pair_rule.msg_pre_why'),
+    instead: other ? text.render(ah.cfg('pair_rule.msg_pre_instead_owner'), { id: t.id, owner: tk.oneLine(t.owner, ah.cfgNum('pair_rule.name_max')) })
+      : ah.cfg(byId ? 'pair_rule.msg_pre_instead_id' : 'pair_rule.msg_pre_instead'),
   });
   return { exact: { code: 2, out: text.blockJson(reason), err: '' } };
 }

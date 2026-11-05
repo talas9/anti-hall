@@ -16,6 +16,8 @@ struct World {
     dir: PathBuf,
     /// Set by a test to force the spawn-by-task-id switch off (`ANTIHALL_PAIR_RULE_BY_TASK_ID=0`); it defaults to on.
     by_id_off: std::cell::Cell<bool>,
+    /// Set by a test to say the session's named task list (`CLAUDE_CODE_TASK_LIST_ID`) in the hook's environment.
+    list_id: std::cell::RefCell<Option<String>>,
 }
 
 impl World {
@@ -24,7 +26,7 @@ impl World {
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         std::fs::create_dir_all(dir.join("proj/.git")).unwrap();
-        World { dir, by_id_off: std::cell::Cell::new(false) }
+        World { dir, by_id_off: std::cell::Cell::new(false), list_id: std::cell::RefCell::new(None) }
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -62,6 +64,9 @@ impl World {
         c.env("ANTIHALL_PAIR_RULE", if on { "1" } else { "0" });
         // a spawn that is accepted is recorded by the spawn ceiling: lift it so a long table of accepted spawns is not stopped by it
         c.env("ANTIHALL_MAX_CONCURRENT_AGENTS", "0");
+        if let Some(id) = self.list_id.borrow().as_ref() {
+            c.env("CLAUDE_CODE_TASK_LIST_ID", id);
+        }
         if self.by_id_off.get() {
             c.env("ANTIHALL_PAIR_RULE_BY_TASK_ID", "0");
         }
@@ -574,12 +579,59 @@ enum Ev {
     BadStore,
     /// A valid store (#405 open) beside the same transcript (#400 open): the store is the list.
     Store,
+    /// The live shape of #411: an EMPTY `session-s1` directory, the session's real tasks in the NAMED list `mylist` (#410 open unowned, #411 open
+    /// owned by someone-else, #412 completed), `CLAUDE_CODE_TASK_LIST_ID=mylist` in the hook's environment, and a stale transcript (#400 open).
+    NamedList,
+    /// The same, but the named list directory is empty (the last task was deleted): the named directory is the list, so nothing is open.
+    NamedEmpty,
+    /// An empty `session-s1` directory with real tasks in a named directory the hook is NOT told about (no variable): never guessed.
+    NamedUnannounced,
+    /// The variable names a list whose directory does not exist, and `session-s1` holds #405 open: the session directory is the list.
+    NamedMissing,
+    /// The session's store directory (no named list) in which two files carry the id 420 (both open, unowned): which one is live is unknown.
+    StoreDuplicate,
+    /// The session's store directory in which #430 has a non-text owner (`7`), #431 the owner `null` and #432 an object owner.
+    StoreOwnerKinds,
 }
 
 impl World {
     /// One by-id row: an unnamed spawn with `description` (None: no field) over the evidence `ev`.
     fn by_id_row(&self, description: Option<&str>, ev: Ev) -> (i32, String, String) {
         let store = self.path("home").join(".claude/tasks/s1");
+        let named = self.path("home").join(".claude/tasks/mylist");
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&named));
+        ah_engine::discard::harmless(std::fs::remove_dir_all(self.path("home").join(".claude/tasks/session-s1")));
+        *self.list_id.borrow_mut() = None;
+        let put = |dir: &std::path::Path, file: &str, json: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(file), json).unwrap();
+        };
+        let sess = self.path("home").join(".claude/tasks/session-s1");
+        if matches!(ev, Ev::NamedList | Ev::NamedEmpty | Ev::NamedUnannounced | Ev::NamedMissing | Ev::StoreDuplicate | Ev::StoreOwnerKinds) {
+            std::fs::create_dir_all(&sess).unwrap();
+            if !matches!(ev, Ev::NamedUnannounced | Ev::StoreDuplicate | Ev::StoreOwnerKinds) {
+                *self.list_id.borrow_mut() = Some("mylist".into());
+            }
+        }
+        match ev {
+            Ev::NamedList | Ev::NamedUnannounced => {
+                put(&named, "410.json", r#"{"id":"410","subject":"a","status":"in_progress"}"#);
+                put(&named, "411.json", r#"{"id":"411","subject":"b","status":"in_progress","owner":"someone-else"}"#);
+                put(&named, "412.json", r#"{"id":"412","subject":"c","status":"completed"}"#);
+            }
+            Ev::NamedEmpty => std::fs::create_dir_all(&named).unwrap(),
+            Ev::NamedMissing => put(&sess, "405.json", r#"{"id":"405","subject":"live","status":"in_progress"}"#),
+            Ev::StoreDuplicate => {
+                put(&sess, "420.json", r#"{"id":"420","subject":"a","status":"in_progress"}"#);
+                put(&sess, "420-copy.json", r#"{"id":"420","subject":"a","status":"in_progress"}"#);
+            }
+            Ev::StoreOwnerKinds => {
+                put(&sess, "430.json", r#"{"id":"430","subject":"a","status":"in_progress","owner":7}"#);
+                put(&sess, "431.json", r#"{"id":"431","subject":"b","status":"in_progress","owner":null}"#);
+                put(&sess, "432.json", r#"{"id":"432","subject":"c","status":"in_progress","owner":{"n":1}}"#);
+            }
+            _ => {}
+        }
         match ev {
             Ev::EmptyStore => std::fs::create_dir_all(&store).unwrap(),
             Ev::BadStore => {
@@ -840,4 +892,55 @@ fn stop_hook_active_and_named_agents_keep_their_behaviour_with_the_new_switch_on
     let t = transcript(&[task(400, "in_progress", Some("someone-else"))], &[("#400 gate", Some("gate-worker"))]);
     assert!(pair_text(&w.stop(&t, true, serde_json::json!({}))), "a named agent that owns no task is still blocked, whatever its description says");
     assert!(!pair_text(&w.stop(&t, true, serde_json::json!({"stop_hook_active": true}))), "stop_hook_active allows");
+}
+
+/// The store rows of the by-id proof (#411): the NAMED list (`CLAUDE_CODE_TASK_LIST_ID`) is the list when the hook is told it, an empty
+/// `session-<8>` directory beside it is not authoritative, every other empty-directory case still denies (deleted-last-task protection), a
+/// duplicate id and a non-text owner are not exact. One fresh World: the spawn-rate guard counts every row (cap 20 in 60 s), so a table
+/// that mixes accepted and denied rows stays under it.
+#[test]
+fn r_pair_e2e_by_id_named_list_and_store_records() {
+    let w = World::new("byid-namedlist");
+    let table: Vec<(&str, Ev, bool)> = vec![
+        // the NAMED list is the list when the variable names it (#411): an empty `session-<8>` directory beside it is not authoritative
+        ("#410 work", Ev::NamedList, true),
+        ("#410", Ev::NamedList, true),
+        ("#411 work", Ev::NamedList, false),  // owned by someone-else
+        ("#412 work", Ev::NamedList, false),  // completed
+        ("#400 work", Ev::NamedList, false),  // only the stale transcript has it
+        ("#410 work", Ev::NamedEmpty, false), // the named list is empty: nothing is open, the transcript is not consulted
+        ("#400 work", Ev::NamedEmpty, false),
+        ("#410 work", Ev::NamedUnannounced, false), // the variable is not set: a named list is never guessed
+        ("#400 work", Ev::NamedUnannounced, false), // empty session directory beside a stale transcript: deleted-last-task protection
+        ("#405 work", Ev::NamedMissing, true),
+        ("#400 work", Ev::NamedMissing, false),
+        ("#420 work", Ev::StoreDuplicate, false),  // two files, one id: unclear
+        ("#430 work", Ev::StoreOwnerKinds, false), // owner 7
+        ("#431 work", Ev::StoreOwnerKinds, true),  // owner null: unowned
+        ("#432 work", Ev::StoreOwnerKinds, false), // owner an object
+    ];
+    assert!(table.len() < 20, "the spawn-rate guard would count past its cap");
+    let mut bad: Vec<String> = Vec::new();
+    for (d, ev, accepted) in &table {
+        let o = w.by_id_row(Some(d), *ev);
+        let ok = if *accepted { !pair_text(&o) && o.0 != 2 } else { denied(&o) };
+        if !ok {
+            bad.push(format!("{d:?} over {ev:?} (expected {}): {o:?}", if *accepted { "accepted" } else { "denied" }));
+        }
+    }
+    assert!(bad.is_empty(), "{} rows wrong:\n{}", bad.len(), bad.iter().map(|b| b.chars().take(160).collect::<String>()).collect::<Vec<_>>().join("\n"));
+}
+
+/// The denial of a task another agent owns names the owner and both ways out (#411 P2), in store mode and in transcript mode alike (the
+/// transcript carries the owner of a TaskUpdate it holds).
+#[test]
+fn r_pair_e2e_other_owner_denial_names_the_owner_and_the_fix() {
+    let w = World::new("byid-owner-msg");
+    for (ev, d) in [(Ev::NamedList, "#411 work"), (Ev::List, "#402 work")] {
+        let o = w.by_id_row(Some(d), ev);
+        assert!(denied(&o), "{ev:?}: {o:?}");
+        let all = format!("{}{}", o.1, o.2).replace("\\\"", "\"");
+        assert!(all.contains("someone-else"), "{ev:?} names the owner: {all}");
+        assert!(all.contains("owner=\"\"") && all.contains("name: \"someone-else\""), "{ev:?} names both ways out: {all}");
+    }
 }
