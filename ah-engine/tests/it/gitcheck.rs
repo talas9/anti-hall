@@ -1675,9 +1675,8 @@ fn comment_text_naming_a_commit_and_a_push_is_not_a_commit_and_a_push() {
     let w = work.to_str().unwrap();
     std::fs::write(work.join("msg.txt"), "summary\n").unwrap();
     // the wrapper only reports: its comments and its usage text name the commands
-    let wrapper = format!(
-        "#!/bin/bash\n# e.g. the lane ran `git add x && git commit -F f` and then git {P} -q origin main\n# it's a report only\necho \"$1 $2\"\n"
-    );
+    let wrapper =
+        format!("#!/bin/bash\n# e.g. the lane ran `git add x && git commit -F f` and then git {P} -q origin main\n# it's a report only\necho \"$1 $2\"\n");
     std::fs::write(work.join("done.sh"), wrapper).unwrap();
     // the same wrapper with a live commit plus a push after its comment lines
     let live = format!("#!/bin/bash\n# note: it's real\ngit commit -q --allow-empty -F msg.txt\ngit {P} -q origin main\n");
@@ -1733,11 +1732,7 @@ fn segmentation_matches_real_bash_on_comment_and_escape_snippets() {
         assert!(Command::new(tool).arg("--version").output().is_ok(), "{tool} is required for the differential segmentation test");
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = Command::new("node")
-        .arg(root.join("tests/fixtures/segdiff/segdiff.cjs"))
-        .arg(root.join("../plugins/anti-hall"))
-        .output()
-        .unwrap();
+    let out = Command::new("node").arg(root.join("tests/fixtures/segdiff/segdiff.cjs")).arg(root.join("../plugins/anti-hall")).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
     let cases: usize = text.split("cases=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(0);
@@ -1749,11 +1744,7 @@ fn segmentation_matches_real_bash_on_comment_and_escape_snippets() {
 #[test]
 fn every_git_call_real_bash_executes_is_a_live_segment() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = Command::new("node")
-        .arg(root.join("tests/fixtures/segdiff/bashdiff.cjs"))
-        .arg(root.join("../plugins/anti-hall"))
-        .output()
-        .unwrap();
+    let out = Command::new("node").arg(root.join("tests/fixtures/segdiff/bashdiff.cjs")).arg(root.join("../plugins/anti-hall")).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
     let n: usize = text.split("snippets=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(0);
