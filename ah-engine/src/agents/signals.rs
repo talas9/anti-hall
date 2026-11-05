@@ -160,6 +160,46 @@ pub(crate) fn waiting_on_ci(a: &Agent) -> bool {
     a.recent.iter().rev().take(lim("ci_wait_calls") as usize).any(|r| re.is_match(&r.1))
 }
 
+/// Whether the agent waits on CI NOW (the stall exemption, #518 review round): a background command that checks or watches CI and has
+/// no end notice yet (`bg_ci`), started within `ci_wait_max_ms`; or a CI command issued within `ci_wait_fresh_ms`, where CI calls no
+/// further apart than that make one wait and the wait began within `ci_wait_max_ms`. A CI command in the call history is no wait. The
+/// ring of recent calls is bounded: when it holds the whole window before the wait's first call it proves the start, and when it is
+/// full and does not, the start was cut off, so the wait counts as past the longest (it errs toward flagging). A window or a longest
+/// wait of 0 turns the exemption off.
+pub(crate) fn ci_wait_current(a: &Agent, now: u64) -> bool {
+    let c = defaults::raw("nudges.stall_limits");
+    let (fresh, max) = (num(c, "ci_wait_fresh_ms"), num(c, "ci_wait_max_ms"));
+    if fresh == 0 || max == 0 {
+        return false;
+    }
+    if a.bg_ci.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| now.saturating_sub(*t) <= max)) {
+        return true;
+    }
+    let Some(re) = defaults::raw("agent_tracker.patterns")
+        .get("ci_wait")
+        .and_then(V::as_str)
+        .and_then(|s| regex::RegexBuilder::new(s).case_insensitive(true).build().ok())
+    else {
+        return false;
+    };
+    let mut hits: Vec<u64> = a.recent.iter().filter(|r| re.is_match(&r.1)).map(|r| r.3).collect();
+    hits.sort_unstable_by(|x, y| y.cmp(x));
+    let Some(newest) = hits.first().copied() else { return false };
+    if now.saturating_sub(newest) > fresh {
+        return false;
+    }
+    let mut start = newest;
+    for t in hits.iter().skip(1) {
+        if start.saturating_sub(*t) > fresh {
+            break;
+        }
+        start = *t;
+    }
+    let oldest = a.recent.iter().map(|r| r.3).min().unwrap_or(start);
+    let cut = a.recent.len() as u64 >= lim("loop_window") && oldest >= start.saturating_sub(fresh);
+    !cut && now.saturating_sub(start) <= max
+}
+
 /// Tokens spent since the agent's last outcome (a commit, finished step, passing test or new file), looking back at most one
 /// waste window. An outcome moves the start forward, so the count (and the breaker) resets when the agent produces one.
 pub(crate) fn tokens_since_outcome(a: &Agent, now: u64) -> u64 {
@@ -392,7 +432,11 @@ fn exempt(reason: &str) {
 /// The CPU term of the stall sample (#535): an agent whose process tree below `root` used CPU is working, whatever its transcript
 /// shows. Read only once the agent was quiet for `cpu_probe_pct` percent of `quiet_ms` (a healthy tick never spawns `ps`), and the
 /// table is read at most once per tick (`table`). A rise of `cpu_step_ms` restarts the quiet window.
-pub(crate) fn cpu_probe(env: &Env, a: &mut Agent, root: u32, table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
+///
+/// `shared`: the tree is a parent's, read for an agent with no pid of its own, and another running agent below the same parent reads it
+/// too. Its CPU cannot be told apart, and one agent's work must not restart the quiet window of two, so nobody is credited with it: the
+/// table is not read, the baseline is dropped (a later lone reading seeds a fresh one) and the tick is counted `cpu_shared`.
+pub(crate) fn cpu_probe(env: &Env, a: &mut Agent, root: u32, shared: bool, table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
     if root == 0 || !(super::is_child(a) || a.kind == kind_name("workspace")) {
         return;
     }
@@ -400,6 +444,13 @@ pub(crate) fn cpu_probe(env: &Env, a: &mut Agent, root: u32, table: &mut Option<
     let (quiet, step) = (num(c, "quiet_ms"), num(c, "cpu_step_ms"));
     let after = quiet.saturating_mul(num(c, "cpu_probe_pct")) / fmtn("pct").max(1);
     if quiet == 0 || step == 0 || now.saturating_sub(a.stall_since) < after {
+        return;
+    }
+    if shared {
+        a.stall_cpu = None;
+        if env.act {
+            metric("cpu_shared");
+        }
         return;
     }
     let t = table.get_or_insert_with(super::procs::snapshot);
@@ -421,9 +472,28 @@ pub(crate) fn cpu_probe(env: &Env, a: &mut Agent, root: u32, table: &mut Option<
     }
 }
 
-/// The stall sample: the observable fingerprint and since when it holds (only while the agent runs). `root` is the pid whose process
-/// tree is the agent's CPU (its own session, else its parent's; 0: unknown).
-fn stall_sample(env: &Env, a: &mut Agent, root: u32, table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
+/// Per agent, the pid whose process tree is its CPU (its own session, else its parent's; 0: unknown) and whether that tree is shared:
+/// the agent has no pid of its own and another running child or workspace stands below the same parent, so the parent's tree holds the
+/// work of more than one of them (an agent with a pid of its own sits inside it too). Computed once per tick, before any agent is
+/// evaluated, so the answer does not depend on the order the agents are taken in.
+pub(crate) fn probe_roots(st: &State) -> BTreeMap<String, (u32, bool)> {
+    let parent_pid = |a: &Agent| st.agents.get(&a.parent).map_or(0, |p| p.pid);
+    let live = |a: &Agent| (super::is_child(a) || a.kind == kind_name("workspace")) && running(a);
+    let mut below: BTreeMap<u32, u64> = BTreeMap::new();
+    for a in st.agents.values().filter(|a| live(a)) {
+        *below.entry(parent_pid(a)).or_default() += 1;
+    }
+    st.agents
+        .iter()
+        .map(|(id, a)| {
+            let root = if a.pid != 0 { (a.pid, false) } else { (parent_pid(a), parent_pid(a) != 0 && below.get(&parent_pid(a)).copied().unwrap_or(0) > 1) };
+            (id.clone(), root)
+        })
+        .collect()
+}
+
+/// The stall sample: the observable fingerprint and since when it holds (only while the agent runs). `root` is [`probe_roots`]'s answer.
+fn stall_sample(env: &Env, a: &mut Agent, root: (u32, bool), table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
     if !env.switch("agent_tracker.stall_sw") || !running(a) {
         (a.stall_since, a.stall_cpu, a.stall_cpu_at) = (0, None, 0);
         return;
@@ -434,7 +504,7 @@ fn stall_sample(env: &Env, a: &mut Agent, root: u32, table: &mut Option<Vec<supe
         a.stall_since = now;
         (a.stall_cpu, a.stall_cpu_at) = (None, 0); // progress: the CPU used while it worked is no part of the next quiet stretch
     }
-    cpu_probe(env, a, root, table, now);
+    cpu_probe(env, a, root.0, root.1, table, now);
     if env.act {
         metric("sampled");
     }
@@ -462,7 +532,7 @@ fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
     // work the transcript does not show: a build or CI wait in flight, or CPU used within the quiet window (#518 FP rubric)
     let busy = if building(a, now) {
         Some("building")
-    } else if waiting_on_ci(a) {
+    } else if ci_wait_current(a, now) {
         Some("ci_wait")
     } else if a.stall_cpu_at > 0 && now.saturating_sub(a.stall_cpu_at) < num(c, "quiet_ms") {
         Some("cpu")
@@ -1062,13 +1132,14 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
     let mut queued = 0;
     let mut judge_budget = super::waste::judge_budget();
     let ids: Vec<String> = st.agents.keys().cloned().collect();
+    let roots = probe_roots(st);
     let mut procs_table: Option<Vec<super::procs::Proc>> = None; // the process table, read at most once a tick and only when a quiet agent needs it
     for id in ids {
         let Some(mut a) = st.agents.remove(&id) else { continue };
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
         super::waste::note_head(env, &mut a);
         sample(&mut a, now);
-        let root = if a.pid != 0 { a.pid } else { st.agents.get(&a.parent).map_or(0, |p| p.pid) };
+        let root = roots.get(&id).copied().unwrap_or((0, false));
         stall_sample(env, &mut a, root, &mut procs_table, now);
         super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);

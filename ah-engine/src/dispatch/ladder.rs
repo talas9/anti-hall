@@ -523,7 +523,11 @@ pub fn at_stop(st: &mut State, kinds: &[Kind], cx: &StopCtx) -> StopOut {
         for key in entry_keys(st, &k.name) {
             let Some(t) = st.kinds.get_mut(&key) else { continue };
             if cx.may_block && !held && t.pending && matches!(k.class, Class::Block | Class::Escalate) {
-                if held_unreadable || cx.live.fact(k, split_key(&key).1) == Fact::Unknown {
+                if k.max_blocks > 0 && t.shown >= k.max_blocks {
+                    // a block owed before the cap held (a state an older version wrote): the cap covers it, same as a block due now
+                    t.pending = false;
+                    out.steps.push((k.name.clone(), "capped", false));
+                } else if held_unreadable || cx.live.fact(k, split_key(&key).1) == Fact::Unknown {
                     out.unverified += 1;
                 } else {
                     ready.push(key.clone());
@@ -2016,5 +2020,75 @@ mod tests {
         stop_all(&d, std::slice::from_ref(&k), &[watcher_adv()]);
         let st = load(&d, "s1").unwrap();
         assert!(st.kinds.keys().all(|n| n == "s"), "keys that are no kind of the table do not survive: {:?}", st.kinds.keys().collect::<Vec<_>>());
+    }
+
+    // ---- R-stuck review round: the episode cap covers the block that was already pending (an inherited state) --------------------------
+
+    fn capped(class: Class, max: u64) -> Kind {
+        let mut k = kind_s2();
+        k.class = class;
+        k.max_blocks = max;
+        k
+    }
+
+    /// A state written before the cap existed: the agents' entries as they were.
+    fn inherited(entries: &[(&str, Track)]) -> State {
+        let mut st = State::default();
+        for (agent, t) in entries {
+            st.kinds.insert(format!("s|{agent}"), t.clone());
+        }
+        st
+    }
+
+    fn legacy(count: u64, pending: bool, shown: u64) -> Track {
+        Track { count, quiet: 0, pending, this_turn: true, shown, headline: "stalled agent w1".into() }
+    }
+
+    fn stalled_live() -> Live {
+        up_by(&[("w1", &["stalled"]), ("w2", &["stalled"])], None)
+    }
+
+    #[test]
+    fn a_pending_block_past_the_episode_cap_is_never_shown_whatever_state_it_came_from() {
+        // the reviewed input: 8 fires, 3 blocks shown, a 4th due, max_blocks 3
+        for class in [Class::Escalate, Class::Block] {
+            for shown in [3, 4, 9, u64::MAX] {
+                let ks = [capped(class, 3)];
+                let mut st = inherited(&[("w1", legacy(8, true, shown))]);
+                let out = at(&mut st, &ks, &stalled_live());
+                assert!(out.reason.is_none(), "{class:?} shown {shown}: no block past the cap, got {:?}", out.reason);
+                assert_eq!(words(&out), vec!["capped"], "{class:?} shown {shown}: counted, once");
+                assert!(!st.kinds["s|w1"].pending && st.kinds["s|w1"].shown == shown, "the owed block is dropped, the count is untouched: {st:?}");
+                let again = at(&mut st, &ks, &stalled_live());
+                assert!(again.reason.is_none() && again.steps.is_empty(), "and it is not counted again at the next Stop: {again:?}");
+            }
+        }
+        // under the cap the same state still blocks; no bound (0) blocks whatever was shown
+        let mut st = inherited(&[("w1", legacy(8, true, 2))]);
+        let out = at(&mut st, &[capped(Class::Escalate, 3)], &stalled_live());
+        assert!(out.reason.is_some() && st.kinds["s|w1"].shown == 3, "2 shown of 3: the third block is shown");
+        let mut st = inherited(&[("w1", legacy(8, true, 99))]);
+        assert!(at(&mut st, &[capped(Class::Escalate, 0)], &stalled_live()).reason.is_some(), "max_blocks 0: no bound");
+        // a capped entry beside a live one: only the live one is answered, and the text names one block
+        let mut st = inherited(&[("w1", legacy(8, true, 3)), ("w2", legacy(2, true, 0))]);
+        let out = at(&mut st, &[capped(Class::Escalate, 3)], &stalled_live());
+        assert!(out.reason.is_some(), "w2 is owed its first block");
+        assert_eq!(words(&out), vec!["capped", "escalated"], "w1 capped, w2 shown: {:?}", out.steps);
+        assert!(st.kinds["s|w2"].shown == 1 && st.kinds["s|w1"].shown == 3 && !st.kinds["s|w1"].pending);
+        // a Stop that may not carry a block leaves the mark alone; the next free Stop drops it
+        let ks = [capped(Class::Escalate, 3)];
+        let mut st = inherited(&[("w1", legacy(8, true, 3))]);
+        let held = pass(&mut st, "Stop", &p_stop(true), &ks, &[], &stalled_live(), &rows_of(&[]));
+        assert!(held.reason.is_none() && held.steps.is_empty() && st.kinds["s|w1"].pending, "stop_hook_active: nothing decided");
+        let free = at(&mut st, &ks, &stalled_live());
+        assert!(free.reason.is_none() && words(&free) == vec!["capped"] && !st.kinds["s|w1"].pending, "{free:?}");
+        // the same state read from the file a previous version wrote
+        let d = tmp("legacy-cap");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(state_file(&d, "s1"), r#"{"kinds":{"s|w1":{"count":8,"pending":true,"shown":3,"this_turn":true,"headline":"stalled agent w1"}}}"#)
+            .unwrap();
+        let blocked = run_with(&d, "Stop", &json!({"session_id": "s1"}), &ks, &[], &stalled_live(), &rows_of(&[]));
+        assert!(blocked.is_none(), "no 4th block from an inherited pending flag");
+        assert!(!load(&d, "s1").unwrap().kinds["s|w1"].pending);
     }
 }
