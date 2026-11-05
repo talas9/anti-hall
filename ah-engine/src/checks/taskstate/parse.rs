@@ -28,6 +28,12 @@ pub struct Facts {
     pub window_reset: bool,
     /// The lowest task number created inside the window (`Infinity` when none).
     pub first_created: f64,
+    /// The task ids the window found "not found" (a `TaskGet` or `TaskUpdate` answered so), in the order met, each once. A reader that
+    /// keeps tasks from before the window (the task snapshot) must drop these: the window's own list no longer holds them, but that
+    /// is not the same as never having seen them.
+    pub deleted: Vec<String>,
+    /// The task numbers the window's `TaskCreate` results named (after the last list reset), in order, each once.
+    pub created: Vec<String>,
 }
 
 struct Res {
@@ -185,6 +191,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
     let mut group_base = 0f64;
     let mut window_reset = false;
     let mut first_created = f64::INFINITY;
+    let mut deleted: Vec<String> = Vec::new();
     let mut calls: HashMap<String, Call> = HashMap::new();
     let mut unsure = false;
 
@@ -230,6 +237,9 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                     && let Some(bad) = call.and_then(|c| c.task_id.clone())
                 {
                     tasks.delete(&bad);
+                    if !deleted.contains(&bad) {
+                        deleted.push(bad.clone());
+                    }
                     let drop: Vec<String> = result_ids.iter().filter(|(_, nid)| *nid == bad).map(|(tid, _)| tid.clone()).collect();
                     for tid in drop {
                         result_ids.retain(|(k, _)| *k != tid);
@@ -409,7 +419,13 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
             unsure = true;
         }
     }
-    Ok(Facts { tasks, window_reset, first_created, unsure })
+    let mut created: Vec<String> = Vec::new();
+    for (_, digits) in &result_ids {
+        if !created.contains(digits) {
+            created.push(digits.clone());
+        }
+    }
+    Ok(Facts { tasks, window_reset, first_created, unsure, deleted, created })
 }
 
 /// `todo.blockedOn` as the TodoWrite record reads it: `todo.metadata.blockedOn` when not null, else `todo.blockedOn`.

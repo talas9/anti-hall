@@ -337,9 +337,15 @@ min = 1
 unit = "bytes"
 
 [taskstate.snapshot_format]
-doc = "Version stamped in a snapshot; a snapshot with another number is read as absent (counted as discarded, reason `format`) and replaced."
-value = 1
+doc = "Version stamped in a snapshot; a snapshot with another number is read as absent (counted as discarded, reason `format`) and replaced. 2 added the session id and the file fingerprint."
+value = 2
 min = 1
+
+[taskstate.snapshot_fingerprint_bytes]
+doc = "Bytes hashed for the transcript fingerprint kept in a snapshot: the first bytes of the file, and the same number of bytes just before the tail window as it stood when the snapshot was written (read back at that fixed offset, so appends do not move it). A transcript whose bytes there differ is another file under the same path: the snapshot is discarded (reason `replaced`). Two reads of this size per rebuild."
+value = 4096
+min = 64
+unit = "bytes"
 
 # ---- task-guard --------------------------------------------------------------------------------
 
@@ -1648,9 +1654,9 @@ doc = "Tasks a rebuild recovered from the session's snapshot because the transcr
 value = { kind = "counter", unit = "tasks", labels = [] }
 
 [metric.snapshot_discarded]
-doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; format: another snapshot version; session: the snapshot names another transcript). A discarded snapshot is replaced by the new list, never deleted."
+doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; renumbered: the tail created a task under a number the snapshot already holds, so a new list began; format: another snapshot version; session: the snapshot names another transcript path or session id; replaced: the transcript bytes at the fingerprinted places differ, so another file lies under the path). A discarded snapshot is replaced by the new list, never deleted."
 value = { kind = "counter", unit = "snapshots", labels = ["reason"] }
 
 [metric.snapshot_error]
-doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, write, big: over taskstate.snapshot_max_bytes, cap: taskstate.snapshot_max_files reached, home: no usable home)."
+doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, shape: a section with a malformed task, write, big: over taskstate.snapshot_max_bytes, cap: taskstate.snapshot_max_files reached, home: no usable home)."
 value = { kind = "counter", unit = "errors", labels = ["kind"] }

@@ -29,6 +29,7 @@
 //! | `lstat(path)` | JSON `{kind,size,mtimeMs,mode}` of the path itself (links not followed), or `null`: see [`lstat`] |
 //! | `realpathEx(path)` | JSON `{path}` or `{error}`: the canonical path, or why there is none: see [`realpath_ex`] |
 //! | `uid()` / `fileSha256(path)` / `readHeadHex(path, n)` | the numeric user id; SHA-256 hex of a regular file; the first bytes of a regular file as hex |
+//! | `readRangeHex(path, from, n)` | `n` bytes of a regular file from byte `from` as hex (fewer at its end): see [`read_range_hex`] |
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
@@ -381,6 +382,28 @@ pub fn read_head_hex(path: &str, n: f64) -> Option<String> {
     f.metadata().ok().filter(std::fs::Metadata::is_file)?;
     let mut b = Vec::new();
     f.take(want).read_to_end(&mut b).ok()?;
+    Some(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// `readRangeHex(path, from, n)`: up to `n` bytes (at most `script.read_max_bytes`) of a regular file starting at byte `from`, as
+/// lowercase hex (fewer when the file ends first, empty from past its end), or `null` when it cannot be read. A script fingerprints
+/// the start and a fixed middle of a transcript with it, one small read each.
+pub fn read_range_hex(path: &str, from: f64, n: f64) -> Option<String> {
+    use std::os::unix::fs::FileExt;
+    let want = (n.max(0.0) as u64).min(defaults::num("script.read_max_bytes"));
+    let start = from.max(0.0) as u64;
+    let f = std::fs::File::open(path).ok()?;
+    f.metadata().ok().filter(std::fs::Metadata::is_file)?;
+    let mut b = vec![0u8; want as usize];
+    let mut got = 0usize;
+    while got < b.len() {
+        let n = f.read_at(b.get_mut(got..)?, start + got as u64).ok()?;
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    b.truncate(got);
     Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
@@ -1257,6 +1280,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("uid", Function::new(c.clone(), || crate::checks::jsport::home::uid() as f64)?)?;
     h.set("fileSha256", Function::new(c.clone(), |p: String| file_sha256(&p))?)?;
     h.set("readHeadHex", Function::new(c.clone(), |p: String, n: f64| read_head_hex(&p, n))?)?;
+    h.set("readRangeHex", Function::new(c.clone(), |p: String, from: f64, n: f64| read_range_hex(&p, from, n))?)?;
     h.set("readlink", Function::new(c.clone(), |p: String| std::fs::read_link(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
     h.set(
         "exec",

@@ -366,7 +366,7 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
             }
         }
     }
-    let mut facts = Facts { tasks, window_reset, first_created, unsure: s.unsure };
+    let mut facts = Facts { tasks, window_reset, first_created, unsure: s.unsure, deleted: Vec::new(), created: Vec::new() };
     if truncated && backfill(&mut facts, path, window).is_err() {
         s.unsure = true;
     }

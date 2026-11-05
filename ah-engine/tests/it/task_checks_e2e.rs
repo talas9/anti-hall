@@ -752,6 +752,27 @@ fn snapshot_keeps_every_open_task_in_the_idle_block_after_the_creates_leave_the_
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "one snapshot file under the isolated home");
 }
 
+/// A deleted task must not come back from the snapshot (the reviewer's repro): the tail ends with a `TaskGet` of #41 answered "not
+/// found" and the finishing of #42, so nothing is open and the Stop passes; a Stop that still named #41 would re-announce a task that
+/// no longer exists.
+#[test]
+fn snapshot_does_not_bring_back_a_task_the_tail_found_deleted() {
+    let w = World::new("snap-deleted");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let head = idle_transcript(&[idle_task(41, "[P1] a task that is deleted", "pending"), idle_task(42, "[P1] a task that is finished", "pending")], &[]);
+    std::fs::write(w.path("t.jsonl"), &head).unwrap();
+    let first = snap_stop(&w).expect("the first Stop sees both idle tasks");
+    assert!(first.contains("#41") && first.contains("#42"), "{first}");
+    snap_pad(&w.path("t.jsonl"), 1_700_000);
+    let get = serde_json::json!({"type": "assistant", "message": {"id": "g41", "role": "assistant", "content": [{"type": "tool_use", "id": "tg41", "name": "TaskGet", "input": {"taskId": "41"}}]}, "timestamp": "2999-01-01T00:00:01.000Z"});
+    let gone = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tg41", "content": "Task #41 not found"}]}, "timestamp": "2999-01-01T00:00:02.000Z"});
+    let done = serde_json::json!({"type": "assistant", "message": {"id": "u42", "role": "assistant", "content": [{"type": "tool_use", "id": "t42b", "name": "TaskUpdate", "input": {"taskId": "42", "status": "completed"}}]}, "timestamp": "2999-01-01T00:00:03.000Z"});
+    let mut f = std::fs::OpenOptions::new().append(true).open(w.path("t.jsonl")).unwrap();
+    writeln!(f, "{get}\n{gone}\n{done}").unwrap();
+    let second = snap_stop(&w);
+    assert!(second.is_none(), "task #41 was found deleted and #42 is finished: nothing is open, got {second:?}");
+}
+
 // ---- the nudge ladder (nudges.enabled, ANTIHALL_NUDGES) next to a task-guard whose own block cap lets the Stop pass ----
 
 /// [`enforce_stop`] with extra environment for the one `ah-engine hook --event Stop` call.

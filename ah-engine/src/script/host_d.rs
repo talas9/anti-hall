@@ -70,8 +70,9 @@ fn task_json(t: &Task) -> Value {
 /// window the way `lib/task-subject-backfill.js` does (a bounded, exact scan; where Node's clock would decide, the answer is
 /// `unsure`). `wide` is only read by `scan`: the widened window searched for task activity when a cut tail holds none.
 ///
-/// - `guard` and `state`: `{"tasks":[...], "windowReset":bool, "firstCreated":number|null, "truncated":bool}` in the order a
-///   JavaScript `Map` would hold them, or `{"tasks":[],"unreadable":true}` when the file cannot be read;
+/// - `guard` and `state`: `{"tasks":[...], "windowReset":bool, "firstCreated":number|null, "deleted":[id], "created":[id],
+///   "truncated":bool}` (`deleted`: the ids a call in the window found "not found"; `created`: the numbers its `TaskCreate` results
+///   named) in the order a JavaScript `Map` would hold them, or `{"tasks":[],"unreadable":true}` when the file cannot be read;
 /// - `scan`: `{"sawTaskActivity", "taskStoreReset", "inProgressCount", "openTaskIds":[...]}`, or `{"quiet":true}` when the Node
 ///   hook would end silently (a JSON `null` entry makes it throw), or `{"unreadable":true}` when the file cannot be read;
 /// - any variant: `{"unsure":true}` when a record or value only JavaScript could read exactly was met.
@@ -117,6 +118,8 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
         "tasks": facts.tasks.values().map(task_json).collect::<Vec<_>>(),
         "windowReset": facts.window_reset,
         "firstCreated": if facts.first_created.is_finite() { json!(facts.first_created) } else { Value::Null },
+        "deleted": facts.deleted,
+        "created": facts.created,
         "truncated": truncated,
     })
     .to_string()

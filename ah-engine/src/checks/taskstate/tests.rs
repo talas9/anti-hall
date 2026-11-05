@@ -339,3 +339,54 @@ mod non_string_status_in_the_scan {
         }
     }
 }
+
+// ---- #390: what a reconstruction hands the task snapshot (the ids a tail deleted and the ids it created) ----
+
+mod snapshot_facts {
+    use super::*;
+
+    fn use_call(id: &str, name: &str, input: Value) -> Value {
+        json!({"type": "assistant", "message": {"id": format!("m{id}"), "role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
+    }
+    fn use_result(id: &str, text: &str) -> Value {
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}})
+    }
+    fn facts_of(lines: &[Value]) -> super::super::parse::Facts {
+        let text = lines_of(lines);
+        let refs: Vec<&str> = text.iter().map(String::as_str).collect();
+        reconstruct(&refs, Variant::Guard).unwrap()
+    }
+    fn create(n: u32) -> Vec<Value> {
+        create_as(n, "c")
+    }
+    fn create_as(n: u32, tag: &str) -> Vec<Value> {
+        vec![
+            use_call(&format!("{tag}{n}"), "TaskCreate", json!({"subject": format!("t{n}")})),
+            use_result(&format!("{tag}{n}"), &format!("Task #{n} created successfully: t{n}")),
+        ]
+    }
+
+    #[test]
+    fn a_task_the_tail_found_not_found_is_exported_as_deleted() {
+        let mut lines = Vec::new();
+        lines.extend(create(1));
+        lines.extend(create(2));
+        lines.push(use_call("g1", "TaskGet", json!({"taskId": "1"})));
+        lines.push(use_result("g1", "Task #1 not found"));
+        lines.push(use_call("g9", "TaskGet", json!({"taskId": "9"})));
+        lines.push(use_result("g9", "Task #9 not found"));
+        let f = facts_of(&lines);
+        assert_eq!(f.tasks.values().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["2"], "the tail's own list drops #1");
+        assert_eq!(f.deleted, ["1", "9"], "both ids are exported, also the one the tail never held");
+    }
+
+    #[test]
+    fn the_ids_a_tail_created_are_exported_in_order_and_cleared_by_a_reset() {
+        let mut lines = Vec::new();
+        lines.extend(create(1));
+        lines.extend(create(2));
+        assert_eq!(facts_of(&lines).created, ["1", "2"]);
+        lines.extend(create_as(1, "again")); // the numbering restarted: only the new list counts
+        assert_eq!(facts_of(&lines).created, ["1"]);
+    }
+}
