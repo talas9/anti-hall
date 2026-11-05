@@ -4519,7 +4519,13 @@ fn the_banner_is_one_user_visible_line_and_its_switch_turns_it_off() {
     let h = home("banner");
     let Some(Some(Verdict::Advisory(a))) = run_event("session-banner", "SessionStart", &[], &h) else { panic!("banner on must speak") };
     let m = serde_json::from_str::<Value>(&a).unwrap()["systemMessage"].as_str().unwrap().to_string();
-    assert!(m.starts_with("anti-hall ") && m.contains("active") && !m.contains('\n'), "{m}");
+    // the wording lives in the TOML (#402): the host prefixes it "SessionStart says:", so it names anti-hall and says it is info/OK
+    let text = defaults::text("guard_rules.banner_text");
+    let (lead, rest) = text.split_once("{version}").expect("banner_text carries {version}");
+    let mid = rest.split_once("{rules}").expect("banner_text carries {rules}").0.trim();
+    assert!(m.starts_with(lead) && m.contains(mid) && !mid.is_empty(), "{m}");
+    assert!(m.contains("anti-hall") && m.contains("OK") && m.contains("info"), "{m}");
+    assert!(!m.contains('\n') && !m.contains('{'), "{m}");
     assert_eq!(run_event("session-banner", "SessionStart", &[("ANTIHALL_UI_BANNER", "false")], &h), Some(Some(Verdict::Allow)));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
