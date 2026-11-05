@@ -136,14 +136,35 @@ impl Who {
     }
 }
 
-/// The message of a block verdict (a block, or an exit-2 answer), `None` for anything else.
-fn block_text(v: &Verdict) -> Option<&str> {
+/// The message of a block verdict (a block, or an exit-2 answer, or an exit-0 answer whose JSON blocks), `None` for anything else.
+fn block_text(v: &Verdict) -> Option<String> {
     match v {
-        Verdict::Block(t) => Some(t),
-        Verdict::Exact(x) if x.code == 2 => Some(&x.err),
+        Verdict::Block(t) => Some(t.clone()),
+        Verdict::Exact(x) if x.code == 2 || (x.code == 0 && crate::dispatch::combine::json_blocks(&x.out)) => {
+            let r = crate::dispatch::combine::HookResult { id: String::new(), code: Some(x.code), out: x.out.clone(), err: x.err.clone() };
+            Some(crate::daemon::block_text_of(&r))
+        }
         Verdict::Routed(inner, _) => block_text(inner),
         _ => None,
     }
+}
+
+/// A block's message as the log keeps it: trimmed, at most `cap` characters, cut where it strands no combining mark (a scalar
+/// boundary backed off over any combining marks and the base they follow; no grapheme crate is a dependency), and followed by
+/// `telemetry.block_truncated_marker` when it was cut.
+fn keep_block_text(text: &str, cap: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= cap {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut end = cap;
+    while end > 0 && chars.get(end).is_some_and(|c| unicode_normalization::char::is_combining_mark(*c)) {
+        end -= 1;
+    }
+    let mut kept: String = chars.iter().take(end).collect();
+    kept.push_str(defaults::text("telemetry.block_truncated_marker"));
+    kept
 }
 
 impl Telemetry {
@@ -395,7 +416,7 @@ impl Telemetry {
         }
         if let Some(text) = block_text(verdict) {
             let cap = defaults::num("telemetry.block_reason_chars") as usize;
-            let reason: String = text.trim().chars().take(cap).collect();
+            let reason = keep_block_text(&text, cap);
             self.sink(Staged::Block(crate::storage::BlockRow {
                 ts_ms: now_ms(),
                 guard: check.into(),
@@ -952,8 +973,38 @@ mod tests {
         let (a, b) = (rows.first().cloned().unwrap_or_default(), rows.get(1).cloned().unwrap_or_default());
         assert_eq!((a.guard.as_str(), b.guard.as_str()), ("tasklist-guard", "edit-guard"), "each row names its check");
         assert!(a.reason.starts_with("first line\nsecond line "), "{}", a.reason);
-        assert_eq!(a.reason.chars().count(), cap, "cut at the configured cap, not at one line");
+        let marker = defaults::text("telemetry.block_truncated_marker");
+        assert!(a.reason.ends_with(marker) && !marker.is_empty(), "a cut message is marked: {}", a.reason);
+        assert_eq!(a.reason.chars().count(), cap + marker.chars().count(), "cut at the configured cap, then the marker");
         assert_eq!(b.reason, "short\nmessage", "a short message is kept whole");
+    }
+
+    #[test]
+    fn the_legacy_path_logs_an_exit_zero_json_block_with_its_full_reason() {
+        // `ah-engine hook` without --event goes through hookio::respond_observed, whose observer gets the check's Exact answer: a
+        // scripted Stop guard blocks with exit 0, a JSON reason on stdout and an empty stderr, and that used to log no row at all
+        let kept = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let t = Telemetry::with_store(Box::new(Blocks(MemStore::new(8, 8, "other"), kept.clone())));
+        let exact = |code: i32, out: &str, err: &str| Verdict::Exact(crate::checks::Exact { code, out: out.into(), err: err.into() });
+        let block = exact(0, "{\"decision\":\"block\",\"reason\":\"first\\nsecond\"}\n", "");
+        t.observe_check_who("Stop", "claim-guard", "claim-guard", &block, 1, "p", &Who::default());
+        // an exit-0 answer that is only an advisory logs no block
+        t.observe_check_who("Stop", "claim-guard", "claim-guard", &exact(0, "{\"systemMessage\":\"fyi\"}\n", ""), 1, "p", &Who::default());
+        let rows = kept.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(rows.len(), 1, "one block row, none for the advisory");
+        assert_eq!(rows.first().map(|r| (r.guard.as_str(), r.reason.as_str())), Some(("claim-guard", "first\nsecond")));
+    }
+
+    #[test]
+    fn a_cut_does_not_strand_a_combining_mark_and_the_cap_has_a_maximum() {
+        // 'e' + U+0301 repeated: a cut between a base and its mark backs off to before the base
+        let text = "e\u{301}".repeat(10);
+        let kept = keep_block_text(&text, 5);
+        let marker = defaults::text("telemetry.block_truncated_marker");
+        let body = kept.strip_suffix(marker).unwrap_or(&kept);
+        assert_eq!(body, "e\u{301}e\u{301}", "{kept:?}");
+        assert_eq!(keep_block_text("whole", 5), "whole", "a message exactly at the cap is not marked");
+        assert!(defaults::num("telemetry.block_reason_chars") <= 16384, "the TOML maximum clamps the cap");
     }
 
     #[test]

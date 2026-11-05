@@ -1574,8 +1574,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `telemetry.block_channel_joiner` | `\n--- stderr ---\n` |  |  | Put between the two texts of a block that exited 2 with a JSON reason on stdout and a different message on stderr: both are kept, the JSON reason first. When one contains the other (the usual case) only the longer is kept. |
 | `telemetry.block_keep_days` | `14` |  | days | How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the message. |
 | `telemetry.block_reason_chars` | `2048` |  | chars | How many characters of a guard block's full message are kept with the block (`ah-engine query guard_blocks`), so the block can be judged afterwards; the text is the one the host gave the model (a JSON block's reason, else the stderr of an exit 2). |
+| `telemetry.block_truncated_marker` | ` [...cut]` |  |  | Appended to a guard block's kept message when it was cut at `telemetry.block_reason_chars`, so a cut message is never mistaken for a whole one. The cut is at a character boundary that does not strand a combining mark. |
 | `telemetry.byte_buckets_bytes` | `8 items` |  | bytes | Upper bounds of the byte histogram buckets (the per-call memory histograms `check_mem_peak_bytes` and `check_mem_alloc_bytes`); a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate. |
 | `telemetry.byte_unit` | `bytes` |  |  | The metric unit that makes a histogram use the byte buckets (`telemetry.byte_buckets_bytes`) instead of the latency buckets. |
 | `telemetry.bytes_per_token` | `4` |  | bytes | Bytes of injected context counted as one token when `impact` estimates what injection costs. |

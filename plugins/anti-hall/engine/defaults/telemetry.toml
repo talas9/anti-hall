@@ -113,7 +113,16 @@ unit = "days"
 doc = "How many characters of a guard block's full message are kept with the block (`ah-engine query guard_blocks`), so the block can be judged afterwards; the text is the one the host gave the model (a JSON block's reason, else the stderr of an exit 2)."
 value = 2048
 min = 20
+max = 16384
 unit = "chars"
+
+[telemetry.block_truncated_marker]
+doc = "Appended to a guard block's kept message when it was cut at `telemetry.block_reason_chars`, so a cut message is never mistaken for a whole one. The cut is at a character boundary that does not strand a combining mark."
+value = " [...cut]"
+
+[telemetry.block_channel_joiner]
+doc = "Put between the two texts of a block that exited 2 with a JSON reason on stdout and a different message on stderr: both are kept, the JSON reason first. When one contains the other (the usual case) only the longer is kept."
+value = "\n--- stderr ---\n"
 
 [telemetry.retention_days]
 doc = "How many days of per-day counter rows and events stay in hot.db; older ones are removed by `telemetry rollup` after they are archived in archive.db, where the daily rollups are kept."

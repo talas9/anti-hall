@@ -864,11 +864,23 @@ struct DaemonObserver<'a> {
     who: telemetry::Who,
 }
 
-/// The text of one blocking result, for the block log: what the host gives the model (a JSON block's reason, else the stderr of an
-/// exit 2). A block whose JSON carries no reason falls back to its stderr, so a Stop guard's exit-0 JSON block is never logged empty.
+/// The text of one blocking result, for the block log: what the host gives the model (a JSON block's reason, else the stderr of
+/// an exit 2). A block whose JSON carries no reason falls back to its stderr, so a Stop guard's exit-0 JSON block is never logged
+/// empty. An exit 2 that carries a JSON reason AND a different stderr message keeps both channels, joined with
+/// `telemetry.block_channel_joiner` (the JSON reason first); when one contains the other only the longer is kept.
 pub(crate) fn block_text_of(r: &crate::dispatch::combine::HookResult) -> String {
     let text = crate::dispatch::combine::block_reason(r);
-    if text.trim().is_empty() { r.err.trim_end().to_string() } else { text }
+    let err = r.err.trim_end();
+    if text.trim().is_empty() {
+        return err.to_string();
+    }
+    if r.code != Some(2) || err.trim().is_empty() || text.contains(err) {
+        return text;
+    }
+    if err.contains(text.as_str()) {
+        return err.to_string();
+    }
+    format!("{text}{}{err}", defaults::text("telemetry.block_channel_joiner"))
 }
 
 /// What a check that just finished read and noted (task #66 step 0): its transcript bytes and latency by transcript size class,
@@ -2691,6 +2703,10 @@ mod tests {
         assert_eq!(block_text_of(&hook(2, "", "stopped: reason\n")), "stopped: reason");
         // a JSON block with no reason falls back to stderr
         assert_eq!(block_text_of(&hook(0, r#"{"decision":"block"}"#, "why on stderr\n")), "why on stderr");
+        // exit 2 with a JSON reason and a different stderr: both channels are kept; a stderr that repeats the reason is not doubled
+        let both = block_text_of(&hook(2, r#"{"decision":"block","reason":"json says"}"#, "stderr says\n"));
+        assert_eq!(both, format!("json says{}stderr says", defaults::text("telemetry.block_channel_joiner")));
+        assert_eq!(block_text_of(&hook(2, r#"{"decision":"block","reason":"same"}"#, "same\n")), "same");
     }
 
     #[test]
