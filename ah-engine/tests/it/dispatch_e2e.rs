@@ -1182,7 +1182,7 @@ fn a_repeated_task_reminder_is_cut_through_the_daemon_and_a_new_session_starts_w
     let tr = e.dir.join("tr.jsonl");
     std::fs::write(&tr, format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": "hello"}}))).unwrap();
     let args = ["hook", "--event", "UserPromptSubmit"];
-    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3"), ("ANTIHALL_TASK_TRACKER_TERSE", "0")]; // the full wording the marker reads: the terse wording ships on
     warm(&e, &args, &on);
     let marker = ah_engine::defaults::text("task_tracker.what_full");
     let seen: Vec<String> = (0..5).map(|_| context_of(&e.run_with(&args, false, &ups_payload_tr("sess-on", &tr), true, &on).1)).collect();
@@ -1327,7 +1327,7 @@ fn a_reminder_that_is_cut_is_no_output_not_an_empty_context() {
     let tr = e.dir.join("tr.jsonl");
     std::fs::write(&tr, format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": "hello"}}))).unwrap();
     let args = ["hook", "--event", "UserPromptSubmit"];
-    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3"), ("ANTIHALL_TASK_TRACKER_TERSE", "0")]; // the full wording the marker reads: the terse wording ships on
     warm(&e, &args, &on);
     let first = e.run_with(&args, false, &ups_payload_tr("sess-empty", &tr), true, &on);
     let second = e.run_with(&args, false, &ups_payload_tr("sess-empty", &tr), true, &on);
