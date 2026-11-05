@@ -440,6 +440,9 @@ pub struct Agent {
     /// Background tasks among `bg_ids` whose command is of a doubt class (burn.doubt.classes: a build), GH #458.
     #[serde(default)]
     pub bg_builds: Vec<String>,
+    /// Background tasks among `bg_ids` whose command checks or watches CI (agent_tracker.patterns.ci_wait): a CI wait still outstanding.
+    #[serde(default)]
+    pub bg_ci: Vec<String>,
     /// The outcome a background shell task among `bg_ids` stands to earn once it ends with success (PR #472): it is a check, and the
     /// files it writes. A background launch is at most a SOFT outcome; its completion notice with a success status is the HARD one.
     #[serde(default)]
@@ -486,6 +489,12 @@ pub struct Agent {
     /// Since when `stall_obs` holds.
     #[serde(default)]
     pub stall_since: u64,
+    /// The CPU (ms) of the process tree below the agent's session the last time it moved by `cpu_step_ms` (`None`: not read yet).
+    #[serde(default)]
+    pub stall_cpu: Option<u64>,
+    /// When that CPU last moved (0: never): the agent was doing work no transcript line shows.
+    #[serde(default)]
+    pub stall_cpu_at: u64,
     /// When each signal was last reminded.
     pub last_sent: BTreeMap<String, u64>,
     /// Reminders queued (signal, time), for the daily cap.

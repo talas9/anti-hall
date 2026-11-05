@@ -160,6 +160,66 @@ pub(crate) fn waiting_on_ci(a: &Agent) -> bool {
     a.recent.iter().rev().take(lim("ci_wait_calls") as usize).any(|r| re.is_match(&r.1))
 }
 
+/// Whether `ts` is an age of at most `span` ms at `now`. A stamp later than `now` has no age: it is NOT within any span (a skewed or
+/// rewound clock must never make evidence look current for ever).
+pub(crate) fn age_within(now: u64, ts: u64, span: u64) -> bool {
+    now.checked_sub(ts).is_some_and(|d| d <= span)
+}
+
+/// Whether any stamp the stall exemptions read stands later than `now`: a CI call, a background CI or build task, a call in flight, the
+/// CPU move or the quiet-window and repeat-line starts. They are ignored (never exempt, restart their window), and a tick that met one is
+/// counted `future_ts_ignored`.
+fn future_stamp(a: &Agent, now: u64) -> bool {
+    let mut tasks = a.bg_ci.iter().chain(a.bg_builds.iter()).filter_map(|id| a.bg_ids.get(id));
+    a.recent.iter().any(|r| r.3 > now)
+        || tasks.any(|t| *t > now)
+        || a.pending.values().any(|p| p.ts > now)
+        || a.stall_cpu_at > now
+        || a.stall_since > now
+        || a.said_since > now
+}
+
+/// Whether the agent waits on CI NOW (the stall exemption, #518 review round): a background command that checks or watches CI and has
+/// no end notice yet (`bg_ci`), started within `ci_wait_max_ms`; or a CI command issued within `ci_wait_fresh_ms`, where CI calls no
+/// further apart than that make one wait and the wait began within `ci_wait_max_ms`. A CI command in the call history is no wait. The
+/// ring of recent calls is bounded: when it holds the whole window before the wait's first call it proves the start, and when it is
+/// full and does not, the start was cut off, so the wait counts as past the longest (it errs toward flagging). A window or a longest
+/// wait of 0 turns the exemption off.
+pub(crate) fn ci_wait_current(a: &Agent, now: u64) -> bool {
+    let c = defaults::raw("nudges.stall_limits");
+    let (fresh, max) = (num(c, "ci_wait_fresh_ms"), num(c, "ci_wait_max_ms"));
+    if fresh == 0 || max == 0 {
+        return false;
+    }
+    if a.bg_ci.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| age_within(now, *t, max))) {
+        return true;
+    }
+    let Some(re) = defaults::raw("agent_tracker.patterns")
+        .get("ci_wait")
+        .and_then(V::as_str)
+        .and_then(|s| regex::RegexBuilder::new(s).case_insensitive(true).build().ok())
+    else {
+        return false;
+    };
+    // a stamp later than `now` (clock skew, a rewound clock) has no age: it is no evidence of a wait that is current
+    let mut hits: Vec<u64> = a.recent.iter().filter(|r| r.3 <= now && re.is_match(&r.1)).map(|r| r.3).collect();
+    hits.sort_unstable_by(|x, y| y.cmp(x));
+    let Some(newest) = hits.first().copied() else { return false };
+    if now.saturating_sub(newest) > fresh {
+        return false;
+    }
+    let mut start = newest;
+    for t in hits.iter().skip(1) {
+        if start.saturating_sub(*t) > fresh {
+            break;
+        }
+        start = *t;
+    }
+    let oldest = a.recent.iter().map(|r| r.3).filter(|t| *t <= now).min().unwrap_or(start);
+    let cut = a.recent.len() as u64 >= lim("loop_window") && oldest >= start.saturating_sub(fresh);
+    !cut && now.saturating_sub(start) <= max
+}
+
 /// Tokens spent since the agent's last outcome (a commit, finished step, passing test or new file), looking back at most one
 /// waste window. An outcome moves the start forward, so the count (and the breaker) resets when the agent produces one.
 pub(crate) fn tokens_since_outcome(a: &Agent, now: u64) -> u64 {
@@ -255,6 +315,15 @@ pub(crate) fn building(a: &Agent, now: u64) -> bool {
     let from = now.saturating_sub(doubt.get("max_ms").and_then(V::as_integer).unwrap_or(0).max(0) as u64);
     a.pending.values().any(|p| p.ts >= from && classes.iter().any(|c| *c == p.class))
         || a.bg_builds.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| *t >= from))
+}
+
+/// [`building`] for the stall exemption: the same background build or call in flight, but a stamp later than `now` is no build in flight.
+fn building_now(a: &Agent, now: u64) -> bool {
+    let doubt = defaults::raw("burn.doubt");
+    let classes = doubt.get("classes").map(V::strings).unwrap_or_default();
+    let max = doubt.get("max_ms").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    a.pending.values().any(|p| age_within(now, p.ts, max) && classes.iter().any(|c| *c == p.class))
+        || a.bg_builds.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| age_within(now, *t, max)))
 }
 
 /// Remove markers older than `burn.marker_ttl_ms` (an agent that left the state without clearing its flag).
@@ -378,17 +447,105 @@ fn metric(step: &str) {
     crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(step))]);
 }
 
-/// The stall sample: the observable fingerprint and since when it holds (only while the agent runs).
-fn stall_sample(env: &Env, a: &mut Agent, now: u64) {
-    if !env.switch("agent_tracker.stall_sw") || !running(a) {
-        a.stall_since = 0;
+/// Whether the CPU of a process tree moved by at least `step` ms since its baseline (`None`: nothing to compare yet, so no). A
+/// step of 0 turns the term off.
+pub(crate) fn cpu_moved(base: Option<u64>, cur: u64, step: u64) -> bool {
+    step > 0 && base.is_some_and(|b| b.abs_diff(cur) >= step)
+}
+
+fn exempt(reason: &str) {
+    let m = defaults::raw("nudges.stall_exempt");
+    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(reason))]);
+}
+
+/// The CPU term of the stall sample (#535): an agent whose process tree below `root` used CPU is working, whatever its transcript
+/// shows. Read only once the agent was quiet for `cpu_probe_pct` percent of `quiet_ms` (a healthy tick never spawns `ps`), and the
+/// table is read at most once per tick (`table`). A rise of `cpu_step_ms` restarts the quiet window.
+///
+/// `shared`: the tree is a parent's, read for an agent with no pid of its own, and another running agent below the same parent reads it
+/// too. Its CPU cannot be told apart, and one agent's work must not restart the quiet window of two, so nobody is credited with it: the
+/// table is not read, the baseline is dropped (a later lone reading seeds a fresh one) and the tick is counted `cpu_shared`.
+pub(crate) fn cpu_probe(env: &Env, a: &mut Agent, root: u32, shared: bool, table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
+    if root == 0 || !(super::is_child(a) || a.kind == kind_name("workspace")) {
         return;
+    }
+    let c = defaults::raw("nudges.stall_limits");
+    let (quiet, step) = (num(c, "quiet_ms"), num(c, "cpu_step_ms"));
+    let after = quiet.saturating_mul(num(c, "cpu_probe_pct")) / fmtn("pct").max(1);
+    if quiet == 0 || step == 0 || now.saturating_sub(a.stall_since) < after {
+        return;
+    }
+    if shared {
+        a.stall_cpu = None;
+        if env.act {
+            metric("cpu_shared");
+        }
+        return;
+    }
+    let t = table.get_or_insert_with(super::procs::snapshot);
+    if t.is_empty() {
+        if env.act {
+            exempt("cpu_unread"); // `ps` gave nothing: the term is silent, the quiet window stands
+        }
+        return;
+    }
+    let kids: Vec<_> = super::procs::tree(t, root).into_iter().filter(|q| q.pid != root).collect();
+    let cur = super::procs::cpu_of(&kids).0;
+    if cpu_moved(a.stall_cpu, cur, step) {
+        (a.stall_cpu, a.stall_cpu_at, a.stall_since) = (Some(cur), now, now);
+        if env.act {
+            exempt("cpu");
+        }
+    } else if a.stall_cpu.is_none() {
+        a.stall_cpu = Some(cur);
+    }
+}
+
+/// Per agent, the pid whose process tree is its CPU (its own session, else its parent's; 0: unknown) and whether that tree is shared:
+/// the agent has no pid of its own and another running child or workspace stands below the same parent, so the parent's tree holds the
+/// work of more than one of them (an agent with a pid of its own sits inside it too). Computed once per tick, before any agent is
+/// evaluated, so the answer does not depend on the order the agents are taken in.
+pub(crate) fn probe_roots(st: &State) -> BTreeMap<String, (u32, bool)> {
+    let parent_pid = |a: &Agent| st.agents.get(&a.parent).map_or(0, |p| p.pid);
+    let live = |a: &Agent| (super::is_child(a) || a.kind == kind_name("workspace")) && running(a);
+    let mut below: BTreeMap<u32, u64> = BTreeMap::new();
+    for a in st.agents.values().filter(|a| live(a)) {
+        *below.entry(parent_pid(a)).or_default() += 1;
+    }
+    st.agents
+        .iter()
+        .map(|(id, a)| {
+            let root = if a.pid != 0 { (a.pid, false) } else { (parent_pid(a), parent_pid(a) != 0 && below.get(&parent_pid(a)).copied().unwrap_or(0) > 1) };
+            (id.clone(), root)
+        })
+        .collect()
+}
+
+/// The stall sample: the observable fingerprint and since when it holds (only while the agent runs). `root` is [`probe_roots`]'s answer.
+fn stall_sample(env: &Env, a: &mut Agent, root: (u32, bool), table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
+    if !env.switch("agent_tracker.stall_sw") || !running(a) {
+        (a.stall_since, a.stall_cpu, a.stall_cpu_at) = (0, None, 0);
+        return;
+    }
+    if future_stamp(a, now) {
+        // a stamp from the future (clock skew, a rewound clock) has no age: the windows it starts restart now, the CPU credit is
+        // dropped, and the exemptions ignore the rest (`ci_wait_current`, `building_now`)
+        if env.act {
+            exempt("future_ts_ignored");
+        }
+        a.stall_since = a.stall_since.min(now);
+        a.said_since = a.said_since.min(now);
+        if a.stall_cpu_at > now {
+            (a.stall_cpu, a.stall_cpu_at) = (None, 0);
+        }
     }
     let obs = vec![a.offset, a.tools, a.commits, a.changes, a.progress, a.edits, a.said_since];
     if a.stall_obs != obs || a.stall_since == 0 {
         a.stall_obs = obs;
         a.stall_since = now;
+        (a.stall_cpu, a.stall_cpu_at) = (None, 0); // progress: the CPU used while it worked is no part of the next quiet stretch
     }
+    cpu_probe(env, a, root.0, root.1, table, now);
     if env.act {
         metric("sampled");
     }
@@ -413,6 +570,22 @@ fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
     } else {
         return None;
     };
+    // work the transcript does not show: a build or CI wait in flight, or CPU used within the quiet window (#518 FP rubric)
+    let busy = if building_now(a, now) {
+        Some("building")
+    } else if ci_wait_current(a, now) {
+        Some("ci_wait")
+    } else if a.stall_cpu_at > 0 && now.checked_sub(a.stall_cpu_at).is_some_and(|d| d < num(c, "quiet_ms")) {
+        Some("cpu")
+    } else {
+        None
+    };
+    if let Some(reason) = busy {
+        if env.act {
+            exempt(reason);
+        }
+        return None;
+    }
     if env.act {
         metric("stalled");
     }
@@ -1000,12 +1173,15 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
     let mut queued = 0;
     let mut judge_budget = super::waste::judge_budget();
     let ids: Vec<String> = st.agents.keys().cloned().collect();
+    let roots = probe_roots(st);
+    let mut procs_table: Option<Vec<super::procs::Proc>> = None; // the process table, read at most once a tick and only when a quiet agent needs it
     for id in ids {
         let Some(mut a) = st.agents.remove(&id) else { continue };
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
         super::waste::note_head(env, &mut a);
         sample(&mut a, now);
-        stall_sample(env, &mut a, now);
+        let root = roots.get(&id).copied().unwrap_or((0, false));
+        stall_sample(env, &mut a, root, &mut procs_table, now);
         super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
         mark_breaker(env, &a, raised.get("burn_hard"));

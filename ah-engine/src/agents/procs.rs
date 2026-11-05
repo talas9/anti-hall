@@ -42,7 +42,7 @@ fn token(s: &str) -> Option<(&str, &str)> {
 }
 
 /// `[dd-][hh:]mm:ss[.cc]` as ms.
-fn parse_time(s: &str) -> Option<u64> {
+pub(crate) fn parse_time(s: &str) -> Option<u64> {
     let (days, rest) = match s.split_once('-') {
         Some((d, r)) => (d.parse::<u64>().ok()?, r),
         None => (0, s),
@@ -51,7 +51,7 @@ fn parse_time(s: &str) -> Option<u64> {
     for p in rest.split(':') {
         secs = secs * 60.0 + p.parse::<f64>().ok()?;
     }
-    Some(days * 86_400_000 + (secs * 1000.0) as u64)
+    Some(days.saturating_mul(86_400_000).saturating_add((secs * 1000.0) as u64))
 }
 
 /// The whole process table (empty when `ps` cannot run).
@@ -98,7 +98,7 @@ pub(crate) fn tree(procs: &[Proc], root: u32) -> Vec<&Proc> {
 
 /// CPU of a tree: (accumulated ms, instantaneous thousandths of a core).
 pub(crate) fn cpu_of(t: &[&Proc]) -> (u64, u64) {
-    (t.iter().map(|p| p.cpu_ms).sum(), t.iter().map(|p| p.pcpu_pm).sum())
+    (t.iter().fold(0u64, |s, p| s.saturating_add(p.cpu_ms)), t.iter().fold(0u64, |s, p| s.saturating_add(p.pcpu_pm)))
 }
 
 /// Whether a tree was idle since the baseline reading: `None` while the span is too short to trust. The accumulated-time rate is
@@ -108,7 +108,7 @@ pub(crate) fn idle_since(base: (u64, u64), now: (u64, u64), now_ms: u64, min_spa
     if span < min_span_ms.max(1) {
         return None;
     }
-    Some(if now.0 >= base.0 { (now.0 - base.0) * 1000 / span <= idle_pm } else { now.1 <= idle_pm })
+    Some(if now.0 >= base.0 { (now.0 - base.0).saturating_mul(1000) / span <= idle_pm } else { now.1 <= idle_pm })
 }
 
 /// One process with the lock file open: pid, command, whether it holds the lock (not just waits for it).

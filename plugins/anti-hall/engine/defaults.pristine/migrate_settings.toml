@@ -198,7 +198,7 @@ value = [
   "{\"section\":\"agents\",\"key\":\"nudgeScope\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_AGENT_NUDGE_SCOPE\"}",
   "{\"section\":\"agents\",\"key\":\"nudgeOwnerActive\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_AGENT_NUDGE_OWNER_ACTIVE\"}",
   "{\"section\":\"nudges\",\"key\":\"enabled\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_NUDGES\"}",
-  "{\"section\":\"nudges\",\"key\":\"stall\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_NUDGES_STALL\"}",
+  "{\"section\":\"nudges\",\"key\":\"stall\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_NUDGES_STALL\"}",
   "{\"section\":\"nudges\",\"key\":\"idleWake\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_NUDGES_IDLE_WAKE\"}",
   "{\"section\":\"nudges\",\"key\":\"parallel\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_NUDGES_PARALLEL\"}",
   "{\"section\":\"versionAlerts\",\"key\":\"antiHall\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_VERSION_ALERT\",\"pluginOption\":\"version_alerts_anti_hall\"}",

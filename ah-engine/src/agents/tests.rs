@@ -28,7 +28,7 @@ fn env(h: &Path, now: u64) -> Env {
         plugin_root: None,
         use_cli: false,
         // These are plain reminder routing cases; the nudge loop has its own tests. The ladder's signal switches (stall, idle wake,
-        // parallel) are off by default (GH #518 #515 #517): the signal tests turn them on here, and the off case drops one.
+        // parallel) are set here as the signal tests need them (stall defaults to on, GH #518; the others are off by default, #515 #517).
         settings: Settings {
             home: h.to_string_lossy().to_string(),
             env: HashMap::from([
@@ -3283,10 +3283,10 @@ fn a_subagent_that_keeps_working_is_never_stalled_and_the_off_switch_holds_it() 
     let mut st2 = State::default();
     for at in [n, n + 16 * MIN, n + 17 * MIN] {
         let mut off = env(&h2, at);
-        off.settings.env.remove("ANTIHALL_NUDGES_STALL"); // the shipped default: off
+        off.settings.env.insert("ANTIHALL_NUDGES_STALL".into(), "false".into()); // forced off: the shipped default is on
         tick(&off, &mut st2);
     }
-    assert!(!agent(&st2, "w1").flags.contains_key("stalled"), "nudges.stall is off by default");
+    assert!(!agent(&st2, "w1").flags.contains_key("stalled"), "nudges.stall off holds the signal");
 }
 
 #[test]
@@ -3484,4 +3484,762 @@ fn delivered_since_says_nothing_it_cannot_read_and_nothing_for_a_queue_that_does
         Some((0, 0)),
         "a cursor that is no number is zero, as the check reads it"
     );
+}
+
+// ---- R-stuck (GH #518, #535): the stalled signal counts CPU and leaves builds and CI waits alone -----------------------------------
+
+fn stall_cfg(k: &str) -> u64 {
+    crate::defaults::raw("nudges.stall_limits").get(k).and_then(crate::defaults::V::as_integer).unwrap_or(0).max(0) as u64
+}
+
+/// A session registered with `pid` and one subagent that has been quiet since `n - 2 min`.
+fn stall_home(tag: &str, pid: u32, n: u64) -> PathBuf {
+    let h = home(tag);
+    register(&h, pid, "parent", "idle", n);
+    write(&sess(&h, "parent"), &[prompt(n - 90 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
+    running_sub(&h, "parent", n, 2);
+    h
+}
+
+/// The ticks of the stalled case: a first sample, then two ticks past `quiet_ms`.
+fn stall_ticks(h: &Path, st: &mut State, n: u64) {
+    ticks(h, st, &[n, n + 16 * MIN, n + 17 * MIN]);
+}
+
+fn stalled_flag(st: &State) -> bool {
+    agent(st, "w1").flags.contains_key("stalled")
+}
+
+fn exempt_count(reason: &str) -> u64 {
+    crate::metrics::bumped_on_this_thread("stall_exempt", &[("reason", reason)])
+}
+
+/// A process tree for the CPU case: a root shell with `busy` spinning children (finite loops, so a leak ends by itself). Dropping it
+/// kills exactly the pids found below the root.
+struct Tree {
+    root: std::process::Child,
+}
+
+impl Tree {
+    fn spawn(busy: usize) -> Tree {
+        let spin = "(i=0; while [ $i -lt 40000000 ]; do i=$((i+1)); done) &";
+        let script = format!("{} wait", spin.repeat(busy));
+        Tree {
+            root: std::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        }
+    }
+
+    fn kids_cpu(&self) -> u64 {
+        let t = procs::snapshot();
+        let kids: Vec<_> = procs::tree(&t, self.root.id()).into_iter().filter(|p| p.pid != self.root.id()).collect();
+        procs::cpu_of(&kids).0
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let t = procs::snapshot();
+        let pids: Vec<u32> = procs::tree(&t, self.root.id()).into_iter().map(|p| p.pid).collect();
+        for pid in pids {
+            crate::discard::harmless(std::process::Command::new("kill").arg(pid.to_string()).output()); // keep: only the pids this test started
+        }
+        crate::discard::harmless(self.root.kill()); // keep: already gone is the goal state
+        crate::discard::harmless(self.root.wait()); // keep: reaped either way
+    }
+}
+
+#[test]
+fn stalled_cpu_rising_is_not_stalled() {
+    let tree = Tree::spawn(4);
+    let n = now0();
+    let h = stall_home("stall-cpu", tree.root.id(), n);
+    let step = stall_cfg("cpu_step_ms");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + 8 * MIN]); // past cpu_probe_pct of quiet_ms: the first read seeds the baseline
+    let seeded = tree.kids_cpu();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while tree.kids_cpu() < seeded + step + step / 5 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(tree.kids_cpu() >= seeded + step + step / 5, "the children used cpu_step_ms of CPU");
+    ticks(&h, &mut st, &[n + 16 * MIN, n + 17 * MIN]);
+    assert!(!stalled_flag(&st), "the process tree below the session used CPU: the agent works, whatever its transcript shows");
+    assert!(agent(&st, "w1").stall_cpu_at > 0, "the rise restarted the quiet window");
+    assert!(exempt_count("cpu") >= 1, "and the move is counted");
+}
+
+/// Progress clears the CPU baseline: the CPU an agent used while it worked must not restart the next quiet stretch at its probe point.
+#[test]
+fn progress_clears_the_cpu_baseline_so_a_later_stall_is_not_delayed() {
+    let n = now0();
+    let h = stall_home("stall-progress", std::process::id(), n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + 8 * MIN]);
+    assert_eq!(agent(&st, "w1").stall_cpu, Some(0), "the probe seeded the baseline");
+    append(&sub_path(&h, "parent"), &[tool(n + 9 * MIN, "sp1", 5, "pp1", "Bash", json!({"command": "ls"})), result(n + 9 * MIN + 500, "pp1", "ok", false)]);
+    ticks(&h, &mut st, &[n + 10 * MIN]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.stall_cpu, a.stall_cpu_at), (None, 0), "progress dropped the baseline");
+}
+
+#[test]
+fn stalled_without_cpu_is_still_stalled_so_the_cpu_term_is_no_blanket_exemption() {
+    let mut idle = std::process::Command::new("sleep").arg("120").spawn().unwrap();
+    let n = now0();
+    let h = stall_home("stall-nocpu", idle.id(), n);
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    crate::discard::harmless(idle.kill()); // keep: the sleep this test started
+    crate::discard::harmless(idle.wait()); // keep: reaped either way
+    assert!(stalled_flag(&st), "a quiet process tree is no work");
+    assert_eq!(agent(&st, "w1").stall_cpu_at, 0);
+}
+
+fn build_lines(n: u64, ago_min: u64, cmd: &str) -> Vec<String> {
+    let t = n - ago_min * MIN;
+    vec![
+        tool(t, "sb1", 5, "bb1", "Bash", json!({"command": cmd, "run_in_background": true})),
+        result(t + 500, "bb1", "Command running in background with ID: bgx1. Output is being written to: /tmp/x", false),
+    ]
+}
+
+#[test]
+fn stalled_building_is_exempt() {
+    let n = now0();
+    let h = stall_home("stall-build", std::process::id(), n);
+    append(&sub_path(&h, "parent"), &build_lines(n, 1, "cargo build --release -j4"));
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    assert!(!stalled_flag(&st), "a background build is in flight: the quiet transcript is the build");
+    assert!(exempt_count("building") >= 1, "and the exemption is counted");
+}
+
+#[test]
+fn stalled_ci_wait_is_exempt() {
+    // a CI watch handed to the background and not ended: the wait is outstanding, whatever the transcript shows
+    let n = now0();
+    let h = stall_home("stall-ci", std::process::id(), n);
+    append(&sub_path(&h, "parent"), &build_lines(n, 1, "gh run watch 12345 --exit-status"));
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    assert!(!stalled_flag(&st), "the agent waits on CI");
+    assert!(agent(&st, "w1").bg_ci.iter().any(|id| id == "bgx1"), "the background CI task is remembered until its end notice");
+    assert!(exempt_count("ci_wait") >= 1);
+}
+
+#[test]
+fn a_ci_command_in_the_history_of_a_quiet_agent_exempts_nothing() {
+    // the same command, foreground, answered 1 minute before the quiet stretch: it is a query that ended, not a wait
+    let n = now0();
+    let h = stall_home("stall-ci-hist", std::process::id(), n);
+    append(
+        &sub_path(&h, "parent"),
+        &[tool(n - MIN, "sc1", 5, "cc1", "Bash", json!({"command": "gh run watch 12345 --exit-status"})), result(n - MIN + 500, "cc1", "queued", false)],
+    );
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    assert!(stalled_flag(&st), "the watch returned 18 minutes ago and nothing waits now");
+}
+
+#[test]
+fn the_stall_signal_is_on_by_default_and_its_kill_switch_holds() {
+    let n = now0();
+    let h = stall_home("stall-default", std::process::id(), n);
+    let mut st = State::default();
+    for at in [n, n + 16 * MIN, n + 17 * MIN] {
+        let mut shipped = env(&h, at);
+        shipped.settings.env.remove("ANTIHALL_NUDGES_STALL"); // the shipped default
+        tick(&shipped, &mut st);
+    }
+    assert!(stalled_flag(&st), "nudges.stall defaults to on");
+    let h2 = stall_home("stall-killed", std::process::id(), n);
+    let mut st2 = State::default();
+    for at in [n, n + 16 * MIN, n + 17 * MIN] {
+        let mut off = env(&h2, at);
+        off.settings.env.insert("ANTIHALL_NUDGES_STALL".into(), "false".into());
+        tick(&off, &mut st2);
+    }
+    assert!(!stalled_flag(&st2), "the kill switch holds it");
+    assert_eq!(agent(&st2, "w1").stall_since, 0, "and no sample is kept");
+}
+
+// ---- class: the CPU term over every shape of process table (a table of inputs, no real process) --------------------------------------
+
+fn proc_row(pid: u32, ppid: u32, cpu_ms: u64) -> procs::Proc {
+    procs::Proc { pid, ppid, pcpu_pm: 0, cpu_ms, cmd: format!("p{pid}") }
+}
+
+fn probe_agent(kind: &str, since: u64) -> Agent {
+    Agent { kind: kind_name(kind).to_string(), stall_since: since, ..Agent::default() }
+}
+
+/// One probe of a fresh subagent quiet since `since`, at `now`, over `table`; returns the agent and whether the table was read.
+fn probe(a: &mut Agent, root: u32, table: Option<Vec<procs::Proc>>, now: u64) -> bool {
+    let mut t = table;
+    let e = env(&home("probe"), now);
+    signals::cpu_probe(&e, a, root, false, &mut t, now);
+    t.is_some()
+}
+
+#[test]
+fn the_cpu_term_decides_on_every_shape_of_process_table() {
+    let (quiet, step) = (stall_cfg("quiet_ms"), stall_cfg("cpu_step_ms"));
+    let after = quiet * stall_cfg("cpu_probe_pct") / 100;
+    let (t0, now) = (1_000_000u64, 1_000_000 + after);
+    let tree = |cpu: u64| vec![proc_row(10, 1, 999_999), proc_row(11, 10, cpu), proc_row(12, 11, 0)];
+    // 1. before the probe point the table is never read (`ps` is not spawned for a healthy agent)
+    let mut a = probe_agent("subagent", t0);
+    let mut t = None;
+    signals::cpu_probe(&env(&home("probe1"), now), &mut a, 10, false, &mut t, now - 1);
+    assert!(t.is_none() && a.stall_cpu.is_none(), "too early: nothing read");
+    // 2. no root (the pid is unknown): nothing read
+    let mut a = probe_agent("subagent", t0);
+    let mut t = None;
+    signals::cpu_probe(&env(&home("probe2"), now), &mut a, 0, false, &mut t, now);
+    assert!(t.is_none(), "no root pid");
+    // 3. a main session is not a candidate for the stalled signal: no read
+    let mut a = probe_agent("main", t0);
+    let mut t = None;
+    signals::cpu_probe(&env(&home("probe3"), now), &mut a, 10, false, &mut t, now);
+    assert!(t.is_none(), "only children and workspaces are probed");
+    // 4. a workspace is probed
+    let mut a = probe_agent("workspace", t0);
+    assert!(probe(&mut a, 10, Some(tree(100)), now));
+    assert_eq!(a.stall_cpu, Some(100));
+    // 5. the first read seeds the baseline and restarts nothing
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(tree(40_000)), now);
+    assert_eq!((a.stall_cpu, a.stall_since, a.stall_cpu_at), (Some(40_000), t0, 0));
+    // 6. the same CPU on the next read: no move
+    probe(&mut a, 10, Some(tree(40_000)), now + 1000);
+    assert_eq!((a.stall_since, a.stall_cpu_at), (t0, 0));
+    // 7. one ms short of a step: no move, and the baseline stays (a trickle adds up)
+    probe(&mut a, 10, Some(tree(40_000 + step - 1)), now + 2000);
+    assert_eq!((a.stall_cpu, a.stall_since), (Some(40_000), t0));
+    // 8. the trickle reaches a step: moved, the quiet window restarts at this tick
+    probe(&mut a, 10, Some(tree(40_000 + step)), now + 3000);
+    assert_eq!((a.stall_cpu, a.stall_since, a.stall_cpu_at), (Some(40_000 + step), now + 3000, now + 3000));
+    // 9. a child that ended (the tree shrank by a step or more) is activity too
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(tree(90_000)), now);
+    probe(&mut a, 10, Some(tree(90_000 - step)), now + 1000);
+    assert_eq!(a.stall_since, now + 1000, "a drop of a step moves the window");
+    // 10. a smaller drop does not
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(tree(90_000)), now);
+    probe(&mut a, 10, Some(tree(90_000 - step + 1)), now + 1000);
+    assert_eq!(a.stall_since, t0);
+    // 11. the root's own CPU (the session process) is not the agent's work
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 5), proc_row(11, 10, 7)]), now);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 5_000_000), proc_row(11, 10, 7)]), now + 1000);
+    assert_eq!((a.stall_cpu, a.stall_since), (Some(7), t0), "the root burned CPU, its children did not");
+    // 12. a process outside the tree is not the agent's work
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(50, 1, 0)]), now);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(50, 1, 9_999_999)]), now + 1000);
+    assert_eq!(a.stall_since, t0, "an unrelated process");
+    // 13. grandchildren count
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(11, 10, 0), proc_row(12, 11, 0)]), now);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(11, 10, 0), proc_row(12, 11, step)]), now + 1000);
+    assert_eq!(a.stall_since, now + 1000);
+    // 14. a table with a process that is its own parent, and a cycle: no hang, no panic
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 10, 0), proc_row(11, 12, 3), proc_row(12, 11, 4)]), now);
+    assert_eq!(a.stall_cpu, Some(0), "the cycle hangs below no root");
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(11, 10, 3), proc_row(12, 11, 4), proc_row(11, 12, 3)]), now);
+    assert_eq!(a.stall_cpu, Some(7), "duplicate pid rows and a cycle below the root are counted once each, never forever");
+    // 15. enormous CPU figures: no overflow
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0), proc_row(11, 10, u64::MAX / 2), proc_row(12, 10, u64::MAX / 2)]), now);
+    probe(&mut a, 10, Some(vec![proc_row(10, 1, 0)]), now + 1000);
+    assert_eq!(a.stall_since, now + 1000, "the figure fell to zero");
+    // 16. an unreadable table (empty): counted, the window stands, the baseline is untouched
+    let mut a = probe_agent("subagent", t0);
+    a.stall_cpu = Some(123);
+    let before = exempt_count("cpu_unread");
+    probe(&mut a, 10, Some(Vec::new()), now);
+    assert_eq!((a.stall_cpu, a.stall_since), (Some(123), t0));
+    assert_eq!(exempt_count("cpu_unread"), before + 1);
+    // 17. two agents in one tick read the table once: the second reuses what the first read
+    let (mut a, mut b) = (probe_agent("subagent", t0), probe_agent("subagent", t0));
+    let mut t = Some(tree(5));
+    let e = env(&home("probe17"), now);
+    signals::cpu_probe(&e, &mut a, 10, false, &mut t, now);
+    let first = t.clone().unwrap().len();
+    signals::cpu_probe(&e, &mut b, 10, false, &mut t, now);
+    assert_eq!((a.stall_cpu, b.stall_cpu, t.unwrap().len()), (Some(5), Some(5), first));
+}
+
+#[test]
+fn cpu_moved_is_exact_at_its_edges() {
+    for (base, cur, step, want) in [
+        (None, 0, 5000, false),
+        (None, 9_999_999, 5000, false),
+        (Some(0), 4999, 5000, false),
+        (Some(0), 5000, 5000, true),
+        (Some(5000), 0, 5000, true),
+        (Some(5000), 1, 5000, false),
+        (Some(7), 7, 5000, false),
+        (Some(0), u64::MAX, 5000, true),
+        (Some(u64::MAX), 0, 5000, true),
+        (Some(0), 1_000_000, 0, false), // a step of 0 turns the term off
+        (Some(1), 1, 0, false),
+        (Some(0), 1, 1, true),
+    ] {
+        assert_eq!(signals::cpu_moved(base, cur, step), want, "base {base:?} cur {cur} step {step}");
+    }
+}
+
+// ---- R-stuck review round: an exemption needs a CURRENT wait, never command history (CI waits, background builds) -------------------
+
+/// An idle process to register as the session pid: its tree uses no CPU, so the CPU term never exempts these cases.
+struct Sleeper(std::process::Child);
+
+impl Sleeper {
+    fn spawn() -> Sleeper {
+        Sleeper(std::process::Command::new("sleep").arg("300").spawn().unwrap())
+    }
+}
+
+impl Drop for Sleeper {
+    fn drop(&mut self) {
+        crate::discard::harmless(self.0.kill()); // keep: the sleep this test started
+        crate::discard::harmless(self.0.wait()); // keep: reaped either way
+    }
+}
+
+/// Stall the quiet subagent (the control: the plain case flags it), then judge it once more at +18 min after `shape` changed what the
+/// tracker remembers about its calls. Returns whether it is flagged stalled.
+fn stalled_after(tag: &str, shape: impl Fn(&mut Agent, u64)) -> bool {
+    let sleeper = Sleeper::spawn();
+    let n = now0();
+    let h = stall_home(tag, sleeper.0.id(), n);
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    assert!(stalled_flag(&st), "{tag}: the quiet agent is stalled before the exemption is tried");
+    let at = n + 18 * MIN;
+    {
+        let a = st.agents.get_mut("w1").unwrap();
+        assert!(a.pending.is_empty());
+        a.flags.clear();
+        shape(a, at);
+    }
+    tick(&env(&h, at), &mut st);
+    stalled_flag(&st)
+}
+
+fn call(cmd: &str, ago_ms: u64, at: u64) -> (String, String, bool, u64) {
+    (format!("Bash:{ago_ms}"), format!("Bash {cmd}"), false, at - ago_ms)
+}
+
+#[test]
+fn a_ci_wait_exempts_only_while_it_is_current() {
+    let fresh = stall_cfg("ci_wait_fresh_ms");
+    let max = stall_cfg("ci_wait_max_ms");
+    assert!(fresh > 0 && max > fresh, "the freshness window and the longest wait are configured");
+    let q = "gh pr view 123 --json state";
+    let w = "gh run watch 777 --exit-status";
+    // (shape, stalled?, why)
+    fn recent_only(calls: Vec<(&'static str, u64)>) -> impl Fn(&mut Agent, u64) {
+        move |a, at| a.recent = calls.iter().map(|(c, ago)| call(c, *ago, at)).collect()
+    }
+    // 1. the reviewed repro: a CI query 70 min ago, nothing in flight
+    assert!(stalled_after("ci1", recent_only(vec![(q, 70 * MIN)])), "a 70 min old query is history");
+    // 2. a watch just past the freshness window
+    assert!(stalled_after("ci2", recent_only(vec![(w, fresh + MIN)])), "a call older than the window is history");
+    // 3. the same watch inside the window is a wait that is current
+    assert!(!stalled_after("ci3", recent_only(vec![(w, fresh - MIN)])), "a call inside the window is a current wait");
+    // 4. a poll this very tick
+    assert!(!stalled_after("ci4", recent_only(vec![(q, 0)])), "a poll now");
+    // 5. a polling chain of 5 min gaps that began inside the longest wait
+    let chain = |span: u64| {
+        let mut v = Vec::new();
+        let mut ago = 0;
+        while ago <= span {
+            v.push((q, ago));
+            ago += 5 * MIN;
+        }
+        v.reverse();
+        v
+    };
+    assert!(!stalled_after("ci5", recent_only(chain(max - 10 * MIN))), "a chain younger than ci_wait_max_ms exempts");
+    // 6. the same chain once it is older than the longest wait
+    assert!(stalled_after("ci6", recent_only(chain(max + 20 * MIN))), "a wait that persists past ci_wait_max_ms stops exempting");
+    // 7. an old chain, a silence, then one fresh poll: the chain is a new one that began just now
+    assert!(
+        !stalled_after("ci7", |a, at| {
+            a.recent = (0..6).map(|i| call(q, 100 * MIN - i * 5 * MIN, at)).chain([call(q, 2 * MIN, at)]).collect();
+        }),
+        "a gap longer than the window starts a new wait"
+    );
+    // 8. a non-CI command inside the window is no wait
+    assert!(stalled_after("ci8", recent_only(vec![("echo completed", MIN)])), "the control command");
+    // 9. a full ring of CI polls: the start of the chain was cut off, so its age is unknown and it errs toward flagging
+    assert!(
+        stalled_after("ci9", |a, at| {
+            a.recent = (0..lim("loop_window")).rev().map(|i| call(q, i * MIN, at)).collect();
+        }),
+        "a ring that holds nothing but CI polls cannot prove the wait began inside the longest wait"
+    );
+    // 10. a background watch still outstanding (no end notice) is a wait that is current ...
+    assert!(
+        !stalled_after("ci10", |a, at| {
+            a.recent = vec![call(w, 20 * MIN, at)];
+            a.bg_ids.insert("bgci".into(), at - 20 * MIN);
+            a.bg_ci.push("bgci".into());
+        }),
+        "an outstanding background CI watch exempts"
+    );
+    // 11. ... until it has run past the longest wait
+    assert!(
+        stalled_after("ci11", |a, at| {
+            a.recent = vec![call(w, max + 10 * MIN, at)];
+            a.bg_ids.insert("bgci".into(), at - max - 10 * MIN);
+            a.bg_ci.push("bgci".into());
+        }),
+        "an outstanding background watch older than ci_wait_max_ms stops exempting"
+    );
+    // 12. a background watch that ended is history, whatever the ring still holds
+    assert!(
+        stalled_after("ci12", |a, at| {
+            a.recent = vec![call(w, 20 * MIN, at)];
+            a.bg_ci.push("bgci".into()); // its end notice removed it from bg_ids
+        }),
+        "an ended background watch is no wait"
+    );
+    // 13. an outstanding background task that is no CI command exempts nothing
+    assert!(
+        stalled_after("ci13", |a, at| {
+            a.bg_ids.insert("bgsh".into(), at - 5 * MIN);
+        }),
+        "a background shell that is not CI"
+    );
+}
+
+#[test]
+fn a_build_exempts_only_while_its_background_task_is_outstanding() {
+    let max = crate::defaults::raw("burn.doubt").get("max_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(0) as u64;
+    assert!(max > 0);
+    let build = "cargo build --release";
+    // 1. a build in the call history, none outstanding: history never exempts
+    assert!(stalled_after("b1", |a, at| a.recent = vec![call(build, 5 * MIN, at)]), "a finished foreground build");
+    // 2. an outstanding background build
+    assert!(
+        !stalled_after("b2", |a, at| {
+            a.bg_ids.insert("bgb".into(), at - 10 * MIN);
+            a.bg_builds.push("bgb".into());
+        }),
+        "an outstanding background build exempts"
+    );
+    // 3. one that has run to just inside the longest wait
+    assert!(
+        !stalled_after("b3", move |a, at| {
+            a.bg_ids.insert("bgb".into(), at - max + MIN);
+            a.bg_builds.push("bgb".into());
+        }),
+        "inside burn.doubt.max_ms"
+    );
+    // 4. one past it
+    assert!(
+        stalled_after("b4", move |a, at| {
+            a.bg_ids.insert("bgb".into(), at - max - MIN);
+            a.bg_builds.push("bgb".into());
+        }),
+        "a build older than burn.doubt.max_ms stops exempting"
+    );
+    // 5. a build that ended (its end notice removed the task) is history
+    assert!(
+        stalled_after("b5", |a, at| {
+            a.recent = vec![call(build, 2 * MIN, at)];
+            a.bg_builds.push("bgb".into());
+        }),
+        "an ended background build"
+    );
+    // 6. an outstanding background task that is no build
+    assert!(
+        stalled_after("b6", |a, at| {
+            a.bg_ids.insert("bgsh".into(), at - 5 * MIN);
+        }),
+        "a background shell that is not a build"
+    );
+    // 7. a build call that stands in a stale pending entry cannot stall the signal either: the agent has a call in flight
+    //    (hung() judges it), so the stall rule leaves it to that signal
+    assert!(
+        !stalled_after("b7", |a, at| {
+            a.pending.insert(
+                "p".into(),
+                crate::agents::Pending {
+                    name: "Bash".into(),
+                    ts: at - 10 * MIN,
+                    label: build.into(),
+                    class: "build".into(),
+                    bg: false,
+                    push: false,
+                    ack: false,
+                    writes: Vec::new(),
+                    amp: false,
+                    cwd: String::new(),
+                },
+            );
+        }),
+        "a call in flight is not a stall"
+    );
+}
+
+// ---- R-stuck review round: CPU figures never overflow; one agent's CPU never restarts two quiet windows ----------------------------
+
+#[test]
+fn the_cpu_term_saturates_on_every_figure_instead_of_wrapping() {
+    let max = u64::MAX;
+    let rows = |figs: &[u64]| {
+        figs.iter().enumerate().map(|(i, c)| procs::Proc { pid: 11 + i as u32, ppid: 10, pcpu_pm: *c, cpu_ms: *c, cmd: String::new() }).collect::<Vec<_>>()
+    };
+    for (figs, want) in [
+        (vec![max, 1], max),
+        (vec![1, max], max),
+        (vec![max, max], max),
+        (vec![max - 1, 1], max),
+        (vec![max - 1, 2], max),
+        (vec![max / 2 + 1, max / 2 + 1], max),
+        (vec![max; 5], max),
+        (vec![7, 8], 15),
+        (vec![], 0),
+    ] {
+        let t = rows(&figs);
+        let refs: Vec<&procs::Proc> = t.iter().collect();
+        assert_eq!(procs::cpu_of(&refs), (want, want), "{figs:?}: accumulated and instantaneous");
+    }
+    // the figure `ps` prints: an absurd day count must not wrap either
+    assert_eq!(procs::parse_time("18446744073709551615-23:59:59"), Some(max));
+    assert_eq!(procs::parse_time("999999999999999999-00:00:01"), Some(max));
+    assert_eq!(procs::parse_time("1-00:00:01"), Some(86_400_000 + 1000));
+    assert_eq!(procs::parse_time("01:02:03.5"), Some(3_723_500));
+    // the rate: a huge accumulated rise is not idle
+    assert_eq!(procs::idle_since((0, 0), (max, 0), 120_000, 60_000, 20), Some(false));
+    // and the probe: a tree summing past u64 keeps its baseline at the top, it does not restart from a wrapped 0
+    let after = stall_cfg("quiet_ms") * stall_cfg("cpu_probe_pct") / 100;
+    let (t0, now) = (1_000_000u64, 1_000_000 + after);
+    let tree = |a: u64, b: u64| vec![proc_row(10, 1, 0), proc_row(11, 10, a), proc_row(12, 10, b)];
+    let mut a = probe_agent("subagent", t0);
+    probe(&mut a, 10, Some(tree(max, 1)), now);
+    assert_eq!(a.stall_cpu, Some(max), "[u64::MAX, 1] aggregates to the top, not to 0");
+    probe(&mut a, 10, Some(tree(max, 1)), now + 1000);
+    assert_eq!(a.stall_since, t0, "the same reading is no move");
+    probe(&mut a, 10, Some(tree(5, 1)), now + 2000);
+    assert_eq!(a.stall_since, now + 2000, "a tree that fell from the top is a move");
+}
+
+fn sibling(id: &str, parent: &str, pid: u32) -> Agent {
+    Agent { id: id.into(), parent: parent.into(), pid, kind: kind_name("subagent").into(), running: true, ..Agent::default() }
+}
+
+#[test]
+fn agents_below_one_parent_never_share_one_cpu_reading() {
+    let main = || Agent { id: "parent".into(), pid: 4242, kind: kind_name("main").into(), running: true, ..Agent::default() };
+    let roots = |agents: Vec<Agent>| {
+        let mut st = State::default();
+        for a in agents {
+            st.agents.insert(a.id.clone(), a);
+        }
+        signals::probe_roots(&st)
+    };
+    // 1. one pid-less child: the parent's tree is its alone
+    let r = roots(vec![main(), sibling("w1", "parent", 0)]);
+    assert_eq!(r["w1"], (4242, false));
+    // 2. two pid-less children: the same tree, credited to neither
+    let r = roots(vec![main(), sibling("w1", "parent", 0), sibling("w2", "parent", 0)]);
+    assert_eq!((r["w1"], r["w2"]), ((4242, true), (4242, true)));
+    // 3. three of them
+    let r = roots(vec![main(), sibling("w1", "parent", 0), sibling("w2", "parent", 0), sibling("w3", "parent", 0)]);
+    assert!(["w1", "w2", "w3"].iter().all(|k| r[*k] == (4242, true)));
+    // 4. a sibling with a pid of its own sits inside the parent's tree: the pid-less one cannot claim the tree, the pid-ful one keeps its own
+    let r = roots(vec![main(), sibling("w1", "parent", 0), sibling("w2", "parent", 777)]);
+    assert_eq!((r["w1"], r["w2"]), ((4242, true), (777, false)));
+    // 5. a sibling that stopped running does not share
+    let mut done = sibling("w2", "parent", 0);
+    done.running = false;
+    let r = roots(vec![main(), sibling("w1", "parent", 0), done]);
+    assert_eq!(r["w1"], (4242, false));
+    // 6. a sibling below another parent does not share
+    let mut other = main();
+    other.id = "parent2".into();
+    other.pid = 5555;
+    let r = roots(vec![main(), other, sibling("w1", "parent", 0), sibling("w2", "parent2", 0)]);
+    assert_eq!((r["w1"], r["w2"]), ((4242, false), (5555, false)));
+    // 7. a parent with no pid: nothing to read
+    let mut nopid = main();
+    nopid.pid = 0;
+    let r = roots(vec![nopid, sibling("w1", "parent", 0), sibling("w2", "parent", 0)]);
+    assert_eq!((r["w1"], r["w2"]), ((0, false), (0, false)));
+    // 8. a parent that is not in the table
+    let r = roots(vec![sibling("w1", "ghost", 0)]);
+    assert_eq!(r["w1"], (0, false));
+    // 9. a workspace beside a subagent
+    let mut ws = sibling("w2", "parent", 0);
+    ws.kind = kind_name("workspace").into();
+    let r = roots(vec![main(), sibling("w1", "parent", 0), ws]);
+    assert_eq!((r["w1"], r["w2"]), ((4242, true), (4242, true)));
+    // 10. the answer does not depend on the order of the ids
+    let a = roots(vec![sibling("a", "parent", 0), main(), sibling("z", "parent", 0)]);
+    let b = roots(vec![sibling("z", "parent", 0), main(), sibling("a", "parent", 0)]);
+    assert_eq!(a, b);
+}
+
+#[test]
+fn a_shared_tree_is_not_read_and_restarts_no_window() {
+    let (quiet, step) = (stall_cfg("quiet_ms"), stall_cfg("cpu_step_ms"));
+    let after = quiet * stall_cfg("cpu_probe_pct") / 100;
+    let (t0, now) = (1_000_000u64, 1_000_000 + after);
+    let busy = |cpu: u64| vec![proc_row(10, 1, 0), proc_row(11, 10, cpu)];
+    // both siblings see the same tree rise by two steps in one tick: neither window moves and the table is never read
+    let (mut a, mut b) = (probe_agent("subagent", t0), probe_agent("subagent", t0));
+    a.stall_cpu = Some(100);
+    b.stall_cpu = Some(100);
+    let (mut ta, mut tb): (Option<Vec<procs::Proc>>, Option<Vec<procs::Proc>>) = (None, None);
+    let e = env(&home("shared"), now);
+    let before = crate::metrics::bumped_on_this_thread("nudge_signal", &[("step", "cpu_shared")]);
+    signals::cpu_probe(&e, &mut a, 10, true, &mut ta, now);
+    signals::cpu_probe(&e, &mut b, 10, true, &mut tb, now);
+    assert!(ta.is_none() && tb.is_none(), "a shared tree is not read");
+    assert_eq!((a.stall_since, a.stall_cpu_at, b.stall_since, b.stall_cpu_at), (t0, 0, t0, 0), "neither window moved");
+    assert_eq!((a.stall_cpu, b.stall_cpu), (None, None), "and the stale baselines are dropped");
+    assert_eq!(crate::metrics::bumped_on_this_thread("nudge_signal", &[("step", "cpu_shared")]), before + 2, "both ticks are counted");
+    // before the probe point nothing is counted
+    let mut c = probe_agent("subagent", t0);
+    signals::cpu_probe(&e, &mut c, 10, true, &mut ta, now - 1);
+    assert_eq!(crate::metrics::bumped_on_this_thread("nudge_signal", &[("step", "cpu_shared")]), before + 2);
+    // the same agent alone afterwards seeds a fresh baseline and a later rise moves its window
+    let mut d = probe_agent("subagent", t0);
+    probe(&mut d, 10, Some(busy(100)), now);
+    probe(&mut d, 10, Some(busy(100 + 2 * step)), now + 1000);
+    assert_eq!(d.stall_since, now + 1000, "unshared, the same rise moves the window");
+}
+
+/// End to end, over a real process tree: two pid-less subagents below one busy session are both still stalled, because one tree cannot
+/// say whose work the CPU is.
+#[test]
+fn two_quiet_subagents_below_one_busy_session_are_both_stalled() {
+    let tree = Tree::spawn(4);
+    let n = now0();
+    let h = stall_home("stall-shared", tree.root.id(), n);
+    std::fs::copy(sub_path(&h, "parent"), h.join(".claude/projects/p/parent/subagents/agent-w2.jsonl")).unwrap();
+    std::fs::write(h.join(".claude/projects/p/parent/subagents/agent-w2.meta.json"), r#"{"description":"second worker"}"#).unwrap();
+    let step = stall_cfg("cpu_step_ms");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + 8 * MIN]);
+    let seeded = tree.kids_cpu();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while tree.kids_cpu() < seeded + step + step / 5 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(tree.kids_cpu() >= seeded + step + step / 5, "the children used cpu_step_ms of CPU");
+    ticks(&h, &mut st, &[n + 16 * MIN, n + 17 * MIN]);
+    assert!(stalled_flag(&st), "w1: the CPU below the shared session is not its work");
+    assert!(agent(&st, "w2").flags.contains_key("stalled"), "w2: nor its work");
+    assert_eq!((agent(&st, "w1").stall_cpu_at, agent(&st, "w2").stall_cpu_at), (0, 0));
+}
+
+// ---- R-stuck review round 2: a stamp from the future has no age and is never evidence ---------------------------------------------
+
+#[test]
+fn a_stamp_from_the_future_is_never_evidence_of_a_current_wait() {
+    let q = "gh pr view 123 --json state";
+    let w = "gh run watch 5 --exit-status";
+    let before = exempt_count("future_ts_ignored");
+    for off in [1, 65 * MIN, 120 * MIN] {
+        // 1. a CI command stamped later than now
+        assert!(
+            stalled_after(&format!("fut-ci-{off}"), move |a, at| a.recent = vec![("k".into(), format!("Bash {q}"), false, at + off)]),
+            "a CI call +{off} ms ahead is history of nothing, not a wait"
+        );
+        // 2. the same as the watch the agent started
+        assert!(stalled_after(&format!("fut-w-{off}"), move |a, at| a.recent = vec![("k".into(), format!("Bash {w}"), false, at + off)]), "+{off}: watch");
+        // 3. a background CI task stamped later than now
+        assert!(
+            stalled_after(&format!("fut-bg-{off}"), move |a, at| {
+                a.bg_ids.insert("bgci".into(), at + off);
+                a.bg_ci.push("bgci".into());
+            }),
+            "a background CI task +{off} ms ahead"
+        );
+        // 4. a background build stamped later than now
+        assert!(
+            stalled_after(&format!("fut-build-{off}"), move |a, at| {
+                a.bg_ids.insert("bgb".into(), at + off);
+                a.bg_builds.push("bgb".into());
+            }),
+            "a background build +{off} ms ahead"
+        );
+        // 5. a CPU credit stamped later than now
+        assert!(
+            stalled_after(&format!("fut-cpu-{off}"), move |a, at| {
+                a.stall_cpu = Some(1);
+                a.stall_cpu_at = at + off;
+            }),
+            "a CPU move +{off} ms ahead"
+        );
+        // 6. a future CI stamp beside a real, current one: only the real one counts
+        assert!(
+            !stalled_after(&format!("fut-mix-{off}"), move |a, at| {
+                a.recent = vec![call(q, 2 * MIN, at), ("k".into(), format!("Bash {q}"), false, at + off)];
+            }),
+            "a current poll still exempts beside a future-stamped one"
+        );
+        // 7. a future stamp on an old chain does not extend it
+        assert!(
+            stalled_after(&format!("fut-old-{off}"), move |a, at| {
+                a.recent = vec![call(q, 70 * MIN, at), ("k".into(), format!("Bash {q}"), false, at + off)];
+            }),
+            "an old query plus a future one"
+        );
+    }
+    assert!(exempt_count("future_ts_ignored") > before, "and the ignored stamps are counted");
+    // the boundary: a stamp equal to now is a call this very tick, so it still exempts; one millisecond later does not
+    assert!(!stalled_after("fut-eq-ci", move |a, at| a.recent = vec![("k".into(), format!("Bash {q}"), false, at)]), "now == ts: a poll this tick");
+    assert!(
+        !stalled_after("fut-eq-bg", |a, at| {
+            a.bg_ids.insert("bgci".into(), at);
+            a.bg_ci.push("bgci".into());
+        }),
+        "now == ts: a background CI task started this tick"
+    );
+    assert!(
+        !stalled_after("fut-eq-build", |a, at| {
+            a.bg_ids.insert("bgb".into(), at);
+            a.bg_builds.push("bgb".into());
+        }),
+        "now == ts: a background build started this tick"
+    );
+}
+
+#[test]
+fn a_rewound_clock_restarts_the_windows_and_the_stall_comes_back() {
+    let n = now0();
+    let sleeper = Sleeper::spawn();
+    let h = stall_home("rewound", sleeper.0.id(), n);
+    let mut st = State::default();
+    stall_ticks(&h, &mut st, n);
+    assert!(stalled_flag(&st));
+    // the clock steps back 16 minutes: the stamps the tracker kept from the later time stand in the future
+    st.agents.get_mut("w1").unwrap().flags.clear();
+    let back = n + MIN;
+    st.agents.get_mut("w1").unwrap().said_since = n + 17 * MIN;
+    let before = exempt_count("future_ts_ignored");
+    ticks(&h, &mut st, &[back]);
+    let a = agent(&st, "w1");
+    assert!(!stalled_flag(&st), "a window that began 'in the future' is not a stall");
+    assert!(a.stall_since <= back && a.said_since <= back, "both windows restart at the rewound now: {} {}", a.stall_since, a.said_since);
+    assert!(exempt_count("future_ts_ignored") > before, "and it is counted");
+    // the quiet stretch then runs from there: a full window later the agent is flagged again
+    ticks(&h, &mut st, &[back + 16 * MIN, back + 16 * MIN + 30_000]);
+    assert!(stalled_flag(&st), "a rewound clock does not hide a stall for ever");
 }

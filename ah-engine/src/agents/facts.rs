@@ -632,6 +632,10 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == p.class) {
             push_ring(&mut a.bg_builds, id.clone(), lim("loop_window"));
         }
+        // a background command that checks or watches CI: a CI wait that stays outstanding until its end notice (the stall exemption)
+        if pat("ci_wait").is_some_and(|r| r.is_match(&p.label)) {
+            push_ring(&mut a.bg_ci, id.clone(), lim("loop_window"));
+        }
         // a task backgrounded inside the task as well (a top-level `&`) ends when its launching shell does: no outcome waits for it
         if !p.amp && (p.class == "check" || !p.writes.is_empty()) {
             a.bg_outcomes.insert(id.clone(), (p.class == "check", p.writes.clone()));
