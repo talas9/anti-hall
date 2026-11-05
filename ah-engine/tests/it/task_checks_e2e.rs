@@ -705,3 +705,48 @@ fn idle_rule_does_not_treat_actionable_text_as_clock_waiting_or_blocked() {
         assert!(idle_stop(&format!("ir-tw-{i}"), &idle_transcript(&[t], &[]), true, None).is_none(), "{desc:?} is a stated wait");
     }
 }
+
+// ---- #390: the task snapshot through two real Stops ----
+
+/// `bytes` of transcript lines that name no task, appended to `path`.
+fn snap_pad(path: &Path, bytes: usize) {
+    let one = format!("{}\n", serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "x".repeat(900)}]}}));
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    for _ in 0..bytes / one.len() + 1 {
+        f.write_all(one.as_bytes()).unwrap();
+    }
+}
+
+/// One Stop of session `s1` over `t.jsonl` of `w` with the R-idle switch on; the decoded block reason, or `None` when it passed.
+fn snap_stop(w: &World) -> Option<String> {
+    let p = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")});
+    let (code, out, err) = stop_run_env(w, "task-guard", &p.to_string(), &[("ANTIHALL_IDLE_RULE", "1")]);
+    assert_eq!(code, 0, "the engine answers; the Node hook must not run: {err}");
+    assert_stdout_is_json_or_empty(&out, "snap_stop");
+    if out.trim().is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    (v["decision"] == "block").then(|| v["reason"].as_str().unwrap().to_string())
+}
+
+/// The overnight shape through the real dispatcher: two idle tasks are announced by one Stop, a burst of transcript lines then pushes
+/// their creates out of the tail window, and a later Stop that sees only a status change on one of them must still name both.
+#[test]
+fn snapshot_keeps_every_open_task_in_the_idle_block_after_the_creates_leave_the_tail() {
+    let w = World::new("snap-stop");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let head = idle_transcript(&[idle_task(21, "[P1] port the check", "pending"), idle_task(22, "[P1] port the other check", "pending")], &[]);
+    std::fs::write(w.path("t.jsonl"), &head).unwrap();
+    let first = snap_stop(&w).expect("the first Stop sees both idle tasks");
+    assert!(first.contains("#21") && first.contains("#22"), "{first}");
+    assert!(snap_stop(&w).is_none(), "the same set is not announced twice");
+    snap_pad(&w.path("t.jsonl"), 1_700_000);
+    let update = serde_json::json!({"type": "assistant", "message": {"id": "u21", "role": "assistant", "content": [{"type": "tool_use", "id": "t21b", "name": "TaskUpdate", "input": {"taskId": "21", "status": "in_progress"}}]}, "timestamp": "2999-01-01T00:00:01.000Z"});
+    let mut f = std::fs::OpenOptions::new().append(true).open(w.path("t.jsonl")).unwrap();
+    writeln!(f, "{update}").unwrap();
+    let second = snap_stop(&w).expect("the changed set is announced: the idle block on the second Stop");
+    assert!(second.contains("#21") && second.contains("#22"), "task #22 left the tail window but is still open: {second}");
+    let dir = w.path("home/.anti-hall/ah-engine/task-snapshots");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "one snapshot file under the isolated home");
+}
