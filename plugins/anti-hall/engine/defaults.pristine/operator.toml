@@ -168,6 +168,10 @@ value = "must be >= {bound}"
 doc = "A number above the maximum. Placeholder: bound."
 value = "must be <= {bound}"
 
+[ops.set_err_integer]
+doc = "A fraction given to a whole-number setting. Placeholder: got (JSON text)."
+value = "expected a whole number, got {got}"
+
 [ops.set_err_exclusive_min]
 doc = "A number at or below the exclusive minimum. Placeholder: bound."
 value = "must be > {bound}"
