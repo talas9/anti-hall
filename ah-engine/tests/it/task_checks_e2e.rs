@@ -837,8 +837,8 @@ fn snapshot_with_an_unreadable_gap_fails_open_instead_of_blocking_on_a_stale_lis
     assert!(second.is_none(), "the gap is over the cap: the stale snapshot must not block, got {second:?}");
 }
 
-/// Switch parity (#390 round 4): `taskstate.snapshot_enabled` set false by the owner's settings file reaches the script (`ah.cfg` read
-/// the shipped value only). Off, the answer is the tail alone: no snapshot file, and the list that left the tail is not brought back.
+/// Switch parity (#390 round 4): `taskstate.snapshot_enabled` set false by the owner's settings file reaches the script (the switch is read
+/// with `ah.cfgLive`; `ah.cfg` answers the shipped value only). Off, the answer is the tail alone: no snapshot file, and the list that left the tail is not brought back.
 #[test]
 fn snapshot_switch_off_in_the_owners_settings_is_the_tail_alone() {
     let run = |off: bool| {

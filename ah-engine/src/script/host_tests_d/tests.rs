@@ -856,3 +856,79 @@ fn a_rebuild_that_cannot_take_the_snapshot_lock_writes_nothing_and_answers_as_be
     assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the next rebuild writes");
     assert_eq!(snap_files(&h).iter().filter(|f| f.ends_with(".lock")).count(), 0, "a released lock leaves no file: {:?}", snap_files(&h));
 }
+
+/// Installs the owner's file layers for a test and removes them on drop (the overlay is process-wide: nextest runs each test in its own
+/// process, and the guard keeps a failing assertion from leaking the override into whatever runs next in this one).
+struct Overlay;
+
+impl Overlay {
+    fn set(values: &[(&str, Value)]) -> Overlay {
+        defaults::set_overlay(values);
+        Overlay
+    }
+}
+
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        defaults::set_overlay(&[]);
+    }
+}
+
+/// #390 round 5: `ah.cfg` is the shipped value for every logic read (about 3,000 calls rely on that); only `ah.cfgLive` is the owner's
+/// layers. The task snapshot's switch is a documented setting and is read through `cfgLive`; nothing else changed meaning.
+#[test]
+fn ah_cfg_stays_the_shipped_value_whatever_the_owner_sets_and_cfg_live_is_the_owners_layers() {
+    let h = home("cfg-scope");
+    std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"taskstate":{"snapshot_enabled":false}}"#).unwrap();
+    put_override(
+        &h,
+        "zz-cfg-scope",
+        "function decide(p){ ah.state.writeAtomic('.anti-hall/out-cfg.json', JSON.stringify({ \
+         heavy: ah.cfg('command.heavy_patterns'), enabled: ah.cfg('taskstate.snapshot_enabled'), live: ah.cfgLive('taskstate.snapshot_enabled'), \
+         gate: taskSnap.enabled(), dir: ah.cfg('taskstate.snapshot_dir') })); return 'allow'; }",
+    );
+    let read = |h: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-cfg.json")).unwrap()).unwrap() };
+    let shipped = |k: &str| defaults::shipped(k).to_json();
+    let _owner =
+        Overlay::set(&[("command.heavy_patterns", json!(["("])), ("taskstate.snapshot_enabled", json!(false)), ("taskstate.snapshot_dir", json!("elsewhere"))]);
+    assert_eq!(run("zz-cfg-scope", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
+    let got = read(&h);
+    assert_eq!(got["heavy"], shipped("command.heavy_patterns"), "ah.cfg of a user-overridden pattern list is the shipped list");
+    assert_eq!(got["enabled"], json!(true), "ah.cfg of the overridden switch is the shipped value");
+    assert_eq!(got["dir"], shipped("taskstate.snapshot_dir"), "an unrelated overridden key is the shipped value too");
+    assert_eq!(got["live"], json!(false), "cfgLive reads the owner's settings.json");
+    assert_eq!(got["gate"], json!(false), "the snapshot gate honours the owner's switch");
+}
+
+/// The confirmed regression of round 4: `command.js` compiles `command.heavy_patterns` without a guard, so an owner override that is not a
+/// regex used to reach the command guard through `ah.cfg`. It must answer exactly as it does without the override.
+#[test]
+fn a_hostile_heavy_patterns_override_leaves_the_command_guard_as_it_is_at_base() {
+    let h = home("cfg-hostile");
+    let proj = format!("{h}/proj");
+    std::fs::create_dir_all(format!("{proj}/.git/refs/heads")).unwrap();
+    std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let e = RequestEnv::from_pairs([
+        ("HOME", h.as_str()),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+        ("DEVSWARM_REPO_ID", "r1"),
+        ("DEVSWARM_SOURCE_BRANCH", "feat"),
+        ("ANTIHALL_INGEST_DRY_RUN", "1"),
+    ]);
+    let call = |sid: &str, c: &str| {
+        super::run_forced(
+            "command",
+            &json!({"tool_name": "Bash", "session_id": sid, "cwd": proj, "tool_input": {"command": c}}),
+            &Value::Null,
+            "PreToolUse",
+            &e,
+        )
+    };
+    let cmds = ["npm run build", "ls -la"];
+    let base: Vec<_> = cmds.iter().map(|c| call("base", c)).collect();
+    assert!(matches!(base.first(), Some(Some(Some(Verdict::Exact(x)))) if x.code == 2), "base: a heavy command is blocked: {base:?}");
+    assert!(matches!(base.get(1), Some(Some(Some(Verdict::Allow)))), "base: a light one passes: {base:?}");
+    let _owner = Overlay::set(&[("command.heavy_patterns", json!(["(", "[a-"]))]);
+    let hostile: Vec<_> = cmds.iter().map(|c| call("hostile", c)).collect();
+    assert_eq!(hostile, base, "the owner's pattern list does not reach the command guard");
+}

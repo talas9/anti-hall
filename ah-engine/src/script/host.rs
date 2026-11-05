@@ -1067,13 +1067,7 @@ fn passwd_home() -> Option<String> {
 /// Install `ahHost` in a fresh context.
 pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     let h = Object::new(c.clone())?;
-    h.set(
-        "cfg",
-        Function::new(c.clone(), |key: String| -> rquickjs::Result<String> {
-            entry(&key)?; // an unknown key is the script's error; the value is the effective one (the owner's files over the shipped default), as `cfgNum` reads it
-            Ok(defaults::raw(&key).to_json().to_string())
-        })?,
-    )?;
+    h.set("cfg", Function::new(c.clone(), |key: String| -> rquickjs::Result<String> { Ok(entry(&key)?.value.to_json().to_string()) })?)?;
     // `cfgGen(hits, misses)`: the generation; the optional counts are the previous check call's `ah.cfg` / `ah.settings` memo hits and
     // misses, folded into `cfg_cache{result}` here so counting them costs no host call of its own
     h.set(

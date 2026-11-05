@@ -110,10 +110,15 @@ var taskSnap = {
     taskSnap.count('snapshot_gap', { result: 'caught_up' });
     return w;
   },
+  // The kill switch, read through the owner's layers (settings.json, config.toml) with `ah.cfgLive`: it is a documented setting, and `ah.cfg`
+  // answers the shipped value only (every other logic read relies on that). Falls back to the shipped value when the layers cannot be read.
+  enabled: function () {
+    try { return ah.cfgLive('taskstate.snapshot_enabled') === true; } catch (e) { return ah.cfg('taskstate.snapshot_enabled') === true; }
+  },
   // `r` (the tail's rebuild) over the session's snapshot; `sid` the hook payload's session id (or none), `win` the tail window in bytes.
   // Any failure, and a snapshot that cannot be written, leave `r` as it is.
   apply: function (p, variant, r, sid, win) {
-    if (!ah.cfg('taskstate.snapshot_enabled') || r.unsure || r.unreadable || !Array.isArray(r.tasks) || typeof p !== 'string' || p === '') return r;
+    if (!taskSnap.enabled() || r.unsure || r.unreadable || !Array.isArray(r.tasks) || typeof p !== 'string' || p === '') return r;
     var g = ah.homeGuard();
     if (g.status === 'guarded') return r; // a test run against the real home reads and writes no state
     if (g.status !== 'ok') { taskSnap.count('snapshot_error', { kind: 'home' }); return r; }
