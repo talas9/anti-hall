@@ -4762,6 +4762,348 @@ mod idle_rule_counters {
     }
 }
 
+// ---- reply-length-guard R-style (guards.styleRule): its counters, the repeat marker and the message text ----
+
+mod r_style_counters {
+    use super::*;
+
+    fn long() -> String {
+        (0..40).map(|i| format!("Line {i}: the change is in place and the tests around it pass.")).collect::<Vec<_>>().join("\n")
+    }
+
+    fn prompt(t: &str) -> String {
+        json!({"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "promptSource": "typed", "message": {"role": "user", "content": t}}).to_string()
+    }
+
+    /// One Stop of the guard: the answer, with the switch on or off, over a transcript of these lines.
+    fn stop(tag: &str, lines: &[String], reply: Option<&str>, extra: Value, on: bool) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), format!("{}\n", lines.join("\n"))).unwrap();
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        // the switch is forced either way, so these tests hold whatever the shipped default is
+        pairs.push(("ANTIHALL_STYLE_RULE".into(), if on { "1" } else { "0" }.into()));
+        let mut p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": tag, "cwd": h});
+        if let Some(r) = reply {
+            p["last_assistant_message"] = json!(r);
+        }
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            p[k] = v;
+        }
+        let v = super::super::run_forced("reply-length-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        v
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn held(v: &Option<Option<Verdict>>) -> bool {
+        matches!(v, Some(Some(Verdict::Exact(x))) if x.out.contains("\"decision\":\"block\""))
+    }
+
+    #[test]
+    fn every_main_session_stop_is_observed_whatever_the_switch_and_only_the_switch_on_fires() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let obs = |m: &crate::metrics::Metrics, result: &str, reason: &str| m.counter("reply_style_observed", &[("result", result), ("reason", reason)]);
+        let lines = [prompt("fix the failing test")];
+        drained();
+        // switch off: the answer is empty (allow), the long reply is still counted as over, and nothing fires or is suppressed
+        let v = stop("rs-off", &lines, Some(&long()), json!({}), false);
+        assert_eq!(v, Some(Some(Verdict::Allow)), "off: no answer");
+        let m = drained();
+        assert_eq!(obs(&m, "over", "none"), 1, "off: the long reply is observed");
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 0);
+        assert_eq!(m.counter("reply_style_suppressed", &[("reason", "short")]), 0, "off: suppressed is not counted");
+        // a short reply: ok
+        stop("rs-ok", &lines, Some("Done."), json!({}), false);
+        assert_eq!(obs(&drained(), "ok", "none"), 1);
+        // the exempt reasons, each counted once under result=exempt
+        stop("rs-asked", &[prompt("please explain this")], Some(&long()), json!({}), false);
+        assert_eq!(obs(&drained(), "exempt", "asked"), 1);
+        stop("rs-plan", &lines, Some(&long()), json!({"permission_mode": "plan"}), false);
+        assert_eq!(obs(&drained(), "exempt", "plan_mode"), 1);
+        stop("rs-sub", &lines, Some(&long()), json!({"agent_id": "a1"}), false);
+        assert_eq!(obs(&drained(), "exempt", "subagent"), 1);
+        stop("rs-hook", &lines, Some(&long()), json!({"stop_hook_active": true}), false);
+        assert_eq!(obs(&drained(), "exempt", "stop_hook_active"), 1);
+        stop("rs-none", &lines, None, json!({}), false);
+        assert_eq!(obs(&drained(), "exempt", "no_reply_text"), 1, "a payload with no reply text is allowed and counted");
+        // switch on: held, observed as over, fired once (first hit), and a pass is counted as suppressed
+        let v = stop("rs-on", &lines, Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        let m = drained();
+        assert_eq!(obs(&m, "over", "none"), 1);
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+        stop("rs-on-short", &lines, Some("Done."), json!({}), true);
+        assert_eq!(drained().counter("reply_style_suppressed", &[("reason", "short")]), 1);
+        stop("rs-on-asked", &[prompt("give me the design")], Some(&long()), json!({}), true);
+        assert_eq!(drained().counter("reply_style_suppressed", &[("reason", "asked")]), 1);
+    }
+
+    #[test]
+    fn a_repeat_after_the_hold_is_counted_as_again_but_a_quoted_marker_is_not() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let marker = defaults::text("reply_length.marker");
+        let fb = json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": format!("Stop hook feedback:\n{marker} 40 chars")}}).to_string();
+        let quoted = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": format!("I will not repeat: {marker} Stop hook feedback")}]}}).to_string();
+        drained();
+        // the hook feedback of an earlier hit of this owner turn stands after the prompt: again=true
+        let v = stop("rs-again", &[prompt("fix the failing test"), fb.clone()], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        let m = drained();
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "true")]), 1);
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 0);
+        // an assistant message that quotes the marker is not hook feedback
+        let v = stop("rs-quote", &[prompt("fix the failing test"), quoted], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        assert_eq!(drained().counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+        // feedback that belongs to an earlier prompt does not count for the new one
+        let v = stop("rs-old", &[prompt("first"), fb, prompt("fix the failing test")], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        assert_eq!(drained().counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+    }
+
+    #[test]
+    fn the_marker_is_a_literal_part_of_the_headline() {
+        assert!(
+            defaults::text("reply_length.msg_what").contains(defaults::text("reply_length.marker")),
+            "again detection looks for the marker in the delivered text"
+        );
+    }
+
+    // ---- the block classifier: CommonMark fences and GFM tables, on a corpus of exact inputs ----
+
+    fn rows(n: usize, f: impl Fn(usize) -> String) -> String {
+        (0..n).map(f).collect::<Vec<_>>().join("\n")
+    }
+
+    /// `n` one-letter lines: 40 of them are over the line limit as prose and inside the code allowance as code.
+    fn a(n: usize) -> String {
+        rows(n, |_| "a".into())
+    }
+
+    /// Whether the guard holds `reply` for a user who typed `ask` (the switch on).
+    fn is_held(tag: &str, ask: &str, reply: &str) -> bool {
+        held(&stop(tag, &[prompt(ask)], Some(reply), json!({}), true))
+    }
+
+    /// The corpus: (name, reply, held). Each exempt row is over the limits when read as prose and inside the allowances when read as the
+    /// block it is; each held row is the sibling that must still count (a near miss of the same shape).
+    fn corpus() -> Vec<(&'static str, String, bool)> {
+        let prose = long();
+        let grid = |head: &str, delim: &str, n: usize, row: &dyn Fn(usize) -> String| format!("{head}\n{delim}\n{}", rows(n, row));
+        let wide = |i: usize| format!("row {i:02} description | {}", "a".repeat(45));
+        let nest = |open: &str, inner: &str, close: &str, body: String| format!("{open}\n{inner}\n{body}\n{inner}\n{close}");
+        let base = vec![
+            // ---- GFM tables ----
+            ("table without outer pipes (the reported input)", grid("name | value", "--- | ---", 25, &wide), false),
+            ("table with outer pipes", grid("| name | n |", "|---|---|", 30, &|i| format!("| row {i} | {i} |")), false),
+            ("alignment colons, no outer pipes", grid("a | b | c", ":--- | ---: | :---:", 30, &|i| format!("{i} | x | y")), false),
+            ("alignment colons, outer pipes", grid("| a | b |", "|:--|--:|", 30, &|i| format!("| {i} | x |")), false),
+            ("leading pipe only", grid("| a | b", "|--- | ---", 30, &|i| format!("| {i} | x")), false),
+            ("trailing pipe only", grid("a | b |", "--- | ---|", 30, &|i| format!("{i} | x |")), false),
+            ("spaced delimiter row", grid("| a | b |", "| --- | --- |", 30, &|i| format!("| {i} | x |")), false),
+            ("one column table", grid("| a |", "|---|", 30, &|i| format!("| r{i} |")), false),
+            ("body rows without a pipe are rows (GFM)", grid("| a | b |", "|---|---|", 30, &|i| format!("r{i}")), false),
+            ("escaped pipe in the header", grid("a \\| b | c", "--- | ---", 30, &|i| format!("{i} | x")), false),
+            ("table in a blockquote", grid("> a | b", "> --- | ---", 30, &|i| format!("> {i} | x")), false),
+            ("table with CRLF line ends", grid("a | b", "--- | ---", 30, &|i| format!("{i} | x")).replace('\n', "\r\n"), false),
+            ("table after a paragraph line", format!("Results:\n{}", grid("k | v", "- | -", 30, &|i| format!("{i} | x"))), false),
+            ("header and delimiter cell counts differ", grid("a | b | c", "--- | ---", 30, &|i| format!("{i} | x")), true),
+            ("pipes without a delimiter row", rows(30, |i| format!("{i} | x")), true),
+            ("setext heading is not a table", format!("Title\n---\n{prose}"), true),
+            ("a thematic break is not a table", format!("a | b\n---\n{prose}"), true),
+            ("table excess over its allowance", grid("| a | b |", "|---|---|", 70, &|i| format!("| {i} | x |")), true),
+            ("prose after a table is counted", format!("{}\n\n{prose}", grid("a | b", "--- | ---", 5, &|i| format!("{i} | x"))), true),
+            ("a heading ends the table", format!("{}\n## Next\n{prose}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x"))), true),
+            ("list items end the table", format!("{}\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("- item {i}"))), true),
+            (
+                "quote lines end an unquoted table",
+                format!("{}\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("> note {i}"))),
+                true,
+            ),
+            (
+                "a blank line ends the table",
+                format!("{}\n\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("{i} | x"))),
+                true,
+            ),
+            // ---- CommonMark fences ----
+            ("backtick fence inside a longer backtick fence", nest("````markdown", "```", "````", a(40)), false),
+            ("the reported nested input", format!("````markdown\n```\n```\n{}", a(40)), false),
+            ("tilde fence", format!("~~~\n{}\n~~~", a(40)), false),
+            ("closer longer than the opener", format!("~~~\n{}\n~~~~~~", a(40)), false),
+            ("backtick info string with attributes", format!("```{{r, echo=FALSE}}\n{}\n```", a(40)), false),
+            ("tilde info string may hold a backtick", format!("~~~ a`b\n{}\n~~~", a(40)), false),
+            ("a shorter run does not close", format!("````\n{}\n```\n{}", a(10), a(40)), false),
+            ("a closer with an info string does not close", format!("```\n{}\n```rust\n{}\n```", a(10), a(40)), false),
+            ("a closer of the other character does not close", format!("```\n{}\n~~~\n{}\n```", a(10), a(40)), false),
+            ("tilde run does not close a longer tilde fence", format!("~~~~\n{}\n~~~\n{}", a(10), a(40)), false),
+            ("a closer indented 4 columns is content", format!("```\n{}\n    ```\n{}", a(10), a(40)), false),
+            ("an unclosed fence runs to the end", format!("```\n{prose}"), false),
+            ("closer with trailing spaces and CRLF", format!("```\r\n{}\r\n```  \r\n", a(40).replace('\n', "\r\n")), false),
+            ("fence under a list marker", format!("1. ```js\n{}\n   ```", a(40)), false),
+            ("fence indented under a list item", format!("- step\n  ```bash\n{}\n  ```", rows(40, |_| "  a".into())), false),
+            ("fence in a blockquote", format!("> ```\n{}\n> ```", rows(40, |_| "> a".into())), false),
+            ("a closer indented 3 columns closes", format!("```\n{}\n   ```\n{prose}", a(10)), true),
+            ("two backticks are not a fence", format!("``\n{prose}"), true),
+            ("a backtick info string with a backtick is not a fence", format!("``` a`b\n{prose}"), true),
+            ("prose after the real close is counted", format!("````\n```\n{}\n```\n````\n{prose}", a(10)), true),
+            ("code excess over its allowance", format!("```\n{}\n```", a(90)), true),
+        ];
+        let mut all = base;
+        // ---- the closer must be nothing but a fence: a marker-like line inside a fence is code (round 2: `- ```` closed the fence) ----
+        let inside = |line: &str| format!("```\n{line}\n{}\n```", a(25));
+        let markers = [
+            ("a dash list marker and a run is code", "- ```"),
+            ("a star list marker and a run is code", "* ```"),
+            ("a plus list marker and a run is code", "+ ```"),
+            ("a numbered (dot) list marker and a run is code", "1. ```"),
+            ("a numbered (paren) list marker and a run is code", "2) ```"),
+            ("a quote marker and a run in an unquoted fence is code", "> ```"),
+            ("text before a run is code", "text ```"),
+            ("a tab before a run (4 columns) is code", "\t```"),
+            ("a list marker with an info string is code", "- ```js"),
+        ];
+        for (name, line) in markers {
+            all.push((name, inside(line), false));
+        }
+        all.push(("a list marker and a tilde run inside a tilde fence is code", format!("~~~\n- ~~~\n{}\n~~~", a(25)), false));
+        all.push(("a numbered marker and a longer run inside a fence is code", format!("```\n1) `````\n{}\n```", a(25)), false));
+        let quoted = |line: &str| format!("> ```\n{line}\n{}\n> ```", rows(25, |_| "> a".into()));
+        all.push(("a deeper quote marker and a run in a quoted fence is code", quoted("> > ```"), false));
+        all.push(("a list marker after the quote marker is code", quoted("> - ```"), false));
+        all.push(("an unquoted run after a quoted fence opens a new fence", quoted("```"), false));
+        // an indented opener: the opener's own spaces do not widen the closer's allowance
+        all.push(("3 spaces opener, a 6 space run is code", format!("   ```\n      ```\n{}\n   ```", a(25)), false));
+        all.push(("3 spaces opener, an unindented run closes", format!("   ```\n{}\n```\n{prose}", a(10)), true));
+        // a list opener: the content width of the marker is the base of the closer's indent
+        let item = |close: &str| format!("- ```\n{}\n{close}\n{prose}", rows(10, |_| "  a".into()));
+        all.push(("list opener, a 2 space closer closes", item("  ```"), true));
+        all.push(("list opener, a 5 space closer closes", item("     ```"), true));
+        all.push(("list opener, a 6 space run is code", format!("- ```\n{}\n      ```\n{}", rows(10, |_| "  a".into()), rows(25, |_| "  a".into())), false));
+        // openers behind any mix of quote and list markers
+        all.push(("quote inside a list item opens a fence", format!("- > ```\n{}\n  > ```", rows(40, |_| "  > a".into())), false));
+        all.push(("list marker inside a list marker opens a fence", format!("- - ```\n{}", a(40)), false));
+        all.push(("numbered item with a quote opens a fence", format!("1. > ```\n{}\n   > ```", rows(40, |_| "   > a".into())), false));
+        all.push(("a quote marker then a list marker opens a fence", format!("> - ```\n{}\n>   ```", rows(40, |_| ">   a".into())), false));
+        // controls: a proper closer still closes
+        all.push(("a proper closer after a marker-like line closes", format!("```\n- ```\n{}\n```\n{prose}", a(10)), true));
+        all.push(("a closer indented 3 columns after a quote marker closes", format!("> ```\n{}\n>    ```\n{prose}", rows(10, |_| "> a".into())), true));
+        // ---- round 3, the class: a closer is a fence run and nothing else; only spaces and tabs may follow it (CommonMark) ----
+        // each row is code the closer line must not end (25 lines stay inside the allowance); the control rows close and count the prose
+        let tail = |close: &str| format!("```text\n{close}\n{}\n```", a(25));
+        let after = [
+            ("NBSP after a closer does not close (U+00A0)", "```\u{00a0}"),
+            ("EM SPACE after a closer does not close (U+2003)", "```\u{2003}"),
+            ("IDEOGRAPHIC SPACE after a closer does not close (U+3000)", "```\u{3000}"),
+            ("NARROW NBSP after a closer does not close (U+202F)", "```\u{202f}"),
+            ("a form feed after a closer does not close", "```\u{000c}"),
+            ("a vertical tab after a closer does not close", "```\u{000b}"),
+            ("a next-line char after a closer does not close (U+0085)", "```\u{0085}"),
+            ("a NBSP between spaces after a closer does not close", "``` \u{00a0} "),
+            ("a NBSP before a closer does not close", "\u{00a0}```"),
+            ("an EM SPACE before a closer does not close", "\u{2003}```"),
+            ("a tilde run with a NBSP after it does not close a tilde fence", "~~~\u{00a0}"),
+        ];
+        for (name, line) in after {
+            let reply = if line.starts_with('~') { format!("~~~\n{line}\n{}\n~~~", a(25)) } else { tail(line) };
+            all.push((name, reply, false));
+        }
+        all.push(("a NBSP closer in a quoted fence does not close", format!("> ```\n> ```\u{00a0}\n{}\n> ```", rows(25, |_| "> a".into())), false));
+        all.push(("a NBSP closer in a list-opened fence does not close", format!("- ```\n  ```\u{00a0}\n{}\n  ```", rows(25, |_| "  a".into())), false));
+        all.push(("a NBSP after a longer closer does not close", format!("```\n```````\u{00a0}\n{}\n```", a(25)), false));
+        // controls: spaces, tabs and a mix of them after a closer do close
+        for (name, close) in [
+            ("a space after a closer closes", "``` "),
+            ("two tabs after a closer close", "```\t\t"),
+            ("spaces and tabs after a closer close", "```  \t "),
+            ("a CR after a closer closes", "```\r"),
+        ] {
+            all.push((name, format!("```\n{}\n{close}\n{prose}", a(10)), true));
+        }
+        // ---- round 3: a container that ends takes its fence with it (CommonMark: a line without the quote marker is not in the quote) ----
+        let quote_end = |between: &str| format!("> ```\n{}\n{between}", rows(5, |_| "> a".into()));
+        all.push(("a prose run after a quoted fence is counted (no closer)", quote_end(&prose), true));
+        all.push(("a blank line then prose ends a quoted fence", quote_end(&format!("\n{prose}")), true));
+        all.push(("a nested quote ends at its first short line", format!("> > ```\n{}\n> {}\n{prose}", rows(5, |_| "> > a".into()), "text"), true));
+        all.push((
+            "a quoted fence in a nested quote that drops one level ends",
+            format!("> > ```\n{}\n> still the outer quote\n{prose}", rows(5, |_| "> > a".into())),
+            true,
+        ));
+        all.push(("a list-opened fence inside a quote ends with the quote", format!("> - ```\n{}\n{prose}", rows(5, |_| ">   a".into())), true));
+        all.push(("a tilde fence in a quote ends with the quote", format!("> ~~~\n{}\n{prose}", rows(5, |_| "> a".into())), true));
+        all.push(("after the quote ends a new fence is read as a new fence", format!("> ```\n{}\n```\n{}\n```", rows(5, |_| "> a".into()), a(40)), false));
+        all.push(("a quote of the same depth keeps its fence", format!("> ```\n{}\n> ```\n{prose}", rows(10, |_| "> a".into())), true));
+        all.push(("an unquoted code-looking line ends a quoted fence", quote_end(&format!("code\n{prose}")), true));
+        // HTML starts another block: it ends a table (GFM)
+        all.push(("an HTML block ends a table", format!("a | b\n---|---\n<div>\n{prose}"), true));
+        all.push(("an HTML comment ends a table", format!("a | b\n---|---\n<!-- x -->\n{prose}"), true));
+        all.push(("an inline tag in a row is still a row", grid("a | b", "--- | ---", 30, &|i| format!("<b>{i}</b> | x")), false));
+        // the table allowance is the survey's 30 rows
+        let note = rows(18, |i| format!("note {i}"));
+        all.push((
+            "30 table rows leave the 18 prose lines at the limit",
+            format!("{}\n\n{note}", grid("| a | b |", "|---|---|", 28, &|i| format!("| {i} | x |"))),
+            false,
+        ));
+        all.push(("the 31st table row counts as a line", format!("{}\n\n{note}", grid("| a | b |", "|---|---|", 29, &|i| format!("| {i} | x |"))), true));
+        all
+    }
+
+    #[test]
+    fn the_block_corpus_is_classified_by_the_markdown_rules() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let mut wrong = Vec::new();
+        for (name, reply, want) in corpus() {
+            let got = is_held("rs-corpus", "show the change", &reply);
+            if got != want {
+                wrong.push(format!("{name}: held={got}, want {want}"));
+            }
+        }
+        drained();
+        assert!(wrong.is_empty(), "misclassified: {wrong:#?}");
+    }
+
+    #[test]
+    fn every_form_of_explain_and_specify_asks_for_a_long_reply_and_near_words_do_not() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let reply = long();
+        let mut wrong = Vec::new();
+        for (ask, want) in [
+            ("Please explain this", false),
+            ("it explains itself, I want it explained", false),
+            ("keep explaining as you go", false),
+            ("write an explainer", false),
+            ("Give me an Explanation", false),
+            ("a few explanations please", false),
+            ("explanatory notes please", false),
+            ("write the spec", false),
+            ("update the specs", false),
+            ("SPECIFICATION needed", false),
+            ("write the specifications", false),
+            ("specify the API", false),
+            ("as specified earlier", false),
+            ("keep specifying the cases", false),
+            ("fix the specific failing test", true),
+            ("inspect the file", true),
+            ("this is special", true),
+            ("respect the order", true),
+            ("fix the failing test", true),
+        ] {
+            let got = is_held("rs-prompts", ask, &reply);
+            if got != want {
+                wrong.push(format!("{ask:?}: held={got}, want {want}"));
+            }
+        }
+        drained();
+        assert!(wrong.is_empty(), "misjudged prompts: {wrong:#?}");
+    }
+}
+
 // ---- role note and task tracker wording (context.roleNoteShort, context.taskTrackerTerse): their counters ----
 
 mod reword_counters {

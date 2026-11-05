@@ -80,6 +80,7 @@ value = [
   { check = "procwatch-advisory", event = "SessionStart" },
   { check = "procwatch-advisory", event = "UserPromptSubmit" },
   { check = "queued-wait-guard", event = "PreToolUse" },
+  { check = "reply-length-guard", event = "Stop" },
   { check = "repair-on-reload", event = "SessionStart" },
   { check = "repair-on-reload", event = "UserPromptSubmit" },
   { check = "rule-digest", event = "SessionStart" },

@@ -54,9 +54,9 @@ debates reference the living docs for evidence; the *current* state and the
 > `hooks.json`, 44 of them also in `codex/hooks/hooks.json`). New hooks this release:
 > `auto-handover.js` (UserPromptSubmit), `auto-handover-pause-nag.js` (Stop),
 > `repair-on-reload.js` (SessionStart + UserPromptSubmit); unreleased on top of that
-> (post-0.108.5): `silent-agent-nudge.js` (Stop). Claude skills: **32** directories under
-> `plugins/anti-hall/skills/` (+ `MODEL-POLICY.md`, not itself a skill; new: `settings`, `afk`); Codex
-> skills: **35** directories under `plugins/anti-hall/codex/skills/` (new: `anti-hall-settings`, `anti-hall-afk`).
+> (post-0.108.5): `silent-agent-nudge.js` (Stop). Claude skills: **33** directories under
+> `plugins/anti-hall/skills/` (+ `MODEL-POLICY.md`, not itself a skill; new: `settings`, `afk`, `engine-replies`); Codex
+> skills: **36** directories under `plugins/anti-hall/codex/skills/` (new: `anti-hall-settings`, `anti-hall-afk`, `anti-hall-engine-replies`).
 > `PostToolUse` wired: 3 Bash-matcher handlers (`output-verify-guard.js`,
 > `devswarm-parent-reply-tracker.js`, `devswarm-child-drain.js`).
 > `PostToolUseFailure` wired: 1 Bash-matcher handler (`failure-root-cause-nudge.js`).
