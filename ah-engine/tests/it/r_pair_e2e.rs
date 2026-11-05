@@ -566,21 +566,27 @@ fn pre_unnamed_spawn_with_an_open_task_id_in_the_description_is_accepted() {
     // (description, accepted) over the list: #400 open, #401 completed, #402 open and owned by someone else, #403 pending
     let long_ref = format!("{} #400", "x".repeat(50_000));
     let long_none = "x".repeat(50_000);
-    // a reference is `#N` leading the description or right after `task ` / `(` / `[` (pair_rule.task_ref_re); a `#N` mid-sentence is not one
+    // a reference is `#N` as the leading token of the description (pair_rule.task_ref_re); any later `#N` is prose
     let table: Vec<(String, bool)> = vec![
         ("#400 gate probe".into(), true),
         ("#400: work".into(), true),
         ("#400 work".into(), true),
         ("  #400 gate".into(), true),
-        ("task #400".into(), true),
-        ("Task #400 gate".into(), true),
-        ("[#400] gate".into(), true),
-        ("(#400)".into(), true),
-        ("gate (#400)".into(), true),
-        ("#400,#401".into(), true),
-        ("#400#401".into(), true),
         ("#402 gate".into(), true),
         ("#403 gate".into(), true),
+        ("task #400".into(), false),
+        ("Task #400 gate".into(), false),
+        ("[#400] gate".into(), false),
+        ("(#400)".into(), false),
+        ("gate (#400)".into(), false),
+        ("#400,#401".into(), false),
+        ("#400#401".into(), false),
+        ("do not task #400: unrelated work".into(), false),
+        ("Use background color (#400) in CSS".into(), false),
+        ("Use background color [#400] in CSS".into(), false),
+        ("unrelated task\n#400 prose".into(), false),
+        (format!("{}x", " ".repeat(1_000_000)), false),
+        (format!("{}#400 work", " ".repeat(1_000_000)), false),
         ("Use background color #400".into(), false),
         ("fix issue #400 in css".into(), false),
         ("gate probe #400".into(), false),
@@ -616,17 +622,38 @@ fn pre_unnamed_spawn_with_an_open_task_id_in_the_description_is_accepted() {
 }
 
 #[test]
-fn pre_a_malformed_store_file_beside_a_valid_one_does_not_hide_an_open_task_the_transcript_shows() {
+fn pre_a_readable_store_is_the_list_whatever_the_transcript_shows_and_a_bad_file_is_skipped() {
     let w = World::new("byid-badstore");
     let store = w.path("home").join(".claude/tasks/s1");
     std::fs::create_dir_all(&store).unwrap();
     std::fs::write(store.join("400.json"), "{bad").unwrap();
     std::fs::write(store.join("401.json"), r#"{"id":"401","subject":"done","status":"completed"}"#).unwrap();
+    std::fs::write(store.join("402.json"), r#"{"id":"402","subject":"live","status":"in_progress"}"#).unwrap();
+    // the transcript lists #400 open, but the readable store is authoritative: #400 is not in it, so it does not pair
     let t = by_id_tasks();
     let o = w.pre_ref(None, Some("#400 work"), Some(&t));
-    assert!(!pair_text(&o) && o.0 != 2, "the store is incomplete: the transcript's open #400 pairs: {o:?}");
-    let o = w.pre_ref(None, Some("no ref"), Some(&t));
-    assert!(denied(&o), "no ref still denied: {o:?}");
+    assert!(denied(&o), "the store (not the transcript) is the list: #400 is not in it: {o:?}");
+    let o = w.pre_ref(None, Some("#401 work"), Some(&t));
+    assert!(denied(&o), "#401 is completed in the store: {o:?}");
+    let o = w.pre_ref(None, Some("#402 work"), Some(&t));
+    assert!(!pair_text(&o) && o.0 != 2, "#402 is open in the store: {o:?}");
+}
+
+#[test]
+fn pre_with_no_store_the_transcript_is_the_list_and_a_huge_description_is_denied_not_failed_open() {
+    let w = World::new("byid-nostore");
+    let t = by_id_tasks();
+    for d in ["#400 work", "#400: work", "  #400 work"] {
+        let o = w.pre_ref(None, Some(d), Some(&t));
+        assert!(!pair_text(&o) && o.0 != 2, "{d:?}: #400 is open: {o:?}");
+    }
+    for d in ["#401 work", "#999 work"] {
+        let o = w.pre_ref(None, Some(d), Some(&t));
+        assert!(denied(&o), "{d:?}: closed or nonexistent: {o:?}");
+    }
+    let huge = format!("{}x", " ".repeat(1_000_000));
+    let o = w.pre_ref(None, Some(&huge), Some(&t));
+    assert_eq!(o.0, 2, "1M spaces + x: denied (exit 2), never fail-open: {o:?}");
 }
 
 #[test]

@@ -8,7 +8,7 @@ doc = "Switch guards.pairRule (default on). On: an Agent or Task spawn without a
 value = { section = "guards", key = "pairRule", type = "boolean", env = "ANTIHALL_PAIR_RULE", option = "", default = true }
 
 [pair_rule.sw_by_id]
-doc = "Switch guards.pairRuleByTaskId (default on, kill switch). On: an Agent or Task spawn without a name is not denied when its description names `#<id>` of an open task of the session's list (the parse is pair_rule.task_ref_re: `#<id>` leading the description, or after `task ` / `(` / `[`), because a named teammate's reports do not reach the coordinator and the unnamed agent is paired by that task id; the PostToolUse advisory and the Stop block treat a name shorter than pair_rule.name_min_chars as no name. Needs guards.pairRule on to print anything. Off: every unnamed spawn is denied, as before."
+doc = "Switch guards.pairRuleByTaskId (default on, kill switch). On: an Agent or Task spawn without a name is not denied when its description names `#<id>` of an open task of the session's list (the parse is pair_rule.task_ref_re: `#<id>` as the leading token of the description, within its first pair_rule.description_scan_max characters), because a named teammate's reports do not reach the coordinator and the unnamed agent is paired by that task id; the PostToolUse advisory and the Stop block treat a name shorter than pair_rule.name_min_chars as no name. Needs guards.pairRule on to print anything. Off: every unnamed spawn is denied, as before."
 value = { section = "guards", key = "pairRuleByTaskId", type = "boolean", env = "ANTIHALL_PAIR_RULE_BY_TASK_ID", option = "", default = true }
 
 [pair_rule.summary]
@@ -40,11 +40,16 @@ value = 2
 min = 1
 
 [pair_rule.task_ref_re]
-doc = "JavaScript regex source of a task reference in an unnamed spawn's description that pairs the agent with that task (capture 1 is the number): `#N` at the start of the description, or right after `task ` or an opening `(` or `[`. A `#N` elsewhere (`background color #400`, `fix issue #400`) is not a reference. Deliberately stricter than task_guard.task_ref_re, which the Stop idle-task guard reads."
-value = '(?:^\s*|\b[Tt]ask\s+|[(\[])#(\d+)\b'
+doc = "JavaScript regex source of the task reference in an unnamed spawn's description that pairs the agent with that task (capture 1 is the number): `#N` as the LEADING token of the description (optional leading white space, then `#N` followed by white space, `:` or the end), nothing else. A `#N` anywhere later (`do not task #400`, `background color (#400)`, `[#400]`, a second line) is prose, not a reference. This is the pair-rule's own stricter, start-anchored regex (no multiline flag); it is NOT the parse of the Stop idle-task guard, which reads task_guard.task_ref_re (`#N` anywhere)."
+value = '^\s*#(\d+)(?:\s|:|$)'
+
+[pair_rule.description_scan_max]
+doc = "Most characters of an unnamed spawn's description examined for the task reference, cut before any regex runs (the reference must start within them; a description of mostly white space cannot cost the regex engine its memory). A spawn whose reference lies beyond is unnamed."
+value = 512
+min = 1
 
 [pair_rule.id_refs_max]
-doc = "Most distinct task references (pair_rule.task_ref_re) read from an unnamed spawn's description; the spawn pairs when ANY of them is an open task. A longer list is cut here, so a huge description cannot cost more than this many lookups (the Stop idle-task guard reads task_guard.task_ref_re with no cap)."
+doc = "Most distinct task references (pair_rule.task_ref_re) read from an unnamed spawn's description; the spawn pairs when ANY of them is an open task. A longer list is cut here (the Stop idle-task guard reads task_guard.task_ref_re with no cap)."
 value = 64
 min = 1
 
