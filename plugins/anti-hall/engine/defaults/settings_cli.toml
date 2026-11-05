@@ -25,6 +25,7 @@ value = [
   "{\"key\":\"engine\",\"label\":\"Engine\",\"description\":\"The optional ah-engine binary (native hook answers).\"}",
   "{\"key\":\"diagnostics\",\"label\":\"Diagnostics\",\"description\":\"Engine self-checks that only report.\"}",
   "{\"key\":\"defects\",\"label\":\"Defects\",\"description\":\"The two-way defect-reporting channel.\"}",
+  "{\"key\":\"taskstate\",\"label\":\"Task list\",\"description\":\"How the task guards read the session task list.\"}",
 ]
 
 [settings_cli.items]
@@ -450,6 +451,7 @@ value = [
   "{\"section\":\"diagnostics\",\"key\":\"engineCurrency\",\"type\":\"boolean\",\"default\":true,\"description\":\"Engine currency (default on; the kill switch): a scheduled job compares the running engine's commit and plugin files with the branch tip of the checkout named by diagnostics.engineCurrencyCheckout and reports the difference (event log kind currency, counter engine_currency_check, the currency field of `ah-engine status --json`). Report only: it never fetches, deploys or rebuilds, and it does nothing until the checkout is set.\"}",
   "{\"section\":\"diagnostics\",\"key\":\"engineCurrencyCheckout\",\"type\":\"string\",\"default\":\"\",\"description\":\"The git checkout the engine currency job compares against (a local path; empty = the job does nothing). Only its branch ref and committed files are read, never its working tree.\"}",
   "{\"section\":\"defects\",\"key\":\"defaultProj\",\"type\":\"string\",\"default\":\"\",\"description\":\"Default project tag used when filing an anti-hall defect (max 64 chars).\"}",
+  "{\"section\":\"taskstate\",\"key\":\"snapshot_enabled\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Keep one snapshot of each session's rebuilt task list and lay the transcript-tail result over it, so the task guards still see tasks whose TaskCreate left the last 1.5 MiB of the transcript. Off = the tail alone (the earlier behaviour). Also settable in the engine's config.toml as [taskstate] snapshot_enabled. [read by: ah-engine task-guard, task-tracker, dispatch-tier]\"}",
 ]
 
 [settings_cli.not_toggleable]

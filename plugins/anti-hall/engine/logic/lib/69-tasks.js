@@ -22,7 +22,7 @@ var tk = {
     var st = tk.storeTasks(home, sid);
     if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
-    var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'));
+    var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
     r.store = false;
     return r;
   },

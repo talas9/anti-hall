@@ -254,3 +254,681 @@ fn every_ahhost_function_the_api_scripts_call_is_registered() {
     assert!(missing.is_empty(), "ahHost functions the API scripts call but the engine never registers: {missing:?}");
     assert!(used.len() > 40, "the scan found the API ({} names)", used.len());
 }
+
+// ---- #390: the task snapshot (the transcript tail alone loses a task list once the creates lie beyond the window) ----
+
+const SNAP_WINDOW: u64 = 1_048_576;
+
+/// A non-task transcript line of about 1 KB, repeated until `bytes` have been written to the end of `path`.
+fn pad(path: &str, bytes: usize) {
+    use std::io::Write;
+    let one = line(json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "x".repeat(900)}]}}));
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    for _ in 0..bytes / one.len() + 1 {
+        f.write_all(one.as_bytes()).unwrap();
+    }
+}
+
+fn snap_create(n: u32, subject: &str) -> String {
+    assistant_tool(&format!("c{n}"), "TaskCreate", json!({"subject": subject, "description": format!("why {n}")}), "2026-10-06T12:00:00.000Z")
+        + &result(&format!("c{n}"), &format!("Task #{n} created successfully: {subject}"))
+}
+
+/// The overnight shape: three tasks at the head, task 1 taken (owner w1, in progress).
+fn snap_head() -> String {
+    snap_create(1, "first")
+        + &snap_create(2, "second")
+        + &snap_create(3, "third")
+        + &assistant_tool("u1", "TaskUpdate", json!({"taskId": "1", "status": "in_progress", "owner": "w1"}), "2026-10-06T12:02:00.000Z")
+        + &result("u1", "Updated task #1")
+}
+
+/// A script that rebuilds the guard task list of `p.t` over a window of `p.w` bytes and files `[id, content, status, owner]` rows (and
+/// `windowReset`) as `.anti-hall/out-<p.n>.json`; the verdict is always allow.
+fn snap_probe(h: &str) {
+    put_override(
+        h,
+        "zz-snap",
+        "function decide(p){ var r = ah.transcript.tasks(p.t, 'guard', p.w, 0, p.s); \
+         ah.state.writeAtomic('.anti-hall/out-' + p.n + '.json', JSON.stringify({rows: (r.tasks || []).map(function (t) { return [t.id, t.content, t.status, t.owner, t.description]; }), reset: !!r.windowReset})); \
+         return 'allow'; }",
+    );
+}
+
+fn snap_rebuild(h: &str, t: &str, n: &str) -> Value {
+    snap_rebuild_as(h, t, n, "")
+}
+
+/// [`snap_rebuild`] for the session `sid` (the hook payload's session id; empty: none given).
+fn snap_rebuild_as(h: &str, t: &str, n: &str, sid: &str) -> Value {
+    assert_eq!(run("zz-snap", &json!({"t": t, "w": SNAP_WINDOW, "n": n, "s": sid}), &env(h)), Some(Some(Verdict::Allow)));
+    serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-{n}.json")).unwrap()).unwrap()
+}
+
+fn snap_rows(v: &Value) -> Vec<(String, String, String, String)> {
+    v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r[0].as_str().unwrap().into(), r[1].as_str().unwrap().into(), r[2].as_str().unwrap().into(), r[3].as_str().unwrap().into()))
+        .collect()
+}
+
+fn snap_files(h: &str) -> Vec<String> {
+    std::fs::read_dir(format!("{h}/.anti-hall/{}", defaults::text("taskstate.snapshot_dir")))
+        .map_or_else(|_| Vec::new(), |d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+}
+
+/// The one snapshot file of the home, parsed (panics when there is not exactly one).
+fn snap_doc(h: &str) -> Value {
+    let files = snap_files(h);
+    assert_eq!(files.len(), 1, "exactly one snapshot file: {files:?}");
+    let p = format!("{h}/.anti-hall/{}/{}", defaults::text("taskstate.snapshot_dir"), files[0]);
+    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+}
+
+/// The ids the snapshot holds for a variant.
+fn snap_ids(doc: &Value, variant: &str) -> Vec<String> {
+    doc["variants"][variant]["tasks"].as_array().map_or_else(Vec::new, |a| a.iter().filter_map(|t| t["id"].as_str().map(str::to_string)).collect())
+}
+
+/// What the calling thread bumped on `name` with the one label `label=value`.
+fn bumped(name: &str, label: &str, value: &str) -> u64 {
+    crate::metrics::bumped_on_this_thread(name, &[(label, value)])
+}
+
+fn append(t: &str, text: &str) {
+    std::fs::OpenOptions::new().append(true).open(t).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes())).unwrap();
+}
+
+fn row(id: &str, content: &str, status: &str, owner: &str) -> (String, String, String, String) {
+    (id.into(), content.into(), status.into(), owner.into())
+}
+
+#[test]
+fn a_task_list_whose_creates_left_the_tail_window_is_still_read_through_its_snapshot() {
+    let h = home("snap-overnight");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    let first = snap_rebuild(&h, &t, "a");
+    let want = vec![row("1", "first", "in_progress", "w1"), row("2", "second", "pending", ""), row("3", "third", "pending", "")];
+    assert_eq!(snap_rows(&first), want, "the first rebuild sees the whole small file");
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let night = snap_rebuild(&h, &t, "b");
+    assert_eq!(snap_rows(&night), want, "the creates lie beyond the window: the snapshot answers");
+    assert_eq!(snap_files(&h).len(), 1, "one snapshot file for the session, rewritten in place: {:?}", snap_files(&h));
+}
+
+/// Round 4: the snapshot was written before the tasks were finished and no rebuild ran until a burst pushed the finishing out of the tail
+/// window; the bytes between the snapshot's size and the tail's start are read, so the snapshot never answers with a stale list.
+#[test]
+fn a_completion_in_the_gap_between_the_snapshot_and_the_tail_is_read_not_missed() {
+    let h = home("snap-gap-read");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    let upd = assistant_tool("u2", "TaskUpdate", json!({"taskId": "2", "status": "completed"}), "2026-10-06T20:00:00.000Z") + &result("u2", "Updated task #2");
+    append(&t, &upd);
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let got = snap_rebuild(&h, &t, "b");
+    assert_eq!(
+        snap_rows(&got),
+        vec![row("1", "first", "in_progress", "w1"), row("2", "second", "completed", ""), row("3", "third", "pending", "")],
+        "the completion lies between the snapshot's size and the tail's start: the rebuild reads it, task 1 and 3 stay open from the snapshot"
+    );
+    assert_eq!(bumped("snapshot_gap", "result", "caught_up"), 1);
+    assert_eq!(bumped("snapshot_discarded", "reason", "gap"), 0);
+}
+
+#[test]
+fn a_tail_that_only_touches_one_task_keeps_the_others_and_the_fields_it_does_not_state() {
+    let h = home("snap-update");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let upd = assistant_tool("u2", "TaskUpdate", json!({"taskId": "1", "status": "completed"}), "2026-10-06T20:00:00.000Z") + &result("u2", "Updated task #1");
+    std::fs::OpenOptions::new().append(true).open(&t).and_then(|mut f| std::io::Write::write_all(&mut f, upd.as_bytes())).unwrap();
+    let got = snap_rebuild(&h, &t, "b");
+    assert_eq!(
+        snap_rows(&got),
+        vec![row("1", "first", "completed", "w1"), row("2", "second", "pending", ""), row("3", "third", "pending", "")],
+        "the tail's status wins; the subject and owner it does not state, and the untouched tasks, come from the snapshot"
+    );
+    // the overlay was written back: the next rebuild after yet another burst still has it
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    assert_eq!(snap_rows(&snap_rebuild(&h, &t, "c")), snap_rows(&got));
+}
+
+#[test]
+fn an_empty_task_list_in_the_tail_discards_the_snapshot_for_good() {
+    let h = home("snap-empty");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let list = assistant_tool("l1", "TaskList", json!({}), "2026-10-06T20:00:00.000Z") + &result("l1", "No tasks found");
+    std::fs::OpenOptions::new().append(true).open(&t).and_then(|mut f| std::io::Write::write_all(&mut f, list.as_bytes())).unwrap();
+    let got = snap_rebuild(&h, &t, "b");
+    assert!(snap_rows(&got).is_empty(), "No tasks found: the snapshot is not laid back: {got}");
+    // without snapshots all of this holds too, so pin that the snapshot was there and was dropped for the reset
+    assert_eq!(bumped("snapshot_discarded", "reason", "reset"), 1, "the reset discarded a snapshot that existed");
+    assert!(snap_ids(&snap_doc(&h), "guard").is_empty(), "the empty list replaced the snapshot's tasks");
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    assert!(snap_rows(&snap_rebuild(&h, &t, "c")).is_empty(), "the empty list left the window and the old tasks did not come back");
+}
+
+#[test]
+fn a_transcript_smaller_than_its_snapshot_is_another_file_and_the_snapshot_is_ignored() {
+    let h = home("snap-shrunk");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    pad(&t, 50_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "a snapshot of the first file's list exists");
+    std::fs::write(&t, snap_create(1, "other list")).unwrap();
+    let got = snap_rebuild(&h, &t, "b");
+    assert_eq!(snap_rows(&got), vec![row("1", "other list", "pending", "")], "only the new file's list");
+    assert_eq!(bumped("snapshot_discarded", "reason", "shrunk"), 1, "the smaller file discarded a snapshot that existed");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1"], "the snapshot now holds the new file's list");
+}
+
+#[test]
+fn no_new_snapshot_file_is_made_once_the_cap_is_reached_and_nothing_is_deleted() {
+    let h = home("snap-cap");
+    let dir = format!("{h}/.anti-hall/{}", defaults::text("taskstate.snapshot_dir"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cap = defaults::num("taskstate.snapshot_max_files");
+    for i in 0..cap {
+        std::fs::write(format!("{dir}/old-{i}.json"), "{}").unwrap();
+    }
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    let first = snap_rebuild(&h, &t, "a");
+    assert_eq!(snap_rows(&first).len(), 3, "the rebuild itself still answers");
+    assert_eq!(snap_files(&h).len() as u64, cap, "no file was added and none removed: {}", snap_files(&h).len());
+    assert_eq!(bumped("snapshot_error", "kind", "cap"), 1, "the refused file is counted (the rebuild reached the snapshot code)");
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    assert!(snap_rows(&snap_rebuild(&h, &t, "b")).is_empty(), "with no snapshot the tail alone answers (fail-open, today's behaviour)");
+}
+
+// ---- #390 fix round: deletions, renumbering and file identity ----
+
+#[test]
+fn a_task_the_tail_found_deleted_does_not_come_back_from_the_snapshot() {
+    let h = home("snap-deleted");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let get = assistant_tool("g1", "TaskGet", json!({"taskId": "1"}), "2026-10-06T20:00:00.000Z") + &result("g1", "Task #1 not found");
+    let done = assistant_tool("u2", "TaskUpdate", json!({"taskId": "2", "status": "completed"}), "2026-10-06T20:01:00.000Z") + &result("u2", "Updated task #2");
+    append(&t, &(get + &done));
+    let got = snap_rebuild(&h, &t, "b");
+    assert_eq!(
+        snap_rows(&got),
+        vec![row("2", "second", "completed", ""), row("3", "third", "pending", "")],
+        "#1 was found not found in the tail: it is gone, the others stay"
+    );
+    assert!(!snap_ids(&snap_doc(&h), "guard").contains(&"1".to_string()), "the deletion was written back");
+}
+
+#[test]
+fn a_task_deleted_and_made_again_in_the_tail_is_the_new_one() {
+    let h = home("snap-deleted-again");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let get = assistant_tool("g1", "TaskGet", json!({"taskId": "3"}), "2026-10-06T20:00:00.000Z") + &result("g1", "Task #3 not found");
+    let upd = assistant_tool("u3", "TaskUpdate", json!({"taskId": "3", "status": "in_progress", "subject": "third again"}), "2026-10-06T20:01:00.000Z");
+    append(&t, &(get + &upd));
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert!(got.iter().any(|r| r.0 == "3" && r.2 == "in_progress"), "what the tail states after the deletion is listed: {got:?}");
+}
+
+#[test]
+fn a_new_list_numbered_from_one_again_after_the_snapshot_replaces_it() {
+    let h = home("snap-renumber");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, 1_700_000);
+    let done = assistant_tool("u9", "TaskUpdate", json!({"taskId": "1", "status": "completed"}), "2026-10-06T20:01:00.000Z");
+    append(&t, &(snap_create(1, "fresh list") + &done));
+    let got = snap_rebuild(&h, &t, "b");
+    assert_eq!(snap_rows(&got), vec![row("1", "fresh list", "completed", "")], "the old #2 and #3 belong to the list this one replaced");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 1);
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1"], "the snapshot now holds the new list");
+}
+
+#[test]
+fn creates_the_snapshot_already_saw_in_an_overlapping_tail_are_not_a_new_list() {
+    let h = home("snap-overlap");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first")).unwrap();
+    pad(&t, 500_000);
+    append(&t, &snap_create(2, "second"));
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2"]);
+    pad(&t, 700_000); // #1 left the tail window, #2 is still inside it and was already in the snapshot
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["1", "2"], "the re-seen create of #2 does not drop #1: {got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+}
+
+/// `size` bytes of non-task lines, exactly.
+fn filler(size: usize, ch: char) -> String {
+    let base = line(json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]}}));
+    let body =
+        line(json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": ch.to_string().repeat(size - base.len())}]}}));
+    assert_eq!(body.len(), size);
+    body
+}
+
+#[test]
+fn another_session_on_the_same_path_does_not_inherit_the_snapshot() {
+    let h = home("snap-session");
+    let t = format!("{h}/t.jsonl");
+    let old = snap_head() + &filler(20_000, 'x');
+    std::fs::write(&t, &old).unwrap();
+    snap_probe(&h);
+    assert_eq!(snap_rows(&snap_rebuild_as(&h, &t, "a", "sess-old")).len(), 3);
+    assert_eq!(snap_doc(&h)["session"], json!("sess-old"), "the snapshot names its session");
+    std::fs::write(&t, filler(old.len(), 'y')).unwrap(); // the same path, the same size, another conversation
+    let got = snap_rebuild_as(&h, &t, "b", "sess-new");
+    assert!(snap_rows(&got).is_empty(), "the old session's tasks are not this session's: {got}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "session"), 1);
+}
+
+#[test]
+fn the_same_session_on_a_replaced_file_of_the_same_size_does_not_inherit_the_snapshot() {
+    let h = home("snap-replaced");
+    let t = format!("{h}/t.jsonl");
+    let old = snap_head() + &filler(20_000, 'x');
+    std::fs::write(&t, &old).unwrap();
+    snap_probe(&h);
+    assert_eq!(snap_rows(&snap_rebuild_as(&h, &t, "a", "sess")).len(), 3);
+    std::fs::write(&t, filler(old.len(), 'y')).unwrap();
+    let got = snap_rebuild_as(&h, &t, "b", "sess");
+    assert!(snap_rows(&got).is_empty(), "the file under the path is another generation: {got}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "replaced"), 1);
+}
+
+#[test]
+fn a_file_that_keeps_its_first_bytes_but_changes_before_the_tail_window_is_another_generation() {
+    let h = home("snap-replaced-mid");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    pad(&t, 900_000);
+    snap_probe(&h);
+    assert_eq!(snap_rows(&snap_rebuild_as(&h, &t, "a", "sess")).len(), 3);
+    pad(&t, 700_000); // the file grows by more than snapshot_refresh_bytes: the snapshot is rewritten for the larger file
+    assert_eq!(snap_rows(&snap_rebuild_as(&h, &t, "b", "sess")).len(), 3, "the same file, grown: still its snapshot");
+    assert_eq!(bumped("snapshot_discarded", "reason", "replaced"), 0);
+    let mut bytes = std::fs::read(&t).unwrap();
+    let keep = 2 * defaults::num("taskstate.snapshot_fingerprint_bytes") as usize + 4096;
+    for b in bytes.iter_mut().skip(keep) {
+        if *b == b'x' {
+            *b = b'z';
+        }
+    }
+    std::fs::write(&t, &bytes).unwrap(); // same size, same start, other text before the window
+    let got = snap_rebuild_as(&h, &t, "c", "sess");
+    assert!(snap_rows(&got).is_empty(), "the bytes before the tail window changed: {got}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "replaced"), 1);
+}
+
+// ---- #390 fix round: a damaged or unwritable snapshot never changes the answer ----
+
+#[test]
+fn a_snapshot_with_a_malformed_task_is_ignored_and_repaired() {
+    for (tag, bad) in [("null", json!(null)), ("number", json!(17)), ("no-id", json!({"status": "pending"})), ("status", json!({"id": "1", "status": 7}))] {
+        let h = home(&format!("snap-malformed-{tag}"));
+        let t = format!("{h}/t.jsonl");
+        std::fs::write(&t, snap_head()).unwrap();
+        snap_probe(&h);
+        snap_rebuild(&h, &t, "a");
+        let dir = format!("{h}/.anti-hall/{}", defaults::text("taskstate.snapshot_dir"));
+        let file = format!("{dir}/{}", snap_files(&h)[0]);
+        let mut doc = snap_doc(&h);
+        doc["variants"]["guard"]["tasks"] = json!([bad]);
+        std::fs::write(&file, doc.to_string()).unwrap();
+        let got = snap_rebuild(&h, &t, "b");
+        assert_eq!(snap_rows(&got).len(), 3, "{tag}: the tail alone answers, nothing is thrown: {got}");
+        assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "{tag}: the damaged section was overwritten with the rebuilt list");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_snapshot_that_cannot_be_written_leaves_the_tail_alone_as_the_answer() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = home("snap-unwritable");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let upd = assistant_tool("u2", "TaskUpdate", json!({"taskId": "2", "status": "completed"}), "2026-10-06T20:00:00.000Z") + &result("u2", "Updated task #2");
+    append(&t, &upd);
+    let dir = format!("{h}/.anti-hall/{}", defaults::text("taskstate.snapshot_dir"));
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let got = snap_rebuild(&h, &t, "b");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ids: Vec<String> = snap_rows(&got).into_iter().map(|r| r.0).collect();
+    assert_eq!(ids, ["2"], "the write failed, so the answer is the tail's alone, as the switch-off path gives it: {got}");
+    assert_eq!(bumped("snapshot_error", "kind", "write"), 1);
+}
+
+#[test]
+fn the_guard_and_state_variants_do_not_lose_each_others_section() {
+    let h = home("snap-race");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    // the guard variant reads the snapshot; before it writes, the state variant files its own section (what a concurrent hook does)
+    put_override(
+        &h,
+        "zz-snap-race",
+        "function decide(p){ var inner = false, read = ah.state.readText; \
+         ah.state.readText = function (rel) { var raw = read(rel); if (!inner && p.race) { inner = true; ah.transcript.tasks(p.t, 'state', p.w, 0, ''); } return raw; }; \
+         ah.transcript.tasks(p.t, 'guard', p.w, 0, ''); ah.state.readText = read; return 'allow'; }",
+    );
+    let go = |race: bool| assert_eq!(run("zz-snap-race", &json!({"t": t, "w": SNAP_WINDOW, "race": race}), &env(&h)), Some(Some(Verdict::Allow)));
+    go(false);
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the guard section is there");
+    append(
+        &t,
+        &(assistant_tool("u2", "TaskUpdate", json!({"taskId": "2", "status": "completed"}), "2026-10-06T20:00:00.000Z") + &result("u2", "Updated task #2")),
+    );
+    go(true);
+    let doc = snap_doc(&h);
+    assert_eq!(snap_ids(&doc, "guard"), ["1", "2", "3"], "the guard section is current");
+    assert_eq!(snap_ids(&doc, "state"), ["1", "2", "3"], "the state section filed during the guard's read survived the guard's write: {doc}");
+}
+
+// ---- #390 fix round 3: a task's identity is the tool-use id of its TaskCreate, never its subject ----
+
+/// A `TaskCreate` of task `n` under the tool-use id `use_id` (a number that is made again by a new list gets another id).
+fn snap_create_as(n: u32, subject: &str, use_id: &str) -> String {
+    assistant_tool(use_id, "TaskCreate", json!({"subject": subject, "description": format!("why {n}")}), "2026-10-06T12:00:00.000Z")
+        + &result(use_id, &format!("Task #{n} created successfully: {subject}"))
+}
+
+fn snap_update(use_id: &str, input: Value) -> String {
+    assistant_tool(use_id, "TaskUpdate", input, "2026-10-06T12:05:00.000Z") + &result(use_id, "Updated task")
+}
+
+/// The ids the snapshot recorded for a variant: `{task number: tool-use id}`.
+fn snap_created_ids(doc: &Value, variant: &str) -> Value {
+    doc["variants"][variant]["ids"].clone()
+}
+
+#[test]
+fn renaming_a_task_created_inside_an_overlapping_tail_does_not_drop_the_older_pending_task() {
+    // reviewer P1-A: the snapshot holds pending #1; the tail creates #2, renames it and completes it. A rename is not a new list.
+    let h = home("snap-id-rename-create");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "genuine open task 1")).unwrap();
+    pad(&t, 800_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    append(&t, &snap_create(2, "original task 2"));
+    snap_rebuild(&h, &t, "b");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2"]);
+    pad(&t, 600_000); // #1's create left the tail window; #2's create (after the snapshot's #1) is still inside it
+    append(&t, &(snap_update("r2", json!({"taskId": "2", "subject": "renamed task 2"})) + &snap_update("d2", json!({"taskId": "2", "status": "completed"}))));
+    let got = snap_rows(&snap_rebuild(&h, &t, "c"));
+    assert_eq!(got, vec![row("1", "genuine open task 1", "pending", ""), row("2", "renamed task 2", "completed", "")], "the pending #1 is still listed");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+    assert_eq!(snap_created_ids(&snap_doc(&h), "guard"), json!({"1": "c1", "2": "c2"}), "the identities are the create tool-use ids");
+}
+
+#[test]
+fn a_rename_of_a_snapshot_task_inside_an_overlapping_tail_is_not_a_new_list() {
+    let h = home("snap-id-rename-snapshot-task");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first")).unwrap();
+    pad(&t, 500_000);
+    append(&t, &snap_create(2, "original second"));
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    append(&t, &snap_update("r2", json!({"taskId": "2", "subject": "renamed second"})));
+    pad(&t, 700_000); // #2's create and its rename are inside the tail, #1's create is not
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got, vec![row("1", "first", "pending", ""), row("2", "renamed second", "pending", "")], "{got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+}
+
+#[test]
+fn a_new_task_one_with_the_same_subject_as_the_old_one_is_a_new_list_and_drops_the_obsolete_tasks() {
+    // reviewer P1-B: equal subjects defeated the old rule; the tool-use id tells the new #1 from the one the snapshot holds.
+    let h = home("snap-id-same-subject");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "same") + &snap_create(2, "obsolete task 2")).unwrap();
+    pad(&t, 800_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2"]);
+    pad(&t, 500_000); // the old creates left the window; the snapshot (800 KB) still overlaps it
+    append(&t, &(snap_create_as(1, "same", "new-c1") + &snap_update("d1", json!({"taskId": "1", "status": "completed"}))));
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got, vec![row("1", "same", "completed", "")], "the obsolete #2 belongs to the list the new #1 replaced: {got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 1);
+    assert_eq!(snap_created_ids(&snap_doc(&h), "guard"), json!({"1": "new-c1"}));
+}
+
+#[test]
+fn the_same_create_seen_in_two_overlapping_tails_is_never_a_new_list() {
+    let h = home("snap-id-seen-twice");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first")).unwrap();
+    pad(&t, 500_000);
+    append(&t, &snap_create(2, "second"));
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, 400_000);
+    let b = snap_rows(&snap_rebuild(&h, &t, "b"));
+    pad(&t, 400_000); // #2's create is inside every tail from here on; #1's left the window
+    let c = snap_rows(&snap_rebuild(&h, &t, "c"));
+    for (tag, got) in [("b", b), ("c", c)] {
+        assert_eq!(got.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["1", "2"], "{tag}: {got:?}");
+    }
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_identity_unknown", &[]), 0);
+}
+
+#[test]
+fn a_create_the_tail_cannot_name_leaves_the_snapshot_alone() {
+    // a TaskCreate line with no tool-use id makes no task in the rebuild: nothing says a new list began
+    let h = home("snap-id-create-without-id");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first") + &snap_create(2, "second")).unwrap();
+    pad(&t, 800_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    pad(&t, 500_000);
+    append(
+        &t,
+        &(line(
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "TaskCreate", "input": {"subject": "first"}}]}}),
+        ) + &result("nobody", "Task #1 created successfully: first")),
+    );
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["1", "2"], "{got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+}
+
+#[test]
+fn a_snapshot_task_with_no_recorded_create_cannot_be_told_from_a_new_one_and_the_snapshot_is_kept_and_counted() {
+    let h = home("snap-id-unrecorded");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_create(1, "first") + &snap_create(2, "second")).unwrap();
+    pad(&t, 800_000);
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    let file = format!("{h}/.anti-hall/{}/{}", defaults::text("taskstate.snapshot_dir"), snap_files(&h)[0]);
+    let mut doc = snap_doc(&h);
+    doc["variants"]["guard"].as_object_mut().unwrap().remove("ids");
+    std::fs::write(&file, doc.to_string()).unwrap();
+    pad(&t, 500_000);
+    append(&t, &snap_create_as(1, "first", "someone-else"));
+    let got = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(got.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["1", "2"], "the snapshot's #2 is kept: {got:?}");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 0);
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_identity_unknown", &[]), 1, "fail-open to the snapshot is counted");
+    assert_eq!(snap_created_ids(&snap_doc(&h), "guard"), json!({"1": "someone-else"}), "the id the tail names is recorded");
+}
+
+#[test]
+fn a_list_made_by_todowrite_has_no_create_ids_and_is_still_kept_and_still_replaced_by_a_new_list() {
+    let h = home("snap-id-todowrite");
+    let t = format!("{h}/t.jsonl");
+    let todos = json!({"todos": [{"id": "1", "content": "alpha", "status": "pending"}, {"id": "2", "content": "beta", "status": "in_progress"}]});
+    std::fs::write(&t, assistant_tool("tw", "TodoWrite", todos, "2026-10-06T12:00:00.000Z")).unwrap();
+    snap_probe(&h);
+    let first = snap_rows(&snap_rebuild(&h, &t, "a"));
+    assert_eq!(first.len(), 2, "{first:?}");
+    pad(&t, 1_700_000);
+    let night = snap_rows(&snap_rebuild(&h, &t, "b"));
+    assert_eq!(night, first, "the todo list left the tail window: the snapshot answers");
+    assert_eq!(snap_created_ids(&snap_doc(&h), "guard"), json!({}), "no TaskCreate made them");
+    pad(&t, 1_100_000); // the tail now starts past the snapshot's bytes, so a create in it is certainly a later one
+    append(&t, &snap_create(1, "fresh list"));
+    let got = snap_rows(&snap_rebuild(&h, &t, "c"));
+    assert_eq!(got, vec![row("1", "fresh list", "pending", "")], "a create after the snapshot's bytes is a new list");
+    assert_eq!(bumped("snapshot_discarded", "reason", "renumbered"), 1);
+}
+
+#[test]
+fn a_snapshot_over_the_size_cap_is_a_damaged_file_and_is_replaced_even_when_its_tasks_are_unchanged() {
+    let h = home("snap-oversize");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    let file = format!("{h}/.anti-hall/{}/{}", defaults::text("taskstate.snapshot_dir"), snap_files(&h)[0]);
+    let mut doc = snap_doc(&h);
+    let mut tasks = doc["variants"]["guard"]["tasks"].as_array().unwrap().clone();
+    for i in 4..2504 {
+        tasks.push(json!({"id": i.to_string(), "content": format!("stale task {i} {}", "x".repeat(120)), "description": "", "status": "pending", "owner": "", "blockedBy": [], "priority": null, "subjectUpdated": false, "unknown": null, "blockUnknown": false, "sinceMs": null}));
+    }
+    doc["variants"]["guard"]["tasks"] = json!(tasks);
+    let big = doc.to_string();
+    assert!(big.len() > defaults::num("taskstate.snapshot_max_bytes") as usize, "the file is over the cap: {}", big.len());
+    std::fs::write(&file, big).unwrap();
+    let got = snap_rebuild(&h, &t, "b");
+    assert_eq!(snap_rows(&got).len(), 3, "the oversized snapshot lays nothing over the tail: {}", snap_rows(&got).len());
+    assert_eq!(bumped("snapshot_error", "kind", "big"), 1);
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the file was replaced by the rebuilt list");
+    assert!(std::fs::metadata(&file).unwrap().len() <= defaults::num("taskstate.snapshot_max_bytes"));
+}
+
+#[test]
+fn a_rebuild_that_cannot_take_the_snapshot_lock_writes_nothing_and_answers_as_before() {
+    let h = home("snap-lock-busy");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    put_override(
+        &h,
+        "zz-snap-lock",
+        "function decide(p){ var lk = ah.state.lock(taskSnap.rel(p.t) + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), 5); \
+         var r = ah.transcript.tasks(p.t, 'guard', p.w, 0, ''); ah.state.unlock(lk); \
+         ah.state.writeAtomic('.anti-hall/out-lock.json', JSON.stringify({held: lk !== null, n: r.tasks.length})); return 'allow'; }",
+    );
+    assert_eq!(run("zz-snap-lock", &json!({"t": t, "w": SNAP_WINDOW}), &env(&h)), Some(Some(Verdict::Allow)));
+    let out: Value = serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-lock.json")).unwrap()).unwrap();
+    assert_eq!(out, json!({"held": true, "n": 3}), "the rebuild still answers");
+    assert_eq!(bumped("snapshot_error", "kind", "lock"), 1, "the busy lock is counted");
+    assert!(snap_files(&h).iter().all(|f| !f.ends_with(".json")), "no snapshot was written under a lock held by another: {:?}", snap_files(&h));
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "free");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the next rebuild writes");
+    assert_eq!(snap_files(&h).iter().filter(|f| f.ends_with(".lock")).count(), 0, "a released lock leaves no file: {:?}", snap_files(&h));
+}
+
+/// Installs the owner's file layers for a test and removes them on drop (the overlay is process-wide: nextest runs each test in its own
+/// process, and the guard keeps a failing assertion from leaking the override into whatever runs next in this one).
+struct Overlay;
+
+impl Overlay {
+    fn set(values: &[(&str, Value)]) -> Overlay {
+        defaults::set_overlay(values);
+        Overlay
+    }
+}
+
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        defaults::set_overlay(&[]);
+    }
+}
+
+/// #390 round 5: `ah.cfg` is the shipped value for every logic read (about 3,000 calls rely on that); only `ah.cfgLive` is the owner's
+/// layers. The task snapshot's switch is a documented setting and is read through `cfgLive`; nothing else changed meaning.
+#[test]
+fn ah_cfg_stays_the_shipped_value_whatever_the_owner_sets_and_cfg_live_is_the_owners_layers() {
+    let h = home("cfg-scope");
+    std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"taskstate":{"snapshot_enabled":false}}"#).unwrap();
+    put_override(
+        &h,
+        "zz-cfg-scope",
+        "function decide(p){ ah.state.writeAtomic('.anti-hall/out-cfg.json', JSON.stringify({ \
+         heavy: ah.cfg('command.heavy_patterns'), enabled: ah.cfg('taskstate.snapshot_enabled'), live: ah.cfgLive('taskstate.snapshot_enabled'), \
+         gate: taskSnap.enabled(), dir: ah.cfg('taskstate.snapshot_dir') })); return 'allow'; }",
+    );
+    let read = |h: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-cfg.json")).unwrap()).unwrap() };
+    let shipped = |k: &str| defaults::shipped(k).to_json();
+    let _owner =
+        Overlay::set(&[("command.heavy_patterns", json!(["("])), ("taskstate.snapshot_enabled", json!(false)), ("taskstate.snapshot_dir", json!("elsewhere"))]);
+    assert_eq!(run("zz-cfg-scope", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
+    let got = read(&h);
+    assert_eq!(got["heavy"], shipped("command.heavy_patterns"), "ah.cfg of a user-overridden pattern list is the shipped list");
+    assert_eq!(got["enabled"], json!(true), "ah.cfg of the overridden switch is the shipped value");
+    assert_eq!(got["dir"], shipped("taskstate.snapshot_dir"), "an unrelated overridden key is the shipped value too");
+    assert_eq!(got["live"], json!(false), "cfgLive reads the owner's settings.json");
+    assert_eq!(got["gate"], json!(false), "the snapshot gate honours the owner's switch");
+}
+
+/// The confirmed regression of round 4: `command.js` compiles `command.heavy_patterns` without a guard, so an owner override that is not a
+/// regex used to reach the command guard through `ah.cfg`. It must answer exactly as it does without the override.
+#[test]
+fn a_hostile_heavy_patterns_override_leaves_the_command_guard_as_it_is_at_base() {
+    let h = home("cfg-hostile");
+    let proj = format!("{h}/proj");
+    std::fs::create_dir_all(format!("{proj}/.git/refs/heads")).unwrap();
+    std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let e = RequestEnv::from_pairs([
+        ("HOME", h.as_str()),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+        ("DEVSWARM_REPO_ID", "r1"),
+        ("DEVSWARM_SOURCE_BRANCH", "feat"),
+        ("ANTIHALL_INGEST_DRY_RUN", "1"),
+    ]);
+    let call = |sid: &str, c: &str| {
+        super::run_forced(
+            "command",
+            &json!({"tool_name": "Bash", "session_id": sid, "cwd": proj, "tool_input": {"command": c}}),
+            &Value::Null,
+            "PreToolUse",
+            &e,
+        )
+    };
+    let cmds = ["npm run build", "ls -la"];
+    let base: Vec<_> = cmds.iter().map(|c| call("base", c)).collect();
+    assert!(matches!(base.first(), Some(Some(Some(Verdict::Exact(x)))) if x.code == 2), "base: a heavy command is blocked: {base:?}");
+    assert!(matches!(base.get(1), Some(Some(Some(Verdict::Allow)))), "base: a light one passes: {base:?}");
+    let _owner = Overlay::set(&[("command.heavy_patterns", json!(["(", "[a-"]))]);
+    let hostile: Vec<_> = cmds.iter().map(|c| call("hostile", c)).collect();
+    assert_eq!(hostile, base, "the owner's pattern list does not reach the command guard");
+}

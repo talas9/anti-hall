@@ -364,7 +364,7 @@ function ttFresh(home, tp, sessionRaw, p) {
   if (tp === null) return null;
   var size = ah.fs.size(tp);
   if (!size) return null;
-  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'));
+  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'), 0, sessionRaw);
   // Claude Code's own store holds the whole list; the transcript tail of a long session does not (the creates lie before it)
   var store = tk.storeTasks(home, sessionRaw);
   if (store === null) {

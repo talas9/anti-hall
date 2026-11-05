@@ -294,6 +294,79 @@ min = 1
 doc = "Prefix of the stamp file that throttles one prefix's sweep."
 value = ".prune-stamp-"
 
+# ---- task snapshot (#390): the list a transcript tail can no longer show -----------------------------
+
+[taskstate.snapshot_enabled]
+doc = "Keep one snapshot file of each session's rebuilt task list and lay the transcript-tail result over it (the tail wins per task id). Without it a list whose creates lie more than taskstate.tail_bytes before the end of the transcript is read as no tasks, and every task guard goes quiet. False = the tail alone, as before (kill switch)."
+value = true
+
+[taskstate.snapshot_dir]
+doc = "Directory of the task snapshots, relative to paths.base_dir (the home directory's state directory). One file per session transcript, overwritten in place. The engine never deletes a snapshot: when taskstate.snapshot_max_files is reached no new file is made, and old ones are left for the owner to remove."
+value = "ah-engine/task-snapshots"
+
+[taskstate.snapshot_file]
+doc = "File name of one session's snapshot. `{name}` is the transcript's file name without its extension (characters outside [A-Za-z0-9_.-] become `_`, cut to taskstate.snapshot_name_max), `{hash}` the first taskstate.snapshot_hash_len hex digits of the SHA-1 of the transcript path (two transcripts of one name do not share a file)."
+value = "{name}-{hash}.json"
+
+[taskstate.snapshot_name_max]
+doc = "Most characters of the transcript's file name used in a snapshot file name."
+value = 64
+min = 1
+
+[taskstate.snapshot_hash_len]
+doc = "Hex digits of the transcript path's SHA-1 in a snapshot file name."
+value = 8
+min = 4
+max = 40
+
+[taskstate.snapshot_max_files]
+doc = "Most files in the snapshot directory. At the cap a session that has no snapshot yet gets none (fail-open: its tail alone answers; counted as snapshot_error kind `cap`); nothing is deleted. A session that already has a file keeps updating it."
+value = 200
+min = 1
+
+[taskstate.snapshot_max_bytes]
+doc = "Largest snapshot written. A list over it is written without its finished tasks; still over, the write is skipped (counted as snapshot_error kind `big`). Must stay under script.write_max_bytes."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[taskstate.snapshot_gap_max_bytes]
+doc = "Most bytes read to catch a snapshot up when the transcript tail starts after the snapshot's size (bytes nobody has read since the snapshot was written, which can hold a TaskUpdate that finished a task the snapshot still lists as open). The rebuild then reads back to the snapshot's size instead of taskstate.tail_bytes. A gap over this is not read: the snapshot is not trusted for that rebuild (discarded, reason gap) and the tail alone answers, so no Stop blocks on a list that may be stale."
+value = 8388608
+min = 1
+unit = "bytes"
+
+[taskstate.snapshot_refresh_bytes]
+doc = "A snapshot whose tasks did not change is rewritten only after the transcript grew by this much since the last write (the recorded size is what tells a replaced, smaller transcript from the one the snapshot belongs to)."
+value = 262144
+min = 1
+unit = "bytes"
+
+[taskstate.snapshot_format]
+doc = "Version stamped in a snapshot; a snapshot with another number is read as absent (counted as discarded, reason `format`) and replaced. 2 added the session id and the file fingerprint; 3 added, per task, the tool-use id of the TaskCreate that made it (a task's identity: the subject is not one)."
+value = 3
+min = 1
+
+[taskstate.snapshot_lock_suffix]
+doc = "Suffix of the lock file a rebuild holds while it merges and rewrites a session's snapshot (next to the snapshot, never counted against taskstate.snapshot_max_files). Without a lock two hooks that rebuild at the same instant could each rewrite the whole file and lose the other's section."
+value = ".lock"
+
+[taskstate.snapshot_lock_group]
+doc = "The defaults group whose `lock_*` keys (stale, step, reclaim, release) time the snapshot lock; the wait is taskstate.snapshot_lock_wait_ms."
+value = "advisor"
+
+[taskstate.snapshot_lock_wait_ms]
+doc = "How long a rebuild waits for the snapshot lock. A rebuild that cannot take it writes no snapshot this time (its answer is unchanged; counted as snapshot_error kind `lock`) and the next rebuild writes."
+value = 250
+unit = "ms"
+min = 0
+
+[taskstate.snapshot_fingerprint_bytes]
+doc = "Bytes hashed for the transcript fingerprint kept in a snapshot: the first bytes of the file, and the same number of bytes just before the tail window as it stood when the snapshot was written (read back at that fixed offset, so appends do not move it). A transcript whose bytes there differ is another file under the same path: the snapshot is discarded (reason `replaced`). Two reads of this size per rebuild."
+value = 4096
+min = 64
+unit = "bytes"
+
 # ---- task-guard --------------------------------------------------------------------------------
 
 [task_guard.summary]
@@ -1591,3 +1664,27 @@ value = { kind = "counter", unit = "min", labels = ["kind"] }
 [metric.idle_rule_age_unknown]
 doc = "Delivered R-idle blocks whose listed tasks had no known start time (a task list read from the store carries none), so idle_slot_minutes got nothing from them."
 value = { kind = "counter", unit = "blocks", labels = ["kind"] }
+
+[metric.snapshot_written]
+doc = "Task snapshot files written (taskstate.snapshot_enabled): the session's rebuilt list saved so a later rebuild can recover tasks that left the transcript tail."
+value = { kind = "counter", unit = "files", labels = [] }
+
+[metric.snapshot_overlaid]
+doc = "Tasks a rebuild recovered from the session's snapshot because the transcript tail no longer showed them."
+value = { kind = "counter", unit = "tasks", labels = [] }
+
+[metric.snapshot_gap]
+doc = "Rebuilds whose transcript tail started after the snapshot's size, by result (caught_up: the bytes between were read, so a completion in them is seen; too_big: the gap is over taskstate.snapshot_gap_max_bytes; unread: the wider read could not be made exactly). too_big and unread discard the snapshot (snapshot_discarded reason gap): the Stop answers from the tail alone."
+value = { kind = "counter", unit = "rebuilds", labels = ["result"] }
+
+[metric.snapshot_discarded]
+doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; renumbered: the tail holds a TaskCreate for a number the snapshot holds whose tool-use id is not the one the snapshot recorded for it, so a new list began (subjects play no part); format: another snapshot version; session: the snapshot names another transcript path or session id; replaced: the transcript bytes at the fingerprinted places differ, so another file lies under the path; gap: the bytes between the snapshot's size and the tail's start could not be read, so the snapshot may be stale). A discarded snapshot is replaced by the new list, never deleted."
+value = { kind = "counter", unit = "snapshots", labels = ["reason"] }
+
+[metric.snapshot_identity_unknown]
+doc = "Rebuilds whose tail holds a TaskCreate for a number the snapshot holds, over bytes the snapshot already covers, where the create's tool-use id or the snapshot's recorded one is missing (a task no create was recorded for, as a TodoWrite makes). Which list it belongs to cannot be told: the snapshot is kept (fail-open to the snapshot)."
+value = { kind = "counter", unit = "rebuilds", labels = [] }
+
+[metric.snapshot_error]
+doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, shape: a section with a malformed task, write, big: over taskstate.snapshot_max_bytes (on a read, the file is replaced), lock: the snapshot lock was busy, cap: taskstate.snapshot_max_files reached, home: no usable home)."
+value = { kind = "counter", unit = "errors", labels = ["kind"] }

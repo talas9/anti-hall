@@ -418,4 +418,5 @@ value = [
   "{\"section\":\"diagnostics\",\"key\":\"engineCurrency\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ENGINE_CURRENCY\"}",
   "{\"section\":\"diagnostics\",\"key\":\"engineCurrencyCheckout\",\"type\":\"string\",\"default\":\"\",\"env\":\"ANTIHALL_ENGINE_CURRENCY_CHECKOUT\"}",
   "{\"section\":\"defects\",\"key\":\"defaultProj\",\"type\":\"string\",\"default\":\"\",\"env\":\"ANTIHALL_DEFECT_PROJ\",\"pluginOption\":\"defects_default_proj\"}",
+  "{\"section\":\"taskstate\",\"key\":\"snapshot_enabled\",\"type\":\"boolean\",\"default\":true}",
 ]

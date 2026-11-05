@@ -706,6 +706,162 @@ fn idle_rule_does_not_treat_actionable_text_as_clock_waiting_or_blocked() {
     }
 }
 
+// ---- #390: the task snapshot through two real Stops ----
+
+/// `bytes` of transcript lines that name no task, appended to `path`.
+fn snap_pad(path: &Path, bytes: usize) {
+    let one =
+        format!("{}\n", serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "x".repeat(900)}]}}));
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    for _ in 0..bytes / one.len() + 1 {
+        f.write_all(one.as_bytes()).unwrap();
+    }
+}
+
+/// One Stop of session `s1` over `t.jsonl` of `w` with the R-idle switch on; the decoded block reason, or `None` when it passed.
+fn snap_stop(w: &World) -> Option<String> {
+    snap_stop_mode(w, None)
+}
+
+/// [`snap_stop`] in permission mode `mode`. Plan mode is quiet under R-idle, so a Stop there files the snapshot without announcing the
+/// open set (a later Stop is not held back as "the same set twice").
+fn snap_stop_mode(w: &World, mode: Option<&str>) -> Option<String> {
+    let mut p = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")});
+    if let Some(m) = mode {
+        p["permission_mode"] = m.into();
+    }
+    let (code, out, err) = stop_run_env(w, "task-guard", &p.to_string(), &[("ANTIHALL_IDLE_RULE", "1")]);
+    assert_eq!(code, 0, "the engine answers; the Node hook must not run: {err}");
+    assert_stdout_is_json_or_empty(&out, "snap_stop");
+    if out.trim().is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    (v["decision"] == "block").then(|| v["reason"].as_str().unwrap().to_string())
+}
+
+/// The overnight shape through the real dispatcher: two idle tasks are announced by one Stop, a burst of transcript lines then pushes
+/// their creates out of the tail window, and a later Stop that sees only the finishing of one of them must still name the other.
+#[test]
+fn snapshot_keeps_every_open_task_in_the_idle_block_after_the_creates_leave_the_tail() {
+    let w = World::new("snap-stop");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let head = idle_transcript(&[idle_task(21, "[P1] port the check", "pending"), idle_task(22, "[P1] port the other check", "pending")], &[]);
+    std::fs::write(w.path("t.jsonl"), &head).unwrap();
+    let first = snap_stop(&w).expect("the first Stop sees both idle tasks");
+    assert!(first.contains("#21") && first.contains("#22"), "{first}");
+    assert!(snap_stop(&w).is_none(), "the same set is not announced twice");
+    snap_pad(&w.path("t.jsonl"), 1_700_000);
+    let update = serde_json::json!({"type": "assistant", "message": {"id": "u21", "role": "assistant", "content": [{"type": "tool_use", "id": "t21b", "name": "TaskUpdate", "input": {"taskId": "21", "status": "completed"}}]}, "timestamp": "2999-01-01T00:00:01.000Z"});
+    let mut f = std::fs::OpenOptions::new().append(true).open(w.path("t.jsonl")).unwrap();
+    writeln!(f, "{update}").unwrap();
+    let second = snap_stop(&w).expect("the changed set is announced: the idle block on the second Stop");
+    assert!(second.contains("#22") && !second.contains("#21"), "task #22 left the tail window but is still open, #21 is finished: {second}");
+    let dir = w.path("home/.anti-hall/ah-engine/task-snapshots");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "one snapshot file under the isolated home");
+}
+
+/// A deleted task must not come back from the snapshot (the reviewer's repro): the tail ends with a `TaskGet` of #41 answered "not
+/// found" and the finishing of #42, so nothing is open and the Stop passes; a Stop that still named #41 would re-announce a task that
+/// no longer exists.
+#[test]
+fn snapshot_does_not_bring_back_a_task_the_tail_found_deleted() {
+    let w = World::new("snap-deleted");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let head = idle_transcript(&[idle_task(41, "[P1] a task that is deleted", "pending"), idle_task(42, "[P1] a task that is finished", "pending")], &[]);
+    std::fs::write(w.path("t.jsonl"), &head).unwrap();
+    let first = snap_stop(&w).expect("the first Stop sees both idle tasks");
+    assert!(first.contains("#41") && first.contains("#42"), "{first}");
+    snap_pad(&w.path("t.jsonl"), 1_700_000);
+    let get = serde_json::json!({"type": "assistant", "message": {"id": "g41", "role": "assistant", "content": [{"type": "tool_use", "id": "tg41", "name": "TaskGet", "input": {"taskId": "41"}}]}, "timestamp": "2999-01-01T00:00:01.000Z"});
+    let gone = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tg41", "content": "Task #41 not found"}]}, "timestamp": "2999-01-01T00:00:02.000Z"});
+    let done = serde_json::json!({"type": "assistant", "message": {"id": "u42", "role": "assistant", "content": [{"type": "tool_use", "id": "t42b", "name": "TaskUpdate", "input": {"taskId": "42", "status": "completed"}}]}, "timestamp": "2999-01-01T00:00:03.000Z"});
+    let mut f = std::fs::OpenOptions::new().append(true).open(w.path("t.jsonl")).unwrap();
+    writeln!(f, "{get}\n{gone}\n{done}").unwrap();
+    let second = snap_stop(&w);
+    assert!(second.is_none(), "task #41 was found deleted and #42 is finished: nothing is open, got {second:?}");
+}
+
+/// A `TaskUpdate` setting task `n` to `status`, appended to `t.jsonl` of `w`.
+fn snap_update(w: &World, n: u32, status: &str) {
+    let u = serde_json::json!({"type": "assistant", "message": {"id": format!("gu{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("tgu{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": status}}]}, "timestamp": "2999-01-01T00:00:03.000Z"});
+    let mut f = std::fs::OpenOptions::new().append(true).open(w.path("t.jsonl")).unwrap();
+    writeln!(f, "{u}").unwrap();
+}
+
+/// The review's stale-block repro (#390 round 4): the snapshot was written by the Stop that announced the open tasks, the tasks were then
+/// finished with no hook running, and a burst of lines pushed both the finishing and the creates out of the tail window. The
+/// finishing sits in the gap between the snapshot's size and the tail's start; the rebuild must read it, not block on the stale list.
+#[test]
+fn snapshot_reads_the_gap_so_a_completion_the_tail_never_shows_does_not_leave_a_stale_block() {
+    let w = World::new("snap-gap-done");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let head = idle_transcript(&[idle_task(1, "[P1] first", "pending"), idle_task(2, "[P1] second", "pending")], &[]);
+    std::fs::write(w.path("t.jsonl"), &head).unwrap();
+    assert!(snap_stop_mode(&w, Some("plan")).is_none(), "plan mode is quiet but the rebuild files the snapshot");
+    snap_update(&w, 1, "completed");
+    snap_update(&w, 2, "completed");
+    snap_pad(&w.path("t.jsonl"), 1_800_000);
+    let second = snap_stop(&w);
+    assert!(second.is_none(), "both tasks were completed inside the gap: nothing is open, got {second:?}");
+}
+
+/// The twin: the gap holds the finishing of #1 only, so #2 is a true open task the tail cannot see and is still named.
+#[test]
+fn snapshot_reads_the_gap_and_still_names_the_open_task_the_tail_cannot_see() {
+    let w = World::new("snap-gap-open");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let head = idle_transcript(&[idle_task(1, "[P1] first", "pending"), idle_task(2, "[P1] second", "pending")], &[]);
+    std::fs::write(w.path("t.jsonl"), &head).unwrap();
+    assert!(snap_stop_mode(&w, Some("plan")).is_none());
+    snap_update(&w, 1, "completed");
+    snap_pad(&w.path("t.jsonl"), 1_800_000);
+    let second = snap_stop(&w).expect("#2 is open and its create left the tail: still blocked");
+    assert!(second.contains("#2") && !second.contains("#1"), "{second}");
+}
+
+/// A gap over `taskstate.snapshot_gap_max_bytes` cannot be read: the evidence is uncertain, so the stale snapshot is not trusted and the
+/// Stop does not block on snapshot-only tasks (fail-open), never a wrong permanent block.
+#[test]
+fn snapshot_with_an_unreadable_gap_fails_open_instead_of_blocking_on_a_stale_list() {
+    let w = World::new("snap-gap-big");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    settings_json(&w, r#"{"taskstate":{"snapshot_gap_max_bytes":1000}}"#);
+    let head = idle_transcript(&[idle_task(1, "[P1] first", "pending"), idle_task(2, "[P1] second", "pending")], &[]);
+    std::fs::write(w.path("t.jsonl"), &head).unwrap();
+    assert!(snap_stop_mode(&w, Some("plan")).is_none());
+    snap_update(&w, 1, "completed");
+    snap_update(&w, 2, "completed");
+    snap_pad(&w.path("t.jsonl"), 1_800_000);
+    let second = snap_stop(&w);
+    assert!(second.is_none(), "the gap is over the cap: the stale snapshot must not block, got {second:?}");
+}
+
+/// Switch parity (#390 round 4): `taskstate.snapshot_enabled` set false by the owner's settings file reaches the script (the switch is read
+/// with `ah.cfgLive`; `ah.cfg` answers the shipped value only). Off, the answer is the tail alone: no snapshot file, and the list that left the tail is not brought back.
+#[test]
+fn snapshot_switch_off_in_the_owners_settings_is_the_tail_alone() {
+    let run = |off: bool| {
+        let w = World::new(if off { "snap-off" } else { "snap-on" });
+        std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+        if off {
+            settings_json(&w, r#"{"taskstate":{"snapshot_enabled":false}}"#);
+        }
+        let head = idle_transcript(&[idle_task(21, "[P1] a", "pending"), idle_task(22, "[P1] b", "pending")], &[]);
+        std::fs::write(w.path("t.jsonl"), &head).unwrap();
+        snap_stop(&w);
+        snap_pad(&w.path("t.jsonl"), 1_700_000);
+        snap_update(&w, 21, "completed");
+        let second = snap_stop(&w);
+        (second, w.path("home/.anti-hall/ah-engine/task-snapshots").exists())
+    };
+    let (on, on_dir) = run(false);
+    assert!(on_dir && on.is_some_and(|r| r.contains("#22")), "on: the snapshot keeps #22");
+    let (off, off_dir) = run(true);
+    assert!(!off_dir, "off: no snapshot file is written");
+    assert!(off.is_none(), "off: the tail alone sees only the finishing of #21, as before the snapshot: {off:?}");
+}
+
 // ---- the nudge ladder (nudges.enabled, ANTIHALL_NUDGES) next to a task-guard whose own block cap lets the Stop pass ----
 
 /// [`enforce_stop`] with extra environment for the one `ah-engine hook --event Stop` call.
