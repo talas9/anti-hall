@@ -30,6 +30,7 @@
 //! | `realpathEx(path)` | JSON `{path}` or `{error}`: the canonical path, or why there is none: see [`realpath_ex`] |
 //! | `uid()` / `fileSha256(path)` / `readHeadHex(path, n)` | the numeric user id; SHA-256 hex of a regular file; the first bytes of a regular file as hex |
 //! | `readRangeHex(path, from, n)` | `n` bytes of a regular file from byte `from` as hex (fewer at its end): see [`read_range_hex`] |
+//! | `rangeSha1Hex(path, from, n)` | SHA-1 hex of the lowercase-hex text of exactly `n` bytes from byte `from`, `null` when fewer exist: see [`range_sha1_hex`] |
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
@@ -405,6 +406,38 @@ pub fn read_range_hex(path: &str, from: f64, n: f64) -> Option<String> {
     }
     b.truncate(got);
     Some(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// `rangeSha1Hex(path, from, n)`: the lowercase hex SHA-1 of the lowercase hex TEXT of exactly `n` bytes of a regular file starting at
+/// byte `from` - the very digest a script got by hashing `readRangeHex(path, from, n)`, so a stored fingerprint stays valid - without
+/// building or returning the hex. `null` when the file cannot be read, holds fewer than `n` bytes from `from`, or `n` is over
+/// `script.read_max_bytes`.
+pub fn range_sha1_hex(path: &str, from: f64, n: f64) -> Option<String> {
+    use std::os::unix::fs::FileExt;
+    let want = n.max(0.0) as u64;
+    if want > defaults::num("script.read_max_bytes") {
+        return None;
+    }
+    let start = from.max(0.0) as u64;
+    let f = std::fs::File::open(path).ok()?;
+    f.metadata().ok().filter(std::fs::Metadata::is_file)?;
+    let mut b = vec![0u8; want as usize];
+    let mut got = 0usize;
+    while got < b.len() {
+        let r = f.read_at(b.get_mut(got..)?, start + got as u64).ok()?;
+        if r == 0 {
+            return None;
+        }
+        got += r;
+    }
+    let nib = |x: u8| char::from_digit(u32::from(x), 16).map_or(b'0', |c| c as u8); // a nibble (0..=15) as lowercase hex
+    let mut text = Vec::with_capacity(b.len() * 2);
+    for x in &b {
+        text.push(nib(x >> 4));
+        text.push(nib(x & 15));
+    }
+    let d = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &text);
+    Some(d.as_ref().iter().flat_map(|x| [nib(x >> 4) as char, nib(x & 15) as char]).collect())
 }
 
 /// `realpathEx(path)`: the canonical path as `{"path":s}`, or `{"error":"NotFound"}` / `{"error":"<io error kind>"}` when it cannot be
@@ -1281,6 +1314,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("fileSha256", Function::new(c.clone(), |p: String| file_sha256(&p))?)?;
     h.set("readHeadHex", Function::new(c.clone(), |p: String, n: f64| read_head_hex(&p, n))?)?;
     h.set("readRangeHex", Function::new(c.clone(), |p: String, from: f64, n: f64| read_range_hex(&p, from, n))?)?;
+    h.set("rangeSha1Hex", Function::new(c.clone(), |p: String, from: f64, n: f64| range_sha1_hex(&p, from, n))?)?;
     h.set("readlink", Function::new(c.clone(), |p: String| std::fs::read_link(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
     h.set(
         "exec",

@@ -5972,3 +5972,22 @@ mod pair_rule_pairing {
         assert!(stop_split("pp-name-nine-fixed", &fixed, &agents).is_none(), "the whole list clears it");
     }
 }
+
+/// `rangeSha1Hex` is exactly the SHA-1 of the hex text `readRangeHex` returned (so a stored transcript fingerprint stays valid), and
+/// is `null` wherever the hex route came up short or empty-handed.
+#[test]
+fn range_sha1_hex_equals_sha1_of_range_hex() {
+    let h = home("range-sha1");
+    let p = format!("{h}/t.bin");
+    let bytes: Vec<u8> = (0..5000u32).map(|i| (i * 7 + 3) as u8).collect();
+    std::fs::write(&p, &bytes).unwrap();
+    for (from, n) in [(0.0, 4096.0), (100.0, 4096.0), (904.0, 4096.0), (0.0, 1.0), (4999.0, 1.0), (0.0, 0.0), (5000.0, 0.0), (0.0, 511.0), (0.0, 513.0)] {
+        let hex = host::read_range_hex(&p, from, n).unwrap();
+        assert_eq!(hex.len() as f64, n * 2.0, "fixture: {from}+{n} lies inside the file");
+        assert_eq!(host::range_sha1_hex(&p, from, n), Some(crate::checks::replykit::io::sha1_hex(&hex)), "from {from} n {n}");
+    }
+    assert_eq!(host::range_sha1_hex(&p, 905.0, 4096.0), None, "fewer than n bytes: null, as the length check on the hex was");
+    assert_eq!(host::range_sha1_hex(&p, 9000.0, 1.0), None);
+    assert_eq!(host::range_sha1_hex(&format!("{h}/absent"), 0.0, 1.0), None);
+    assert_eq!(host::range_sha1_hex(&h, 0.0, 1.0), None, "a directory is not a file");
+}

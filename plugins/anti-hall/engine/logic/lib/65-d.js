@@ -72,15 +72,14 @@ var taskSnap = {
   // window as it stands now, read back later at that fixed offset (a transcript only grows at its end). null when it cannot be read.
   fingerprint: function (p, size, win) {
     var n = ah.cfgNum('taskstate.snapshot_fingerprint_bytes'), hl = Math.min(n, size), at = Math.max(0, size - win - n), ml = Math.min(n, size - at);
-    var h = ah.fs.readRangeHex(p, 0, hl), m = ah.fs.readRangeHex(p, at, ml);
-    if (h === null || m === null || h.length !== hl * 2 || m.length !== ml * 2) return null;
-    return { head: ah.sha1(h), headLen: hl, at: at, mid: ah.sha1(m), midLen: ml };
+    var h = ah.fs.rangeSha1Hex(p, 0, hl), m = ah.fs.rangeSha1Hex(p, at, ml);
+    if (h === null || m === null) return null;
+    return { head: h, headLen: hl, at: at, mid: m, midLen: ml };
   },
   // Whether the transcript at `p` still has the bytes a fingerprint recorded.
   sameFile: function (p, g) {
-    if (g === null || typeof g !== 'object' || typeof g.headLen !== 'number' || typeof g.midLen !== 'number' || typeof g.at !== 'number') return false;
-    var h = ah.fs.readRangeHex(p, 0, g.headLen), m = ah.fs.readRangeHex(p, g.at, g.midLen);
-    return h !== null && m !== null && h.length === g.headLen * 2 && m.length === g.midLen * 2 && ah.sha1(h) === g.head && ah.sha1(m) === g.mid;
+    if (g === null || typeof g !== 'object' || typeof g.headLen !== 'number' || typeof g.midLen !== 'number' || typeof g.at !== 'number' || typeof g.head !== 'string' || typeof g.mid !== 'string') return false;
+    return ah.fs.rangeSha1Hex(p, 0, g.headLen) === g.head && ah.fs.rangeSha1Hex(p, g.at, g.midLen) === g.mid;
   },
   // Whether the tail began a new list under numbers the snapshot already holds. A TaskCreate the tail shows for a number the snapshot
   // holds is either the create the snapshot already saw (the tail reaches back over the bytes the snapshot was written from) or a new
@@ -273,6 +272,9 @@ ah.date = { parse: function (text) { return JSON.parse(ahHost.dateParse(text)); 
 ah.fs.readEnd = function (p, bytes) { return ahNull(ahHost.readEnd(p, bytes || 0)); };
 // `n` bytes of a regular file from byte `from` as lowercase hex (fewer at the end of the file); null when unreadable.
 ah.fs.readRangeHex = function (p, from, n) { return ahNull(ahHost.readRangeHex(p, from || 0, n || 0)); };
+// The lowercase hex SHA-1 of the lowercase hex text of exactly `n` bytes from byte `from` (= ah.sha1 of ah.fs.readRangeHex, computed in
+// the engine without moving the bytes into the script); null when unreadable or fewer than `n` bytes exist.
+ah.fs.rangeSha1Hex = function (p, from, n) { return ahNull(ahHost.rangeSha1Hex(p, from || 0, n || 0)); };
 // A regular file this process may execute.
 ah.fs.isExecutable = function (p) { return ahHost.isExecutable(p); };
 // The process's user id.
