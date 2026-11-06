@@ -111,29 +111,41 @@ static CHILD: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new())
 
 /// The counts file the daemon named for this process, when it started it as a scheduled job: the variable `schedule.child_counts_env`
 /// holds `<daemon pid>:<path>` and is accepted only while the parent is that pid, so a grandchild that inherited it ignores it.
-/// Read once.
+///
+/// This never loads or initialises the settings: the variable's name lives in them, so a process whose settings are not loaded yet has
+/// no marker (answered `None` without remembering it) and nothing to flush. Once they are loaded the answer is resolved once and kept.
 pub fn child_counts() -> Option<&'static std::path::Path> {
     static MARK: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    if let Some(m) = MARK.get() {
+        return m.as_deref();
+    }
+    if !defaults::is_loaded() {
+        return None;
+    }
     MARK.get_or_init(|| {
         let v = std::env::var(defaults::text("schedule.child_counts_env")).ok()?;
-        let (pid, path) = v.split_once(':')?;
         // SAFETY: `getppid` takes no arguments and cannot fail.
-        (pid.parse::<i64>().ok()? == i64::from(unsafe { libc::getppid() }) && !path.is_empty()).then(|| std::path::PathBuf::from(path))
+        parse_marker(&v, i64::from(unsafe { libc::getppid() }))
     })
     .as_deref()
 }
 
-/// Take the counts of a scheduled child out of its table (`try_lock` when `try_only`: after a panic a thread may have died holding it).
-pub fn take_child(try_only: bool) -> Vec<PendingRow> {
-    let taken = if try_only {
-        match CHILD.try_lock() {
-            Ok(mut g) => std::mem::take(&mut *g),
-            Err(_) => return Vec::new(),
-        }
-    } else {
-        std::mem::take(&mut *CHILD.lock().unwrap_or_else(|e| e.into_inner()))
-    };
-    taken.into_values().collect()
+/// The path in a marker `<pid>:<path>` when `pid` is `parent`.
+fn parse_marker(value: &str, parent: i64) -> Option<std::path::PathBuf> {
+    let (pid, path) = value.split_once(':')?;
+    (pid.parse::<i64>().ok()? == parent && !path.is_empty()).then(|| std::path::PathBuf::from(path))
+}
+
+/// Take the counts of a scheduled child out of its table. Only ever try-locked: it is read on the exit path, where nothing else is
+/// meant to hold it, and a busy table (or one a dead thread poisoned while holding it) is skipped rather than waited on.
+pub fn take_child() -> Vec<PendingRow> {
+    match CHILD.try_lock() {
+        Ok(mut g) => std::mem::take(&mut *g),
+        Err(std::sync::TryLockError::Poisoned(e)) => std::mem::take(&mut *e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => return Vec::new(),
+    }
+    .into_values()
+    .collect()
 }
 
 /// Add one `counter` event read from a child's counts file to this process's table ([`bump_by`]; in the daemon, [`PENDING`], which
@@ -423,6 +435,25 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marker_is_accepted_only_for_the_parent_it_names() {
+        assert_eq!(parse_marker("42:/s/counts.jsonl", 42), Some(std::path::PathBuf::from("/s/counts.jsonl")));
+        assert_eq!(parse_marker("42:/s/counts.jsonl", 43), None, "another parent");
+        assert_eq!(parse_marker("x:/s/c", 42), None);
+        assert_eq!(parse_marker("42:", 42), None);
+        assert_eq!(parse_marker("42", 42), None);
+        assert_eq!(parse_marker("42:/a:b", 42), Some(std::path::PathBuf::from("/a:b")), "split at the first colon only");
+    }
+
+    #[test]
+    fn taking_the_child_table_never_waits_on_a_lock_someone_holds() {
+        let held = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+        let t = std::time::Instant::now();
+        assert!(take_child().is_empty(), "a busy table is skipped");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        drop(held);
+    }
 
     #[test]
     fn a_shared_count_carries_its_labels_in_the_registered_order() {

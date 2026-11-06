@@ -592,7 +592,7 @@ doc = "Telemetry samples or events that could not be kept: slots (a counter tabl
 value = { kind = "counter", unit = "samples", labels = ["reason"] }
 
 [metric.tel_child_counts]
-doc = "Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table) or bad (a line that was not a valid counter for a registered metric)."
+doc = "Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table), bad (a line that was not valid UTF-8 or not a valid counter for a registered metric) or overflow (lines past telemetry.inbox_max_bytes, not read)."
 value = { kind = "counter", unit = "series", labels = ["result"] }
 
 [metric.procwatch_events]

@@ -736,6 +736,7 @@ fn subprocess_counted(argv: &[String], timeout: Duration, job: &str) -> Outcome 
     let got = crate::telemetry::emit::ingest_child_counts(&path);
     crate::metrics::bump_by("tel_child_counts", &[("result", "series")], got.series);
     crate::metrics::bump_by("tel_child_counts", &[("result", "bad")], got.bad);
+    crate::metrics::bump_by("tel_child_counts", &[("result", "overflow")], got.overflow);
     out
 }
 

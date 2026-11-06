@@ -3,6 +3,7 @@
 //! (`AH_ENGINE_NOSPAWN`), so nothing here touches the live engine; this test process plays the daemon (it is the child's parent).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process::Command;
@@ -47,12 +48,30 @@ impl Drop for Scratch {
 
 impl Scratch {
     fn counts(&self) -> PathBuf {
-        self.dir.join("counts.jsonl")
+        self.dir.join("eng").join("telemetry-child-jev_arrival.jsonl")
     }
 
-    /// The counts file as the daemon would have made it: empty, owned by the run.
+    /// The counts file as the daemon would have made it: empty, owned by the run, in the state directory.
     fn prepare_counts(&self) {
+        std::fs::create_dir_all(self.dir.join("eng")).unwrap();
         std::fs::write(self.counts(), "").unwrap();
+    }
+
+    /// Run `c` and fail the test when it is still there after `secs` (it is killed): an exit that waits on something must not hang the suite.
+    fn finishes(c: &mut Command, secs: u64) -> std::process::ExitStatus {
+        let mut child = c.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let start = Instant::now();
+        loop {
+            if let Some(st) = child.try_wait().unwrap() {
+                return st;
+            }
+            if start.elapsed() > Duration::from_secs(secs) {
+                ah_engine::discard::harmless(child.kill()); // keep: the test is failing and the child is stuck
+                ah_engine::discard::harmless(child.wait());
+                panic!("the process was still running after {secs}s: its exit path waits");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// `jev arrival` as the scheduler starts it: the marker names this process (the child's parent) and the counts file.
@@ -151,4 +170,100 @@ fn an_unmarked_process_keeps_the_base_path() {
     assert_eq!(std::fs::read_to_string(s.counts()).unwrap(), "", "no marker: the counts file is not touched");
     let inbox = std::fs::read_to_string(s.inbox()).unwrap_or_default();
     assert!(Scratch::counter_lines(&inbox).is_empty(), "no marker: no counter line reaches the inbox, got: {inbox:?}");
+}
+
+#[test]
+fn a_standalone_command_with_no_plugin_root_exits_normally() {
+    // the exit path must not load or initialise settings: `version` needs none, so with no plugin root it must still answer and exit 0
+    // (the engine's defaults-free fallback), not abort with "shipped defaults unavailable"
+    let s = Scratch::new("noroot");
+    let empty = s.dir.join("empty-root");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = Command::new(BIN)
+        .arg("version")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", s.dir.join("home"))
+        .env("AH_ENGINE_PLUGIN_ROOT", &empty)
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("shipped defaults unavailable"));
+}
+
+#[test]
+fn a_marked_process_whose_settings_never_loaded_flushes_nothing_and_exits_normally() {
+    // the marker's name lives in the settings: with none loaded there is no marker, hence nothing to flush and no way to abort on the way out
+    let s = Scratch::new("noroot-marked");
+    s.prepare_counts();
+    let empty = s.dir.join("empty-root");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = Command::new(BIN)
+        .arg("version")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", s.dir.join("home"))
+        .env("AH_ENGINE_PLUGIN_ROOT", &empty)
+        .env("AH_ENGINE_DIR", s.dir.join("eng"))
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_CHILD_COUNTS", format!("{}:{}", std::process::id(), s.counts().display()))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(s.counts()).unwrap(), "");
+}
+
+#[test]
+fn a_counts_path_that_is_a_fifo_never_holds_the_exit() {
+    let s = Scratch::new("fifo");
+    std::fs::create_dir_all(s.dir.join("eng")).unwrap();
+    let c = std::ffi::CString::new(s.counts().to_str().unwrap()).unwrap();
+    // SAFETY: `c` is a NUL-terminated path that lives through the call.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    // a reader keeps the FIFO open for writing, so a blocking write-open would go on and a write would stall once the pipe filled
+    let _reader = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(s.counts()).unwrap();
+    let st = Scratch::finishes(&mut s.marked(&std::process::id().to_string()), 25);
+    assert!(st.success(), "{st:?}");
+    // and with no reader at all
+    drop(_reader);
+    let st = Scratch::finishes(&mut s.marked(&std::process::id().to_string()), 25);
+    assert!(st.success(), "{st:?}");
+}
+
+#[test]
+fn a_counts_path_that_is_a_symlink_a_directory_or_oversized_is_left_alone() {
+    // symlink to a file that must stay empty
+    let s = Scratch::new("hostile");
+    s.prepare_counts();
+    let victim = s.dir.join("eng").join("victim.txt");
+    std::fs::write(&victim, "").unwrap();
+    std::fs::remove_file(s.counts()).unwrap();
+    std::os::unix::fs::symlink(&victim, s.counts()).unwrap();
+    assert!(Scratch::finishes(&mut s.marked(&std::process::id().to_string()), 25).success());
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "", "a symlink is not followed");
+    // directory
+    std::fs::remove_file(s.counts()).unwrap();
+    std::fs::create_dir(s.counts()).unwrap();
+    assert!(Scratch::finishes(&mut s.marked(&std::process::id().to_string()), 25).success());
+    std::fs::remove_dir(s.counts()).unwrap();
+    // a file already at the cap takes nothing more
+    s.prepare_counts();
+    let cap = ah_engine::defaults::num("telemetry.inbox_max_bytes");
+    std::fs::OpenOptions::new().write(true).open(s.counts()).unwrap().set_len(cap).unwrap();
+    assert!(Scratch::finishes(&mut s.marked(&std::process::id().to_string()), 25).success());
+    assert_eq!(std::fs::metadata(s.counts()).unwrap().len(), cap, "nothing was appended past the cap");
+}
+
+#[test]
+fn a_counts_path_outside_the_state_dir_is_left_alone() {
+    // the marker comes from the environment, so a path the daemon could not have named is refused
+    let s = Scratch::new("outside");
+    std::fs::create_dir_all(s.dir.join("eng")).unwrap();
+    let elsewhere = s.dir.join("elsewhere.jsonl");
+    std::fs::write(&elsewhere, "").unwrap();
+    let mut c = s.command();
+    c.env(ah_engine::defaults::text("schedule.child_counts_env"), format!("{}:{}", std::process::id(), elsewhere.display()));
+    assert!(Scratch::finishes(&mut c, 25).success());
+    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "");
 }
