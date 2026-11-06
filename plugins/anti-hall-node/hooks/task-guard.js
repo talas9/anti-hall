@@ -796,6 +796,7 @@ function parseTasksFromFile(filePath) {
     } catch (_) {
       continue;
     }
+    if (!require('./lib/task-state.js').isConversationRow(entry)) continue;
 
     // Collect TaskCreate tool_results from user messages.
     // Shape: { type:"user", message:{ content:[ { type:"tool_result",
