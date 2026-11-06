@@ -122,9 +122,15 @@ pub fn bump(name: &str, labels: &[(&str, &str)]) {
 }
 
 /// Add `by` to the counter `name` from code that has no `Metrics` at hand ([`bump`] with a count; the same bounds); `0` adds nothing.
+/// In the daemon the count waits in the process table; in any other process it is queued as a `counter` event for the daemon ([`bump_by_shared`]).
 pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
     if by == 0 || !is_registered(name) {
         return;
+    }
+    // a process that is not the daemon (a scheduled subprocess action, a one-shot command) has no reader for `PENDING`: only the
+    // daemon drains it. Its count goes to the telemetry inbox like `bump_by_shared`'s, whichever of the two the call site names.
+    if !cfg!(test) && !crate::telemetry::emit::in_daemon() {
+        return bump_by_shared(name, labels, by);
     }
     let key = series(name, labels);
     #[cfg(test)]
@@ -150,6 +156,10 @@ pub fn bump_by_shared(name: &str, labels: &[(&str, &str)], by: u64) {
     }
     #[cfg(test)]
     THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(series(name, labels)).or_insert(0) += by);
+    // the event carries the values in the order the metric registers its labels, whatever order the call site named them in
+    let registered = defaults::raw(&format!("metric.{name}")).get("labels").map(defaults::V::strings).unwrap_or_default();
+    let ordered: Vec<(&str, &str)> = registered.iter().filter_map(|l| labels.iter().find(|(n, _)| n == l).copied()).collect();
+    let labels = if ordered.len() == registered.len() { &ordered[..] } else { labels };
     crate::telemetry::emit::queue(crate::telemetry::emit::counter(name, labels, by));
 }
 
@@ -378,6 +388,19 @@ mod tests {
         }
         assert_eq!(m.counter("agent_wake_dropped", &[("reason", "foreign_pid")]), 1);
         assert_eq!(m.counter("agent_nudge_to_owner", &[("where", "file")]), 1);
+    }
+
+    #[test]
+    fn a_shared_count_carries_its_labels_in_the_registered_order() {
+        use crate::telemetry::emit;
+        emit::take_queued();
+        // delivery_funnel registers check, model, project, stage; the call site names them in another order
+        bump_shared("delivery_funnel", &[("stage", "sent"), ("project", "p"), ("model", "m"), ("check", "c")]);
+        let evs = emit::take_queued();
+        assert_eq!(evs.len(), 1, "{evs:?}");
+        let mut m = Metrics::default();
+        assert!(add_from_event(&mut m, evs[0].h.as_str(), evs[0].e.as_str(), evs[0].ib));
+        assert_eq!(m.counter("delivery_funnel", &[("check", "c"), ("model", "m"), ("project", "p"), ("stage", "sent")]), 1);
     }
 
     #[test]

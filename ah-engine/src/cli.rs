@@ -303,8 +303,9 @@ pub fn run(args: &[String]) -> i32 {
     match handlers().iter().find(|(n, _)| *n == p.command) {
         Some((_, h)) => {
             let code = run_recorded(&p, *h);
-            // counts a child process bumped through `metrics::bump_shared` (the scheduled `agent_tick`) wait in the thread batch: hand them to the daemon now
-            crate::telemetry::emit::flush();
+            // the counts this process bumped (a scheduled subprocess action's, every `metrics::bump`) wait in the process queue: hand them to the daemon now,
+            // without waiting on the inbox lock past `telemetry.exit_flush_budget_ms`
+            crate::telemetry::emit::flush_bounded(false);
             code
         }
         None => 70, // registered as implemented but has no handler: the registry test prevents this

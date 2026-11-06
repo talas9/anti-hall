@@ -237,6 +237,24 @@ value = 4194304
 unit = "bytes"
 min = 1024
 
+[telemetry.exit_flush_budget_ms]
+doc = "The longest a short-lived child (a scheduled subprocess action, a one-shot command) waits for the telemetry inbox lock when it hands its queued events to the daemon on exit. The daemon holds that lock while it reads the inbox, so the wait is bounded: past it the events are dropped (counted in `tel_dropped` reason `exit_flush_lock`) and the child exits. Must stay far below the shortest subprocess job timeout (`schedule` jobs: mcp_reaper, 60000 ms)."
+value = 1500
+unit = "ms"
+min = 1
+
+[telemetry.exit_flush_poll_ms]
+doc = "How often the exit flush retries the telemetry inbox lock within `telemetry.exit_flush_budget_ms`."
+value = 20
+unit = "ms"
+min = 1
+
+[telemetry.exit_queue_max]
+doc = "Most events a process keeps queued for its exit flush; further events are dropped (logged, rate-limited). Bounds a long-running one-shot process."
+value = 4096
+unit = "events"
+min = 1
+
 [telemetry.health_snapshot_ms]
 doc = "How often the daemon records a `daemon` health snapshot event (resident set, its cap, restarts, degraded flag, queue and worker load, saturation). Events are kept for retention_days and capped by max_event_rows."
 value = 60000
@@ -555,7 +573,7 @@ doc = "Bytes injected into model context, by hook or check (h) and hook event (e
 value = { kind = "counter", unit = "bytes", labels = ["h", "e"] }
 
 [metric.tel_dropped]
-doc = "Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed)."
+doc = "Telemetry samples or events that could not be kept: slots (a counter table was full), ring (an event was overwritten before it was flushed) or exit_flush_lock (a child process could not get the inbox lock within telemetry.exit_flush_budget_ms and dropped its queued events)."
 value = { kind = "counter", unit = "samples", labels = ["reason"] }
 
 [metric.procwatch_events]

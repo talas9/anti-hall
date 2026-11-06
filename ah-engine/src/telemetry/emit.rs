@@ -34,6 +34,10 @@ thread_local! {
     static ITEMS: Cell<u64> = const { Cell::new(0) };
 }
 
+/// The events of this process, collected by [`queue`] and written by [`flush`] / [`flush_bounded`]. One table for the whole process (a
+/// worker thread's counts are not stranded in its own batch); a unit test keeps to the thread-local [`BATCH`] so parallel tests stay apart.
+static PROCESS_QUEUE: std::sync::Mutex<Vec<Event>> = std::sync::Mutex::new(Vec::new());
+
 static READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Make this process write no telemetry at all (a read-only command such as `doctor --check`): its events are dropped, and the
@@ -50,6 +54,12 @@ pub fn in_daemon() -> bool {
 /// Send this process's events to `sink` instead of the inbox. Called once by the daemon; a second call changes nothing.
 pub fn install(sink: Sink) {
     crate::discard::harmless(SINK.set(sink).map_err(|_| ())); // keep: already installed by an earlier start in this process
+    // events queued before the sink existed (a count bumped while the daemon was starting) go to the recorder now
+    if let Some(sink) = SINK.get() {
+        for ev in take_batch() {
+            sink(ev);
+        }
+    }
 }
 
 /// The inbox file.
@@ -74,13 +84,34 @@ pub fn event(ev: Event) {
 pub fn queue(ev: Event) {
     match SINK.get() {
         Some(sink) => sink(ev),
-        None => BATCH.with(|b| b.borrow_mut().push(ev)),
+        None => push_batch(ev),
     }
+}
+
+fn push_batch(ev: Event) {
+    if cfg!(test) {
+        BATCH.with(|b| b.borrow_mut().push(ev));
+        return;
+    }
+    let mut g = PROCESS_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    if g.len() >= defaults::num("telemetry.exit_queue_max") as usize {
+        drop(g);
+        crate::discard::note("tel_exit_queue_full", defaults::text("msg.log_tel_exit_queue_full"));
+        return;
+    }
+    g.push(ev);
+}
+
+fn take_batch() -> Vec<Event> {
+    if cfg!(test) {
+        return BATCH.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    }
+    std::mem::take(&mut *PROCESS_QUEUE.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// The events collected on this thread and not yet written, emptied (for tests of the code that records them).
 pub fn take_queued() -> Vec<Event> {
-    BATCH.with(|b| std::mem::take(&mut *b.borrow_mut()))
+    take_batch()
 }
 
 /// Write the events collected by [`queue`] on this thread, in one append.
@@ -89,9 +120,68 @@ pub fn flush() {
         BATCH.with(|b| b.borrow_mut().clear()); // a unit test must not write the real state directory
         return;
     }
-    let evs = BATCH.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    let evs = take_batch();
     if !evs.is_empty() {
         append_to(&inbox_path(), &evs);
+    }
+}
+
+/// [`flush`] for the exit of a short-lived child (a scheduled subprocess action, a one-shot command): the same append, but it never waits
+/// for the inbox lock without bound. The daemon holds that lock while it reads the inbox and hands every event on, so a stuck daemon would
+/// otherwise stall the child until the scheduler's watchdog kills it. The lock is tried every `telemetry.exit_flush_poll_ms` for at most
+/// `telemetry.exit_flush_budget_ms` in all; past that the events are dropped (fail-open) and counted in `tel_dropped{reason=exit_flush_lock}`.
+/// With `try_only` the in-memory queue is taken with `try_lock` (the panic path, where a thread may have died holding it): a busy queue is left alone.
+pub fn flush_bounded(try_only: bool) {
+    if cfg!(test) || READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
+        take_batch();
+        return;
+    }
+    let evs = if try_only {
+        match PROCESS_QUEUE.try_lock() {
+            Ok(mut g) => std::mem::take(&mut *g),
+            Err(_) => return, // busy or poisoned: nothing safe to take
+        }
+    } else {
+        take_batch()
+    };
+    if evs.is_empty() {
+        return;
+    }
+    let path = inbox_path();
+    let budget = defaults::millis("telemetry.exit_flush_budget_ms");
+    if let Err(e) = write_bounded(&path, &evs, budget, defaults::millis("telemetry.exit_flush_poll_ms")) {
+        crate::discard::note("tel_exit_flush_dropped", &defaults::render("msg.log_tel_exit_flush_dropped", &[("events", &evs.len()), ("error", &e)]));
+        // the count of what was lost: one more try, in the same bounded way, so it reaches the daemon when the contention was brief
+        let ev = [counter("tel_dropped", &[("reason", "exit_flush_lock")], evs.len() as u64)];
+        crate::discard::logged("tel_exit_flush_count", write_bounded(&path, &ev, budget / 4, defaults::millis("telemetry.exit_flush_poll_ms")));
+    }
+}
+
+fn write_bounded(path: &Path, evs: &[Event], budget: std::time::Duration, poll: std::time::Duration) -> std::io::Result<()> {
+    let mut bytes = Vec::new();
+    for e in evs {
+        bytes.extend_from_slice(e.to_json().to_string().as_bytes());
+        bytes.push(b'\n');
+    }
+    write_locked_with(path, &bytes, |f| try_flock_within(f, budget, poll))
+}
+
+/// Take the exclusive lock without blocking, retrying every `poll` until `budget` has passed.
+fn try_flock_within(f: &std::fs::File, budget: std::time::Duration, poll: std::time::Duration) -> std::io::Result<()> {
+    let start = std::time::Instant::now();
+    loop {
+        // SAFETY: `f` is an open file owned by the caller, so its descriptor is valid; `flock` takes only the descriptor and flags.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(err);
+        }
+        if start.elapsed() >= budget {
+            return Err(err);
+        }
+        std::thread::sleep(poll.min(budget.saturating_sub(start.elapsed()))); // `poll` is at least 1 ms (the key's minimum)
     }
 }
 
@@ -118,6 +208,10 @@ fn flock(f: &std::fs::File) -> std::io::Result<()> {
 }
 
 fn write_locked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_locked_with(path, bytes, flock)
+}
+
+fn write_locked_with(path: &Path, bytes: &[u8], lock: impl FnOnce(&std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
     let open = || std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path);
     let mut f = match open() {
         Ok(f) => f,
@@ -129,7 +223,7 @@ fn write_locked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         }
         Err(e) => return Err(e),
     };
-    flock(&f)?;
+    lock(&f)?;
     if f.metadata()?.len() + bytes.len() as u64 > defaults::num("telemetry.inbox_max_bytes") {
         return Ok(()); // full: the daemon is not reading; drop rather than grow without bound
     }
@@ -429,6 +523,23 @@ pub fn mistake(r: &ActRec<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bounded_lock_gives_up_at_its_budget_on_a_held_inbox() {
+        let p = scratch("bounded");
+        let holder = std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+        flock(&holder).unwrap();
+        let start = std::time::Instant::now();
+        let r =
+            write_bounded(&p, &[counter("tel_dropped", &[("reason", "ring")], 1)], std::time::Duration::from_millis(120), std::time::Duration::from_millis(10));
+        let took = start.elapsed();
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert!(took >= std::time::Duration::from_millis(120) && took < std::time::Duration::from_secs(5), "{took:?}");
+        drop(holder); // the lock is free now: the same write goes through
+        write_bounded(&p, &[counter("tel_dropped", &[("reason", "ring")], 1)], std::time::Duration::from_millis(120), std::time::Duration::from_millis(10))
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), 1);
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ah-tel-emit-{tag}-{}-{}", std::process::id(), now_ms()));

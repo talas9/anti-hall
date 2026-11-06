@@ -22,6 +22,10 @@ fn main() {
     }
     // a panic is recorded by the hook; a write to a closed pipe (`ah-engine docs | head`) is the reader leaving, so exit
     // quietly with the SIGPIPE convention (128 + 13) instead of the panic exit code
-    let code = std::panic::catch_unwind(|| cli::run(&args)).unwrap_or_else(|_| if ah_engine::crash::broken_pipe_seen() { 141 } else { 101 });
+    let ran = std::panic::catch_unwind(|| cli::run(&args));
+    // best effort, outside the panic hook (no lock of ours is held here): what a run that panicked or returned early left in the queue;
+    // after a panic the queue is only try-locked, so a thread that died holding it cannot stall the exit
+    ah_engine::telemetry::emit::flush_bounded(ran.is_err());
+    let code = ran.unwrap_or_else(|_| if ah_engine::crash::broken_pipe_seen() { 141 } else { 101 });
     std::process::exit(code);
 }

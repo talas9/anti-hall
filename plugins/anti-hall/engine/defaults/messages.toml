@@ -225,6 +225,14 @@ value = "accept works again after {n} failed accepts (last {code})"
 doc = "Event-log detail (rate-limited, code proc_spawn_failed) when a helper process could not be started. Placeholders: {what} (the program), {code} (os<n>), {err}."
 value = "could not start {what} ({code}: {err})"
 
+[msg.log_tel_exit_flush_dropped]
+doc = "Event-log detail (rate-limited, code tel_exit_flush_dropped) when a child process could not get the telemetry inbox lock in time and dropped its queued events. Placeholders: {events}, {error}."
+value = "{events} queued telemetry events dropped at exit: the inbox lock was not free in time ({error})"
+
+[msg.log_tel_exit_queue_full]
+doc = "Event-log detail (rate-limited, code tel_exit_queue_full) when a process's queue of telemetry events for its exit flush was full and an event was dropped."
+value = "telemetry exit queue is full; an event was dropped"
+
 [msg.log_proc_timeout]
 doc = "Event-log detail (rate-limited, code proc_timeout) when a helper process ran past its timeout and its process group was killed. Placeholders: {what}, {ms}."
 value = "{what} ran past {ms} ms; its process group was killed"
