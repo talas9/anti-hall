@@ -86,6 +86,11 @@ enum Store {
     OnlyJunk,
     /// A valid pending task in a directory that cannot be listed (mode 000).
     UnreadableDir,
+    /// Consumers axis only (not in [`STORES`], so not in the golden matrix): two records with the SAME id 1 (pending in a.json, completed in
+    /// b.json) next to a record that is not JSON.
+    DupIdWithJunk,
+    /// Consumers axis only: a completed task 1 next to a record that is not JSON.
+    CompletedWithJunk,
 }
 const STORES: [Store; 8] = [
     Store::Absent,
@@ -317,6 +322,15 @@ fn build(cell: &Cell, root: &Path) -> (PathBuf, PathBuf) {
             store_file(&dir, "1.json", "1", "pending");
             #[cfg(unix)]
             chmod(&dir, 0o000);
+        }
+        Store::DupIdWithJunk => {
+            store_file(&dir, "a.json", "1", "pending");
+            store_file(&dir, "b.json", "1", "completed");
+            std::fs::write(dir.join("c.json"), "{not json").unwrap();
+        }
+        Store::CompletedWithJunk => {
+            store_file(&dir, "1.json", "1", "completed");
+            std::fs::write(dir.join("c.json"), "{not json").unwrap();
         }
     }
     if cell.named == Named::SetWithList {
@@ -615,4 +629,711 @@ fn the_matrix_names_the_shapes_of_the_failed_rounds() {
     assert!(has(&|c| c.rows == Rows::Blob), "api-request-blob rows");
     let keys: BTreeSet<String> = m.iter().map(Cell::key).collect();
     assert_eq!(keys.len(), m.len(), "cell keys are unique");
+}
+
+// ===============================================================================================================================
+// ---- THE CONSUMERS AXIS (#448) -----------------------------------------------------------------------------------------------
+//
+// The golden above only runs task-guard. Every OTHER consumer of the task reader decides from the same list, and a reader change that
+// passes the open-set property can still relax one of them (stage A: task-pair-guard threw away the whole task set and allowed the Stop
+// when the reader carried transcript uncertainty). This section records each consumer's DECISION per cell and holds it to
+//
+//   for every case and consumer:   decision(reader under test)  is at least as BLOCKING as  decision(golden)     (block >= nudge >= allow)
+//                                  ids named by a blocking decision  ⊇  ids named by the golden, minus ids PROVEN to be ghosts
+//                                  count stated by the decision  >=  the golden's, minus the proven ghosts
+//
+// The fixtures are the cells above (`build`, `probe`, `plant_snapshot`: the adapter section is reused, nothing is regenerated), the two
+// extra store shapes of the #445 round-2 review, and the pair-guard cells at the end of this section. The golden is
+// `tests/fixtures/task-reader-consumer-decisions.json`; regenerate ONLY on the base commit named in it:
+// `AH_REGEN_TASK_READER_CONSUMERS=1 AH_GOLDEN_BASE=<sha> cargo test --test task_reader_open_set the_consumers`.
+// Consumers not driven, and why: tests/fixtures/reader-mutations/README.md.
+
+use ah_engine::checks::Verdict;
+
+const CONSUMERS_GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/task-reader-consumer-decisions.json");
+/// The agent every matrix cell launches (live) for the pair-guard Stop; the pair-guard Post names it.
+const AGENT: (&str, &str) = ("job", "worker-alpha");
+/// Task ids the by-id spawn check is probed with (`#<id> ...` as an unnamed spawn's description).
+const PRE_IDS: [&str; 7] = ["1", "2", "3", "6", "7", "8", "9"];
+/// Every task id a cell can hold: the universe the tasklist-guard dedupe signal is decoded against.
+const ID_UNIVERSE: [&str; 14] =
+    ["1", "2", "3", "6", "7", "8", "9", "x", "toolu_snapghost", "toolu_unans", "toolu_blob", "toolu_empty", "toolu_notype", "toolu_unk"];
+
+/// block > nudge > allow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    Allow,
+    Nudge,
+    Block,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Allow => "allow",
+            Kind::Nudge => "nudge",
+            Kind::Block => "block",
+        }
+    }
+    fn parse(s: &str) -> Kind {
+        match s {
+            "allow" => Kind::Allow,
+            "nudge" => Kind::Nudge,
+            "block" => Kind::Block,
+            other => panic!("unknown decision kind {other:?}"),
+        }
+    }
+}
+
+/// What one consumer decided.
+#[derive(Clone, Debug, PartialEq)]
+struct Decision {
+    kind: Kind,
+    /// The start of the message (digits and ids kept), for people reading a failure.
+    reason: String,
+    /// The task ids the decision names.
+    ids: BTreeSet<String>,
+    /// A number of tasks the decision states (open tasks, tasks in progress).
+    count: Option<u64>,
+    /// The ids could not be recovered (tasklist-guard only).
+    undecoded: bool,
+}
+
+/// One case: a cell, plus what the pair-guard needs on top of it.
+struct Case {
+    key: String,
+    cell: Cell,
+    /// The consumer groups this case runs.
+    groups: Vec<&'static str>,
+    /// Live launched agents `(description, name)` the pair-guard Stop sees.
+    agents: Vec<(&'static str, &'static str)>,
+    /// Extra files of the session store directory `(file name, content)`.
+    store_files: Vec<(&'static str, String)>,
+    /// Store files made unreadable (mode 000).
+    unreadable: Vec<&'static str>,
+    /// Extra conversation rows appended to the transcript.
+    rows: Vec<Value>,
+    pre_ids: Vec<&'static str>,
+}
+
+const ALL_GROUPS: [&str; 8] = ["ladder", "pair_stop", "pair_post", "pair_pre", "tasklist", "tracker", "hygiene", "compact"];
+const PAIR_GROUPS: [&str; 3] = ["pair_stop", "pair_post", "pair_pre"];
+
+fn plain_case(cell: Cell) -> Case {
+    Case {
+        key: cell.key(),
+        cell,
+        groups: ALL_GROUPS.to_vec(),
+        agents: vec![AGENT],
+        store_files: Vec::new(),
+        unreadable: Vec::new(),
+        rows: Vec::new(),
+        pre_ids: PRE_IDS.to_vec(),
+    }
+}
+
+fn store_rec(id: &str, status: &str, owner: Option<&str>) -> String {
+    let mut v = json!({"id": id, "subject": format!("store {id}"), "status": status});
+    if let Some(o) = owner {
+        v["owner"] = json!(o);
+    }
+    v.to_string()
+}
+
+/// The pair-guard cells the matrix has no axis for: ownership and live agents.
+fn pair_cases() -> Vec<Case> {
+    let base = |store, trans| Cell { store, named: Named::Unset, trans, snap: Snap::None, rows: Rows::Conv, knobs: Knobs::new() };
+    let pair = |key: &str, cell: Cell, agents: Vec<(&'static str, &'static str)>| Case {
+        key: format!("pair|{key}"),
+        cell,
+        groups: PAIR_GROUPS.to_vec(),
+        agents,
+        store_files: Vec::new(),
+        unreadable: Vec::new(),
+        rows: Vec::new(),
+        pre_ids: vec!["1", "2"],
+    };
+    let mut out = Vec::new();
+    // two live named agents: worker-a owns open store task 1, worker-b owns none
+    let mut c = pair("two_agents_one_owner", base(Store::Empty, Trans::NoTasks), vec![("job a", "worker-a"), ("job b", "worker-b")]);
+    c.store_files = vec![("1.json", store_rec("1", "pending", Some("worker-a"))), ("2.json", store_rec("2", "pending", None))];
+    out.push(c);
+    // both agents own an open task: clean
+    let mut c = pair("two_agents_two_owners", base(Store::Empty, Trans::NoTasks), vec![("job a", "worker-a"), ("job b", "worker-b")]);
+    c.store_files = vec![("1.json", store_rec("1", "pending", Some("worker-a"))), ("2.json", store_rec("2", "in_progress", Some("worker-b")))];
+    out.push(c);
+    // a store task owned by an agent next to a malformed sibling record (not JSON / unreadable)
+    let mut c = pair("owner_with_junk_sibling", base(Store::Empty, Trans::NoTasks), vec![("job a", "worker-a")]);
+    c.store_files = vec![("1.json", store_rec("1", "pending", Some("worker-a"))), ("2.json", "{not json".to_string())];
+    out.push(c);
+    let mut c = pair("owner_with_unreadable_sibling", base(Store::Empty, Trans::NoTasks), vec![("job a", "worker-a")]);
+    c.store_files = vec![("1.json", store_rec("1", "pending", Some("worker-a"))), ("2.json", store_rec("2", "pending", None))];
+    c.unreadable = vec!["2.json"];
+    out.push(c);
+    let mut c = pair("owner_with_numeric_status_sibling", base(Store::Empty, Trans::NoTasks), vec![("job a", "worker-a")]);
+    c.store_files = vec![("1.json", store_rec("1", "pending", Some("worker-a"))), ("2.json", json!({"id": "2", "status": 3}).to_string())];
+    out.push(c);
+    // a TodoWrite whose item has an uncertain status (a number) in the transcript, next to every kind of store
+    for (tag, store) in [("absent", Store::Absent), ("nonempty", Store::NonEmpty), ("junk", Store::OneJunkRecord), ("unreadable_dir", Store::UnreadableDir)] {
+        let mut c = pair(&format!("todowrite_status_123|store={tag}"), base(store, Trans::NoTasks), vec![("job a", "worker-a")]);
+        c.rows = vec![todo_raw(json!([{"id": "1", "content": "odd status", "status": 123}, {"id": "2", "content": "fine", "status": "pending"}]))];
+        out.push(c);
+    }
+    out
+}
+
+/// Cells with several tasks in progress, which the matrix has none of: tasklist-guard reads them as stalled (no live agent) and states
+/// how many, and the tracker counts them.
+fn stalled_cases() -> Vec<Case> {
+    let base = |store, trans| Cell { store, named: Named::Unset, trans, snap: Snap::None, rows: Rows::Conv, knobs: Knobs::new() };
+    let mk = |key: &str, cell: Cell| Case { key: format!("tasks|{key}"), pre_ids: vec!["1", "2", "3"], ..plain_case(cell) };
+    let two = || vec![("1.json", store_rec("1", "in_progress", None)), ("2.json", store_rec("2", "in_progress", None)), ("3.json", store_rec("3", "pending", None))];
+    let three_todo = || todo_raw(json!([{"id": "1", "content": "a", "status": "in_progress"}, {"id": "2", "content": "b", "status": "in_progress"}, {"id": "3", "content": "c", "status": "in_progress"}]));
+    let mut out = Vec::new();
+    let mut c = mk("two_in_progress_store", base(Store::Empty, Trans::TaskCreate));
+    c.store_files = two();
+    out.push(c);
+    let mut c = mk("two_in_progress_store_with_junk", base(Store::Empty, Trans::TaskCreate));
+    c.store_files = two();
+    c.store_files.push(("4.json", "{not json".to_string()));
+    out.push(c);
+    let mut c = mk("three_in_progress_todowrite_no_store", base(Store::Absent, Trans::NoTasks));
+    c.rows = vec![three_todo()];
+    out.push(c);
+    let mut c = mk("three_in_progress_todowrite_junk_store", base(Store::OneJunkRecord, Trans::NoTasks));
+    c.rows = vec![three_todo()];
+    out.push(c);
+    out
+}
+
+fn todo_raw(todos: Value) -> Value {
+    tool_use("tw-raw", "TodoWrite", json!({ "todos": todos }))
+}
+
+fn cases() -> Vec<Case> {
+    let mut out: Vec<Case> = matrix().into_iter().map(plain_case).collect();
+    out.extend(extra_cells().into_iter().map(plain_case));
+    out.extend(pair_cases());
+    out.extend(stalled_cases());
+    out
+}
+
+/// Shapes the golden matrix has no axis for (#445 round 2: duplicate ids inside the store, a completed task next to junk).
+fn extra_cells() -> Vec<Cell> {
+    let mk = |store, trans, snap| Cell { store, named: Named::Unset, trans, snap, rows: Rows::Conv, knobs: Knobs::new() };
+    vec![mk(Store::DupIdWithJunk, Trans::TodoWrite, Snap::None), mk(Store::CompletedWithJunk, Trans::NoTasks, Snap::Plain)]
+}
+
+// ---- the consumer adapter: every call into a consumer of the reader goes through this part ---------------------------------------
+
+struct Fx {
+    home: PathBuf,
+    t: PathBuf,
+    proj: PathBuf,
+    env: RequestEnv,
+}
+
+fn agent_rows(agents: &[(&str, &str)]) -> Vec<Value> {
+    let ts = "2026-10-06T12:30:00.000Z";
+    let mut out = Vec::new();
+    for (i, (description, name)) in agents.iter().enumerate() {
+        let agent = format!("a{:015x}", i + 1);
+        let input = json!({"description": description, "name": name, "prompt": "p", "run_in_background": true});
+        out.push(json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_ag{i}"), "name": "Agent", "input": input}]}, "timestamp": ts}));
+        let text = format!("Async agent launched successfully. (internal metadata)\nagentId: {agent} (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/{agent}.output\n");
+        out.push(json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": format!("toolu_ag{i}"), "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts}));
+    }
+    out
+}
+
+/// The agent tracker's proof that the agents are live (a fresh subagent transcript and a retained row each).
+fn track_agents(home: &Path, agents: &[(&str, &str)]) {
+    if agents.is_empty() {
+        return;
+    }
+    let mut st = ah_engine::agents::State::default();
+    for (i, (description, _)) in agents.iter().enumerate() {
+        let id = format!("a{:015x}", i + 1);
+        let rel = format!(".claude/projects/p/{SID}/subagents/agent-{id}.jsonl");
+        std::fs::create_dir_all(home.join(&rel).parent().unwrap()).unwrap();
+        std::fs::write(home.join(&rel), format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+        let a = ah_engine::agents::Agent {
+            id: id.clone(),
+            kind: "subagent".into(),
+            parent: SID.into(),
+            name: (*description).into(),
+            cwd: home.to_string_lossy().into_owned(),
+            path: home.join(rel).to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        st.agents.insert(id, a);
+    }
+    std::fs::create_dir_all(home.join(".anti-hall/agent-tracker")).unwrap();
+    std::fs::write(home.join(".anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+}
+
+/// A fresh world for one consumer run: the cell's files, the case's extras, rows appended (before the snapshot is planted, so its
+/// fingerprint matches), the project directory the cwd names, the tracker state of the live agents.
+fn fixture(case: &Case, root: &Path, extra_rows: &[Value], agents: &[(&str, &str)]) -> Fx {
+    std::fs::create_dir_all(root).unwrap();
+    let (home, t) = build(&case.cell, root);
+    let dir = home.join(".claude/tasks").join(format!("session-{SID8}"));
+    for (name, body) in &case.store_files {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+    #[cfg(unix)]
+    for n in &case.unreadable {
+        chmod(&dir.join(n), 0o000);
+    }
+    let proj = root.join("proj");
+    std::fs::create_dir_all(proj.join(".git")).unwrap();
+    if t.exists() {
+        use std::io::Write;
+        let mut rows = case.rows.clone();
+        rows.extend(extra_rows.iter().cloned());
+        rows.extend(agent_rows(agents));
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        f.write_all(rows.iter().map(line).collect::<String>().as_bytes()).unwrap();
+    }
+    probe(&home);
+    let mut pairs = vec![("HOME".to_string(), home.to_string_lossy().into_owned()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())];
+    if case.cell.named != Named::Unset {
+        pairs.push(("CLAUDE_CODE_TASK_LIST_ID".to_string(), NAMED_LIST.to_string()));
+    }
+    let env = RequestEnv::from_pairs(pairs);
+    plant_snapshot(&case.cell, &home, &t, &env);
+    track_agents(&home, agents);
+    Fx { home, t, proj, env }
+}
+
+fn flatten(v: &Value, out: &mut String) {
+    match v {
+        Value::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        Value::Array(a) => a.iter().for_each(|x| flatten(x, out)),
+        Value::Object(m) => m.values().for_each(|x| flatten(x, out)),
+        _ => {}
+    }
+}
+
+/// Every `#<id>` of a text.
+fn ids_in(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('#') {
+        let id: String = rest[at + 1..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        if !id.is_empty() {
+            out.insert(id);
+        }
+        rest = &rest[at + 1..];
+    }
+    out
+}
+
+/// The block-details files the guards saved (the whole list a visible line may cut).
+fn saved_details(home: &Path) -> String {
+    let mut out = String::new();
+    for e in std::fs::read_dir(home.join(".anti-hall/block-details")).into_iter().flatten().flatten() {
+        out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+        out.push('\n');
+    }
+    out
+}
+
+/// The message strings of a payload that may be JSON (a hook's `reason`, `additionalContext`, ...), else the raw text.
+fn message_of(raw: &str) -> String {
+    match serde_json::from_str::<Value>(raw.trim()) {
+        Ok(j) => {
+            let mut text = String::new();
+            for key in ["reason", "additionalContext", "systemMessage"] {
+                for v in [&j[key], &j["hookSpecificOutput"][key]] {
+                    if let Some(s) = v.as_str() {
+                        text.push_str(s);
+                        text.push('\n');
+                    }
+                }
+            }
+            if text.is_empty() {
+                flatten(&j, &mut text);
+            }
+            text
+        }
+        Err(_) => format!("{raw}\n"),
+    }
+}
+
+/// A verdict as a decision. `text` is every message string it carries, flattened.
+fn verdict_text(v: &Option<Option<Verdict>>) -> (Kind, String) {
+    match v {
+        Some(Some(Verdict::Allow)) | Some(None) => (Kind::Allow, String::new()),
+        Some(Some(Verdict::Block(s))) => (Kind::Block, message_of(s)),
+        Some(Some(Verdict::Advisory(s))) => (Kind::Nudge, message_of(s)),
+        Some(Some(Verdict::Exact(x))) => {
+            let text = format!("{}{}", message_of(&x.out), message_of(&x.err));
+            let blocking = x.code == 2 || serde_json::from_str::<Value>(x.out.trim()).is_ok_and(|j| j["decision"] == json!("block"));
+            let kind = if blocking {
+                Kind::Block
+            } else if text.trim().is_empty() {
+                Kind::Allow
+            } else {
+                Kind::Nudge
+            };
+            (kind, text)
+        }
+        other => panic!("unexpected verdict shape {other:?}"),
+    }
+}
+
+fn head_of(text: &str) -> String {
+    text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(110).collect()
+}
+
+fn decision(v: &Option<Option<Verdict>>, home: &Path) -> Decision {
+    let (kind, text) = verdict_text(v);
+    let ids = if kind == Kind::Allow { BTreeSet::new() } else { ids_in(&format!("{text}\n{}", saved_details(home))) };
+    Decision { kind, reason: head_of(&text), ids, count: None, undecoded: false }
+}
+
+fn hook(name: &str, payload: &Value, event: &str, fx: &Fx) -> Option<Option<Verdict>> {
+    ah_engine::script::run_forced(name, payload, &Value::Null, event, &fx.env)
+}
+
+fn base_payload(fx: &Fx, event: &str) -> Value {
+    json!({"hook_event_name": event, "session_id": SID, "cwd": fx.proj, "transcript_path": fx.t})
+}
+
+/// The Rust ladder.
+fn consumer_ladder(case: &Case, root: &Path) -> Decision {
+    let fx = fixture(case, root, &[], &[]);
+    let r = ladder_has_open(&fx.home, &fx.t);
+    unlock(&fx.home);
+    Decision {
+        kind: if r == Some(true) { Kind::Block } else { Kind::Allow },
+        reason: format!("ladder {r:?}"),
+        ids: BTreeSet::new(),
+        count: None,
+        undecoded: false,
+    }
+}
+
+/// task-pair-guard Stop: a live named agent that owns no open task blocks, but only when the list was read.
+fn consumer_pair_stop(case: &Case, root: &Path) -> Decision {
+    let fx = fixture(case, root, &[], &case.agents);
+    let v = hook("task-pair-guard", &base_payload(&fx, "Stop"), "Stop", &fx);
+    let d = decision(&v, &fx.home);
+    unlock(&fx.home);
+    d
+}
+
+/// task-pair-guard PostToolUse: a named spawn whose name owns no open task gets a nudge, but only when the list was read.
+fn consumer_pair_post(case: &Case, root: &Path) -> Decision {
+    let name = case.agents.first().map_or(AGENT.1, |a| a.1);
+    let fx = fixture(case, root, &[], &[]);
+    let mut p = base_payload(&fx, "PostToolUse");
+    p["tool_name"] = json!("Agent");
+    p["tool_input"] = json!({"description": "port the wake", "prompt": "do it", "name": name, "run_in_background": true});
+    p["tool_response"] = json!({"status": "async_launched", "agentId": "a000000000000001"});
+    let v = hook("task-pair-guard", &p, "PostToolUse", &fx);
+    let d = decision(&v, &fx.home);
+    unlock(&fx.home);
+    d
+}
+
+/// task-pair-guard PreToolUse, the by-id proof: an unnamed spawn `#<id> ...` is allowed only on positive proof that task `id` is open.
+fn consumer_pair_pre(case: &Case, root: &Path, id: &str) -> Decision {
+    let fx = fixture(case, root, &[], &[]);
+    let mut p = base_payload(&fx, "PreToolUse");
+    p["tool_name"] = json!("Agent");
+    p["tool_input"] = json!({"description": format!("#{id} do the thing"), "prompt": "do it", "run_in_background": true});
+    let v = hook("task-pair-guard", &p, "PreToolUse", &fx);
+    let mut d = decision(&v, &fx.home);
+    d.reason = format!("by-id #{id}: {}", d.reason);
+    unlock(&fx.home);
+    d
+}
+
+/// The transcript rows that make a session non-trivial for tasklist-guard: more counted edits than its threshold.
+fn edit_rows(proj: &Path) -> Vec<Value> {
+    (0..4)
+        .map(|i| tool_use(&format!("edit{i}"), "Edit", json!({"file_path": proj.join(format!("src/f{i}.rs")), "old_string": "a", "new_string": "b"})))
+        .collect()
+}
+
+/// The ids the tasklist-guard dedupe signal was computed over, recovered from the hash the guard stored (its state file): the guard
+/// itself is the only thing that can say which open ids it saw. `None`: no stored hash, or no subset of the id universe reproduces it.
+fn decode_tasklist_ids(home: &Path, work: u64) -> Option<Option<BTreeSet<String>>> {
+    let prefix = ah_engine::defaults::text("tasklist_guard.state_prefix");
+    let ext = ah_engine::defaults::text("tasklist_guard.state_ext");
+    let entries = std::fs::read_dir(home.join(".anti-hall")).ok()?;
+    let file = entries.flatten().find(|e| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n.starts_with(&format!("{prefix}-")) && n.ends_with(ext)
+    })?;
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(file.path()).ok()?).ok()?;
+    let want = state["hash"].as_str()?.to_string();
+    let (sep, ids_sep) = (ah_engine::defaults::text("tasklist_guard.signal_sep"), ah_engine::defaults::text("tasklist_guard.open_ids_sep"));
+    let hash_len = ah_engine::defaults::num("tasklist_guard.open_hash_len") as usize;
+    let bucket = (work / 3).min(ah_engine::defaults::num("tasklist_guard.work_bucket_max") as u64);
+    let sha = |s: &str| ah_engine::checks::replykit::io::sha1_hex(s);
+    for bits in 0..8u32 {
+        let bit = |n: u32| if bits & (1 << n) != 0 { "1" } else { "0" };
+        for mask in 0..(1u32 << ID_UNIVERSE.len()) {
+            let mut ids: Vec<&str> = ID_UNIVERSE.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, s)| *s).collect();
+            ids.sort_unstable();
+            let open_hash: String = sha(&ids.join(ids_sep)).chars().take(hash_len).collect();
+            let signal = [bucket.to_string(), bit(0).into(), bit(1).into(), bit(2).into(), open_hash].join(sep);
+            if sha(&signal) == want {
+                return Some(Some(ids.into_iter().map(str::to_string).collect()));
+            }
+        }
+    }
+    Some(None)
+}
+
+/// tasklist-guard Stop: the guard's own verdict, and the open ids its dedupe signal was computed over.
+fn consumer_tasklist(case: &Case, root: &Path) -> Decision {
+    let proj_probe = root.join("proj");
+    let rows = edit_rows(&proj_probe);
+    let fx = fixture(case, root, &rows, &[]);
+    let v = hook("tasklist-guard", &base_payload(&fx, "Stop"), "Stop", &fx);
+    let mut d = decision(&v, &fx.home);
+    d.ids = BTreeSet::new();
+    if d.kind != Kind::Allow {
+        match decode_tasklist_ids(&fx.home, rows.len() as u64) {
+            Some(Some(ids)) => d.ids = ids,
+            _ => d.undecoded = true,
+        }
+        // "N tasks in progress" of the stalled message
+        d.count = count_after(&flatten_text(&v), " tasks are marked in progress");
+    }
+    unlock(&fx.home);
+    d
+}
+
+fn flatten_text(v: &Option<Option<Verdict>>) -> String {
+    verdict_text(v).1
+}
+
+/// The integer written just before `marker` ("2 tasks in progress").
+fn count_after(text: &str, marker: &str) -> Option<u64> {
+    let at = text.find(marker)?;
+    let digits: String = text[..at].trim_end().chars().rev().take_while(char::is_ascii_digit).collect::<Vec<_>>().into_iter().rev().collect();
+    digits.parse().ok()
+}
+
+/// task-tracker UserPromptSubmit: the open-tasks line and the dispatch line, from the lines of the note that state them.
+fn consumer_tracker(case: &Case, root: &Path) -> Decision {
+    let fx = fixture(case, root, &[], &[]);
+    let mut p = base_payload(&fx, "UserPromptSubmit");
+    p["prompt"] = json!("keep going");
+    let v = hook("task-tracker", &p, "UserPromptSubmit", &fx);
+    let (kind, text) = verdict_text(&v);
+    let lines: Vec<&str> = text.lines().filter(|l| l.contains("open tasks:") || l.contains("DISPATCH NOW")).collect();
+    let joined = lines.join("\n");
+    let count = joined.find("open tasks:").and_then(|at| {
+        let d: String = joined[at + "open tasks:".len()..].trim_start().chars().take_while(char::is_ascii_digit).collect();
+        d.parse().ok()
+    });
+    let d = Decision { kind, reason: if joined.is_empty() { head_of(&text) } else { head_of(&joined) }, ids: ids_in(&joined), count, undecoded: false };
+    unlock(&fx.home);
+    d
+}
+
+/// tasklist-hygiene PostToolUse on a TaskCreate with the open-task budget lowered to 1: the breach states how many tasks are open (the
+/// list is read from the transcript or the store; a list that cannot be read exactly says nothing).
+fn consumer_hygiene(case: &Case, root: &Path) -> Decision {
+    let fx = fixture(case, root, &[], &[]);
+    std::fs::write(fx.home.join(".anti-hall/settings.json"), r#"{"handover":{"taskListBudget":1,"taskListEnforce":"advisory"}}"#).unwrap();
+    let mut p = base_payload(&fx, "PostToolUse");
+    p["tool_name"] = json!("TaskCreate");
+    p["tool_input"] = json!({"subject": "brand new task", "description": ""});
+    p["tool_response"] = json!({"id": "99"});
+    let v = hook("tasklist-hygiene", &p, "PostToolUse", &fx);
+    let mut d = decision(&v, &fx.home);
+    let text = flatten_text(&v);
+    d.count = count_after(&text, " open tasks (budget");
+    unlock(&fx.home);
+    d
+}
+
+/// compact-advice-guard Stop: a "safe to compact" declaration is refused while the task list holds finished tasks (or too many), and
+/// says how many.
+fn consumer_compact(case: &Case, root: &Path) -> Decision {
+    let fx = fixture(case, root, &[], &[]);
+    let mut p = base_payload(&fx, "Stop");
+    p["last_assistant_message"] = json!("All the work is finished.\n\nSafe to compact.");
+    let v = hook("compact-advice-guard", &p, "Stop", &fx);
+    let mut d = decision(&v, &fx.home);
+    d.ids = BTreeSet::new();
+    // the visible line cuts the reasons; the saved details hold them whole
+    d.count = count_after(&format!("{}\n{}", flatten_text(&v), saved_details(&fx.home)), " finished tasks are still");
+    unlock(&fx.home);
+    d
+}
+
+/// Every decision of a case, keyed by consumer.
+fn run_case(case: &Case, base: &Path) -> BTreeMap<String, Decision> {
+    let mut out = BTreeMap::new();
+    let sub = |name: &str| base.join(name);
+    for g in &case.groups {
+        match *g {
+            "ladder" => {
+                out.insert("ladder".into(), consumer_ladder(case, &sub("ladder")));
+            }
+            "pair_stop" => {
+                out.insert("pair_stop".into(), consumer_pair_stop(case, &sub("pair_stop")));
+            }
+            "pair_post" => {
+                out.insert("pair_post".into(), consumer_pair_post(case, &sub("pair_post")));
+            }
+            "pair_pre" => {
+                for id in &case.pre_ids {
+                    out.insert(format!("pair_pre:{id}"), consumer_pair_pre(case, &sub(&format!("pair_pre{id}")), id));
+                }
+            }
+            "tasklist" => {
+                out.insert("tasklist_stop".into(), consumer_tasklist(case, &sub("tasklist")));
+            }
+            "tracker" => {
+                out.insert("tracker_prompt".into(), consumer_tracker(case, &sub("tracker")));
+            }
+            "hygiene" => {
+                out.insert("hygiene_post".into(), consumer_hygiene(case, &sub("hygiene")));
+            }
+            "compact" => {
+                out.insert("compact_advice".into(), consumer_compact(case, &sub("compact")));
+            }
+            other => panic!("unknown consumer group {other}"),
+        }
+    }
+    out
+}
+
+fn run_all_cases() -> Vec<(Case, BTreeMap<String, Decision>)> {
+    let base = scratch("consumers");
+    let out = cases()
+        .into_iter()
+        .enumerate()
+        .map(|(i, case)| {
+            let root = base.join(i.to_string());
+            std::fs::create_dir_all(&root).unwrap();
+            let d = run_case(&case, &root);
+            (case, d)
+        })
+        .collect();
+    std::fs::remove_dir_all(&base).ok();
+    out
+}
+
+fn decision_json(d: &Decision) -> Value {
+    json!({"kind": d.kind.name(), "reason": d.reason, "ids": d.ids, "count": d.count})
+}
+
+/// The ghost ids a case's golden open set excuses: the open ids of the task-guard golden cell that every mention proves to be a ghost.
+fn excused_ghosts(case: &Case, task_guard_golden: &Value) -> BTreeSet<String> {
+    let Some(g) = task_guard_golden["cells"].get(case.key.as_str()) else { return BTreeSet::new() };
+    let open: BTreeSet<String> = g["open"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    let rows: Vec<String> =
+        if case.cell.trans == Trans::Missing { Vec::new() } else { rows_of(case.cell.trans, case.cell.rows).iter().map(|v| v.to_string()).collect() };
+    proven_ghosts(&rows, &open)
+}
+
+/// The violations of `got` against `golden` for one case and consumer (empty: the decision is at least as blocking).
+fn violations(case: &Case, consumer: &str, golden: &Value, got: &Decision, ghosts: &BTreeSet<String>, golden_open: &BTreeSet<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let gk = Kind::parse(golden["kind"].as_str().unwrap());
+    let g_ids: BTreeSet<String> = golden["ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    let g_count = golden["count"].as_u64();
+    // every open task the golden had is a proven ghost: the decision may legitimately fall back
+    let all_ghosts = !ghosts.is_empty() && golden_open.difference(ghosts).next().is_none();
+    let at = format!("{} / {consumer}", case.key);
+    if got.kind < gk {
+        if !all_ghosts {
+            out.push(format!("{at}: the base {} (\"{}\") became {} (\"{}\")", gk.name(), golden["reason"].as_str().unwrap_or(""), got.kind.name(), got.reason));
+        }
+        return out;
+    }
+    if gk == Kind::Block && got.kind == Kind::Block {
+        let missing: Vec<&String> = g_ids.difference(ghosts).filter(|i| !got.ids.contains(*i)).collect();
+        if !missing.is_empty() {
+            out.push(format!("{at}: the block no longer names task(s) {missing:?} (names {:?})", got.ids));
+        }
+        if got.undecoded {
+            out.push(format!("{at}: the open ids the guard computed over could not be recovered"));
+        }
+    }
+    if let Some(c) = g_count {
+        let floor = c.saturating_sub(ghosts.len() as u64);
+        match got.count {
+            Some(n) if n >= floor => {}
+            other => out.push(format!("{at}: the decision states {other:?} task(s), the base stated {c}")),
+        }
+    }
+    out
+}
+
+#[test]
+fn the_consumers_of_the_task_reader_never_decide_less_than_the_base() {
+    let t0 = std::time::Instant::now();
+    let observed = run_all_cases();
+    let total: usize = observed.iter().map(|(_, d)| d.len()).sum();
+    if std::env::var("AH_CONSUMERS_DUMP").is_ok() {
+        for (case, ds) in &observed {
+            for (name, d) in ds {
+                eprintln!("DUMP {} | {name} | {} | {:?} | {:?} | {:?}{}", case.key, d.kind.name(), d.reason, d.ids, d.count, if d.undecoded { " | UNDECODED" } else { "" });
+            }
+        }
+    }
+    if std::env::var("AH_REGEN_TASK_READER_CONSUMERS").is_ok_and(|v| v == "1") {
+        let mut cells = BTreeMap::new();
+        for (case, ds) in &observed {
+            for (name, d) in ds {
+                assert!(!d.undecoded, "{} / {name}: the tasklist ids could not be decoded; widen ID_UNIVERSE", case.key);
+            }
+            cells.insert(case.key.clone(), ds.iter().map(|(k, d)| (k.clone(), decision_json(d))).collect::<BTreeMap<_, _>>());
+        }
+        let doc = json!({
+            "about": "Decisions of every consumer of the task reader (task-pair-guard Stop/Post/Pre-by-id, tasklist-guard, task-tracker, the Rust ladder), one per case of tests/task_reader_open_set.rs. Regenerate only on the base commit named here.",
+            "captured_on": std::env::var("AH_GOLDEN_BASE").unwrap_or_else(|_| "unset".into()),
+            "cells": cells,
+        });
+        std::fs::write(CONSUMERS_GOLDEN, serde_json::to_string_pretty(&doc).unwrap() + "\n").unwrap();
+        eprintln!("consumer golden written: {} cases, {total} decisions", observed.len());
+        return;
+    }
+    let golden: Value = serde_json::from_str(&std::fs::read_to_string(CONSUMERS_GOLDEN).expect("the committed consumer golden")).unwrap();
+    let task_guard_golden: Value = serde_json::from_str(&std::fs::read_to_string(GOLDEN).expect("the task-guard golden")).unwrap();
+    let cells = golden["cells"].as_object().expect("cells");
+    let mut found: Vec<String> = Vec::new();
+    let (mut checked, mut equal, mut stricter) = (0usize, 0usize, 0usize);
+    for (case, ds) in &observed {
+        let g = cells.get(&case.key).unwrap_or_else(|| panic!("no golden case {}: regenerate on the base commit", case.key));
+        let ghosts = excused_ghosts(case, &task_guard_golden);
+        let golden_open: BTreeSet<String> = task_guard_golden["cells"]
+            .get(case.key.as_str())
+            .map(|c| c["open"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect())
+            .unwrap_or_default();
+        for (name, got) in ds {
+            let gd = g.get(name).unwrap_or_else(|| panic!("no golden decision {} / {name}", case.key));
+            checked += 1;
+            found.extend(violations(case, name, gd, got, &ghosts, &golden_open));
+            if got.kind.name() == gd["kind"].as_str().unwrap() && got.ids == gd["ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect() {
+                equal += 1;
+            } else if got.kind > Kind::parse(gd["kind"].as_str().unwrap()) {
+                stricter += 1;
+            }
+        }
+    }
+    eprintln!(
+        "task reader consumers gate: {} cases, {checked} decisions ({} consumers), {equal} equal to the golden, {stricter} stricter, {:.1}s",
+        observed.len(),
+        observed.iter().flat_map(|(_, d)| d.keys().map(|k| k.split(':').next().unwrap().to_string())).collect::<BTreeSet<_>>().len(),
+        t0.elapsed().as_secs_f64()
+    );
+    assert!(found.is_empty(), "{} violation(s):\n{}", found.len(), found.join("\n"));
+    let golden_total: usize = cells.values().map(|c| c.as_object().unwrap().len()).sum();
+    assert_eq!(checked, golden_total, "the golden holds decisions the cases no longer produce");
 }
