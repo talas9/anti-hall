@@ -191,6 +191,41 @@ fn task_guard_answers_a_stop_with_nothing_open_and_blocks_one_with_an_open_task(
     }
 }
 
+/// #438: an `api-request-blob` row replays a request's message array, TaskCreate tool uses included, whose results lie elsewhere. The
+/// Stop guard must not read those copies as open tasks nobody is working on.
+#[test]
+fn replayed_creates_in_an_api_request_blob_row_do_not_block_the_stop_guard() {
+    let w = World::new("task-guard-blob");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let replay: Vec<serde_json::Value> = (1..=4)
+        .map(|i| serde_json::json!({"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_g{i}"), "name": "TaskCreate", "input": {"subject": format!("ghost {i}")}}]}))
+        .collect();
+    let blob = serde_json::json!({"type": "api-request-blob", "message": {"messages": replay}});
+    let tail = serde_json::json!({"type": "assistant", "message": {"id": "m9", "role": "assistant", "content": [{"type": "text", "text": "done"}]}});
+    std::fs::write(w.path("t.jsonl"), format!("{blob}\n{tail}\n")).unwrap();
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let (code, out) = stop_run(&w, "task-guard", &payload);
+    assert_eq!(code, 0);
+    assert!(!out.contains("\"decision\":\"block\""), "the replayed creates are not open tasks: {out}");
+    assert!(!w.path("home/.anti-hall/last-stop-taskset-s1").exists());
+}
+
+/// #438 (allow direction): a row of a type nobody listed is conversation, so its open tasks still block the Stop.
+#[test]
+fn an_unknown_type_row_with_open_creates_still_blocks_the_stop_guard() {
+    let w = World::new("task-guard-unknown-type");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let rows: Vec<String> = (1..=4)
+        .map(|i| serde_json::json!({"type": "unknown", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_r{i}"), "name": "TaskCreate", "input": {"subject": format!("real {i}")}}]}}).to_string())
+        .collect();
+    let tail = serde_json::json!({"type": "assistant", "message": {"id": "m9", "role": "assistant", "content": [{"type": "text", "text": "done"}]}});
+    std::fs::write(w.path("t.jsonl"), format!("{}\n{tail}\n", rows.join("\n"))).unwrap();
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let (code, out) = stop_run(&w, "task-guard", &payload);
+    assert_eq!(code, 0);
+    assert!(out.contains("\"decision\":\"block\""), "open creates in an unlisted-type row still block: {out}");
+}
+
 /// #237: a transcript line `JSON.parse` reads and serde does not (here an escaped lone surrogate in an unrelated assistant text) must
 /// not turn the open tasks of the transcript into "no tasks": Node still blocks the Stop.
 #[test]

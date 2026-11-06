@@ -401,3 +401,212 @@ mod snapshot_facts {
         assert_eq!(by(&facts_of(&lines)), ["1=again1"]);
     }
 }
+
+/// Only the row types listed in `taskstate.skipped_row_types` (request replays) are dropped; every other row is read (#438): a wrongly
+/// dropped row can lose a real open task and let a Stop through.
+mod blob_rows {
+    use super::super::parse::reconstruct;
+    use super::super::scanview::scan_tasks;
+    use super::super::{Variant, is_conversation_row};
+    use crate::defaults;
+    use serde_json::{Value, json};
+    use std::collections::BTreeSet;
+
+    fn call(id: &str, name: &str, input: Value) -> Value {
+        json!({"type": "assistant", "message": {"id": format!("m-{id}"), "role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
+    }
+    fn result(id: &str, text: &str) -> Value {
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}})
+    }
+    /// The configured request-replay types (plugin TOML; no literal here).
+    fn skipped() -> Vec<&'static str> {
+        defaults::list("taskstate.skipped_row_types")
+    }
+    /// A row of any `type` value (or none: `None`), carrying `rows[..]`'s message as the harness writes a blob row (one message).
+    fn typed(ty: Option<Value>, row: &Value) -> Value {
+        let mut r = json!({"sessionId": "f3", "hash": "x", "message": row["message"].clone()});
+        if let Some(t) = ty {
+            r["type"] = t;
+        }
+        r
+    }
+
+    fn rebuild(rows: &[Value], variant: Variant) -> Vec<(String, Option<String>)> {
+        let text: Vec<String> = rows.iter().map(Value::to_string).collect();
+        let refs: Vec<&str> = text.iter().map(String::as_str).collect();
+        reconstruct(&refs, variant).unwrap().tasks.values().map(|t| (t.id.clone(), t.status.clone())).collect()
+    }
+    fn ids(rows: &[Value], variant: Variant) -> BTreeSet<String> {
+        rebuild(rows, variant).into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn scan(tag: &str, rows: &[Value]) -> (Vec<String>, u64, bool) {
+        let path = std::env::temp_dir().join(format!("ah-blobrows-{}-{tag}.jsonl", std::process::id()));
+        std::fs::write(&path, rows.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let s = scan_tasks(&path.to_string_lossy(), 1 << 20, 1 << 20).unwrap().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        (s.open_task_ids, s.in_progress_count, s.saw_task_activity)
+    }
+
+    fn create() -> Value {
+        call("toolu_real", "TaskCreate", json!({"subject": "real"}))
+    }
+    fn todo() -> Value {
+        call("toolu_todo", "TodoWrite", json!({"todos": [{"id": "z", "content": "real todo", "status": "pending"}]}))
+    }
+    /// Every `type` value that is not a configured skip: all of them are read.
+    fn read_types() -> Vec<Option<Value>> {
+        vec![Some(json!("unknown")), Some(json!("")), None, Some(Value::Null), Some(json!(7)), Some(json!(true)), Some(json!("user")), Some(json!("assistant"))]
+    }
+
+    #[test]
+    fn the_skipped_types_are_configured_and_only_they_are_skipped() {
+        assert!(!skipped().is_empty(), "the shipped TOML lists the request-replay types");
+        for kind in skipped() {
+            assert!(!is_conversation_row(&json!({"type": kind})), "{kind}");
+        }
+        for ty in read_types() {
+            let row = typed(ty.clone(), &create());
+            assert!(is_conversation_row(&row), "{ty:?}");
+        }
+        assert!(is_conversation_row(&json!({"type": "user"})) && is_conversation_row(&json!({"type": "assistant"})) && is_conversation_row(&json!({})));
+    }
+
+    #[test]
+    fn a_row_of_an_unknown_empty_missing_null_or_numeric_type_is_kept() {
+        for ty in read_types() {
+            for variant in [Variant::Guard, Variant::State] {
+                for (name, row, want) in [("TaskCreate", create(), "toolu_real"), ("TodoWrite", todo(), "z")] {
+                    let got = ids(&[typed(ty.clone(), &row)], variant);
+                    assert_eq!(got.len(), 1, "{name} {ty:?} {variant:?}: {got:?}");
+                    assert!(got.iter().next().unwrap().contains(want), "{name} {ty:?} {variant:?}: {got:?}");
+                }
+            }
+            let (open, _, activity) = scan("kept", &[typed(ty.clone(), &create())]);
+            assert!(activity && open.len() == 1, "scan {ty:?}: {open:?} {activity}");
+        }
+    }
+
+    #[test]
+    fn the_codex_p1_unknown_type_row_yields_its_task() {
+        let row =
+            json!({"type": "unknown", "message": {"content": [{"type": "tool_use", "id": "real-open", "name": "TaskCreate", "input": {"subject": "real"}}]}});
+        assert_eq!(rebuild(&[row], Variant::Guard), vec![("real-open".to_string(), Some("pending".to_string()))]);
+    }
+
+    #[test]
+    fn each_configured_skipped_type_is_dropped_by_every_reader() {
+        for kind in skipped() {
+            let rows = [
+                typed(Some(json!(kind)), &create()),
+                typed(Some(json!(kind)), &result("toolu_real", "Task #1 created successfully: real")),
+                typed(Some(json!(kind)), &todo()),
+            ];
+            for variant in [Variant::Guard, Variant::State] {
+                assert_eq!(rebuild(&rows, variant), vec![], "{kind} {variant:?}");
+            }
+            assert_eq!(scan("dropped", &rows), (vec![], 0, false), "{kind}");
+        }
+    }
+
+    /// Real `api-request-blob` rows from a harness transcript (redacted): one message per row, a TaskCreate use and its result.
+    #[test]
+    fn real_blob_rows_make_no_ghost_task() {
+        let rows: Vec<Value> = [
+            r#"{"type":"api-request-blob","sessionId":"f3","hash":"x","message":{"id":"msg_c0","role":"assistant","content":[{"type":"tool_use","id":"toolu_AAA1","name":"TaskCreate","input":{"subject":"<redacted>","description":"<redacted>"}}]}}"#,
+            r#"{"type":"api-request-blob","sessionId":"f3","hash":"x","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_AAA1","content":"Task #1 created successfully: <redacted>"}]}}"#,
+            r#"{"type":"api-request-blob","sessionId":"f3","hash":"x","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_AAA2","content":"Task #2 created successfully: <redacted>"}]}}"#,
+        ]
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+        assert!(skipped().contains(&"api-request-blob"));
+        for variant in [Variant::Guard, Variant::State] {
+            assert_eq!(rebuild(&rows, variant), vec![], "{variant:?}");
+        }
+        assert_eq!(scan("real-blob", &rows), (vec![], 0, false));
+        // control: the same rows as conversation rows do make a task
+        let conv: Vec<Value> = rows.iter().take(2).map(|r| typed(Some(json!(if r["message"]["role"] == "user" { "user" } else { "assistant" })), r)).collect();
+        assert_eq!(rebuild(&conv, Variant::Guard).len(), 1);
+    }
+
+    #[test]
+    fn a_real_unresolved_create_is_counted_once_whatever_a_blob_replays() {
+        let kind = skipped()[0];
+        let replay = [typed(Some(json!(kind)), &create()), typed(Some(json!(kind)), &call("toolu_g", "TaskCreate", json!({"subject": "ghost"})))];
+        let rows = [create(), replay[0].clone(), replay[1].clone()];
+        for variant in [Variant::Guard, Variant::State] {
+            assert_eq!(rebuild(&rows, variant), vec![("toolu_real".to_string(), Some("pending".to_string()))], "{variant:?}");
+        }
+    }
+
+    /// The new reader's task set is a superset of the base reader's (every row read) minus the ids that appear only in skipped rows.
+    #[test]
+    fn differential_new_reader_loses_only_ids_seen_in_skipped_rows() {
+        let kind = skipped()[0];
+        let pairs: Vec<(Value, Value)> = vec![
+            (call("toolu_1", "TaskCreate", json!({"subject": "a"})), result("toolu_1", "Task #1 created successfully: a")),
+            (call("toolu_2", "TaskCreate", json!({"subject": "b"})), result("toolu_2", "Task #2 created successfully: b")),
+            (call("toolu_3", "TaskUpdate", json!({"taskId": "1", "status": "completed"})), result("toolu_3", "Updated task #1")),
+            (call("toolu_4", "TaskCreate", json!({"subject": "c"})), result("toolu_4", "Task #3 created successfully: c")),
+        ];
+        let mut tys: Vec<Option<Value>> = read_types();
+        tys.push(Some(json!(kind)));
+        // every assignment of a row type to each of the first three pairs (4th pair stays a plain conversation pair)
+        let n = tys.len();
+        for code in 0..n * n * n {
+            let pick = [tys[code % n].clone(), tys[(code / n) % n].clone(), tys[code / (n * n) % n].clone()];
+            let mut rows = Vec::new();
+            let mut kept_text = String::new();
+            for (k, (c, r)) in pairs.iter().enumerate() {
+                let ty = pick.get(k).cloned().unwrap_or(None);
+                let is_skipped = k < 3 && ty.as_ref().and_then(Value::as_str) == Some(kind);
+                // the call row takes the matrix type; its result row stays a plain `user` row unless the pair is a skipped replay
+                let (c2, r2) = match (k < 3, is_skipped) {
+                    (true, true) => (typed(ty.clone(), c), typed(ty.clone(), r)),
+                    (true, false) => (typed(ty.clone(), c), r.clone()),
+                    _ => (c.clone(), r.clone()),
+                };
+                for row in [&c2, &r2] {
+                    if !is_skipped {
+                        kept_text += &row.to_string();
+                    }
+                }
+                rows.extend([c2, r2]);
+            }
+            // base reader: every row read (the skip stripped by retyping the skipped rows as conversation)
+            let base_rows: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    if r["type"] == kind {
+                        let mut b = r.clone();
+                        b.as_object_mut().unwrap().remove("type");
+                        b
+                    } else {
+                        r.clone()
+                    }
+                })
+                .collect();
+            for variant in [Variant::Guard, Variant::State] {
+                let new = ids(&rows, variant);
+                let base = ids(&base_rows, variant);
+                for id in &base {
+                    let only_in_skipped =
+                        !kept_text.contains(&format!("\"{id}\"")) && !kept_text.contains(&format!("#{id} ")) && !kept_text.contains(&format!("#{id}\""));
+                    if !only_in_skipped {
+                        assert!(new.contains(id), "id {id} lost: pick={pick:?} {variant:?} new={new:?} base={base:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn skipped_rows_are_counted() {
+        crate::metrics::reset_this_thread();
+        let kind = skipped()[0];
+        let rows = [typed(Some(json!(kind)), &create()), typed(Some(json!("unknown")), &create()), typed(Some(json!(kind)), &todo()), create()];
+        rebuild(&rows, Variant::Guard);
+        assert_eq!(crate::metrics::bumped_on_this_thread("taskstate_rows_skipped", &[]), 2);
+    }
+}
