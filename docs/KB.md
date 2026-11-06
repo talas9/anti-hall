@@ -1,5 +1,7 @@
 # KB.md — Canonical Knowledge Base for anti-hall
 
+> **Historical (pre-engine).** This knowledge base describes the Node-hook era. Since release 0.301.1 the Rust engine is the only runtime and no Node hooks ship; see [AH-ENGINE.md](AH-ENGINE.md) for the current design. Entries naming `.js` hooks refer to checks the engine now runs.
+
 > **Source of truth for developing and maintaining the anti-hall plugin.**
 > This is the map. The deep research lives in the section docs linked below; this
 > file is the authoritative index, the *current-plugin ground truth*, and the

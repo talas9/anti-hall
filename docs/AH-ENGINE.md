@@ -1,13 +1,13 @@
 # ah-engine
 
 `ah-engine` is anti-hall's core component: a small resident program that answers the hooks instead of a new Node process for every
-tool call. The Node hooks are a temporary compatibility fallback during the migration; v0.301 removes them and the engine is then the only runtime. This page explains what it is, why it exists, what works today and what is not built yet. Anything not built
+tool call. As of release 0.301.1 the engine is the only runtime: the Node hooks are gone. This page explains what it is, why it exists, what works today and what is not built yet. Anything not built
 is marked **planned** with the number of its decision, for example planned (D33) for the scheduler; each number is an entry
 in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
 The exact list of commands, settings, metrics and error codes is generated from the engine itself and lives in
 [`ah-engine/REFERENCE.md`](../ah-engine/REFERENCE.md).
 
-**Status: being brought back online (release v0.300.3); see the [roadmap](ROADMAP.md). The plugin installs it itself once a release pins it.** The plugin's hooks are one thin trigger
+**Status: shipped in release 0.301.1 (engine only, no Node hooks); see the [roadmap](ROADMAP.md). The plugin fetches the sha256-pinned engine itself on first use.** The plugin's hooks are one thin trigger
 per event: `hooks.json` runs the Rust thin client `~/.anti-hall/ah-engine/bin/ah-hook <Event>`, which asks the engine. The
 thin client is the only entry point, for hooks of both hosts and for every command (`ah-hook <verb>` runs `ah-engine <verb>`).
 No Node and no shell script runs on an entry path; when the engine is absent or cannot answer, the call passes through with one
@@ -29,7 +29,7 @@ labelled with how it was measured in the README of `ah-engine/`.
  host (Claude Code / Codex)
    |  hook JSON on stdin
    v
- ah-engine hook  --fallback <node hook>          (client, ~2 MB, ~2 ms)
+ ah-hook <Event>                                 (thin client, ~2 MB, ~2 ms)
    |  one framed request over a unix socket, hard 2 s budget
    v
  ah-engine serve                                 (daemon, one per user, ~5 MB)
@@ -42,13 +42,14 @@ labelled with how it was measured in the README of `ah-engine/`.
 ```
 
 - **Client.** Reads the hook payload, asks the daemon, prints the answer. If anything is wrong (no daemon, busy, timeout,
-  damaged reply, open breaker, crash loop) it runs the Node hook named by `--fallback` and passes its output and exit
-  code through. It only allows silently when that Node hook is also unavailable (D11).
+  damaged reply, open breaker, crash loop) the call passes through (no block, no output) and one notice per session says the
+  engine did not answer. There is no Node hook to fall back to (D11 describes the earlier fallback design).
 - **Daemon.** One per user, started by the first client that finds none (D5, D6). It stays up after the last session
   closes (D7): idle exit exists as the setting `daemon.idle_exit_s`, default 0 meaning disabled. A newer client gets its
   answer, then the old daemon drains and exits so the next call starts the new build (D8).
 - **Rules.** `rules.json`, evaluated in file order; every match contributes and any `deny` wins. A rule may name a built-in
   check instead of a pattern.
+- **Historical note (migration era).** The bullets below and the status table further down record how each check was ported from its Node original and speak of Node deferrals and byte parity. Those Node hooks no longer ship (release 0.301.1); read them as design history, not as current behavior.
 - **Small guard ports.** `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
   `compact-declaration-guard` are the five small guards ported from Node. They share `checks/guardkit`: the switch and
   skip-file lookup, the message layout, JavaScript-exact regex translation and the per-session state files the Node guards

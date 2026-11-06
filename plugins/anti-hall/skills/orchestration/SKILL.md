@@ -69,7 +69,7 @@ tokens `haiku`/`sonnet`/`opus`/`fable`, never a versioned model id):
   for debate seats — see the availability fallback matrix in `../MODEL-POLICY.md`).
 - **Fable (flagship)** — RE-ENABLED as of 2026-07-12 (owner call, reversing the
   2026-07-02 policy-disable now that Fable is available; see `../MODEL-POLICY.md`) —
-  routed to the Reviewer seat of the ship-it / deadly-loop trio when `fable-availability.js`
+  routed to the Reviewer seat of the ship-it / deadly-loop trio when `fable-availability`
   reports `args.fableAvailable === true`, falling back to Sonnet then Opus. *Reconsider
   if Fable's track record regresses.*
 
@@ -236,9 +236,9 @@ The plugin enforces a non-negotiable task-list protocol via two hooks:
    user a brief status update. Don't go silent.
 
 **Plugin enforcement:**
-- `task-tracker.js` (`UserPromptSubmit`) — injects this discipline as `additionalContext`
+- `task-tracker` (`UserPromptSubmit`) — injects this discipline as `additionalContext`
   on every turn so it stays at top-of-context where it has the highest salience.
-- `task-guard.js` (`Stop`, loop-safe) — when the session is about to stop with open
+- `task-guard` (`Stop`, loop-safe) — when the session is about to stop with open
   tasks still in `pending` or `in_progress`, blocks once to prompt the model to
   continue, defer, or explicitly tell the user what is pending. Defers to an active
   OMC autonomous loop or a live background agent (checked via `~/.anti-hall/agents/*.json`
@@ -316,7 +316,7 @@ while they work. File path: `~/.anti-hall/agents/<id>.json`. Format:
 - `session` — the `session_id` of the PARENT session that spawned this agent
               (from that session's hook payloads). REQUIRED: `~/.anti-hall/agents/`
               is a single home-scoped directory shared by every project/session on
-              the machine, so `silent-agent-nudge.js` only ever nudges for a
+              the machine, so `silent-agent-nudge` only ever nudges for a
               heartbeat whose `session` matches the session that is about to Stop —
               a heartbeat with no `session` field (or a mismatched one) is treated
               as belonging to someone else and never nudges.
@@ -326,7 +326,7 @@ Delete it on clean exit. Do not write to os.tmpdir() — use the home-dir path
 (`~/.anti-hall/agents/`) so it is consistent across hook runners, the
 statusline, and the orchestrator.
 
-### Mechanical reminder (silent-agent-nudge.js)
+### Mechanical reminder (silent-agent-nudge)
 
 Polling is the orchestrator's own responsibility (below) — nothing forces it.
 As a backstop, `silent-agent-nudge` (Stop, on by default) watches for

@@ -221,7 +221,7 @@ turn-ending Stop point (the fire-once or the natural-pause nag in
 `auto-handover-pause-nag`), once this session's `HANDOVER*.md` exists and
 is fresh (no counted file-changing action — including subagent edits and Bash
 writes — happened after it was written; the same shared detector
-`tasklist-guard.js` uses), the directive tells the agent to END its
+`tasklist-guard` uses), the directive tells the agent to END its
 reply with one prominent, glyph-led line naming the exact command: `🟢 **GOOD POINT
 TO /compact NOW**: handover saved at <path>. /compact keeps working on the same
 task; /new if the next task is different.` — or, when the handover's own "Open
@@ -279,7 +279,7 @@ a transcript estimate (`ANTIHALL_CONTEXT_WINDOW_TOKENS` overrides the window siz
 estimate with an unknown window gets only a soft advisory from the percent path (the
 token ceiling still fires the directive). If a long autonomous turn never reaches a
 new prompt, the Stop hook delivers the directive once instead. Before every compaction
-`precompact-snapshot.js` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
+`precompact-snapshot` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
 next to the handovers (it never blocks compaction). Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 ## Engine settings (`ah-engine`)

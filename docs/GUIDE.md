@@ -5,14 +5,12 @@
 > used to live in README.md / plugins/anti-hall/README.md is preserved below,
 > verbatim where practical.
 
-**New in 0.108.0** (full list: [CHANGELOG](../CHANGELOG.md)): automatic handover at
-85% context (`auto-handover.js`, `auto-handover-pause-nag.js`); one settings store and the
-`/anti-hall:settings` skill ([Settings](#settings-anti-hallsettings)); repairs on every
-reload (`repair-on-reload.js`); update-vs-reload version alerts; Jev cost, precision,
-budget watch and credit balance; and for DevSwarm the app database as ground truth
-([KB-devswarm-app-db.md](KB-devswarm-app-db.md)), a capability gate, auto-archive,
-owner-approved prune and message retention. Per-component detail is in the
-[Features table](#hook-reference--plugin-features-table-detailed-per-hook).
+> **Historical (pre-engine).** This guide was written when the hooks were Node scripts (`*.js`).
+> Since release 0.301.1 the Rust engine is the only runtime and no Node hooks ship; the hook
+> names below now name engine checks, and the Node-latency and "defer to Node" passages describe
+> the earlier design. For the current architecture read [AH-ENGINE.md](AH-ENGINE.md); for the
+> release history, the [CHANGELOG](../CHANGELOG.md). Per-component detail is in the
+> [Features table](#hook-reference--plugin-features-table-detailed-per-hook).
 
 ## Contents
 - [What it is, and why it exists](#what-it-is-and-why-it-exists)
@@ -123,22 +121,20 @@ The synthetic corpus is 84 labelled cases (`tools/eval/inference-bench.js`), wri
 
 ### Hook latency
 
-The numbers below are for the Node hooks. With the engine running most calls skip the Node start-up; its pre-release replay numbers are in [AH-ENGINE.md](AH-ENGINE.md#measured-results-pre-release) and are not part of these tables.
+**Historical (pre-engine).** The numbers below were measured on the earlier Node hooks, which no longer ship. The engine's own numbers are in [AH-ENGINE.md](AH-ENGINE.md#measured-results-pre-release) and are not part of these tables.
 
 Hooks are small per call but not free. On a quiet machine a bare `node -e 0` costs about 16 to 18 ms of CPU and most hooks cost 22 to 35 ms. Claude Code runs a matcher's hooks in parallel, so a tool call costs about its slowest hook, while CPU adds up across hooks. The DevSwarm hooks exit before loading their libraries in a session that is not a DevSwarm Primary or child, which saves about 20 ms of CPU per Stop and about 25 ms per prompt. The measured tables, method and caveats are in [HOOK-LATENCY](HOOK-LATENCY.md).
 
 ### The engine
 
-`ah-engine`, a small Rust program, is the core component: it answers the hook calls without starting Node per call. The plugin's hooks are one
-thin trigger per event; the engine decides natively what it can prove identical to the Node hook and defers the rest to Node (never
-weaker than Node). Every hook command in `hooks.json` runs the installed thin client (`~/.anti-hall/ah-engine/bin/ah-hook <Event>`) directly, and runs
+`ah-engine`, a small Rust program, is the core component and the only runtime (release 0.301.1): it answers every hook call and no Node hook ships. The plugin's hooks are one
+thin trigger per event; the engine decides each one natively. Every hook command in `hooks.json` runs the installed thin client (`~/.anti-hall/ah-engine/bin/ah-hook <Event>`) directly, and runs
 the plugin's one shell file, `hooks/install.sh`, only while the thin client is missing (one notice per session, the call passes
 through). The binaries are installed from the GitHub Release by `sh hooks/install.sh --download` (the setup skill runs it) and only if
 their sha256 equals the one pinned in the plugin's `ah-engine.lock`; the automatic download on SessionStart is opt-in (the setting
 `engine.bootstrap` = true, or `AH_ENGINE_BOOTSTRAP=1`; default false). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
-time with hot reload and fallbacks (edited, then last-known-good, then pristine, then Node), and `ah-engine config heal` restores a
-missing key. Still on Node: the DevSwarm mesh writes and daemons, every call that consults Jev, the semantic judge's model call and the
-statusline. macOS and Linux only; Windows is not supported yet.
+time with hot reload and fallbacks (edited, then last-known-good, then pristine), and `ah-engine config heal` restores a
+missing key. macOS and Linux only; Windows is not supported yet.
 
 Full description (install, go-live, rollback, failover, telemetry, what runs on Node, pre-release measurements): [AH-ENGINE.md](AH-ENGINE.md).
 

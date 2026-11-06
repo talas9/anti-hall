@@ -19,7 +19,7 @@ is in [CHANGELOG.md](https://github.com/talas9/anti-hall/blob/main/CHANGELOG.md)
 
 ## Install
 
-Prerequisite: Node.js >= 22 on PATH (hooks silently no-op without it; Windows is not supported).
+No Node.js needed; the plugin fetches the sha256-pinned engine (setup skill, or the opt-in `engine.bootstrap`). macOS and Linux only (Windows is not supported).
 
 ```
 /plugin marketplace add talas9/anti-hall

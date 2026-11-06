@@ -134,7 +134,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   confidence ≥0.85 on a 30-day, 3-project offline benchmark, see CHANGELOG 0.108.4;
   `postHandoverGate` (advisory: does a new request fit in the remaining
   post-handover context budget, asked fire-and-forget from the shared
-  `auto-handover.js` while the post-handover gate is armed) defaults `off` —
+  `auto-handover` while the post-handover gate is armed) defaults `off` —
   an offline benchmark (n=299) found park-recall 17.6% vs 28.8% for the
   agent's own size judgment plus the measured budget backstop, no gain over
   that baseline;
@@ -155,7 +155,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
   `docs/KB-jev-classifier.md` §10. Neither platform has a per-integration `/config` row (Claude
   Code's panel carries only the headline switches; Codex has none) — use
-  `settings.js show --section jevIntegrations` or the `anti-hall-settings` skill.
+  `ah-engine settings show --section jevIntegrations` or the `anti-hall-settings` skill.
   **Claude/Codex parity**: `speculation`, `triage`, `claimLedger`, `mergeGateHedge`,
   `newRequest`, `gitGuardSelfCredit`, `parentGateQuestion`, `tasklistTrivial` run on
   BOTH platforms (their backing hooks are registered in this port's own
