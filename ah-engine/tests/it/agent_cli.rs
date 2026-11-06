@@ -320,6 +320,16 @@ fn counter_total(m: &serde_json::Value, name: &str) -> u64 {
     m["metrics"]["counters"].as_array().unwrap().iter().filter(|c| c["name"] == name).map(|c| c["value"].as_u64().unwrap()).sum()
 }
 
+/// The sum of the counters named `name` in the metrics snapshot the daemon has COMMITTED to hot.db (series keys are `name|label=..`);
+/// 0 while there is none yet or the database is not readable.
+fn persisted_counter_total(db: &std::path::Path, name: &str) -> u64 {
+    let Ok(c) = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return 0 };
+    let Ok(body) = c.query_row("SELECT body FROM metrics_snapshot WHERE id = 1", [], |r| r.get::<_, String>(0)) else { return 0 };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else { return 0 };
+    let prefix = format!("{name}|");
+    v["counters"].as_object().map_or(0, |m| m.iter().filter(|(k, _)| k.as_str() == name || k.starts_with(&prefix)).filter_map(|(_, n)| n.as_u64()).sum())
+}
+
 fn wait_down(e: &Env) {
     let t = Instant::now();
     while t.elapsed() < common::scaled(Duration::from_secs(5)) && e.up() {
@@ -330,7 +340,7 @@ fn wait_down(e: &Env) {
 
 #[test]
 fn metrics_impact_and_rollups_survive_a_restart_and_a_kill() {
-    let e = Env::new("persist", &[("AH_ENGINE_SNAPSHOT_MS", "100")]);
+    let e = Env::new("persist", &[("AH_ENGINE_SNAPSHOT_MS", "500")]);
     e.warm();
     assert_eq!(e.hook(FORCE).2, 2);
     assert_eq!(e.hook("git status").2, 0);
@@ -356,7 +366,18 @@ fn metrics_impact_and_rollups_survive_a_restart_and_a_kill() {
 
     // a kill loses at most what came after the last periodic snapshot
     let seen = counter_total(&e.json(&["metrics", "--json"]), "check_calls");
-    std::thread::sleep(Duration::from_millis(400)); // several snapshot periods
+    // wait until the PERSISTED counters (the ones asserted on below) hold what `seen` counted. The in-memory `snapshot_ms` is no proof:
+    // the export happens before the timestamp is taken, so a timestamp newer than `seen` can still come from a pre-`seen` export.
+    // A deadline, not a fixed sleep: a scheduler wake late by a whole period skips that window, so the next one has to be waited for.
+    let t = Instant::now();
+    loop {
+        let kept = persisted_counter_total(&e.dir.join("eng").join("hot.db"), "check_calls");
+        if kept >= seen {
+            break;
+        }
+        assert!(t.elapsed() < common::scaled(Duration::from_secs(15)), "no persisted snapshot holds {seen} check_calls (has {kept}){}", e.diag());
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let pid = common::marker_pid(&e.dir.join("eng")).expect("run marker");
     // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
     unsafe { libc::kill(pid, libc::SIGKILL) };

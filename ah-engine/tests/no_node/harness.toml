@@ -98,3 +98,8 @@ duties = ["log_rotate", "verdicts", "reconcile", "deferred", "app_sync", "retent
 workspaces_dir = ".anti-hall/devswarm/workspaces"
 workspace_id = "ws-nonode"
 descriptor = '{"id":"{id}","title":"no-node fixture","worktree":"{cwd}","cwd":"{cwd}","role":"child"}'
+
+[absent]
+# Machine-wide locations the engine looks at besides HOME and PATH (the DevSwarm app's own hivecontrol). Emptied in the plugin
+# copy of every run, so the result does not depend on whether the app is installed on the machine that runs the test.
+settings = ["mesh_write.hivecontrol_known_locations"]
