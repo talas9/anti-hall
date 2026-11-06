@@ -11,6 +11,7 @@
 //! makes the whole call [`Unsure`] and the Node hook decides (D74). A task map is only ever answered from when every
 //! record in the window was understood.
 pub mod backfill;
+pub mod idproof;
 pub mod parse;
 pub mod scanview;
 pub mod store;
@@ -244,6 +245,22 @@ impl TaskMap {
     pub fn max_numeric_key(&self) -> f64 {
         self.order.iter().filter(|k| is_digits(k)).map(|k| number_of_digits(k)).fold(0.0, f64::max)
     }
+}
+
+/// Whether a transcript row is part of the conversation the task model may read (`taskstate.conversation_row_types`). A row with no
+/// string `type` is accepted (the legacy shape). Rows of any other type (`api-request-blob` and its kin replay a request's whole message
+/// array) carry copies of tool uses and never their results, so reading them makes ghosts of tasks the conversation has long settled.
+pub fn is_conversation_row(entry: &Value) -> bool {
+    match entry.get("type").and_then(Value::as_str) {
+        Some(t) => defaults::list("taskstate.conversation_row_types").contains(&t),
+        None => true,
+    }
+}
+
+/// Count the rows a pass skipped as non-conversation rows (`taskstate_rows_skipped`); the pass may run in the hook dispatcher or the
+/// daemon, so the count goes through the shared bump.
+pub fn note_rows_skipped(n: u64) {
+    crate::metrics::bump_by_shared("taskstate_rows_skipped", &[], n);
 }
 
 /// `/^\d+$/.test(s)` for an ASCII digit run.

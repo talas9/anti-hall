@@ -203,6 +203,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
     let mut deleted: Vec<String> = Vec::new();
     let mut calls: HashMap<String, Call> = HashMap::new();
     let mut unsure = false;
+    let mut skipped = 0u64;
 
     for line in lines {
         let t = js_trim(line);
@@ -223,6 +224,10 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         // `entry.type` on a JSON `null` throws in JavaScript.
         if entry.is_null() {
             unsure = true;
+            continue;
+        }
+        if !super::is_conversation_row(&entry) {
+            skipped += 1;
             continue;
         }
         if get(&entry, "type").and_then(Value::as_str) == Some("user") {
@@ -445,6 +450,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
             created_by.push((digits.clone(), use_id.clone()));
         }
     }
+    super::note_rows_skipped(skipped);
     Ok(Facts { tasks, window_reset, first_created, unsure, deleted, created, created_by, provisional, todo_ids })
 }
 

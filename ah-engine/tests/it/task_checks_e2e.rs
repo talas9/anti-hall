@@ -191,6 +191,25 @@ fn task_guard_answers_a_stop_with_nothing_open_and_blocks_one_with_an_open_task(
     }
 }
 
+/// #438: an `api-request-blob` row replays a request's message array, TaskCreate tool uses included, whose results lie elsewhere. The
+/// Stop guard must not read those copies as open tasks nobody is working on.
+#[test]
+fn replayed_creates_in_an_api_request_blob_row_do_not_block_the_stop_guard() {
+    let w = World::new("task-guard-blob");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    let replay: Vec<serde_json::Value> = (1..=4)
+        .map(|i| serde_json::json!({"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_g{i}"), "name": "TaskCreate", "input": {"subject": format!("ghost {i}")}}]}))
+        .collect();
+    let blob = serde_json::json!({"type": "api-request-blob", "message": {"messages": replay}});
+    let tail = serde_json::json!({"type": "assistant", "message": {"id": "m9", "role": "assistant", "content": [{"type": "text", "text": "done"}]}});
+    std::fs::write(w.path("t.jsonl"), format!("{blob}\n{tail}\n")).unwrap();
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let (code, out) = stop_run(&w, "task-guard", &payload);
+    assert_eq!(code, 0);
+    assert!(!out.contains("\"decision\":\"block\""), "the replayed creates are not open tasks: {out}");
+    assert!(!w.path("home/.anti-hall/last-stop-taskset-s1").exists());
+}
+
 /// #237: a transcript line `JSON.parse` reads and serde does not (here an escaped lone surrogate in an unrelated assistant text) must
 /// not turn the open tasks of the transcript into "no tasks": Node still blocks the Stop.
 #[test]
@@ -1697,7 +1716,10 @@ fn a_flagged_ghost_a_snapshot_saved_is_gone_at_the_next_stop_and_a_real_task_wit
     inject(serde_json::json!({"id": "toolu_ghost", "content": "ghost", "status": "pending", "prov": true}));
     assert!(!ladder_stop(&w, "s1", &[]), "the flagged ghost is not an open task");
     let after = std::fs::read_to_string(&file).unwrap();
-    assert!(!after.contains("toolu_ghost") && after.contains("\"id\":\"1\""), "the ghost left the file, the real task stayed: {after}");
+    let doc: serde_json::Value = serde_json::from_str(&after).unwrap();
+    let listed: Vec<&str> = doc["variants"]["guard"]["tasks"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
+    assert_eq!(listed, ["1"], "the ghost left the list, the real task stayed: {after}");
+    assert_eq!(doc["variants"]["guard"]["quarantine"][0]["id"], "toolu_ghost", "and its record is kept, not deleted: {after}");
     // a task of the same loose shape with no flag and no proof (a TodoWrite id) is real: it blocks and stays in the file
     inject(
         serde_json::json!({"id": "toolu_real", "content": "real", "description": "", "status": "pending", "owner": "", "blockedBy": [], "priority": null, "subjectUpdated": false, "unknown": null, "blockUnknown": false, "sinceMs": null}),

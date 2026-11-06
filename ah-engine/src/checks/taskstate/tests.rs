@@ -420,3 +420,141 @@ mod snapshot_facts {
         assert!(facts_of(&after).todo_ids.is_empty(), "a reset clears them");
     }
 }
+
+/// Rows that only replay an API request (`api-request-blob` and kin) are not the conversation: the task model never reads them (#438).
+mod blob_rows {
+    use super::super::parse::reconstruct;
+    use super::super::scanview::scan_tasks;
+    use super::super::{Variant, is_conversation_row};
+    use serde_json::{Value, json};
+
+    fn call(id: &str, name: &str, input: Value) -> Value {
+        json!({"type": "assistant", "message": {"id": format!("m-{id}"), "role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
+    }
+    fn result(id: &str, text: &str) -> Value {
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}})
+    }
+    /// A row that replays the request's message array, as the harness writes it.
+    fn blob(kind: &str, rows: &[Value]) -> Value {
+        json!({"type": kind, "message": {"messages": rows.iter().map(|r| r["message"].clone()).collect::<Vec<_>>()}})
+    }
+
+    fn rebuild(rows: &[Value], variant: Variant) -> Vec<(String, Option<String>)> {
+        let text: Vec<String> = rows.iter().map(Value::to_string).collect();
+        let refs: Vec<&str> = text.iter().map(String::as_str).collect();
+        reconstruct(&refs, variant).unwrap().tasks.values().map(|t| (t.id.clone(), t.status.clone())).collect()
+    }
+
+    fn scan(tag: &str, rows: &[Value]) -> (Vec<String>, u64, bool) {
+        let path = std::env::temp_dir().join(format!("ah-blobrows-{}-{tag}.jsonl", std::process::id()));
+        std::fs::write(&path, rows.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let s = scan_tasks(&path.to_string_lossy(), 1 << 20, 1 << 20).unwrap().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        (s.open_task_ids, s.in_progress_count, s.saw_task_activity)
+    }
+
+    /// The replayed creates of a request, none of whose results lie in the window.
+    fn replayed() -> Vec<Value> {
+        vec![
+            call("toolu_a", "TaskCreate", json!({"subject": "ghost a"})),
+            call("toolu_b", "TaskCreate", json!({"subject": "ghost b"})),
+            call("toolu_c", "TodoWrite", json!({"todos": [{"id": "z", "content": "ghost z", "status": "pending"}]})),
+        ]
+    }
+
+    #[test]
+    fn which_rows_are_the_conversation() {
+        assert!(is_conversation_row(&json!({"type": "user"})));
+        assert!(is_conversation_row(&json!({"type": "assistant"})));
+        assert!(is_conversation_row(&json!({"message": {}})), "no type: the legacy shape is read");
+        for kind in ["api-request-blob", "api-request", "api-request-shape"] {
+            assert!(!is_conversation_row(&json!({"type": kind})), "{kind}");
+        }
+    }
+
+    #[test]
+    fn replayed_creates_in_blob_rows_make_no_ghost_tasks() {
+        for variant in [Variant::Guard, Variant::State] {
+            for kind in ["api-request-blob", "api-request", "api-request-shape"] {
+                let rows = [blob(kind, &replayed()), call("toolu_x", "Bash", json!({"command": "Task"}))];
+                assert_eq!(rebuild(&rows, variant), vec![], "{kind} {variant:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_tasklist_scan_ignores_replayed_creates_too() {
+        let (open, in_progress, activity) = scan("ghosts", &[blob("api-request-blob", &replayed())]);
+        assert_eq!((open, in_progress, activity), (vec![], 0, false));
+    }
+
+    #[test]
+    fn a_real_unresolved_create_is_counted_once_whatever_the_blob_replays() {
+        let real = [call("toolu_r", "TaskCreate", json!({"subject": "real"})), result("toolu_r", "Task #1 created successfully: real")];
+        // the blob replays the same unresolved create (and an unrelated one); the conversation row is the only one read
+        let replay = [call("toolu_r", "TaskCreate", json!({"subject": "real"})), call("toolu_g", "TaskCreate", json!({"subject": "ghost"}))];
+        let rows = [real[0].clone(), real[1].clone(), blob("api-request-blob", &replay)];
+        for variant in [Variant::Guard, Variant::State] {
+            assert_eq!(rebuild(&rows, variant), vec![("1".to_string(), Some("pending".to_string()))], "{variant:?}");
+        }
+        assert_eq!(scan("real", &rows), (vec!["1".to_string()], 0, true));
+        // a genuinely unresolved create in the conversation stays, under its tool-use id, exactly once
+        let rows = [
+            call("toolu_u", "TaskCreate", json!({"subject": "unresolved"})),
+            blob("api-request-blob", &[call("toolu_u", "TaskCreate", json!({"subject": "unresolved"}))]),
+        ];
+        for variant in [Variant::Guard, Variant::State] {
+            assert_eq!(rebuild(&rows, variant), vec![("toolu_u".to_string(), Some("pending".to_string()))], "{variant:?}");
+        }
+    }
+
+    #[test]
+    fn a_replayed_completed_update_does_not_stand_in_for_a_row_that_is_gone() {
+        // the replay holds many completed tasks whose real rows lie before the window: none of them is listed
+        let mut replay = Vec::new();
+        for i in 1..=5 {
+            replay.push(call(&format!("toolu_{i}"), "TaskUpdate", json!({"taskId": i.to_string(), "status": "completed"})));
+        }
+        assert_eq!(rebuild(&[blob("api-request-blob", &replay)], Variant::Guard), vec![]);
+    }
+
+    #[test]
+    fn skipped_rows_are_counted() {
+        crate::metrics::reset_this_thread();
+        let rows = [blob("api-request-blob", &replayed()), blob("api-request", &replayed()), call("toolu_r", "TaskCreate", json!({"subject": "r"}))];
+        rebuild(&rows, Variant::Guard);
+        assert_eq!(crate::metrics::bumped_on_this_thread("taskstate_rows_skipped", &[]), 2);
+    }
+}
+
+// ---- GH #438 repair: where an id occurs in the whole transcript ------------------------------------------------------------------
+
+mod idproof_tests {
+    use super::super::idproof::{Seen, scan_ids};
+    use serde_json::json;
+
+    fn file(tag: &str, lines: &[String]) -> String {
+        let dir = std::env::temp_dir().join(format!("ah-idproof-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.jsonl");
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn replayed_rows_and_conversation_rows_are_told_apart_and_unreadable_text_counts_as_conversation() {
+        const ID: &str = "toolu_01ABCDEFGHIJKLMNOPQRSTUV";
+        let blob = json!({"type": "api-request-blob", "messages": [{"content": [{"type": "tool_use", "id": ID}]}]}).to_string();
+        let conv = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_01ZZZZZZZZZZZZZZZZZZZZZZ", "name": "TaskCreate"}]}})
+            .to_string();
+        let broken = format!("{{\"type\": \"api-request-blob\", {ID}");
+        let p = file("kinds", &[blob.clone(), conv.clone(), blob, broken]);
+        let ids = vec![ID.to_string(), "toolu_01ZZZZZZZZZZZZZZZZZZZZZZ".to_string(), "short".to_string(), "toolu_01NEVERNEVERNEVERNEVER".to_string()];
+        let got = scan_ids(&p, &ids).unwrap();
+        assert_eq!(got[0].1, Seen { skipped: 2, conversation: 1 }, "two replayed rows; the line that is not JSON is read as conversation");
+        assert_eq!(got[1].1, Seen { skipped: 0, conversation: 1 });
+        assert_eq!(got[2].1, Seen::default(), "an id shorter than the needle minimum is not searched");
+        assert_eq!(got[3].1, Seen::default(), "an id found nowhere proves nothing");
+        assert!(scan_ids("/nonexistent/ah-idproof.jsonl", &ids).is_err(), "an unreadable file proves nothing");
+    }
+}

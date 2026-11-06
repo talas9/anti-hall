@@ -5,6 +5,7 @@
 //! | raw function | what it does |
 //! |---|---|
 //! | `transcriptTasks(path, variant, window, wide)` | the task list of a transcript tail, rebuilt exactly as the Node hooks rebuild it: see [`transcript_tasks`] |
+//! | `transcriptIdProof(path, idsJson)` | where each task id occurs in the whole transcript, replayed rows against conversation rows: see [`crate::checks::taskstate::idproof`] |
 //! | `agentScan(path, tailBytes, ignoreUnansweredStops)` | every agent a transcript tail shows launched, with its times, output file, the ids with terminal evidence and the teammates with a message not yet answered: see [`agent_scan`] |
 //! | `jevRecordOutcome(id, hash, outcome, source, projectFrom)` | report a later observed result against a Jev decision by hash: see [`jev_record_outcome`] |
 //! | `jevEnabled()` | whether the Jev master switch is on for this request (an integration can still be off) |
@@ -360,6 +361,13 @@ fn read_end(path: &str, bytes: f64) -> Option<String> {
 /// Add the batch-6 functions to `ahHost`.
 pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("transcriptTasks", Function::new(c.clone(), |p: String, v: String, w: f64, wide: f64| super::host::unless_cut(transcript_tasks(&p, &v, w, wide)))?)?;
+    h.set(
+        "transcriptIdProof",
+        Function::new(c.clone(), |p: String, ids: String| {
+            let ids: Vec<String> = serde_json::from_str(&ids).unwrap_or_default();
+            super::host::unless_cut(crate::checks::taskstate::idproof::scan_json(&p, &ids))
+        })?,
+    )?;
     h.set(
         "agentScan",
         Function::new(c.clone(), |p: String, t: f64, ignore: Option<bool>| super::host::unless_cut(agent_scan(&p, t, ignore.unwrap_or(false))))?,

@@ -1656,6 +1656,65 @@ fn a_snapshot_ghost_is_dropped_only_with_provenance_and_the_rest_is_kept_and_cou
     assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_kept", &[]), 1, "C");
 }
 
+/// A replayed request row (`api-request-blob`): the whole message array of a request, tool uses without their results.
+fn blob_row(uses: &[(&str, &str, Value)]) -> String {
+    let content: Vec<Value> = uses.iter().map(|(id, name, input)| json!({"type": "tool_use", "id": id, "name": name, "input": input})).collect();
+    line(json!({"type": "api-request-blob", "timestamp": "2026-10-06T13:00:00.000Z", "messages": [{"role": "assistant", "content": content}]}))
+}
+
+#[test]
+fn ghosts_a_replayed_row_made_are_repaired_on_proof_only_quarantined_counted_and_idempotent() {
+    let h = home("snap-repair438");
+    let t = format!("{h}/t.jsonl");
+    let todo_id = "toolu_01TODOTODOTODOTODOTODOA";
+    let nowhere = "toolu_01NOWHERENOWHERENOWHERE";
+    // the real tasks: #1-#3 (TaskCreate with results), a TodoWrite item with an arbitrary id (filed with its `src`), and an entry of the harness shape that the
+    // conversation itself mentions (it is also replayed in a blob row)
+    let mention = line(
+        json!({"type": "assistant", "timestamp": "2026-10-06T12:06:00.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": format!("tracking {todo_id}")}]}}),
+    );
+    std::fs::write(&t, snap_head() + &mention).unwrap();
+    snap_probe(&h);
+    snap_rebuild_as(&h, &t, "a", "s1");
+    // an older rebuild saved 14 ghosts of replayed rows (unflagged, no `src`), the TodoWrite item without its `src` (legacy file), and
+    // one more of the harness shape that occurs nowhere in the transcript
+    let ghost_ids: Vec<String> = (0..14).map(|i| format!("toolu_01GHOSTGHOSTGHOST{i:06}")).collect();
+    let mut todo_item = snap_task("write-docs");
+    todo_item["src"] = json!("todo");
+    let mut extra: Vec<Value> = vec![todo_item];
+    extra.extend(ghost_ids.iter().map(|g| snap_task(g)));
+    let mut legacy_todo = snap_task(todo_id);
+    legacy_todo["content"] = json!("real todo");
+    extra.push(legacy_todo);
+    extra.push(snap_task(nowhere));
+    snap_inject(&h, extra);
+    let uses: Vec<(&str, &str, Value)> = ghost_ids.iter().map(|g| (g.as_str(), "TaskCreate", json!({"subject": "replayed"}))).collect();
+    append(&t, &blob_row(&uses));
+    append(&t, &blob_row(&[(todo_id, "TaskCreate", json!({"subject": "replayed"}))]));
+    let got = snap_rebuild_as(&h, &t, "b", "s1");
+    let ids: Vec<String> = snap_rows(&got).into_iter().map(|r| r.0).collect();
+    let want = ["1", "2", "3", "write-docs", todo_id, nowhere];
+    assert_eq!(ids, want, "only the proven ghosts are left out of the list the gate sees");
+    assert_eq!(snap_ids_now(&h), want, "and out of the file's list");
+    let sec = snap_doc(&h)["variants"]["guard"].clone();
+    let quarantined: Vec<String> = sec["quarantine"].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(quarantined, ghost_ids, "the records are kept, not deleted");
+    assert!(sec["quarantine"].as_array().unwrap().iter().all(|x| x["prov"] == true && x["content"].as_str().unwrap().starts_with("task toolu_")));
+    assert_eq!(
+        sec["checked"].as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>().len(),
+        2,
+        "the two that are no ghost are not looked up again"
+    );
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_repaired", &[]), 14);
+    assert_eq!(bumped("snapshot_ghost_scan", "result", "read"), 1);
+    // idempotent: a second pass changes nothing, looks nothing up and counts nothing more
+    let again = snap_rebuild_as(&h, &t, "c", "s1");
+    assert_eq!(snap_rows(&again).into_iter().map(|r| r.0).collect::<Vec<_>>(), want);
+    assert_eq!(snap_doc(&h)["variants"]["guard"], sec, "the section is unchanged");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_repaired", &[]), 14);
+    assert_eq!(bumped("snapshot_ghost_scan", "result", "read"), 1);
+}
+
 // ---- #440 fix round: a list that cannot be read in full is no answer; the switches both ways; the shared fixtures -------------------
 
 #[test]

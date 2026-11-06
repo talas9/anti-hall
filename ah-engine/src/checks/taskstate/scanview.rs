@@ -97,6 +97,9 @@ pub(crate) fn judge_wide_line(buf: &[u8], names: &[&str], finders: &[memchr::mem
         Line::Unsure => return Some(Decisive::Unsure),
         Line::Skip => return None,
     };
+    if !super::is_conversation_row(&entry) {
+        return None;
+    }
     let mut uses = Vec::new();
     collect_tool_uses(&entry, &mut uses);
     uses.iter().any(|tu| get(tu, "name").and_then(Value::as_str).is_some_and(|n| names.contains(&n))).then_some(Decisive::Hit)
@@ -188,6 +191,7 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
     let mut first_created = f64::INFINITY;
     let mut max_created = 0f64;
     let mut result_ids: Vec<(String, String)> = Vec::new();
+    let mut skipped = 0u64;
 
     for line in lines {
         let t = js_trim(line);
@@ -204,6 +208,10 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
         };
         if entry.is_null() {
             s.unsure = true;
+            continue;
+        }
+        if !super::is_conversation_row(&entry) {
+            skipped += 1;
             continue;
         }
         if get(&entry, "type").and_then(Value::as_str) == Some("user") {
@@ -419,6 +427,7 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
             Err(_) => s.unsure = true,
         }
     }
+    super::note_rows_skipped(skipped);
     Ok(Some(s))
 }
 

@@ -38,6 +38,7 @@ function reconstructTasks(tail) {
     if (t.indexOf('Task') === -1 && t.indexOf('TodoWrite') === -1) continue;
     let entry;
     try { entry = JSON.parse(t); } catch (_) { continue; }
+    if (!isConversationRow(entry)) continue;
     if (entry.type === 'user') {
       const c = entry.message && Array.isArray(entry.message.content) ? entry.message.content : [];
       for (const it of c) {
@@ -330,4 +331,12 @@ function collectTU(node) {
 }
 
 
-module.exports = { reconstructTasks, classifyOpen, normOwner, normBlockedBy, collectTU, unseenTask, gapsAfterUpdate, fillFromCreate, isOpenTask, isIdleCandidate, openOf, unknownOf, unknownNote };
+// Rows that ARE the conversation (engine key taskstate.conversation_row_types in task_guards.toml): the only rows the task model reads.
+// api-request-blob / api-request / api-request-shape rows replay a request's message array (tool uses, never their results) and would
+// be counted as unresolved ghost tasks. A row with no string type is read (legacy shape).
+const CONVERSATION_ROW_TYPES = ['user', 'assistant'];
+function isConversationRow(entry) {
+  return !entry || typeof entry.type !== 'string' || CONVERSATION_ROW_TYPES.includes(entry.type);
+}
+
+module.exports = { isConversationRow, reconstructTasks, classifyOpen, normOwner, normBlockedBy, collectTU, unseenTask, gapsAfterUpdate, fillFromCreate, isOpenTask, isIdleCandidate, openOf, unknownOf, unknownNote };

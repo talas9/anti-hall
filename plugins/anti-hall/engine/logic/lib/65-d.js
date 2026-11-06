@@ -39,27 +39,28 @@ var taskSnap = {
   // The snapshot's tasks, then the tail's tasks the snapshot does not hold, each tail task laid over its snapshot twin. A snapshot task the
   // tail found "not found" (`deleted`) is gone: only what the tail itself holds of that id is listed. `proof` (see `proof`) says which
   // snapshot entries are provably ghosts.
-  overlay: function (snap, tail, deleted, proof) {
+  overlay: function (snap, tail, deleted, proof, dropped) {
     var byId = Object.create(null), seen = Object.create(null), gone = Object.create(null), out = [];
     tail.forEach(function (t) { byId[t.id] = t; });
     deleted.forEach(function (id) { gone[id] = true; });
-    var drop = 0, kept = 0;
+    var drop = 0, kept = 0, repaired = 0;
     snap.forEach(function (s) {
       if (gone[s.id]) return;
-      if (taskSnap.ghost(s, proof)) { drop++; return; } // a ghost an older rebuild saved: never listed again, and the rewrite below drops it from the file
+      if (taskSnap.ghost(s, proof)) { drop++; if (proof.proven[s.id] === true) repaired++; if (dropped) dropped.push(s); return; } // a ghost an older rebuild saved: never listed again, and the rewrite below drops it from the file
       if (taskSnap.shaped(s.id) && s.src !== 'todo') kept++; // looks like a harness id but no provenance: kept (a task is never dropped without proof)
       seen[s.id] = true;
       out.push(byId[s.id] ? taskSnap.merge(byId[s.id], s) : s);
     });
     tail.forEach(function (t) { if (!seen[t.id]) out.push(t); });
     if (drop > 0) taskSnap.count('snapshot_ghost_dropped', {}, drop);
+    if (repaired > 0) taskSnap.count('snapshot_ghost_repaired', {}, repaired);
     if (kept > 0) taskSnap.count('snapshot_ghost_kept', {}, kept);
     return out;
   },
   // What the tail's rebuild proves about ids: `prov` (ids keyed by a TaskCreate tool-use id whose result it does not show), `todo` (ids a
   // TodoWrite set: real, whatever their shape) and `uses` (every TaskCreate tool-use id it shows, resolved or not).
   proof: function (r) {
-    var out = { prov: Object.create(null), todo: Object.create(null), uses: Object.create(null) };
+    var out = { prov: Object.create(null), todo: Object.create(null), uses: Object.create(null), proven: Object.create(null) };
     if (Array.isArray(r.provisional)) r.provisional.forEach(function (id) { out.prov[id] = true; out.uses[id] = true; });
     if (Array.isArray(r.todoIds)) r.todoIds.forEach(function (id) { out.todo[id] = true; });
     if (r.createdBy !== null && typeof r.createdBy === 'object') Object.keys(r.createdBy).forEach(function (k) { if (typeof r.createdBy[k] === 'string') out.uses[r.createdBy[k]] = true; });
@@ -73,8 +74,48 @@ var taskSnap = {
   // the flag too); or an unflagged older entry of the exact harness shape whose id the tail shows as a TaskCreate tool-use id.
   ghost: function (t, proof) {
     if (ah.cfg('taskstate.snapshot_drop_provisional') !== true || t.src === 'todo' || proof.todo[t.id] === true) return false;
-    if (t.prov === true || proof.prov[t.id] === true) return true;
+    if (t.prov === true || proof.prov[t.id] === true || proof.proven[t.id] === true) return true;
     return taskSnap.shaped(t.id) && proof.uses[t.id] === true;
+  },
+  // The repair of ghosts an older rebuild saved from replayed request rows (GH #438): a snapshot entry of the exact harness shape that no
+  // tail proof or flag condemns is looked up in the WHOLE transcript once (ahHost.transcriptIdProof). It is a ghost only when the id occurs in
+  // replayed rows and in no conversation row, never as a TodoWrite item (`src: todo`). A verdict that is not a ghost is remembered in the
+  // section's `checked`, so the scan is not repeated. Fills `proof.proven`; returns the `checked` map to write. Any failure proves nothing.
+  repair: function (p, sec, r, proof, gone) {
+    var checked = {}, own = Object.prototype.hasOwnProperty;
+    if (sec.checked !== null && typeof sec.checked === 'object' && !Array.isArray(sec.checked)) Object.keys(sec.checked).forEach(function (k) { if (sec.checked[k] === true) checked[k] = true; });
+    if (ah.cfg('taskstate.ghost_proof_enabled') !== true || ah.cfg('taskstate.snapshot_drop_provisional') !== true) return checked;
+    var cand = [], max = ah.cfgNum('taskstate.ghost_candidates_max');
+    sec.tasks.forEach(function (t) {
+      if (gone[t.id] || t.src === 'todo' || t.prov === true || proof.todo[t.id] === true || proof.prov[t.id] === true || proof.uses[t.id] === true) return;
+      if (own.call(checked, t.id) || !taskSnap.shaped(t.id) || cand.length >= max) return;
+      cand.push(t.id);
+    });
+    if (cand.length === 0) return checked;
+    var res = null;
+    try { res = JSON.parse(ahHost.transcriptIdProof(p, JSON.stringify(cand))); } catch (e) { res = null; }
+    if (res === null || typeof res !== 'object' || res.unsure === true || res.ids === null || typeof res.ids !== 'object') { taskSnap.count('snapshot_ghost_scan', { result: 'unread' }); return checked; }
+    taskSnap.count('snapshot_ghost_scan', { result: 'read' });
+    cand.forEach(function (id) {
+      var v = res.ids[id];
+      if (v === null || typeof v !== 'object' || typeof v.skipped !== 'number' || typeof v.conversation !== 'number') return; // no answer: nothing proven, asked again
+      if (v.skipped > 0 && v.conversation === 0) proof.proven[id] = true;
+      else checked[id] = true;
+    });
+    return checked;
+  },
+  // The quarantine a section keeps: its earlier entries and the snapshot entries dropped as ghosts now, each once by id, at most
+  // taskstate.ghost_quarantine_max. A dropped record is never lost with the task list: it stays here, flagged `prov`, for the owner.
+  quarantine: function (old, dropped) {
+    var out = [], seen = Object.create(null), max = ah.cfgNum('taskstate.ghost_quarantine_max'), full = 0;
+    (Array.isArray(old) ? old : []).concat(dropped).forEach(function (t) {
+      if (!taskSnap.sound(t) || seen[t.id] === true) return;
+      if (out.length >= max) { full++; return; }
+      seen[t.id] = true;
+      out.push(t.prov === true ? t : Object.assign({}, t, { prov: true }));
+    });
+    if (full > 0) taskSnap.count('snapshot_error', { kind: 'quarantine_full' }, full);
+    return out;
   },
   // The tail's tasks marked with what the rebuild proves: `prov: true` on a provisional create, `src: 'todo'` on a TodoWrite item (additive
   // fields; an older reader ignores them, and a snapshot without them is read by the shape rule above).
@@ -198,8 +239,13 @@ var taskSnap = {
     }
     var proof = taskSnap.proof(r);
     taskSnap.mark(r, proof);
+    var checked = {}, quarantine = [];
     if (sec !== null) {
-      tasks = taskSnap.overlay(sec.tasks, r.tasks, Array.isArray(r.deleted) ? r.deleted : [], proof);
+      var deletedIds = Array.isArray(r.deleted) ? r.deleted : [], goneIds = Object.create(null), dropped = [];
+      deletedIds.forEach(function (id) { goneIds[id] = true; });
+      checked = taskSnap.repair(p, sec, r, proof, goneIds);
+      tasks = taskSnap.overlay(sec.tasks, r.tasks, deletedIds, proof, dropped);
+      quarantine = taskSnap.quarantine(sec.quarantine, dropped);
       var tailIds = Object.create(null);
       r.tasks.forEach(function (t) { tailIds[t.id] = true; });
       recovered = tasks.filter(function (t) { return !tailIds[t.id]; }).length;
@@ -208,7 +254,8 @@ var taskSnap = {
     var keep = taskSnap.persisted(tasks, proof); // what the file holds: an in-flight create stays in the answer but is not written
     var ids = taskSnap.idsOf(keep, sec !== null ? sec.ids : null, r.createdBy);
     try {
-      var same = sec !== null && JSON.stringify(sec.tasks) === JSON.stringify(keep) && JSON.stringify(sec.ids || {}) === JSON.stringify(ids);
+      var same = sec !== null && JSON.stringify(sec.tasks) === JSON.stringify(keep) && JSON.stringify(sec.ids || {}) === JSON.stringify(ids) &&
+        JSON.stringify(sec.quarantine || []) === JSON.stringify(quarantine) && JSON.stringify(sec.checked || {}) === JSON.stringify(checked);
       if (same && size - sec.size < ah.cfgNum('taskstate.snapshot_refresh_bytes')) return taskSnap.counted(out, recovered);
       if (keep.length === 0 && !existed) return r;
       if (!existed) {
@@ -251,7 +298,13 @@ var taskSnap = {
         body.session = sid !== null ? sid : (typeof body.session === 'string' ? body.session : null);
         if (!discarded) taskSnap.mergeOthers(rel, body, variant, p, fmt, max);
         var done = ah.cfg('taskstate.done_statuses');
-        var put = function (list) { body.variants[variant] = { size: size, ms: ah.clock.now(), tasks: list, ids: taskSnap.idsOf(list, ids) }; return JSON.stringify(body); };
+        var put = function (list) {
+          var section = { size: size, ms: ah.clock.now(), tasks: list, ids: taskSnap.idsOf(list, ids) };
+          if (quarantine.length > 0) section.quarantine = quarantine; // additive: an older reader ignores it
+          if (Object.keys(checked).length > 0) section.checked = checked;
+          body.variants[variant] = section;
+          return JSON.stringify(body);
+        };
         var text1 = put(keep);
         if (text1.length > max) text1 = put(keep.filter(function (t) { return done.indexOf((t.status || '').toLowerCase()) < 0; }));
         if (text1.length > max) { taskSnap.count('snapshot_error', { kind: 'big' }); return r; }
