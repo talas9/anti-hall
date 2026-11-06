@@ -362,6 +362,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_count_bumped_outside_the_daemon_reaches_the_daemon_registry() {
+        use crate::telemetry::emit;
+        // a child process (the scheduled agent_tick) has no sink: bump_shared queues a counter event instead of filling its own PENDING
+        assert!(!emit::in_daemon());
+        emit::take_queued();
+        bump_shared("agent_wake_dropped", &[("reason", "foreign_pid")]);
+        bump_shared("agent_nudge_to_owner", &[("where", "file")]);
+        let evs = emit::take_queued();
+        assert_eq!(evs.len(), 2, "{evs:?}");
+        // the daemon reads these rows from the inbox and adds them to its registry, labels included
+        let mut m = Metrics::default();
+        for ev in &evs {
+            assert!(add_from_event(&mut m, ev.h.as_str(), ev.e.as_str(), ev.ib), "{ev:?}");
+        }
+        assert_eq!(m.counter("agent_wake_dropped", &[("reason", "foreign_pid")]), 1);
+        assert_eq!(m.counter("agent_nudge_to_owner", &[("where", "file")]), 1);
+    }
+
+    #[test]
     fn counters_labels_and_totals() {
         let mut m = Metrics::default();
         m.inc("check_calls", &[("check", "git")]);

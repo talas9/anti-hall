@@ -246,7 +246,7 @@ fn live_plan(env: &Env, id: &str, a: &Agent, plan_done: u64) {
 fn watcher_armed(env: &Env, id: &str) -> bool {
     let found = crate::meshw::watcher::live_for_workspace(&env.home, id, env.now_ms as i64);
     if found.as_ref().is_ok_and(|f| f.by_checkout) {
-        crate::metrics::bump("mesh_watcher_matched_by_checkout", &[]);
+        crate::metrics::bump_shared("mesh_watcher_matched_by_checkout", &[]);
     }
     found.is_ok_and(|f| f.armed)
 }

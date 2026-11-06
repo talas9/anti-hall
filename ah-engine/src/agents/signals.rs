@@ -268,7 +268,7 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
     let doubt = defaults::raw("burn.doubt");
     let body = match (body, hold_reason(a, env.now_ms)) {
         (Some(_), Some(reason)) => {
-            crate::metrics::bump(doubt.str_field("metric"), &[(doubt.str_field("label"), reason)]);
+            crate::metrics::bump_shared(doubt.str_field("metric"), &[(doubt.str_field("label"), reason)]);
             None
         }
         (b, _) => b,
@@ -444,7 +444,7 @@ fn num(t: &V, k: &str) -> u64 {
 
 fn metric(step: &str) {
     let m = defaults::raw("nudges.metric");
-    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(step))]);
+    crate::metrics::bump_shared(m.str_field("name"), &[(m.str_field("label"), m.str_field(step))]);
 }
 
 /// Whether the CPU of a process tree moved by at least `step` ms since its baseline (`None`: nothing to compare yet, so no). A
@@ -455,7 +455,7 @@ pub(crate) fn cpu_moved(base: Option<u64>, cur: u64, step: u64) -> bool {
 
 fn exempt(reason: &str) {
     let m = defaults::raw("nudges.stall_exempt");
-    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(reason))]);
+    crate::metrics::bump_shared(m.str_field("name"), &[(m.str_field("label"), m.str_field(reason))]);
 }
 
 /// The CPU term of the stall sample (#535): an agent whose process tree below `root` used CPU is working, whatever its transcript
@@ -1005,7 +1005,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         };
         if let Some(r) = drop {
             rec(env, ws.str_field("class"), ws.str_field("dropped"), Outcome::Skip, base(a).tok("signal", sig).tok("reason", r));
-            crate::metrics::bump("agent_wake_dropped", &[("reason", r)]);
+            crate::metrics::bump_shared("agent_wake_dropped", &[("reason", r)]);
             a.last_sent.insert(sig.to_string(), now);
             return;
         }

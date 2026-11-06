@@ -301,7 +301,12 @@ pub fn run(args: &[String]) -> i32 {
         crate::telemetry::emit::set_read_only();
     }
     match handlers().iter().find(|(n, _)| *n == p.command) {
-        Some((_, h)) => run_recorded(&p, *h),
+        Some((_, h)) => {
+            let code = run_recorded(&p, *h);
+            // counts a child process bumped through `metrics::bump_shared` (the scheduled `agent_tick`) wait in the thread batch: hand them to the daemon now
+            crate::telemetry::emit::flush();
+            code
+        }
         None => 70, // registered as implemented but has no handler: the registry test prevents this
     }
 }
