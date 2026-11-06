@@ -616,3 +616,71 @@ fn the_matrix_names_the_shapes_of_the_failed_rounds() {
     let keys: BTreeSet<String> = m.iter().map(Cell::key).collect();
     assert_eq!(keys.len(), m.len(), "cell keys are unique");
 }
+
+// ---- #445 stage A: a store that cannot be read in full is UNSURE, the transcript's tasks are added -----------------------------
+
+const MUST_OPEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/task-reader-must-be-open.json");
+
+/// Cells where the base reader LOST an open task (an unreadable or junk record hid it) and the fixed reader must hold it, or (the
+/// unlistable directory) keep it. Each lists the ids that MUST be open and the Stop verdict. The ids are the transcript-sourced pending
+/// tasks of the cell, so they are the proof that the transcript is read next to a store that is not sure.
+#[test]
+fn an_unsure_store_adds_the_transcripts_open_tasks_and_never_removes_any() {
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(MUST_OPEN).expect("the must-be-open fixture")).unwrap();
+    let cells = doc["cells"].as_object().expect("cells");
+    let by_key: BTreeMap<String, Cell> = matrix().into_iter().map(|c| (c.key(), c)).collect();
+    let base = scratch("mustopen");
+    let mut failures = Vec::new();
+    for (i, (key, want)) in cells.iter().enumerate() {
+        let cell = by_key.get(key).unwrap_or_else(|| panic!("the matrix has no cell {key}"));
+        let root = base.join(i.to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        let got = read_cell(cell, &root);
+        let must: BTreeSet<String> = want["must_open"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        let missing: Vec<&String> = must.difference(&got.open).collect();
+        if !missing.is_empty() {
+            failures.push(format!("{key}: open task(s) {missing:?} must be open (got {:?})", got.open));
+        }
+        if let Some(stop) = want["stop"].as_str()
+            && stop != got.stop
+        {
+            failures.push(format!("{key}: Stop is {:?}, want {stop:?}", got.stop));
+        }
+    }
+    std::fs::remove_dir_all(&base).ok();
+    assert!(failures.is_empty(), "{} failure(s):\n{}", failures.len(), failures.join("\n"));
+}
+
+/// The Stop on an unlistable store: it allows when the transcript has no open task (uncertainty is never a permanent block), blocks while
+/// the transcript holds a pending one, and allows again once the transcript completes it.
+#[test]
+fn an_unlistable_store_never_blocks_a_stop_by_itself_and_unblocks_with_the_transcript() {
+    let base = scratch("unlistable");
+    let stop_of = |tag: &str, rows: Vec<Value>| {
+        let root = base.join(tag);
+        std::fs::create_dir_all(&root).unwrap();
+        let cell = Cell { store: Store::UnreadableDir, named: Named::Unset, trans: Trans::NoTasks, snap: Snap::None, rows: Rows::Conv, knobs: Knobs::new() };
+        let (home, t) = build(&cell, &root);
+        std::fs::write(&t, rows.iter().map(line).collect::<String>()).unwrap();
+        let env = env_of(&cell, &home);
+        let payload = json!({"cwd": home, "hook_event_name": "Stop", "session_id": SID, "transcript_path": t});
+        let verdict = format!("{:?}", ah_engine::script::run_forced("task-guard", &payload, &json!({}), "Stop", &env));
+        unlock(&home);
+        if verdict.contains("block") || verdict.contains("Block") {
+            "block"
+        } else if verdict.contains("Allow") {
+            "allow"
+        } else {
+            "other"
+        }
+    };
+    let start = json!({"type": "user", "uuid": "u0", "timestamp": "2026-10-06T11:59:00.000Z", "message": {"role": "user", "content": "start"}});
+    assert_eq!(stop_of("none", vec![start.clone()]), "allow", "unlistable store, no transcript task");
+    let mut pending = vec![start.clone()];
+    pending.extend(create(1, "tc one"));
+    assert_eq!(stop_of("pending", pending.clone()), "block", "unlistable store, a transcript task pending");
+    pending.push(tool_use("u1", "TaskUpdate", json!({"taskId": "1", "status": "completed"})));
+    pending.push(tool_result("u1", "Updated task #1"));
+    assert_eq!(stop_of("done", pending), "allow", "the transcript completes it");
+    std::fs::remove_dir_all(&base).ok();
+}

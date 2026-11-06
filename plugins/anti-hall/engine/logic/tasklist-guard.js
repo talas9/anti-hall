@@ -646,7 +646,12 @@ function decide(p, opts) {
   if (t.unsure) ah.unable('tasklist-guard:tasks_unsure'); // keep known work and task facts when a line cannot be reconstructed
   if (t.quiet) return 'allow';
   var stored = tk.storeScan(home, rawSid); // the session's task store, when it has one, is the list; the transcript only says whether tasks were used
-  if (stored !== null) { t.openTaskIds = stored.openTaskIds; t.inProgressCount = stored.inProgressCount; }
+  if (stored !== null) {
+    var storeOpen = stored.openTaskIds;
+    // a store with a record it could not read: the transcript's open ids that no readable record names stay open too
+    if (stored.unsure) storeOpen = storeOpen.concat((t.openTaskIds || []).filter(function (id) { return stored.knownIds.indexOf(id) < 0; }));
+    t.openTaskIds = storeOpen; t.inProgressCount = stored.inProgressCount;
+  }
   var scan = {
     work: work.work, lastWork: work.lastWork, lastProgressWrite: work.lastProgressWrite,
     names: work.names || [], nameTotal: work.nameTotal || 0,

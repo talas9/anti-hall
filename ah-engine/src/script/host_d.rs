@@ -161,6 +161,13 @@ pub fn guard_open_tasks(path: &str, window: u64) -> Option<bool> {
     (open || !facts.unsure).then_some(open)
 }
 
+/// The `guard` reconstruction of the tail of `path` as `(id, is open)` pairs and whether the reconstruction is unsure; `None` when the
+/// file cannot be read. What [`guard_open_tasks`] reads, with the ids kept so a reader can lay a task store over it.
+pub fn guard_task_states(path: &str, window: u64) -> Option<(Vec<(String, bool)>, bool)> {
+    let (facts, _) = task_facts(path, window, Variant::Guard, true).ok()?;
+    Some((facts.tasks.values().map(|t| (t.id.clone(), t.is_open())).collect(), facts.unsure))
+}
+
 /// One launched agent as JSON (`NaN` times are `null`).
 pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
     json!({

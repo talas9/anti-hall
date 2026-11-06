@@ -1,0 +1,47 @@
+{
+  "about": "Task ids that MUST be open (and the Stop verdict) in cells where a store that cannot be read in full hid a transcript-sourced pending task (#445 stage A). Hand-written from the cell definitions, not captured from a build.",
+  "cells": {
+    "store=OneUnreadableRecord|named=Unset|trans=TodoWrite|snap=None|rows=Conv": {
+      "must_open": [
+        "1",
+        "2"
+      ]
+    },
+    "store=OneUnreadableRecord|named=Unset|trans=CreateThenTodo|snap=None|rows=Conv": {
+      "must_open": [
+        "1",
+        "x"
+      ]
+    },
+    "store=OneJunkRecord|named=Unset|trans=TodoWrite|snap=None|rows=Conv": {
+      "must_open": [
+        "1",
+        "2"
+      ]
+    },
+    "store=OneJunkRecord|named=Unset|trans=CreateThenTodo|snap=None|rows=Conv": {
+      "must_open": [
+        "1",
+        "x"
+      ]
+    },
+    "store=UnreadableDir|named=Unset|trans=TodoWrite|snap=None|rows=Conv": {
+      "must_open": [
+        "1",
+        "2"
+      ],
+      "stop": "block"
+    },
+    "store=UnreadableDir|named=Unset|trans=CreateThenTodo|snap=None|rows=Conv": {
+      "must_open": [
+        "1",
+        "x"
+      ],
+      "stop": "block"
+    },
+    "store=UnreadableDir|named=Unset|trans=NoTasks|snap=None|rows=Conv": {
+      "must_open": [],
+      "stop": "allow"
+    }
+  }
+}

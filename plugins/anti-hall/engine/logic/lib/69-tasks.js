@@ -14,13 +14,20 @@ var tk = {
     if (r.unsure) ah.unable('tasks:tail_unsure');
     var tasks = r.unreadable ? [] : (r.tasks || []);
     tasks.unsure = !!r.unsure;
+    tasks.storeUnsure = !!r.storeUnsure;
     return tasks;
   },
   // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
   // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
   tasksOf: function (home, sid, path, variant) {
-    var st = tk.storeTasks(home, sid);
-    if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
+    var sr = tk.storeRead(home, sid);
+    if (sr !== null && !sr.unsure) return { tasks: tk.withStore([], sr.tasks), unsure: false, unreadable: false, store: true };
+    if (sr !== null) {
+      // The store answers UNSURE (a record or a directory it could not read may hold an open task): its readable tasks, plus every
+      // task the transcript reconstruction holds that the readable records do not name. Never fewer open tasks than the store alone.
+      var tr = typeof path === 'string' ? ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid) : { tasks: [], unsure: false, unreadable: true };
+      return { tasks: tk.unionStore(tr.unreadable ? [] : (tr.tasks || []), sr.tasks), unsure: !!tr.unsure, unreadable: false, store: true, storeUnsure: true };
+    }
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
     r.store = false;
@@ -29,36 +36,44 @@ var tk = {
   // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none. The
   // store carries no priority, so every in-progress task counts (the transcript scan only counts the actionable priorities).
   storeScan: function (home, sid) {
-    var st = tk.storeTasks(home, sid);
-    if (st === null) return null;
-    var ids = [], inProg = 0;
-    tk.withStore([], st).forEach(function (t) {
+    var sr = tk.storeRead(home, sid);
+    if (sr === null) return null;
+    var ids = [], inProg = 0, known = sr.tasks.map(function (t) { return t.id; });
+    tk.withStore([], sr.tasks).forEach(function (t) {
       if (!tk.isOpen(t)) return;
       var s = tk.statusLc(t);
       if (ah.cfg('taskstate.in_progress_statuses').indexOf(s) >= 0) { ids.push(t.id); inProg++; } else if (ah.cfg('taskstate.pending_statuses').indexOf(s) >= 0) ids.push(t.id);
     });
-    return { openTaskIds: ids, inProgressCount: inProg };
+    return { openTaskIds: ids, inProgressCount: inProg, unsure: sr.unsure, knownIds: known };
   },
   // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
   // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
   // what is done and open; the transcript's tasks only add what the store does not carry.
   storeTasks: function (home, sid) {
+    var sr = tk.storeRead(home, sid);
+    return sr === null ? null : sr.tasks;
+  },
+  // `{tasks, unsure}` for the session's store, or null as `storeTasks`. `unsure` is true when a directory tried on the way (the one
+  // that answers or one before it) could not be listed, or a task file of the answering directory could not be read or is not a task:
+  // the readable tasks may then be only part of the list.
+  storeRead: function (home, sid) {
     if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
     var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
+    var unsure = false;
     var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
     for (var i = 0; i < names.length; i++) {
       var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
       var files = ah.fs.readdir(dir);
-      if (files === null) continue;
+      if (files === null) { if (ah.fs.isDir(dir)) unsure = true; continue; } // a directory that exists but cannot be listed may hold open tasks
       files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
       if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
       var out = [];
       for (var k = 0; k < files.length; k++) {
         var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
-        if (raw === null) continue;
+        if (raw === null) { unsure = true; continue; }
         var rec;
-        try { rec = JSON.parse(raw); } catch (e) { continue; }
-        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+        try { rec = JSON.parse(raw); } catch (e) { unsure = true; continue; }
+        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') { unsure = true; continue; }
         out.push({
           id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
           description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
@@ -67,8 +82,9 @@ var tk = {
           blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
         });
       }
-      if (out.length > 0) return out;
+      if (out.length > 0) { if (unsure) ah.unable('tasks:store_unsure'); return { tasks: out, unsure: unsure }; }
     }
+    if (unsure) ah.unable('tasks:store_unsure'); // no readable task, but a directory or record could not be read: the transcript answers alone, as before
     return null;
   },
   // The store's tasks laid over the transcript's: the store is the list (a task it lacks is gone), and for a task both hold the store
@@ -83,6 +99,13 @@ var tk = {
       t.unknown = null; t.blockUnknown = false;
       return t;
     });
+  },
+  // The readable store tasks laid over the transcript's (as `withStore`), then the transcript tasks no readable record names.
+  unionStore: function (tasks, store) {
+    var named = {};
+    store.forEach(function (s) { named[s.id] = true; });
+    var rest = tasks.filter(function (t) { return named[t.id] !== true; });
+    return tk.withStore(tasks, store).concat(rest);
   },
   statusLc: function (t) { return (t.status || '').toLowerCase(); },
   isOpen: function (t) { return ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0; },

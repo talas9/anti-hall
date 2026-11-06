@@ -366,12 +366,15 @@ function ttFresh(home, tp, sessionRaw, p) {
   if (!size) return null;
   var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'), 0, sessionRaw);
   // Claude Code's own store holds the whole list; the transcript tail of a long session does not (the creates lie before it)
-  var store = tk.storeTasks(home, sessionRaw);
+  var sr = tk.storeRead(home, sessionRaw), store = sr === null ? null : sr.tasks;
   if (store === null) {
     if (r.unsure) { ah.unable('task-tracker:tasks_unsure'); return null; } // a tail the engine cannot read exactly is read as no tasks
     if (r.unreadable) return null;
   }
-  var tasks = store === null ? r.tasks : tk.withStore(r.unsure || r.unreadable ? [] : r.tasks, store);
+  var tasks;
+  if (store === null) tasks = r.tasks;
+  else if (sr.unsure) { tasks = tk.unionStore(r.unreadable ? [] : (r.tasks || []), store); } // a record the store could not read may hold an open task: add the transcript's
+  else tasks = tk.withStore(r.unsure || r.unreadable ? [] : r.tasks, store);
   var plan = { track: null, annotate: null, demandShown: 0 };
   var tr = ttTrack(home, sessionRaw, tp, tasks);
   plan.track = tr.apply;
