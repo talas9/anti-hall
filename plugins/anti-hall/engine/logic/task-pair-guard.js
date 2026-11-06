@@ -226,7 +226,7 @@ function prgDirRecords(dir) {
 // not a gate). null: no readable list (denied).
 function prgByIdTasks(p, home) {
   var sid = p.session_id ? String(p.session_id) : '';
-  var st = tk.storeLadder(home, sid, function (dir) { return ah.fs.isDir(dir) ? prgDirRecords(dir) : undefined; }, false, true);
+  var st = tk.storeLadder(home, sid, function (dir) { return ah.fs.isDir(dir) ? prgDirRecords(dir) : undefined; }, ah.cfg('taskstate.store_named_list') === true, true);
   return st !== null ? st.list : prgAllTasks(p, home);
 }
 

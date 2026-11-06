@@ -1458,28 +1458,42 @@ fn a_hostile_heavy_patterns_override_leaves_the_command_guard_as_it_is_at_base()
 
 // ---- #440: the shared task-store ladder and the provisional ids of a snapshot ------------------------------------------------------
 
-/// A script that reads the guard task list the way the Stop gates do (`tk.tasksOf`) and files `[id, status]` rows, `store` and `unreadable`
-/// as `.anti-hall/out-<p.n>.json`.
+/// A script that reads the guard task list the way the Stop gates do (`tk.tasksOf`, the three ladder switches optionally given as `p.sw`)
+/// and files `[id, status]` rows, `store`, `unreadable` and whether a task is open as `.anti-hall/out-<p.n>.json`.
 fn ladder_probe(h: &str) {
     put_override(
         h,
         "zz-ladder",
-        "function decide(p){ var r = tk.tasksOf(p.h, p.s, p.t, 'guard'); \
-         ah.state.writeAtomic('.anti-hall/out-' + p.n + '.json', JSON.stringify({rows: (r.tasks || []).map(function (t) { return [t.id, t.status]; }), store: !!r.store, unreadable: !!r.unreadable})); \
+        "function decide(p){ var r = tk.tasksOf(p.h, p.s, p.t, 'guard', p.sw); \
+         ah.state.writeAtomic('.anti-hall/out-' + p.n + '.json', JSON.stringify({rows: (r.tasks || []).map(function (t) { return [t.id, t.status]; }), store: !!r.store, unreadable: !!r.unreadable, open: (r.tasks || []).some(tk.isOpen)})); \
          return 'allow'; }",
     );
 }
 
+/// The three ladder switches as the probe's `p.sw`.
+fn sw(named: bool, empty_is_list: bool, scope_list: bool) -> Value {
+    json!({"named": named, "emptyIsList": empty_is_list, "scopeList": scope_list})
+}
+
 /// Reads the list of session `sid` through [`ladder_probe`], with the named list `list` in the hook's environment when given.
-fn ladder_read(h: &str, t: &str, sid: &str, list: Option<&str>, n: &str) -> (Vec<(String, String)>, bool) {
+fn ladder_read_sw(h: &str, t: &str, sid: &str, list: Option<&str>, n: &str, switches: Option<Value>) -> (Vec<(String, String)>, bool, bool) {
     let mut pairs = vec![("HOME", h)];
     if let Some(l) = list {
         pairs.push(("CLAUDE_CODE_TASK_LIST_ID", l));
     }
-    assert_eq!(run("zz-ladder", &json!({"h": h, "t": t, "s": sid, "n": n}), &RequestEnv::from_pairs(pairs)), Some(Some(Verdict::Allow)));
+    let mut p = json!({"h": h, "t": t, "s": sid, "n": n});
+    if let Some(s) = switches {
+        p["sw"] = s;
+    }
+    assert_eq!(run("zz-ladder", &p, &RequestEnv::from_pairs(pairs)), Some(Some(Verdict::Allow)));
     let v: Value = serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-{n}.json")).unwrap()).unwrap();
     let rows = v["rows"].as_array().unwrap().iter().map(|r| (r[0].as_str().unwrap().to_string(), r[1].as_str().unwrap().to_string())).collect();
-    (rows, v["store"].as_bool().unwrap())
+    (rows, v["store"].as_bool().unwrap(), v["open"].as_bool().unwrap())
+}
+
+fn ladder_read(h: &str, t: &str, sid: &str, list: Option<&str>, n: &str) -> (Vec<(String, String)>, bool) {
+    let (rows, store, _) = ladder_read_sw(h, t, sid, list, n, None);
+    (rows, store)
 }
 
 fn store_put(h: &str, dir: &str, id: &str, status: &str) {
@@ -1549,27 +1563,204 @@ fn without_the_named_list_the_empty_session_directory_and_the_missing_one_leave_
     assert_eq!(bumped("taskstate_store_source", "source", "none"), 2);
 }
 
+/// Files `extra` into the guard section of the session's one snapshot file, as an older rebuild would have saved them.
+fn snap_inject(h: &str, extra: Vec<Value>) {
+    let file = format!("{h}/.anti-hall/{}/{}", defaults::text("taskstate.snapshot_dir"), snap_files(h)[0]);
+    let mut doc = snap_doc(h);
+    for e in extra {
+        doc["variants"]["guard"]["tasks"].as_array_mut().unwrap().push(e);
+    }
+    std::fs::write(&file, doc.to_string()).unwrap();
+}
+
+fn snap_task(id: &str) -> Value {
+    json!({"id": id, "content": format!("task {id}"), "status": "pending", "owner": ""})
+}
+
+const HARNESS_ID_A: &str = "toolu_01ABCDEFGHIJKLMNOPQRSTUV";
+const HARNESS_ID_B: &str = "toolu_01ZYXWVUTSRQPONMLKJIHGFE";
+
+fn snap_ids_now(h: &str) -> Vec<String> {
+    snap_ids(&snap_doc(h), "guard")
+}
+
 #[test]
-fn a_snapshot_ghost_is_dropped_on_read_and_from_the_file_while_real_and_todowrite_ids_stay() {
+fn a_snapshot_only_task_is_never_dropped_by_the_shape_of_its_id_alone() {
+    let h = home("snap-keep-shape");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild_as(&h, &t, "a", "s1");
+    // an id that starts like a tool-use id (a TodoWrite id is any text) and one with the exact harness shape, neither flagged nor shown by the tail
+    snap_inject(&h, vec![snap_task("toolu_real"), snap_task(HARNESS_ID_A)]);
+    let got = snap_rebuild_as(&h, &t, "b", "s1");
+    let ids: Vec<String> = snap_rows(&got).into_iter().map(|r| r.0).collect();
+    assert_eq!(ids, ["1", "2", "3", "toolu_real", HARNESS_ID_A], "no provenance, no drop");
+    assert_eq!(snap_ids_now(&h), ["1", "2", "3", "toolu_real", HARNESS_ID_A], "and the file keeps them");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_dropped", &[]), 0);
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_kept", &[]), 1, "the one of the exact harness shape is counted as kept");
+}
+
+#[test]
+fn a_todowrite_task_is_written_with_its_source_and_survives_whatever_its_id_looks_like() {
+    let h = home("snap-todowrite");
+    let t = format!("{h}/t.jsonl");
+    let todos = json!({"todos": [
+        {"id": HARNESS_ID_A, "content": "harness-shaped", "status": "pending"},
+        {"id": "toolu_real", "content": "short", "status": "pending"},
+    ]});
+    std::fs::write(&t, assistant_tool("tw", "TodoWrite", todos, "2026-10-06T12:00:00.000Z")).unwrap();
+    snap_probe(&h);
+    snap_rebuild_as(&h, &t, "a", "s1");
+    assert_eq!(snap_ids_now(&h), [HARNESS_ID_A, "toolu_real"], "TodoWrite items are written, whatever the id");
+    let doc = snap_doc(&h);
+    assert!(
+        doc["variants"]["guard"]["tasks"].as_array().unwrap().iter().all(|x| x["src"] == "todo" && x.get("prov").is_none()),
+        "marked as TodoWrite items: {doc}"
+    );
+    pad(&t, SNAP_WINDOW as usize + 200_000);
+    let night = snap_rebuild_as(&h, &t, "b", "s1");
+    let ids: Vec<String> = snap_rows(&night).into_iter().map(|r| r.0).collect();
+    assert_eq!(ids, [HARNESS_ID_A, "toolu_real"], "the TodoWrite is beyond the window: the snapshot answers with both");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_dropped", &[]), 0);
+}
+
+#[test]
+fn a_snapshot_ghost_is_dropped_only_with_provenance_and_the_rest_is_kept_and_counted() {
     let h = home("snap-ghost");
     let t = format!("{h}/t.jsonl");
     std::fs::write(&t, snap_head()).unwrap();
     snap_probe(&h);
     snap_rebuild_as(&h, &t, "a", "s1");
-    // an older rebuild saved a provisional key, a real number and a TodoWrite-style id that the tail does not name
-    let file = format!("{h}/.anti-hall/{}/{}", defaults::text("taskstate.snapshot_dir"), snap_files(&h)[0]);
-    let mut doc = snap_doc(&h);
-    for extra in [
-        json!({"id": "toolu_X", "content": "ghost", "status": "pending", "owner": ""}),
-        json!({"id": "7", "content": "seven", "status": "pending", "owner": ""}),
-        json!({"id": "write-docs", "content": "docs", "status": "pending", "owner": ""}),
-    ] {
-        doc["variants"]["guard"]["tasks"].as_array_mut().unwrap().push(extra);
-    }
-    std::fs::write(&file, doc.to_string()).unwrap();
+    // an older rebuild saved: a flagged provisional create (A), an unflagged id of the exact harness shape that the tail now shows as a
+    // TaskCreate tool-use id with no result (B), one of the exact shape the tail does not show (C), a real number and a TodoWrite-style id
+    let mut flagged = snap_task("toolu_flagged");
+    flagged["prov"] = json!(true);
+    let mut todo = snap_task("write-docs");
+    todo["src"] = json!("todo");
+    snap_inject(&h, vec![flagged, snap_task(HARNESS_ID_B), snap_task("toolu_01CCCCCCCCCCCCCCCCCCCCCC"), snap_task("7"), todo]);
+    append(&t, &assistant_tool(HARNESS_ID_B, "TaskCreate", json!({"subject": "in flight"}), "2026-10-06T13:00:00.000Z"));
     let got = snap_rebuild_as(&h, &t, "b", "s1");
     let ids: Vec<String> = snap_rows(&got).into_iter().map(|r| r.0).collect();
-    assert_eq!(ids, ["1", "2", "3", "7", "write-docs"], "the ghost is gone from the answer; real and TodoWrite ids stay");
-    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3", "7", "write-docs"], "and from the rewritten file");
-    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_dropped", &[]), 1);
+    assert_eq!(
+        ids,
+        ["1", "2", "3", "toolu_01CCCCCCCCCCCCCCCCCCCCCC", "7", "write-docs", HARNESS_ID_B],
+        "the flagged one is gone; B stays in the answer only as the tail's own in-flight create; C has no provenance and stays"
+    );
+    assert_eq!(
+        snap_ids_now(&h),
+        ["1", "2", "3", "toolu_01CCCCCCCCCCCCCCCCCCCCCC", "7", "write-docs"],
+        "the file holds no ghost with provenance and no in-flight create"
+    );
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_dropped", &[]), 2, "the flagged one and B");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_kept", &[]), 1, "C");
+}
+
+// ---- #440 fix round: a list that cannot be read in full is no answer; the switches both ways; the shared fixtures -------------------
+
+#[test]
+fn a_task_file_that_cannot_be_read_makes_the_whole_list_no_answer_and_the_transcript_decides() {
+    let h = home("ladder-unreadable");
+    ladder_probe(&h);
+    store_put(&h, "L", "2", "completed");
+    std::fs::write(format!("{h}/.claude/tasks/L/1.json"), "{not json").unwrap();
+    std::fs::create_dir_all(format!("{h}/.claude/tasks/session-aaaaaaaa")).unwrap();
+    let a = ladder_transcript(&h, "a", &[1], false);
+    let (rows, store, open) = ladder_read_sw(&h, &a, "aaaaaaaa-1", Some("L"), "junk", None);
+    assert_eq!(rows, ids_status(&[("1", "pending")]), "#1's record is unreadable: its id is not gone, the transcript's #1 stays");
+    assert!(!store && open);
+    // a record that is JSON but not a task, and one over the byte cap
+    std::fs::write(format!("{h}/.claude/tasks/L/1.json"), r#"{"id":"1","subject":"x"}"#).unwrap();
+    assert_eq!(ladder_read(&h, &a, "aaaaaaaa-1", Some("L"), "nostatus").0, ids_status(&[("1", "pending")]), "no status: not a record");
+    let big = format!(r#"{{"id":"1","subject":"{}","status":"completed"}}"#, "y".repeat(defaults::num("taskstate.store_file_max_bytes") as usize));
+    std::fs::write(format!("{h}/.claude/tasks/L/1.json"), big).unwrap();
+    assert_eq!(ladder_read(&h, &a, "aaaaaaaa-1", Some("L"), "big").0, ids_status(&[("1", "pending")]), "over the cap: not read in full");
+    // the same list, all readable: the store answers and #1 is done
+    store_put(&h, "L", "1", "completed");
+    assert_eq!(ladder_read(&h, &a, "aaaaaaaa-1", Some("L"), "ok"), (ids_status(&[("1", "completed")]), true));
+}
+
+#[test]
+fn a_store_directory_that_cannot_be_listed_is_no_answer_for_the_named_list_and_the_session_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = home("ladder-denied");
+    ladder_probe(&h);
+    let a = ladder_transcript(&h, "a", &[1], false);
+    for (dir, list) in [("L", Some("L")), ("session-aaaaaaaa", None)] {
+        store_put(&h, dir, "1", "completed");
+        let d = format!("{h}/.claude/tasks/{dir}");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let got = ladder_read_sw(&h, &a, "aaaaaaaa-1", list, dir, Some(sw(true, true, false)));
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(got.0, ids_status(&[("1", "pending")]), "{dir}: an unlistable directory is not an empty list");
+        assert!(!got.1, "{dir}");
+    }
+}
+
+#[test]
+fn the_ids_a_snapshot_knows_are_this_sessions_on_a_named_list_too() {
+    let h = home("ladder-snap-known");
+    ladder_probe(&h);
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap(); // #1 in progress, #2, #3 pending
+    // the first read files the snapshot (no list), the creates then leave the tail window
+    ladder_read(&h, &t, "aaaaaaaa-1", None, "first");
+    pad(&t, defaults::num("taskstate.tail_bytes") as usize + 200_000);
+    for (id, st) in [("1", "pending"), ("2", "completed"), ("3", "pending"), ("4", "pending")] {
+        store_put(&h, "L", id, st);
+    }
+    let (rows, store) = ladder_read(&h, &t, "aaaaaaaa-1", Some("L"), "named");
+    assert_eq!(
+        rows,
+        ids_status(&[("1", "pending"), ("2", "completed"), ("3", "pending")]),
+        "the snapshot's ids with the list's state; #4 is another session's"
+    );
+    assert!(store);
+}
+
+#[test]
+fn the_switches_are_honoured_in_both_settings() {
+    let h = home("ladder-switches");
+    ladder_probe(&h);
+    for (id, st) in [("1", "completed"), ("2", "pending")] {
+        store_put(&h, "L", id, st);
+    }
+    std::fs::create_dir_all(format!("{h}/.claude/tasks/session-aaaaaaaa")).unwrap();
+    let a = ladder_transcript(&h, "a", &[1], false);
+    let at = |n: &str, list: Option<&str>, s: Value| ladder_read_sw(&h, &a, "aaaaaaaa-1", list, n, Some(s));
+    // named_list_scope: session lists only the known #1 (done); list lists the whole list (#2 is open)
+    assert_eq!(at("scope-s", Some("L"), sw(true, false, false)).0, ids_status(&[("1", "completed")]));
+    assert_eq!(at("scope-l", Some("L"), sw(true, false, true)).0, ids_status(&[("1", "completed"), ("2", "pending")]));
+    // store_named_list: off reads the transcript
+    let off = at("named-off", Some("L"), sw(false, false, false));
+    assert_eq!((off.0, off.1), (ids_status(&[("1", "pending")]), false));
+    // store_empty_is_list: the empty session directory is the list (nothing) or no store (the transcript)
+    let no = at("empty-off", None, sw(true, false, false));
+    assert_eq!((no.0, no.1), (ids_status(&[("1", "pending")]), false));
+    let yes = at("empty-on", None, sw(true, true, false));
+    assert_eq!((yes.0, yes.1), (Vec::new(), true));
+}
+
+/// The shared fixtures (`tests/fixtures/task-store-ladder.json`): the Rust reader runs the same file
+/// (`checks/taskstate/store.rs`, `the_shared_ladder_fixtures_give_the_documented_answers_through_the_rust_reader`).
+#[test]
+fn the_shared_ladder_fixtures_give_the_same_answers_through_the_script_reader() {
+    let fx: Value = serde_json::from_str(include_str!("../../../tests/fixtures/task-store-ladder.json")).unwrap();
+    for (n, c) in fx["cases"].as_array().unwrap().iter().enumerate() {
+        let name = c["name"].as_str().unwrap();
+        let h = home(&format!("fx{n}"));
+        ladder_probe(&h);
+        for (dir, files) in c["dirs"].as_object().unwrap() {
+            std::fs::create_dir_all(format!("{h}/.claude/tasks/{dir}")).unwrap();
+            for (f, body) in files.as_object().unwrap() {
+                std::fs::write(format!("{h}/.claude/tasks/{dir}/{f}"), body.as_str().map_or_else(|| body.to_string(), str::to_string)).unwrap();
+            }
+        }
+        let ids: Vec<u32> = c["created"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let t = ladder_transcript(&h, "t", &ids, false);
+        let s = &c["switches"];
+        let switches = sw(s["named"].as_bool().unwrap(), s["empty_is_list"].as_bool().unwrap(), s["scope_list"].as_bool().unwrap());
+        let (_, _, open) = ladder_read_sw(&h, &t, c["session"].as_str().unwrap(), c["list_id"].as_str(), "fx", Some(switches));
+        assert_eq!(Some(open), c["open"].as_bool(), "{name}");
+    }
 }

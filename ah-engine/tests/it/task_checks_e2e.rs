@@ -1531,16 +1531,14 @@ fn the_cap_holds_when_one_of_several_store_tasks_is_open() {
 }
 
 #[test]
-fn the_cap_holds_when_the_store_has_files_that_are_not_tasks_next_to_the_open_one() {
+fn the_cap_holds_when_the_store_has_files_that_are_not_task_files_next_to_the_open_one() {
     the_ladder_leaves_a_capped_stop_alone(
         "s4-junk",
         NO_ROWS,
         NO_ROWS,
         |w| {
             store_task(w, "session-s1", 1, "pending");
-            store_put(w, "session-s1", "2.json", "{not json");
-            store_put(w, "session-s1", "3.json", r#"{"id":"3","subject":"x","status":7}"#);
-            store_put(w, "session-s1", "4.json", "[1,2]");
+            // a task file that cannot be read makes the whole list no answer (tested in host_tests_d); the store's own non-task files do not
             store_put(w, "session-s1", ".lock", "");
             store_put(w, "session-s1", ".highwatermark", "9");
             store_put(w, "session-s1", "5.json.tmp", r#"{"id":"5","subject":"x","status":"completed"}"#);
@@ -1679,7 +1677,7 @@ fn an_empty_session_directory_without_a_named_list_leaves_the_transcript_to_deci
 }
 
 #[test]
-fn a_ghost_a_snapshot_saved_is_gone_at_the_next_stop_and_from_the_file() {
+fn a_flagged_ghost_a_snapshot_saved_is_gone_at_the_next_stop_and_a_real_task_without_proof_still_blocks() {
     let w = World::new("ladder-ghost-stop");
     std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
     std::fs::write(w.path("t.jsonl"), task_lines("completed")).unwrap();
@@ -1691,10 +1689,33 @@ fn a_ghost_a_snapshot_saved_is_gone_at_the_next_stop_and_from_the_file() {
         .map(|e| e.path())
         .find(|p| p.extension().is_some_and(|x| x == "json"))
         .expect("the first Stop filed a snapshot");
-    let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    doc["variants"]["guard"]["tasks"].as_array_mut().unwrap().push(serde_json::json!({"id": "toolu_ghost", "content": "ghost", "status": "pending"}));
-    std::fs::write(&file, doc.to_string()).unwrap();
-    assert!(!ladder_stop(&w, "s1", &[]), "the saved ghost is not an open task");
+    let inject = |task: serde_json::Value| {
+        let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        doc["variants"]["guard"]["tasks"].as_array_mut().unwrap().push(task);
+        std::fs::write(&file, doc.to_string()).unwrap();
+    };
+    inject(serde_json::json!({"id": "toolu_ghost", "content": "ghost", "status": "pending", "prov": true}));
+    assert!(!ladder_stop(&w, "s1", &[]), "the flagged ghost is not an open task");
     let after = std::fs::read_to_string(&file).unwrap();
     assert!(!after.contains("toolu_ghost") && after.contains("\"id\":\"1\""), "the ghost left the file, the real task stayed: {after}");
+    // a task of the same loose shape with no flag and no proof (a TodoWrite id) is real: it blocks and stays in the file
+    inject(
+        serde_json::json!({"id": "toolu_real", "content": "real", "description": "", "status": "pending", "owner": "", "blockedBy": [], "priority": null, "subjectUpdated": false, "unknown": null, "blockUnknown": false, "sinceMs": null}),
+    );
+    assert!(ladder_stop(&w, "s1", &[]), "an unflagged snapshot-only task is never dropped on the shape of its id");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("toolu_real"));
+}
+
+#[test]
+fn a_named_list_with_an_unreadable_record_does_not_let_the_stop_pass() {
+    let w = World::new("ladder-unreadable-stop");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    std::fs::create_dir_all(w.path("home/.claude/tasks/session-s1aaaaaa")).unwrap();
+    let on = [("CLAUDE_CODE_TASK_LIST_ID", "L")];
+    std::fs::write(w.path("t.jsonl"), task_lines("pending")).unwrap(); // the transcript's #1 is open
+    store_put(&w, "L", "1.json", "{not json");
+    store_task(&w, "L", 2, "completed");
+    assert!(ladder_stop(&w, "s1aaaaaa", &on), "#1's record cannot be read: the list is no answer, the transcript's open #1 blocks");
+    store_task(&w, "L", 1, "completed");
+    assert!(!ladder_stop(&w, "s1aaaaaa", &on), "all records readable: the list says #1 is done");
 }

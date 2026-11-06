@@ -37,6 +37,11 @@ pub struct Facts {
     /// For each number in `created`, the tool-use id of the `TaskCreate` that made it (the first met, as `created` is): the identity of
     /// that create. A re-read of the same transcript bytes names the same tool-use id; a new list numbered from one again names another.
     pub created_by: Vec<(String, String)>,
+    /// The task keys that are a `TaskCreate` tool-use id whose result the window does not show (in flight, or its result lies elsewhere):
+    /// provisional by construction, as no real task is keyed so. Provenance for the snapshot, which never keeps these.
+    pub provisional: Vec<String>,
+    /// The task ids a `TodoWrite` set (its last list in the window, minus a later reset): a real id of any shape, never a ghost.
+    pub todo_ids: Vec<String>,
 }
 
 struct Res {
@@ -188,6 +193,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
     let empty = Value::Object(serde_json::Map::new());
     let mut prov: Vec<(String, Prov)> = Vec::new(); // JavaScript Map order
     let mut tasks = TaskMap::default();
+    let mut todo_ids: Vec<String> = Vec::new();
     let mut result_ids: Vec<(String, String)> = Vec::new(); // tool_use_id -> "N", insertion ordered
     let mut max_created = 0f64;
     let mut group_msg: Option<String> = None;
@@ -232,6 +238,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                 if call_name == "TaskList" && is_list_empty(txt) {
                     tasks.clear();
                     prov.clear();
+                    todo_ids.clear();
                     result_ids.clear();
                     max_created = 0.0;
                     window_reset = true;
@@ -333,6 +340,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                                     },
                                 );
                             }
+                            todo_ids = replacement.values().map(|t| t.id.clone()).collect();
                             tasks = replacement;
                             prov.clear();
                             window_reset = true;
@@ -414,7 +422,14 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
             }
         }
     }
+    let provisional: Vec<String> = prov
+        .iter()
+        .filter(|(tid, _)| !result_ids.iter().any(|(k, n)| k == tid && !n.is_empty()))
+        .map(|(tid, _)| tid.strip_prefix(NON_STRING_ID).unwrap_or(tid).to_string())
+        .collect();
     resolve_provisional(&mut tasks, &prov, &result_ids, variant);
+    let provisional: Vec<String> = provisional.into_iter().filter(|k| tasks.get(k).is_some()).collect();
+    todo_ids.retain(|k| tasks.get(k).is_some());
     // a task that ends the scan with a non-string status: the Node code lowercases it and throws
     for t in tasks.values_mut() {
         if is_non_string_status(t.status.as_deref()) {
@@ -430,7 +445,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
             created_by.push((digits.clone(), use_id.clone()));
         }
     }
-    Ok(Facts { tasks, window_reset, first_created, unsure, deleted, created, created_by })
+    Ok(Facts { tasks, window_reset, first_created, unsure, deleted, created, created_by, provisional, todo_ids })
 }
 
 /// `todo.blockedOn` as the TodoWrite record reads it: `todo.metadata.blockedOn` when not null, else `todo.blockedOn`.

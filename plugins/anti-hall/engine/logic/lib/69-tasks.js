@@ -20,9 +20,12 @@ var tk = {
   // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
   // A NAMED list is shared by every session of the repo: with taskstate.named_list_scope `session` (the default) the transcript still says
   // which ids this session knows, and the named list gives their state (an id it lacks is gone); `list` reads the whole named list.
-  tasksOf: function (home, sid, path, variant) {
-    var st = tk.storeList(home, sid);
-    if (st !== null && !tk.sessionScoped(st)) return { tasks: tk.withStore([], st.tasks), unsure: false, unreadable: false, store: true };
+  // `sw` (optional) overrides the three ladder switches `{named, emptyIsList, scopeList}` (the logic tests and the shared fixtures set them;
+  // the shipped values are read otherwise).
+  tasksOf: function (home, sid, path, variant, sw) {
+    sw = tk.switches(sw);
+    var st = tk.storeList(home, sid, sw);
+    if (st !== null && !tk.sessionScoped(st, sw)) return { tasks: tk.withStore([], st.tasks), unsure: false, unreadable: false, store: true };
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
     r.store = false;
@@ -30,7 +33,12 @@ var tk = {
     return r;
   },
   // Whether a ladder answer is a shared named list that is read session-scoped (taskstate.named_list_scope, `session` unless `list`).
-  sessionScoped: function (st) { return st.shared === true && ah.cfg('taskstate.named_list_scope') !== 'list'; },
+  sessionScoped: function (st, sw) { return st.shared === true && !tk.switches(sw).scopeList; },
+  // The ladder switches: the shipped values (taskstate.store_named_list, store_empty_is_list, named_list_scope) unless `sw` gives them.
+  switches: function (sw) {
+    if (sw !== undefined && sw !== null && sw.named !== undefined) return sw;
+    return { named: ah.cfg('taskstate.store_named_list') === true, emptyIsList: ah.cfg('taskstate.store_empty_is_list') === true, scopeList: ah.cfg('taskstate.named_list_scope') === 'list' };
+  },
   // The known tasks (this session's transcript list) laid over the shared named list: only the ids both hold, with the list's state.
   scoped: function (known, store) {
     var mine = Object.create(null);
@@ -59,11 +67,12 @@ var tk = {
   //   2. the session's own directory (taskstate.store_dir_names): the first that holds a record, else, with `emptyIsList` (the guards pass
   //      taskstate.store_empty_is_list; the by-id proof always passes true), any that exists (empty means no tasks, not "no store").
   //   3. none: null, and the transcript answers.
-  // Returns {src: 'named'|'session'|'session_empty', shared, list} (list null: unreadable) or null. `skipNamed` skips rung 1.
-  storeLadder: function (home, sid, readDir, skipNamed, emptyIsList) {
+  // Returns {src: 'named'|'session'|'session_empty', shared, list} (list null: unreadable) or null. `named` (rung 1 on) defaults to the shipped
+  // switch; a list that cannot be read in full is `list: null` and ends the ladder there (the transcript answers; no later rung stands in for it).
+  storeLadder: function (home, sid, readDir, named, emptyIsList) {
     if (!home) return null;
     var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/';
-    if (!skipNamed && ah.cfg('taskstate.store_named_list') === true) {
+    if (named === true) {
       var listId = ah.env.get(ah.cfg('taskstate.list_id_env'));
       if (typeof listId === 'string' && jx.re('taskstate.list_id_re').test(listId) && ah.fs.isDir(base + listId)) {
         var nl = readDir(base + listId);
@@ -83,28 +92,29 @@ var tk = {
   },
   // The ladder over the guards' record reader: {src, shared, tasks} or null (no store, or one that cannot be read: the transcript answers).
   // Counted under taskstate_store_source by the rung that answered.
-  storeList: function (home, sid) {
-    var st = tk.storeLadder(home, sid, tk.dirTasks, false, ah.cfg('taskstate.store_empty_is_list') === true);
-    if (st !== null && st.list === null && st.src === 'named') st = tk.storeLadder(home, sid, tk.dirTasks, true, ah.cfg('taskstate.store_empty_is_list') === true); // an unreadable named list falls through to the session's
+  storeList: function (home, sid, sw) {
+    sw = tk.switches(sw);
+    var st = tk.storeLadder(home, sid, tk.dirTasks, sw.named, sw.emptyIsList);
+    // A list that cannot be read in full (a record that exists but cannot be read, a directory error, over the bounds) is NO answer, never
+    // an empty or partial one: a task is gone only when the whole list was read and every record accounted for. The transcript answers.
     if (st === null || st.list === null) { ah.metric('taskstate_store_source', { source: 'none' }); return null; }
     ah.metric('taskstate_store_source', { source: st.src });
     return { src: st.src, shared: st.shared, tasks: st.list };
   },
-  // The tasks of one store directory (`<id>.json` files), undefined when it does not exist, null when it holds more than
-  // taskstate.store_max_files task files (counted).
+  // The tasks of one store directory (`<id>.json` files), undefined when it does not exist, null when it cannot be read IN FULL: more than
+  // taskstate.store_max_files task files, a directory that exists but cannot be listed, or a task file that cannot be read or is not a task
+  // record (unreadable, over taskstate.store_file_max_bytes, not JSON, no id or no status). A partial list would make the missing ids look gone.
   dirTasks: function (dir) {
     var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
     var files = ah.fs.readdir(dir);
-    if (files === null) return undefined;
+    if (files === null) { if (ah.fs.isDir(dir)) { ah.unable('tasks:store_unreadable'); return null; } return undefined; }
     files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
     if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
     var out = [];
     for (var k = 0; k < files.length; k++) {
-      var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
-      if (raw === null) continue;
-      var rec;
-      try { rec = JSON.parse(raw); } catch (e) { continue; }
-      if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+      var raw = ah.fs.readText(dir + '/' + files[k], maxBytes), rec = null;
+      if (raw !== null) { try { rec = JSON.parse(raw); } catch (e) { rec = null; } }
+      if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') { ah.unable('tasks:store_unreadable'); return null; }
       out.push({
         id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
         description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,

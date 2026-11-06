@@ -30,34 +30,62 @@ var taskSnap = {
     if (tu && tu.blockedOn) { if (s.blockedOn === undefined) delete m.blockedOn; else m.blockedOn = s.blockedOn; }
     if (t.priority === null || t.priority === undefined) m.priority = s.priority === undefined ? null : s.priority;
     if (t.sinceMs === null || t.sinceMs === undefined) m.sinceMs = s.sinceMs === undefined ? null : s.sinceMs;
+    if (m.src === undefined && s.src !== undefined) m.src = s.src;
     m.subjectUpdated = !!(t.subjectUpdated || s.subjectUpdated);
     m.unknown = still ? mu : null;
     m.blockUnknown = !tu ? !!t.blockUnknown : ((tu.blockedBy || tu.blockedOn) ? !!(s.blockUnknown || mu.blockedBy || mu.blockedOn) : !!t.blockUnknown);
     return m;
   },
   // The snapshot's tasks, then the tail's tasks the snapshot does not hold, each tail task laid over its snapshot twin. A snapshot task the
-  // tail found "not found" (`deleted`) is gone: only what the tail itself holds of that id is listed.
-  overlay: function (snap, tail, deleted) {
+  // tail found "not found" (`deleted`) is gone: only what the tail itself holds of that id is listed. `proof` (see `proof`) says which
+  // snapshot entries are provably ghosts.
+  overlay: function (snap, tail, deleted, proof) {
     var byId = Object.create(null), seen = Object.create(null), gone = Object.create(null), out = [];
     tail.forEach(function (t) { byId[t.id] = t; });
     deleted.forEach(function (id) { gone[id] = true; });
-    var drop = 0;
+    var drop = 0, kept = 0;
     snap.forEach(function (s) {
       if (gone[s.id]) return;
-      if (taskSnap.provisional(s.id)) { drop++; return; } // a ghost an older rebuild saved: never listed again, and the rewrite below drops it from the file
+      if (taskSnap.ghost(s, proof)) { drop++; return; } // a ghost an older rebuild saved: never listed again, and the rewrite below drops it from the file
+      if (taskSnap.shaped(s.id) && s.src !== 'todo') kept++; // looks like a harness id but no provenance: kept (a task is never dropped without proof)
       seen[s.id] = true;
       out.push(byId[s.id] ? taskSnap.merge(byId[s.id], s) : s);
     });
     tail.forEach(function (t) { if (!seen[t.id]) out.push(t); });
     if (drop > 0) taskSnap.count('snapshot_ghost_dropped', {}, drop);
+    if (kept > 0) taskSnap.count('snapshot_ghost_kept', {}, kept);
     return out;
   },
-  // Whether `id` is a provisional key (the tool-use id of a TaskCreate whose result is not seen, or the non-string form): a task keyed so is
-  // in flight in the tail and is never kept in a snapshot (taskstate.snapshot_drop_provisional, taskstate.provisional_id_re). Real ids that
-  // are not numbers (a TodoWrite's) never take this shape.
-  provisional: function (id) { return ah.cfg('taskstate.snapshot_drop_provisional') === true && typeof id === 'string' && jx.re('taskstate.provisional_id_re').test(id); },
-  // The tasks a snapshot may hold: `tasks` without the provisional ones.
-  persisted: function (tasks) { return tasks.filter(function (t) { return !taskSnap.provisional(t.id); }); },
+  // What the tail's rebuild proves about ids: `prov` (ids keyed by a TaskCreate tool-use id whose result it does not show), `todo` (ids a
+  // TodoWrite set: real, whatever their shape) and `uses` (every TaskCreate tool-use id it shows, resolved or not).
+  proof: function (r) {
+    var out = { prov: Object.create(null), todo: Object.create(null), uses: Object.create(null) };
+    if (Array.isArray(r.provisional)) r.provisional.forEach(function (id) { out.prov[id] = true; out.uses[id] = true; });
+    if (Array.isArray(r.todoIds)) r.todoIds.forEach(function (id) { out.todo[id] = true; });
+    if (r.createdBy !== null && typeof r.createdBy === 'object') Object.keys(r.createdBy).forEach(function (k) { if (typeof r.createdBy[k] === 'string') out.uses[r.createdBy[k]] = true; });
+    return out;
+  },
+  // Whether `id` has the exact shape of a harness tool-use id (taskstate.provisional_id_re): the shape alone proves nothing, a TodoWrite
+  // item may carry any id.
+  shaped: function (id) { return ah.cfg('taskstate.snapshot_drop_provisional') === true && typeof id === 'string' && jx.re('taskstate.provisional_id_re').test(id); },
+  // Whether `t` is a provisional ghost, by provenance only (taskstate.snapshot_drop_provisional is the kill switch): never a task a TodoWrite
+  // set (marked `src: 'todo'`); a task flagged `prov` (the tail's own provisional create, flagged when it is read; an older file may carry
+  // the flag too); or an unflagged older entry of the exact harness shape whose id the tail shows as a TaskCreate tool-use id.
+  ghost: function (t, proof) {
+    if (ah.cfg('taskstate.snapshot_drop_provisional') !== true || t.src === 'todo' || proof.todo[t.id] === true) return false;
+    if (t.prov === true || proof.prov[t.id] === true) return true;
+    return taskSnap.shaped(t.id) && proof.uses[t.id] === true;
+  },
+  // The tail's tasks marked with what the rebuild proves: `prov: true` on a provisional create, `src: 'todo'` on a TodoWrite item (additive
+  // fields; an older reader ignores them, and a snapshot without them is read by the shape rule above).
+  mark: function (r, proof) {
+    r.tasks.forEach(function (t) {
+      if (proof.todo[t.id] === true) t.src = 'todo';
+      else if (proof.prov[t.id] === true) t.prov = true;
+    });
+  },
+  // The tasks a snapshot may hold: `tasks` without the ghosts. An in-flight create stays in the answer but is not written.
+  persisted: function (tasks, proof) { return tasks.filter(function (t) { return !taskSnap.ghost(t, proof); }); },
   // A task as a snapshot may hold it: an id and a status that is text or absent. Anything else is a damaged file.
   sound: function (t) {
     return t !== null && typeof t === 'object' && typeof t.id === 'string' && t.id !== '' && (t.status === null || t.status === undefined || typeof t.status === 'string');
@@ -168,14 +196,16 @@ var taskSnap = {
         doc = null; sec = null; discarded = true;
       }
     }
+    var proof = taskSnap.proof(r);
+    taskSnap.mark(r, proof);
     if (sec !== null) {
-      tasks = taskSnap.overlay(sec.tasks, r.tasks, Array.isArray(r.deleted) ? r.deleted : []);
+      tasks = taskSnap.overlay(sec.tasks, r.tasks, Array.isArray(r.deleted) ? r.deleted : [], proof);
       var tailIds = Object.create(null);
       r.tasks.forEach(function (t) { tailIds[t.id] = true; });
       recovered = tasks.filter(function (t) { return !tailIds[t.id]; }).length;
     }
     var out = sec !== null ? Object.assign({}, r, { tasks: tasks }) : r;
-    var keep = taskSnap.persisted(tasks); // what the file holds: an in-flight create stays in the answer but is not written
+    var keep = taskSnap.persisted(tasks, proof); // what the file holds: an in-flight create stays in the answer but is not written
     var ids = taskSnap.idsOf(keep, sec !== null ? sec.ids : null, r.createdBy);
     try {
       var same = sec !== null && JSON.stringify(sec.tasks) === JSON.stringify(keep) && JSON.stringify(sec.ids || {}) === JSON.stringify(ids);

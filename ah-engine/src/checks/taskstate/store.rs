@@ -15,8 +15,10 @@ use serde_json::Value;
 use std::io::Read;
 use std::path::Path;
 
-/// One store directory: absent, unreadable (more than `taskstate.store_max_files` task files), or its tasks as (id, lowercase status). A
-/// file that is not valid JSON, has no string status or no string/number id, or is bigger than `taskstate.store_file_max_bytes` is skipped.
+/// One store directory: absent, unreadable, or its tasks as (id, lowercase status). Unreadable is "not read IN FULL": more than
+/// `taskstate.store_max_files` task files, a directory that exists but cannot be listed, or a task file that cannot be read, is bigger than
+/// `taskstate.store_file_max_bytes`, is not JSON or has no string/number id or no string status. A partial list would make the missing
+/// ids look gone, and a task is gone only when the whole list was read and every record accounted for.
 enum Dir {
     Absent,
     Unreadable,
@@ -28,32 +30,60 @@ fn read_dir_tasks(dir: &Path) -> Dir {
     let (max_files, max_bytes) = (defaults::num("taskstate.store_max_files") as usize, defaults::num("taskstate.store_file_max_bytes"));
     let fields = defaults::raw("taskstate.store_fields");
     let (id_field, status_field) = (fields.str_field("id"), fields.str_field("status"));
-    let Ok(rd) = std::fs::read_dir(dir) else { return Dir::Absent };
-    let files: Vec<_> = rd
-        .flatten()
-        .filter(|e| e.file_name().to_str().is_some_and(|n| n.len() > suffix.len() && n.ends_with(suffix)))
-        .take(max_files.saturating_add(1))
-        .collect();
-    if files.len() > max_files {
-        return Dir::Unreadable;
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) if dir.is_dir() => return Dir::Unreadable,
+        Err(_) => return Dir::Absent,
+    };
+    let mut files = Vec::new();
+    for e in rd {
+        let Ok(e) = e else { return Dir::Unreadable };
+        if e.file_name().to_str().is_some_and(|n| n.len() > suffix.len() && n.ends_with(suffix)) {
+            files.push(e);
+        }
+        if files.len() > max_files {
+            return Dir::Unreadable;
+        }
     }
     let mut out = Vec::new();
     for e in files {
         let mut raw = Vec::new();
-        if std::fs::File::open(e.path()).and_then(|f| f.take(max_bytes).read_to_end(&mut raw)).is_err() {
-            continue;
+        if std::fs::File::open(e.path()).and_then(|f| f.take(max_bytes.saturating_add(1)).read_to_end(&mut raw)).is_err() || raw.len() as u64 > max_bytes {
+            return Dir::Unreadable;
         }
-        let Ok(rec) = serde_json::from_str::<Value>(&String::from_utf8_lossy(&raw)) else { continue };
+        let Ok(rec) = serde_json::from_str::<Value>(&String::from_utf8_lossy(&raw)) else { return Dir::Unreadable };
         let id = match rec.get(id_field) {
             Some(Value::String(s)) => s.clone(),
             Some(Value::Number(n)) => n.to_string(),
-            _ => continue,
+            _ => return Dir::Unreadable,
         };
-        if let Some(status) = rec.get(status_field).and_then(Value::as_str) {
-            out.push((id, status.to_lowercase()));
-        }
+        let Some(status) = rec.get(status_field).and_then(Value::as_str) else { return Dir::Unreadable };
+        out.push((id, status.to_lowercase()));
     }
     Dir::Tasks(out)
+}
+
+/// The three ladder switches (`taskstate.store_named_list`, `store_empty_is_list`, `named_list_scope`). The logic scripts read them as shipped
+/// (`ah.cfg`); [`Switches::shipped`] is that, and a test passes its own to cover the other setting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Switches {
+    /// Rung 1 (the named list) is read.
+    pub named: bool,
+    /// An existing but empty session directory is the list (no tasks), not "no store".
+    pub empty_is_list: bool,
+    /// A named list is read whole (`named_list_scope` `list`), not session-scoped.
+    pub scope_list: bool,
+}
+
+impl Switches {
+    /// The shipped values.
+    pub fn shipped() -> Self {
+        Switches {
+            named: defaults::shipped("taskstate.store_named_list").as_bool() == Some(true),
+            empty_is_list: defaults::shipped("taskstate.store_empty_is_list").as_bool() == Some(true),
+            scope_list: defaults::shipped("taskstate.named_list_scope").as_str() == Some("list"),
+        }
+    }
 }
 
 /// What the store ladder found: the tasks of the list as (id, lowercase status), and whether it is a NAMED list (shared by every session
@@ -73,19 +103,24 @@ pub struct Found {
 /// 3. `None`: the session has no readable store (no home, a session id with a character outside `[A-Za-z0-9_-]`, no directory, more than
 ///    `taskstate.store_max_files` task files), and the transcript answers.
 pub fn ladder(home: &str, session: &str, list_id: Option<&str>) -> Option<Found> {
+    ladder_with(home, session, list_id, Switches::shipped())
+}
+
+/// [`ladder`] with the switches given. A list that cannot be read in full (see `Dir`) ends the ladder at that rung with `None`: the
+/// transcript answers, and no later rung (an empty session directory) stands in for it.
+pub fn ladder_with(home: &str, session: &str, list_id: Option<&str>, sw: Switches) -> Option<Found> {
     if home.is_empty() {
         return None;
     }
     let base = defaults::list("taskstate.store_base").into_iter().fold(Path::new(home).to_path_buf(), |p, part| p.join(part));
-    if defaults::shipped("taskstate.store_named_list").as_bool() == Some(true)
+    if sw.named
         && let Some(id) = list_id
         && regex::Regex::new(defaults::text("taskstate.list_id_re")).is_ok_and(|re| re.is_match(id))
         && base.join(id).is_dir()
     {
         match read_dir_tasks(&base.join(id)) {
             Dir::Tasks(tasks) => return Some(Found { shared: true, tasks }),
-            // an unreadable named list falls through to the session's directory, as the guards do
-            Dir::Absent | Dir::Unreadable => {}
+            Dir::Unreadable | Dir::Absent => return None,
         }
     }
     if session.is_empty() || !session.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
@@ -105,7 +140,7 @@ pub fn ladder(home: &str, session: &str, list_id: Option<&str>) -> Option<Found>
             }
         }
     }
-    (seen && defaults::shipped("taskstate.store_empty_is_list").as_bool() == Some(true)).then(|| Found { shared: false, tasks: Vec::new() })
+    (seen && sw.empty_is_list).then(|| Found { shared: false, tasks: Vec::new() })
 }
 
 /// Whether the session's task store holds an open task (`taskstate.open_statuses`): `None` when the session has no readable store (see
@@ -120,17 +155,37 @@ pub fn has_open(home: &str, session: &str) -> Option<bool> {
 /// guard also leaves undecided). A NAMED list is shared by every session that selects it: with `taskstate.named_list_scope` `session`
 /// (the default) only the ids the transcript tail knows count, with the state the named list gives them; `list` counts the whole list.
 pub fn session_has_open(home: &str, session: Option<&str>, transcript: Option<&str>, list_id: Option<&str>) -> Option<bool> {
+    session_has_open_with(home, session, transcript, list_id, Switches::shipped())
+}
+
+/// [`session_has_open`] with the switches given.
+///
+/// One difference from the guards' reader (`tk.tasksOf`), on purpose: the guards' known ids are the transcript tail's AND the session's
+/// task snapshot's (a JavaScript-side file this reader does not read). Here the known ids are the tail's only, so for a shared named list
+/// read session-scoped the answer is `Some(true)` when an open id the tail knows is open in the list, `Some(false)` when no open id of the list
+/// is unknown to the tail, and `None` (cannot tell) when the list holds an open id the tail does not know: the snapshot might know it, and
+/// "no open task" is never answered without proof.
+pub fn session_has_open_with(home: &str, session: Option<&str>, transcript: Option<&str>, list_id: Option<&str>, sw: Switches) -> Option<bool> {
     let open = defaults::list("taskstate.open_statuses");
-    let found = ladder(home, session.unwrap_or(""), list_id);
+    let found = ladder_with(home, session.unwrap_or(""), list_id, sw);
     if let Some(f) = &found
-        && (!f.shared || defaults::shipped("taskstate.named_list_scope").as_str() == Some("list"))
+        && (!f.shared || sw.scope_list)
     {
         return Some(f.tasks.iter().any(|(_, s)| open.contains(&s.as_str())));
     }
     let path = transcript.filter(|t| !t.is_empty())?;
     let Some(f) = found else { return crate::script::host_d::guard_open_tasks(path, defaults::num("taskstate.tail_bytes")) };
     let known = crate::script::host_d::guard_task_ids(path, defaults::num("taskstate.tail_bytes"))?;
-    Some(f.tasks.iter().any(|(id, s)| known.contains(id) && open.contains(&s.as_str())))
+    let mut unknown_open = false;
+    for (id, s) in &f.tasks {
+        if open.contains(&s.as_str()) {
+            if known.contains(id) {
+                return Some(true);
+            }
+            unknown_open = true;
+        }
+    }
+    if unknown_open { None } else { Some(false) }
 }
 
 #[cfg(test)]
@@ -181,11 +236,12 @@ mod tests {
         put(&h, "session-s1", "4.json", "[1]");
         put(&h, "session-s1", "5.json.tmp", &task("pending"));
         put(&h, "session-s1", ".lock", &task("pending"));
-        assert_eq!(open(&h, "s1"), None, "files that are not tasks make no store");
+        assert_eq!(open(&h, "s1"), None, "a task file that cannot be read in full makes no store (never a partial list)");
         assert_eq!(open(&h, ""), None);
         assert_eq!(has_open("", "s1"), None);
+        std::fs::remove_dir_all(h.join(".claude/tasks/session-s1")).unwrap();
         put(&h, "session-s1", "6.json", &task("pending"));
-        assert_eq!(open(&h, "s1"), Some(true), "one task among the junk is the store");
+        assert_eq!(open(&h, "s1"), Some(true), "the same directory without the junk is the store");
         crate::discard::harmless(std::fs::remove_dir_all(&h));
     }
 
@@ -207,7 +263,7 @@ mod tests {
         assert_eq!(open(&h, "s1"), Some(true));
         let big = format!(r#"{{"id":"2","subject":"{}","status":"pending"}}"#, "y".repeat(defaults::num("taskstate.store_file_max_bytes") as usize));
         put(&h, "session-s2", "1.json", &big);
-        assert_eq!(open(&h, "s2"), None, "the only file is too big: no store");
+        assert_eq!(open(&h, "s2"), None, "a file over the byte cap cannot be read in full: no store");
         crate::discard::harmless(std::fs::remove_dir_all(&h));
     }
 
@@ -273,10 +329,99 @@ mod tests {
             put(&h, "L", &format!("{id}.json"), &rec(id, st));
         }
         let (a, b, c) = (transcript(&h, "a.jsonl", &["2"]), transcript(&h, "b.jsonl", &["1", "2"]), transcript(&h, "c.jsonl", &["3"]));
-        assert_eq!(session_has_open(hs, Some("s1"), Some(&a), Some("L")), Some(false), "#3 and #1 are open, but session A knows only #2, which is done");
+        assert_eq!(
+            session_has_open(hs, Some("s1"), Some(&a), Some("L")),
+            None,
+            "#1 and #3 are open and session A's tail does not know them (its snapshot, unread here, might): cannot tell, never 'nothing open'"
+        );
         assert_eq!(session_has_open(hs, Some("s1"), Some(&b), Some("L")), Some(true), "session B knows #1");
         assert_eq!(session_has_open(hs, Some("s1"), Some(&c), Some("L")), Some(true), "session C knows #3");
         assert_eq!(session_has_open(hs, Some("s1"), None, Some("L")), None, "a shared list needs the transcript to scope it");
         crate::discard::harmless(std::fs::remove_dir_all(&h));
+    }
+
+    #[test]
+    fn a_task_file_that_exists_but_cannot_be_read_ends_the_ladder_there_and_no_later_rung_stands_in() {
+        let h = home("unreadable");
+        let hs = h.to_str().unwrap();
+        put(&h, "L", "1.json", "{not json");
+        put(&h, "L", "2.json", &rec("2", "completed"));
+        put(&h, "session-s1", "1.json", &rec("1", "pending"));
+        assert!(ladder(hs, "s1", Some("L")).is_none(), "the named list is unreadable: no answer, not the session's directory and not a list without #1");
+        let sw = Switches { empty_is_list: true, ..Switches::shipped() };
+        std::fs::remove_dir_all(h.join(".claude/tasks/session-s1")).unwrap();
+        std::fs::create_dir_all(h.join(".claude/tasks/session-s1")).unwrap();
+        assert!(ladder_with(hs, "s1", Some("L"), sw).is_none(), "an empty session directory does not stand in for the unreadable list");
+        put(&h, "session-s2", "1.json", &rec("1", "pending"));
+        put(&h, "session-s2", "2.json", &task_no_status());
+        assert!(ladder(hs, "s2", None).is_none(), "a record without a status: the directory is unreadable");
+        // a directory that exists but cannot be listed
+        use std::os::unix::fs::PermissionsExt;
+        put(&h, "session-s3", "1.json", &rec("1", "pending"));
+        let d = h.join(".claude/tasks/session-s3");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = ladder(hs, "s3", None);
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(denied.is_none(), "an unlistable directory is unreadable, not absent");
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+    }
+
+    fn task_no_status() -> String {
+        r#"{"id":"2","subject":"x"}"#.to_string()
+    }
+
+    #[test]
+    fn each_switch_changes_the_ladder_in_both_directions() {
+        let h = home("switches");
+        let hs = h.to_str().unwrap();
+        put(&h, "L", "1.json", &rec("1", "pending"));
+        std::fs::create_dir_all(h.join(".claude/tasks/session-s1")).unwrap();
+        let off = Switches { named: false, empty_is_list: false, scope_list: false };
+        assert!(ladder_with(hs, "s1", Some("L"), off).is_none(), "named off, empty directory not a list: no store");
+        assert!(ladder_with(hs, "s1", Some("L"), Switches { named: true, ..off }).unwrap().shared);
+        let empty = ladder_with(hs, "s1", Some("L"), Switches { empty_is_list: true, ..off }).unwrap();
+        assert!(!empty.shared && empty.tasks.is_empty(), "named off, empty directory is the list");
+        let t = transcript(&h, "t.jsonl", &["1"]);
+        let on = Switches { named: true, empty_is_list: false, scope_list: true };
+        assert_eq!(session_has_open_with(hs, Some("s1"), Some(&t), Some("L"), on), Some(true), "scope list: the whole list");
+        put(&h, "L", "9.json", &rec("9", "pending"));
+        std::fs::write(h.join(".claude/tasks/L/1.json"), rec("1", "completed")).unwrap();
+        assert_eq!(session_has_open_with(hs, Some("s1"), Some(&t), Some("L"), on), Some(true), "scope list: #9 counts");
+        assert_eq!(
+            session_has_open_with(hs, Some("s1"), Some(&t), Some("L"), Switches { scope_list: false, ..on }),
+            None,
+            "scope session: #9 is not known to the tail"
+        );
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+    }
+
+    /// The shared fixtures (`tests/fixtures/task-store-ladder.json`) through this reader; the JavaScript reader runs the same file
+    /// (`host_tests_d`, `the_shared_ladder_fixtures_give_the_same_answers_through_the_script_reader`).
+    #[test]
+    fn the_shared_ladder_fixtures_give_the_documented_answers_through_the_rust_reader() {
+        let fx: Value = serde_json::from_str(include_str!("../../../tests/fixtures/task-store-ladder.json")).unwrap();
+        for (n, c) in fx["cases"].as_array().unwrap().iter().enumerate() {
+            let name = c["name"].as_str().unwrap();
+            let h = home(&format!("fx{n}"));
+            let hs = h.to_str().unwrap();
+            for (dir, files) in c["dirs"].as_object().unwrap() {
+                std::fs::create_dir_all(h.join(".claude/tasks").join(dir)).unwrap();
+                for (f, body) in files.as_object().unwrap() {
+                    let text = body.as_str().map_or_else(|| body.to_string(), str::to_string);
+                    put(&h, dir, f, &text);
+                }
+            }
+            let ids: Vec<String> = c["created"].as_array().unwrap().iter().map(|v| v.to_string()).collect();
+            let t = transcript(&h, "t.jsonl", &ids.iter().map(String::as_str).collect::<Vec<_>>());
+            let s = &c["switches"];
+            let sw = Switches {
+                named: s["named"].as_bool().unwrap(),
+                empty_is_list: s["empty_is_list"].as_bool().unwrap(),
+                scope_list: s["scope_list"].as_bool().unwrap(),
+            };
+            let want = c.get("rust_open").unwrap_or(&c["open"]).as_bool();
+            assert_eq!(session_has_open_with(hs, c["session"].as_str(), Some(&t), c["list_id"].as_str(), sw), want, "{name}");
+            crate::discard::harmless(std::fs::remove_dir_all(&h));
+        }
     }
 }

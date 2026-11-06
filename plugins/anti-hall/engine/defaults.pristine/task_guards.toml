@@ -321,12 +321,12 @@ doc = "Keep one snapshot file of each session's rebuilt task list and lay the tr
 value = true
 
 [taskstate.snapshot_drop_provisional]
-doc = "Drop provisional task ids (taskstate.provisional_id_re: the tool-use id of a TaskCreate whose result is not seen) from a task snapshot when it is written and when it is read, so a ghost an older rebuild saved disappears at the next rebuild. snapshot_format is not bumped for this: a bump would discard the real tasks the snapshot alone remembers. False = ghosts are kept (kill switch)."
+doc = "Drop provisional task ghosts from a task snapshot when it is written and when it is read, by provenance only: a task the rebuild itself shows as an unresolved TaskCreate (flagged `prov` in the answer, never written), a snapshot entry carrying that flag, or an unflagged entry of the exact harness shape (taskstate.provisional_id_re) whose id the tail shows as a TaskCreate tool-use id. A TodoWrite item (marked `src: todo` when written) is never dropped, and an entry whose provenance cannot be established is kept. snapshot_format is not bumped for this: a bump would discard the real tasks the snapshot alone remembers. False = ghosts are kept (kill switch)."
 value = true
 
 [taskstate.provisional_id_re]
-doc = "JavaScript regex source of a provisional task key: the tool-use id of a TaskCreate (`toolu_...`) or the non-string form the engine marks with U+0001. A real task is keyed by its number, a TodoWrite item by its id, content or index, none of which take this shape."
-value = '^(?:toolu_|\u0001)'
+doc = "JavaScript regex source of the EXACT shape of a harness tool-use id (`toolu_` and at least 20 letters or digits, or the non-string form the engine marks with U+0001). The shape alone proves nothing, as a TodoWrite item may carry any id: an older snapshot entry (one with no `prov` flag) of this shape is dropped only when the transcript tail also shows the id as a TaskCreate tool-use id; with no such proof it is kept and counted under snapshot_ghost_kept."
+value = '^(?:toolu_[0-9A-Za-z]{20,}$|\u0001)'
 
 [taskstate.snapshot_dir]
 doc = "Directory of the task snapshots, relative to paths.base_dir (the home directory's state directory). One file per session transcript, overwritten in place. The engine never deletes a snapshot: when taskstate.snapshot_max_files is reached no new file is made, and old ones are left for the owner to remove."
@@ -1707,6 +1707,10 @@ value = { kind = "counter", unit = "files", labels = [] }
 
 [metric.snapshot_ghost_dropped]
 doc = "Provisional task ids (taskstate.provisional_id_re) dropped from a session's snapshot when it was read: ghosts an older rebuild saved, gone from the answer and from the file."
+value = { kind = "counter", unit = "tasks", labels = [] }
+
+[metric.snapshot_ghost_kept]
+doc = "Snapshot entries whose id has the exact shape of a harness tool-use id (taskstate.provisional_id_re) but no provenance (no `prov` flag, not shown by the tail as a TaskCreate): kept, as a task is never dropped without proof."
 value = { kind = "counter", unit = "tasks", labels = [] }
 
 [metric.taskstate_store_source]

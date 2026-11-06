@@ -70,7 +70,7 @@ fn task_json(t: &Task) -> Value {
 /// window the way `lib/task-subject-backfill.js` does (a bounded, exact scan; where Node's clock would decide, the answer is
 /// `unsure`). `wide` is only read by `scan`: the widened window searched for task activity when a cut tail holds none.
 ///
-/// - `guard` and `state`: `{"tasks":[...], "windowReset":bool, "firstCreated":number|null, "deleted":[id], "created":[id],
+/// - `guard` and `state`: `{"provisional":[id], "todoIds":[id], "tasks":[...], "windowReset":bool, "firstCreated":number|null, "deleted":[id], "created":[id],
 ///   "createdBy":{id: toolUseId}, "truncated":bool}` (`deleted`: the ids a call in the window found "not found"; `created`: the numbers
 ///   its `TaskCreate` results named; `createdBy`: the tool-use id of the create that made each) in the order a JavaScript `Map` would hold them, or `{"tasks":[],"unreadable":true}` when the file cannot be read;
 /// - `scan`: `{"sawTaskActivity", "taskStoreReset", "inProgressCount", "openTaskIds":[...]}`, or `{"quiet":true}` when the Node
@@ -121,6 +121,8 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
         "deleted": facts.deleted,
         "created": facts.created,
         "createdBy": facts.created_by.iter().map(|(n, u)| (n.clone(), json!(u))).collect::<serde_json::Map<String, Value>>(),
+        "provisional": facts.provisional,
+        "todoIds": facts.todo_ids,
         "truncated": truncated,
     })
     .to_string()

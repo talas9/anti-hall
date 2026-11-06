@@ -1,0 +1,405 @@
+{
+ "doc": "Shared ladder fixtures: the same inputs through the Rust reader (checks/taskstate/store.rs) and the JavaScript one (tk.tasksOf, host_tests_d). dirs: store directories under <home>/.claude/tasks, each a map file -> record (object) or raw text. created: the task numbers the session's transcript created (all pending there). switches: the three ladder switches. open: whether the session has an open task, as both ladders answer; rust_open overrides it where the Rust reader answers differently on purpose (null = cannot tell).",
+ "cases": [
+  {
+   "name": "named_unreadable_record_is_no_list_transcript_answers",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {
+     "1.json": "{not json",
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "completed"
+     }
+    },
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    1
+   ],
+   "open": true
+  },
+  {
+   "name": "named_list_session_scoped_other_sessions_open_ids_are_not_this_sessions",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {
+     "1.json": {
+      "id": "1",
+      "subject": "task 1",
+      "status": "pending"
+     },
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "completed"
+     },
+     "3.json": {
+      "id": "3",
+      "subject": "task 3",
+      "status": "pending"
+     }
+    },
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    2
+   ],
+   "open": false,
+   "rust_open": null,
+   "note": "the tail knows #2 only; the guards also know the snapshot's ids, which the Rust reader cannot read, so it answers 'cannot tell' where an open id of the list is unknown to the tail"
+  },
+  {
+   "name": "named_list_session_scoped_known_open_id_is_open",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {
+     "1.json": {
+      "id": "1",
+      "subject": "task 1",
+      "status": "pending"
+     },
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "completed"
+     },
+     "3.json": {
+      "id": "3",
+      "subject": "task 3",
+      "status": "pending"
+     }
+    },
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    1,
+    2
+   ],
+   "open": true
+  },
+  {
+   "name": "named_list_session_scoped_known_ids_all_done",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "completed"
+     }
+    },
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    2
+   ],
+   "open": false
+  },
+  {
+   "name": "named_list_scope_list_reads_the_whole_list",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": true
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {
+     "1.json": {
+      "id": "1",
+      "subject": "task 1",
+      "status": "completed"
+     },
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "pending"
+     }
+    },
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    1
+   ],
+   "open": true
+  },
+  {
+   "name": "named_list_scope_session_ignores_an_id_the_session_does_not_know",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {
+     "1.json": {
+      "id": "1",
+      "subject": "task 1",
+      "status": "completed"
+     },
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "completed"
+     }
+    },
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    1
+   ],
+   "open": false
+  },
+  {
+   "name": "empty_named_list_a_known_id_it_lacks_is_gone",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "E",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "E": {}
+   },
+   "created": [
+    1
+   ],
+   "open": false
+  },
+  {
+   "name": "named_switch_off_the_named_list_is_not_read",
+   "switches": {
+    "named": false,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {
+     "1.json": {
+      "id": "1",
+      "subject": "task 1",
+      "status": "completed"
+     }
+    }
+   },
+   "created": [
+    1
+   ],
+   "open": true
+  },
+  {
+   "name": "named_list_without_a_directory_falls_to_the_session_directory",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "nolist",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "session-aaaaaaaa": {
+     "5.json": {
+      "id": "5",
+      "subject": "task 5",
+      "status": "completed"
+     }
+    }
+   },
+   "created": [
+    5
+   ],
+   "open": false
+  },
+  {
+   "name": "invalid_list_id_is_no_list",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "../x",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "session-aaaaaaaa": {
+     "5.json": {
+      "id": "5",
+      "subject": "task 5",
+      "status": "pending"
+     }
+    }
+   },
+   "created": [
+    5
+   ],
+   "open": true
+  },
+  {
+   "name": "empty_session_directory_is_no_store_by_default",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": null,
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    5
+   ],
+   "open": true
+  },
+  {
+   "name": "empty_session_directory_is_the_list_when_the_switch_is_on",
+   "switches": {
+    "named": true,
+    "empty_is_list": true,
+    "scope_list": false
+   },
+   "list_id": null,
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    5
+   ],
+   "open": false
+  },
+  {
+   "name": "session_directory_with_an_unreadable_record_is_no_list_even_when_empty_is_list",
+   "switches": {
+    "named": true,
+    "empty_is_list": true,
+    "scope_list": false
+   },
+   "list_id": null,
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "session-aaaaaaaa": {
+     "1.json": "{not json",
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "completed"
+     }
+    }
+   },
+   "created": [
+    1
+   ],
+   "open": true
+  },
+  {
+   "name": "session_directory_with_a_record_without_status_is_no_list",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": null,
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "session-aaaaaaaa": {
+     "1.json": {
+      "id": "1",
+      "subject": "x"
+     },
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "completed"
+     }
+    }
+   },
+   "created": [
+    1
+   ],
+   "open": true
+  },
+  {
+   "name": "session_directory_with_tasks_is_the_list",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": null,
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "session-aaaaaaaa": {
+     "1.json": {
+      "id": "1",
+      "subject": "task 1",
+      "status": "completed"
+     },
+     "2.json": {
+      "id": "2",
+      "subject": "task 2",
+      "status": "pending"
+     }
+    }
+   },
+   "created": [
+    1
+   ],
+   "open": true
+  },
+  {
+   "name": "session_id_with_a_foreign_character_has_no_store",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": null,
+   "session": "a.b",
+   "dirs": {
+    "session-a.b": {
+     "1.json": {
+      "id": "1",
+      "subject": "task 1",
+      "status": "completed"
+     }
+    }
+   },
+   "created": [
+    1
+   ],
+   "open": true
+  }
+ ]
+}

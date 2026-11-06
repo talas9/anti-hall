@@ -366,7 +366,17 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
             }
         }
     }
-    let mut facts = Facts { tasks, window_reset, first_created, unsure: s.unsure, deleted: Vec::new(), created: Vec::new(), created_by: Vec::new() };
+    let mut facts = Facts {
+        tasks,
+        window_reset,
+        first_created,
+        unsure: s.unsure,
+        deleted: Vec::new(),
+        created: Vec::new(),
+        created_by: Vec::new(),
+        provisional: Vec::new(),
+        todo_ids: Vec::new(),
+    };
     if truncated && backfill(&mut facts, path, window).is_err() {
         s.unsure = true;
     }

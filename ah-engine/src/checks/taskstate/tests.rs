@@ -400,4 +400,23 @@ mod snapshot_facts {
         lines.extend(create_as(1, "again")); // a new list numbered from one: the old ids are gone, the new create is named by its own id
         assert_eq!(by(&facts_of(&lines)), ["1=again1"]);
     }
+
+    #[test]
+    fn a_create_without_a_result_is_provisional_and_a_todowrite_item_is_a_todo_id_whatever_its_shape() {
+        let mut lines = Vec::new();
+        lines.extend(create(1));
+        lines.push(use_call("toolu_inflight", "TaskCreate", json!({"subject": "no result yet"})));
+        let f = facts_of(&lines);
+        assert_eq!(f.provisional, ["toolu_inflight"], "only the create whose result is not shown");
+        assert!(f.todo_ids.is_empty());
+        let mut todo = Vec::new();
+        todo.push(use_call("tw", "TodoWrite", json!({"todos": [{"id": "toolu_real", "content": "x", "status": "pending"}]})));
+        let g = facts_of(&todo);
+        assert_eq!(g.todo_ids, ["toolu_real"]);
+        assert!(g.provisional.is_empty(), "a TodoWrite id is never provisional");
+        let mut after = todo;
+        after.push(use_call("tl", "TaskList", json!({})));
+        after.push(use_result("tl", "No tasks found"));
+        assert!(facts_of(&after).todo_ids.is_empty(), "a reset clears them");
+    }
 }
