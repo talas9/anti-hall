@@ -115,6 +115,12 @@ pub(crate) fn bumped_on_this_thread(name: &str, labels: &[(&str, &str)]) -> u64 
     THIS_THREAD.with(|t| t.lock().unwrap_or_else(|e| e.into_inner()).get(&series(name, labels)).copied().unwrap_or(0))
 }
 
+/// Test only: forget what the calling thread bumped (a test that checks several rounds one by one).
+#[cfg(test)]
+pub(crate) fn reset_this_thread() {
+    THIS_THREAD.with(|t| t.lock().unwrap_or_else(|e| e.into_inner()).clear());
+}
+
 /// Add one to the counter `name` from code that has no `Metrics` at hand. A name nobody registered is ignored (a test catches it),
 /// and so is a new series once `telemetry.max_series` are waiting, so the table stays bounded between two drains.
 pub fn bump(name: &str, labels: &[(&str, &str)]) {

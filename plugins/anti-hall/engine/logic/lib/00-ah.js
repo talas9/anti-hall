@@ -82,8 +82,9 @@ var ah = {
     // when it could not be taken. A lock still held when the call ends is released by the engine.
     // `waitMs` (optional) replaces the group's wait (never past script.lock_wait_max_ms). Up to script.lock_max_held at once; take nested ones in a fixed order.
     lock: function (rel, group, waitMs) { return ahNull(ahHost.lockAcquire(rel, group, waitMs === undefined ? null : waitMs)); },
-    // A kernel flock on a file no other (Node) writer locks: a handle, 'busy' (the wait ran out), or null (cannot be had here). Release with unlock.
-    flock: function (rel, group, waitMs) { var h = ahNull(ahHost.flockAcquire(rel, group, waitMs === undefined ? null : waitMs)); return h === 0 ? 'busy' : h; },
+    // A kernel flock on a file no other (Node) writer locks: a handle, 'busy' (the wait ran out), 'failed' (not acquired: the file cannot be opened or is a link, or flock failed: write nothing),
+    // or null (ONLY: this platform or filesystem has no flock at all; the one case a caller may use another lock instead). Release with unlock.
+    flock: function (rel, group, waitMs) { var h = ahNull(ahHost.flockAcquire(rel, group, waitMs === undefined ? null : waitMs)); return h === 0 ? 'busy' : (h === -1 ? 'failed' : h); },
     unlock: function (h) { return ahHost.lockRelease(h); },
     // The fenced commit of a file guarded by the lock `h` taken in this call: `fenceSweep` (right after taking the lock, before
     // reading `rel`) removes earlier holders' staged copies `<rel><infix>*`; `writeFenced` stages, re-checks that `h` is still

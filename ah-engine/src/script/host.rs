@@ -319,18 +319,20 @@ fn scoped_target(home: &str, rel: &str, len: usize, want_dir: bool) -> rquickjs:
     let root: PathBuf = Path::new(home).join(parts[0]);
     let mut cur = root.clone();
     let last = parts.len() - 1;
+    let mut parent_is_dir = false; // the walk below just saw the directory the file goes in (not a link): no need to make it
     for (i, part) in parts.iter().enumerate().skip(1) {
         cur.push(part);
         match std::fs::symlink_metadata(&cur) {
             Ok(m) if m.file_type().is_symlink() => return Err(refused(defaults::text("script.write_why_link"))),
             // a file where a directory is needed, or a directory where the file goes: the disk cannot take the write
             Ok(m) if (i < last && !m.is_dir()) || (i == last && (want_dir != m.is_dir() || (!want_dir && !m.is_file()))) => return Ok(None),
+            Ok(_) if i + 1 == last && !want_dir => parent_is_dir = true,
             _ => {}
         }
     }
     // the root itself may be a link the owner set up (a state directory on another disk); what is refused is a link BELOW it
     let Some(parent) = (if want_dir { Some(cur.as_path()) } else { cur.parent() }) else { return Ok(None) };
-    if std::fs::create_dir_all(parent).is_err() {
+    if !parent_is_dir && std::fs::create_dir_all(parent).is_err() {
         return Ok(None);
     }
     let (Ok(real_root), Ok(real_parent)) = (std::fs::canonicalize(&root), std::fs::canonicalize(parent)) else { return Ok(None) };
@@ -530,11 +532,15 @@ pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) ->
 }
 
 /// `flockAcquire(rel, group, waitMs?)`: like [`lock_acquire`] with a kernel `flock(LOCK_EX)` on the file `rel` (created if absent,
-/// never deleted, never truncated) in place of the Node lock protocol: no owner record, no staleness, no takeover, and a holder that
-/// dies drops it. Only for a file no Node peer locks. The step is `<group>.lock_step_ms`. Returns the handle number, `0` when the wait
-/// ran out (held elsewhere), or `null` when no lock can be had here (the file cannot be opened, or the filesystem has no flock): the
-/// script then decides (it falls back to [`lock_acquire`]). Released by [`lock_release`] or at the end of the call.
+/// never deleted, never truncated, opened `O_NOFOLLOW` with mode 0600) in place of the Node lock protocol: no owner record, no
+/// staleness, no takeover, and a holder that dies drops it. Only for a file no Node peer locks. The step is `<group>.lock_step_ms`.
+/// Returns the handle number (the lock is held), `0` when the wait ran out (held elsewhere), `-1` when the lock could not be acquired
+/// (the file cannot be opened or is a link, the count of held locks is spent, or flock failed with an errno that is not "unsupported":
+/// the script must write nothing), or `null` when, and only when, the filesystem or platform has no flock at all (`ENOTSUP`,
+/// `EOPNOTSUPP`, `ENOSYS`): only then may the script fall back to [`lock_acquire`], whose own file lock is a different protocol
+/// that does not exclude a holder of this one. Released by [`lock_release`] or at the end of the call.
 pub fn flock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
+    let failed = || Ok(Some(-1.0)); // the handle number's "not acquired" answer (see the doc above)
     let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
         return Err(err("flockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
     };
@@ -543,33 +549,33 @@ pub fn flock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -
     }
     let held_now = HELD.with(|h| h.borrow().len());
     if held_now as u64 >= defaults::num("script.lock_max_held") {
-        return Ok(None);
+        return failed();
     }
-    let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(None) };
-    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).mode_0600().open(&path) else { return Ok(None) };
+    let Some(path) = scoped_target(home, rel, 0, false)? else { return failed() };
+    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).mode_0600().nofollow().open(&path) else {
+        return failed();
+    };
     let started = std::time::Instant::now();
     let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
     let deadline = started + std::time::Duration::from_millis(params.wait_ms);
     let outcome = loop {
-        use std::os::unix::io::AsRawFd;
-        // SAFETY: `file` is open and owned here, so its descriptor is valid; flock takes only it and flags.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            break Some(true);
-        }
-        match std::io::Error::last_os_error().raw_os_error() {
-            Some(libc::EWOULDBLOCK) | Some(libc::EINTR) => {}
-            _ => break None, // ENOTSUP, ENOLCK, ...: this filesystem has no flock
+        match try_flock(&file) {
+            Ok(()) => break Ok(true),
+            Err(e) if e == libc::EWOULDBLOCK || e == libc::EINTR => {}
+            Err(e) if e == libc::ENOTSUP || e == libc::EOPNOTSUPP || e == libc::ENOSYS => break Err(true),
+            Err(_) => break Err(false), // ENOLCK, EBADF, EIO, ...: the lock was not taken, and no one said flock does not exist here
         }
         if std::time::Instant::now() >= deadline {
-            break Some(false);
+            break Ok(false);
         }
         std::thread::sleep(std::time::Duration::from_millis(params.step_ms.max(1)));
     };
     credit_blocking(started);
     match outcome {
-        None => Ok(None),
-        Some(false) => Ok(Some(0.0)),
-        Some(true) => {
+        Err(true) => Ok(None),
+        Err(false) => failed(),
+        Ok(false) => Ok(Some(0.0)),
+        Ok(true) => {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
             let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             HELD.with(|h| h.borrow_mut().push((id, Kind::Flock(file), guard)));
@@ -578,12 +584,44 @@ pub fn flock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test seam: the errno the next `try_flock` calls of this thread fail with (the kernel's own answers cannot be forced).
+    static FLOCK_ERRNO: std::sync::atomic::AtomicI32 = const { std::sync::atomic::AtomicI32::new(0) };
+}
+
+/// Test seam: make the `flock` calls of this thread fail with `errno` (`None`: the real call again).
+#[cfg(test)]
+pub(crate) fn set_flock_errno(errno: Option<i32>) {
+    FLOCK_ERRNO.with(|f| f.store(errno.unwrap_or(0), std::sync::atomic::Ordering::Relaxed));
+}
+
+/// One non-blocking `flock(LOCK_EX)`: `Ok` when taken, else the errno.
+fn try_flock(file: &std::fs::File) -> Result<(), i32> {
+    use std::os::unix::io::AsRawFd;
+    #[cfg(test)]
+    match FLOCK_ERRNO.with(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
+        0 => {}
+        e => return Err(e),
+    }
+    // SAFETY: `file` is open and owned by the caller, so its descriptor is valid; flock takes only it and flags.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO))
+    }
+}
+
 trait Mode0600 {
     fn mode_0600(&mut self) -> &mut Self;
+    fn nofollow(&mut self) -> &mut Self;
 }
 impl Mode0600 for std::fs::OpenOptions {
     fn mode_0600(&mut self) -> &mut Self {
         std::os::unix::fs::OpenOptionsExt::mode(self, 0o600)
+    }
+    fn nofollow(&mut self) -> &mut Self {
+        std::os::unix::fs::OpenOptionsExt::custom_flags(self, libc::O_NOFOLLOW)
     }
 }
 
