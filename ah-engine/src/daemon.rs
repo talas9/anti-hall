@@ -1664,6 +1664,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     crate::deadline::end();
     let (event, session) = crate::load::take_request();
     crate::failopen::drain_into(&sh.telemetry);
+    crate::checks::guardkit::settings::drain_invalid_into(&sh.telemetry);
     crate::failopen::sync_notice(false);
     if let Some(res) = res {
         record_wire(sh, &event, wait, judge, res);

@@ -15,6 +15,7 @@ load.rs | Load.minutes | newest load.minutes_kept buckets, each bucket capped | 
 tier.rs | Bus.subs | max_channels channels and a bounded queue per subscriber | pub/sub channels
 transcript/registry.rs | Indexes.slots | `max` slots, entries expire after ttl_ms (cfg) | transcript index slots; registry follow-up (transcript caches belong to another job)
 checks/guardkit/settings.rs | SEEN | at most guardkit.settings_seen_max + 1 entries; when len is already over the configured max, the next new-key insert clears first (max 0 still permits one) | unreadable settings-file verdict cache keyed by file metadata
+checks/guardkit/settings.rs | INVALID_SEEN | at most guardkit.settings_invalid_pending_max entries (note_invalid keeps room = max - len); drained into the settings_value_invalid counter after every request | out-of-range settings values waiting to be counted
 meshw/ident.rs | SUPER_CACHE | at most mesh_write.super_cache_max entries; a full map drops its expired entries (mesh_write.super_cache_ttl_ms), then everything | the superproject answers git gave per nested checkout (identity.js superCache); registry follow-up
 devswarm_rt/reconcile.rs | Hold.edges | registered as mem.devswarm_rt_* and cfg.edge_cap also limits retained edges | recent realtime edges are recoverable and evicted first
 devswarm_rt/reconcile.rs | Hold.generations | registered as mem.devswarm_rt_* and stale weak snapshots are pruned while accounting | old Arc-held snapshots stay charged until callers drop them
