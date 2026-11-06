@@ -32,7 +32,6 @@ pub fn cfg() -> toml::Table {
     text.parse::<toml::Table>().unwrap()
 }
 
-/// A string list at `section.key` of harness.toml.
 /// Make the outcome independent of the machine: the engine also looks for fixed machine locations (the DevSwarm app's own
 /// `hivecontrol`, which execs a Node script) that no scratch HOME or PATH can hide. In the plugin COPY (both the live and the
 /// pristine defaults) each setting named in harness.toml `[absent] settings` gets an empty list, so a machine that has the app
@@ -64,6 +63,7 @@ fn absent_machine_locations(plugin: &Path, cfg: &toml::Table) {
     }
 }
 
+/// A string list at `section.key` of harness.toml.
 pub fn cfg_list(cfg: &toml::Table, section: &str, key: &str) -> Vec<String> {
     cfg[section][key].as_array().unwrap_or_else(|| panic!("harness.toml {section}.{key}")).iter().map(|v| v.as_str().unwrap().to_string()).collect()
 }
