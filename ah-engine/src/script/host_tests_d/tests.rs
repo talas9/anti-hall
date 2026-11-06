@@ -1686,14 +1686,18 @@ fn a_store_directory_that_cannot_be_listed_is_no_answer_for_the_named_list_and_t
     let h = home("ladder-denied");
     ladder_probe(&h);
     let a = ladder_transcript(&h, "a", &[1], false);
-    for (dir, list) in [("L", Some("L")), ("session-aaaaaaaa", None)] {
+    // each case also has a readable fallback store that says #1 is done: it must not stand in for the list that cannot be listed
+    for (dir, list, fallback) in [("L", Some("L"), "session-aaaaaaaa"), ("session-aaaaaaaa", None, "aaaaaaaa-1")] {
         store_put(&h, dir, "1", "completed");
+        store_put(&h, fallback, "1", "completed");
         let d = format!("{h}/.claude/tasks/{dir}");
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o000)).unwrap();
         let got = ladder_read_sw(&h, &a, "aaaaaaaa-1", list, dir, Some(sw(true, true, false)));
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(got.0, ids_status(&[("1", "pending")]), "{dir}: an unlistable directory is not an empty list");
         assert!(!got.1, "{dir}");
+        std::fs::remove_dir_all(format!("{h}/.claude/tasks/{fallback}")).unwrap();
+        std::fs::remove_dir_all(format!("{h}/.claude/tasks/{dir}")).unwrap();
     }
 }
 
