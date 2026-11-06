@@ -113,7 +113,7 @@ const ALLOW: &[(&str, &str)] = &[
     ),
     (
         "src/metrics.rs",
-        "`child_counts`, run only outside the daemon (`bump_by` and `bump_by_shared` test `in_daemon` first): reads the marker variable (name from `schedule.child_counts_env`) the daemon set on a scheduled subprocess job, honoured only while the parent pid is the daemon's; no request is answered from it",
+        "`child_counts`, reached from `bump_by` (only when `in_daemon` is false) and from the exit emitter `write_child_counts` (src/main.rs after `cli::run`, which has no daemon exclusion and so also runs in the daemon process once serve returns): reads the marker variable (name from `schedule.child_counts_env`) the daemon set on a scheduled subprocess job, honoured only while the parent pid is the one named in the marker; the answer is resolved once and kept; no request is answered from it",
     ),
     (
         "src/script/host_tests_d/tests.rs",
