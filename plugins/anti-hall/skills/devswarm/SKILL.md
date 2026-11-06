@@ -27,7 +27,7 @@ project is running DevSwarm, not to this plugin.
 
 ## command-guard's destructive-read redirect (shipped v0.53.0, later hardened to an unconditional block)
 
-Separate from the four addons above — this lives in the always-on `command-guard.js`
+Separate from the four addons above — this lives in the always-on `command-guard`
 hook, not in the DevSwarm companion. Under a DevSwarm-active session, `command-guard`
 redirects the two CONSUMING native `hivecontrol` inbox reads, in ALL contexts (a
 delegated subagent read drains the queue identically): **both** `hivecontrol workspace
@@ -59,7 +59,7 @@ breaking those would break DevSwarm spawn/merge. Own skip name `devswarm-send-gu
 (independent of `devswarm-read-guard` and command-guard's own skip), honors
 `DISABLE_ANTIHALL_DEVSWARM=1`. The block's reason redirects to the mesh CLI: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --message-file <path>` (or `--to <meshId>`) to
 direct-message, `~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat <id> --summary "<text>"` to report
-status. Fires on both platforms — `command-guard.js` is the single shared hook file, so a
+status. Fires on both platforms — `command-guard` is the single shared check, so a
 Codex Bash tool call is blocked identically — but the PROACTIVE per-turn reminder that
 keeps the mesh top-of-mind (below) is Claude-only; a Codex session only learns this
 reactively, at the moment it attempts a native send. Full detail:
@@ -68,7 +68,7 @@ reactively, at the moment it attempts a native send. Full detail:
 A companion guard closes the same hole for RAW file reads of the durable inbox/store
 (`cat`/`head`/`grep`/… via Bash, or the `Read` tool) — those don't drain the native
 queue, but bypass the durable cursor (cursor desync) and violate the store's
-write/derive layering. `command-guard.js` itself catches the shell-verb form (both
+write/derive layering. `command-guard` itself catches the shell-verb form (both
 platforms); a Claude-only PreToolUse hook, `inbox-read-guard`, catches a
 direct `Read` tool call (not mirrored to Codex — it guards Claude's own `Read` tool).
 `inbox/**` is always denied; the store's db/journal files are denied once a Primary
@@ -175,7 +175,7 @@ its git toplevel (any content, existence-only check — create it locally,
 `.anti-hall/` is gitignored, never commit it), or the operator set
 `ANTIHALL_STASH_GUARD=1`. Unarmed, the guard is a pure no-op in every context.
 Once armed, it blocks in **both** subagent and coordinator context — own skip
-name `git-stash-guard` (in `skip-guard.js`'s `DESTRUCTIVE` set, so a blanket
+name `git-stash-guard` (in the skip guard's `DESTRUCTIVE` set, so a blanket
 `"all"` skip cannot silence it).
 
 ## Always-listening reception (child, per turn)
@@ -653,7 +653,7 @@ preference:
   hand-parsing it is exactly the kind of improvisation this document exists to prevent.
 
 This is also mechanically enforced: `inbox-read-guard` blocks Claude's own
-`Read` tool on `inbox/**`, and `command-guard.js` blocks raw shell reads (`cat`/`head`/
+`Read` tool on `inbox/**`, and `command-guard` blocks raw shell reads (`cat`/`head`/
 `grep`/…) of the same paths on both platforms. The lesson is a real incident, not a
 hypothetical: a real DevSwarm Primary fell back to querying raw sqlite because the CLI
 hadn't yet surfaced `roster`/`diagnose`/`healthcheck` clearly enough — don't repeat that.
@@ -853,7 +853,7 @@ escalation lands in `orphans[]` rather than the workspace's own row, and the blo
 `devswarm-parent-gate` Stop hook does not check `orphans[]` (only the informational
 `devswarm-parent-inbox` does).
 
-**Daemon — unchanged.** `devswarm-ingest.js` and its per-project install/health-check
+**Daemon — unchanged.** The engine ingest duty and its per-project install/health-check
 machinery are untouched by v0.58; the daemon only ever drained the Primary's own reception
 queue, not a fanout mechanism the mesh-only decision needed to touch.
 
@@ -864,7 +864,7 @@ no attack surface beyond what already exists) — and per the honest caveat abov
 MCP included, currently wakes a truly idle session, so an MCP server would not have solved
 the actual gap.
 
-**Codex parity — precise, not aspirational (corrected).** `command-guard.js`'s native-SEND
+**Codex parity — precise, not aspirational (corrected).** `command-guard`'s native-SEND
 block is shared and fires identically for Codex (see above). A prior version of this note
 claimed the five override/reassert hooks (`devswarm-child-role`, `devswarm-child-turn`,
 `devswarm-parent-inbox`, `devswarm-parent-gate`, `devswarm-child-gate`) were
@@ -873,15 +873,15 @@ premise was disproven: `docs/KB-devswarm-hivecontrol.md` §6/§8.7's live-verifi
 fingerprint states `DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` are set
 by hivecontrol per-workspace regardless of agent (`DEVSWARM_AI_AGENT` is the separate var
 naming claude vs codex) — the exact same fact this doc already relies on for
-`command-guard.js`'s own DevSwarm gate above. All five hooks are now registered, unmodified,
+`command-guard`'s own DevSwarm gate above. All five hooks are now registered, unmodified,
 in `codex/hooks/hooks.json`. A Codex agent in an active DevSwarm workspace is therefore
 mechanically prevented from sending a native message AND gets the proactive per-turn "use
 the mesh" reminder, same as a Claude session. What remains genuinely Claude-only: the
 liveness supervisor and its mesh-urgency escalation (it identity-binds to `claude --resume`
 processes specifically) and the on-demand `ah-engine devswarm recover` CLI's own target (a Codex
 operator can still invoke the script, but only against a `claude` workspace). The CLI verbs
-themselves are plain Node scripts a Codex session can invoke directly via Bash — nothing
-agent-specific about the script.
+themselves are `ah-engine devswarm` / `ah-engine mesh` verbs a Codex session can invoke directly via Bash — nothing
+agent-specific about the verbs.
 
 **Parent Stop-gate: count parity + busy-vs-neglect (v0.109.0, two field fixes).**
 `devswarm-parent-gate`'s unread count for a child used to additionally exclude any
@@ -921,7 +921,7 @@ Full reference, source-line citations, and the exact worked example:
 `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.58 mesh-only messaging" note and §8.8's CLI
 table/worked example.
 
-## Migrating historical backlog without a false unread wall — `migrate-state.js --mark-read`
+## Migrating historical backlog without a false unread wall — `--mark-read`
 
 `ah-engine migrate` (a separate verb from the mesh verbs, run once per repo checkout)
 also auto-migrates the DevSwarm store as part of its normal legacy-state fold. By default an
@@ -1003,7 +1003,7 @@ the broader mesh-only COMMUNICATION OVERRIDE directive (see "v0.58 mesh-only mes
 above) — the idle-self-report line above is still child-only, but the hook itself is no
 longer a silent no-op for a Primary session.
 
-**Layer 2 — supervisor poke.** The background sweep (`devswarm-supervisor.js`) computes
+**Layer 2 — supervisor poke.** The background sweep (the engine supervisor duty) computes
 liveness per published workspace descriptor (`liveness`'s
 `computeLiveness`). On a `stale` verdict (both outbound signals — transcript mtime AND
 git activity — idle past threshold, AND a pending unread inbox backlog), it calls
@@ -1132,7 +1132,7 @@ This is the part a DevSwarm-consuming project needs, in order:
 ~/.anti-hall/ah-engine/bin/ah-engine units uninstall
 ```
 
-`devswarm-ingest.js` is the one supervised daemon wrapping `hivecontrol workspace
+the engine ingest duty is the one supervised daemon wrapping `hivecontrol workspace
 monitor` into the substrate store (see `docs/KB-devswarm-hivecontrol.md` §8.7) — it
 shipped in 0.54.0 but nothing auto-started it until this installer landed in 0.54.1.
 Unlike the supervisor (a periodic sweep on `StartInterval`/`.timer`), the ingest daemon
@@ -1196,12 +1196,12 @@ covered machine-wide or for other repos — it proves only that its OWN worktree
   worktree; otherwise it lands in `orphans[]`, unseen by the blocking parent-gate hook.
 
 **3. Env gate.** `DISABLE_ANTIHALL_DEVSWARM=1` is the hard kill-switch. Note the
-supervisor daemon's own gate (`devswarm-supervisor.js`) checks only that switch plus
+supervisor daemon's own gate (the engine supervisor duty) checks only that switch plus
 `ANTIHALL_DEVSWARM_SUPERVISOR=off` — it does **not** require `DEVSWARM_REPO_ID`, because
 that variable is per-session and is absent from a `launchd`/`systemd` background job. The
 real activation signal for the daemon is simply the presence of descriptor files under
 `~/.anti-hall/devswarm/workspaces/`. `DEVSWARM_REPO_ID` (and `ANTIHALL_DEVSWARM_SUPERVISOR=on`)
-is what session-side consumers (`devswarm-detect`, `doctor.js`,
+is what session-side consumers (`devswarm-detect`, `ah-engine doctor`,
 `devswarm-child-role`) check instead.
 
 **4. Keep the descriptor fresh:**
@@ -1210,16 +1210,16 @@ is what session-side consumers (`devswarm-detect`, `doctor.js`,
   zero candidates and abstains (never recovers, never false-positives either).
 - **Delete the descriptor when the workspace closes** — there is no GC. A stale
   descriptor for a closed workspace just sits there abstaining forever (harmless, but
-  noisy in `doctor.js`).
+  noisy in `ah-engine doctor`).
 - `escalated` is a **terminal** verdict (the sweep stops re-targeting it once written) —
   reset it by deleting `~/.anti-hall/devswarm/liveness/<id>.json` once resolved (either by
-  running `ah-engine devswarm recover --id <id>`, or after a human has otherwise handled it).
+  running `ah-engine devswarm recover --id <id> --request <request-id>`, or after a human has otherwise handled it).
 
 ## Config / tuning env
 
 **Automatic sweep** (resolved by `resolveThresholdsFromEnv()` in
 the engine supervisor duty — seconds in, ms out; invalid/absent values fall back
-to the defaults below; both the live sweep and `doctor.js`'s DevSwarm section read
+to the defaults below; both the live sweep and `ah-engine doctor`'s DevSwarm section read
 through it):
 
 | Var | Default | Effect |
@@ -1228,7 +1228,7 @@ through it):
 | `ANTIHALL_DEVSWARM_APP_SYNC` | on | `0` disables the per-tick DevSwarm app-DB sync (v0.108.0). |
 | `ANTIHALL_DEVSWARM_APP_DB` | per-OS app data dir | Path to the DevSwarm app DB, or `off` to disable every app-DB read. |
 | `ANTIHALL_DEVSWARM_FOCUS_MS` | `120000` | How long a UI selection in the app counts as "on screen" (nag suppression); `0` disables. |
-| `ANTIHALL_DEVSWARM_SUPERVISOR` | `auto` | `off` disables the daemon gate; `on`/`auto` otherwise don't change daemon behavior (see gate note above) but do drive `devswarm-detect.js`'s session-side `active` signal. |
+| `ANTIHALL_DEVSWARM_SUPERVISOR` | `auto` | `off` disables the daemon gate; `on`/`auto` otherwise don't change daemon behavior (see gate note above) but do drive `devswarm-detect`'s session-side `active` signal. |
 | `DISABLE_ANTIHALL_DEVSWARM` | unset | `1` = hard kill-switch, overrides everything. |
 | `ANTIHALL_DEVSWARM_IDLE_SEC` | `900` (min 60) | Idle threshold (seconds) before a workspace is a stale candidate. |
 | `ANTIHALL_DEVSWARM_COOLDOWN_SEC` | `600` (min 0) | Cooldown before a re-stale workspace is re-evaluated. |

@@ -23,7 +23,7 @@ workspace too. What follows is what a Codex user needs to know about the four ad
 | Addon | Status | Where |
 |---|---|---|
 | **hivecontrol reference KB** | Reference doc | `docs/KB-devswarm-hivecontrol.md` in the anti-hall source repository — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the parent/child async message-passing model. Includes a parallel OMC/OMX table for the workspace tier (§8.4 of the KB): the workspace-create/merge surface is CLI-identical either way; only the in-workspace fan-out engine differs (Workflow tool + subagents for Claude, `omx team`/workers for Codex). Repo-clone-only — does not ship with a plugin install. |
-| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live (both agents); mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now proactively told that a **child workspace** is its top fan-out tier (above subagents) plus the choice rule, and the guard redirect names `~/.anti-hall/ah-engine/bin/ah-engine devswarm spawn <branch> -p "<brief>"` instead of "spawn a subagent". This reaches **Codex too**: the injecting hooks (`verify-first-orch` rule W, `verify-first`, `task-tracker`) and `command-guard.js` are the SAME files registered in `codex/hooks/hooks.json`. (`edit-guard` carries the same redirect and is registered for Codex on `apply_patch` edits only.) Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session are byte-identical to before. NOT BUILT — **no mechanical classifier** blocks a "workspace-scale" subagent spawn (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` (`devswarm-guard.js`/`devswarm-children.js`) still does not exist. |
+| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live (both agents); mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now proactively told that a **child workspace** is its top fan-out tier (above subagents) plus the choice rule, and the guard redirect names `~/.anti-hall/ah-engine/bin/ah-engine devswarm spawn <branch> -p "<brief>"` instead of "spawn a subagent". This reaches **Codex too**: the injecting hooks (`verify-first-orch` rule W, `verify-first`, `task-tracker`) and `command-guard` are the SAME files registered in `codex/hooks/hooks.json`. (`edit-guard` carries the same redirect and is registered for Codex on `apply_patch` edits only.) Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session are byte-identical to before. NOT BUILT — **no mechanical classifier** blocks a "workspace-scale" subagent spawn (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` (`devswarm-guard.js`/`devswarm-children.js`) still does not exist. |
 | **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped — Claude-only** | the engine supervisor duty (`ah-engine devswarm supervisor`). The automatic background sweep. Recovers **wedged `claude` sessions specifically** (workaround for `claude-code#39755`) — it identity-binds to `claude -p --resume <uuid>` processes by argv, not Codex sessions. This section explains it for awareness; it is not a Codex-side capability. (`devswarm-detect`/`devswarm-role` are Node-era module names; the originals are in the Node backup, `plugins/anti-hall-node/`, and they are shared env-detection helpers, not supervisor-only — `devswarm-child-role`, the SessionStart child self-report hook, is now registered for **both** agents; see below.) |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped — targets `claude` processes only** | `ah-engine devswarm recover`, invoked explicitly per workspace id. Still Claude-only in what it targets (see below), but a Codex-side operator can run it. |
 
@@ -86,7 +86,7 @@ target surface; nothing here signals or resumes a Codex process.
 
 ## command-guard's destructive-read redirect (shipped v0.53.0, later hardened — applies to Codex too)
 
-Unlike the recovery model above, this one is **not** Claude-only: `command-guard.js` is
+Unlike the recovery model above, this one is **not** Claude-only: `command-guard` is
 a single file registered in both `codex/hooks/hooks.json` and the Claude hooks.json, so
 its DevSwarm branch fires identically for a Codex workspace. Under a DevSwarm-active
 session it redirects the two CONSUMING native `hivecontrol` inbox reads, in ALL contexts
@@ -105,7 +105,7 @@ skip-guard's `DESTRUCTIVE` set — a blanket `all` skip does not cover it). Full
 A second guard closes the RAW-file-read hole (`cat`/`head`/`grep`/… of the durable
 inbox/store — doesn't drain the native queue, but desyncs the durable cursor and
 violates the store's write/derive layering). The shell-verb form is caught by
-`command-guard.js` itself — **shared, so this fires on Codex too.** The dedicated
+`command-guard` itself — **shared, so this fires on Codex too.** The dedicated
 `Read`-tool guard (`inbox-read-guard`) is **Claude-only** (not registered in
 `codex/hooks/hooks.json` — it guards Claude's own `Read` tool specifically). Full
 taxonomy: `docs/KB-devswarm-hivecontrol.md` §8.5.
@@ -115,7 +115,7 @@ taxonomy: `docs/KB-devswarm-hivecontrol.md` §8.5.
 A SEPARATE, newer guard branch from the destructive-read redirect above, but with the
 **same shared-file mechanics**: `hivecontrol workspace message-child` and `hivecontrol
 workspace message-parent` — the two native SEND subcommands — are now guard-blocked
-UNCONDITIONALLY whenever DevSwarm is active, in ALL contexts. `command-guard.js` is the
+UNCONDITIONALLY whenever DevSwarm is active, in ALL contexts. `command-guard` is the
 single file registered on both platforms and the DevSwarm-active gate it depends on
 (`devswarm-detect`) keys off `DEVSWARM_REPO_ID`, which hivecontrol sets
 per-workspace regardless of which agent runs there — **so this block fires identically
@@ -135,7 +135,7 @@ hooks' gating `DEVSWARM_*` env vars were Claude-only. That premise was wrong —
 `docs/KB-devswarm-hivecontrol.md` §6/§8.7 (live-verified env fingerprint) states
 `DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` are set by hivecontrol
 per-workspace regardless of agent — `DEVSWARM_AI_AGENT` is the separate var naming
-claude vs codex — the same fact §8.5/§8.7 already established for `command-guard.js`'s own
+claude vs codex — the same fact §8.5/§8.7 already established for `command-guard`'s own
 DevSwarm gate above. All three hooks (plus the SessionStart `devswarm-child-role` and
 the Stop-side `devswarm-parent-gate`/`devswarm-child-gate`) are now registered in
 `codex/hooks/hooks.json`, unmodified, alongside the guard-block. A Codex agent inside an
@@ -184,7 +184,7 @@ the CLI itself runs identically either way. Full detail: `docs/KB-devswarm-hivec
 main thread may run `inbox pull`/`ack`/`read`/`read-primary`/`tick`/`reap-orphans`,
 `heartbeat`, `inbox messages --ack`/`--ack-as-owner`, `mesh read` (without `--peek`/`--seq`),
 or `roster --ack` — a subagent that does advances the shared cursor and the main thread
-silently misses mail. The guard is registered in the shared `command-guard.js` hook
+silently misses mail. The guard is registered in the shared `command-guard` hook
 (`devswarm-subagent-mailbox-guard`), identically in `codex/hooks/hooks.json` — no separate
 Codex code path. Its deny behavior depends on the harness supplying subagent markers
 (`agent_id`/`agent_type`) in the hook payload, which has been verified on Claude Code only.
@@ -264,7 +264,7 @@ Two v0.56.0 additions:
   `<childId>`'s own mesh store partition (zero `hivecontrol` calls; `--child-branch` is
   gone). **Caveat — this now depends on the same repoKey mesh store the v0.57 mesh note
   below still describes as not yet officially Codex-documented:** the script itself has no
-  agent affinity (plain Node, no Claude-specific API) and nothing stops a Codex session
+  agent affinity (engine verbs, no Claude-specific API) and nothing stops a Codex session
   from invoking it directly, but treat it with the same "not yet promoted for Codex"
   posture as `send`/`roster`/`mesh read` below until that status changes. CHILD role: on
   seeing that marker in an unread message, confirm with YOUR user, then run
@@ -474,7 +474,7 @@ If parent↔child messages seem to vanish or the durable inbox disagrees with wh
 sent, the likely cause is a **second process** — outside anti-hall entirely — also calling
 `hivecontrol workspace monitor`/`read-messages` against the same queue (a leftover cron job,
 `launchd`/`systemd`/`pm2` unit, shell loop, or `package.json` script). This is agent-agnostic:
-neither the Claude nor the Codex side of `command-guard.js` can see or block a process outside
+neither the Claude nor the Codex side of `command-guard` can see or block a process outside
 its own tool-call surface. **anti-hall CANNOT mechanically detect or kill an external
 non-tool-call consumer — identification + your own cleanup are the only levers.** Full
 identify → stop → verify recipe: `docs/KB-devswarm-hivecontrol.md` §8.7.2 (`ps aux | grep
@@ -498,9 +498,9 @@ deliberately deferred out of v0.57 to ship the Claude-side work first).
 directly instead of calling hivecontrol) — same documentation-status caveat as the v0.57
 verbs above: technically callable by a Codex session (the script has no agent affinity),
 but not yet promoted here. **The one exception — mechanical, not a documentation
-choice:** v0.58's `command-guard.js` native-SEND block (`message-child`/`message-parent`
+choice:** v0.58's `command-guard` native-SEND block (`message-child`/`message-parent`
 guard-blocked) is NOT gated by this Codex-mesh-support status at all — it fires for a
-Codex session today, unconditionally, because `command-guard.js` is the single shared hook
+Codex session today, unconditionally, because `command-guard` is the single shared check
 file both platforms register (see the section above). A Codex agent in an active DevSwarm
 workspace is mechanically blocked from a native send RIGHT NOW, independent of whether the
 mesh CLI itself is "officially" Codex-supported yet — it just isn't told to use the mesh
@@ -591,7 +591,7 @@ against a `claude` workspace's id (see "On-demand recovery" below).
 
 ### Every CLI verb — `ah-engine mesh`
 
-Agent-agnostic (plain Node, no Claude-specific API) unless noted. **Promotion-status
+Agent-agnostic (engine verbs, no Claude-specific API) unless noted. **Promotion-status
 caveat:** the v0.57/v0.58 mesh verbs (`send`, `roster`, `mesh read`, `heartbeat
 --summary`, `diagnose`, `healthcheck`, `reconcile`, `spawn`, `merge`, and the REVISED
 `archive-request`) are technically callable identically from a Codex session — nothing
@@ -707,7 +707,7 @@ the sqlite/NDJSON store files directly (`cat`/`grep`/a raw file read against
 cursor/derive layering the CLI's own read verbs keep consistent, and the store may
 literally be the append-only journal backend that only `devswarm-store`
 knows how to interpret correctly. Mechanically enforced on both platforms:
-`command-guard.js` blocks raw shell reads of these paths (shared hook, fires identically
+`command-guard` blocks raw shell reads of these paths (shared hook, fires identically
 for a Codex Bash call); the Claude-only `inbox-read-guard` additionally blocks
 Claude's own `Read` tool. This is a real-incident lesson, not a hypothetical: a real
 DevSwarm Primary fell back to querying raw sqlite because the CLI hadn't yet surfaced
@@ -756,7 +756,7 @@ hand.
 
 The mesh is the **ONLY** agent-initiated messaging channel on either platform. Native
 `hivecontrol workspace message-child`/`message-parent` are guard-blocked unconditionally
-whenever DevSwarm is active (`command-guard.js`, shared — fires identically for Codex).
+whenever DevSwarm is active (`command-guard`, shared — fires identically for Codex).
 Report via `heartbeat <id> --summary TEXT`; direct-message via `send --to-primary`/`send
 --to <meshId>`; broadcast via `send --broadcast`; check mesh state via
 `roster`/`diagnose`/`healthcheck`/`inbox read-primary <id>` — subject to the promotion-
@@ -885,7 +885,7 @@ tighter loop), not a genuine event-driven wake.
   for lookups, single commands, scoped investigations and review passes. CLI-identical
   between agents (`… -a codex` vs `… -a claude`); only the in-workspace fan-out differs
   (`omx team`/workers vs Workflow tool + subagents). The injected doctrine + the
-  `command-guard.js` redirect that name this fire for a Codex Primary too (shared hook
+  `command-guard` redirect that name this fire for a Codex Primary too (shared hook
   files); see `anti-hall-orchestration` for the choice rule.
 - Mechanical per-turn override/reassert hooks (`devswarm-child-role`,
   `devswarm-child-turn`, `devswarm-parent-inbox`, `devswarm-parent-gate`,

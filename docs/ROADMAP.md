@@ -7,7 +7,7 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 ## Decisions that shape the plan
 
 - Features ship **between v0.301 and v1.0**, not after it.
-- Node is removed in **v0.301** (ahead of 1.0). With no Node and a missing or broken engine, the hooks **pass through and print one notice** instead of blocking the session.
+- Node is removed in **v0.301** (ahead of 1.0). With no Node and a missing or unreachable engine, the hooks **pass through and print one notice** instead of blocking the session.
 - Native Windows support (#28) is **parked in Later**. It is not a promise.
 - "Engine-only" means Rust primitives plus the QuickJS logic files in `plugins/anti-hall/engine/logic/` plus TOML values. Nothing tunable is compiled into the engine binary.
 - Branches proven merged are deleted at the end of R1. Old GitHub release pages are deleted at 1.0; git tags are always kept.
