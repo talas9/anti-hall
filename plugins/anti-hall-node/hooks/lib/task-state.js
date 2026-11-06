@@ -331,12 +331,12 @@ function collectTU(node) {
 }
 
 
-// Rows that ARE the conversation (engine key taskstate.conversation_row_types in task_guards.toml): the only rows the task model reads.
-// api-request-blob / api-request / api-request-shape rows replay a request's message array (tool uses, never their results) and would
-// be counted as unresolved ghost tasks. A row with no string type is read (legacy shape).
-const CONVERSATION_ROW_TYPES = ['user', 'assistant'];
+// Rows the task model does not read (engine key taskstate.skipped_row_types in task_guards.toml): api-request-blob rows replay a request's
+// message array (task tool uses and their results for tasks the conversation has settled). Every other row, an unknown, empty, missing
+// or non-string type included, is read: a wrongly skipped row can drop a real open task and let a Stop through.
+const SKIPPED_ROW_TYPES = ['api-request-blob'];
 function isConversationRow(entry) {
-  return !entry || typeof entry.type !== 'string' || CONVERSATION_ROW_TYPES.includes(entry.type);
+  return !entry || typeof entry.type !== 'string' || !SKIPPED_ROW_TYPES.includes(entry.type);
 }
 
 module.exports = { isConversationRow, reconstructTasks, classifyOpen, normOwner, normBlockedBy, collectTU, unseenTask, gapsAfterUpdate, fillFromCreate, isOpenTask, isIdleCandidate, openOf, unknownOf, unknownNote };

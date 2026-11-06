@@ -246,12 +246,13 @@ impl TaskMap {
     }
 }
 
-/// Whether a transcript row is part of the conversation the task model may read (`taskstate.conversation_row_types`). A row with no
-/// string `type` is accepted (the legacy shape). Rows of any other type (`api-request-blob` and its kin replay a request's whole message
-/// array) carry copies of tool uses and never their results, so reading them makes ghosts of tasks the conversation has long settled.
+/// Whether a transcript row is part of the conversation the task model may read. Only the row types listed in
+/// `taskstate.skipped_row_types` (request replays, which carry copies of tool uses and tool results of tasks the conversation has long
+/// settled) are skipped. Any other type (unknown, empty, missing, null, numeric) is read: a wrongly skipped row can drop a real open task
+/// and let a Stop through, a wrongly read one at worst keeps a task visible.
 pub fn is_conversation_row(entry: &Value) -> bool {
     match entry.get("type").and_then(Value::as_str) {
-        Some(t) => defaults::list("taskstate.conversation_row_types").contains(&t),
+        Some(t) => !defaults::list("taskstate.skipped_row_types").contains(&t),
         None => true,
     }
 }

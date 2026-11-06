@@ -218,9 +218,9 @@ value = '^\s*Task\s*(?:#\S+)?\s*not\s+found\b'
 doc = "The input fields a task tool call may name its task id in, in order: the harness's `taskId`, then `id`, then `task_id`."
 value = ["taskId", "id", "task_id"]
 
-[taskstate.conversation_row_types]
-doc = "The transcript row types that are the conversation itself, the only rows the task model reads (a TaskCreate/TaskUpdate tool use, a tool result). Rows of any other type, such as the `api-request-blob`, `api-request` and `api-request-shape` rows that replay a request's whole message array, carry copies of tool uses whose results never follow them and would be counted as unresolved ghost tasks. A row with no string `type` is read (legacy shape)."
-value = ["user", "assistant"]
+[taskstate.skipped_row_types]
+doc = "The transcript row types the task model does not read: rows that replay a request's whole message array (the `api-request-blob` rows), which carry copies of task tool uses and of their results for tasks the conversation has long settled, so reading them makes ghost or stale tasks. Every other row type, an unknown, empty, missing or non-string one included, is read as conversation (a skipped real row could let a Stop through with a task open)."
+value = ["api-request-blob"]
 
 [taskstate.tools_collect_keys]
 doc = "The object keys the tool-use collector descends into, in order (the Node `collectToolUses`)."
@@ -1686,7 +1686,7 @@ doc = "Delivered R-idle blocks whose listed tasks had no known start time (a tas
 value = { kind = "counter", unit = "blocks", labels = ["kind"] }
 
 [metric.taskstate_rows_skipped]
-doc = "Transcript rows the task model skipped because their type is not in taskstate.conversation_row_types (replayed API-request rows, not the conversation). Counted once per rebuild pass in the hook dispatcher or the daemon."
+doc = "Transcript rows the task model skipped because their type is in taskstate.skipped_row_types (replayed API-request rows, not the conversation). Counted once per rebuild pass in the hook dispatcher or the daemon."
 value = { kind = "counter", unit = "rows", labels = [] }
 
 [metric.snapshot_written]
