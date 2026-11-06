@@ -1,0 +1,23 @@
+diff --git a/plugins/anti-hall/engine/logic/lib/69-tasks.js b/plugins/anti-hall/engine/logic/lib/69-tasks.js
+index 09333c98..2ec4a393 100644
+--- a/plugins/anti-hall/engine/logic/lib/69-tasks.js
++++ b/plugins/anti-hall/engine/logic/lib/69-tasks.js
+@@ -49,15 +49,15 @@ var tk = {
+     for (var i = 0; i < names.length; i++) {
+       var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
+       var files = ah.fs.readdir(dir);
+-      if (files === null) continue;
++      if (files === null) { if (ah.fs.isDir(dir)) return []; continue; } // MUTATION M1: an unreadable store directory reads as a store of deleted tasks
+       files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
+       if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
+       var out = [];
+       for (var k = 0; k < files.length; k++) {
+         var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
+-        if (raw === null) continue;
++        if (raw === null) return []; // MUTATION M1: an unreadable record reads as the whole store deleted
+         var rec;
+-        try { rec = JSON.parse(raw); } catch (e) { continue; }
++        try { rec = JSON.parse(raw); } catch (e) { return []; } // MUTATION M1: a junk record likewise
+         if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+         out.push({
+           id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
