@@ -41,14 +41,23 @@ var taskSnap = {
     var byId = Object.create(null), seen = Object.create(null), gone = Object.create(null), out = [];
     tail.forEach(function (t) { byId[t.id] = t; });
     deleted.forEach(function (id) { gone[id] = true; });
+    var drop = 0;
     snap.forEach(function (s) {
       if (gone[s.id]) return;
+      if (taskSnap.provisional(s.id)) { drop++; return; } // a ghost an older rebuild saved: never listed again, and the rewrite below drops it from the file
       seen[s.id] = true;
       out.push(byId[s.id] ? taskSnap.merge(byId[s.id], s) : s);
     });
     tail.forEach(function (t) { if (!seen[t.id]) out.push(t); });
+    if (drop > 0) taskSnap.count('snapshot_ghost_dropped', {}, drop);
     return out;
   },
+  // Whether `id` is a provisional key (the tool-use id of a TaskCreate whose result is not seen, or the non-string form): a task keyed so is
+  // in flight in the tail and is never kept in a snapshot (taskstate.snapshot_drop_provisional, taskstate.provisional_id_re). Real ids that
+  // are not numbers (a TodoWrite's) never take this shape.
+  provisional: function (id) { return ah.cfg('taskstate.snapshot_drop_provisional') === true && typeof id === 'string' && jx.re('taskstate.provisional_id_re').test(id); },
+  // The tasks a snapshot may hold: `tasks` without the provisional ones.
+  persisted: function (tasks) { return tasks.filter(function (t) { return !taskSnap.provisional(t.id); }); },
   // A task as a snapshot may hold it: an id and a status that is text or absent. Anything else is a damaged file.
   sound: function (t) {
     return t !== null && typeof t === 'object' && typeof t.id === 'string' && t.id !== '' && (t.status === null || t.status === undefined || typeof t.status === 'string');
@@ -166,11 +175,12 @@ var taskSnap = {
       recovered = tasks.filter(function (t) { return !tailIds[t.id]; }).length;
     }
     var out = sec !== null ? Object.assign({}, r, { tasks: tasks }) : r;
-    var ids = taskSnap.idsOf(tasks, sec !== null ? sec.ids : null, r.createdBy);
+    var keep = taskSnap.persisted(tasks); // what the file holds: an in-flight create stays in the answer but is not written
+    var ids = taskSnap.idsOf(keep, sec !== null ? sec.ids : null, r.createdBy);
     try {
-      var same = sec !== null && JSON.stringify(sec.tasks) === JSON.stringify(tasks) && JSON.stringify(sec.ids || {}) === JSON.stringify(ids);
+      var same = sec !== null && JSON.stringify(sec.tasks) === JSON.stringify(keep) && JSON.stringify(sec.ids || {}) === JSON.stringify(ids);
       if (same && size - sec.size < ah.cfgNum('taskstate.snapshot_refresh_bytes')) return taskSnap.counted(out, recovered);
-      if (tasks.length === 0 && !existed) return r;
+      if (keep.length === 0 && !existed) return r;
       if (!existed) {
         var dir = g.home + '/' + ah.cfg('paths.base_dir') + '/' + ah.cfg('taskstate.snapshot_dir');
         var names = ah.fs.isDir(dir) ? ah.fs.readdir(dir) : [];
@@ -212,8 +222,8 @@ var taskSnap = {
         if (!discarded) taskSnap.mergeOthers(rel, body, variant, p, fmt, max);
         var done = ah.cfg('taskstate.done_statuses');
         var put = function (list) { body.variants[variant] = { size: size, ms: ah.clock.now(), tasks: list, ids: taskSnap.idsOf(list, ids) }; return JSON.stringify(body); };
-        var text1 = put(tasks);
-        if (text1.length > max) text1 = put(tasks.filter(function (t) { return done.indexOf((t.status || '').toLowerCase()) < 0; }));
+        var text1 = put(keep);
+        if (text1.length > max) text1 = put(keep.filter(function (t) { return done.indexOf((t.status || '').toLowerCase()) < 0; }));
         if (text1.length > max) { taskSnap.count('snapshot_error', { kind: 'big' }); return r; }
         if (!ah.state.writeAtomic(rel, text1)) { taskSnap.count('snapshot_error', { kind: 'write' }); return r; }
         taskSnap.count('snapshot_written');

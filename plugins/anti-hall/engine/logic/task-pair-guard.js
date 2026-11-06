@@ -221,32 +221,13 @@ function prgDirRecords(dir) {
   return out;
 }
 
-// The task list the by-id proof reads, in this order; the first that applies is THE list:
-//   1. the NAMED list: the variable taskstate.list_id_env (Claude Code's own list selector) holds a valid id and its store directory exists.
-//      Claude Code then keeps the session's tasks only there and leaves `session-<8>` empty, so the named directory is the list, even when it
-//      is empty (the transcript is never consulted: it may hold stale or foreign tasks).
-//   2. the session's own store directory (taskstate.store_dir_names: the first that holds a task, else any that exists): the list, even when
-//      empty or holding nothing valid, for the same reason.
-//   3. no store directory at all: the transcript's reconstruction.
-// null: no readable list (denied).
+// The task list the by-id proof reads: the shared store ladder `tk.storeLadder` (named list, else the session's own directory even when
+// empty, else the transcript), here over the raw record reader above. The whole named list is read (it is a by-id proof that a task exists,
+// not a gate). null: no readable list (denied).
 function prgByIdTasks(p, home) {
-  var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/';
-  var listId = home ? ah.env.get(ah.cfg('taskstate.list_id_env')) : null;
-  if (typeof listId === 'string' && new RegExp(ah.cfg('taskstate.list_id_re')).test(listId) && ah.fs.isDir(base + listId)) return prgDirRecords(base + listId);
   var sid = p.session_id ? String(p.session_id) : '';
-  if (home && sid !== '' && !/[^A-Za-z0-9_-]/.test(sid)) {
-    var names = ah.cfg('taskstate.store_dir_names'), seen = false;
-    for (var i = 0; i < names.length; i++) {
-      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
-      if (!ah.fs.isDir(dir)) continue;
-      seen = true;
-      var recs = prgDirRecords(dir);
-      if (recs === null) return null;
-      if (recs.length > 0) return recs;
-    }
-    if (seen) return [];
-  }
-  return prgAllTasks(p, home);
+  var st = tk.storeLadder(home, sid, function (dir) { return ah.fs.isDir(dir) ? prgDirRecords(dir) : undefined; }, false, true);
+  return st !== null ? st.list : prgAllTasks(p, home);
 }
 
 function prgPre(p, on, home) {

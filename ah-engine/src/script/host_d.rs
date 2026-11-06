@@ -161,6 +161,13 @@ pub fn guard_open_tasks(path: &str, window: u64) -> Option<bool> {
     (open || !facts.unsure).then_some(open)
 }
 
+/// The ids of the tasks the transcript tail at `path` shows, in the list task-guard reconstructs (`guard` variant): `None` when the file
+/// cannot be read or the reconstruction is not sure (the ids could be incomplete).
+pub fn guard_task_ids(path: &str, window: u64) -> Option<std::collections::HashSet<String>> {
+    let (facts, _) = task_facts(path, window, Variant::Guard, true).ok()?;
+    (!facts.unsure).then(|| facts.tasks.values().map(|t| t.id.clone()).collect())
+}
+
 /// One launched agent as JSON (`NaN` times are `null`).
 pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
     json!({

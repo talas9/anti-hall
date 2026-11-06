@@ -1640,3 +1640,61 @@ fn with_the_ladder_off_the_two_reminders_then_stop_output_is_the_base_output() {
     assert_eq!(enforce_stop_env(&w, &empty, &off), enforce_stop_env(&base, &empty, &[]), "switch off equals the base output");
     assert!(!w.path("state/nudge-ladder").exists());
 }
+
+// ---- #440: the shared task-store ladder and the snapshot's provisional ids through real Stops ----
+
+/// One task-guard Stop of `session` over `t.jsonl` with `env`; whether it blocked (the engine answers: the Node hook must not run).
+fn ladder_stop(w: &World, session: &str, env: &[(&str, &str)]) -> bool {
+    let payload =
+        serde_json::json!({"hook_event_name": "Stop", "session_id": session, "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let (code, out, err) = stop_run_env(w, "task-guard", &payload, env);
+    assert_eq!(code, 0, "the engine answers; the Node hook must not run: {err}");
+    out.contains("\"decision\":\"block\"")
+}
+
+#[test]
+fn a_named_list_with_an_open_task_blocks_the_stop_that_knows_it_and_not_the_one_that_does_not() {
+    let w = World::new("ladder-named-stop");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    std::fs::create_dir_all(w.path("home/.claude/tasks/session-s1aaaaaa")).unwrap(); // Claude Code leaves the session's own directory empty
+    let on = [("CLAUDE_CODE_TASK_LIST_ID", "L")];
+    // the transcript says #1 is done; the named list (the truth Claude Code holds) says it is open
+    std::fs::write(w.path("t.jsonl"), task_lines("completed")).unwrap();
+    store_task(&w, "L", 1, "pending");
+    assert!(ladder_stop(&w, "s1aaaaaa", &on), "the named list says #1 is open: the Stop blocks");
+    assert!(!ladder_stop(&w, "s1aaaaaa", &[]), "without the variable the transcript (#1 done) decides: the base behaviour");
+    // another session's task of the same list is not this session's: the default scope keeps it out
+    store_task(&w, "L", 1, "completed");
+    store_task(&w, "L", 9, "pending");
+    assert!(!ladder_stop(&w, "s1aaaaaa", &on), "#9 belongs to another session of the list: session scope does not block on it");
+}
+
+#[test]
+fn an_empty_session_directory_without_a_named_list_leaves_the_transcript_to_decide() {
+    let w = World::new("ladder-empty-stop");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    std::fs::create_dir_all(w.path("home/.claude/tasks/session-s1aaaaaa")).unwrap();
+    std::fs::write(w.path("t.jsonl"), task_lines("pending")).unwrap();
+    assert!(ladder_stop(&w, "s1aaaaaa", &[]), "the empty store directory is no store: the transcript's open task blocks");
+}
+
+#[test]
+fn a_ghost_a_snapshot_saved_is_gone_at_the_next_stop_and_from_the_file() {
+    let w = World::new("ladder-ghost-stop");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    std::fs::write(w.path("t.jsonl"), task_lines("completed")).unwrap();
+    assert!(!ladder_stop(&w, "s1", &[]), "everything is done");
+    let dir = w.path("home/.anti-hall/ah-engine/task-snapshots");
+    let file = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "json"))
+        .expect("the first Stop filed a snapshot");
+    let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    doc["variants"]["guard"]["tasks"].as_array_mut().unwrap().push(serde_json::json!({"id": "toolu_ghost", "content": "ghost", "status": "pending"}));
+    std::fs::write(&file, doc.to_string()).unwrap();
+    assert!(!ladder_stop(&w, "s1", &[]), "the saved ghost is not an open task");
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert!(!after.contains("toolu_ghost") && after.contains("\"id\":\"1\""), "the ghost left the file, the real task stayed: {after}");
+}

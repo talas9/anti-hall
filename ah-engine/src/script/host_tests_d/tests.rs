@@ -1455,3 +1455,121 @@ fn a_hostile_heavy_patterns_override_leaves_the_command_guard_as_it_is_at_base()
     let hostile: Vec<_> = cmds.iter().map(|c| call("hostile", c)).collect();
     assert_eq!(hostile, base, "the owner's pattern list does not reach the command guard");
 }
+
+// ---- #440: the shared task-store ladder and the provisional ids of a snapshot ------------------------------------------------------
+
+/// A script that reads the guard task list the way the Stop gates do (`tk.tasksOf`) and files `[id, status]` rows, `store` and `unreadable`
+/// as `.anti-hall/out-<p.n>.json`.
+fn ladder_probe(h: &str) {
+    put_override(
+        h,
+        "zz-ladder",
+        "function decide(p){ var r = tk.tasksOf(p.h, p.s, p.t, 'guard'); \
+         ah.state.writeAtomic('.anti-hall/out-' + p.n + '.json', JSON.stringify({rows: (r.tasks || []).map(function (t) { return [t.id, t.status]; }), store: !!r.store, unreadable: !!r.unreadable})); \
+         return 'allow'; }",
+    );
+}
+
+/// Reads the list of session `sid` through [`ladder_probe`], with the named list `list` in the hook's environment when given.
+fn ladder_read(h: &str, t: &str, sid: &str, list: Option<&str>, n: &str) -> (Vec<(String, String)>, bool) {
+    let mut pairs = vec![("HOME", h)];
+    if let Some(l) = list {
+        pairs.push(("CLAUDE_CODE_TASK_LIST_ID", l));
+    }
+    assert_eq!(run("zz-ladder", &json!({"h": h, "t": t, "s": sid, "n": n}), &RequestEnv::from_pairs(pairs)), Some(Some(Verdict::Allow)));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-{n}.json")).unwrap()).unwrap();
+    let rows = v["rows"].as_array().unwrap().iter().map(|r| (r[0].as_str().unwrap().to_string(), r[1].as_str().unwrap().to_string())).collect();
+    (rows, v["store"].as_bool().unwrap())
+}
+
+fn store_put(h: &str, dir: &str, id: &str, status: &str) {
+    let d = format!("{h}/.claude/tasks/{dir}");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(format!("{d}/{id}.json"), json!({"id": id, "subject": format!("task {id}"), "status": status}).to_string()).unwrap();
+}
+
+fn ids_status(v: &[(&str, &str)]) -> Vec<(String, String)> {
+    v.iter().map(|(a, b)| ((*a).to_string(), (*b).to_string())).collect()
+}
+
+/// A transcript that created tasks `ids` (each answered) and, when `ghost`, one more TaskCreate whose result never came.
+fn ladder_transcript(h: &str, name: &str, ids: &[u32], ghost: bool) -> String {
+    let mut text = String::new();
+    for n in ids {
+        text.push_str(&snap_create(*n, &format!("s{n}")));
+    }
+    if ghost {
+        text.push_str(&assistant_tool("toolu_ghost", "TaskCreate", json!({"subject": "pending ghost"}), "2026-10-06T12:00:00.000Z"));
+    }
+    let p = format!("{h}/{name}.jsonl");
+    std::fs::write(&p, text).unwrap();
+    p
+}
+
+#[test]
+fn a_named_list_is_the_store_read_session_scoped_and_two_sessions_see_only_their_own_ids() {
+    let h = home("ladder-named");
+    ladder_probe(&h);
+    for (id, st) in [("1", "pending"), ("2", "completed"), ("3", "pending")] {
+        store_put(&h, "L", id, st);
+    }
+    std::fs::create_dir_all(format!("{h}/.claude/tasks/session-aaaaaaaa")).unwrap(); // Claude Code leaves the session's own directory empty
+    let a = ladder_transcript(&h, "a", &[1, 2], true);
+    let b = ladder_transcript(&h, "b", &[3], false);
+    let (rows, store) = ladder_read(&h, &a, "aaaaaaaa-1", Some("L"), "a");
+    assert_eq!(
+        rows,
+        ids_status(&[("1", "pending"), ("2", "completed")]),
+        "the named list's state of the ids session A knows; #3 is another session's and the ghost is gone"
+    );
+    assert!(store);
+    let (rows, _) = ladder_read(&h, &b, "bbbbbbbb-1", Some("L"), "b");
+    assert_eq!(rows, ids_status(&[("3", "pending")]), "session B on the same list sees only its own id");
+    assert_eq!(bumped("taskstate_store_source", "source", "named"), 2);
+}
+
+#[test]
+fn without_the_named_list_the_empty_session_directory_and_the_missing_one_leave_the_transcript_to_decide() {
+    let h = home("ladder-fallthrough");
+    ladder_probe(&h);
+    let a = ladder_transcript(&h, "a", &[5], false);
+    std::fs::create_dir_all(format!("{h}/.claude/tasks/session-aaaaaaaa")).unwrap();
+    let (rows, store) = ladder_read(&h, &a, "aaaaaaaa-1", None, "empty");
+    assert_eq!(rows, ids_status(&[("5", "pending")]), "an empty session directory is no store: the transcript answers");
+    assert!(!store);
+    // a named list that is set but has no directory: the session's own directory, then the transcript
+    let (rows, store) = ladder_read(&h, &a, "aaaaaaaa-1", Some("nolist"), "nodir");
+    assert_eq!(rows, ids_status(&[("5", "pending")]));
+    assert!(!store);
+    store_put(&h, "session-aaaaaaaa", "5", "completed");
+    let (rows, store) = ladder_read(&h, &a, "aaaaaaaa-1", Some("nolist"), "sess");
+    assert_eq!(rows, ids_status(&[("5", "completed")]), "the session directory holds a task: it is the list");
+    assert!(store);
+    assert_eq!(bumped("taskstate_store_source", "source", "session"), 1);
+    assert_eq!(bumped("taskstate_store_source", "source", "none"), 2);
+}
+
+#[test]
+fn a_snapshot_ghost_is_dropped_on_read_and_from_the_file_while_real_and_todowrite_ids_stay() {
+    let h = home("snap-ghost");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild_as(&h, &t, "a", "s1");
+    // an older rebuild saved a provisional key, a real number and a TodoWrite-style id that the tail does not name
+    let file = format!("{h}/.anti-hall/{}/{}", defaults::text("taskstate.snapshot_dir"), snap_files(&h)[0]);
+    let mut doc = snap_doc(&h);
+    for extra in [
+        json!({"id": "toolu_X", "content": "ghost", "status": "pending", "owner": ""}),
+        json!({"id": "7", "content": "seven", "status": "pending", "owner": ""}),
+        json!({"id": "write-docs", "content": "docs", "status": "pending", "owner": ""}),
+    ] {
+        doc["variants"]["guard"]["tasks"].as_array_mut().unwrap().push(extra);
+    }
+    std::fs::write(&file, doc.to_string()).unwrap();
+    let got = snap_rebuild_as(&h, &t, "b", "s1");
+    let ids: Vec<String> = snap_rows(&got).into_iter().map(|r| r.0).collect();
+    assert_eq!(ids, ["1", "2", "3", "7", "write-docs"], "the ghost is gone from the answer; real and TodoWrite ids stay");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3", "7", "write-docs"], "and from the rewritten file");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_ghost_dropped", &[]), 1);
+}

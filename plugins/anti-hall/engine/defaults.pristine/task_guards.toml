@@ -184,6 +184,18 @@ value = "CLAUDE_CODE_TASK_LIST_ID"
 doc = "A valid named-list id (one directory name under the store: starts with a letter, digit or underscore, then letters, digits, `_`, `.` or `-`; never a path)."
 value = "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"
 
+[taskstate.store_named_list]
+doc = "Read the NAMED task list (taskstate.list_id_env holds a valid id whose store directory exists) as the store, in the one ladder every reader of the task store shares (named list, then the session's own directory, then the transcript). False = the named list is not read by the guards (kill switch; the R-pair by-id proof then reads the session directory too)."
+value = true
+
+[taskstate.store_empty_is_list]
+doc = "A session store directory that exists but holds no task file is the list (no tasks), not \"no store\", for the task guards: the transcript is not consulted, because the tail of an emptied list still names tasks Claude Code no longer has. Default false: such a directory falls through to the transcript, as before. The R-pair by-id proof always reads an existing empty directory as the list (its own, older rule), whatever this says."
+value = false
+
+[taskstate.named_list_scope]
+doc = "How the Stop gates read a NAMED list, which every session started in the repo shares: `session` (default) lists only the ids this session's transcript and snapshot know, with the state the named list gives them (an id the named list lacks is gone, and an id only another session made is not this session's); `list` lists the whole named list (a coordinator-style repo where one list is everyone's). The R-pair by-id proof always reads the whole named list. Any other value reads as `session`."
+value = "session"
+
 [taskstate.store_file_suffix]
 doc = "Suffix of the task files in a store directory (the lock and high-water-mark files lack it)."
 value = ".json"
@@ -307,6 +319,14 @@ value = ".prune-stamp-"
 [taskstate.snapshot_enabled]
 doc = "Keep one snapshot file of each session's rebuilt task list and lay the transcript-tail result over it (the tail wins per task id). Without it a list whose creates lie more than taskstate.tail_bytes before the end of the transcript is read as no tasks, and every task guard goes quiet. False = the tail alone, as before (kill switch)."
 value = true
+
+[taskstate.snapshot_drop_provisional]
+doc = "Drop provisional task ids (taskstate.provisional_id_re: the tool-use id of a TaskCreate whose result is not seen) from a task snapshot when it is written and when it is read, so a ghost an older rebuild saved disappears at the next rebuild. snapshot_format is not bumped for this: a bump would discard the real tasks the snapshot alone remembers. False = ghosts are kept (kill switch)."
+value = true
+
+[taskstate.provisional_id_re]
+doc = "JavaScript regex source of a provisional task key: the tool-use id of a TaskCreate (`toolu_...`) or the non-string form the engine marks with U+0001. A real task is keyed by its number, a TodoWrite item by its id, content or index, none of which take this shape."
+value = '^(?:toolu_|\u0001)'
 
 [taskstate.snapshot_dir]
 doc = "Directory of the task snapshots, relative to paths.base_dir (the home directory's state directory). One file per session transcript, overwritten in place. The engine never deletes a snapshot: when taskstate.snapshot_max_files is reached no new file is made, and old ones are left for the owner to remove."
@@ -1684,6 +1704,14 @@ value = { kind = "counter", unit = "blocks", labels = ["kind"] }
 [metric.snapshot_written]
 doc = "Task snapshot files written (taskstate.snapshot_enabled): the session's rebuilt list saved so a later rebuild can recover tasks that left the transcript tail."
 value = { kind = "counter", unit = "files", labels = [] }
+
+[metric.snapshot_ghost_dropped]
+doc = "Provisional task ids (taskstate.provisional_id_re) dropped from a session's snapshot when it was read: ghosts an older rebuild saved, gone from the answer and from the file."
+value = { kind = "counter", unit = "tasks", labels = [] }
+
+[metric.taskstate_store_source]
+doc = "Task store reads by the rung of the shared ladder that answered: named (the named list), session (the session's own directory), session_empty (an existing empty session directory: the list is empty), none (no readable store: the transcript answers)."
+value = { kind = "counter", unit = "reads", labels = ["source"] }
 
 [metric.snapshot_overlaid]
 doc = "Tasks a rebuild recovered from the session's snapshot because the transcript tail no longer showed them."

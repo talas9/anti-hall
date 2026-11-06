@@ -18,58 +18,109 @@ var tk = {
   },
   // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
   // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
+  // A NAMED list is shared by every session of the repo: with taskstate.named_list_scope `session` (the default) the transcript still says
+  // which ids this session knows, and the named list gives their state (an id it lacks is gone); `list` reads the whole named list.
   tasksOf: function (home, sid, path, variant) {
-    var st = tk.storeTasks(home, sid);
-    if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
+    var st = tk.storeList(home, sid);
+    if (st !== null && !tk.sessionScoped(st)) return { tasks: tk.withStore([], st.tasks), unsure: false, unreadable: false, store: true };
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
     r.store = false;
+    if (st !== null && !r.unsure && !r.unreadable && Array.isArray(r.tasks)) { r.tasks = tk.scoped(r.tasks, st.tasks); r.store = true; }
     return r;
   },
-  // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none. The
-  // store carries no priority, so every in-progress task counts (the transcript scan only counts the actionable priorities).
+  // Whether a ladder answer is a shared named list that is read session-scoped (taskstate.named_list_scope, `session` unless `list`).
+  sessionScoped: function (st) { return st.shared === true && ah.cfg('taskstate.named_list_scope') !== 'list'; },
+  // The known tasks (this session's transcript list) laid over the shared named list: only the ids both hold, with the list's state.
+  scoped: function (known, store) {
+    var mine = Object.create(null);
+    known.forEach(function (t) { mine[t.id] = true; });
+    return tk.withStore(known, store.filter(function (s) { return mine[s.id] === true; }));
+  },
+  // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none (a shared
+  // named list read session-scoped has none either: the scan carries no list of known ids). The store carries no priority, so every
+  // in-progress task counts (the transcript scan only counts the actionable priorities).
   storeScan: function (home, sid) {
-    var st = tk.storeTasks(home, sid);
-    if (st === null) return null;
+    var st = tk.storeList(home, sid);
+    if (st === null || tk.sessionScoped(st)) return null;
     var ids = [], inProg = 0;
-    tk.withStore([], st).forEach(function (t) {
+    tk.withStore([], st.tasks).forEach(function (t) {
       if (!tk.isOpen(t)) return;
       var s = tk.statusLc(t);
       if (ah.cfg('taskstate.in_progress_statuses').indexOf(s) >= 0) { ids.push(t.id); inProg++; } else if (ah.cfg('taskstate.pending_statuses').indexOf(s) >= 0) ids.push(t.id);
     });
     return { openTaskIds: ids, inProgressCount: inProg };
   },
-  // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
-  // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
-  // what is done and open; the transcript's tasks only add what the store does not carry.
-  storeTasks: function (home, sid) {
-    if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
-    var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
-    var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
-    for (var i = 0; i < names.length; i++) {
-      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
-      var files = ah.fs.readdir(dir);
-      if (files === null) continue;
-      files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
-      if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
-      var out = [];
-      for (var k = 0; k < files.length; k++) {
-        var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
-        if (raw === null) continue;
-        var rec;
-        try { rec = JSON.parse(raw); } catch (e) { continue; }
-        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
-        out.push({
-          id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
-          description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
-          owner: typeof rec.owner === 'string' ? rec.owner.trim() : '',
-          blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
-          blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
-        });
+  // THE store ladder, used by every reader of Claude Code's task store (the guards through tk.storeList, the R-pair by-id proof through
+  // its own record reader). `readDir(dir)` returns the records of one store directory, null (unreadable or over the bounds) or undefined
+  // (no such directory). In this order the first that applies is THE list:
+  //   1. the NAMED list: taskstate.list_id_env holds a valid id (taskstate.list_id_re) whose directory exists, even when empty (Claude Code
+  //      then keeps the session's tasks only there and leaves `session-<8>` empty); taskstate.store_named_list is its kill switch.
+  //   2. the session's own directory (taskstate.store_dir_names): the first that holds a record, else, with `emptyIsList` (the guards pass
+  //      taskstate.store_empty_is_list; the by-id proof always passes true), any that exists (empty means no tasks, not "no store").
+  //   3. none: null, and the transcript answers.
+  // Returns {src: 'named'|'session'|'session_empty', shared, list} (list null: unreadable) or null. `skipNamed` skips rung 1.
+  storeLadder: function (home, sid, readDir, skipNamed, emptyIsList) {
+    if (!home) return null;
+    var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/';
+    if (!skipNamed && ah.cfg('taskstate.store_named_list') === true) {
+      var listId = ah.env.get(ah.cfg('taskstate.list_id_env'));
+      if (typeof listId === 'string' && jx.re('taskstate.list_id_re').test(listId) && ah.fs.isDir(base + listId)) {
+        var nl = readDir(base + listId);
+        return { src: 'named', shared: true, list: nl === undefined ? null : nl };
       }
-      if (out.length > 0) return out;
     }
-    return null;
+    if (typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
+    var names = ah.cfg('taskstate.store_dir_names'), seen = false;
+    for (var i = 0; i < names.length; i++) {
+      var recs = readDir(base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) }));
+      if (recs === undefined) continue;
+      if (recs === null) return { src: 'session', shared: false, list: null };
+      seen = true;
+      if (recs.length > 0) return { src: 'session', shared: false, list: recs };
+    }
+    return seen && emptyIsList === true ? { src: 'session_empty', shared: false, list: [] } : null;
+  },
+  // The ladder over the guards' record reader: {src, shared, tasks} or null (no store, or one that cannot be read: the transcript answers).
+  // Counted under taskstate_store_source by the rung that answered.
+  storeList: function (home, sid) {
+    var st = tk.storeLadder(home, sid, tk.dirTasks, false, ah.cfg('taskstate.store_empty_is_list') === true);
+    if (st !== null && st.list === null && st.src === 'named') st = tk.storeLadder(home, sid, tk.dirTasks, true, ah.cfg('taskstate.store_empty_is_list') === true); // an unreadable named list falls through to the session's
+    if (st === null || st.list === null) { ah.metric('taskstate_store_source', { source: 'none' }); return null; }
+    ah.metric('taskstate_store_source', { source: st.src });
+    return { src: st.src, shared: st.shared, tasks: st.list };
+  },
+  // The tasks of one store directory (`<id>.json` files), undefined when it does not exist, null when it holds more than
+  // taskstate.store_max_files task files (counted).
+  dirTasks: function (dir) {
+    var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
+    var files = ah.fs.readdir(dir);
+    if (files === null) return undefined;
+    files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
+    if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
+    var out = [];
+    for (var k = 0; k < files.length; k++) {
+      var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
+      if (raw === null) continue;
+      var rec;
+      try { rec = JSON.parse(raw); } catch (e) { continue; }
+      if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+      out.push({
+        id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
+        description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
+        owner: typeof rec.owner === 'string' ? rec.owner.trim() : '',
+        blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
+        blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
+      });
+    }
+    return out;
+  },
+  // The task list in Claude Code's own store for the session, or null when there is none or it cannot be read within the bounds. For a
+  // shared named list read session-scoped use tk.tasksOf / tk.scoped (this is the whole list). A long session's transcript tail no longer
+  // holds the creates, so the store is the source of what is done and open; the transcript's tasks only add what the store does not carry.
+  storeTasks: function (home, sid) {
+    var st = tk.storeList(home, sid);
+    return st === null ? null : st.tasks;
   },
   // The store's tasks laid over the transcript's: the store is the list (a task it lacks is gone), and for a task both hold the store
   // gives subject, status, owner and blockers while the transcript keeps its other facts (blockedOn marker, time).

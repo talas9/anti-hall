@@ -806,7 +806,8 @@ pub fn enabled(env: &RequestEnv) -> bool {
 /// call open tasks done (or the reverse) and lift, or keep, a hold the guard's own cap decided.
 fn open_tasks(st: &Settings, p: &Value) -> Option<bool> {
     let field = |k: &str| p.get(k).and_then(Value::as_str);
-    crate::checks::taskstate::store::session_has_open(&st.home, field("session_id"), field("transcript_path"))
+    let list_id = st.env.get(defaults::text("taskstate.list_id_env")).map(String::as_str);
+    crate::checks::taskstate::store::session_has_open(&st.home, field("session_id"), field("transcript_path"), list_id)
 }
 
 /// Whether `v` holds the counter `field` above zero, in itself or in a nested object up to `depth` levels down.
