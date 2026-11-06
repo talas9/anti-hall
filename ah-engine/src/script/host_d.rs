@@ -164,6 +164,19 @@ pub fn guard_open_tasks(path: &str, window: u64) -> Option<bool> {
     (open || !facts.unsure).then_some(open)
 }
 
+/// Whether the transcript tail at `path` shows an open task that a `TodoWrite` set (`guard` variant): such a task is not in Claude Code's
+/// task store, so the store's membership says nothing about it. A file that cannot be read shows none (`Some(false)`: there is no
+/// transcript to show pending work); `None` when the reconstruction is not sure and shows no such task.
+pub fn guard_open_todo(path: &str, window: u64) -> Option<bool> {
+    let (facts, _) = match task_facts(path, window, Variant::Guard, true) {
+        Ok(f) => f,
+        Err(Unreadable::File) => return Some(false),
+        Err(Unreadable::Unsure) => return None,
+    };
+    let open = facts.tasks.values().any(|t| t.is_open() && facts.todo_ids.contains(&t.id));
+    (open || !facts.unsure).then_some(open)
+}
+
 /// The ids of the tasks the transcript tail at `path` shows, in the list task-guard reconstructs (`guard` variant): `None` when the file
 /// cannot be read or the reconstruction is not sure (the ids could be incomplete).
 pub fn guard_task_ids(path: &str, window: u64) -> Option<std::collections::HashSet<String>> {

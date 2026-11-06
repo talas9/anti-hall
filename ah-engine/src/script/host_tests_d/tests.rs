@@ -1821,6 +1821,10 @@ fn the_shared_ladder_fixtures_give_the_same_answers_through_the_script_reader() 
         }
         let ids: Vec<u32> = c["created"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
         let t = ladder_transcript(&h, "t", &ids, false);
+        if let Some(todos) = c.get("todos").and_then(Value::as_array) {
+            let items: Vec<Value> = todos.iter().enumerate().map(|(i, v)| json!({"id": format!("todo-{i}"), "content": v, "status": "pending"})).collect();
+            append(&t, &assistant_tool("tw1", "TodoWrite", json!({"todos": items}), "2026-10-06T12:30:00.000Z"));
+        }
         let s = &c["switches"];
         let switches = sw(s["named"].as_bool().unwrap(), s["empty_is_list"].as_bool().unwrap(), s["scope_list"].as_bool().unwrap());
         let (_, _, open) = ladder_read_sw(&h, &t, c["session"].as_str().unwrap(), c["list_id"].as_str(), "fx", Some(switches));

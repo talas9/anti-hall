@@ -367,12 +367,12 @@ function ttFresh(home, tp, sessionRaw, p) {
   var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'), 0, sessionRaw);
   // Claude Code's own store holds the whole list; the transcript tail of a long session does not (the creates lie before it)
   var st = tk.storeList(home, sessionRaw);
-  var scoped = st !== null && tk.sessionScoped(st); // a shared named list: the transcript says which ids are this session's
+  var scoped = st !== null && (tk.sessionScoped(st) || st.tasks.length === 0); // a shared named list: the transcript says which ids are this session's; an empty list is no proof that nothing is pending
   if (st === null || scoped) {
     if (r.unsure) { ah.unable('task-tracker:tasks_unsure'); return null; } // a tail the engine cannot read exactly is read as no tasks
     if (r.unreadable) return null;
   }
-  var tasks = st === null ? r.tasks : scoped ? tk.scoped(r.tasks, st.tasks) : tk.withStore(r.unsure || r.unreadable ? [] : r.tasks, st.tasks);
+  var tasks = st === null ? r.tasks : scoped ? tk.scoped(r.tasks, st.tasks, tk.todoIds(r)) : tk.withStore(r.unsure || r.unreadable ? [] : r.tasks, st.tasks);
   var plan = { track: null, annotate: null, demandShown: 0 };
   var tr = ttTrack(home, sessionRaw, tp, tasks);
   plan.track = tr.apply;

@@ -168,10 +168,18 @@ pub fn session_has_open(home: &str, session: Option<&str>, transcript: Option<&s
 pub fn session_has_open_with(home: &str, session: Option<&str>, transcript: Option<&str>, list_id: Option<&str>, sw: Switches) -> Option<bool> {
     let open = defaults::list("taskstate.open_statuses");
     let found = ladder_with(home, session.unwrap_or(""), list_id, sw);
+    // A task a TodoWrite set is no member of the store, so the store never says it is gone: when the store shows nothing open, an open
+    // TodoWrite task of the transcript still counts (and one that cannot be read is no answer, never "nothing open").
+    let none_open = || -> Option<bool> {
+        match transcript.filter(|t| !t.is_empty()) {
+            Some(path) => crate::script::host_d::guard_open_todo(path, defaults::num("taskstate.tail_bytes")),
+            None => Some(false),
+        }
+    };
     if let Some(f) = &found
         && (!f.shared || sw.scope_list)
     {
-        return Some(f.tasks.iter().any(|(_, s)| open.contains(&s.as_str())));
+        return if f.tasks.iter().any(|(_, s)| open.contains(&s.as_str())) { Some(true) } else { none_open() };
     }
     let path = transcript.filter(|t| !t.is_empty())?;
     let Some(f) = found else { return crate::script::host_d::guard_open_tasks(path, defaults::num("taskstate.tail_bytes")) };
@@ -185,12 +193,13 @@ pub fn session_has_open_with(home: &str, session: Option<&str>, transcript: Opti
             unknown_open = true;
         }
     }
-    if unknown_open { None } else { Some(false) }
+    if unknown_open { None } else { none_open() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::path::PathBuf;
 
     fn home(tag: &str) -> PathBuf {
@@ -413,6 +422,13 @@ mod tests {
             }
             let ids: Vec<String> = c["created"].as_array().unwrap().iter().map(|v| v.to_string()).collect();
             let t = transcript(&h, "t.jsonl", &ids.iter().map(String::as_str).collect::<Vec<_>>());
+            if let Some(todos) = c.get("todos").and_then(Value::as_array) {
+                // a TodoWrite whose items are pending: no member of the task store
+                let items: Vec<Value> = todos.iter().enumerate().map(|(i, v)| json!({"id": format!("todo-{i}"), "content": v, "status": "pending"})).collect();
+                let row = json!({"type": "assistant", "timestamp": "2026-10-06T12:30:00.000Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tw1", "name": "TodoWrite", "input": {"todos": items}}]}});
+                let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+                std::io::Write::write_all(&mut f, format!("{row}\n").as_bytes()).unwrap();
+            }
             let s = &c["switches"];
             let sw = Switches {
                 named: s["named"].as_bool().unwrap(),

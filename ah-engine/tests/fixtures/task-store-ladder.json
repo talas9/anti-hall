@@ -1,5 +1,5 @@
 {
- "doc": "Shared ladder fixtures: the same inputs through the Rust reader (checks/taskstate/store.rs) and the JavaScript one (tk.tasksOf, host_tests_d). dirs: store directories under <home>/.claude/tasks, each a map file -> record (object) or raw text. created: the task numbers the session's transcript created (all pending there). switches: the three ladder switches. open: whether the session has an open task, as both ladders answer; rust_open overrides it where the Rust reader answers differently on purpose (null = cannot tell).",
+ "doc": "Shared ladder fixtures: the same inputs through the Rust reader (checks/taskstate/store.rs) and the JavaScript one (tk.tasksOf, host_tests_d). dirs: store directories under <home>/.claude/tasks, each a map file -> record (object) or raw text. created: the task numbers the session's transcript created (all pending there). switches: the three ladder switches. open: whether the session has an open task, as both ladders answer; rust_open overrides it where the Rust reader answers differently on purpose (null = cannot tell). todos: optional TodoWrite items (subjects) the transcript shows pending; a TodoWrite task is no member of the task store, so the store never declares it gone.",
  "cases": [
   {
    "name": "named_unreadable_record_is_no_list_transcript_answers",
@@ -400,6 +400,105 @@
     1
    ],
    "open": true
+  },
+  {
+   "name": "todowrite_pending_survives_an_empty_named_list_session_scoped",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {},
+    "session-aaaaaaaa": {}
+   },
+   "created": [],
+   "todos": [
+    "Write docs"
+   ],
+   "open": true
+  },
+  {
+   "name": "todowrite_pending_survives_an_empty_named_list_whole_list_scope",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": true
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {},
+    "session-aaaaaaaa": {}
+   },
+   "created": [],
+   "todos": [
+    "Write docs"
+   ],
+   "open": true
+  },
+  {
+   "name": "todowrite_pending_survives_an_empty_session_directory_that_is_the_list",
+   "switches": {
+    "named": true,
+    "empty_is_list": true,
+    "scope_list": false
+   },
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "session-aaaaaaaa": {}
+   },
+   "created": [],
+   "todos": [
+    "Write docs"
+   ],
+   "open": true
+  },
+  {
+   "name": "todowrite_pending_survives_a_named_list_that_holds_only_finished_tasks",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {
+     "5.json": {
+      "id": "5",
+      "subject": "task 5",
+      "status": "completed"
+     }
+    },
+    "session-aaaaaaaa": {}
+   },
+   "created": [],
+   "todos": [
+    "Write docs"
+   ],
+   "open": true
+  },
+  {
+   "name": "taskcreate_pending_is_still_gone_when_the_named_list_is_empty",
+   "switches": {
+    "named": true,
+    "empty_is_list": false,
+    "scope_list": false
+   },
+   "list_id": "L",
+   "session": "aaaaaaaa-1",
+   "dirs": {
+    "L": {},
+    "session-aaaaaaaa": {}
+   },
+   "created": [
+    1
+   ],
+   "todos": [],
+   "open": false
   }
  ]
 }

@@ -25,11 +25,11 @@ var tk = {
   tasksOf: function (home, sid, path, variant, sw) {
     sw = tk.switches(sw);
     var st = tk.storeList(home, sid, sw);
-    if (st !== null && !tk.sessionScoped(st, sw)) return { tasks: tk.withStore([], st.tasks), unsure: false, unreadable: false, store: true };
+    if (st !== null && st.tasks.length > 0 && !tk.sessionScoped(st, sw)) return { tasks: tk.withStore([], st.tasks), unsure: false, unreadable: false, store: true };
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
     r.store = false;
-    if (st !== null && !r.unsure && !r.unreadable && Array.isArray(r.tasks)) { r.tasks = tk.scoped(r.tasks, st.tasks); r.store = true; }
+    if (st !== null && !r.unsure && !r.unreadable && Array.isArray(r.tasks)) { r.tasks = tk.scoped(r.tasks, st.tasks, tk.todoIds(r)); r.store = true; }
     return r;
   },
   // Whether a ladder answer is a shared named list that is read session-scoped (taskstate.named_list_scope, `session` unless `list`).
@@ -39,18 +39,30 @@ var tk = {
     if (sw !== undefined && sw !== null && sw.named !== undefined) return sw;
     return { named: ah.cfg('taskstate.store_named_list') === true, emptyIsList: ah.cfg('taskstate.store_empty_is_list') === true, scopeList: ah.cfg('taskstate.named_list_scope') === 'list' };
   },
-  // The known tasks (this session's transcript list) laid over the shared named list: only the ids both hold, with the list's state.
-  scoped: function (known, store) {
-    var mine = Object.create(null);
+  // The known tasks (this session's transcript list) laid over the list: the TaskCreate-sourced ones only when the list holds them, with the
+  // list's state (an id it lacks is gone). A task a TodoWrite set is no member of Claude Code's task store, so membership never filters it
+  // or declares it gone (`todo`, from tk.todoIds). An empty list is therefore no proof that nothing is pending.
+  scoped: function (known, store, todo) {
+    var mine = Object.create(null), inStore = Object.create(null);
     known.forEach(function (t) { mine[t.id] = true; });
-    return tk.withStore(known, store.filter(function (s) { return mine[s.id] === true; }));
+    store.forEach(function (s) { inStore[s.id] = true; });
+    var members = tk.withStore(known, store.filter(function (s) { return mine[s.id] === true; }));
+    return members.concat(known.filter(function (t) { return inStore[t.id] !== true && tk.fromTodo(t, todo); }));
   },
+  // The ids a rebuild shows a TodoWrite set (`todoIds`, always reported by the engine), as a lookup.
+  todoIds: function (r) {
+    var out = Object.create(null);
+    if (r !== null && typeof r === 'object' && Array.isArray(r.todoIds)) r.todoIds.forEach(function (id) { out[id] = true; });
+    return out;
+  },
+  // Whether `t` is a TodoWrite-sourced task: its id is in `todo`, or a snapshot filed it with `src: todo`.
+  fromTodo: function (t, todo) { return t.src === 'todo' || (todo !== undefined && todo !== null && todo[t.id] === true); },
   // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none (a shared
   // named list read session-scoped has none either: the scan carries no list of known ids). The store carries no priority, so every
   // in-progress task counts (the transcript scan only counts the actionable priorities).
   storeScan: function (home, sid) {
     var st = tk.storeList(home, sid);
-    if (st === null || tk.sessionScoped(st)) return null;
+    if (st === null || st.tasks.length === 0 || tk.sessionScoped(st)) return null; // an empty list is no proof that nothing is pending (a TodoWrite task is no store member): the transcript scan answers
     var ids = [], inProg = 0;
     tk.withStore([], st.tasks).forEach(function (t) {
       if (!tk.isOpen(t)) return;
