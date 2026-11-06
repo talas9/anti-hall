@@ -19,6 +19,33 @@ value = "archive.db"
 doc = "Suffix SQLite gives a database's write-ahead log file; used to report WAL sizes."
 value = "-wal"
 
+[storage.shm_suffix]
+doc = "Suffix SQLite gives a database's shared-memory index file; the read-only open checks it beside the WAL (storage.offline_open_readonly)."
+value = "-shm"
+
+[storage.journal_suffix]
+doc = "Suffix SQLite gives a database's rollback journal; a database with one beside it is refused by the read-only open (storage.offline_open_readonly)."
+value = "-journal"
+
+[storage.offline_open_readonly]
+doc = "1 makes the offline inspection verbs (telemetry summary and events with no daemon, query guard_blocks, the audit and script block reads) open hot.db and archive.db read-only: nothing is created, migrated, checkpointed or written, and a database whose schema is older or newer than this build, or that has a lone WAL/shm file or a rollback journal, is refused with the step that clears it. 0 restores the old open, which creates archive.db, migrates and folds the WAL. On by default because it removes a write from a read verb (GH #563)."
+value = 1
+min = 0
+max = 1
+env = "AH_ENGINE_OFFLINE_OPEN_READONLY"
+
+[storage.msg_schema_old]
+doc = "Refusal of the read-only open when a database is older than this build's schema. Placeholders: {db}, {found}, {known}."
+value = "{db} has schema version {found}, older than this build expects ({known}); nothing was changed. Start the daemon, which migrates its databases when it starts (check with ah-engine status), then retry."
+
+[storage.msg_schema_new]
+doc = "Refusal of the read-only open when a database is newer than this build's schema. Placeholders: {db}, {found}, {known}."
+value = "{db} has schema version {found}, newer than this build knows ({known}); nothing was changed. Run the engine build that matches the daemon that wrote it (ah-engine version, ah-engine status), then retry."
+
+[storage.msg_db_sidecars]
+doc = "Refusal of the read-only open when a database has a lone WAL or shm file, or a rollback journal, beside it (a crashed or running writer). Placeholders: {db}."
+value = "{db} has an unpaired -wal/-shm file or a rollback journal beside it, so it cannot be read without changing it; nothing was changed. Start the daemon, which recovers it (check with ah-engine status), then retry."
+
 # ---- SQLite settings ------------------------------------------------------------------------------------
 
 [storage.journal_mode]

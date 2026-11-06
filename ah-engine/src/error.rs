@@ -156,6 +156,20 @@ pub enum DbError {
         /// The newest version this build knows.
         known: usize,
     },
+    /// The database is older than this build's schema and a read-only open may not migrate it.
+    SchemaOld {
+        /// Which database.
+        db: String,
+        /// The version found in the file.
+        found: i64,
+        /// The version this build expects.
+        known: usize,
+    },
+    /// A read-only open found an unpaired `-wal`/`-shm` file or a rollback journal beside the database.
+    Sidecars {
+        /// Which database.
+        db: String,
+    },
     /// The journal mode could not be set (the file system may not support WAL).
     JournalMode(String),
     /// The writer queue is full; the client retries, then spools.
@@ -181,6 +195,8 @@ impl DbError {
         match self {
             DbError::Sql(_) => "db_sql",
             DbError::Schema { .. } => "db_schema",
+            DbError::SchemaOld { .. } => "db_schema_old",
+            DbError::Sidecars { .. } => "db_sidecars",
             DbError::JournalMode(_) => "db_journal",
             DbError::Busy => "db_busy",
             DbError::Unavailable => "db_unavailable",
@@ -195,6 +211,10 @@ impl fmt::Display for DbError {
         match self {
             DbError::Sql(e) => f.write_str(&defaults::render("msg.err_db_sql", &[("err", e)])),
             DbError::Schema { db, found, known } => f.write_str(&defaults::render("msg.err_db_schema", &[("db", db), ("found", found), ("known", known)])),
+            DbError::SchemaOld { db, found, known } => {
+                f.write_str(&defaults::render("storage.msg_schema_old", &[("db", db), ("found", found), ("known", known)]))
+            }
+            DbError::Sidecars { db } => f.write_str(&defaults::render("storage.msg_db_sidecars", &[("db", db)])),
             DbError::JournalMode(m) => f.write_str(&defaults::render("msg.err_db_journal", &[("mode", m)])),
             DbError::Busy => f.write_str(defaults::text("msg.err_db_busy")),
             DbError::Unavailable => f.write_str(defaults::text("msg.err_db_unavailable")),

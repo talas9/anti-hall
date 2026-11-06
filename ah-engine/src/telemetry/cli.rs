@@ -22,13 +22,30 @@ fn now_ms() -> u64 {
     crate::health::now_ms()
 }
 
-/// Open the databases for reading; `None` when no database exists yet.
-pub(crate) fn open_existing() -> Option<TelDb> {
+/// The refusal text for a database the read-only open will not touch (a newer schema has its own text).
+fn refusal(e: &crate::error::DbError) -> String {
+    match e {
+        crate::error::DbError::Schema { db, found, known } => defaults::render("storage.msg_schema_new", &[("db", db), ("found", found), ("known", known)]),
+        other => other.to_string(),
+    }
+}
+
+/// Open the databases for reading, read-only when `storage.offline_open_readonly` is on (nothing is created, migrated or
+/// written); `Ok(None)` when no database exists yet, `Err` with the refusal text when the read-only open will not touch it.
+pub(crate) fn open_existing_checked() -> Result<Option<TelDb>, String> {
     let dir = paths::dir();
     if !dir.join(defaults::text("storage.hot_file")).exists() {
-        return None;
+        return Ok(None);
     }
-    crate::db::Db::open(&dir).ok_logged("tel_db_open").map(TelDb::new)
+    if defaults::num("storage.offline_open_readonly") == 0 {
+        return Ok(crate::db::Db::open(&dir).ok_logged("tel_db_open").map(TelDb::new));
+    }
+    crate::db::Db::open_read_only(&dir).map(|d| Some(TelDb::new(d))).map_err(|e| refusal(&e))
+}
+
+/// Open the databases for reading; `None` when no database exists yet or the open is refused (the refusal is logged).
+pub(crate) fn open_existing() -> Option<TelDb> {
+    open_existing_checked().map_err(|e| crate::discard::note("tel_db_open", &e)).ok().flatten()
 }
 
 /// Open (creating if needed) the databases for a command that writes.
@@ -69,7 +86,10 @@ pub fn run(rest: &[String]) -> (Value, i32) {
                 }
                 return (v, 0);
             }
-            let tel = open_existing();
+            let tel = match open_existing_checked() {
+                Ok(t) => t,
+                Err(e) => return (json!({"error": e}), 1),
+            };
             let days = report::window_days(&window);
             let mut v = if sub == "events" {
                 report::events_json(tel.as_ref(), None, &kind, days, limit.parse().unwrap_or(defaults::num("telemetry.recent_default") as usize), now_ms())

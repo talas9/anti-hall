@@ -244,6 +244,9 @@ impl TelDb {
 
     /// Daily rollup rows for days `from..=to` (archive.db).
     pub fn daily(&self, from: i64, to: i64) -> Vec<DayRow> {
+        if self.db.archive_absent() {
+            return Vec::new(); // a read-only open never creates archive.db, and no rollup has run yet
+        }
         self.db
             .archive(|c| Ok(c.prepare_cached(sql::TEL_DAILY_RANGE)?.query_map(params![from, to], row_of)?.collect::<rusqlite::Result<Vec<_>>>()?))
             .or_default_logged("db_read")
