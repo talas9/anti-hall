@@ -373,7 +373,7 @@ function ttFresh(home, tp, sessionRaw, p) {
   }
   var tasks;
   if (store === null) tasks = r.tasks;
-  else if (sr.unsure) { tasks = tk.unionStore(r.unreadable ? [] : (r.tasks || []), store); } // a record the store could not read may hold an open task: add the transcript's
+  else if (sr.unsure) { var raw = tk.rawTasks(tp, 'state'); tasks = tk.unionStore(raw.unreadable ? [] : (raw.tasks || []), store); } // a record the store could not read may hold an open task: add the transcript's
   else tasks = tk.withStore(r.unsure || r.unreadable ? [] : r.tasks, store);
   var plan = { track: null, annotate: null, demandShown: 0 };
   var tr = ttTrack(home, sessionRaw, tp, tasks);

@@ -86,6 +86,11 @@ enum Store {
     OnlyJunk,
     /// A valid pending task in a directory that cannot be listed (mode 000).
     UnreadableDir,
+    /// #445 round 2 (not in the golden matrix, see [`extra_cells`]): two records with the SAME id 1 (pending in a.json, completed in
+    /// b.json) next to a record that is not JSON.
+    DupIdWithJunk,
+    /// #445 round 2 (see [`extra_cells`]): a completed task 1 next to a record that is not JSON.
+    CompletedWithJunk,
 }
 const STORES: [Store; 8] = [
     Store::Absent,
@@ -205,6 +210,13 @@ fn matrix() -> Vec<Cell> {
     out
 }
 
+/// Shapes the golden matrix has no axis for (#445 round 2: duplicate ids inside the store, a snapshot-sourced task next to an unsure store).
+/// They are not in [`matrix`] (the golden file stays as it was captured); the must-be-open fixture names them.
+fn extra_cells() -> Vec<Cell> {
+    let mk = |store, trans, snap| Cell { store, named: Named::Unset, trans, snap, rows: Rows::Conv, knobs: Knobs::new() };
+    vec![mk(Store::DupIdWithJunk, Trans::TodoWrite, Snap::None), mk(Store::CompletedWithJunk, Trans::NoTasks, Snap::Plain)]
+}
+
 // ---- building a cell ---------------------------------------------------------------------------------------------------------
 
 fn line(v: &Value) -> String {
@@ -317,6 +329,15 @@ fn build(cell: &Cell, root: &Path) -> (PathBuf, PathBuf) {
             store_file(&dir, "1.json", "1", "pending");
             #[cfg(unix)]
             chmod(&dir, 0o000);
+        }
+        Store::DupIdWithJunk => {
+            store_file(&dir, "a.json", "1", "pending");
+            store_file(&dir, "b.json", "1", "completed");
+            std::fs::write(dir.join("c.json"), "{not json").unwrap();
+        }
+        Store::CompletedWithJunk => {
+            store_file(&dir, "1.json", "1", "completed");
+            std::fs::write(dir.join("c.json"), "{not json").unwrap();
         }
     }
     if cell.named == Named::SetWithList {
@@ -628,7 +649,7 @@ const MUST_OPEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tas
 fn an_unsure_store_adds_the_transcripts_open_tasks_and_never_removes_any() {
     let doc: Value = serde_json::from_str(&std::fs::read_to_string(MUST_OPEN).expect("the must-be-open fixture")).unwrap();
     let cells = doc["cells"].as_object().expect("cells");
-    let by_key: BTreeMap<String, Cell> = matrix().into_iter().map(|c| (c.key(), c)).collect();
+    let by_key: BTreeMap<String, Cell> = matrix().into_iter().chain(extra_cells()).map(|c| (c.key(), c)).collect();
     let base = scratch("mustopen");
     let mut failures = Vec::new();
     for (i, (key, want)) in cells.iter().enumerate() {
@@ -640,6 +661,17 @@ fn an_unsure_store_adds_the_transcripts_open_tasks_and_never_removes_any() {
         let missing: Vec<&String> = must.difference(&got.open).collect();
         if !missing.is_empty() {
             failures.push(format!("{key}: open task(s) {missing:?} must be open (got {:?})", got.open));
+        }
+        let must_not: BTreeSet<String> =
+            want["must_not_open"].as_array().map(|a| a.iter().map(|x| x.as_str().unwrap().to_string()).collect()).unwrap_or_default();
+        let wrongly: Vec<&String> = must_not.intersection(&got.open).collect();
+        if !wrongly.is_empty() {
+            failures.push(format!("{key}: task(s) {wrongly:?} must not be open (the JS and Rust readers must agree), got {:?}", got.open));
+        }
+        if let Some(l) = want["ladder"].as_bool()
+            && got.ladder != Some(l)
+        {
+            failures.push(format!("{key}: the Rust ladder says {:?}, want {l}", got.ladder));
         }
         if let Some(stop) = want["stop"].as_str()
             && stop != got.stop

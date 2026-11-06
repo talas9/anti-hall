@@ -42,6 +42,21 @@
     "store=UnreadableDir|named=Unset|trans=NoTasks|snap=None|rows=Conv": {
       "must_open": [],
       "stop": "allow"
+    },
+    "store=DupIdWithJunk|named=Unset|trans=TodoWrite|snap=None|rows=Conv": {
+      "must_open": [
+        "1",
+        "2"
+      ],
+      "ladder": true,
+      "stop": "block"
+    },
+    "store=CompletedWithJunk|named=Unset|trans=NoTasks|snap=Plain|rows=Conv": {
+      "must_open": [],
+      "must_not_open": [
+        "7"
+      ],
+      "ladder": false
     }
   }
 }

@@ -25,13 +25,19 @@ var tk = {
     if (sr !== null) {
       // The store answers UNSURE (a record or a directory it could not read may hold an open task): its readable tasks, plus every
       // task the transcript reconstruction holds that the readable records do not name. Never fewer open tasks than the store alone.
-      var tr = typeof path === 'string' ? ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid) : { tasks: [], unsure: false, unreadable: true };
+      var tr = tk.rawTasks(path, variant);
       return { tasks: tk.unionStore(tr.unreadable ? [] : (tr.tasks || []), sr.tasks), unsure: !!tr.unsure, unreadable: false, store: true, storeUnsure: true };
     }
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
     r.store = false;
     return r;
+  },
+  // The transcript tail's reconstruction WITHOUT the snapshot laid over it (`ah.transcript.tasks` minus `taskSnap.apply`): what the Rust
+  // ladder (`store::session_has_open`) reads, so both sides agree on the transcript tasks they add to an unsure store.
+  rawTasks: function (path, variant) {
+    if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true };
+    return JSON.parse(ahHost.transcriptTasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0));
   },
   // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none. The
   // store carries no priority, so every in-progress task counts (the transcript scan only counts the actionable priorities).
@@ -89,12 +95,15 @@ var tk = {
   },
   // The store's tasks laid over the transcript's: the store is the list (a task it lacks is gone), and for a task both hold the store
   // gives subject, status, owner and blockers while the transcript keeps its other facts (blockedOn marker, time).
+  // One fresh entry per store record, merged by value: a transcript task is only READ, never mutated or shared, so two records with the
+  // same id (the store is a multiset, as `store::read` keeps it) stay two separate entries each with its own status.
   withStore: function (tasks, store) {
-    var byId = {};
+    var byId = Object.create(null);
     tasks.forEach(function (t) { byId[t.id] = t; });
     return store.map(function (s) {
-      var t = byId[s.id] || { id: s.id, priority: null, subjectUpdated: false, sinceMs: null };
-      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.blockedBy = s.blockedBy;
+      var b = byId[s.id], t = { id: s.id, priority: null, subjectUpdated: false, sinceMs: null }, k;
+      if (b) for (k in b) if (Object.prototype.hasOwnProperty.call(b, k)) t[k] = b[k];
+      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.blockedBy = s.blockedBy.slice();
       if (s.blockedOn !== undefined) t.blockedOn = s.blockedOn;
       t.unknown = null; t.blockUnknown = false;
       return t;
