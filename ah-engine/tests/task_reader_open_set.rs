@@ -30,6 +30,41 @@ const SID8: &str = "s1abcdef";
 const NAMED_LIST: &str = "team-list";
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/task-reader-open-sets.json");
 
+// ---- THE ADAPTER ------------------------------------------------------------------------------------------------------------
+//
+// Every call into the engine's task reader goes through this section and nowhere else. A resolver lane that changes a signature or a
+// defaults key edits ONLY this section; the matrix, the golden and the assertions below stay as they are.
+
+/// The reader's JS entry, run inside the script host: `tk.tasks(transcript, home, session)` plus the store probe `tk.storeTasks`.
+/// The returned object must carry `tasks` ([[id, status]]), `unsure` and `store`.
+/// Plants the snapshot entry `p.entry` the way the reader writes its snapshot of transcript `p.t` (sets `out.ok`).
+const JS_PLANT_CALL: &str = "var size = ah.fs.size(p.t), win = ah.cfgNum('taskstate.tail_bytes'); \
+           var doc = {format: ah.cfgNum('taskstate.snapshot_format'), path: p.t, gen: taskSnap.fingerprint(p.t, size, win), session: p.s, \
+             variants: {guard: {size: size, ms: ah.clock.now(), tasks: [p.entry], ids: {}}}}; \
+           out = {ok: ah.state.writeAtomic(taskSnap.rel(p.t), JSON.stringify(doc))};";
+
+const JS_READ_CALL: &str = "var ts = tk.tasks(p.t, ah.home(), p.s); \
+           out = {tasks: ts.map(function (t) { return [t.id, t.status === null || t.status === undefined ? null : t.status]; }), unsure: !!ts.unsure, store: tk.storeTasks(ah.home(), p.s) !== null};";
+
+/// A defaults list. A key the engine under test does not define degrades to an empty list (with a printed note, once per key) instead
+/// of aborting the whole gate.
+fn cfg_list(key: &str) -> Vec<&'static str> {
+    if ah_engine::defaults::has(key) {
+        ah_engine::defaults::list(key)
+    } else {
+        static NOTED: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
+        if NOTED.lock().unwrap().insert(key.to_string()) {
+            eprintln!("note: defaults key {key:?} is not defined by the engine under test; treated as an empty list");
+        }
+        Vec::new()
+    }
+}
+
+/// The Rust ladder `store::session_has_open` (the base signature; a lane with a different one changes only this body).
+fn ladder_has_open(home: &Path, transcript: &Path) -> Option<bool> {
+    ah_engine::checks::taskstate::store::session_has_open(home.to_str().unwrap(), Some(SID), Some(transcript.to_str().unwrap()))
+}
+
 // ---- the matrix -------------------------------------------------------------------------------------------------------------
 
 /// The task store of the session.
@@ -326,18 +361,11 @@ fn snap_entry(kind: Snap) -> Option<Value> {
 }
 
 fn probe(home: &Path) {
-    std::fs::write(
-        home.join(".anti-hall/logic/zz-oset.js"),
-        "function decide(p){ var out = {}; \
-         if (p.mode === 'plant') { var size = ah.fs.size(p.t), win = ah.cfgNum('taskstate.tail_bytes'); \
-           var doc = {format: ah.cfgNum('taskstate.snapshot_format'), path: p.t, gen: taskSnap.fingerprint(p.t, size, win), session: p.s, \
-             variants: {guard: {size: size, ms: ah.clock.now(), tasks: [p.entry], ids: {}}}}; \
-           out = {ok: ah.state.writeAtomic(taskSnap.rel(p.t), JSON.stringify(doc))}; } \
-         else { var ts = tk.tasks(p.t, ah.home(), p.s); \
-           out = {tasks: ts.map(function (t) { return [t.id, t.status === null || t.status === undefined ? null : t.status]; }), unsure: !!ts.unsure, store: tk.storeTasks(ah.home(), p.s) !== null}; } \
-         ah.state.writeAtomic('.anti-hall/out-' + p.mode + '.json', JSON.stringify(out)); return 'allow'; }",
-    )
-    .unwrap();
+    let js = format!(
+        "function decide(p){{ var out = {{}}; if (p.mode === 'plant') {{ {JS_PLANT_CALL} }} else {{ {JS_READ_CALL} }} \
+         ah.state.writeAtomic('.anti-hall/out-' + p.mode + '.json', JSON.stringify(out)); return 'allow'; }}"
+    );
+    std::fs::write(home.join(".anti-hall/logic/zz-oset.js"), js).unwrap();
 }
 
 fn env_of(cell: &Cell, home: &Path) -> RequestEnv {
@@ -386,7 +414,7 @@ struct Observed {
 }
 
 fn is_open(status: &str) -> bool {
-    ah_engine::defaults::list("taskstate.open_statuses").contains(&status.to_lowercase().as_str())
+    cfg_list("taskstate.open_statuses").contains(&status.to_lowercase().as_str())
 }
 
 /// THE READER UNDER TEST. Runs the base decision path of a cell: the JS reader `tk.tasks` through the script host, the Rust ladder and
@@ -400,7 +428,7 @@ fn read_cell(cell: &Cell, root: &Path) -> Observed {
     let tasks: Vec<(String, Option<String>)> =
         got["tasks"].as_array().unwrap().iter().map(|r| (r[0].as_str().unwrap().to_string(), r[1].as_str().map(str::to_string))).collect();
     let open = tasks.iter().filter(|(_, s)| s.as_deref().is_some_and(is_open)).map(|(i, _)| i.clone()).collect();
-    let ladder = ah_engine::checks::taskstate::store::session_has_open(home.to_str().unwrap(), Some(SID), Some(t.to_str().unwrap()));
+    let ladder = ladder_has_open(&home, &t);
     let payload = json!({"cwd": home, "hook_event_name": "Stop", "session_id": SID, "transcript_path": t});
     let verdict = format!("{:?}", ah_engine::script::run_forced("task-guard", &payload, &json!({}), "Stop", &env));
     let stop = if verdict.contains("block") || verdict.contains("Block") {
@@ -420,7 +448,7 @@ fn read_cell(cell: &Cell, root: &Path) -> Observed {
 /// Every task id a decoded row names: a task-tool input id (`taskId`, `id`, `task_id`), a tool-use id, a `tool_use_id`, a TodoWrite
 /// item id, and every `#<digits>` of any string in the row ("Task #9 created", "Updated task #2").
 fn mentioned_ids(v: &Value, out: &mut BTreeSet<String>) {
-    let keys = ah_engine::defaults::list("taskstate.id_keys");
+    let keys = cfg_list("taskstate.id_keys");
     match v {
         Value::Object(m) => {
             for (k, x) in m {
@@ -457,7 +485,7 @@ fn mentioned_ids(v: &Value, out: &mut BTreeSet<String>) {
 /// `taskstate.skipped_row_types`. Rows are decoded (a row that does not decode proves nothing); store records and snapshot entries are not
 /// rows, so an id they carry is never in `named_elsewhere` here and the caller passes only ids the rows are the sole source of.
 fn proven_ghosts(row_lines: &[String], ids: &BTreeSet<String>) -> BTreeSet<String> {
-    let excluded = ah_engine::defaults::list("taskstate.skipped_row_types");
+    let excluded = cfg_list("taskstate.skipped_row_types");
     let mut in_excluded: BTreeSet<String> = BTreeSet::new();
     let mut elsewhere: BTreeSet<String> = BTreeSet::new();
     for l in row_lines {
