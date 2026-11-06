@@ -173,8 +173,8 @@ var taskSnap = {
       if (tasks.length === 0 && !existed) return r;
       if (!existed) {
         var dir = g.home + '/' + ah.cfg('paths.base_dir') + '/' + ah.cfg('taskstate.snapshot_dir');
-        var names = ah.fs.isDir(dir) ? ah.fs.readdir(dir) : [], lockEnd = ah.cfg('taskstate.snapshot_lock_suffix');
-        if (names !== null) names = names.filter(function (n) { return n.slice(-lockEnd.length) !== lockEnd; }); // a lock file is no snapshot
+        var names = ah.fs.isDir(dir) ? ah.fs.readdir(dir) : [], lockEnd = ah.cfg('taskstate.snapshot_lock_suffix'), flockEnd = ah.cfg('taskstate.snapshot_flock_suffix');
+        if (names !== null) names = names.filter(function (n) { return n.slice(-lockEnd.length) !== lockEnd && n.slice(-flockEnd.length) !== flockEnd; }); // a lock file is no snapshot
         if (names === null || names.length >= ah.cfgNum('taskstate.snapshot_max_files')) { taskSnap.count('snapshot_error', { kind: 'cap' }); return r; }
       }
       var fp = taskSnap.fingerprint(p, size, win);
@@ -182,11 +182,22 @@ var taskSnap = {
       // The file is read, merged and rewritten whole by every hook that rebuilds a list, so the last step runs under one lock per file:
       // a hook that cannot take it in taskstate.snapshot_lock_wait_ms writes nothing (its answer is the same; the next rebuild writes)
       // and is counted under snapshot_error kind `lock`. Without the lock two hooks in the same instant could still lose one section.
-      var lk = null;
-      try { lk = ah.state.lock(rel + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = null; }
-      // null: the lock is held by another (its file is there: write nothing) or cannot be made at all (an unwritable directory: no file, and
-      // the write below fails and is counted as such, as it always was)
-      if (lk === null && ah.fs.isFile(g.home + '/' + rel + ah.cfg('taskstate.snapshot_lock_suffix'))) { taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
+      var lk = null, lockKind = 'file';
+      var kind = ah.cfg('taskstate.snapshot_lock_kind');
+      try { kind = ah.cfgLive('taskstate.snapshot_lock_kind'); } catch (e) { /* the shipped value stands */ } // the kill switch is the owner's: settings.json or config.toml
+      if (kind === 'flock') {
+        try { lk = ah.state.flock(rel + ah.cfg('taskstate.snapshot_flock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = null; }
+        lockKind = 'flock';
+        if (lk === 'busy') { taskSnap.count('snapshot_lock', { kind: 'flock', result: 'busy' }); taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
+        if (lk === null) lockKind = 'fallback'; // no flock here (an unwritable directory, or a filesystem without it): the lock file below
+      }
+      if (lk === null) {
+        try { lk = ah.state.lock(rel + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = null; }
+        // null: the lock is held by another (its file is there: write nothing) or cannot be made at all (an unwritable directory: no file, and
+        // the write below fails and is counted as such, as it always was)
+        if (lk === null && ah.fs.isFile(g.home + '/' + rel + ah.cfg('taskstate.snapshot_lock_suffix'))) { taskSnap.count('snapshot_lock', { kind: lockKind, result: 'busy' }); taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
+      }
+      taskSnap.count('snapshot_lock', { kind: lockKind, result: lk === null ? 'null' : 'taken' });
       try {
         var body = doc === null ? { format: fmt, path: p, variants: {} } : doc;
         body.format = fmt; body.path = p; body.gen = fp;

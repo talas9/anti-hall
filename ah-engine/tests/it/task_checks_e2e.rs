@@ -758,7 +758,10 @@ fn snapshot_keeps_every_open_task_in_the_idle_block_after_the_creates_leave_the_
     let second = snap_stop(&w).expect("the changed set is announced: the idle block on the second Stop");
     assert!(second.contains("#22") && !second.contains("#21"), "task #22 left the tail window but is still open, #21 is finished: {second}");
     let dir = w.path("home/.anti-hall/ah-engine/task-snapshots");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "one snapshot file under the isolated home");
+    // the kernel lock's file (#407) stays beside the snapshot and is no snapshot
+    let names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names.iter().filter(|n| n.ends_with(".json")).count(), 1, "one snapshot file under the isolated home: {names:?}");
+    assert_eq!(names.iter().filter(|n| n.ends_with(".flock")).count(), 1, "and the persistent lock file: {names:?}");
 }
 
 /// A deleted task must not come back from the snapshot (the reviewer's repro): the tail ends with a `TaskGet` of #41 answered "not

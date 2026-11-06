@@ -359,6 +359,14 @@ min = 1
 doc = "Suffix of the lock file a rebuild holds while it merges and rewrites a session's snapshot (next to the snapshot, never counted against taskstate.snapshot_max_files). Without a lock two hooks that rebuild at the same instant could each rewrite the whole file and lose the other's section."
 value = ".lock"
 
+[taskstate.snapshot_lock_kind]
+doc = "How the snapshot lock is taken: `flock` (a kernel lock on the file named by taskstate.snapshot_flock_suffix: one open and one lock call, released by the kernel when the holder dies; no Node peer uses this file) or `file` (the lock file of taskstate.snapshot_lock_suffix with the owner record, stale takeover and sidecar of the Node lock protocol: four directory creates and four removals per cycle). `file` is the kill switch. Where flock cannot be had (a filesystem without it), a rebuild falls back to `file` on its own (counted snapshot_lock kind `fallback`)."
+value = "flock"
+
+[taskstate.snapshot_flock_suffix]
+doc = "Suffix of the file a rebuild flocks when taskstate.snapshot_lock_kind is `flock`. Kept (never deleted) next to the snapshot and never counted against taskstate.snapshot_max_files. Must differ from taskstate.snapshot_lock_suffix: an engine still on the lock-file protocol would read this empty file as a stale holder."
+value = ".flock"
+
 [taskstate.snapshot_lock_group]
 doc = "The defaults group whose `lock_*` keys (stale, step, reclaim, release) time the snapshot lock; the wait is taskstate.snapshot_lock_wait_ms."
 value = "advisor"
@@ -1692,6 +1700,10 @@ value = { kind = "counter", unit = "snapshots", labels = ["reason"] }
 [metric.snapshot_identity_unknown]
 doc = "Rebuilds whose tail holds a TaskCreate for a number the snapshot holds, over bytes the snapshot already covers, where the create's tool-use id or the snapshot's recorded one is missing (a task no create was recorded for, as a TodoWrite makes). Which list it belongs to cannot be told: the snapshot is kept (fail-open to the snapshot)."
 value = { kind = "counter", unit = "rebuilds", labels = [] }
+
+[metric.snapshot_lock]
+doc = "Task snapshot lock takes, by kind (flock: the kernel lock; file: the lock file of the Node protocol, by taskstate.snapshot_lock_kind; fallback: flock could not be had here, the lock file was used) and result (taken; busy: held elsewhere past taskstate.snapshot_lock_wait_ms, nothing written; null: no lock could be made, the write was tried without one)."
+value = { kind = "counter", unit = "takes", labels = ["kind", "result"] }
 
 [metric.snapshot_error]
 doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, shape: a section with a malformed task, write, big: over taskstate.snapshot_max_bytes (on a read, the file is replaced), lock: the snapshot lock was busy, cap: taskstate.snapshot_max_files reached, home: no usable home)."

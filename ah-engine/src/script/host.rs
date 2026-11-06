@@ -35,6 +35,7 @@
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
 //! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
+//! | `flockAcquire(rel, group, waitMs?)` | a kernel `flock` on a file no Node peer locks (released with `lockRelease`); handle, `0` busy, `null` unavailable: see [`flock_acquire`] |
 //! | `fenceSweep(rel, infix)` / `writeFenced(rel, text, handle, infix, guard?)` | the fenced commit of a file guarded by a lock taken in this call, optionally discarded when a watched value moved past its bound: see [`write_fenced`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
@@ -470,7 +471,26 @@ static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A held lock: the handle number, the lock file, and the in-process guard (only the first lock of a call holds it; the ones taken
 /// after it in the same call are covered by it).
-type Held = (u64, crate::checks::guardkit::nodelock::Held, Option<std::sync::MutexGuard<'static, ()>>);
+type Held = (u64, Kind, Option<std::sync::MutexGuard<'static, ()>>);
+
+/// What a handle holds: a lock file of the Node protocol, or the open file of a kernel `flock` (closing it releases the lock, also
+/// when the process dies).
+enum Kind {
+    Node(crate::checks::guardkit::nodelock::Held),
+    Flock(std::fs::File),
+}
+
+impl Kind {
+    fn release(self) -> bool {
+        match self {
+            Kind::Node(h) => h.release(),
+            Kind::Flock(f) => {
+                crate::health::flock(&f, libc::LOCK_UN);
+                true
+            }
+        }
+    }
+}
 
 thread_local! {
     static CLOCK: RefCell<Option<f64>> = const { RefCell::new(None) };
@@ -505,8 +525,66 @@ pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) ->
     let Some(held) = taken else { return Ok(None) };
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    HELD.with(|h| h.borrow_mut().push((id, held, guard)));
+    HELD.with(|h| h.borrow_mut().push((id, Kind::Node(held), guard)));
     Ok(Some(id as f64))
+}
+
+/// `flockAcquire(rel, group, waitMs?)`: like [`lock_acquire`] with a kernel `flock(LOCK_EX)` on the file `rel` (created if absent,
+/// never deleted, never truncated) in place of the Node lock protocol: no owner record, no staleness, no takeover, and a holder that
+/// dies drops it. Only for a file no Node peer locks. The step is `<group>.lock_step_ms`. Returns the handle number, `0` when the wait
+/// ran out (held elsewhere), or `null` when no lock can be had here (the file cannot be opened, or the filesystem has no flock): the
+/// script then decides (it falls back to [`lock_acquire`]). Released by [`lock_release`] or at the end of the call.
+pub fn flock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
+    let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
+        return Err(err("flockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
+    };
+    if let Some(w) = wait_ms.filter(|w| w.is_finite() && *w >= 0.0) {
+        params.wait_ms = (w as u64).min(defaults::num("script.lock_wait_max_ms"));
+    }
+    let held_now = HELD.with(|h| h.borrow().len());
+    if held_now as u64 >= defaults::num("script.lock_max_held") {
+        return Ok(None);
+    }
+    let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(None) };
+    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).mode_0600().open(&path) else { return Ok(None) };
+    let started = std::time::Instant::now();
+    let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
+    let deadline = started + std::time::Duration::from_millis(params.wait_ms);
+    let outcome = loop {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: `file` is open and owned here, so its descriptor is valid; flock takes only it and flags.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            break Some(true);
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EWOULDBLOCK) | Some(libc::EINTR) => {}
+            _ => break None, // ENOTSUP, ENOLCK, ...: this filesystem has no flock
+        }
+        if std::time::Instant::now() >= deadline {
+            break Some(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(params.step_ms.max(1)));
+    };
+    credit_blocking(started);
+    match outcome {
+        None => Ok(None),
+        Some(false) => Ok(Some(0.0)),
+        Some(true) => {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            HELD.with(|h| h.borrow_mut().push((id, Kind::Flock(file), guard)));
+            Ok(Some(id as f64))
+        }
+    }
+}
+
+trait Mode0600 {
+    fn mode_0600(&mut self) -> &mut Self;
+}
+impl Mode0600 for std::fs::OpenOptions {
+    fn mode_0600(&mut self) -> &mut Self {
+        std::os::unix::fs::OpenOptionsExt::mode(self, 0o600)
+    }
 }
 
 /// `lockRelease(handle)`: release a lock taken in this call; `false` when it was not held (or no longer ours).
@@ -553,10 +631,10 @@ pub fn write_fenced(home: &str, rel: &str, text: &str, id: f64, infix: &str, gua
     let started = std::time::Instant::now();
     let sync = defaults::num("script.write_sync") != 0;
     let r = HELD.with(|h| {
-        h.borrow()
-            .iter()
-            .find(|(n, _, _)| *n as f64 == id)
-            .map(|(_, held, _)| crate::checks::guardkit::nodelock::fenced_write_if(held, &path, text, infix, sync, &still_valid))
+        h.borrow().iter().find(|(n, _, _)| *n as f64 == id).and_then(|(_, held, _)| match held {
+            Kind::Node(held) => Some(crate::checks::guardkit::nodelock::fenced_write_if(held, &path, text, infix, sync, &still_valid)),
+            Kind::Flock(_) => None,
+        })
     });
     credit_blocking(started);
     Ok(matches!(r, Some(Ok(true))))
@@ -1248,6 +1326,13 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
         Function::new(c.clone(), |rel: String, group: String, wait: Option<f64>| -> rquickjs::Result<Option<f64>> {
             let home = with_settings(|st| st.home.clone())?;
             lock_acquire(&home, &rel, &group, wait)
+        })?,
+    )?;
+    h.set(
+        "flockAcquire",
+        Function::new(c.clone(), |rel: String, group: String, wait: Option<f64>| -> rquickjs::Result<Option<f64>> {
+            let home = with_settings(|st| st.home.clone())?;
+            flock_acquire(&home, &rel, &group, wait)
         })?,
     )?;
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;

@@ -314,9 +314,16 @@ fn snap_rows(v: &Value) -> Vec<(String, String, String, String)> {
         .collect()
 }
 
+fn snap_all(h: &str) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(format!("{h}/.anti-hall/{}", defaults::text("taskstate.snapshot_dir")))
+        .map_or_else(|_| Vec::new(), |d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect());
+    v.sort();
+    v
+}
+
+/// The snapshot files of the home (the lock files beside them are [`snap_all`]'s).
 fn snap_files(h: &str) -> Vec<String> {
-    std::fs::read_dir(format!("{h}/.anti-hall/{}", defaults::text("taskstate.snapshot_dir")))
-        .map_or_else(|_| Vec::new(), |d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+    snap_all(h).into_iter().filter(|f| f.ends_with(".json")).collect()
 }
 
 /// The one snapshot file of the home, parsed (panics when there is not exactly one).
@@ -839,6 +846,7 @@ fn a_rebuild_that_cannot_take_the_snapshot_lock_writes_nothing_and_answers_as_be
     let h = home("snap-lock-busy");
     let t = format!("{h}/t.jsonl");
     std::fs::write(&t, snap_head()).unwrap();
+    std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"taskstate":{"snapshot_lock_kind":"file"}}"#).unwrap(); // the kill switch: the lock file
     put_override(
         &h,
         "zz-snap-lock",
@@ -850,11 +858,250 @@ fn a_rebuild_that_cannot_take_the_snapshot_lock_writes_nothing_and_answers_as_be
     let out: Value = serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-lock.json")).unwrap()).unwrap();
     assert_eq!(out, json!({"held": true, "n": 3}), "the rebuild still answers");
     assert_eq!(bumped("snapshot_error", "kind", "lock"), 1, "the busy lock is counted");
-    assert!(snap_files(&h).iter().all(|f| !f.ends_with(".json")), "no snapshot was written under a lock held by another: {:?}", snap_files(&h));
+    assert!(snap_files(&h).is_empty(), "no snapshot was written under a lock held by another: {:?}", snap_all(&h));
     snap_probe(&h);
     snap_rebuild(&h, &t, "free");
     assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the next rebuild writes");
-    assert_eq!(snap_files(&h).iter().filter(|f| f.ends_with(".lock")).count(), 0, "a released lock leaves no file: {:?}", snap_files(&h));
+    assert_eq!(snap_all(&h).iter().filter(|f| f.ends_with(".lock")).count(), 0, "a released lock leaves no file: {:?}", snap_all(&h));
+}
+
+// ---- #407: the snapshot lock is a kernel flock ----
+
+/// A script that rebuilds the `p.v` variant of the list of `p.t`.
+fn snap_probe_variant(h: &str) {
+    put_override(h, "zz-snapv", "function decide(p){ ah.transcript.tasks(p.t, p.v, p.w, 0, ''); return 'allow'; }");
+}
+
+/// The snapshot path (relative to the home) and the flock file path (absolute) of a transcript.
+fn snap_flock_path(h: &str, t: &str) -> String {
+    put_override(h, "zz-snaprel", "function decide(p){ ah.state.writeAtomic('.anti-hall/out-rel.json', JSON.stringify(taskSnap.rel(p.t))); return 'allow'; }");
+    assert_eq!(run("zz-snaprel", &json!({"t": t}), &env(h)), Some(Some(Verdict::Allow)));
+    let rel: String = serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-rel.json")).unwrap()).unwrap();
+    format!("{h}/{rel}{}", defaults::text("taskstate.snapshot_flock_suffix"))
+}
+
+/// A child process that holds the exclusive flock of `path` until it is killed.
+fn flock_holder(path: &str) -> std::process::Child {
+    use std::io::BufRead;
+    let mut c = std::process::Command::new("python3")
+        .args(["-c", "import fcntl,sys,time\nf=open(sys.argv[1],'a')\nfcntl.flock(f,fcntl.LOCK_EX)\nprint('held',flush=True)\ntime.sleep(600)", path])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3 to hold the lock");
+    let mut got = String::new();
+    std::io::BufReader::new(c.stdout.as_mut().unwrap()).read_line(&mut got).unwrap();
+    assert_eq!(got.trim(), "held");
+    c
+}
+
+#[test]
+fn the_snapshot_lock_is_a_flock_that_leaves_one_persistent_file_and_is_counted() {
+    let h = home("snap-flock-take");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"]);
+    let all = snap_all(&h);
+    assert_eq!(all.len(), 2, "the snapshot and its flock file, nothing else: {all:?}");
+    assert!(all.iter().any(|f| f.ends_with(&defaults::text("taskstate.snapshot_flock_suffix"))), "{all:?}");
+    assert!(all.iter().all(|f| !f.ends_with(&defaults::text("taskstate.snapshot_lock_suffix"))), "no Node lock file: {all:?}");
+    assert_eq!(std::fs::metadata(snap_flock_path(&h, &t)).unwrap().len(), 0, "the lock file is never written");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_lock", &[("kind", "flock"), ("result", "taken")]), 1);
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_lock", &[("kind", "file"), ("result", "taken")]), 0);
+}
+
+#[test]
+fn a_rebuild_whose_flock_is_held_in_this_process_writes_nothing_counts_busy_and_still_answers() {
+    let h = home("snap-flock-busy");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    put_override(
+        &h,
+        "zz-flock-busy",
+        "function decide(p){ var lk = ah.state.flock(taskSnap.rel(p.t) + ah.cfg('taskstate.snapshot_flock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), 5); \
+         var r = ah.transcript.tasks(p.t, 'guard', p.w, 0, ''); ah.state.unlock(lk); \
+         ah.state.writeAtomic('.anti-hall/out-lock.json', JSON.stringify({held: typeof lk === 'number', n: r.tasks.length})); return 'allow'; }",
+    );
+    assert_eq!(run("zz-flock-busy", &json!({"t": t, "w": SNAP_WINDOW}), &env(&h)), Some(Some(Verdict::Allow)));
+    let out: Value = serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/out-lock.json")).unwrap()).unwrap();
+    assert_eq!(out, json!({"held": true, "n": 3}));
+    assert_eq!(bumped("snapshot_error", "kind", "lock"), 1);
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_lock", &[("kind", "flock"), ("result", "busy")]), 1);
+    assert!(snap_files(&h).is_empty(), "nothing written under a held lock: {:?}", snap_all(&h));
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "free");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the unlock freed it: the next rebuild writes");
+}
+
+#[test]
+fn a_flock_held_by_another_process_blocks_the_write_and_a_killed_holder_frees_it_at_once() {
+    let h = home("snap-flock-proc");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    let lockfile = snap_flock_path(&h, &t);
+    std::fs::create_dir_all(std::path::Path::new(&lockfile).parent().unwrap()).unwrap();
+    let mut holder = flock_holder(&lockfile);
+    let got = snap_rebuild(&h, &t, "busy");
+    assert_eq!(snap_rows(&got).len(), 3, "the rebuild still answers");
+    assert_eq!(bumped("snapshot_error", "kind", "lock"), 1);
+    assert!(snap_files(&h).is_empty(), "{:?}", snap_all(&h));
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    let started = std::time::Instant::now();
+    snap_rebuild(&h, &t, "freed");
+    let waited = started.elapsed();
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "the dead holder's lock is gone with it: no stale wait");
+    assert!(waited < std::time::Duration::from_millis(defaults::num("taskstate.snapshot_lock_wait_ms")), "no wait for a dead holder: {waited:?}");
+}
+
+/// The body of the child processes of the concurrency test: rebuild every transcript as the variant named in `AH_T_CHILD`.
+fn flock_child_work(h: &str, variant: &str) {
+    for i in 0..CONCURRENT_FILES {
+        let t = format!("{h}/t{i}.jsonl");
+        let r = run("zz-snapv", &json!({"t": t, "v": variant, "w": SNAP_WINDOW}), &env(h));
+        assert_eq!(r, Some(Some(Verdict::Allow)));
+    }
+}
+
+const CONCURRENT_FILES: usize = 12;
+
+#[test]
+fn concurrent_creates_from_threads_and_processes_lose_no_section() {
+    if let Ok(spec) = std::env::var("AH_T_CHILD") {
+        let (h, v) = spec.split_once('|').unwrap();
+        flock_child_work(h, v);
+        std::fs::write(format!("{h}/child-{}.done", std::process::id()), "").unwrap(); // proof the child ran the work, not zero tests
+        return;
+    }
+    let h = home("snap-flock-conc");
+    for i in 0..CONCURRENT_FILES {
+        std::fs::write(format!("{h}/t{i}.jsonl"), snap_head()).unwrap();
+    }
+    snap_probe_variant(&h);
+    let exe = std::env::current_exe().unwrap();
+    let mut kids: Vec<std::process::Child> = ["guard", "state", "guard", "state"]
+        .iter()
+        .map(|v| {
+            std::process::Command::new(&exe)
+                .args(["--exact", "script::tests_host_d::concurrent_creates_from_threads_and_processes_lose_no_section", "--nocapture", "--test-threads=1"])
+                .env("AH_T_CHILD", format!("{h}|{v}"))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    let threads: Vec<_> = ["guard", "state", "guard", "state"]
+        .iter()
+        .map(|v| {
+            let (h, v) = (h.clone(), v.to_string());
+            std::thread::spawn(move || flock_child_work(&h, &v))
+        })
+        .collect();
+    for th in threads {
+        th.join().unwrap();
+    }
+    for k in &mut kids {
+        assert!(k.wait().unwrap().success());
+    }
+    let done = std::fs::read_dir(&h).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".done")).count();
+    assert_eq!(done, 4, "all four child processes ran the work");
+    let files = snap_files(&h);
+    assert_eq!(files.len(), CONCURRENT_FILES, "{files:?}");
+    for f in &files {
+        let p = format!("{h}/.anti-hall/{}/{f}", defaults::text("taskstate.snapshot_dir"));
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).expect("every snapshot is whole, valid JSON");
+        for v in ["guard", "state"] {
+            assert_eq!(snap_ids(&doc, v), ["1", "2", "3"], "{f} lost its {v} section");
+        }
+    }
+}
+
+#[test]
+fn crash_leftovers_and_legacy_lock_files_beside_the_snapshot_change_nothing_and_are_not_counted_against_the_cap() {
+    let h = home("snap-flock-left");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    let flock = snap_flock_path(&h, &t);
+    let dir = std::path::Path::new(&flock).parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    // a snapshot cap's worth of files minus two (the crash's temporary file below still counts, as it always did), a legacy lock with an owner record, and an empty flock file from an earlier run
+    let cap = defaults::num("taskstate.snapshot_max_files");
+    for i in 0..cap - 2 {
+        std::fs::write(dir.join(format!("old-{i}.json")), "{}").unwrap();
+    }
+    let base = flock.trim_end_matches(&defaults::text("taskstate.snapshot_flock_suffix")).to_string();
+    std::fs::write(format!("{base}{}", defaults::text("taskstate.snapshot_lock_suffix")), r#"{"pid":1,"host":"gone","token":"x"}"#).unwrap();
+    std::fs::write(&flock, "").unwrap();
+    std::fs::write(format!("{base}.tmp{}", defaults::text("atomic.tmp_suffix")), "{\"cut").unwrap();
+    std::fs::write(dir.join("zz-other.flock"), "").unwrap();
+    let got = snap_rebuild(&h, &t, "a");
+    assert_eq!(snap_rows(&got).len(), 3);
+    assert_eq!(bumped("snapshot_error", "kind", "cap"), 0, "lock files are no snapshots");
+    assert_eq!(bumped("snapshot_error", "kind", "lock"), 0);
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&base).unwrap()).unwrap();
+    assert_eq!(snap_ids(&doc, "guard"), ["1", "2", "3"]);
+    assert!(std::path::Path::new(&format!("{base}{}", defaults::text("taskstate.snapshot_lock_suffix"))).exists(), "the legacy lock file is left alone");
+}
+
+#[test]
+fn seeded_bad_snapshots_are_replaced_under_the_flock() {
+    for (tag, seed) in [
+        ("corrupt", "{not json".to_string()),
+        ("format", json!({"format": 99, "variants": {}}).to_string()),
+        ("session", json!({"format": 1, "session": "someone-else", "path": "/elsewhere", "variants": {}}).to_string()),
+    ] {
+        let h = home(&format!("snap-flock-bad-{tag}"));
+        let t = format!("{h}/t.jsonl");
+        std::fs::write(&t, snap_head()).unwrap();
+        snap_probe(&h);
+        let flock = snap_flock_path(&h, &t);
+        let base = flock.trim_end_matches(&defaults::text("taskstate.snapshot_flock_suffix")).to_string();
+        std::fs::create_dir_all(std::path::Path::new(&base).parent().unwrap()).unwrap();
+        std::fs::write(&base, seed).unwrap();
+        let got = snap_rebuild(&h, &t, "a");
+        assert_eq!(snap_rows(&got).len(), 3, "{tag}: the tail answers");
+        assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"], "{tag}: the bad file was replaced");
+    }
+}
+
+#[test]
+fn an_unwritable_snapshot_directory_falls_back_to_the_lock_file_and_the_failed_write_is_counted() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid takes no arguments and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return; // root writes anywhere
+    }
+    let h = home("snap-flock-ro");
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    let flock = snap_flock_path(&h, &t);
+    let dir = std::path::Path::new(&flock).parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let got = snap_rebuild(&h, &t, "a");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(snap_rows(&got).len(), 3, "the rebuild still answers");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_lock", &[("kind", "fallback"), ("result", "null")]), 1);
+    assert_eq!(bumped("snapshot_error", "kind", "write"), 1);
+    assert!(snap_all(&h).is_empty(), "{:?}", snap_all(&h));
+}
+
+#[test]
+fn the_kill_switch_restores_the_lock_file_protocol_and_leaves_no_flock_file() {
+    let h = home("snap-flock-off");
+    std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"taskstate":{"snapshot_lock_kind":"file"}}"#).unwrap();
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    snap_probe(&h);
+    snap_rebuild(&h, &t, "a");
+    assert_eq!(snap_ids(&snap_doc(&h), "guard"), ["1", "2", "3"]);
+    assert_eq!(snap_all(&h).len(), 1, "no flock file and the released Node lock is gone: {:?}", snap_all(&h));
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_lock", &[("kind", "file"), ("result", "taken")]), 1);
 }
 
 /// Installs the owner's file layers for a test and removes them on drop (the overlay is process-wide: nextest runs each test in its own
