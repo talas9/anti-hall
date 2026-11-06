@@ -30,10 +30,12 @@
 //! | `realpathEx(path)` | JSON `{path}` or `{error}`: the canonical path, or why there is none: see [`realpath_ex`] |
 //! | `uid()` / `fileSha256(path)` / `readHeadHex(path, n)` | the numeric user id; SHA-256 hex of a regular file; the first bytes of a regular file as hex |
 //! | `readRangeHex(path, from, n)` | `n` bytes of a regular file from byte `from` as hex (fewer at its end): see [`read_range_hex`] |
+//! | `rangeSha1Hex(path, from, n)` | SHA-1 hex of the lowercase-hex text of exactly `n` bytes from byte `from`, `null` when fewer exist: see [`range_sha1_hex`] |
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
 //! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
+//! | `flockAcquire(rel, group, waitMs?)` | a kernel `flock` on a file no Node peer locks (released with `lockRelease`); handle, `0` busy, `null` unavailable: see [`flock_acquire`] |
 //! | `fenceSweep(rel, infix)` / `writeFenced(rel, text, handle, infix, guard?)` | the fenced commit of a file guarded by a lock taken in this call, optionally discarded when a watched value moved past its bound: see [`write_fenced`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
@@ -317,18 +319,20 @@ fn scoped_target(home: &str, rel: &str, len: usize, want_dir: bool) -> rquickjs:
     let root: PathBuf = Path::new(home).join(parts[0]);
     let mut cur = root.clone();
     let last = parts.len() - 1;
+    let mut parent_is_dir = false; // the walk below just saw the directory the file goes in (not a link): no need to make it
     for (i, part) in parts.iter().enumerate().skip(1) {
         cur.push(part);
         match std::fs::symlink_metadata(&cur) {
             Ok(m) if m.file_type().is_symlink() => return Err(refused(defaults::text("script.write_why_link"))),
             // a file where a directory is needed, or a directory where the file goes: the disk cannot take the write
             Ok(m) if (i < last && !m.is_dir()) || (i == last && (want_dir != m.is_dir() || (!want_dir && !m.is_file()))) => return Ok(None),
+            Ok(_) if i + 1 == last && !want_dir => parent_is_dir = true,
             _ => {}
         }
     }
     // the root itself may be a link the owner set up (a state directory on another disk); what is refused is a link BELOW it
     let Some(parent) = (if want_dir { Some(cur.as_path()) } else { cur.parent() }) else { return Ok(None) };
-    if std::fs::create_dir_all(parent).is_err() {
+    if !parent_is_dir && std::fs::create_dir_all(parent).is_err() {
         return Ok(None);
     }
     let (Ok(real_root), Ok(real_parent)) = (std::fs::canonicalize(&root), std::fs::canonicalize(parent)) else { return Ok(None) };
@@ -407,6 +411,38 @@ pub fn read_range_hex(path: &str, from: f64, n: f64) -> Option<String> {
     Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
+/// `rangeSha1Hex(path, from, n)`: the lowercase hex SHA-1 of the lowercase hex TEXT of exactly `n` bytes of a regular file starting at
+/// byte `from` - the very digest a script got by hashing `readRangeHex(path, from, n)`, so a stored fingerprint stays valid - without
+/// building or returning the hex. `null` when the file cannot be read, holds fewer than `n` bytes from `from`, or `n` is over
+/// `script.read_max_bytes`.
+pub fn range_sha1_hex(path: &str, from: f64, n: f64) -> Option<String> {
+    use std::os::unix::fs::FileExt;
+    let want = n.max(0.0) as u64;
+    if want > defaults::num("script.read_max_bytes") {
+        return None;
+    }
+    let start = from.max(0.0) as u64;
+    let f = std::fs::File::open(path).ok()?;
+    f.metadata().ok().filter(std::fs::Metadata::is_file)?;
+    let mut b = vec![0u8; want as usize];
+    let mut got = 0usize;
+    while got < b.len() {
+        let r = f.read_at(b.get_mut(got..)?, start + got as u64).ok()?;
+        if r == 0 {
+            return None;
+        }
+        got += r;
+    }
+    let nib = |x: u8| char::from_digit(u32::from(x), 16).map_or(b'0', |c| c as u8); // a nibble (0..=15) as lowercase hex
+    let mut text = Vec::with_capacity(b.len() * 2);
+    for x in &b {
+        text.push(nib(x >> 4));
+        text.push(nib(x & 15));
+    }
+    let d = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &text);
+    Some(d.as_ref().iter().flat_map(|x| [nib(x >> 4) as char, nib(x & 15) as char]).collect())
+}
+
 /// `realpathEx(path)`: the canonical path as `{"path":s}`, or `{"error":"NotFound"}` / `{"error":"<io error kind>"}` when it cannot be
 /// resolved, so a script can tell a path that does not exist from one it could not examine.
 pub fn realpath_ex(path: &str) -> String {
@@ -437,7 +473,26 @@ static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A held lock: the handle number, the lock file, and the in-process guard (only the first lock of a call holds it; the ones taken
 /// after it in the same call are covered by it).
-type Held = (u64, crate::checks::guardkit::nodelock::Held, Option<std::sync::MutexGuard<'static, ()>>);
+type Held = (u64, Kind, Option<std::sync::MutexGuard<'static, ()>>);
+
+/// What a handle holds: a lock file of the Node protocol, or the open file of a kernel `flock` (closing it releases the lock, also
+/// when the process dies).
+enum Kind {
+    Node(crate::checks::guardkit::nodelock::Held),
+    Flock(std::fs::File),
+}
+
+impl Kind {
+    fn release(self) -> bool {
+        match self {
+            Kind::Node(h) => h.release(),
+            Kind::Flock(f) => {
+                crate::health::flock(&f, libc::LOCK_UN);
+                true
+            }
+        }
+    }
+}
 
 thread_local! {
     static CLOCK: RefCell<Option<f64>> = const { RefCell::new(None) };
@@ -472,8 +527,112 @@ pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) ->
     let Some(held) = taken else { return Ok(None) };
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    HELD.with(|h| h.borrow_mut().push((id, held, guard)));
+    HELD.with(|h| h.borrow_mut().push((id, Kind::Node(held), guard)));
     Ok(Some(id as f64))
+}
+
+/// `flockAcquire(rel, group, waitMs?)`: like [`lock_acquire`] with a kernel `flock(LOCK_EX)` on the file `rel` (created if absent,
+/// never deleted, never truncated, opened `O_NOFOLLOW` with mode 0600) in place of the Node lock protocol: no owner record, no
+/// staleness, no takeover, and a holder that dies drops it. Only for a file no Node peer locks. The step is `<group>.lock_step_ms`.
+/// Returns the handle number (the lock is held), `0` when the wait ran out (held elsewhere), `-1` when the lock could not be acquired
+/// (the file cannot be opened or is a link, the count of held locks is spent, or flock failed with an errno that is not "unsupported":
+/// the script must write nothing), or `null` when, and only when, the filesystem or platform has no flock at all (`ENOTSUP`,
+/// `EOPNOTSUPP`, `ENOSYS`): only then may the script fall back to [`lock_acquire`], whose own file lock is a different protocol
+/// that does not exclude a holder of this one. Released by [`lock_release`] or at the end of the call.
+pub fn flock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
+    let failed = || Ok(Some(-1.0)); // the handle number's "not acquired" answer (see the doc above)
+    let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
+        return Err(err("flockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
+    };
+    if let Some(w) = wait_ms.filter(|w| w.is_finite() && *w >= 0.0) {
+        params.wait_ms = (w as u64).min(defaults::num("script.lock_wait_max_ms"));
+    }
+    let held_now = HELD.with(|h| h.borrow().len());
+    if held_now as u64 >= defaults::num("script.lock_max_held") {
+        return failed();
+    }
+    let Some(path) = scoped_target(home, rel, 0, false)? else { return failed() };
+    let Ok(file) = open_flock_file(&path) else { return failed() };
+    let started = std::time::Instant::now();
+    let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
+    let deadline = started + std::time::Duration::from_millis(params.wait_ms);
+    let outcome = loop {
+        match try_flock(&file) {
+            Ok(()) => break Ok(true),
+            Err(e) if e == libc::EWOULDBLOCK || e == libc::EINTR => {}
+            Err(e) if e == libc::ENOTSUP || e == libc::EOPNOTSUPP || e == libc::ENOSYS => break Err(true),
+            Err(_) => break Err(false), // ENOLCK, EBADF, EIO, ...: the lock was not taken, and no one said flock does not exist here
+        }
+        if std::time::Instant::now() >= deadline {
+            break Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(params.step_ms.max(1)));
+    };
+    credit_blocking(started);
+    match outcome {
+        Err(true) => Ok(None),
+        Err(false) => failed(),
+        Ok(false) => Ok(Some(0.0)),
+        Ok(true) => {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            HELD.with(|h| h.borrow_mut().push((id, Kind::Flock(file), guard)));
+            Ok(Some(id as f64))
+        }
+    }
+}
+
+/// The one open of a flock file: created if absent, never truncated, mode 0600, `O_NOFOLLOW` (a link in the file's place is refused even
+/// when it appears after [`scoped_target`] looked).
+fn open_flock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).mode_0600().nofollow().open(path)
+}
+
+/// Test seam: the production open of a flock file (see [`open_flock_file`]).
+#[cfg(test)]
+pub(crate) fn open_flock_file_for_test(path: &Path) -> std::io::Result<std::fs::File> {
+    open_flock_file(path)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test seam: the errno the next `try_flock` calls of this thread fail with (the kernel's own answers cannot be forced).
+    static FLOCK_ERRNO: std::sync::atomic::AtomicI32 = const { std::sync::atomic::AtomicI32::new(0) };
+}
+
+/// Test seam: make the `flock` calls of this thread fail with `errno` (`None`: the real call again).
+#[cfg(test)]
+pub(crate) fn set_flock_errno(errno: Option<i32>) {
+    FLOCK_ERRNO.with(|f| f.store(errno.unwrap_or(0), std::sync::atomic::Ordering::Relaxed));
+}
+
+/// One non-blocking `flock(LOCK_EX)`: `Ok` when taken, else the errno.
+fn try_flock(file: &std::fs::File) -> Result<(), i32> {
+    use std::os::unix::io::AsRawFd;
+    #[cfg(test)]
+    match FLOCK_ERRNO.with(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
+        0 => {}
+        e => return Err(e),
+    }
+    // SAFETY: `file` is open and owned by the caller, so its descriptor is valid; flock takes only it and flags.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO))
+    }
+}
+
+trait Mode0600 {
+    fn mode_0600(&mut self) -> &mut Self;
+    fn nofollow(&mut self) -> &mut Self;
+}
+impl Mode0600 for std::fs::OpenOptions {
+    fn mode_0600(&mut self) -> &mut Self {
+        std::os::unix::fs::OpenOptionsExt::mode(self, 0o600)
+    }
+    fn nofollow(&mut self) -> &mut Self {
+        std::os::unix::fs::OpenOptionsExt::custom_flags(self, libc::O_NOFOLLOW)
+    }
 }
 
 /// `lockRelease(handle)`: release a lock taken in this call; `false` when it was not held (or no longer ours).
@@ -520,10 +679,10 @@ pub fn write_fenced(home: &str, rel: &str, text: &str, id: f64, infix: &str, gua
     let started = std::time::Instant::now();
     let sync = defaults::num("script.write_sync") != 0;
     let r = HELD.with(|h| {
-        h.borrow()
-            .iter()
-            .find(|(n, _, _)| *n as f64 == id)
-            .map(|(_, held, _)| crate::checks::guardkit::nodelock::fenced_write_if(held, &path, text, infix, sync, &still_valid))
+        h.borrow().iter().find(|(n, _, _)| *n as f64 == id).and_then(|(_, held, _)| match held {
+            Kind::Node(held) => Some(crate::checks::guardkit::nodelock::fenced_write_if(held, &path, text, infix, sync, &still_valid)),
+            Kind::Flock(_) => None,
+        })
     });
     credit_blocking(started);
     Ok(matches!(r, Some(Ok(true))))
@@ -1217,6 +1376,13 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
             lock_acquire(&home, &rel, &group, wait)
         })?,
     )?;
+    h.set(
+        "flockAcquire",
+        Function::new(c.clone(), |rel: String, group: String, wait: Option<f64>| -> rquickjs::Result<Option<f64>> {
+            let home = with_settings(|st| st.home.clone())?;
+            flock_acquire(&home, &rel, &group, wait)
+        })?,
+    )?;
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
     h.set(
         "fenceSweep",
@@ -1281,6 +1447,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("fileSha256", Function::new(c.clone(), |p: String| file_sha256(&p))?)?;
     h.set("readHeadHex", Function::new(c.clone(), |p: String, n: f64| read_head_hex(&p, n))?)?;
     h.set("readRangeHex", Function::new(c.clone(), |p: String, from: f64, n: f64| read_range_hex(&p, from, n))?)?;
+    h.set("rangeSha1Hex", Function::new(c.clone(), |p: String, from: f64, n: f64| range_sha1_hex(&p, from, n))?)?;
     h.set("readlink", Function::new(c.clone(), |p: String| std::fs::read_link(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
     h.set(
         "exec",

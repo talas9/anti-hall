@@ -72,15 +72,14 @@ var taskSnap = {
   // window as it stands now, read back later at that fixed offset (a transcript only grows at its end). null when it cannot be read.
   fingerprint: function (p, size, win) {
     var n = ah.cfgNum('taskstate.snapshot_fingerprint_bytes'), hl = Math.min(n, size), at = Math.max(0, size - win - n), ml = Math.min(n, size - at);
-    var h = ah.fs.readRangeHex(p, 0, hl), m = ah.fs.readRangeHex(p, at, ml);
-    if (h === null || m === null || h.length !== hl * 2 || m.length !== ml * 2) return null;
-    return { head: ah.sha1(h), headLen: hl, at: at, mid: ah.sha1(m), midLen: ml };
+    var h = ah.fs.rangeSha1Hex(p, 0, hl), m = ah.fs.rangeSha1Hex(p, at, ml);
+    if (h === null || m === null) return null;
+    return { head: h, headLen: hl, at: at, mid: m, midLen: ml };
   },
   // Whether the transcript at `p` still has the bytes a fingerprint recorded.
   sameFile: function (p, g) {
-    if (g === null || typeof g !== 'object' || typeof g.headLen !== 'number' || typeof g.midLen !== 'number' || typeof g.at !== 'number') return false;
-    var h = ah.fs.readRangeHex(p, 0, g.headLen), m = ah.fs.readRangeHex(p, g.at, g.midLen);
-    return h !== null && m !== null && h.length === g.headLen * 2 && m.length === g.midLen * 2 && ah.sha1(h) === g.head && ah.sha1(m) === g.mid;
+    if (g === null || typeof g !== 'object' || typeof g.headLen !== 'number' || typeof g.midLen !== 'number' || typeof g.at !== 'number' || typeof g.head !== 'string' || typeof g.mid !== 'string') return false;
+    return ah.fs.rangeSha1Hex(p, 0, g.headLen) === g.head && ah.fs.rangeSha1Hex(p, g.at, g.midLen) === g.mid;
   },
   // Whether the tail began a new list under numbers the snapshot already holds. A TaskCreate the tail shows for a number the snapshot
   // holds is either the create the snapshot already saw (the tail reaches back over the bytes the snapshot was written from) or a new
@@ -174,8 +173,11 @@ var taskSnap = {
       if (tasks.length === 0 && !existed) return r;
       if (!existed) {
         var dir = g.home + '/' + ah.cfg('paths.base_dir') + '/' + ah.cfg('taskstate.snapshot_dir');
-        var names = ah.fs.isDir(dir) ? ah.fs.readdir(dir) : [], lockEnd = ah.cfg('taskstate.snapshot_lock_suffix');
-        if (names !== null) names = names.filter(function (n) { return n.slice(-lockEnd.length) !== lockEnd; }); // a lock file is no snapshot
+        var names = ah.fs.isDir(dir) ? ah.fs.readdir(dir) : [];
+        if (names !== null && names.length > 0) { // an absent or empty directory (the first snapshot) has nothing to filter: the suffixes are not read
+          var lockEnd = ah.cfg('taskstate.snapshot_lock_suffix'), flockEnd = ah.cfg('taskstate.snapshot_flock_suffix');
+          names = names.filter(function (n) { return n.slice(-lockEnd.length) !== lockEnd && n.slice(-flockEnd.length) !== flockEnd; }); // a lock file is no snapshot
+        }
         if (names === null || names.length >= ah.cfgNum('taskstate.snapshot_max_files')) { taskSnap.count('snapshot_error', { kind: 'cap' }); return r; }
       }
       var fp = taskSnap.fingerprint(p, size, win);
@@ -183,11 +185,26 @@ var taskSnap = {
       // The file is read, merged and rewritten whole by every hook that rebuilds a list, so the last step runs under one lock per file:
       // a hook that cannot take it in taskstate.snapshot_lock_wait_ms writes nothing (its answer is the same; the next rebuild writes)
       // and is counted under snapshot_error kind `lock`. Without the lock two hooks in the same instant could still lose one section.
-      var lk = null;
-      try { lk = ah.state.lock(rel + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = null; }
-      // null: the lock is held by another (its file is there: write nothing) or cannot be made at all (an unwritable directory: no file, and
-      // the write below fails and is counted as such, as it always was)
-      if (lk === null && ah.fs.isFile(g.home + '/' + rel + ah.cfg('taskstate.snapshot_lock_suffix'))) { taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
+      var lk = null, lockKind = 'file';
+      var kind;
+      try { kind = ah.cfgLive('taskstate.snapshot_lock_kind'); } catch (e) { kind = ah.cfg('taskstate.snapshot_lock_kind'); } // the kill switch is the owner's: settings.json or config.toml; the shipped value stands when they cannot be read
+      if (kind === 'flock') {
+        // Only a flock this platform or filesystem does not have at all (null) may fall back to the lock file, whose protocol does not exclude
+        // a holder of the flock. Every other outcome that is not a held lock ('busy', 'failed': an unopenable or linked file, an errno, a refused path) writes nothing.
+        try { lk = ah.state.flock(rel + ah.cfg('taskstate.snapshot_flock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = 'failed'; }
+        lockKind = 'flock';
+        if (lk === 'busy' || lk === 'failed') { taskSnap.count('snapshot_lock', { kind: 'flock', result: lk }); taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
+        if (lk === null) lockKind = 'fallback'; // no flock here at all: the lock file below
+      }
+      if (lk === null) {
+        // The lock file protocol (kind `file`, or the flock fallback). A write needs a lock POSITIVELY held: only a handle counts. A null
+        // (held by another past the wait, or no lock file can be made: a directory or a link in its place, an unwritable directory, a
+        // refused path) and an exception both write nothing, counted like a busy flock.
+        var res = 'busy';
+        try { lk = ah.state.lock(rel + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = null; res = 'failed'; }
+        if (lk === null) { taskSnap.count('snapshot_lock', { kind: lockKind, result: res }); taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
+      }
+      taskSnap.count('snapshot_lock', { kind: lockKind, result: 'taken' });
       try {
         var body = doc === null ? { format: fmt, path: p, variants: {} } : doc;
         body.format = fmt; body.path = p; body.gen = fp;
@@ -200,7 +217,7 @@ var taskSnap = {
         if (text1.length > max) { taskSnap.count('snapshot_error', { kind: 'big' }); return r; }
         if (!ah.state.writeAtomic(rel, text1)) { taskSnap.count('snapshot_error', { kind: 'write' }); return r; }
         taskSnap.count('snapshot_written');
-      } finally { if (lk !== null) ah.state.unlock(lk); }
+      } finally { ah.state.unlock(lk); } // lk is a held handle here: no path reaches the write without one
     } catch (e) { taskSnap.count('snapshot_error', { kind: 'write' }); return r; }
     return taskSnap.counted(out, recovered);
   },
@@ -273,6 +290,9 @@ ah.date = { parse: function (text) { return JSON.parse(ahHost.dateParse(text)); 
 ah.fs.readEnd = function (p, bytes) { return ahNull(ahHost.readEnd(p, bytes || 0)); };
 // `n` bytes of a regular file from byte `from` as lowercase hex (fewer at the end of the file); null when unreadable.
 ah.fs.readRangeHex = function (p, from, n) { return ahNull(ahHost.readRangeHex(p, from || 0, n || 0)); };
+// The lowercase hex SHA-1 of the lowercase hex text of exactly `n` bytes from byte `from` (= ah.sha1 of ah.fs.readRangeHex, computed in
+// the engine without moving the bytes into the script); null when unreadable or fewer than `n` bytes exist.
+ah.fs.rangeSha1Hex = function (p, from, n) { return ahNull(ahHost.rangeSha1Hex(p, from || 0, n || 0)); };
 // A regular file this process may execute.
 ah.fs.isExecutable = function (p) { return ahHost.isExecutable(p); };
 // The process's user id.
