@@ -32,9 +32,17 @@ fn seed(state: &Path, n: usize) {
     drop(c);
 }
 
-fn files(state: &Path) -> Vec<(String, Vec<u8>)> {
-    let mut v: Vec<(String, Vec<u8>)> =
-        std::fs::read_dir(state).unwrap().flatten().map(|e| (e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).unwrap())).collect();
+/// Everything observable about the directory: name, size, mtime and bytes of each entry, sorted (a created, removed,
+/// touched or rewritten file, even a transient one that left a trace, shows).
+fn files(state: &Path) -> Vec<(String, u64, std::time::SystemTime, Vec<u8>)> {
+    let mut v: Vec<_> = std::fs::read_dir(state)
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            let m = e.metadata().unwrap();
+            (e.file_name().to_string_lossy().to_string(), m.len(), m.modified().unwrap(), std::fs::read(e.path()).unwrap())
+        })
+        .collect();
     v.sort();
     v
 }
@@ -89,4 +97,70 @@ fn the_kill_switch_restores_the_old_open_that_creates_archive_db() {
     let (code, out, err) = summary(&d, &state, &[("AH_ENGINE_OFFLINE_OPEN_READONLY", "0")]);
     assert_eq!(code, 0, "stdout: {out} stderr: {err}");
     assert!(state.join("archive.db").exists(), "switch off: the old open creates archive.db");
+}
+
+/// A hot.db with uncheckpointed WAL frames: the returned writer connection stays open, so `-wal` (non-empty) and `-shm` exist.
+fn seed_live_wal(state: &Path) -> Connection {
+    let mut c = Connection::open(state.join("hot.db")).unwrap();
+    c.pragma_update(None, "journal_mode", "WAL").unwrap();
+    c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    db::migrate(&mut c, "hot.db", sql::HOT_MIGRATIONS).unwrap();
+    c.execute_batch("CREATE TABLE IF NOT EXISTS offro_probe(x); INSERT INTO offro_probe VALUES (1);").unwrap();
+    let wal = std::fs::metadata(state.join("hot.db-wal")).unwrap().len();
+    assert!(wal > 0 && state.join("hot.db-shm").exists(), "the fixture has a live WAL ({wal} bytes) and shm");
+    c
+}
+
+#[test]
+fn a_database_with_a_live_non_empty_wal_is_refused_and_nothing_changes() {
+    let (d, state) = scratch("wal");
+    let _writer = seed_live_wal(&state);
+    let before = files(&state);
+    let (code, out, err) = summary(&d, &state, &[]);
+    assert_eq!(code, 1, "stdout: {out} stderr: {err}");
+    let said = format!("{out}{err}");
+    assert!(said.contains("hot.db") && said.contains("ah-engine status"), "the refusal names the file and the step: {said}");
+    assert_eq!(files(&state), before, "a refused open changes no file, size or mtime, and leaves no new entry");
+    assert!(!state.join("archive.db").exists(), "no archive.db is created");
+}
+
+#[test]
+fn empty_or_absent_sidecars_are_read_without_changing_anything() {
+    let (d, state) = scratch("emptysc");
+    seed(&state, sql::HOT_MIGRATIONS.len());
+    std::fs::write(state.join("hot.db-wal"), b"").unwrap();
+    std::fs::write(state.join("hot.db-shm"), b"").unwrap();
+    let before = files(&state);
+    let (code, out, err) = summary(&d, &state, &[]);
+    assert_eq!(code, 0, "stdout: {out} stderr: {err}");
+    assert_eq!(files(&state), before, "zero-length sidecars stay as they were");
+}
+
+#[test]
+fn a_refusal_by_archive_db_is_an_error_not_an_empty_answer_and_logs_nothing() {
+    let (d, state) = scratch("arch");
+    seed(&state, sql::HOT_MIGRATIONS.len());
+    let a = Connection::open(state.join("archive.db")).unwrap();
+    a.pragma_update(None, "user_version", 1).unwrap(); // older than this build's archive schema
+    drop(a);
+    let before = files(&state);
+    let (code, out, err) = summary(&d, &state, &[]);
+    assert_eq!(code, 1, "stdout: {out} stderr: {err}");
+    assert!(out.contains("error"), "an {{error}} report, not partial data: {out}");
+    assert_eq!(files(&state), before, "nothing changed");
+    let logs: Vec<_> = walk(&d.join("home"));
+    assert!(logs.is_empty(), "the offline path writes no log line: {logs:?}");
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
 }

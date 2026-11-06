@@ -100,6 +100,9 @@ pub fn run(rest: &[String]) -> (Value, i32) {
                 v["agent_cost"] = crate::agents::cost_report();
                 v["advisory"] = advisory_counts();
             }
+            if let Some(e) = tel.as_ref().and_then(|t| t.db().fault()) {
+                return (json!({"error": refusal(&e)}), 1); // a read-only read that failed is a refusal, never a partial answer
+            }
             v["from"] = json!("files");
             v["running"] = json!(false);
             (v, 0)

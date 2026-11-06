@@ -139,6 +139,20 @@ impl Run {
         }
     }
 
+    /// What starting the daemon again does to a killed one's database: open it read-write and close it, which replays and
+    /// removes the WAL. The offline verbs refuse a database with a live WAL (they would have to change the shm to read it).
+    fn recover(&self) {
+        let refused = self.json(&["telemetry", "summary", "--window", "1d"]);
+        assert!(refused["error"].as_str().is_some_and(|e| e.contains("in use")), "a killed daemon's live WAL is refused offline: {refused}");
+        for f in ["hot.db", "archive.db"] {
+            let path = self.dir.join("eng").join(f);
+            if path.exists() {
+                let c = rusqlite::Connection::open(path).unwrap();
+                c.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
+            }
+        }
+    }
+
     fn json(&self, args: &[&str]) -> serde_json::Value {
         let o = self.cmd("10000").args(args).arg("--json").output().unwrap();
         serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{args:?}: {e}: {}", String::from_utf8_lossy(&o.stdout)))
@@ -163,8 +177,9 @@ fn a_killed_daemon_keeps_what_was_flushed_and_loses_only_the_window() {
     let live = run.json(&["telemetry", "summary", "--window", "1d"]);
     assert_eq!((live["from"].as_str(), live["invocations"].as_u64()), (Some("daemon"), Some(12)), "{live}");
     run.kill9();
+    run.recover();
     let after = run.json(&["telemetry", "summary", "--window", "1d"]);
-    assert_eq!(after["from"], "files", "no daemon any more: read from the database");
+    assert_eq!(after["from"], "files", "no daemon any more: read from the database: {after}");
     assert_eq!(after["invocations"], 12, "everything up to the last flush survived kill -9: {after}");
 
     // the loss window: a daemon whose flush interval never comes up before the kill loses what it recorded
@@ -174,6 +189,7 @@ fn a_killed_daemon_keeps_what_was_flushed_and_loses_only_the_window() {
     let live = run2.json(&["telemetry", "summary", "--window", "1d"]);
     assert_eq!(live["invocations"], 7, "the live report sees unflushed data");
     run2.kill9();
+    run2.recover();
     let after = run2.json(&["telemetry", "summary", "--window", "1d"]);
     assert_eq!(after["invocations"], 0, "documented: a kill -9 loses what was recorded since the last flush: {after}");
 }
@@ -185,6 +201,7 @@ fn rollup_through_the_cli_is_idempotent() {
     run.hooks(3);
     run.wait_flushed(3);
     run.kill9();
+    run.recover();
     let s = run.json(&["telemetry", "summary", "--window", "1d"]);
     assert_eq!(s["invocations"], 3, "{s}");
     let r1 = run.json(&["telemetry", "rollup"]);

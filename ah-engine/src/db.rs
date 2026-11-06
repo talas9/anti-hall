@@ -339,6 +339,8 @@ pub struct Db {
     writer: Mutex<Option<JoinHandle<()>>>,
     /// Opened by [`Db::open_read_only`]: no writer, and `archive.db` is only ever opened read-only.
     read_only: bool,
+    /// The first read failure a read-only handle swallowed into an empty answer (offline verbs report it, never log it).
+    fault: Mutex<Option<DbError>>,
     /// The in-memory layer over hot.db.
     pub mem: Arc<Mem>,
 }
@@ -386,7 +388,14 @@ pub(crate) fn open_file(path: &Path, sync_key: &str, migrations: &[&str]) -> Res
     Ok(c)
 }
 
-/// Whether `path` has a sidecar file beside it (`suffix_key` names its suffix).
+/// Whether the sidecar of `path` (`suffix_key` names its suffix) exists and holds bytes: a live WAL/shm, not a leftover empty file.
+fn sidecar_live(path: &Path, suffix_key: &str) -> bool {
+    let mut p = path.as_os_str().to_owned();
+    p.push(defaults::text(suffix_key));
+    std::fs::metadata(Path::new(&p)).is_ok_and(|m| m.len() > 0)
+}
+
+/// Whether the rollback-journal sidecar of `path` exists at all.
 fn has_sidecar(path: &Path, suffix_key: &str) -> bool {
     let mut p = path.as_os_str().to_owned();
     p.push(defaults::text(suffix_key));
@@ -408,20 +417,20 @@ fn immutable_uri(path: &Path) -> String {
     uri
 }
 
-/// Open one existing database file read-only and check its schema against `migrations`. With no `-wal`/`-shm` beside it the
-/// file opens immutable (SQLite creates nothing); with the pair it opens as an ordinary read-only connection; a lone one of
-/// the pair, or a rollback journal, is refused. Never creates, migrates or configures.
+/// Open one existing database file read-only and check its schema against `migrations`. The file always opens immutable
+/// (SQLite creates, locks and writes nothing, not even a `-shm`). A non-empty `-wal`, or a rollback journal, means a writer
+/// holds the database (live, or crashed with unrecovered frames): that is refused, never opened, because even a read-only
+/// WAL connection may rebuild the `-shm`. An absent or zero-length `-wal`/`-shm` is fine. Never creates, migrates or configures.
 fn open_read_only_file(path: &Path, migrations: &[&str]) -> Result<Connection, DbError> {
     if !path.is_file() {
         return Err(DbError::Unavailable);
     }
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let (wal, shm) = (has_sidecar(path, "storage.wal_suffix"), has_sidecar(path, "storage.shm_suffix"));
-    if wal != shm || has_sidecar(path, "storage.journal_suffix") {
+    if sidecar_live(path, "storage.wal_suffix") || has_sidecar(path, "storage.journal_suffix") {
         return Err(DbError::Sidecars { db: name });
     }
     let ro = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let c = if wal { Connection::open_with_flags(path, ro)? } else { Connection::open_with_flags(immutable_uri(path), ro | OpenFlags::SQLITE_OPEN_URI)? };
+    let c = Connection::open_with_flags(immutable_uri(path), ro | OpenFlags::SQLITE_OPEN_URI)?;
     let found: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let known = migrations.len();
     if found > known as i64 {
@@ -459,12 +468,13 @@ impl Db {
             dir: dir.to_path_buf(),
             writer: Mutex::new(Some(handle)),
             read_only: false,
+            fault: Mutex::new(None),
             mem,
         }))
     }
 
     /// Open hot.db in `dir` for reading only (offline inspection verbs). Nothing is created, migrated, checkpointed or
-    /// written: there is no writer thread, `configure` is not applied, and a missing file, an unpaired sidecar or a schema
+    /// written: there is no writer thread, `configure` is not applied, and a missing file, a live `-wal`/journal or a schema
     /// that is not this build's is an error. `archive.db` opens on first use, read-only, and only if it already exists.
     pub fn open_read_only(dir: &Path) -> Result<Arc<Db>, DbError> {
         let hot = dir.join(defaults::text("storage.hot_file"));
@@ -476,6 +486,7 @@ impl Db {
             dir: dir.to_path_buf(),
             writer: Mutex::new(None),
             read_only: true,
+            fault: Mutex::new(None),
             mem: Arc::new(Mem::new()),
         }))
     }
@@ -483,6 +494,21 @@ impl Db {
     /// Whether this is a read-only handle and `archive.db` does not exist: there is nothing to read there, and nothing is created.
     pub fn archive_absent(&self) -> bool {
         self.read_only && !self.dir.join(defaults::text("storage.archive_file")).is_file()
+    }
+
+    /// Whether this handle was opened read-only (offline verbs: no writes, no log lines).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Remember the first read failure on a read-only handle so the verb can refuse instead of printing a partial answer.
+    pub fn note_fault(&self, e: DbError) {
+        lk(&self.fault).get_or_insert(e);
+    }
+
+    /// The first read failure remembered by [`Db::note_fault`], if any.
+    pub fn fault(&self) -> Option<DbError> {
+        lk(&self.fault).clone()
     }
 
     /// The directory holding both database files.
@@ -975,8 +1001,12 @@ mod tests {
         assert_eq!(std::fs::read(d.0.join("hot.db")).unwrap(), before, "hot.db is byte-identical");
 
         std::fs::write(d.0.join("hot.db-wal"), b"").unwrap();
-        assert!(matches!(Db::open_read_only(&d.0).err(), Some(DbError::Sidecars { .. })), "a lone -wal is refused");
+        std::fs::write(d.0.join("hot.db-shm"), b"").unwrap();
+        assert!(Db::open_read_only(&d.0).is_ok(), "zero-length -wal/-shm are fine");
+        std::fs::write(d.0.join("hot.db-wal"), b"x").unwrap();
+        assert!(matches!(Db::open_read_only(&d.0).err(), Some(DbError::Sidecars { .. })), "a non-empty -wal is refused");
         std::fs::remove_file(d.0.join("hot.db-wal")).unwrap();
+        std::fs::remove_file(d.0.join("hot.db-shm")).unwrap();
 
         let c = Connection::open(d.0.join("hot.db")).unwrap();
         c.pragma_update(None, "user_version", 99).unwrap();

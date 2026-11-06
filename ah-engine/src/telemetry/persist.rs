@@ -13,7 +13,6 @@ use super::event::Event;
 use super::recorder::Delta;
 use crate::db::{Db, Op};
 use crate::defaults;
-use crate::discard::Logged;
 use crate::error::DbError;
 use crate::sql;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -171,26 +170,25 @@ pub struct TelDb {
 impl TelDb {
     /// The guard blocks since `since_ms`, newest first, at most `limit`.
     pub fn blocks(&self, since_ms: u64, limit: usize) -> Vec<crate::storage::BlockRow> {
-        self.db
-            .read(|c| {
-                let mut st = c.prepare_cached(crate::sql::BLOCK_RECENT)?;
-                let rows = st.query_map(rusqlite::params![since_ms as i64, limit as i64], |r| {
-                    Ok(crate::storage::BlockRow {
-                        ts_ms: r.get::<_, i64>(0)?.max(0) as u64,
-                        guard: r.get(1)?,
-                        rule: r.get(2)?,
-                        event: r.get(3)?,
-                        session: r.get(4)?,
-                        agent: r.get(5)?,
-                        tool: r.get(6)?,
-                        project: r.get(7)?,
-                        reason: r.get(8)?,
-                        repeat: r.get::<_, i64>(9)?.max(0) as u64,
-                    })
-                })?;
-                rows.collect()
-            })
-            .unwrap_or_default()
+        let r = self.db.read(|c| {
+            let mut st = c.prepare_cached(crate::sql::BLOCK_RECENT)?;
+            let rows = st.query_map(rusqlite::params![since_ms as i64, limit as i64], |r| {
+                Ok(crate::storage::BlockRow {
+                    ts_ms: r.get::<_, i64>(0)?.max(0) as u64,
+                    guard: r.get(1)?,
+                    rule: r.get(2)?,
+                    event: r.get(3)?,
+                    session: r.get(4)?,
+                    agent: r.get(5)?,
+                    tool: r.get(6)?,
+                    project: r.get(7)?,
+                    reason: r.get(8)?,
+                    repeat: r.get::<_, i64>(9)?.max(0) as u64,
+                })
+            })?;
+            rows.collect()
+        });
+        self.soft("db_read", r)
     }
 }
 
@@ -212,6 +210,22 @@ fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<DayRow> {
 }
 
 impl TelDb {
+    /// A read's result with a failure turned into an empty answer: logged on a live handle, remembered (never logged) on a
+    /// read-only one so the offline verb can refuse instead of printing incomplete data.
+    fn soft<T: Default>(&self, code: &'static str, r: Result<T, DbError>) -> T {
+        match r {
+            Ok(v) => v,
+            Err(e) if self.db.is_read_only() => {
+                self.db.note_fault(e);
+                T::default()
+            }
+            Err(e) => {
+                crate::discard::note(code, &e.to_string());
+                T::default()
+            }
+        }
+    }
+
     /// Telemetry over an open database.
     pub fn new(db: Arc<Db>) -> TelDb {
         TelDb { db }
@@ -239,7 +253,8 @@ impl TelDb {
     /// Counter rows for days `from..=to` (hot.db).
     pub fn counts(&self, from: i64, to: i64) -> Vec<DayRow> {
         crate::discard::logged("db_barrier", self.db.barrier());
-        self.db.read(|c| c.prepare_cached(sql::TEL_COUNTS_RANGE)?.query_map(params![from, to], row_of)?.collect()).or_default_logged("db_read")
+        let r = self.db.read(|c| c.prepare_cached(sql::TEL_COUNTS_RANGE)?.query_map(params![from, to], row_of)?.collect());
+        self.soft("db_read", r)
     }
 
     /// Daily rollup rows for days `from..=to` (archive.db).
@@ -247,14 +262,14 @@ impl TelDb {
         if self.db.archive_absent() {
             return Vec::new(); // a read-only open never creates archive.db, and no rollup has run yet
         }
-        self.db
-            .archive(|c| Ok(c.prepare_cached(sql::TEL_DAILY_RANGE)?.query_map(params![from, to], row_of)?.collect::<rusqlite::Result<Vec<_>>>()?))
-            .or_default_logged("db_read")
+        let r = self.db.archive(|c| Ok(c.prepare_cached(sql::TEL_DAILY_RANGE)?.query_map(params![from, to], row_of)?.collect::<rusqlite::Result<Vec<_>>>()?));
+        self.soft("db_read", r)
     }
 
     fn events_from(&self, sql_text: &str, p: &[&dyn rusqlite::ToSql]) -> Vec<Event> {
         crate::discard::logged("db_barrier", self.db.barrier());
-        let texts: Vec<String> = self.db.read(|c| c.prepare_cached(sql_text)?.query_map(p, |r| r.get::<_, String>(0))?.collect()).or_default_logged("db_read");
+        let r = self.db.read(|c| c.prepare_cached(sql_text)?.query_map(p, |r| r.get::<_, String>(0))?.collect());
+        let texts: Vec<String> = self.soft("db_read", r);
         texts.iter().filter_map(|t| serde_json::from_str::<Value>(t).ok()).filter_map(|v| Event::from_json(&v).ok()).collect()
     }
 
@@ -273,7 +288,8 @@ impl TelDb {
     /// Events held in hot.db.
     pub fn held_events(&self) -> u64 {
         crate::discard::logged("db_barrier", self.db.barrier());
-        self.db.read(|c| c.query_row(sql::TEL_EVENTS_HELD, [], |r| r.get::<_, i64>(0))).map(|n| n.max(0) as u64).unwrap_or(0)
+        let r = self.db.read(|c| c.query_row(sql::TEL_EVENTS_HELD, [], |r| r.get::<_, i64>(0)));
+        self.soft("db_read", r.map(|n| n.max(0) as u64))
     }
 }
 
