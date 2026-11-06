@@ -552,9 +552,7 @@ pub fn flock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -
         return failed();
     }
     let Some(path) = scoped_target(home, rel, 0, false)? else { return failed() };
-    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).mode_0600().nofollow().open(&path) else {
-        return failed();
-    };
+    let Ok(file) = open_flock_file(&path) else { return failed() };
     let started = std::time::Instant::now();
     let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
     let deadline = started + std::time::Duration::from_millis(params.wait_ms);
@@ -582,6 +580,18 @@ pub fn flock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -
             Ok(Some(id as f64))
         }
     }
+}
+
+/// The one open of a flock file: created if absent, never truncated, mode 0600, `O_NOFOLLOW` (a link in the file's place is refused even
+/// when it appears after [`scoped_target`] looked).
+fn open_flock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).mode_0600().nofollow().open(path)
+}
+
+/// Test seam: the production open of a flock file (see [`open_flock_file`]).
+#[cfg(test)]
+pub(crate) fn open_flock_file_for_test(path: &Path) -> std::io::Result<std::fs::File> {
+    open_flock_file(path)
 }
 
 #[cfg(test)]

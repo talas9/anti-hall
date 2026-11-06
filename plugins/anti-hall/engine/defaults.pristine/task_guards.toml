@@ -360,7 +360,7 @@ doc = "Suffix of the lock file a rebuild holds while it merges and rewrites a se
 value = ".lock"
 
 [taskstate.snapshot_lock_kind]
-doc = "How the snapshot lock is taken: `flock` (a kernel lock on the file named by taskstate.snapshot_flock_suffix: one open and one lock call, released by the kernel when the holder dies; no Node peer uses this file) or `file` (the lock file of taskstate.snapshot_lock_suffix with the owner record, stale takeover and sidecar of the Node lock protocol: four directory creates and four removals per cycle). `file` is the kill switch. Where the platform or filesystem has no flock at all (ENOTSUP, EOPNOTSUPP, ENOSYS), a rebuild falls back to `file` on its own (counted snapshot_lock kind `fallback`); any other failure to take the flock (the file will not open, is a link, an errno) writes nothing (counted snapshot_lock result `failed`)."
+doc = "How the snapshot lock is taken: `flock` (a kernel lock on the file named by taskstate.snapshot_flock_suffix: one open and one lock call, released by the kernel when the holder dies; no Node peer uses this file) or `file` (the lock file of taskstate.snapshot_lock_suffix with the owner record, stale takeover and sidecar of the Node lock protocol: four directory creates and four removals per cycle). `file` is the kill switch. Where the platform or filesystem has no flock at all (ENOTSUP, EOPNOTSUPP, ENOSYS), a rebuild falls back to `file` on its own (counted snapshot_lock kind `fallback`); any other failure to take the flock (the file will not open, is a link, an errno) writes nothing (counted snapshot_lock result `failed`). On `file` and on the fallback a lock that is not positively held (busy, no lock file can be made, an exception) also writes nothing."
 value = "flock"
 
 [taskstate.snapshot_flock_suffix]
@@ -1702,7 +1702,7 @@ doc = "Rebuilds whose tail holds a TaskCreate for a number the snapshot holds, o
 value = { kind = "counter", unit = "rebuilds", labels = [] }
 
 [metric.snapshot_lock]
-doc = "Task snapshot lock takes, by kind (flock: the kernel lock; file: the lock file of the Node protocol, by taskstate.snapshot_lock_kind; fallback: this platform or filesystem has no flock at all, the lock file was used) and result (taken; busy: held elsewhere past taskstate.snapshot_lock_wait_ms, nothing written; failed: the flock could not be acquired (the file would not open or is a link, or flock failed with an errno other than unsupported), nothing written; null: no lock could be made on the fallback path, the write was tried without one)."
+doc = "Task snapshot lock takes, by kind (flock: the kernel lock; file: the lock file of the Node protocol, by taskstate.snapshot_lock_kind; fallback: this platform or filesystem has no flock at all, the lock file was used) and result (taken; busy: held elsewhere past taskstate.snapshot_lock_wait_ms, nothing written; failed: the flock could not be acquired (the file would not open or is a link, or flock failed with an errno other than unsupported), nothing written). On the file and fallback kinds busy also covers a lock file that cannot be made (a directory or link in its place, an unwritable directory) and failed a lock call that raised: nothing is written either way. A write happens only under a lock that is positively held."
 value = { kind = "counter", unit = "takes", labels = ["kind", "result"] }
 
 [metric.snapshot_error]

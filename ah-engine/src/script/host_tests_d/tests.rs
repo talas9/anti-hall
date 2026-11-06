@@ -1194,6 +1194,59 @@ fn a_platform_or_filesystem_without_flock_falls_back_to_the_lock_file_and_still_
     }
 }
 
+/// A rebuild of `t.jsonl` under `kind` with the flock reported unsupported, the lock file's place taken by `block`: nothing may be written.
+fn assert_lock_file_path_writes_nothing(tag: &str, kind: &str, unsupported: bool, block: impl Fn(&str, &str), lock_call: Option<&str>, result: &str) {
+    let h = home(&format!("snap-lockfile-{tag}"));
+    let t = format!("{h}/t.jsonl");
+    std::fs::write(&t, snap_head()).unwrap();
+    std::fs::write(format!("{h}/.anti-hall/settings.json"), format!(r#"{{"taskstate":{{"snapshot_lock_kind":"{kind}"}}}}"#)).unwrap();
+    snap_probe(&h);
+    let flock = snap_flock_path(&h, &t);
+    let lock = format!("{}{}", flock.trim_end_matches(&defaults::text("taskstate.snapshot_flock_suffix")), defaults::text("taskstate.snapshot_lock_suffix"));
+    std::fs::create_dir_all(std::path::Path::new(&lock).parent().unwrap()).unwrap();
+    block(&lock, &h);
+    if let Some(body) = lock_call {
+        put_override(
+            &h,
+            "zz-snapx",
+            &format!("function decide(p){{ ah.state.lock = function () {{ {body} }}; ah.transcript.tasks(p.t, 'guard', p.w, 0, ''); return 'allow'; }}"),
+        );
+    }
+    let got = {
+        let _inject = unsupported.then(|| FlockErrno::set(libc::ENOTSUP));
+        if lock_call.is_some() {
+            assert_eq!(run("zz-snapx", &json!({"t": t, "w": SNAP_WINDOW}), &env(&h)), Some(Some(Verdict::Allow)));
+            Value::Null
+        } else {
+            snap_rebuild(&h, &t, "a")
+        }
+    };
+    if lock_call.is_none() {
+        assert_eq!(snap_rows(&got).len(), 3, "{tag}: the rebuild still answers");
+    }
+    let lock_kind = if unsupported { "fallback" } else { "file" };
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_lock", &[("kind", lock_kind), ("result", result)]), 1, "{tag}");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_lock", &[("kind", lock_kind), ("result", "taken")]), 0, "{tag}");
+    assert_eq!(bumped("snapshot_error", "kind", "lock"), 1, "{tag}");
+    assert_eq!(crate::metrics::bumped_on_this_thread("snapshot_written", &[]), 0, "{tag}: nothing was written");
+    assert!(snap_files(&h).is_empty(), "{tag}: no snapshot was written without a held lock: {:?}", snap_all(&h));
+    crate::metrics::reset_this_thread();
+}
+
+#[test]
+fn a_directory_where_the_lock_file_goes_writes_no_snapshot_on_the_file_kind_and_on_the_fallback() {
+    let mkdir = |lock: &str, _h: &str| std::fs::create_dir_all(lock).unwrap();
+    assert_lock_file_path_writes_nothing("dir-file", "file", false, mkdir, None, "busy");
+    assert_lock_file_path_writes_nothing("dir-fallback", "flock", true, mkdir, None, "busy");
+}
+
+#[test]
+fn a_lock_call_that_raises_on_the_file_kind_or_the_fallback_writes_no_snapshot() {
+    let nothing = |_: &str, _: &str| {};
+    assert_lock_file_path_writes_nothing("raise-file", "file", false, nothing, Some("throw new Error('boom');"), "failed");
+    assert_lock_file_path_writes_nothing("raise-fallback", "flock", true, nothing, Some("throw new Error('boom');"), "failed");
+}
+
 #[test]
 fn a_symlinked_flock_file_is_refused_writes_nothing_and_the_target_is_untouched() {
     let h = home("snap-flock-link");
@@ -1226,9 +1279,10 @@ fn a_flock_file_opens_with_o_nofollow_and_mode_0600() {
     std::fs::write(&victim, "").unwrap();
     let link = format!("{h}/link.flock");
     std::os::unix::fs::symlink(&victim, &link).unwrap();
-    use std::os::unix::fs::OpenOptionsExt;
-    let opened = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(&link);
-    assert!(opened.is_err(), "O_NOFOLLOW refuses a link");
+    let opened = host::open_flock_file_for_test(std::path::Path::new(&link));
+    assert!(opened.is_err(), "the production open refuses a link (O_NOFOLLOW)");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "", "the link's target is untouched");
+    assert!(host::open_flock_file_for_test(std::path::Path::new(&format!("{h}/fresh.flock"))).is_ok(), "a plain path opens");
 }
 
 /// Child of the lost-update test: rebuild the `state` variant of `t.jsonl` once the parent has the guard writer inside its lock.

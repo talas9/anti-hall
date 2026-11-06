@@ -197,12 +197,14 @@ var taskSnap = {
         if (lk === null) lockKind = 'fallback'; // no flock here at all: the lock file below
       }
       if (lk === null) {
-        try { lk = ah.state.lock(rel + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = null; }
-        // null: the lock is held by another (its file is there: write nothing) or cannot be made at all (an unwritable directory: no file, and
-        // the write below fails and is counted as such, as it always was)
-        if (lk === null && ah.fs.isFile(g.home + '/' + rel + ah.cfg('taskstate.snapshot_lock_suffix'))) { taskSnap.count('snapshot_lock', { kind: lockKind, result: 'busy' }); taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
+        // The lock file protocol (kind `file`, or the flock fallback). A write needs a lock POSITIVELY held: only a handle counts. A null
+        // (held by another past the wait, or no lock file can be made: a directory or a link in its place, an unwritable directory, a
+        // refused path) and an exception both write nothing, counted like a busy flock.
+        var res = 'busy';
+        try { lk = ah.state.lock(rel + ah.cfg('taskstate.snapshot_lock_suffix'), ah.cfg('taskstate.snapshot_lock_group'), ah.cfgNum('taskstate.snapshot_lock_wait_ms')); } catch (e) { lk = null; res = 'failed'; }
+        if (lk === null) { taskSnap.count('snapshot_lock', { kind: lockKind, result: res }); taskSnap.count('snapshot_error', { kind: 'lock' }); return taskSnap.counted(out, recovered); }
       }
-      taskSnap.count('snapshot_lock', { kind: lockKind, result: lk === null ? 'null' : 'taken' });
+      taskSnap.count('snapshot_lock', { kind: lockKind, result: 'taken' });
       try {
         var body = doc === null ? { format: fmt, path: p, variants: {} } : doc;
         body.format = fmt; body.path = p; body.gen = fp;
@@ -215,7 +217,7 @@ var taskSnap = {
         if (text1.length > max) { taskSnap.count('snapshot_error', { kind: 'big' }); return r; }
         if (!ah.state.writeAtomic(rel, text1)) { taskSnap.count('snapshot_error', { kind: 'write' }); return r; }
         taskSnap.count('snapshot_written');
-      } finally { if (lk !== null) ah.state.unlock(lk); }
+      } finally { ah.state.unlock(lk); } // lk is a held handle here: no path reaches the write without one
     } catch (e) { taskSnap.count('snapshot_error', { kind: 'write' }); return r; }
     return taskSnap.counted(out, recovered);
   },
