@@ -901,6 +901,14 @@ database). Samples that could not be kept (a full table, an event overwritten in
 `tel_dropped`, never silently lost. Counters also feed the metrics registry (`tel_events`, `tel_injected_bytes`), so
 `ah-engine metrics` shows the same numbers.
 
+**Counts of a scheduled child.** A scheduled subprocess job (`ah-engine <action> --json`) is a process of its own, and only the daemon
+reads the counts bumped through `metrics::bump`. Before it starts the job the daemon makes a private file for that run
+(`files.telemetry_child_counts`) and names it to the child in the variable `schedule.child_counts_env` (`<daemon pid>:<path>`; the child
+accepts it only while its parent is that pid). At exit the child appends one `counter` line per series to that file, with no lock, no
+directory and no log; once the child has ended, however it ended, the daemon adds the lines to its own table and empties the file.
+`tel_child_counts` (label `result`) counts the series handed over (`series`) and the lines refused (`bad`). The hook dispatcher carries no marker
+and is unchanged.
+
 **Daily rollups.** `hot.db` keeps one counter row per UTC day and (k, h, e, o). `ah-engine telemetry rollup` copies every
 complete day into `archive.db` (counts, sums and latency histograms), replacing the archive row, so it is idempotent, and
 removes hot rows older than `telemetry.retention_days` only after they are archived (and old events by the same

@@ -34,10 +34,6 @@ thread_local! {
     static ITEMS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The events of this process, collected by [`queue`] and written by [`flush`] / [`flush_bounded`]. One table for the whole process (a
-/// worker thread's counts are not stranded in its own batch); a unit test keeps to the thread-local [`BATCH`] so parallel tests stay apart.
-static PROCESS_QUEUE: std::sync::Mutex<Vec<Event>> = std::sync::Mutex::new(Vec::new());
-
 static READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Make this process write no telemetry at all (a read-only command such as `doctor --check`): its events are dropped, and the
@@ -54,12 +50,6 @@ pub fn in_daemon() -> bool {
 /// Send this process's events to `sink` instead of the inbox. Called once by the daemon; a second call changes nothing.
 pub fn install(sink: Sink) {
     crate::discard::harmless(SINK.set(sink).map_err(|_| ())); // keep: already installed by an earlier start in this process
-    // events queued before the sink existed (a count bumped while the daemon was starting) go to the recorder now
-    if let Some(sink) = SINK.get() {
-        for ev in take_batch() {
-            sink(ev);
-        }
-    }
 }
 
 /// The inbox file.
@@ -84,34 +74,13 @@ pub fn event(ev: Event) {
 pub fn queue(ev: Event) {
     match SINK.get() {
         Some(sink) => sink(ev),
-        None => push_batch(ev),
+        None => BATCH.with(|b| b.borrow_mut().push(ev)),
     }
-}
-
-fn push_batch(ev: Event) {
-    if cfg!(test) {
-        BATCH.with(|b| b.borrow_mut().push(ev));
-        return;
-    }
-    let mut g = PROCESS_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-    if g.len() >= defaults::num("telemetry.exit_queue_max") as usize {
-        drop(g);
-        crate::discard::note("tel_exit_queue_full", defaults::text("msg.log_tel_exit_queue_full"));
-        return;
-    }
-    g.push(ev);
-}
-
-fn take_batch() -> Vec<Event> {
-    if cfg!(test) {
-        return BATCH.with(|b| std::mem::take(&mut *b.borrow_mut()));
-    }
-    std::mem::take(&mut *PROCESS_QUEUE.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// The events collected on this thread and not yet written, emptied (for tests of the code that records them).
 pub fn take_queued() -> Vec<Event> {
-    take_batch()
+    BATCH.with(|b| std::mem::take(&mut *b.borrow_mut()))
 }
 
 /// Write the events collected by [`queue`] on this thread, in one append.
@@ -120,68 +89,9 @@ pub fn flush() {
         BATCH.with(|b| b.borrow_mut().clear()); // a unit test must not write the real state directory
         return;
     }
-    let evs = take_batch();
+    let evs = BATCH.with(|b| std::mem::take(&mut *b.borrow_mut()));
     if !evs.is_empty() {
         append_to(&inbox_path(), &evs);
-    }
-}
-
-/// [`flush`] for the exit of a short-lived child (a scheduled subprocess action, a one-shot command): the same append, but it never waits
-/// for the inbox lock without bound. The daemon holds that lock while it reads the inbox and hands every event on, so a stuck daemon would
-/// otherwise stall the child until the scheduler's watchdog kills it. The lock is tried every `telemetry.exit_flush_poll_ms` for at most
-/// `telemetry.exit_flush_budget_ms` in all; past that the events are dropped (fail-open) and counted in `tel_dropped{reason=exit_flush_lock}`.
-/// With `try_only` the in-memory queue is taken with `try_lock` (the panic path, where a thread may have died holding it): a busy queue is left alone.
-pub fn flush_bounded(try_only: bool) {
-    if cfg!(test) || READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
-        take_batch();
-        return;
-    }
-    let evs = if try_only {
-        match PROCESS_QUEUE.try_lock() {
-            Ok(mut g) => std::mem::take(&mut *g),
-            Err(_) => return, // busy or poisoned: nothing safe to take
-        }
-    } else {
-        take_batch()
-    };
-    if evs.is_empty() {
-        return;
-    }
-    let path = inbox_path();
-    let budget = defaults::millis("telemetry.exit_flush_budget_ms");
-    if let Err(e) = write_bounded(&path, &evs, budget, defaults::millis("telemetry.exit_flush_poll_ms")) {
-        crate::discard::note("tel_exit_flush_dropped", &defaults::render("msg.log_tel_exit_flush_dropped", &[("events", &evs.len()), ("error", &e)]));
-        // the count of what was lost: one more try, in the same bounded way, so it reaches the daemon when the contention was brief
-        let ev = [counter("tel_dropped", &[("reason", "exit_flush_lock")], evs.len() as u64)];
-        crate::discard::logged("tel_exit_flush_count", write_bounded(&path, &ev, budget / 4, defaults::millis("telemetry.exit_flush_poll_ms")));
-    }
-}
-
-fn write_bounded(path: &Path, evs: &[Event], budget: std::time::Duration, poll: std::time::Duration) -> std::io::Result<()> {
-    let mut bytes = Vec::new();
-    for e in evs {
-        bytes.extend_from_slice(e.to_json().to_string().as_bytes());
-        bytes.push(b'\n');
-    }
-    write_locked_with(path, &bytes, |f| try_flock_within(f, budget, poll))
-}
-
-/// Take the exclusive lock without blocking, retrying every `poll` until `budget` has passed.
-fn try_flock_within(f: &std::fs::File, budget: std::time::Duration, poll: std::time::Duration) -> std::io::Result<()> {
-    let start = std::time::Instant::now();
-    loop {
-        // SAFETY: `f` is an open file owned by the caller, so its descriptor is valid; `flock` takes only the descriptor and flags.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(());
-        }
-        let err = std::io::Error::last_os_error();
-        if err.kind() != std::io::ErrorKind::WouldBlock {
-            return Err(err);
-        }
-        if start.elapsed() >= budget {
-            return Err(err);
-        }
-        std::thread::sleep(poll.min(budget.saturating_sub(start.elapsed()))); // `poll` is at least 1 ms (the key's minimum)
     }
 }
 
@@ -208,10 +118,6 @@ fn flock(f: &std::fs::File) -> std::io::Result<()> {
 }
 
 fn write_locked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_locked_with(path, bytes, flock)
-}
-
-fn write_locked_with(path: &Path, bytes: &[u8], lock: impl FnOnce(&std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
     let open = || std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path);
     let mut f = match open() {
         Ok(f) => f,
@@ -223,7 +129,7 @@ fn write_locked_with(path: &Path, bytes: &[u8], lock: impl FnOnce(&std::fs::File
         }
         Err(e) => return Err(e),
     };
-    lock(&f)?;
+    flock(&f)?;
     if f.metadata()?.len() + bytes.len() as u64 > defaults::num("telemetry.inbox_max_bytes") {
         return Ok(()); // full: the daemon is not reading; drop rather than grow without bound
     }
@@ -262,6 +168,73 @@ pub fn ingest_from(path: &Path, mut take: impl FnMut(Event)) -> Ingested {
                 take(ev);
             }
             None => out.bad += 1,
+        }
+    }
+    out
+}
+
+// ---- counts of a scheduled child ---------------------------------------------------------------------------------
+
+/// The exit write of a scheduled subprocess action (`ran_panicked` after a panic): the counts it bumped ([`crate::metrics::child_counts`]
+/// names the file) go to the counts file the daemon made for this run, one `counter` line per series. No lock, no directory, no
+/// metadata call and no log: one `open` (no create, no symlink followed) and one `write`, on a file only this run writes and the
+/// daemon reads once the process is gone. Every failure is dropped (a missing file is a daemon that made none).
+pub fn write_child_counts(ran_panicked: bool) {
+    let Some(path) = crate::metrics::child_counts() else { return };
+    if READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let mut bytes = Vec::new();
+    for (name, labels, n) in crate::metrics::take_child(ran_panicked) {
+        // the values ride in the order the metric registers its labels, as the daemon reads them back positionally
+        let registered = defaults::raw(&format!("metric.{name}")).get("labels").map(defaults::V::strings).unwrap_or_default();
+        let ordered: Vec<(&str, &str)> = registered.iter().filter_map(|l| labels.iter().find(|(k, _)| k == l).map(|(k, v)| (k.as_str(), v.as_str()))).collect();
+        if ordered.len() != registered.len() {
+            continue;
+        }
+        bytes.extend_from_slice(counter(&name, &ordered, n).to_json().to_string().as_bytes());
+        bytes.push(b'\n');
+    }
+    if bytes.is_empty() {
+        return;
+    }
+    let open = std::fs::OpenOptions::new().append(true).custom_flags(libc::O_NOFOLLOW).open(path);
+    if let Ok(mut f) = open {
+        crate::discard::harmless(f.write_all(&bytes)); // keep: exit path, nothing may be logged or waited on
+    }
+}
+
+/// What the daemon found in a child's counts file.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ChildCounts {
+    /// Series added to the daemon's table.
+    pub series: u64,
+    /// Lines that were not a valid `counter` event for a registered metric.
+    pub bad: u64,
+}
+
+/// Prepare the counts file of one run: create it (or empty it) with mode 0600 and no symlink followed. The daemon calls this before the
+/// child starts; the child only appends to it.
+pub fn prepare_child_counts(path: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path).map(drop)
+}
+
+/// Read the counts file of a run that has ended (at most `telemetry.inbox_max_bytes`), empty it, and add every `counter` line to this
+/// process's table ([`crate::metrics::bump_from_event`]). No lock: the writer is gone. An absent file is nothing to read.
+pub fn ingest_child_counts(path: &Path) -> ChildCounts {
+    let mut out = ChildCounts::default();
+    let Ok(mut f) = std::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(path) else { return out };
+    let mut text = String::new();
+    let read = Read::by_ref(&mut f).take(defaults::num("telemetry.inbox_max_bytes")).read_to_string(&mut text);
+    crate::discard::logged("tel_child_counts_clear", f.set_len(0));
+    if crate::discard::logged_ok("tel_child_counts_read", read).is_none() {
+        return out;
+    }
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let ev = serde_json::from_str::<serde_json::Value>(line).ok().and_then(|v| Event::from_json(&v).ok());
+        match ev {
+            Some(ev) if ev.kind == Kind::Counter && crate::metrics::bump_from_event(ev.h.as_str(), ev.e.as_str(), ev.ib) => out.series += 1,
+            _ => out.bad += 1,
         }
     }
     out
@@ -525,20 +498,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_bounded_lock_gives_up_at_its_budget_on_a_held_inbox() {
-        let p = scratch("bounded");
-        let holder = std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
-        flock(&holder).unwrap();
-        let start = std::time::Instant::now();
-        let r =
-            write_bounded(&p, &[counter("tel_dropped", &[("reason", "ring")], 1)], std::time::Duration::from_millis(120), std::time::Duration::from_millis(10));
-        let took = start.elapsed();
-        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
-        assert!(took >= std::time::Duration::from_millis(120) && took < std::time::Duration::from_secs(5), "{took:?}");
-        drop(holder); // the lock is free now: the same write goes through
-        write_bounded(&p, &[counter("tel_dropped", &[("reason", "ring")], 1)], std::time::Duration::from_millis(120), std::time::Duration::from_millis(10))
-            .unwrap();
-        assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), 1);
+    fn the_daemon_reads_a_counts_file_adds_the_counters_counts_the_bad_lines_and_empties_it() {
+        let p = scratch("childcounts").with_file_name("counts.jsonl");
+        prepare_child_counts(&p).unwrap();
+        let good = counter("delivery_funnel", &[("check", "c"), ("model", "m"), ("project", "p"), ("stage", "sent")], 3).to_json().to_string();
+        let plain = counter("tel_child_counts", &[("result", "bad")], 2).to_json().to_string();
+        let unregistered = counter("no_such_metric_416", &[], 1).to_json().to_string();
+        let not_counter = nudge_step("k", "fired", false).to_json().to_string();
+        std::fs::write(&p, format!("{good}\n{plain}\n{unregistered}\n{not_counter}\n{{\"k\":\"coun\n\n")).unwrap();
+        let got = ingest_child_counts(&p);
+        assert_eq!(got, ChildCounts { series: 2, bad: 3 });
+        // the values are stored in the metric's registered label order
+        assert_eq!(crate::metrics::bumped_on_this_thread("delivery_funnel", &[("check", "c"), ("model", "m"), ("project", "p"), ("stage", "sent")]), 3);
+        assert_eq!(crate::metrics::bumped_on_this_thread("tel_child_counts", &[("result", "bad")]), 2);
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), 0, "the file is emptied, not deleted");
+        assert_eq!(ingest_child_counts(&p), ChildCounts::default());
+        assert_eq!(ingest_child_counts(&p.with_file_name("absent.jsonl")), ChildCounts::default(), "an absent file is nothing to read");
     }
 
     fn scratch(tag: &str) -> PathBuf {

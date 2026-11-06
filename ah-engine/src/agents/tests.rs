@@ -2412,10 +2412,6 @@ static NUDGE_COUNTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn drained() -> crate::metrics::Metrics {
     let mut m = crate::metrics::Metrics::default();
     crate::metrics::drain_pending(&mut m);
-    // the tick runs as a child process: its counts are queued as counter events for the daemon (`metrics::bump_shared`)
-    for ev in crate::telemetry::emit::take_queued().iter().filter(|e| e.kind == crate::telemetry::event::Kind::Counter) {
-        assert!(crate::metrics::add_from_event(&mut m, ev.h.as_str(), ev.e.as_str(), ev.ib), "{ev:?}");
-    }
     m
 }
 

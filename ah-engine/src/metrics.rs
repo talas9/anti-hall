@@ -101,8 +101,49 @@ pub fn is_registered(name: &str) -> bool {
 
 /// Counts bumped by code that holds no `Metrics` (resolvers, discovery): series key -> (name, labels, count). The daemon moves them
 /// into its registry whenever it reads or snapshots the metrics ([`drain_pending`]).
-type Pending = BTreeMap<String, (String, Vec<(String, String)>, u64)>;
+type PendingRow = (String, Vec<(String, String)>, u64);
+type Pending = BTreeMap<String, PendingRow>;
 static PENDING: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The counts a scheduled subprocess action bumped, same shape and bounds as [`PENDING`]; written to its counts file at exit
+/// ([`crate::telemetry::emit::write_child_counts`]).
+static CHILD: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The counts file the daemon named for this process, when it started it as a scheduled job: the variable `schedule.child_counts_env`
+/// holds `<daemon pid>:<path>` and is accepted only while the parent is that pid, so a grandchild that inherited it ignores it.
+/// Read once.
+pub fn child_counts() -> Option<&'static std::path::Path> {
+    static MARK: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| {
+        let v = std::env::var(defaults::text("schedule.child_counts_env")).ok()?;
+        let (pid, path) = v.split_once(':')?;
+        // SAFETY: `getppid` takes no arguments and cannot fail.
+        (pid.parse::<i64>().ok()? == i64::from(unsafe { libc::getppid() }) && !path.is_empty()).then(|| std::path::PathBuf::from(path))
+    })
+    .as_deref()
+}
+
+/// Take the counts of a scheduled child out of its table (`try_lock` when `try_only`: after a panic a thread may have died holding it).
+pub fn take_child(try_only: bool) -> Vec<PendingRow> {
+    let taken = if try_only {
+        match CHILD.try_lock() {
+            Ok(mut g) => std::mem::take(&mut *g),
+            Err(_) => return Vec::new(),
+        }
+    } else {
+        std::mem::take(&mut *CHILD.lock().unwrap_or_else(|e| e.into_inner()))
+    };
+    taken.into_values().collect()
+}
+
+/// Add one `counter` event read from a child's counts file to this process's table ([`bump_by`]; in the daemon, [`PENDING`], which
+/// [`drain_pending`] moves into the registry). False when the metric is not registered or the label values do not fit it.
+pub fn bump_from_event(name: &str, values: &str, by: u64) -> bool {
+    let Some(pairs) = event_labels(name, values) else { return false };
+    let labels: Vec<(&str, &str)> = pairs.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    bump_by(name, &labels, by);
+    true
+}
 
 #[cfg(test)]
 thread_local! {
@@ -122,21 +163,26 @@ pub fn bump(name: &str, labels: &[(&str, &str)]) {
 }
 
 /// Add `by` to the counter `name` from code that has no `Metrics` at hand ([`bump`] with a count; the same bounds); `0` adds nothing.
-/// In the daemon the count waits in the process table; in any other process it is queued as a `counter` event for the daemon ([`bump_by_shared`]).
 pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
     if by == 0 || !is_registered(name) {
         return;
     }
-    // a process that is not the daemon (a scheduled subprocess action, a one-shot command) has no reader for `PENDING`: only the
-    // daemon drains it. Its count goes to the telemetry inbox like `bump_by_shared`'s, whichever of the two the call site names.
-    if !cfg!(test) && !crate::telemetry::emit::in_daemon() {
-        return bump_by_shared(name, labels, by);
+    // a scheduled subprocess action (it carries the daemon's marker) keeps its counts apart: the daemon reads them from the file it named
+    if !crate::telemetry::emit::in_daemon() && child_counts().is_some() {
+        let mut g = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+        add_bounded(&mut g, name, labels, by);
+        return;
     }
-    let key = series(name, labels);
     #[cfg(test)]
-    THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += by);
-    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    // a metric with its own series cap may fill the pending map up to it (its counts are not dropped at the global cap)
+    THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(series(name, labels)).or_insert(0) += by);
+    add_bounded(&mut PENDING.lock().unwrap_or_else(|e| e.into_inner()), name, labels, by);
+}
+
+/// Add `by` to the series in `g`, dropping a new series once the table is at its cap (`telemetry.max_series`, or the metric's own
+/// `max_series_by_metric`), so a table stays bounded between two drains.
+fn add_bounded(g: &mut Pending, name: &str, labels: &[(&str, &str)], by: u64) {
+    let key = series(name, labels);
+    // a metric with its own series cap may fill the table up to it (its counts are not dropped at the global cap)
     let room = defaults::raw("telemetry.max_series_by_metric").get(name).and_then(defaults::V::as_integer).map_or(0, |c| c.max(0) as usize);
     if !g.contains_key(&key) && g.len() >= (defaults::num("telemetry.max_series") as usize).max(room) {
         return;
@@ -153,6 +199,9 @@ pub fn bump_by_shared(name: &str, labels: &[(&str, &str)], by: u64) {
     }
     if by == 0 || !is_registered(name) {
         return;
+    }
+    if child_counts().is_some() {
+        return bump_by(name, labels, by); // a scheduled child: its table, written to the daemon's file at exit (`emit::queue`'s batch is never flushed there)
     }
     #[cfg(test)]
     THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(series(name, labels)).or_insert(0) += by);
@@ -171,18 +220,22 @@ pub fn bump_shared(name: &str, labels: &[(&str, &str)]) {
 /// Add the counts of a `counter` event (`emit::counter`) to `m`: `values` are the label values joined by `/`. False when the metric is
 /// not registered or the number of values differs from its labels (the event is refused and nothing is added).
 pub fn add_from_event(m: &mut Metrics, name: &str, values: &str, by: u64) -> bool {
+    let Some(pairs) = event_labels(name, values) else { return false };
+    let labels: Vec<(&str, &str)> = pairs.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    m.add(name, &labels, by);
+    true
+}
+
+/// The label names of the registered metric `name` paired with the `/`-joined `values` of an event; None when the metric is not
+/// registered or the number of values differs from its labels.
+fn event_labels<'a>(name: &str, values: &'a str) -> Option<Vec<(String, &'a str)>> {
     let key = format!("metric.{name}");
     if !defaults::has(&key) {
-        return false;
+        return None;
     }
     let names = defaults::raw(&key).get("labels").map(defaults::V::strings).unwrap_or_default();
     let vals: Vec<&str> = if names.is_empty() { Vec::new() } else { values.split('/').collect() };
-    if vals.len() != names.len() {
-        return false;
-    }
-    let labels: Vec<(&str, &str)> = names.into_iter().zip(vals).collect();
-    m.add(name, &labels, by);
-    true
+    (vals.len() == names.len()).then(|| names.into_iter().map(str::to_string).zip(vals).collect())
 }
 
 /// Whether the telemetry of the recent fixes (config cache, newest-tail reads, served requests, SIGINT drains) is on (`recent_tel.enabled`).
@@ -370,25 +423,6 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_count_bumped_outside_the_daemon_reaches_the_daemon_registry() {
-        use crate::telemetry::emit;
-        // a child process (the scheduled agent_tick) has no sink: bump_shared queues a counter event instead of filling its own PENDING
-        assert!(!emit::in_daemon());
-        emit::take_queued();
-        bump_shared("agent_wake_dropped", &[("reason", "foreign_pid")]);
-        bump_shared("agent_nudge_to_owner", &[("where", "file")]);
-        let evs = emit::take_queued();
-        assert_eq!(evs.len(), 2, "{evs:?}");
-        // the daemon reads these rows from the inbox and adds them to its registry, labels included
-        let mut m = Metrics::default();
-        for ev in &evs {
-            assert!(add_from_event(&mut m, ev.h.as_str(), ev.e.as_str(), ev.ib), "{ev:?}");
-        }
-        assert_eq!(m.counter("agent_wake_dropped", &[("reason", "foreign_pid")]), 1);
-        assert_eq!(m.counter("agent_nudge_to_owner", &[("where", "file")]), 1);
-    }
 
     #[test]
     fn a_shared_count_carries_its_labels_in_the_registered_order() {

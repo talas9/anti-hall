@@ -294,7 +294,7 @@ fn answer_line(n: &Nudge) -> String {
 
 /// Count a delivery that failed, by the channel it failed on (`agent_nudge_delivery_failed`, label `where`: queue, wake or owner_file).
 fn delivery_failed(wher: &str) {
-    crate::metrics::bump_shared("agent_nudge_delivery_failed", &[("where", wher)]);
+    crate::metrics::bump("agent_nudge_delivery_failed", &[("where", wher)]);
 }
 
 /// Put `text` in front of session `to`: its reminder queue (its hook delivers it at its next turn) and, while a wake-watch covers
@@ -347,7 +347,7 @@ fn to_owner(env: &Env, st: &State, n: &Nudge, text: String) -> (String, String, 
             let p = send_to(env, &k, n, text);
             let ok = !p.is_empty();
             if ok {
-                crate::metrics::bump_shared("agent_nudge_to_owner", &[("where", "session")]); // a failed delivery is counted by send_to
+                crate::metrics::bump("agent_nudge_to_owner", &[("where", "session")]); // a failed delivery is counted by send_to
             }
             (k, p, ok)
         }
@@ -356,7 +356,7 @@ fn to_owner(env: &Env, st: &State, n: &Nudge, text: String) -> (String, String, 
             // keep: the event below records the escalation either way; the counter only counts a notice that was written
             let ok = OwnerNotices.deliver(env, "", &r).is_ok();
             if ok {
-                crate::metrics::bump_shared("agent_nudge_to_owner", &[("where", "file")]);
+                crate::metrics::bump("agent_nudge_to_owner", &[("where", "file")]);
             } else {
                 delivery_failed("owner_file");
             }
@@ -530,7 +530,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
                     hold_done(st, &a, now);
                     let sup = defaults::raw("agent_nudge.suppress");
                     rec(env, word("class"), sup.str_field("event"), Outcome::Skip, base(&a).tok("reason", sup.str_field("judge_done")).tok("trigger", trig));
-                    crate::metrics::bump_shared("agent_nudge_suppressed", &[("reason", sup.str_field("judge_done"))]);
+                    crate::metrics::bump("agent_nudge_suppressed", &[("reason", sup.str_field("judge_done"))]);
                     continue;
                 }
             }
@@ -597,7 +597,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
         };
         emit(env, word("ev_sent"), &n);
         if delivered {
-            crate::metrics::bump_shared("agent_nudge_sent", &[("trigger", trig)]);
+            crate::metrics::bump("agent_nudge_sent", &[("trigger", trig)]);
         }
         st.nudges.insert(id, n);
     }
@@ -623,7 +623,7 @@ fn adopt_legacy_done_holds(st: &mut State, now: u64) {
         let activity_ms = st.agents.get(&c).map_or(0, |a| a.last_output_ms).min(until.saturating_sub(span));
         st.nudge_done_hold.entry(c.clone()).or_insert(DoneHold { until, activity_ms });
         st.nudge_hold.remove(&c);
-        crate::metrics::bump_shared("agent_nudge_legacy_hold_adopted", &[]);
+        crate::metrics::bump("agent_nudge_legacy_hold_adopted", &[]);
     }
 }
 
@@ -642,7 +642,7 @@ fn answered_since_send(env: &Env, n: &mut Nudge) -> bool {
     n.fallback_at = env.now_ms;
     let sup = defaults::raw("agent_nudge.suppress");
     rec(env, word("class"), sup.str_field("event"), Outcome::Skip, ev(n).tok("reason", sup.str_field("answered")));
-    crate::metrics::bump_shared("agent_nudge_suppressed", &[("reason", sup.str_field("answered"))]);
+    crate::metrics::bump("agent_nudge_suppressed", &[("reason", sup.str_field("answered"))]);
     true
 }
 
@@ -772,7 +772,7 @@ fn follow_nudges(env: &Env, st: &mut State) {
             let after = defaults::raw("agent_nudge.runtime_escalation").get("after_reminders").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
             if after > 0 && n.reminders >= after && !n.runtime_escalated {
                 n.runtime_escalated = true;
-                crate::metrics::bump_shared("runtime_escalations", &[]);
+                crate::metrics::bump("runtime_escalations", &[]);
             }
             n.last_sent = now;
             let text = defaults::render(
@@ -798,7 +798,7 @@ fn follow_nudges(env: &Env, st: &mut State) {
                 }
             }
             if first_landing && !n.path.is_empty() {
-                crate::metrics::bump_shared("agent_nudge_sent", &[("trigger", &n.trigger)]);
+                crate::metrics::bump("agent_nudge_sent", &[("trigger", &n.trigger)]);
             }
             emit(env, word("ev_reminded"), &n);
         }
@@ -1219,7 +1219,7 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
         let seen = agents.get(c).map(|a| a.last_output_ms);
         let kept = live && seen.is_some_and(|t| t <= h.activity_ms);
         if live && seen.is_some_and(|t| t > h.activity_ms) {
-            crate::metrics::bump_shared("agent_nudge_done_hold_released", &[]); // new output, not expiry or a forgotten child
+            crate::metrics::bump("agent_nudge_done_hold_released", &[]); // new output, not expiry or a forgotten child
         }
         kept
     });

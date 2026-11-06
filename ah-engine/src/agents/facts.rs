@@ -862,7 +862,7 @@ fn unquoted(cmd: &str) -> String {
 /// Count one outcome of a kind GH #458 added (shell_file, probe, check) in the registered counter agent_tracker.outcome_metric.
 fn count_outcome(kind: &str) {
     let m = defaults::raw("agent_tracker.outcome_metric");
-    crate::metrics::bump_shared(m.str_field("name"), &[(m.str_field("label"), kind)]);
+    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), kind)]);
 }
 
 /// The path of a subagent's metadata file next to its transcript.
