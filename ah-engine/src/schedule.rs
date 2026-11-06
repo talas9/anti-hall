@@ -1053,7 +1053,7 @@ mod tests {
         let r = runs.clone();
         let s = probe_scheduler(
             "sched-idle",
-            r#"{"jobs": {"metrics_snapshot": {"every_ms": 0}, "spool_drain": {"every_ms": 20, "timeout_ms": 2000, "catch_up": "skip", "persist": false}}}"#,
+            r#"{"jobs": {"metrics_snapshot": {"every_ms": 0}, "spool_drain": {"every_ms": 500, "timeout_ms": 2000, "catch_up": "skip", "persist": false}}}"#,
             Box::new(move |action| {
                 if action == "spool_drain" {
                     r.fetch_add(1, SeqCst);
@@ -1061,18 +1061,26 @@ mod tests {
                 Ok(String::new())
             }),
         );
+        // Why 500 ms: the ticker skips (catch_up "skip") a window it wakes a whole interval late, and a timer wake on a loaded or
+        // low-QoS thread is routinely tens of ms late, so a 20 ms interval was skipped window after window and never ran.
+        let first = lk(&s.state).get("spool_drain").unwrap().next_ms;
         let has_work = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let w = has_work.clone();
         s.set_work_probe(Box::new(move |_| w.load(SeqCst)));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (s2, stop2) = (s.clone(), stop.clone());
         let h = std::thread::spawn(move || s2.run_ticker(&|| stop2.load(SeqCst)));
-        std::thread::sleep(Duration::from_millis(400)); // twenty windows pass with the spool empty
+        // two windows pass with the spool empty (each one moves the next window at least one interval on); a deadline, not a sleep
+        let t = Instant::now();
+        while lk(&s.state).get("spool_drain").unwrap().next_ms < first + 1000 {
+            assert!(t.elapsed() < Duration::from_secs(15), "the idle windows did not pass");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert_eq!(runs.load(SeqCst), 0, "no work: the job is never started");
         assert!(lk(&s.last).get("spool_drain").is_none(), "and leaves no run record");
         has_work.store(true, SeqCst);
         let t = Instant::now();
-        while runs.load(SeqCst) == 0 && t.elapsed() < Duration::from_secs(3) {
+        while runs.load(SeqCst) == 0 && t.elapsed() < Duration::from_secs(15) {
             std::thread::sleep(Duration::from_millis(10));
         }
         stop.store(true, SeqCst);
