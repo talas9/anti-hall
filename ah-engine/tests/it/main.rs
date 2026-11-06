@@ -45,6 +45,7 @@ mod durability;
 mod e2e;
 mod engine_currency;
 mod engine_update;
+mod exit_flush;
 mod fail_closed_matrix;
 mod flip_parity;
 mod gitcache_parity;

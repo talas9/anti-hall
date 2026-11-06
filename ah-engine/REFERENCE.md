@@ -212,6 +212,7 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 | `AH_ENGINE_BREAKER_COOLDOWN_S` | `client.breaker_cooldown_s` | How long the breaker stays open once tripped. |
 | `AH_ENGINE_BREAKER_N` | `client.breaker_n` | Engine failures within the window that open the breaker (the client then skips the engine). |
 | `AH_ENGINE_BREAKER_WINDOW_S` | `client.breaker_window_s` | Window in which breaker failures are counted. |
+| `AH_ENGINE_CHILD_COUNTS` | `schedule.child_counts_env` | Name of the environment variable through which the daemon names the counts file of a scheduled subprocess job to the job (`files.telemetry_child_counts`). Its value is `<daemon pid>:<path>`; the job accepts it only while its parent process is that pid, so a process the job starts in turn ignores it. |
 | `AH_ENGINE_CLAUDE_BIN` |  | Overrides the Claude Code program the agent tracker asks for its session listing (tests point it at a stand-in). |
 | `AH_ENGINE_COMMIT_MARK` | `mesh_write.env_commit_mark` | The environment variable by which the stable launcher names a marker file; the engine creates it at its commit point, so a launcher that has to stop the engine (time limit) can tell that the verb already acted and must not be run again in Node. |
 | `AH_ENGINE_CONFIG` |  | Overrides the path of the engine's own user config file (default: config.toml in the state directory). |
@@ -665,6 +666,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `files.spool` | `spool.log` |  |  | The write spool: project writes a client could not deliver, applied by the daemon in order (D24). |
 | `files.spool_quarantine` | `spool.quarantine` |  |  | Spool records that could not be parsed or that the store refused for good, kept with their reason, never dropped (D24). |
 | `files.starts` | `starts` |  |  | Counter of daemon starts, surfaced as `starts` and `restarts` in status. |
+| `files.telemetry_child_counts` | `telemetry-child-{job}.jsonl` |  |  | The counts one run of a scheduled subprocess job hands to the daemon, one `counter` JSON line per series, in the state directory. The daemon makes (or empties) it before it starts the job and reads and empties it after the job has ended; the job only appends to it. `{job}` is the job name. |
 | `files.telemetry_inbox` | `telemetry-inbox.jsonl` |  |  | Events recorded by processes other than the daemon (the hook dispatcher, one-shot commands), one JSON line each, in the state directory; the daemon reads and empties it on every telemetry flush. |
 | `files.unreachable_notice` | `unreachable.notice` |  |  | Holds the recent session ids (see launcher.notice_sessions_max) that already got the engine-unreachable notice, so the notice is shown once per session. |
 | `files.wrapper_fail_log` | `wrapper.fails` |  |  | Epoch seconds, one per line, of the thin client's engine failures (timeout, signal death, no answer). The integrity check counts them against rollback.fail_n. |
@@ -1880,6 +1882,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `schedule.actions` | `18 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
+| `schedule.child_counts_env` | `AH_ENGINE_CHILD_COUNTS` |  |  | Name of the environment variable through which the daemon names the counts file of a scheduled subprocess job to the job (`files.telemetry_child_counts`). Its value is `<daemon pid>:<path>`; the job accepts it only while its parent process is that pid, so a process the job starts in turn ignores it. |
 | `schedule.cpu_backoff_ms` | `60000` |  | ms | How long scheduled jobs pause after the daemon sustained-CPU self-check warns; 0 logs only. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
 | `schedule.handovers_ms` | `600000` | `AH_ENGINE_HANDOVERS_MS` | ms | Interval of the handovers job; 0 turns it off. |
@@ -14989,6 +14992,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `stop_channel` | counter | stops | counter, check, model, project | Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, over_total, limit_clamped, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime. |
 | `tasks_cache` | counter | lookups | result | Task-line lookups of `ah.transcript.tasks` (task-guard, tasklist-guard, task-tracker): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh). |
 | `tasks_cache_rebuild` | counter | lookups | reason | Why a task-line lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place). |
+| `tel_child_counts` | counter | series | result | Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table), bad (a line that was not valid UTF-8 or not a valid counter for a registered metric) or overflow (lines past telemetry.inbox_max_bytes, not read). |
 | `tel_dropped` | counter | samples | reason | Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed). |
 | `tel_events` | counter | invocations | k, h, e, o | Telemetry invocations recorded, by kind (k), hook or check (h), hook event (e) and outcome (o) (D78). |
 | `tel_injected_bytes` | counter | bytes | h, e | Bytes injected into model context, by hook or check (h) and hook event (e). The whole-hook rows (h=hook) add up to the total; a per-check row is attribution inside it (D78). |

@@ -419,3 +419,26 @@ fn the_schedule_command_lists_runs_and_shows_history() {
     assert_eq!(offline["runs"].as_array().unwrap().len(), 1, "history reads hot.db without a daemon: {offline}");
     assert!(e.json(&["schedule", "list", "--json"])["jobs"].as_array().unwrap().iter().any(|j| j["name"] == "probe"));
 }
+
+#[test]
+fn a_scheduled_subprocess_hands_the_counts_it_bumped_to_the_daemon_registry() {
+    // #416: `jev arrival` runs as a child of the daemon and bumps `jev_arrival` in its own process, where only the daemon drains the
+    // table; the count reached the registry only through the counts file the daemon names to the child. Scratch HOME with nothing
+    // configured: Jev is off, so the run ends at its `off` outcome before any labeller (and so any model) is reached.
+    let jobs = r#"{"jobs": {"jev_arrival": {"kind": "engine", "action": "jev_arrival", "every_ms": 3600000, "timeout_ms": 20000, "persist": true, "catch_up": "skip"}}}"#;
+    let mut e = Env::new("child-counts", jobs);
+    let cache = e.dir.join("home").join(ah_engine::defaults::text("paths.base_dir")).join(ah_engine::defaults::text("mesh_write.dir_cache"));
+    std::fs::create_dir_all(&cache).unwrap();
+    // pending work, so the scheduler does not skip the run (`schedule.skip_without_work`)
+    std::fs::write(cache.join(ah_engine::defaults::raw("jev_arrival.files").str_field("queue")), "{\"h\":\"abc\",\"t\":\"hello\"}\n").unwrap();
+    e.start();
+    let r = e.json(&["schedule", "run", "jev_arrival", "--json"]);
+    assert_eq!(r["status"], "ok", "{r}");
+    assert!(r["detail"].as_str().unwrap_or_default().contains("off"), "the run must end at the off outcome (no model call): {r}");
+    let m = e.json(&["metrics", "--json"]);
+    let counted =
+        |name: &str| -> u64 { m["metrics"]["counters"].as_array().unwrap().iter().filter(|c| c["name"] == name).map(|c| c["value"].as_u64().unwrap()).sum() };
+    assert!(counted("jev_arrival") >= 1, "the child's count must reach the daemon registry: {m}");
+    assert!(counted("tel_child_counts") >= 1, "the hand-over is itself counted: {m}");
+    e.stop();
+}

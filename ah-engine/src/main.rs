@@ -22,6 +22,9 @@ fn main() {
     }
     // a panic is recorded by the hook; a write to a closed pipe (`ah-engine docs | head`) is the reader leaving, so exit
     // quietly with the SIGPIPE convention (128 + 13) instead of the panic exit code
-    let code = std::panic::catch_unwind(|| cli::run(&args)).unwrap_or_else(|_| if ah_engine::crash::broken_pipe_seen() { 141 } else { 101 });
+    let ran = std::panic::catch_unwind(|| cli::run(&args));
+    // a scheduled subprocess action hands its counts to the daemon through the file the daemon named (inert for any other process; it never loads settings)
+    ah_engine::telemetry::emit::write_child_counts();
+    let code = ran.unwrap_or_else(|_| if ah_engine::crash::broken_pipe_seen() { 141 } else { 101 });
     std::process::exit(code);
 }

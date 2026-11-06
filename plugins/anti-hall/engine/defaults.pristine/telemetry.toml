@@ -558,6 +558,10 @@ value = { kind = "counter", unit = "bytes", labels = ["h", "e"] }
 doc = "Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed)."
 value = { kind = "counter", unit = "samples", labels = ["reason"] }
 
+[metric.tel_child_counts]
+doc = "Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table), bad (a line that was not valid UTF-8 or not a valid counter for a registered metric) or overflow (lines past telemetry.inbox_max_bytes, not read)."
+value = { kind = "counter", unit = "series", labels = ["result"] }
+
 [metric.procwatch_events]
 doc = "Process-watch findings, by kind (orphan_candidate, orphan_kill, resource_warning, disk_warning) and class or reason."
 value = { kind = "counter", unit = "events", labels = ["kind", "class"] }

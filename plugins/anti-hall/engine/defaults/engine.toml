@@ -254,6 +254,10 @@ value = "spool.log"
 doc = "Events recorded by processes other than the daemon (the hook dispatcher, one-shot commands), one JSON line each, in the state directory; the daemon reads and empties it on every telemetry flush."
 value = "telemetry-inbox.jsonl"
 
+[files.telemetry_child_counts]
+doc = "The counts one run of a scheduled subprocess job hands to the daemon, one `counter` JSON line per series, in the state directory. The daemon makes (or empties) it before it starts the job and reads and empties it after the job has ended; the job only appends to it. `{job}` is the job name."
+value = "telemetry-child-{job}.jsonl"
+
 [files.spool_quarantine]
 doc = "Spool records that could not be parsed or that the store refused for good, kept with their reason, never dropped (D24)."
 value = "spool.quarantine"

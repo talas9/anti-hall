@@ -101,8 +101,61 @@ pub fn is_registered(name: &str) -> bool {
 
 /// Counts bumped by code that holds no `Metrics` (resolvers, discovery): series key -> (name, labels, count). The daemon moves them
 /// into its registry whenever it reads or snapshots the metrics ([`drain_pending`]).
-type Pending = BTreeMap<String, (String, Vec<(String, String)>, u64)>;
+type PendingRow = (String, Vec<(String, String)>, u64);
+type Pending = BTreeMap<String, PendingRow>;
 static PENDING: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The counts a scheduled subprocess action bumped, same shape and bounds as [`PENDING`]; written to its counts file at exit
+/// ([`crate::telemetry::emit::write_child_counts`]).
+static CHILD: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The counts file the daemon named for this process, when it started it as a scheduled job: the variable `schedule.child_counts_env`
+/// holds `<daemon pid>:<path>` and is accepted only while the parent is that pid, so a grandchild that inherited it ignores it.
+///
+/// This never loads or initialises the settings: the variable's name lives in them, so a process whose settings are not loaded yet has
+/// no marker (answered `None` without remembering it) and nothing to flush. Once they are loaded the answer is resolved once and kept.
+pub fn child_counts() -> Option<&'static std::path::Path> {
+    static MARK: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    if let Some(m) = MARK.get() {
+        return m.as_deref();
+    }
+    if !defaults::is_loaded() {
+        return None;
+    }
+    MARK.get_or_init(|| {
+        let v = std::env::var(defaults::text("schedule.child_counts_env")).ok()?;
+        // SAFETY: `getppid` takes no arguments and cannot fail.
+        parse_marker(&v, i64::from(unsafe { libc::getppid() }))
+    })
+    .as_deref()
+}
+
+/// The path in a marker `<pid>:<path>` when `pid` is `parent`.
+fn parse_marker(value: &str, parent: i64) -> Option<std::path::PathBuf> {
+    let (pid, path) = value.split_once(':')?;
+    (pid.parse::<i64>().ok()? == parent && !path.is_empty()).then(|| std::path::PathBuf::from(path))
+}
+
+/// Take the counts of a scheduled child out of its table. Only ever try-locked: it is read on the exit path, where nothing else is
+/// meant to hold it, and a busy table (or one a dead thread poisoned while holding it) is skipped rather than waited on.
+pub fn take_child() -> Vec<PendingRow> {
+    match CHILD.try_lock() {
+        Ok(mut g) => std::mem::take(&mut *g),
+        Err(std::sync::TryLockError::Poisoned(e)) => std::mem::take(&mut *e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => return Vec::new(),
+    }
+    .into_values()
+    .collect()
+}
+
+/// Add one `counter` event read from a child's counts file to this process's table ([`bump_by`]; in the daemon, [`PENDING`], which
+/// [`drain_pending`] moves into the registry). False when the metric is not registered or the label values do not fit it.
+pub fn bump_from_event(name: &str, values: &str, by: u64) -> bool {
+    let Some(pairs) = event_labels(name, values) else { return false };
+    let labels: Vec<(&str, &str)> = pairs.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    bump_by(name, &labels, by);
+    true
+}
 
 #[cfg(test)]
 thread_local! {
@@ -132,11 +185,22 @@ pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
     if by == 0 || !is_registered(name) {
         return;
     }
-    let key = series(name, labels);
+    // a scheduled subprocess action (it carries the daemon's marker) keeps its counts apart: the daemon reads them from the file it named
+    if !crate::telemetry::emit::in_daemon() && child_counts().is_some() {
+        let mut g = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+        add_bounded(&mut g, name, labels, by);
+        return;
+    }
     #[cfg(test)]
-    THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += by);
-    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    // a metric with its own series cap may fill the pending map up to it (its counts are not dropped at the global cap)
+    THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(series(name, labels)).or_insert(0) += by);
+    add_bounded(&mut PENDING.lock().unwrap_or_else(|e| e.into_inner()), name, labels, by);
+}
+
+/// Add `by` to the series in `g`, dropping a new series once the table is at its cap (`telemetry.max_series`, or the metric's own
+/// `max_series_by_metric`), so a table stays bounded between two drains.
+fn add_bounded(g: &mut Pending, name: &str, labels: &[(&str, &str)], by: u64) {
+    let key = series(name, labels);
+    // a metric with its own series cap may fill the table up to it (its counts are not dropped at the global cap)
     let room = defaults::raw("telemetry.max_series_by_metric").get(name).and_then(defaults::V::as_integer).map_or(0, |c| c.max(0) as usize);
     if !g.contains_key(&key) && g.len() >= (defaults::num("telemetry.max_series") as usize).max(room) {
         return;
@@ -154,8 +218,15 @@ pub fn bump_by_shared(name: &str, labels: &[(&str, &str)], by: u64) {
     if by == 0 || !is_registered(name) {
         return;
     }
+    if child_counts().is_some() {
+        return bump_by(name, labels, by); // a scheduled child: its table, written to the daemon's file at exit (`emit::queue`'s batch is never flushed there)
+    }
     #[cfg(test)]
     THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(series(name, labels)).or_insert(0) += by);
+    // the event carries the values in the order the metric registers its labels, whatever order the call site named them in
+    let registered = defaults::raw(&format!("metric.{name}")).get("labels").map(defaults::V::strings).unwrap_or_default();
+    let ordered: Vec<(&str, &str)> = registered.iter().filter_map(|l| labels.iter().find(|(n, _)| n == l).copied()).collect();
+    let labels = if ordered.len() == registered.len() { &ordered[..] } else { labels };
     crate::telemetry::emit::queue(crate::telemetry::emit::counter(name, labels, by));
 }
 
@@ -167,18 +238,22 @@ pub fn bump_shared(name: &str, labels: &[(&str, &str)]) {
 /// Add the counts of a `counter` event (`emit::counter`) to `m`: `values` are the label values joined by `/`. False when the metric is
 /// not registered or the number of values differs from its labels (the event is refused and nothing is added).
 pub fn add_from_event(m: &mut Metrics, name: &str, values: &str, by: u64) -> bool {
+    let Some(pairs) = event_labels(name, values) else { return false };
+    let labels: Vec<(&str, &str)> = pairs.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    m.add(name, &labels, by);
+    true
+}
+
+/// The label names of the registered metric `name` paired with the `/`-joined `values` of an event; None when the metric is not
+/// registered or the number of values differs from its labels.
+fn event_labels<'a>(name: &str, values: &'a str) -> Option<Vec<(String, &'a str)>> {
     let key = format!("metric.{name}");
     if !defaults::has(&key) {
-        return false;
+        return None;
     }
     let names = defaults::raw(&key).get("labels").map(defaults::V::strings).unwrap_or_default();
     let vals: Vec<&str> = if names.is_empty() { Vec::new() } else { values.split('/').collect() };
-    if vals.len() != names.len() {
-        return false;
-    }
-    let labels: Vec<(&str, &str)> = names.into_iter().zip(vals).collect();
-    m.add(name, &labels, by);
-    true
+    (vals.len() == names.len()).then(|| names.into_iter().map(str::to_string).zip(vals).collect())
 }
 
 /// Whether the telemetry of the recent fixes (config cache, newest-tail reads, served requests, SIGINT drains) is on (`recent_tel.enabled`).
@@ -366,6 +441,38 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marker_is_accepted_only_for_the_parent_it_names() {
+        assert_eq!(parse_marker("42:/s/counts.jsonl", 42), Some(std::path::PathBuf::from("/s/counts.jsonl")));
+        assert_eq!(parse_marker("42:/s/counts.jsonl", 43), None, "another parent");
+        assert_eq!(parse_marker("x:/s/c", 42), None);
+        assert_eq!(parse_marker("42:", 42), None);
+        assert_eq!(parse_marker("42", 42), None);
+        assert_eq!(parse_marker("42:/a:b", 42), Some(std::path::PathBuf::from("/a:b")), "split at the first colon only");
+    }
+
+    #[test]
+    fn taking_the_child_table_never_waits_on_a_lock_someone_holds() {
+        let held = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+        let t = std::time::Instant::now();
+        assert!(take_child().is_empty(), "a busy table is skipped");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        drop(held);
+    }
+
+    #[test]
+    fn a_shared_count_carries_its_labels_in_the_registered_order() {
+        use crate::telemetry::emit;
+        emit::take_queued();
+        // delivery_funnel registers check, model, project, stage; the call site names them in another order
+        bump_shared("delivery_funnel", &[("stage", "sent"), ("project", "p"), ("model", "m"), ("check", "c")]);
+        let evs = emit::take_queued();
+        assert_eq!(evs.len(), 1, "{evs:?}");
+        let mut m = Metrics::default();
+        assert!(add_from_event(&mut m, evs[0].h.as_str(), evs[0].e.as_str(), evs[0].ib));
+        assert_eq!(m.counter("delivery_funnel", &[("check", "c"), ("model", "m"), ("project", "p"), ("stage", "sent")]), 1);
+    }
 
     #[test]
     fn counters_labels_and_totals() {
