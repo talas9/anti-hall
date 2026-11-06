@@ -112,6 +112,14 @@ const ALLOW: &[(&str, &str)] = &[
         "`provenance_of_process`, for the engine's own mesh reads that no request drives (reconcile, live and wake probes): the settings file under the home plus this process's own environment are that read's settings; every request-driven read takes the request's `Settings` through `provenance_of` instead (GH #429)",
     ),
     (
+        "src/metrics.rs",
+        "`child_counts`, run only outside the daemon (`bump_by` and `bump_by_shared` test `in_daemon` first): reads the marker variable (name from `schedule.child_counts_env`) the daemon set on a scheduled subprocess job, honoured only while the parent pid is the daemon's; no request is answered from it",
+    ),
+    (
+        "src/script/host_tests_d/tests.rs",
+        "test builds only (a file of its own so the scan's `#[cfg(test)]` cut does not apply): `AH_T_CHILD` and `AH_T_LOSTUPDATE`, the variables with which a test re-runs its own test binary as a child process; no request is ever answered from them",
+    ),
+    (
         "src/dswire/cli.rs",
         "the `ah-engine devswarm` command-line process (and its one-shot state read): its own environment IS the caller's (the daemon is not involved, D76)",
     ),
