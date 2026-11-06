@@ -64,7 +64,7 @@ files on disk. Codex has no `/config` panel and no statusline hook; skills are n
 | app DB | The DevSwarm app's own SQLite DB, read read-only as ground truth (titles, rank, archived, PRs, session map). |
 | capability gate | Every DevSwarm verb/table/column/app file is checked by version + detection; a missing surface sleeps and doctor names it. |
 | supervisor / ingest daemon | Opt-in companions: the periodic sweep (poke → escalate, app sync, auto-archive, retention) and the per-project monitor → store daemon. |
-| poke / escalate / recover | Recovery ladder: nudge a stale child, then tell the Primary; only `devswarm-recover.js <id>` ever kills. |
+| poke / escalate / recover | Recovery ladder: nudge a stale child, then tell the Primary; only `ah-engine devswarm recover --id <id>` ever kills. |
 | finish gates | `done`, `merged`, `tests_passed` (`devswarm.requiredGates`) set via `ah-engine mesh gate --set`. |
 
 ## Hard rules

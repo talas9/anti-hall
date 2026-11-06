@@ -584,7 +584,7 @@ on stdout, exit `0`=`ok:true`/`2`=`ok:false`; every `<id>` is `isSafeId`-gated
 | **Liveness supervisor** (the engine supervisor duty) | Opt-in periodic sweep (default 90s): computes liveness per published descriptor, pokes then escalates a stale workspace — **never kills**. **Claude-only in what it targets** — it identity-binds to `claude --resume` processes by argv, so a Codex workspace is outside its recovery surface even though the sweep itself runs the same way. | Verdict file `~/.anti-hall/devswarm/liveness/<id>.json`. | `~/.anti-hall/ah-engine/bin/ah-engine units install` (`uninstall` / `--dry-run`). Claude-side setup; see "Activation" below. |
 
 Both installers are re-run automatically by the `update` skill whenever it detects an
-active DevSwarm session. The **on-demand `devswarm-recover.js` CLI** (the only path that
+active DevSwarm session. The **on-demand `ah-engine devswarm recover` CLI** (the only path that
 ever kills a process) is a third, explicitly-invoked script — Claude-side tooling (it
 resumes a `claude` process), but a Codex-side operator can still invoke it directly
 against a `claude` workspace's id (see "On-demand recovery" below).
@@ -658,7 +658,7 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 verbs — reach for these together for mesh state without touching anything.
 
 **`reconcile`/fold auto-heal — a separate, ALREADY-shared code path, not a mesh
-promotion.** `doctor.js` and `update.js` are the SAME scripts on both platforms (see
+promotion.** `ah-engine doctor` and `ah-engine update` are the SAME commands on both platforms (see
 `anti-hall-doctor`/`anti-hall-update`), so their `reconcile` + `foldMeshDuplicates`
 auto-heal wiring runs identically for a Codex session — subject to the SAME "DevSwarm
 gate is effectively always closed for gpt-5.x Codex/OMX sessions" caveat as every other
@@ -839,7 +839,7 @@ registration one); use `doctor --repair-ingest-orphans` (dry-run, prints the unl
 plist AND no live heartbeat/lock for its project (`orphan-path-gone`/`duplicate-label-
 same-project` are always report-only — a plist exists on disk for both).
 `--repair-ingest-orphans` runs ONLY this section, never doctor's unrelated full
-auto-repair pass. `doctor.js`/`install-devswarm-ingest.js` are shared, unforked files,
+auto-repair pass. `ah-engine doctor` and the DevSwarm ingest daemon (`ah-engine devswarm ingest`) are shared, not forked per platform,
 so this applies identically to Codex sessions.
 **(mesh redesign Phase 4)** A plain `doctor` is READ-ONLY (no repair pass — use
 `doctor --repair` / `--fix` to apply repairs), and every run ALSO prints a report-only

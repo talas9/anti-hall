@@ -521,7 +521,7 @@ source-line citations + a worked lifecycle example: `docs/KB-devswarm-hivecontro
 Both installers are re-run automatically by the `update` skill whenever it detects an
 active DevSwarm session (idempotent refresh, not just first-install) — an agent normally
 never has to think about installing these by hand after first activation. The **on-demand
-`devswarm-recover.js` CLI** (the only path that ever kills a process — see "On-demand
+`ah-engine devswarm recover` CLI** (the only path that ever kills a process — see "On-demand
 recovery" below) is a third, explicitly-invoked script, not a daemon.
 
 ### Every CLI verb — `ah-engine mesh`
@@ -838,7 +838,7 @@ is `high`/`urgent`, the sweep fires a parent-store escalation notice immediately
 independent of, and even when, the base poke/escalate cadence above (Layers 2–3) only
 nudged. `low`/`normal`/no-signal never forces anything (relies on the agent's own next
 turn). This is purely additive — it NEVER resolves a pid and NEVER kills; the on-demand
-`devswarm-recover.js` CLI (below) remains the only path that ever does.
+`ah-engine devswarm recover` CLI (below) remains the only path that ever does.
 
 **v0.67.1 — this path never delivered end-to-end until now.** Four stacked defects, any
 one of which alone silently swallowed the escalation: a missing `deriveSummary` call
@@ -878,7 +878,7 @@ in `codex/hooks/hooks.json`. A Codex agent in an active DevSwarm workspace is th
 mechanically prevented from sending a native message AND gets the proactive per-turn "use
 the mesh" reminder, same as a Claude session. What remains genuinely Claude-only: the
 liveness supervisor and its mesh-urgency escalation (it identity-binds to `claude --resume`
-processes specifically) and the on-demand `devswarm-recover.js` CLI's own target (a Codex
+processes specifically) and the on-demand `ah-engine devswarm recover` CLI's own target (a Codex
 operator can still invoke the script, but only against a `claude` workspace). The CLI verbs
 themselves are plain Node scripts a Codex session can invoke directly via Bash — nothing
 agent-specific about the script.
@@ -1213,7 +1213,7 @@ is what session-side consumers (`devswarm-detect`, `doctor.js`,
   noisy in `doctor.js`).
 - `escalated` is a **terminal** verdict (the sweep stops re-targeting it once written) —
   reset it by deleting `~/.anti-hall/devswarm/liveness/<id>.json` once resolved (either by
-  running `devswarm-recover.js <id>`, or after a human has otherwise handled it).
+  running `ah-engine devswarm recover --id <id>`, or after a human has otherwise handled it).
 
 ## Config / tuning env
 
@@ -1237,7 +1237,7 @@ through it):
 | `ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC` | `120` (min 0) | Minimum gap between successive pokes. |
 | `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` | `20000` (ms, not seconds) | v0.96.1: per-pass budget for the supervisor's deferred post-update sweep — one of `fold-all-stores` / `heal-orphan-partitions` / `fold-archived-rows` / `heal-registry-rows` (the last added v0.102.1) is run per pass, rotating via a persisted cursor at `~/.anti-hall/devswarm/deferred-sweep-state.json`, only when that stage's own resume marker shows real pending work. The supervisor's JSON output line carries this as `deferredSweep: {stage, ran, ...}`. |
 
-**On-demand CLI** (`devswarm-recover.js` resolves these itself, decoupled from the
+**On-demand CLI** (`ah-engine devswarm recover` resolves these itself, decoupled from the
 sweep's env — the automatic path no longer carries them at all since it never kills):
 
 | Var | Default | Effect |
