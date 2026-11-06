@@ -127,7 +127,7 @@ Hooks are small per call but not free. On a quiet machine a bare `node -e 0` cos
 
 ### The engine
 
-`ah-engine`, a small Rust program, is the core component and the only runtime (release 0.301.1): it answers every hook call and no Node hook ships. The plugin's hooks are one
+`ah-engine`, a small Rust program, is the core component and the only runtime (release 0.301.1): it answers every hook call and no Node hook ships (the original Node hooks are kept as a backup in `plugins/anti-hall-node/`, used only after `ah-engine fallback node`). The plugin's hooks are one
 thin trigger per event; the engine decides each one natively. Every hook command in `hooks.json` runs the installed thin client (`~/.anti-hall/ah-engine/bin/ah-hook <Event>`) directly, and runs
 the plugin's one shell file, `hooks/install.sh`, only while the thin client is missing (one notice per session, the call passes
 through). The binaries are installed from the GitHub Release by `sh hooks/install.sh --download` (the setup skill runs it) and only if

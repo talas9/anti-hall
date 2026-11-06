@@ -308,4 +308,4 @@ Text sent to the gateway (prompt, last assistant message, commit/PR text, test o
 ## Never
 
 Never print/log/commit the key. Never guess the provider. Never store the key
-anywhere but the resolved key file (Codex has no plugin options: enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json`, with `settings.js set … --confirmed`, for the key file to be read) (the file the jev-setup script's set-key command writes).
+anywhere but the resolved key file (Codex has no plugin options: enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json`, with `ah-engine settings set … --confirmed`, for the key file to be read) (the file the jev-setup script's set-key command writes).

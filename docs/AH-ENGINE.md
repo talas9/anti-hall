@@ -11,7 +11,7 @@ The exact list of commands, settings, metrics and error codes is generated from 
 per event: `hooks.json` runs the Rust thin client `~/.anti-hall/ah-engine/bin/ah-hook <Event>`, which asks the engine. The
 thin client is the only entry point, for hooks of both hosts and for every command (`ah-hook <verb>` runs `ah-engine <verb>`).
 No Node and no shell script runs on an entry path; when the engine is absent or cannot answer, the call passes through with one
-notice per session. The binaries are installed by the plugin's one shell file, `hooks/install.sh`, and checked against a sha256
+notice per session (the manual `ah-engine fallback node` switch can hand calls to the Node backup in `plugins/anti-hall-node/`). The binaries are installed by the plugin's one shell file, `hooks/install.sh`, and checked against a sha256
 pinned in the plugin ([Install, go-live and rollback](#install-go-live-and-rollback)).
 Supported platforms: macOS and Linux (including WSL, which runs the Linux build). Windows is not supported yet.
 
@@ -42,8 +42,11 @@ labelled with how it was measured in the README of `ah-engine/`.
 ```
 
 - **Client.** Reads the hook payload, asks the daemon, prints the answer. If anything is wrong (no daemon, busy, timeout,
-  damaged reply, open breaker, crash loop) the call passes through (no block, no output) and one notice per session says the
-  engine did not answer. There is no Node hook to fall back to (D11 describes the earlier fallback design).
+  damaged reply, open breaker, crash loop) the call passes through without a block (it prints an environment advisory when one was
+  recorded) and one notice per session says the engine did not answer. The exception: for a guarded event, stdin the client
+  cannot safely forward (invalid UTF-8, over the read cap, a read error) is refused with exit 2. No Node hook ships in the
+  plugin, but the manual switch `ah-engine fallback node` hands calls to the Node backup kept in `plugins/anti-hall-node/`
+  (see "The Node backup: shadow and fallback switch"; D11 describes the earlier automatic fallback design).
 - **Daemon.** One per user, started by the first client that finds none (D5, D6). It stays up after the last session
   closes (D7): idle exit exists as the setting `daemon.idle_exit_s`, default 0 meaning disabled. A newer client gets its
   answer, then the old daemon drains and exits so the next call starts the new build (D8).
@@ -438,12 +441,18 @@ entries). A check that cannot reproduce Node exactly defers (exit 75 from the en
 | a bad engine build | copy `bin/ah-engine.prev` back over `bin/ah-engine`; the bootstrap then leaves it alone (its sha256 no longer matches the install marker), so the rollback sticks until you remove the binary or the lock changes |
 | a bad plugin edit of the engine files | nothing to do: the layered failover below falls back by itself |
 
-Whatever the engine cannot do, the Node hooks do; Node is the permanent floor.
+Whatever the engine cannot do, the Node hooks did; that was the migration-era design. Since release 0.301.1 no Node hook ships
+in the plugin; the backup is kept outside it (`plugins/anti-hall-node/`) and runs only when you switch it on with
+`ah-engine fallback node` (see "The Node backup: shadow and fallback switch").
 
 ## What still runs on Node
 
-The engine does not replace Node yet; it answers what it can prove identical and leaves the rest. Honest list of what stays
-on Node today (each is a deferral, so Node's answer is the one the host sees):
+**Historical (migration era).** This section and its table describe the deferrals of the staged migration, kept for the record. The
+dispatcher now has a standing guarantee that no production deferral reaches a Node start (`src/dispatch/mod.rs`, test
+"no production deferral reaches `start_node`"); read the rows below as what used to stay on Node, not as the current runtime.
+
+The engine did not replace Node at first; it answered what it could prove identical and left the rest. The list of what stayed
+on Node then (each was a deferral, so Node's answer was the one the host saw):
 
 | Stays on Node | Why |
 |---|---|

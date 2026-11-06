@@ -143,7 +143,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | PreCompact | precompact-snapshot | Before every compaction writes a mechanical `PRECOMPACT-<n>.md` (git state, task list, last 10 user messages, newest handover pointer); never blocks. A "since the last handover" delta is planned, not shipped. | ✓ | maintenance.precompactSnapshot |
 | SessionEnd | session-end-mcp-reaper | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | maintenance.sessionEndReaper (`ANTIHALL_SESSION_END_REAPER=0`) |
 
-Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `skip-guard.js`,
+Shared libraries (historical, Node era; no Node hook ships and each is now an engine check or module; the original files are the Node backup in `plugins/anti-hall-node/`): `verify-first-core.js`, `coordinator-detect.js`, `skip-guard.js`,
 `omc-detect.js`, `limit-conserve.js`; `hooks/lib/`: `settings.js` + `settings-schema.js`
 (the settings store), `context-pct.js` + `context-pct-store.js` (context %),
 `auto-handover-config.js`/`-state.js`, `jev-client.js`/`jev-assist.js`/`jev-triage.js`,
@@ -179,7 +179,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | Codex skill | Claude counterpart / purpose |
 |---|---|
 | anti-hall-activate | activate |
-| anti-hall-context-conserve | no Claude skill — Codex form of limit conservation (`limit-conserve-inject.js`) |
+| anti-hall-context-conserve | no Claude skill — Codex form of limit conservation (`limit-conserve-inject.js`, a Node-era script kept only in the Node backup, `plugins/anti-hall-node/`) |
 | anti-hall-deadly-loop | deadly-loop |
 | anti-hall-debt | debt |
 | anti-hall-defects | defects |
@@ -316,7 +316,7 @@ Dormant unless in a DevSwarm session (`DEVSWARM_REPO_ID`) or an opt-in companion
 installed. Primary and children talk only through the per-project mesh store via
 `ah-engine mesh` (native hivecontrol messaging and `SendMessage` to workspaces are
 blocked). Recovery is layered and never auto-kills: child self-report → supervisor poke →
-escalate to the parent; only `devswarm-recover.js` kills. The DevSwarm desktop app's own
+escalate to the parent; only `ah-engine devswarm recover` kills. The DevSwarm desktop app's own
 SQLite DB is read (read-only, never message bodies or credentials) as the ground truth for
 open/archived state, titles, sidebar order, PRs and session identity. Every DevSwarm
 surface passes the capability gate (`devswarm-capabilities`: minimum
@@ -334,5 +334,5 @@ message bodies to gzip, then prunes them. Full reference:
 - [plugins/anti-hall/.codex-plugin/plugin.json](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/.codex-plugin/plugin.json): the Codex manifest, bumped together with the Claude one.
 - [.claude-plugin/marketplace.json](https://github.com/talas9/anti-hall/blob/main/.claude-plugin/marketplace.json): the marketplace entry (carries no version).
 - [tests/](https://github.com/talas9/anti-hall/tree/main/tests/): zero-dependency `node --test`; v0.108.0 end-to-end scenarios in `tests/e2e/v0108/`.
-- [.github/workflows/test.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/test.yml): CI: full sharded matrix (ubuntu + macOS x Node 22/24) on `rc-v*` tags, a reduced matrix on pull requests (the `dev` → `main` pull request is the merge gate) and on `main`; pushes to `dev` and `v*` tags do not trigger it.
+- [.github/workflows/ah-engine.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/ah-engine.yml): CI for the engine and the thin client: build and tests on ubuntu-latest and macos-latest, on pull requests, pushes to `dev` and `main`, `v*` tags, plus a nightly full-suite schedule (the `dev` → `main` pull request is the merge gate). The Node `tests/` suite is the legacy suite of the Node era.
 - [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): bump both manifests + CHANGELOG on `dev`, pull request `dev` → `main`, tag, GitHub Release.

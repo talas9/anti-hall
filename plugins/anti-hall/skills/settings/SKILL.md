@@ -317,7 +317,7 @@ next to the handovers (it never blocks compaction). Planned, not shipped yet: th
 
 The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honoured by the engine and by the Node hooks alike, so
 `set` works the same with or without the engine. The engine's own tunables (limits, texts, rules, dispatch rows, `telemetry.enabled`,
-`telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `settings.js` keys: they are plain files in the plugin's
+`telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `ah-engine settings` keys: they are plain files in the plugin's
 `engine/` directory plus the engine's `config.toml`. Show them with `ah-engine config --json` (each value with its source),
 validate an edit with `ah-engine config validate <file>`, restore a missing key with `ah-engine config heal`. A bad edit falls back
 to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. The automatic
