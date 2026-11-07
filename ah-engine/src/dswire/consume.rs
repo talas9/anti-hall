@@ -167,11 +167,12 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
         told.retain(|ws, _| snap.workspaces.contains_key(ws));
         held.retain(|ws, _| snap.workspaces.contains_key(ws));
     }
-    let kept = edges.iter().filter(|e| e.kind == EdgeKind::Activity).count() as u64;
     let enabled = rt.mode() == Mode::On && defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false);
     if !enabled {
         // nothing is told, so nothing is recorded as told or held; the marker only moves to the current generation (below)
-        (told, held) = (marker.told.clone(), marker.held.clone());
+        // (a change held before the switch went off is stale by the time it is back on: it is not carried over, or it would be told
+        // after the dwell as a change the workspace has since undone)
+        (told, held) = (marker.told.clone(), BTreeMap::new());
     }
     let edges: Vec<Value> = edges.iter().map(|e| json!({"ws": e.ws, "label": label(rt, &e.ws), "kind": e.kind.as_str(), "from": e.from, "to": e.to})).collect();
     let payload = json!({
@@ -194,7 +195,7 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     // never moves it, so the marker follows the state's generation: the edges it saw are not replayed at every prompt.
     let mark = ans.get("mark").and_then(Value::as_u64).or_else(|| match enabled {
         true => (told != marker.told || held != marker.held).then_some(seen).flatten(),
-        false => seen.filter(|s| *s != gen_now).map(|_| gen_now),
+        false => seen.filter(|s| *s != gen_now || !marker.held.is_empty()).map(|_| gen_now),
     });
     if let Some(mark) = mark {
         write_seen(path.as_deref()?, mark, &told, &held, now)?;
@@ -204,8 +205,10 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
         }
     }
     let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
-    if advise.is_some() && mark.is_some() && kept > 0 {
-        crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_emitted"))], kept);
+    // only the activity changes the text names count: the ones past the cap are a "+N more" and are not shown
+    let shown = ans.get("shownActivity").and_then(Value::as_u64).unwrap_or(0);
+    if advise.is_some() && mark.is_some() && shown > 0 {
+        crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_emitted"))], shown);
     }
     let nag = crate::dsact::nag::take_pending(state_dir);
     match (advise, nag) {
