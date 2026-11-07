@@ -102,12 +102,25 @@ impl Census {
         !self.serve_dup.is_empty()
     }
 
+    /// Anything off the design: a duplicate daemon, a daemon of another or an unknown state directory, a legacy watcher, a process on a
+    /// replaced binary, or a slow process. The status line chip shows in `anomaly` mode only when this holds.
+    pub fn off_design(&self) -> bool {
+        self.multi_instance()
+            || !self.serve_nonlive.is_empty()
+            || !self.serve_unknown.is_empty()
+            || !self.legacy.is_empty()
+            || !self.stale.is_empty()
+            || !self.slow.is_empty()
+    }
+
     /// The one census line every surface prints.
     pub fn line(&self) -> String {
         defaults::render(
             "doctor.census_line",
             &[
                 ("serve", &self.serve.len()),
+                ("nonlive", &self.serve_nonlive.len()),
+                ("unknown", &self.serve_unknown.len()),
                 ("jobs", &self.jobs.len()),
                 ("clients", &self.clients.len()),
                 ("stubs", &self.stubs.len()),
@@ -173,6 +186,17 @@ fn state_of(env: &[(String, String)]) -> Option<PathBuf> {
     env_get(env, defaults::env_name("dir")).filter(|d| !d.is_empty()).map(PathBuf::from).or_else(|| crate::doctor::runtime::state_from_env(env))
 }
 
+/// The state directory process `pid` runs on, absolute: a relative directory in its environment is joined to THAT process's working
+/// directory (never this process's). `None` when the environment is unreadable, names none, or names a relative one whose process
+/// working directory the system will not show.
+pub fn process_state(host: &mut dyn Host, pid: u32) -> Option<PathBuf> {
+    let state = host.environ(pid).as_deref().and_then(state_of)?;
+    if state.is_absolute() {
+        return Some(state);
+    }
+    host.cwd(pid).filter(|d| d.is_absolute()).map(|d| d.join(state))
+}
+
 /// Count the engine processes in `rows`. `live_key` maps a state directory to the canonical key of the installed live one it is (`None`
 /// when it is some other directory); `own` are the pids never counted (this process and its ancestors: the caller that asks is not a
 /// finding). A serve whose environment cannot be read is counted apart (`serve_unknown`), never as live.
@@ -189,7 +213,7 @@ pub fn classify(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, own: &HashSet<
     let mut by_state: std::collections::BTreeMap<PathBuf, Vec<u32>> = std::collections::BTreeMap::new();
     for r in rows.iter().filter(|r| !own.contains(&r.pid)) {
         if class_of(&r.cmd).is_some_and(|k| is(k, "doctor.census_class_serve")) {
-            match host.environ(r.pid).as_deref().and_then(state_of) {
+            match process_state(host, r.pid) {
                 None => {
                     c.serve_unknown.push(r.pid);
                     foreign.insert(r.pid);
@@ -218,7 +242,7 @@ pub fn classify(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, own: &HashSet<
         let is_serve = is(k, "doctor.census_class_serve");
         // a scratch or test tree (a child of a foreign daemon, or a process whose own state directory is not the live one) is not this
         // install's: it makes no job, client, legacy watcher, stale image or slow process
-        if !is_serve && (foreign.contains(&r.ppid) || host.environ(r.pid).as_deref().and_then(state_of).is_some_and(|s| live_key(&s).is_none())) {
+        if !is_serve && (foreign.contains(&r.ppid) || process_state(host, r.pid).is_some_and(|s| live_key(&s).is_none())) {
             continue;
         }
         if is_serve {
@@ -323,6 +347,8 @@ mod tests {
         env: Vec<(String, String)>,
         /// A per-pid environment that replaces `env`; `None` is an environment that cannot be read.
         env_of: Vec<(u32, Env)>,
+        /// The working directory of a process; absent means the system will not show it.
+        cwd_of: Vec<(u32, PathBuf)>,
         signals: usize,
     }
 
@@ -342,8 +368,8 @@ mod tests {
                 None => Some(self.env.clone()),
             }
         }
-        fn cwd(&mut self, _: u32) -> Option<PathBuf> {
-            None
+        fn cwd(&mut self, pid: u32) -> Option<PathBuf> {
+            self.cwd_of.iter().find(|(p, _)| *p == pid).map(|(_, d)| d.clone())
         }
         fn mem(&mut self) -> MemInfo {
             MemInfo { swap_used: 0, pressure: Pressure::Unknown, ram_total: 0, ram_free: 0 }
@@ -387,12 +413,39 @@ mod tests {
     }
 
     fn fake(rows: Vec<ProcRow>) -> Fake {
-        Fake { rows, idents: Vec::new(), env: vec![(defaults::env_name("dir").to_string(), "/live".to_string())], env_of: Vec::new(), signals: 0 }
+        Fake {
+            rows,
+            idents: Vec::new(),
+            env: vec![(defaults::env_name("dir").to_string(), "/live".to_string())],
+            env_of: Vec::new(),
+            cwd_of: Vec::new(),
+            signals: 0,
+        }
     }
 
     fn run(f: &mut Fake, cfg: &Cfg) -> Census {
         let rows = f.rows.clone();
         classify(f, &rows, cfg, &HashSet::new(), &|s| (s == Path::new("/live") || s == Path::new("/live2")).then(|| s.to_path_buf()))
+    }
+
+    #[test]
+    fn a_relative_state_dir_is_resolved_against_that_process_cwd_or_filed_as_unknown() {
+        crate::defaults::init().unwrap();
+        let cfg = cfg_with_bin(&temp_bin("rel"));
+        let rel = |pid| (pid, Some(vec![(defaults::env_name("dir").to_string(), "state".to_string())]));
+        let mut f = fake(vec![row(100, 1, 50, &format!("{BIN} serve")), row(101, 1, 50, &format!("{BIN} serve"))]);
+        f.env_of = vec![rel(100), rel(101)];
+        // 100 runs in /live's parent, so "state" is /live-parent/state (not live); 101 has no readable cwd
+        f.cwd_of = vec![(100, PathBuf::from("/elsewhere"))];
+        let c = run(&mut f, &cfg);
+        assert_eq!((c.serve.clone(), c.serve_nonlive.clone(), c.serve_unknown.clone()), (vec![], vec![100], vec![101]));
+        // joined to the process's own cwd it IS the live directory
+        f.cwd_of = vec![(100, PathBuf::from("/"))];
+        f.env_of = vec![(100, Some(vec![(defaults::env_name("dir").to_string(), "live".to_string())])), rel(101)];
+        assert_eq!(run(&mut f, &cfg).serve, vec![100]);
+        assert!(Census { serve_unknown: vec![1], ..Default::default() }.off_design());
+        assert!(Census { serve_nonlive: vec![1], ..Default::default() }.off_design());
+        assert!(!Census { serve: vec![1], ..Default::default() }.off_design());
     }
 
     #[test]
@@ -402,7 +455,7 @@ mod tests {
         let mut f = fake(vec![row(100, 1, 5000, &format!("{BIN} serve --start-reason hook-client")), row(200, 100, 3, &format!("{BIN} agent_tick --json"))]);
         let c = run(&mut f, &cfg);
         assert_eq!((c.serve.clone(), c.jobs.clone(), c.legacy.len(), c.stale.len()), (vec![100], vec![200], 0, 0));
-        assert_eq!(c.line(), "engine: serve=1 jobs=1 clients=0 stubs=0/0 legacy=0 stale=0");
+        assert_eq!(c.line(), "engine: serve=1 nonlive=0 unknown=0 jobs=1 clients=0 stubs=0/0 legacy=0 stale=0");
         assert!(!c.multi_instance());
         assert_eq!(alert_doc(&Value::Null, &c)["active"], json!(false));
         assert_eq!(f.signals, 0, "the census never signals");

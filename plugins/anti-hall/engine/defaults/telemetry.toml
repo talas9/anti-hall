@@ -795,6 +795,14 @@ value = { kind = "gauge", unit = "processes", labels = [] }
 doc = "Engine daemons of another state directory counted by the last census (a test run, a second setup)."
 value = { kind = "gauge", unit = "processes", labels = [] }
 
+[metric.engine_census_serve_unknown]
+doc = "Engine daemons whose state directory could not be told, counted by the last census (shown, never the P0 condition)."
+value = { kind = "gauge", unit = "processes", labels = [] }
+
+[metric.engine_census_serve_dup]
+doc = "Live engine daemons that share a state directory with another one, counted by the last census (the P0 condition; target 0)."
+value = { kind = "gauge", unit = "processes", labels = [] }
+
 [metric.engine_census_job]
 doc = "Scheduled engine jobs counted by the last census."
 value = { kind = "gauge", unit = "processes", labels = [] }

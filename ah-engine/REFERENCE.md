@@ -6246,7 +6246,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.census_enabled` | `1` |  |  | 1: doctor, the process sweep and the statusline count the engine processes by class (serve, job, hook client, legacy wake watcher, stub, stale binary) and print one census line; more than one live `serve` is a P0 report. 0: the census is not taken anywhere. Report only: no process is ever stopped by it. |
 | `doctor.census_event_detail` | `{n} live daemons, pids {pids}` |  |  | The log detail written once when the multi-instance condition starts. {n}, {pids}. |
 | `doctor.census_job_max_age_s` | `3600` |  | s | A scheduled job older than this many seconds is reported as slow (the longest job timeout is far below it). |
-| `doctor.census_line` | `engine: serve={serve} jobs={jobs} clients={clients} stubs={stubs}/{sessions} ...` |  |  | The one census line (doctor, status, statusline). {serve} live daemons (1 expected), {jobs} scheduled jobs, {clients} hook or CLI calls, {stubs} per-session stubs of {sessions} live sessions, {legacy} legacy wake watchers, {stale} processes on a replaced binary. |
+| `doctor.census_line` | `engine: serve={serve} nonlive={nonlive} unknown={unknown} jobs={jobs} clients...` |  |  | The one census line (doctor, status, statusline). {serve} live daemons (1 expected), {nonlive} daemons of another state directory, {unknown} daemons whose state directory could not be told, {jobs} scheduled jobs, {clients} hook or CLI calls, {stubs} per-session stubs of {sessions} live sessions, {legacy} legacy wake watchers, {stale} processes on a replaced binary. |
 | `doctor.census_max_listed` | `20` |  |  | The most pids one census line, doctor warning, alert document or status field lists (counts stay exact). |
 | `doctor.census_msg_legacy` | `{n} legacy per-session wake watchers run (pids {pids}); each ends with its se...` |  |  | Legacy per-session wake watchers are running. {n}, {pids}. |
 | `doctor.census_msg_no_serve` | `no engine daemon in the process list; the next hook call starts it` |  |  | No live engine daemon was found by the process list (it starts on the next hook call). |
@@ -14992,7 +14992,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `engine_census_hook_client` | gauge | processes |  | Short-lived hook or CLI engine processes counted by the last census. |
 | `engine_census_job` | gauge | processes |  | Scheduled engine jobs counted by the last census. |
 | `engine_census_serve` | gauge | processes |  | Live engine daemons counted by the last census (1 is the design). |
+| `engine_census_serve_dup` | gauge | processes |  | Live engine daemons that share a state directory with another one, counted by the last census (the P0 condition; target 0). |
 | `engine_census_serve_nonlive` | gauge | processes |  | Engine daemons of another state directory counted by the last census (a test run, a second setup). |
+| `engine_census_serve_unknown` | gauge | processes |  | Engine daemons whose state directory could not be told, counted by the last census (shown, never the P0 condition). |
 | `engine_census_stub` | gauge | processes |  | Thin per-session stubs counted by the last census (none ships, expected 0). |
 | `engine_multi_instance` | counter | events |  | Process sweeps that found more than one live engine daemon (the one-daemon design is broken). Target 0. |
 | `errors` | counter | requests |  | Requests answered ERR. |

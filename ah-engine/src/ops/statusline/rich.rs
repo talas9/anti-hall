@@ -390,7 +390,7 @@ fn census_chip_from(path: &Path, now_ms: f64, c: &Colors, sep: &str) -> String {
     else {
         return String::new();
     };
-    let off = census.multi_instance() || !census.legacy.is_empty() || !census.stale.is_empty() || !census.slow.is_empty();
+    let off = census.off_design();
     if !off && defaults::text("statusline.census_mode") == defaults::text("statusline.census_mode_anomaly") {
         return String::new();
     }

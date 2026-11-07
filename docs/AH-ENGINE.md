@@ -1120,12 +1120,13 @@ SessionEnd MCP reaper (a separate switch) would select, plus more; a test keeps 
 **Engine process census (one daemon).** The design is ONE long-lived engine daemon (`serve`) per state directory; everything else is a
 short-lived job or hook call. Every orphan scan (`procwatch.scan_every_s`) also counts the engine processes by class and
 `doctor`, `status --json` (`census`) and the status line (a chip) print the same line:
-`engine: serve=1 jobs=<n> clients=<n> stubs=<n>/<sessions> legacy=<n> stale=<n>`.
+`engine: serve=1 nonlive=<n> unknown=<n> jobs=<n> clients=<n> stubs=<n>/<sessions> legacy=<n> stale=<n>`.
 
 | Class | What it is | Expected | When off |
 |---|---|---|---|
 | `serve` | the daemon of the live state directory | exactly 1 | more than 1 is a **P0** (below); 0 is info (it starts on the next hook call) |
-| `serve_nonlive` | a daemon of another state directory (a test run, a second setup) | 0 | existing warning |
+| `serve_nonlive` | a daemon of another state directory (a test run, a second setup); its line item is `nonlive=` and the status line chip shows in `anomaly` mode when it is not 0 | 0 | existing warning |
+| `serve_unknown` | a daemon whose state directory could not be told (unreadable environment, or a relative one whose working directory is not shown); `unknown=` in the line, never the P0 | 0 | chip anomaly |
 | `job` | a scheduled subprocess job (its parent is the daemon) | any | warn when older than `doctor.census_job_max_age_s` |
 | `hook_client` | any other engine process (a hook or CLI call) | any, short-lived | warn when older than `client.deadline_ms` x `doctor.census_client_age_mult` |
 | `legacy_watcher` | the old per-session `agents` / `devswarm wake-watch` | 0 over time | warn and count; **never stopped**, each ends with its session |
@@ -1139,14 +1140,18 @@ The classes, patterns, ages and texts are plugin configuration (`doctor.toml`, k
 `details` and a bounded occurrences array (`procwatch.census_max_occurrences`), logs once to the event log when it starts, and the
 advisory names it once per `procwatch.census_cooldown_s`. A per-session wake watcher whose binary was replaced hands over to the new
 one (`agent_tracker.wake_rebin_enabled`, check every `agent_tracker.wake_rebin_check_ms`; the same module as the DevSwarm watcher), so
-a long session no longer pins an old build.
+a long session no longer pins an old build. The hand-over passes the session's lease descriptor to the successor, which adopts it. **Rollback
+limit:** a successor binary older than that (a downgrade, or a rolled-back deploy) does not know the descriptor: it opens the lease file
+anew, the lock its predecessor passed on conflicts with that, it refuses with "held" and ends, and the session has no wake watcher until one is
+armed again. The predecessor cannot tell beforehand (the capability is not in the binary, which holds no configuration, and probing the
+successor would run it), so this is documented, not prevented: after a rollback, end the old watchers or let the sessions re-arm.
 
 **Gate wording: restarts.** A gate on daemon restarts reads `health.restarts.total` (windowed, crash-kind) or the ring's after-crash
 starts. It never reads the top-level `restarts` of `status --json` (that is the lifetime `starts - 1`, benign and large on a long-lived
 install) and never a raw process count.
 
 **Telemetry.** Impact kinds `orphan_candidate`, `orphan_kill`, `resource_warning`, `stuck_agent_warning`, `disk_warning` and the
-counter `procwatch_events` (labels kind and class). The census adds the counters `engine_multi_instance` (sweeps that found more than one live daemon; target 0) and `wake_rebin` (label result: exec, exec_failed), and the gauges `engine_census_serve`, `engine_census_serve_nonlive`, `engine_census_job`, `engine_census_hook_client`, `engine_census_stub`, `legacy_watchers` and `stale_binary_procs` (the last two fall to 0 as old sessions end and after one rebin cycle). The sweep writes `procwatch-report.json` in the state directory (`cost_ms`, process
+counter `procwatch_events` (labels kind and class). The census adds the counters `engine_multi_instance` (sweeps that found more than one live daemon; target 0) and `wake_rebin` (label result: exec, exec_failed), and the gauges `engine_census_serve`, `engine_census_serve_nonlive`, `engine_census_serve_unknown`, `engine_census_serve_dup`, `engine_census_job`, `engine_census_hook_client`, `engine_census_stub`, `legacy_watchers` and `stale_binary_procs` (the last two fall to 0 as old sessions end and after one rebin cycle). The sweep writes `procwatch-report.json` in the state directory (`cost_ms`, process
 count, candidates, kills, recent warnings) which the advisory reads; the sweep's own cost on this Mac is about 50 ms for 990
 processes with an orphan scan (release), and the resource-only sweep between scans reads the process table once.
 

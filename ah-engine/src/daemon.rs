@@ -308,6 +308,7 @@ impl Shared {
                 ("engine_census_serve", c.serve.len() as f64),
                 ("engine_census_serve_nonlive", c.serve_nonlive.len() as f64),
                 ("engine_census_serve_unknown", c.serve_unknown.len() as f64),
+                ("engine_census_serve_dup", c.serve_dup.len() as f64),
                 ("engine_census_job", c.jobs.len() as f64),
                 ("engine_census_hook_client", c.clients.len() as f64),
                 ("engine_census_stub", c.stubs.len() as f64),

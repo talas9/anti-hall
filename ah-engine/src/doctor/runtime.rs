@@ -268,8 +268,7 @@ pub fn non_live_serve_processes(host: &mut dyn Host) -> Vec<(u32, PathBuf)> {
     let serve = format!(" {}", defaults::text("health.serve_arg"));
     let mut out = Vec::new();
     for row in host.procs().into_iter().filter(|r| r.cmd.contains(&exe) && r.cmd.contains(&serve)) {
-        let Some(env) = host.environ(row.pid) else { continue };
-        let Some(state) = state_from_env(&env) else { continue };
+        let Some(state) = crate::procwatch::census::process_state(host, row.pid) else { continue };
         if live_state_dir(&state) {
             continue;
         }
@@ -516,7 +515,7 @@ mod tests {
         doc.head("engine");
         census_lines(&mut doc, &c);
         let body = doc.body();
-        assert!(body.contains("engine: serve=2 jobs=0 clients=0 stubs=0/0 legacy=1 stale=0"), "{body}");
+        assert!(body.contains("engine: serve=2 nonlive=0 unknown=0 jobs=0 clients=0 stubs=0/0 legacy=1 stale=0"), "{body}");
         assert!(body.contains("P0 engine_multi_instance: 2 engine daemons"), "{body}");
         assert!(body.contains("1 legacy per-session wake watchers"), "{body}");
         assert_eq!((doc.fail, doc.warn), (1, 1));

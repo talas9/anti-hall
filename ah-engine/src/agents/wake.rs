@@ -209,24 +209,39 @@ impl Rebin {
 /// returned. When the exec fails a line says so and the
 /// watcher ends: never a silent stale one.
 fn rebin_exec(lease: std::fs::File, path: &Path) -> i32 {
-    use std::os::unix::io::AsRawFd;
     use std::os::unix::process::CommandExt;
-    let fd = lease.as_raw_fd();
-    // SAFETY: fcntl(F_SETFD, 0) on the open lease descriptor clears close-on-exec so the lock holder survives the exec.
-    let kept = unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } == 0;
     emit(&defaults::render("wake_watch.line_rebin", &[("path", &path.display())]));
     crate::metrics::bump_shared("wake_rebin", &[("result", "exec")]);
     crate::telemetry::emit::flush();
-    let mut cmd = std::process::Command::new(path);
-    cmd.args(std::env::args().skip(1)).env(defaults::text("wake_watch.env_rebin"), (crate::health::now_ms() / 1000).to_string());
-    if kept {
-        cmd.env(defaults::text("wake_watch.env_rebin_lease"), fd.to_string());
+    let mut cmd = handover_cmd(&lease, path);
+    // the descriptor stays close-on-exec until this point: nothing between here and the exec spawns a child that could inherit the lock
+    if !keep_across_exec(&lease) {
+        cmd.env_remove(defaults::text("wake_watch.env_rebin_lease"));
     }
     let err = cmd.exec(); // only returns on failure; `lease` is still open here and drops with this frame
     crate::metrics::bump_shared("wake_rebin", &[("result", "exec_failed")]);
     crate::telemetry::emit::flush();
     eprint!("{}", defaults::render("wake_watch.diag_rebin_failed", &[("path", &path.display()), ("why", &err)]));
     1
+}
+
+/// The command that starts the successor: the same arguments, the rebin time, and the lease descriptor number. It does not touch the
+/// descriptor's flags (see [`keep_across_exec`]).
+fn handover_cmd(lease: &std::fs::File, path: &Path) -> std::process::Command {
+    use std::os::unix::io::AsRawFd;
+    let mut cmd = std::process::Command::new(path);
+    cmd.args(std::env::args().skip(1))
+        .env(defaults::text("wake_watch.env_rebin"), (crate::health::now_ms() / 1000).to_string())
+        .env(defaults::text("wake_watch.env_rebin_lease"), lease.as_raw_fd().to_string());
+    cmd
+}
+
+/// Clear close-on-exec on the lease descriptor so the lock holder survives the exec; `false` when the flag could not be cleared (the
+/// successor then takes the lease the usual way).
+fn keep_across_exec(lease: &std::fs::File) -> bool {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: fcntl(F_SETFD, 0) on the open lease descriptor clears close-on-exec.
+    unsafe { libc::fcntl(lease.as_raw_fd(), libc::F_SETFD, 0) == 0 }
 }
 
 /// The loop of the watcher: renew the stamp, print each new row of the session's feed once, stop when `stop` says so. Rows from before
@@ -419,6 +434,22 @@ mod tests {
         successor.kill().unwrap();
         successor.wait().unwrap();
         assert!(acquire(&stamp).is_some(), "the lease frees when the successor ends");
+    }
+
+    #[test]
+    fn building_the_handover_leaves_the_lease_close_on_exec_until_the_last_moment() {
+        use std::os::unix::io::AsRawFd;
+        let stamp = stamp_in("cloexec");
+        let lease = acquire(&stamp).expect("lease");
+        let fd = lease.as_raw_fd();
+        // SAFETY: fcntl(F_GETFD) only reads the flags of the open descriptor.
+        let flags = || unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        let cmd = handover_cmd(&lease, Path::new("/bin/true"));
+        assert_ne!(flags() & libc::FD_CLOEXEC, 0, "a child spawned before the exec must not inherit the lock");
+        let vars: Vec<_> = cmd.get_envs().map(|(k, v)| (k.to_string_lossy().to_string(), v.map(|v| v.to_string_lossy().to_string()))).collect();
+        assert!(vars.contains(&(defaults::text("wake_watch.env_rebin_lease").to_string(), Some(fd.to_string()))), "{vars:?}");
+        assert!(keep_across_exec(&lease));
+        assert_eq!(flags() & libc::FD_CLOEXEC, 0, "cleared only by the last step before the exec");
     }
 
     #[test]

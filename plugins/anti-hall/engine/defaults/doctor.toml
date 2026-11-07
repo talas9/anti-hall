@@ -2587,8 +2587,8 @@ doc = "macOS: the most memory regions walked to find the file behind a process's
 value = 64
 
 [doctor.census_line]
-doc = "The one census line (doctor, status, statusline). {serve} live daemons (1 expected), {jobs} scheduled jobs, {clients} hook or CLI calls, {stubs} per-session stubs of {sessions} live sessions, {legacy} legacy wake watchers, {stale} processes on a replaced binary."
-value = "engine: serve={serve} jobs={jobs} clients={clients} stubs={stubs}/{sessions} legacy={legacy} stale={stale}"
+doc = "The one census line (doctor, status, statusline). {serve} live daemons (1 expected), {nonlive} daemons of another state directory, {unknown} daemons whose state directory could not be told, {jobs} scheduled jobs, {clients} hook or CLI calls, {stubs} per-session stubs of {sessions} live sessions, {legacy} legacy wake watchers, {stale} processes on a replaced binary."
+value = "engine: serve={serve} nonlive={nonlive} unknown={unknown} jobs={jobs} clients={clients} stubs={stubs}/{sessions} legacy={legacy} stale={stale}"
 
 [doctor.census_msg_p0]
 doc = "P0: more than one live engine daemon. {n}, {pids}."
