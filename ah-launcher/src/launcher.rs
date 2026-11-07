@@ -397,6 +397,7 @@ impl L {
         // (the same one the engine uses): the cold wait must watch THAT path, not skip the wait (a long HOME let the first
         // cold guard call through unchecked at the launcher's 560 ms budget)
         let sock = crate::util::engine_socket(&self.s, &self.state_dir);
+        let hashed = sock != self.state_dir.join(sock_name);
         if sock.as_os_str().len() as u64 > sock_max {
             return None;
         }
@@ -406,6 +407,9 @@ impl L {
         );
         if probed == Sock::Live {
             return None;
+        }
+        if hashed {
+            limits::bump(Ctr::ColdWaitHashed); // the wait runs for a state dir whose socket is at the hashed private path (it was skipped)
         }
         // a socket file nobody listens on that is NEWER than a start request is a daemon that request started and that then died: the
         // request is no reason to keep waiting (a daemon still starting has not bound its socket yet, so the file is older than its request)
@@ -512,6 +516,9 @@ impl L {
             "cold_guard_gave_up event={} cap_ms={cap}",
             self.event
         ));
+        if hashed {
+            limits::bump(Ctr::ColdWaitHashedExpired);
+        }
         self.cold_notice();
         Some(0)
     }
