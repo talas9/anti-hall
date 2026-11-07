@@ -249,7 +249,15 @@ value = { pr = ["merge", "close", "edit", "create", "review"], issue = ["create"
 
 [command.remote_allow]
 doc = "Remote commands that run in the main thread whatever their body or output (GH #263). Each entry is a command prefix: the binary and its leading subcommand words, global flags such as -R/--repo skipped, optionally followed by an option and its value (`gh api -X POST`). Works for any binary. Block wins over allow; a command in neither list keeps the default rule (reads pass, mutations block). Change it in your own config.toml (`[command]` table) with remote_allow_add and remote_allow_remove."
-value = ["gh issue create", "gh issue comment", "gh issue edit", "gh issue close", "gh issue reopen", "gh label create", "gh label edit", "gh pr create", "gh pr comment", "gh pr edit"]
+value = ["gh issue create", "gh issue comment", "gh issue edit", "gh issue close", "gh issue reopen", "gh label create", "gh label edit", "gh pr create", "gh pr comment", "gh pr edit", "gh pr ready", "gh pr close"]
+
+[command.sw_resolve_wrapper_scripts]
+doc = "Default on: a `sh|bash <script>` run in the main thread is judged by the script's body (read up to script.read_max_bytes), the same verdict as the raw command (#547); off judges the wrapper as written."
+value = { section = "guards", key = "commandResolveWrapperScripts", type = "boolean", env = "ANTIHALL_COMMAND_RESOLVE_WRAPPER_SCRIPTS", option = "", default = true }
+
+[metric.command_wrapper_resolved]
+doc = "Heavy-command checks that read a `sh|bash <script>` body (#547), by verdict: same (the body is not heavy, the wrapper's verdict is unchanged) or differs (the body is heavy and the wrapper is now stopped like the raw command)."
+value = { kind = "counter", unit = "checks", labels = ["verdict"] }
 
 [command.remote_block]
 doc = "Remote commands blocked in the main thread unless read_only_subcommands or read_only_api proves a read, named in the block text as irreversible or sensitive (msg_remote_block_why). Same entry format as command.remote_allow; wins over it."
@@ -429,6 +437,10 @@ value = "."
 [command.msg_heavy_allowed_claude]
 doc = "End of the allowed text on Claude (the scratchpad script path)."
 value = "; or a read-only script in the scratchpad run in the background."
+
+[command.msg_heavy_suite_place]
+doc = "Added to the allowed text of a heavy-command block: the one place a full test suite may run (#621). Keep it the same place lane_test.msg_instead names."
+value = " A full test suite runs in one place only: the integration or deploy gate, not in a lane or the main thread."
 
 [command.msg_heavy_cd_hint]
 doc = "Added when the same command joined with && would qualify for the inline check."

@@ -13,7 +13,7 @@ fn plugin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall")
 }
 
-fn run(argv: &[&str], extra: &[(&str, &str)], stdin: &str) -> (i32, String, String) {
+pub(crate) fn run(argv: &[&str], extra: &[(&str, &str)], stdin: &str) -> (i32, String, String) {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("lanewaste-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("home")).unwrap();
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
@@ -69,13 +69,16 @@ fn suite_table() -> Vec<(&'static str, Option<&'static str>)> {
         ("CARGO_TARGET_DIR=/x lockf /x/l nice -n 10 cargo test -j4", Some("cargo test")),
         ("cd ah-engine && cargo test", Some("cargo test")),
         ("sh -c 'cargo test'", Some("cargo test")),
-        ("node --test", Some("node --test")),
-        ("node --test tests/", Some("node --test")),
+        ("node --test", None), // lock-free runner: allowed while guards.laneTestLockBoundOnly is on (#621)
+        ("node --test tests/", None),
         ("./test.sh", Some("test.sh")),
         ("bash ah-engine/test.sh", None), // a script run through an interpreter is out of reach
         ("ah-engine/test.sh", Some("test.sh")),
         ("make test", Some("make test")),
-        ("npm test", Some("npm test")),
+        ("npm test", None),
+        ("pnpm run test", None),
+        ("pytest", None),
+        ("flutter test", None),
         ("./a7-replay.sh", Some("replay or soak runner")),
         ("soak-run.sh --hours 2", Some("replay or soak runner")),
         // allowed: a build check, a filtered single-module test, text that merely names a runner
@@ -113,6 +116,22 @@ fn the_decision_table_holds_for_a_subagent_on_both_hosts() {
             }
         }
     }
+}
+
+/// #621: with guards.laneTestLockBoundOnly off every suite-scale runner is blocked as before; a lock-bound runner is blocked either way.
+#[test]
+fn lock_bound_only_off_blocks_the_lock_free_runners_too() {
+    let off = [("ANTIHALL_LANE_TEST_LOCK_BOUND_ONLY", "0")];
+    for (cmd, label) in [("node --test", "node --test"), ("npm test", "npm test"), ("pytest", "pytest"), ("flutter test", "flutter test")] {
+        let (code, out, _) = test_guard(cmd, "subagent", &off);
+        assert_eq!(code, 2, "{cmd} must be blocked with the switch off");
+        assert!(out.contains(&format!("({label})")), "{cmd}: {out}");
+        assert_eq!(test_guard(cmd, "subagent", &[]).0, 0, "{cmd} allowed by default");
+    }
+    for cmd in ["cargo test", "cargo nextest run", "make test", "./test.sh"] {
+        assert_eq!(test_guard(cmd, "subagent", &[]).0, 2, "{cmd}: lock-bound stays blocked by default");
+    }
+    assert_eq!(test_guard("cargo test", "subagent", &off).0, 2);
 }
 
 #[test]
@@ -281,4 +300,49 @@ fn the_wait_guard_is_wired_for_both_hosts_and_both_orchestration_ports() {
     assert!(!plugin().join("hooks/queued-wait-guard").exists(), "the native guard needs no fallback no-op");
     let schema = std::fs::read_to_string(plugin().join("../anti-hall-node/hooks/lib/settings-schema.js")).unwrap();
     assert!(schema.contains("key: 'queuedWaitGuard'") && schema.contains("ANTIHALL_QUEUED_WAIT_GUARD"), "guards.queuedWaitGuard is a registered setting");
+}
+
+// ---- wide-search-guard depth bound (#623) ---------------------------------------------------------------
+
+fn wide_guard(cmd: &str, who: &str, env_pairs: &[(&str, &str)]) -> (i32, String, String) {
+    run(&["check", "wide-search-guard"], env_pairs, &payload(cmd, who).to_string())
+}
+
+#[test]
+fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
+    let allow = [
+        "find ~ -maxdepth 4 -iname x",
+        "find ~ -iname x -maxdepth 2",
+        "bfs / -maxdepth 3 -name x",
+        "rg --max-depth=2 foo /Users",
+        "rg --max-depth 2 foo ~",
+        "fd -d 3 x ~",
+        "fd --max-depth 1 x /Volumes",
+        "find ~ -maxdepth 0 -name x",
+    ];
+    let block = [
+        "find ~ -iname x",
+        "find ~ -maxdepth 5 -iname x",
+        "find / -name x",
+        "rg foo ~",
+        "fd x ~",
+        "fd -d 9 x ~",
+        "find ~ -maxdepth abc -name x",
+        "find ~ -path '*/src/*' -prune -name x", // a -prune/-path limit is not a depth bound
+    ];
+    for who in ["main", "subagent", "codex"] {
+        for cmd in allow {
+            assert_eq!(wide_guard(cmd, who, &[]).0, 0, "{who}: {cmd} must be allowed");
+        }
+        for cmd in block {
+            assert_eq!(wide_guard(cmd, who, &[]).0, 2, "{who}: {cmd} must be blocked");
+        }
+    }
+}
+
+#[test]
+fn the_depth_bound_is_a_setting() {
+    assert_eq!(wide_guard("find ~ -maxdepth 4 -iname x", "main", &[("ANTIHALL_WIDE_SEARCH_DEPTH_BOUND", "0")]).0, 2, "guards.wideSearchDepthBound off");
+    assert_eq!(wide_guard("find ~ -maxdepth 4 -iname x", "main", &[]).0, 0, "default on");
+    assert_eq!(wide_guard("find ~ -maxdepth 4 -iname x", "main", &[("ANTIHALL_ALLOW_WIDE_SEARCH", "0")]).0, 0);
 }

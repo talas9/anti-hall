@@ -266,7 +266,11 @@ function decide(p) {
   var tokenSet = new Set(tokens);
   var mechanical = mrSig(tokens, tokenSet, 'model_routing.mechanical'), complex = mrSig(tokens, tokenSet, 'model_routing.complex');
   // any planning signal (or heavy reading) vetoes the rows that steer to haiku
-  var mechanicalOnly = mechanical > 0 && complex === 0 && !mrReasoning(corpus);
+  var neverRoutine = mrSig(tokens, tokenSet, 'model_routing.never_routine');
+  var mechanicalOnly = mechanical > 0 && complex === 0 && neverRoutine === 0 && !mrReasoning(corpus);
+  if (mechanical > 0 && complex === 0 && neverRoutine > 0 && !mrReasoning(corpus)) {
+    try { ah.metric('model_routing_never_routine', []); } catch (e) { /* counting never fails a hook */ }
+  }
   var strict = routingMode !== ah.cfg('model_routing.advisory_mode');
   var exempt = mrT('model_routing.role_word_re', description);
   var researchExempt = !(mrSig(tokens, tokenSet, 'model_routing.hard_execution') > 0) && mrT('model_routing.research_re', corpus);
@@ -342,6 +346,17 @@ function decide(p) {
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
   // a brief that writes a file or report or runs a script or shell commands needs a type that can: no Explore hint (it has no Write/Edit)
   var execShaped = ah.settings.bool('model_routing.explore_exec_setting') && mrT('model_routing.exec_report_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' '));
+  // #336: a review seat or a brief that runs tests is no read-only research, whatever else it says: no Explore hint
+  var skipReason = null;
+  if (generic && ah.settings.bool('model_routing.explore_hint_skip_setting')) {
+    var skipRe = ah.cfg('model_routing.explore_hint_skip_re');
+    if (ah.re.test(skipRe.reviewer, 'r', corpus)) skipReason = 'reviewer';
+    else if (ah.re.test(skipRe.tests, 'r', corpus)) skipReason = 'tests';
+  }
+  if (skipReason !== null && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped) {
+    try { ah.metric('model_routing_explore_hint_skipped', ['reason', skipReason]); } catch (e) { /* counting never fails a hook */ }
+    return mrRouted('allow', p, input, 'unknown', omitted ? ah.cfg('model_routing.tier_inherit') : model, 'allow');
+  }
   if (generic && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped) {
     return mrRouted(mrTip(ah.cfg('model_routing.msg_row6_what'), ah.cfg('model_routing.msg_row6_instead'), ah.cfg('model_routing.msg_row6_why')), p, input, 'research', ah.cfg('model_routing.explore_type'), 'exempt');
   }

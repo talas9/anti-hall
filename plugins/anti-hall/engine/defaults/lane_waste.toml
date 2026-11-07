@@ -154,16 +154,40 @@ doc = "Flags that make cargo test only build the test binaries and run nothing: 
 value = ["--no-run", "--list", "--help", "-h"]
 
 [lane_test.rules]
-doc = "Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message."
+doc = "Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message; `shared_lock` (default true when absent) says whether the runner queues behind the shared build lock: a row with `shared_lock = false` (node --test, npm/pnpm/yarn/bun test, pytest, flutter test) holds no shared lock, so it is not blocked while lane_test.sw_lock_bound_only is on (#621)."
 value = [
-  { id = "node-test", label = "node --test", re = '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)', unless_re = '\.(?:[cm]?js|ts|mts|cts)(?:\s|$)' },
-  { id = "npm-test", label = "npm test", re = '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:test|test:\S+)(?:\s|$)' },
+  { id = "node-test", label = "node --test", shared_lock = false, re = '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)', unless_re = '\.(?:[cm]?js|ts|mts|cts)(?:\s|$)' },
+  { id = "npm-test", label = "npm test", shared_lock = false, re = '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:test|test:\S+)(?:\s|$)' },
   { id = "test-sh", label = "test.sh", re = '^(?:\S*/)?test\.sh(?:\s|$)' },
   { id = "make-test", label = "make test", re = '^make\s(?:\S+\s)*?(?:test|tests|check|gate|replay|soak)(?:\s|$)' },
-  { id = "pytest", label = "pytest", re = '^(?:python3?\s-m\s)?pytest(?:\s|$)', unless_re = '(?:\.py|::)\S*(?:\s|$)' },
-  { id = "flutter-test", label = "flutter test", re = '^flutter\stest(?:\s|$)', unless_re = '\.dart(?:\s|$)' },
+  { id = "pytest", label = "pytest", shared_lock = false, re = '^(?:python3?\s-m\s)?pytest(?:\s|$)', unless_re = '(?:\.py|::)\S*(?:\s|$)' },
+  { id = "flutter-test", label = "flutter test", shared_lock = false, re = '^flutter\stest(?:\s|$)', unless_re = '\.dart(?:\s|$)' },
   { id = "replay-soak", label = "replay or soak runner", re = '^(?:\S*/)?(?:[\w.-]*[-_.])?(?:replay|soak)(?:[-_.][\w.-]*)?(?:\s|$)' },
 ]
+
+[lane_test.sw_lock_bound_only]
+doc = "Default on: only a suite runner that queues behind a shared build lock (cargo test or nextest, make test, test.sh, replay and soak runners) is blocked for a subagent; a lock-free runner (a lane_test.rules row with shared_lock = false: node --test, npm/pnpm/yarn/bun test, pytest, flutter test) is allowed. Off blocks every suite-scale runner as before."
+value = { section = "guards", key = "laneTestLockBoundOnly", type = "boolean", env = "ANTIHALL_LANE_TEST_LOCK_BOUND_ONLY", option = "", default = true }
+
+[lane_test.shared_lock_key]
+doc = "The lane_test.rules field that says whether a runner queues behind the shared build lock."
+value = "shared_lock"
+
+[lane_test.label_shared_lock_yes]
+doc = "Counter label `shared_lock` of a lane-test block on a runner that queues behind the shared build lock."
+value = "true"
+
+[lane_test.label_shared_lock_no]
+doc = "Counter label `shared_lock` of a lane-test block on a lock-free runner (only when lane_test.sw_lock_bound_only is off)."
+value = "false"
+
+[metric.lane_test_block]
+doc = "Suite-scale test runs blocked for a subagent by lane-test-guard, by runner label and whether the runner queues behind the shared build lock (#621)."
+value = { kind = "counter", unit = "blocks", labels = ["label", "shared_lock"] }
+
+[metric.lane_test_lockfree_allowed]
+doc = "Suite-scale runs of a lock-free runner allowed because lane_test.sw_lock_bound_only is on, by runner label (#621)."
+value = { kind = "counter", unit = "calls", labels = ["label"] }
 
 [lane_test.msg_what]
 doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run."
@@ -175,7 +199,7 @@ value = "Full suites can queue behind a shared build lock and waste the work bud
 
 [lane_test.msg_instead]
 doc = "What to do instead."
-value = "Run a build check or one allowed module test, then report the result."
+value = "Run a build check or one allowed module test, then report the result. The full suite runs in one place only: the integration or deploy gate, not in a lane."
 
 [lane_test.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
@@ -306,8 +330,26 @@ doc = "A path word the guard cannot resolve (a glob or a variable): it is not ju
 value = '[*?\[\]{}$`]'
 
 [wide_search.commands]
-doc = "The search commands, per command name: `style` is paths-first (find, bfs: paths come first, then the expression; `skip_flags` are leading flags without a value), pattern-first (rg, fd, grep: flags, a pattern, then paths; `value_flags` take the next word, `pattern_flags` supply the pattern so every plain word is a path, `no_pattern_flags` mean there is no pattern; `needs_recursive` with `recursive_re` judges the command only when a recursive flag is present, as for grep) or spotlight (mdfind: `scope_flag` names the directory searched, none means the whole disk)."
-value = { find = { style = "paths-first", skip_flags = ["-H", "-L", "-P"] }, bfs = { style = "paths-first", skip_flags = ["-H", "-L", "-P", "-E", "-X", "-s", "-S"] }, rg = { style = "pattern-first", value_flags = ["-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-j", "--threads", "-M", "--max-columns", "--max-depth", "-d", "--max-filesize", "--ignore-file", "--sort", "--sortr", "-r", "--replace", "--colors", "--color", "--engine", "--path-separator", "--pre", "--pre-glob", "-E", "--encoding", "--type-add", "--type-clear"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = ["--files", "--type-list"] }, fd = { style = "pattern-first", value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "--min-depth", "--exact-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads", "--changed-within", "--changed-before", "-o", "--owner", "--search-path", "--base-directory", "--ignore-file", "--format", "--max-results", "--and"], no_pattern_flags = [] }, fdfind = { style = "pattern-first", value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads"], no_pattern_flags = [] }, ag = { style = "pattern-first", value_flags = ["-G", "--file-search-regex", "-g", "-A", "-B", "-C", "--ignore", "-m", "--max-count", "--depth", "--workers", "-p", "--path-to-ignore", "--color-match", "--color-line-number", "--color-path"], pattern_flags = [], no_pattern_flags = [] }, ack = { style = "pattern-first", value_flags = ["-A", "-B", "-C", "-m", "--max-count", "--type", "--ignore-dir", "--ignore-file", "--pager", "--color-match"], pattern_flags = [], no_pattern_flags = [] }, grep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-d", "--directories", "-D", "--devices", "--include", "--exclude", "--exclude-dir", "--include-dir", "--exclude-from", "--label", "--color", "--colour", "-T"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = [] }, egrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, fgrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ugrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ug = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, mdfind = { style = "spotlight", scope_flag = "-onlyin" } }
+doc = "The search commands, per command name: `style` is paths-first (find, bfs: paths come first, then the expression; `skip_flags` are leading flags without a value), pattern-first (rg, fd, grep: flags, a pattern, then paths; `value_flags` take the next word, `pattern_flags` supply the pattern so every plain word is a path, `no_pattern_flags` mean there is no pattern; `needs_recursive` with `recursive_re` judges the command only when a recursive flag is present, as for grep; `depth_flags` name the flags whose value is a depth limit, see wide_search.depth_allow_max) or spotlight (mdfind: `scope_flag` names the directory searched, none means the whole disk)."
+value = { find = { style = "paths-first", depth_flags = ["-maxdepth"], skip_flags = ["-H", "-L", "-P"] }, bfs = { style = "paths-first", depth_flags = ["-maxdepth"], skip_flags = ["-H", "-L", "-P", "-E", "-X", "-s", "-S"] }, rg = { style = "pattern-first", depth_flags = ["--max-depth", "-d"], value_flags = ["-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-j", "--threads", "-M", "--max-columns", "--max-depth", "-d", "--max-filesize", "--ignore-file", "--sort", "--sortr", "-r", "--replace", "--colors", "--color", "--engine", "--path-separator", "--pre", "--pre-glob", "-E", "--encoding", "--type-add", "--type-clear"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = ["--files", "--type-list"] }, fd = { style = "pattern-first", depth_flags = ["--max-depth", "-d"], value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "--min-depth", "--exact-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads", "--changed-within", "--changed-before", "-o", "--owner", "--search-path", "--base-directory", "--ignore-file", "--format", "--max-results", "--and"], no_pattern_flags = [] }, fdfind = { style = "pattern-first", depth_flags = ["--max-depth", "-d"], value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads"], no_pattern_flags = [] }, ag = { style = "pattern-first", value_flags = ["-G", "--file-search-regex", "-g", "-A", "-B", "-C", "--ignore", "-m", "--max-count", "--depth", "--workers", "-p", "--path-to-ignore", "--color-match", "--color-line-number", "--color-path"], pattern_flags = [], no_pattern_flags = [] }, ack = { style = "pattern-first", value_flags = ["-A", "-B", "-C", "-m", "--max-count", "--type", "--ignore-dir", "--ignore-file", "--pager", "--color-match"], pattern_flags = [], no_pattern_flags = [] }, grep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-d", "--directories", "-D", "--devices", "--include", "--exclude", "--exclude-dir", "--include-dir", "--exclude-from", "--label", "--color", "--colour", "-T"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = [] }, egrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, fgrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ugrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ug = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, mdfind = { style = "spotlight", scope_flag = "-onlyin" } }
+
+[wide_search.depth_allow_max]
+doc = "A search under a forbidden root that carries a depth limit (a `commands.<name>.depth_flags` flag such as find -maxdepth, fd or rg --max-depth) of at most this many levels is allowed, since it cannot walk the whole disk (#623). `-prune` and `-path` limits do not count. Do not confuse with lane_waste.max_depth (nested sh -c scripts)."
+value = 4
+min = 0
+max = 64
+
+[wide_search.depth_value_re]
+doc = "A depth-limit word that counts as a number (digits only). Regular expression (Rust syntax)."
+value = '^[0-9]{1,4}$'
+
+[wide_search.sw_depth_bound]
+doc = "Default on: a search with a depth limit within wide_search.depth_allow_max is allowed under a forbidden root; off blocks it as before."
+value = { section = "guards", key = "wideSearchDepthBound", type = "boolean", env = "ANTIHALL_WIDE_SEARCH_DEPTH_BOUND", option = "", default = true }
+
+[metric.wide_search_depth_bounded]
+doc = "Searches under a forbidden root allowed because a depth limit within wide_search.depth_allow_max bounds them (#623), by command."
+value = { kind = "counter", unit = "calls", labels = ["cmd"] }
 
 [wide_search.msg_what]
 doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches."

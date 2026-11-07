@@ -2676,6 +2676,21 @@ function extractEvalPayloadRaw(segment) {
 // RECURSION: also evaluates commands hidden in command substitution `$(...)` /
 // backticks and in `bash -c '...'` payloads, so `echo "$(npm run build)"` and
 // `bash -c "npm run build"` are caught. Depth-bounded to avoid pathological input.
+// #547: `sh|bash <script>` is judged by the body of the script, so a wrapper and its raw command get the same verdict (the host reads the
+// script as git-guard does, up to script.read_max_bytes). null when the call is no literal shell-script run, the setting is off, or the
+// script cannot be read (the wrapper is then judged as written). The path resolves against the session's working directory.
+function wrapperScriptBody(seg) {
+  if (!S || !S.wrapCwd || !ah.settings.bool('command.sw_resolve_wrapper_scripts')) return null;
+  let run = null, verb = '';
+  try { run = scriptRunToken(seg); verb = effectiveVerb(seg).replace(/["']/g, ''); } catch (_) { return null; }
+  if (!run || run.direct || !T.scriptShells.has(verb)) return null;
+  const r = resolveScriptPath(run.token, { cwd: S.wrapCwd, cwdUnknown: false });
+  if (!r || r.unresolvable) return null;
+  const size = ah.fs.size(r.real), cap = ah.cfgNum('script.read_max_bytes');
+  if (size === null || size > cap) return null;
+  return ah.fs.readText(r.real, cap);
+}
+
 function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
@@ -2693,6 +2708,12 @@ function isHeavyCommand(command, depth) {
       // (c) eval payload: unwrap eval's argument(s) and evaluate as command(s).
       const evalPayload = extractEvalPayload(seg);
       if (evalPayload && isHeavyCommand(evalPayload, d + 1)) return true;
+      const body = wrapperScriptBody(seg);
+      if (body !== null) {
+        const heavy = isHeavyCommand(body, d + 1);
+        if (S && S.wrapResolved !== 'differs') S.wrapResolved = heavy ? 'differs' : 'same';
+        if (heavy) return true;
+      }
     }
   }
   // (a) command substitution: scan the WHOLE command (substitutions can span
@@ -2746,6 +2767,11 @@ function classifyHeavy(command, depth) {
       const evalPayload = extractEvalPayload(seg);
       if (evalPayload) {
         const inner = classifyHeavy(evalPayload, d + 1);
+        if (inner) return inner;
+      }
+      const body = wrapperScriptBody(seg);
+      if (body !== null) {
+        const inner = classifyHeavy(body, d + 1);
         if (inner) return inner;
       }
     }
@@ -5102,7 +5128,10 @@ function mainFlow(payload) {
   });
   if (hit) return hit;
   S.light = T.light.concat(launcherRegexes(command));
-  if (!isHeavyCommand(command)) return 'allow';
+  S.wrapCwd = (payload && typeof payload.cwd === 'string' && payload.cwd.charAt(0) === '/') ? payload.cwd : '';
+  const heavyNow = isHeavyCommand(command);
+  if (S.wrapResolved) { try { ah.metric('command_wrapper_resolved', ['verdict', S.wrapResolved]); } catch (e) { /* counting never fails a hook */ } }
+  if (!heavyNow) return 'allow';
   if (guarded(() => settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command, { payload: payload }))) return 'allow';
   if (guarded(() => {
     if (settingsGet('guards', 'projectCommandAllow') !== false) {
@@ -5156,7 +5185,7 @@ function mainFlow(payload) {
       return standNote ? { advisory: text.advisoryJson('PreToolUse', standNote) } : 'allow';
     }
   }
-  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
+  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + ah.cfg('command.msg_heavy_suite_place') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
   const reason = text.detailsMessage('block', ah.cfg('command.guard_name'), {
     what: heavyWhat,
     why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),
