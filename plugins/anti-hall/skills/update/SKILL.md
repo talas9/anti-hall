@@ -11,7 +11,7 @@ Update anti-hall to the latest released version and show the changelog delta. Us
 
 > **UPGRADE NOTE — user on 0.107.x or earlier:** tell them to run
 > `claude plugin update anti-hall@anti-hall` once, then restart Claude Code. The 0.107.x
-> `update.js` has no post-pull re-exec, so it cannot perform 0.108.0's harness
+> The Node-era `update.js` had no post-pull re-exec, so it cannot perform 0.108.0's harness
 > registration and Claude Code keeps loading the old build until they do. From 0.108.0 on
 > the helper registers the new build itself.
 
@@ -36,7 +36,7 @@ takes effect in-session — this skill does not over-promise.
   is **HARNESS-OWNED**: the helper reads it, it **never** writes it.
 - **Version authority** — `plugins/anti-hall/.claude-plugin/plugin.json` in the clone.
   `CHANGELOG.md` (repo root) carries one `## <version>` section per release.
-- **DevSwarm ingest daemon's baked script path** — `install-devswarm-ingest.js`'s daemon
+- **DevSwarm ingest daemon's baked script path** — `ah-engine units install`'s daemon
   unit bakes the **marketplace clone's own the engine ingest duty** (this is the
   ONE path this skill `git pull --ff-only`s in place — never a version-pinned cache dir,
   which is a NEW directory per release). That is what makes the daemon survive an update
@@ -51,7 +51,7 @@ the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a 
 `cache/.../<newver>/` dir (it never deletes or overwrites another version dir).
 
 **(v0.94.0)** The stdout contract (the JSON status line + human summary) is unchanged, but
-`update.js` now also prints a `[update] <stage> start` / `done <ms>ms` line to **stderr**
+`ah-engine update` now also prints a `[update] <stage> start` / `done <ms>ms` line to **stderr**
 around each post-update stage (reconcile, fold, migrations, ...) so a slow stage is visible
 while it runs instead of the script staying silent until every stage returns. Set
 `ANTIHALL_UPDATE_QUIET=1` to suppress these lines (e.g. for a caller that captures stderr for
@@ -80,11 +80,11 @@ its own purposes).
      no-sync run (a unit enumeration plus a few `statSync`s — no spawn, no writes)
      and deliberately does NOT treat `absent` as "needs heal", so a no-op update can
      never first-install an opt-in daemon for a user who never enabled it.
-     Root cause: `install-devswarm-ingest.js`'s daemon unit used to bake an install-time
+     Root cause: the `ah-engine units install` daemon unit used to bake an install-time
      script path (`__dirname`) that could go stale across a plugin update — the plugin
      manager relocating the version-pinned cache dir the daemon was baked from, crash-
      looping the daemon. The installer now bakes the **git marketplace clone's own copy**
-     of `devswarm-ingest.js` (the exact path this very update step just `git pull
+     of the engine ingest duty (the exact path this very update step just `git pull
      --ff-only`ed **in place**) so a fresh install never goes stale again — but a daemon
      installed *before* this fix shipped is still pointed at a path that may now be gone,
      and needs a one-time re-bake. `healIngestDaemon` runs ONLY under the same
@@ -212,8 +212,8 @@ Modes:
    running the OLD cached version's own hardcoded post-pull stage list — a
    stage first added in the new release never ran until a second update or
    `doctor` call. The marketplace clone is always the newest copy right after
-   `git pull --ff-only`, which `update.js` itself does as its first step, so
-   this path is self-correcting even before that pull completes. (`update.js`
+   `git pull --ff-only`, which `ah-engine update` itself does as its first step, so
+   this path is self-correcting even before that pull completes. (`ah-engine update`
    also now re-execs the freshly-pulled version's own copy internally as a
    second line of defense — see its own `runPostPullReexec` — but the
    INVOCATION path here should never depend on that.)
@@ -248,12 +248,12 @@ Modes:
    `.anti-hall-history.md` files into the new dated `.anti-hall/history/`
    structure (copy-only; the originals are never touched). A GSD `.planning/`
    tree is NOT folded by default and never automatically: only the explicit
-   `migrate-state.js --planning` copies it into
+   the Node backup's `migrate-state.js --planning` copies it into
    `.anti-hall/history/legacy/planning/`, copy-only, and it skips git-tracked
    `.planning/`, linked/child worktrees and submodules. If `doctor` reports
    moved `.planning/` files (damage from the pre-0.108.5 automatic fold),
    restore them with the printed `git -C <worktree> checkout -- .planning`, or
-   the opt-in `migrate-state.js --restore-planning --dir <worktree>`. Owner
+   the opt-in Node backup's `migrate-state.js --restore-planning --dir <worktree>`. Owner
    decision (2026-07-03): `.anti-hall/` is the intended destination for
    progress/handover state across all projects going forward.
 7. Run the capability scan (`"$HOME/.anti-hall/ah-engine/bin/ah-engine" capability-scan`)

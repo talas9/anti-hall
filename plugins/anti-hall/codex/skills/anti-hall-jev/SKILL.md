@@ -74,13 +74,13 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
 - Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
   `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
-  `jev-setup.js set-key --transport <vendor>` writing that vendor's key file, `~/.config/vercel/ai-gateway-key` or
+  `ah-engine jev-setup set-key --transport <vendor>` writing that vendor's key file, `~/.config/vercel/ai-gateway-key` or
   `~/.config/typesafe/key`; `--role fallback` is an alias for the fallback vendor). The older generic `jev_api_key`
   (and an explicit `jev.keyFile`) still work but are bound to ONE vendor: the home-only setting
   `jev.genericKeyVendor` (default vercel; never `jev.transport`, never env or `/config`); for any other vendor they
   are refused with a "jev_api_key is bound to X; set jev_<Y>_api_key" diagnostic. `enable --transport V` warns when
   V has no key of its own and the generic key is bound elsewhere, and never re-binds. Re-bind deliberately with
-  `jev-setup.js bind-generic-key --vendor <v>`. So neither a transport change nor an env/plugin-option flip can
+  `ah-engine jev-setup bind-generic-key --vendor <v>`. So neither a transport change nor an env/plugin-option flip can
   redirect a key.
 - `status` shows both transports and whether a key is visible for each (yes/no only); `test` tests each
   transport on its own.
@@ -134,7 +134,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   confidence ≥0.85 on a 30-day, 3-project offline benchmark, see CHANGELOG 0.108.4;
   `postHandoverGate` (advisory: does a new request fit in the remaining
   post-handover context budget, asked fire-and-forget from the shared
-  `auto-handover.js` while the post-handover gate is armed) defaults `off` —
+  `auto-handover` while the post-handover gate is armed) defaults `off` —
   an offline benchmark (n=299) found park-recall 17.6% vs 28.8% for the
   agent's own size judgment plus the measured budget backstop, no gain over
   that baseline;
@@ -155,7 +155,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
   `docs/KB-jev-classifier.md` §10. Neither platform has a per-integration `/config` row (Claude
   Code's panel carries only the headline switches; Codex has none) — use
-  `settings.js show --section jevIntegrations` or the `anti-hall-settings` skill.
+  `ah-engine settings show --section jevIntegrations` or the `anti-hall-settings` skill.
   **Claude/Codex parity**: `speculation`, `triage`, `claimLedger`, `mergeGateHedge`,
   `newRequest`, `gitGuardSelfCredit`, `parentGateQuestion`, `tasklistTrivial` run on
   BOTH platforms (their backing hooks are registered in this port's own
@@ -308,4 +308,4 @@ Text sent to the gateway (prompt, last assistant message, commit/PR text, test o
 ## Never
 
 Never print/log/commit the key. Never guess the provider. Never store the key
-anywhere but the resolved key file (Codex has no plugin options: enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json`, with `settings.js set … --confirmed`, for the key file to be read) (the file the jev-setup script's set-key command writes).
+anywhere but the resolved key file (Codex has no plugin options: enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json`, with `ah-engine settings set … --confirmed`, for the key file to be read) (the file the jev-setup script's set-key command writes).

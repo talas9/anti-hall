@@ -230,7 +230,7 @@ Codex is unavailable. The Reviewer uses `model: "sonnet"` (Sonnet) at effort
 which case it tries Fable first. See `references/ship-it.workflow.js`
 for the canonical spawn. *Fable routing is RE-ENABLED (2026-07-12, owner call): the
 earlier policy-disable (2026-07-02, over-restrictive/refusal-prone reports) is reversed
-now that Fable is available. When `fable-availability.js` detects Fable is available
+now that Fable is available. When `fable-availability` detects Fable is available
 and threads `args.fableAvailable=true`, the Reviewer seat tries `model: "fable"` FIRST,
 falling back to Sonnet then Opus if Fable returns null/falsy. Revisit if Fable's track
 record regresses.*

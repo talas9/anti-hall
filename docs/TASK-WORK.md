@@ -67,7 +67,7 @@ and `TaskGet` read back. Designed for long, multi-session, multi-subagent work.
   incident: a Primary faked a dependency purely to silence the nag). Mark it
   with `metadata.blockedOn: 'owner'` (`'user'`/`'human'`/`'external'` also recognized,
   case-insensitive), or give the subject an `"OWNER:"` / `"OWNER DECISION"`
-  prefix (case-insensitive). `task-guard.js`'s IDLE NEGLECT check
+  prefix (case-insensitive). `task-guard`'s IDLE NEGLECT check
   (`isOwnerBlocked()`) treats either as non-dispatchable — it is excluded
   from the ACTIONABLE-NOW set and never nagged, without needing a fabricated
   blocker. The generic "open tasks remain" nudge also leaves out marked tasks

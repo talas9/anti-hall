@@ -251,7 +251,7 @@ turn-ending Stop point (the fire-once or the natural-pause nag in
 `auto-handover-pause-nag`), once this session's `HANDOVER*.md` exists and
 is fresh (no counted file-changing action — including subagent edits and Bash
 writes — happened after it was written; the same shared detector
-`tasklist-guard.js` uses), the directive tells the agent to END its
+`tasklist-guard` uses), the directive tells the agent to END its
 reply with one prominent, glyph-led line naming the exact command: `🟢 **GOOD POINT
 TO /compact NOW**: handover saved at <path>. /compact keeps working on the same
 task; /clear if the next task is different.` — or, when the handover's own "Open
@@ -310,14 +310,14 @@ a transcript estimate (`ANTIHALL_CONTEXT_WINDOW_TOKENS` overrides the window siz
 estimate with an unknown window gets only a soft advisory from the percent path (the
 token ceiling still fires the directive). If a long autonomous turn never reaches a
 new prompt, the Stop hook delivers the directive once instead. Before every compaction
-`precompact-snapshot.js` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
+`precompact-snapshot` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
 next to the handovers (it never blocks compaction). Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 ## Engine settings (`ah-engine`)
 
 The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honoured by the engine and by the Node hooks alike, so
 `set` works the same with or without the engine. The engine's own tunables (limits, texts, rules, dispatch rows, `telemetry.enabled`,
-`telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `settings.js` keys: they are plain files in the plugin's
+`telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `ah-engine settings` keys: they are plain files in the plugin's
 `engine/` directory plus the engine's `config.toml`. Show them with `ah-engine config --json` (each value with its source),
 validate an edit with `ah-engine config validate <file>`, restore a missing key with `ah-engine config heal`. A bad edit falls back
 to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. The automatic

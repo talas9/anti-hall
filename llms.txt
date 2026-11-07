@@ -19,7 +19,7 @@ is in [CHANGELOG.md](https://github.com/talas9/anti-hall/blob/main/CHANGELOG.md)
 
 ## Install
 
-Prerequisite: Node.js >= 22 on PATH (hooks silently no-op without it; Windows is not supported).
+No Node.js needed; the plugin fetches the sha256-pinned engine (setup skill, or the opt-in `engine.bootstrap`). macOS and Linux only (Windows is not supported).
 
 ```
 /plugin marketplace add talas9/anti-hall
@@ -81,7 +81,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | Event (matcher) | Hook | What it does | Codex | Switch |
 |---|---|---|---|---|
 | SessionStart | verify-first-full | Injects the verify-first foundation: Iron Law, rationalization table, positive rules, scope & fidelity, output-presentation rule K. | ✓ | context.verifyFirstSession |
-| SessionStart | verify-first-orch | Injects the orchestration ruleset (rules A–N, DevSwarm-Primary rule W) inline by default; experimental `context.orchFullOn=spawn` sends compact lines plus a per-session marker instead and orch-on-spawn.js delivers the full text on the first spawn. | ✓ | context.verifyFirstOrchestration |
+| SessionStart | verify-first-orch | Injects the orchestration ruleset (rules A–N, DevSwarm-Primary rule W) inline by default; experimental `context.orchFullOn=spawn` sends compact lines plus a per-session marker instead and the `orch-on-spawn` logic script (`plugins/anti-hall/engine/logic/`) delivers the full text on the first spawn. | ✓ | context.verifyFirstOrchestration |
 | PreToolUse (Agent\|Task\|Workflow) | orch-on-spawn | Experimental, opt-in (`context.orchFullOn=spawn`, unverified live): sends the full orchestration rules once per context epoch on the coordinator's first spawn (Claude Code only); silent by default. | — | context.verifyFirstOrchestration |
 | SessionStart | version-alert | Tells the user when anti-hall is behind: remote newer → update then reload; plugin-cache mirror newer → reload only. Once per session; 2 h detached refresh. | ✓ | `ANTIHALL_VERSION_ALERT=off` |
 | SessionStart | claude-cli-version | Flags Claude Code CLI drift from the version anti-hall's harness KB was verified against. | ✓ | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT=off` |
@@ -96,7 +96,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | SessionStart | jev-weekly-scorecard | Jev enabled only: once a week names one integration worth promoting (KEEP) or turning off (REMOVE). | ✓ | jev.weeklyNotice |
 | SessionStart | jev-review-reminder | Jev enabled only: durable "time to review the Jev shadow numbers" nudge once a shadow integration has run `jev.reviewAfterDays` with `jev.reviewMinDecisions` decisions logged; also the bold "Recommended: enable Jev" notice while Jev is OFF (`jev.recommendNotice`, once, then at most every 30 days). | ✓ | jev.reviewReminder |
 | SessionStart | defect-nudge | Once-a-day count of open defect reports (counts only, never reporter text). | ✓ | context.defectNudge |
-| SessionStart + UserPromptSubmit | repair-on-reload | When any repair migration isn't stamped for the running version, spawns one detached `ah-engine doctor --repair --migrations-only --quiet` (data migrations only; never writes user config — the legacy migration copies into the project's `.anti-hall/history/legacy/` and never deletes or moves a repo file — the GSD `.planning/` fold is explicit-only, copy-only `migrate-state.js --planning`; lock-guarded; at most once an hour; newest 5 logs kept). | ✓ | maintenance.repairOnReload (`ANTIHALL_REPAIR_ON_RELOAD=off`) |
+| SessionStart + UserPromptSubmit | repair-on-reload | When any repair migration isn't stamped for the running version, spawns one detached `ah-engine doctor --repair --migrations-only --quiet` (data migrations only; never writes user config — the legacy migration copies into the project's `.anti-hall/history/legacy/` and never deletes or moves a repo file — the GSD `.planning/` fold is explicit-only, copy-only `migrate-state.js --planning` (Node backup, `plugins/anti-hall-node`); lock-guarded; at most once an hour; newest 5 logs kept). | ✓ | maintenance.repairOnReload (`ANTIHALL_REPAIR_ON_RELOAD=off`) |
 | UserPromptSubmit | verify-first | Short rotating one-line verify-first nudge. | ✓ | context.verifyFirstTurn |
 | UserPromptSubmit | task-tracker | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | context.taskTracker |
 | UserPromptSubmit | idle-agent-sweep | Advisory (never blocks), once per user prompt: lists agents that finished but were never stopped (Claude named teammates whose last report has idleReason available/failed, with no later SendMessage or TaskStop; Codex multi_agent_v1 agents completed/errored in wait_agent and never closed), oldest first, up to 10 names, with the exact `TaskStop` / `close_agent` call. Fires at ≥ 3 idle or any idle ≥ 15 min. | ✓ | guards.idleAgentSweep, guards.idleAgentSweepCount (3), guards.idleAgentSweepMin (15) |
@@ -143,7 +143,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | PreCompact | precompact-snapshot | Before every compaction writes a mechanical `PRECOMPACT-<n>.md` (git state, task list, last 10 user messages, newest handover pointer); never blocks. A "since the last handover" delta is planned, not shipped. | ✓ | maintenance.precompactSnapshot |
 | SessionEnd | session-end-mcp-reaper | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | maintenance.sessionEndReaper (`ANTIHALL_SESSION_END_REAPER=0`) |
 
-Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `skip-guard.js`,
+Shared libraries (historical, Node era; no Node hook ships and each is now an engine check or module; the original files are the Node backup in `plugins/anti-hall-node/`): `verify-first-core.js`, `coordinator-detect.js`, `skip-guard.js`,
 `omc-detect.js`, `limit-conserve.js`; `hooks/lib/`: `settings.js` + `settings-schema.js`
 (the settings store), `context-pct.js` + `context-pct-store.js` (context %),
 `auto-handover-config.js`/`-state.js`, `jev-client.js`/`jev-assist.js`/`jev-triage.js`,
@@ -179,7 +179,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | Codex skill | Claude counterpart / purpose |
 |---|---|
 | anti-hall-activate | activate |
-| anti-hall-context-conserve | no Claude skill — Codex form of limit conservation (`limit-conserve-inject.js`) |
+| anti-hall-context-conserve | no Claude skill — Codex form of limit conservation (`limit-conserve-inject.js`, a Node-era script kept only in the Node backup, `plugins/anti-hall-node/`) |
 | anti-hall-deadly-loop | deadly-loop |
 | anti-hall-debt | debt |
 | anti-hall-defects | defects |
@@ -316,7 +316,7 @@ Dormant unless in a DevSwarm session (`DEVSWARM_REPO_ID`) or an opt-in companion
 installed. Primary and children talk only through the per-project mesh store via
 `ah-engine mesh` (native hivecontrol messaging and `SendMessage` to workspaces are
 blocked). Recovery is layered and never auto-kills: child self-report → supervisor poke →
-escalate to the parent; only `devswarm-recover.js` kills. The DevSwarm desktop app's own
+escalate to the parent; only `ah-engine devswarm recover` kills. The DevSwarm desktop app's own
 SQLite DB is read (read-only, never message bodies or credentials) as the ground truth for
 open/archived state, titles, sidebar order, PRs and session identity. Every DevSwarm
 surface passes the capability gate (`devswarm-capabilities`: minimum
@@ -334,5 +334,5 @@ message bodies to gzip, then prunes them. Full reference:
 - [plugins/anti-hall/.codex-plugin/plugin.json](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/.codex-plugin/plugin.json): the Codex manifest, bumped together with the Claude one.
 - [.claude-plugin/marketplace.json](https://github.com/talas9/anti-hall/blob/main/.claude-plugin/marketplace.json): the marketplace entry (carries no version).
 - [tests/](https://github.com/talas9/anti-hall/tree/main/tests/): zero-dependency `node --test`; v0.108.0 end-to-end scenarios in `tests/e2e/v0108/`.
-- [.github/workflows/test.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/test.yml): CI: full sharded matrix (ubuntu + macOS x Node 22/24) on `rc-v*` tags, a reduced matrix on pull requests (the `dev` → `main` pull request is the merge gate) and on `main`; pushes to `dev` and `v*` tags do not trigger it.
+- [.github/workflows/ah-engine.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/ah-engine.yml): CI for the engine and the thin client: build and tests on ubuntu-latest and macos-latest, on pull requests, pushes to `dev` and `main`, `v*` tags, plus a nightly full-suite schedule (the `dev` → `main` pull request is the merge gate). The Node `tests/` suite is the legacy suite of the Node era.
 - [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): bump both manifests + CHANGELOG on `dev`, pull request `dev` → `main`, tag, GitHub Release.

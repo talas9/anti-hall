@@ -1,17 +1,17 @@
 # ah-engine
 
 `ah-engine` is anti-hall's core component: a small resident program that answers the hooks instead of a new Node process for every
-tool call. The Node hooks are a temporary compatibility fallback during the migration; v0.301 removes them and the engine is then the only runtime. This page explains what it is, why it exists, what works today and what is not built yet. Anything not built
+tool call. As of release 0.301.1 the engine is the only runtime: the Node hooks are gone. This page explains what it is, why it exists, what works today and what is not built yet. Anything not built
 is marked **planned** with the number of its decision, for example planned (D33) for the scheduler; each number is an entry
 in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
 The exact list of commands, settings, metrics and error codes is generated from the engine itself and lives in
 [`ah-engine/REFERENCE.md`](../ah-engine/REFERENCE.md).
 
-**Status: being brought back online (release v0.300.3); see the [roadmap](ROADMAP.md). The plugin installs it itself once a release pins it.** The plugin's hooks are one thin trigger
+**Status: shipped in release 0.301.1 (engine only, no Node hooks); see the [roadmap](ROADMAP.md). The plugin fetches the sha256-pinned engine itself on first use.** The plugin's hooks are one thin trigger
 per event: `hooks.json` runs the Rust thin client `~/.anti-hall/ah-engine/bin/ah-hook <Event>`, which asks the engine. The
 thin client is the only entry point, for hooks of both hosts and for every command (`ah-hook <verb>` runs `ah-engine <verb>`).
-No Node and no shell script runs on an entry path; when the engine is absent or cannot answer, the call passes through with one
-notice per session. The binaries are installed by the plugin's one shell file, `hooks/install.sh`, and checked against a sha256
+No Node and no shell script runs on an entry path; when the engine is absent or unreachable, the call passes through with one
+notice per session (a daemon that answers with an error or no verdict is resolved by `dispatch.failure_mode`, see the Client bullet) (the manual `ah-engine fallback node` switch can hand calls to the Node backup in `plugins/anti-hall-node/`). The binaries are installed by the plugin's one shell file, `hooks/install.sh`, and checked against a sha256
 pinned in the plugin ([Install, go-live and rollback](#install-go-live-and-rollback)).
 Supported platforms: macOS and Linux (including WSL, which runs the Linux build). Windows is not supported yet.
 
@@ -29,7 +29,7 @@ labelled with how it was measured in the README of `ah-engine/`.
  host (Claude Code / Codex)
    |  hook JSON on stdin
    v
- ah-engine hook  --fallback <node hook>          (client, ~2 MB, ~2 ms)
+ ah-hook <Event>                                 (thin client, ~2 MB, ~2 ms)
    |  one framed request over a unix socket, hard 2 s budget
    v
  ah-engine serve                                 (daemon, one per user, ~5 MB)
@@ -41,14 +41,20 @@ labelled with how it was measured in the README of `ah-engine/`.
    `-- storage                  hot.db + archive.db (SQLite, bundled), one writer thread
 ```
 
-- **Client.** Reads the hook payload, asks the daemon, prints the answer. If anything is wrong (no daemon, busy, timeout,
-  damaged reply, open breaker, crash loop) it runs the Node hook named by `--fallback` and passes its output and exit
-  code through. It only allows silently when that Node hook is also unavailable (D11).
+- **Client.** Reads the hook payload, asks the daemon, prints the answer. If the engine is unreachable (no daemon, open
+  breaker, crash loop) the call exits 0 without a block, prints an environment advisory when one was recorded, and one notice
+  per session says the engine did not answer. If the daemon answered with a non-OK reply (busy, error, damaged) or no
+  verdict, a guarded event is resolved by `dispatch.failure_mode.infra` (`closed` by default, so it blocks with exit 2);
+  other events exit 0. Stdin the client cannot safely forward (invalid UTF-8, over the read cap) on a guarded or unknown
+  event is refused with exit 2; a stdin read error fails open. No Node hook ships in the
+  plugin, but the manual switch `ah-engine fallback node` hands calls to the Node backup kept in `plugins/anti-hall-node/`
+  (see "The Node backup: shadow and fallback switch"; D11 describes the earlier automatic fallback design).
 - **Daemon.** One per user, started by the first client that finds none (D5, D6). It stays up after the last session
   closes (D7): idle exit exists as the setting `daemon.idle_exit_s`, default 0 meaning disabled. A newer client gets its
   answer, then the old daemon drains and exits so the next call starts the new build (D8).
 - **Rules.** `rules.json`, evaluated in file order; every match contributes and any `deny` wins. A rule may name a built-in
   check instead of a pattern.
+- **Historical note (migration era).** The bullets below and the status table further down record how each check was ported from its Node original and speak of Node deferrals and byte parity. Those Node hooks no longer ship (release 0.301.1); read them as design history, not as current behavior.
 - **Small guard ports.** `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
   `compact-declaration-guard` are the five small guards ported from Node. They share `checks/guardkit`: the switch and
   skip-file lookup, the message layout, JavaScript-exact regex translation and the per-session state files the Node guards
@@ -437,12 +443,18 @@ entries). A check that cannot reproduce Node exactly defers (exit 75 from the en
 | a bad engine build | copy `bin/ah-engine.prev` back over `bin/ah-engine`; the bootstrap then leaves it alone (its sha256 no longer matches the install marker), so the rollback sticks until you remove the binary or the lock changes |
 | a bad plugin edit of the engine files | nothing to do: the layered failover below falls back by itself |
 
-Whatever the engine cannot do, the Node hooks do; Node is the permanent floor.
+Whatever the engine cannot do, the Node hooks did; that was the migration-era design. Since release 0.301.1 no Node hook ships
+in the plugin; the backup is kept outside it (`plugins/anti-hall-node/`) and runs only when you switch it on with
+`ah-engine fallback node` (see "The Node backup: shadow and fallback switch").
 
 ## What still runs on Node
 
-The engine does not replace Node yet; it answers what it can prove identical and leaves the rest. Honest list of what stays
-on Node today (each is a deferral, so Node's answer is the one the host sees):
+**Historical (migration era).** This section and its table describe the deferrals of the staged migration, kept for the record. The
+dispatcher now has a standing guarantee that no production deferral reaches a Node start (`src/dispatch/mod.rs`, test
+`no_shipped_entry_can_defer_to_a_node_hook_that_is_not_launched`); read the rows below as what used to stay on Node, not as the current runtime.
+
+The engine did not replace Node at first; it answered what it could prove identical and left the rest. The list of what stayed
+on Node then (each was a deferral, so Node's answer was the one the host saw):
 
 | Stays on Node | Why |
 |---|---|
@@ -1867,7 +1879,7 @@ The original Node hooks are kept as a backup outside the published plugin, in st
 
 **Where the Node backup lives.** The original Node code is not part of the published plugin: it was moved (with its relative paths) to `plugins/anti-hall-node/`, a sibling of `plugins/anti-hall`, so the plugin directory limits hold (`sh ah-engine/tests/plugin-dir-limits.sh`, limits in `ah-engine/tests/plugin-dir-limits.toml`). `nodeback.node_dir` (default `../anti-hall-node`, relative to the plugin root) names it; the dispatch commands and the generated `ah-fallback.*` lists point at `${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/...`. When the directory is missing the shadow is skipped and counted (`shadow` / `skip_no_node`) and the fallback switch is a logged no-op: the engine keeps deciding, nothing blocks.
 
-**Stage 2, the fallback switch.** `ah-engine fallback node` writes the marker file `fallback.node` in the state directory; while it exists the thin client `ah-hook` hands the call to the Node backup, which runs the original Node hooks directly instead of the engine and writes their verdicts to the ledger with source `node`. `ah-engine fallback off` removes it and `ah-engine fallback status` shows it (`nodeback.fallback` is the shipped default; the marker overrides it). The switch never flips by itself. If the engine is unreachable and the switch is off, the call still passes through with one notice.
+**Stage 2, the fallback switch.** `ah-engine fallback node` writes the marker file `fallback.node` in the state directory; while it exists the thin client `ah-hook` hands the call to the Node backup, which runs the original Node hooks directly instead of the engine and writes their verdicts to the ledger with source `node`. `ah-engine fallback off` removes it and `ah-engine fallback status` shows it (`nodeback.fallback` is the shipped default; the marker overrides it). The switch never flips by itself. If the engine is unreachable and the switch is off, the call still passes through with one notice (an unreachable engine only; see the Client bullet for a daemon that answers badly).
 
 ## Retiring the Node path
 

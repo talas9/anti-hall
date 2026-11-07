@@ -43,7 +43,7 @@ version-pinned cache mirror (Codex's clone-based distribution has no such
 mirror step). Never hardcode a different, potentially-stale root here (see
 the Claude-side SKILL.md's own note on the P0 field bug this parallels:
 `${CLAUDE_PLUGIN_ROOT}` there resolves to a cache dir that can lag the
-freshly-pulled marketplace clone). `update.js` itself also re-execs the
+freshly-pulled marketplace clone). `ah-engine update` itself also re-execs the
 freshly-pulled version's own copy internally as a second line of defense.
 
 For Codex, also re-run the Codex hook installer after a successful update:
@@ -62,11 +62,11 @@ Do not force-pull, rebase, or delete plugin cache directories. If the update hel
 
 ## DevSwarm ingest daemon durability (auto-heal, gated, fail-open)
 
-`install-devswarm-ingest.js`'s daemon unit used to bake an install-time script path
+the `ah-engine units install` daemon unit used to bake an install-time script path
 (`__dirname`) that could go stale across a plugin update — the plugin manager relocating
 the version-pinned cache dir the daemon was baked from, orphaning/crash-looping the
 daemon. The installer now bakes the **git marketplace clone's own copy** of
-`devswarm-ingest.js` (the exact path the update helper above just `git pull --ff-only`ed
+the engine ingest duty (the exact path the update helper above just `git pull --ff-only`ed
 **in place**), so a fresh install never goes stale again.
 
 The update helper (`ah-engine update`) ALSO attempts to heal an already-installed daemon
@@ -123,7 +123,7 @@ its per-row drains — `ANTIHALL_RECONCILE_BUDGET_MS` (default `60000`; `0` = un
 `--budget-ms` on a direct CLI call — so a large stranded backlog can no longer hang `update`
 indefinitely (defect f3c1bc827d89). A row whose worktree no longer exists on disk is skipped
 before it costs any budget; whatever is still deferred when the budget runs out is written to
-a resume marker and drained FIRST on the next sweep. Separately, `update.js`'s stdout contract
+a resume marker and drained FIRST on the next sweep. Separately, `ah-engine update`'s stdout contract
 (the JSON status line + human summary) is unchanged, but it now also prints a `[update]
 <stage> start` / `done <ms>ms` line to **stderr** around each post-update stage so a slow
 stage is visible while it runs; `ANTIHALL_UPDATE_QUIET=1` suppresses these lines.
@@ -151,7 +151,7 @@ After a successful update, also run the capability scan to find what's missing o
 ```
 
 Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js` and pending state migrations) as `{name, available, active, how}`. The retired statusline installer is intentionally not an enableable capability. Present a concise available-vs-active summary:
-- `state-migrations` at `active: false` — run `~/.anti-hall/ah-engine/bin/ah-engine migrate` (idempotent, safe to re-run) to fold it, same as the Claude-side update flow. It never folds or moves `.planning/`: the GSD fold is the explicit, copy-only `migrate-state.js --planning` (skips git-tracked `.planning/`, linked/child worktrees and submodules). If `doctor` reports moved `.planning/` files (pre-0.108.5 damage), restore with the printed `git -C <worktree> checkout -- .planning` or the opt-in `migrate-state.js --restore-planning --dir <worktree>`.
+- `state-migrations` at `active: false` — run `~/.anti-hall/ah-engine/bin/ah-engine migrate` (idempotent, safe to re-run) to fold it, same as the Claude-side update flow. It never folds or moves `.planning/`: the GSD fold is the explicit, copy-only Node backup `migrate-state.js --planning` (`plugins/anti-hall-node/`; no `ah-engine` verb for the GSD fold was verified) (skips git-tracked `.planning/`, linked/child worktrees and submodules). If `doctor` reports moved `.planning/` files (pre-0.108.5 damage), restore with the printed `git -C <worktree> checkout -- .planning` or the opt-in Node backup's `migrate-state.js --restore-planning --dir <worktree>`.
 - **DevSwarm liveness supervisor** — **autonomously install-or-refresh it
   whenever this update is running inside a DevSwarm session, no offer, no
   ask.** Check `devswarm-detect`'s `isDevswarmActive(process.env)` — true only
