@@ -1260,8 +1260,10 @@ fn finish_span(sh: &Shared, delivered: bool, late: bool) {
         let ev = [("event", sum.event.as_str())];
         m.inc("span_recorded", &ev);
         m.observe("span_gap_us", &ev, sum.gap_us);
-        for (k, us) in &sum.host {
-            m.observe("span_host_us", &[("kind", crate::obs::spans::kind_name(*k))], *us);
+        for (k, us, cpu) in &sum.host {
+            let kind = [("kind", crate::obs::spans::kind_name(*k))];
+            m.observe("span_host_us", &kind, *us);
+            m.observe("span_host_wait_us", &kind, us.saturating_sub(*cpu));
         }
         if sum.pushed.slow_added {
             m.inc("span_slow", &ev);

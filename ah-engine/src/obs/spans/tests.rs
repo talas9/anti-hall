@@ -4,7 +4,7 @@ use super::*;
 use std::time::Duration;
 
 fn lim() -> Limits {
-    Limits { ring_max: 1000, ring_max_bytes: 1 << 30, slow_keep: 3, slow_min_us: 0 }
+    Limits { ring_max: 1000, ring_max_bytes: 1 << 30, slow_keep: 3, slow_max_bytes: 1 << 30, slow_min_us: 0 }
 }
 
 /// A request of event `ev` with the given checks, each sleeping `ms` and ending with `reason`.
@@ -73,16 +73,16 @@ fn host_time_is_booked_to_the_running_check_by_kind() {
     set_event_in("T4", "s", &["T4"]);
     begin_check("c1", "spans.phase_select");
     assert!(timing());
-    note_host(0, 700);
-    note_host(0, 300);
-    note_host(2, 50);
+    note_host(0, 700, 600);
+    note_host(0, 300, 0);
+    note_host(2, 50, 50);
     end_check("block", "");
     assert!(!timing(), "no timing between checks");
     end_checks("spans.phase_post_checks");
     let s = finish_with("spans.phase_finish", "spans.outcome_cut", true, lim()).unwrap();
-    assert_eq!(s.host, vec![(0, 1000), (2, 50)]);
+    assert_eq!(s.host, vec![(0, 1000, 600), (2, 50, 50)]);
     let r = find("T4");
-    assert_eq!(r["checks"][0]["host"][kind_name(0)], json!({"us": 1000, "calls": 2}));
+    assert_eq!(r["checks"][0]["host"][kind_name(0)], json!({"us": 1000, "cpu_us": 600, "wait_us": 400, "calls": 2}));
     assert_eq!(r["checks"][0]["decision"], "block");
     assert_eq!(r["outcome"], defaults::text("spans.outcome_cut"));
     assert_eq!(r["late"], true);
@@ -90,7 +90,7 @@ fn host_time_is_booked_to_the_running_check_by_kind() {
 
 #[test]
 fn the_ring_never_holds_more_than_its_bounds() {
-    let tight = Limits { ring_max: 4, ring_max_bytes: 1 << 30, slow_keep: 0, slow_min_us: 0 };
+    let tight = Limits { ring_max: 4, ring_max_bytes: 1 << 30, slow_keep: 0, slow_max_bytes: 1 << 30, slow_min_us: 0 };
     let mut evicted = 0;
     for _ in 0..10 {
         begin_if(true, Instant::now(), Duration::ZERO);
@@ -103,7 +103,7 @@ fn the_ring_never_holds_more_than_its_bounds() {
     let held = RING.lock().unwrap().recent.len();
     assert!(held <= 4, "ring_max enforced, held {held}");
     assert!(evicted >= 6, "evictions are reported: {evicted}");
-    let bytes_cap = Limits { ring_max: 1000, ring_max_bytes: 1, slow_keep: 0, slow_min_us: 0 };
+    let bytes_cap = Limits { ring_max: 1000, ring_max_bytes: 1, slow_keep: 0, slow_max_bytes: 1 << 30, slow_min_us: 0 };
     begin_if(true, Instant::now(), Duration::ZERO);
     set_event_in("T5", "s", &["T5"]);
     finish_with("spans.phase_finish", "spans.outcome_delivered", false, bytes_cap).unwrap();
@@ -114,7 +114,7 @@ fn the_ring_never_holds_more_than_its_bounds() {
 
 #[test]
 fn the_slow_list_keeps_the_slowest_and_is_bounded() {
-    let l = Limits { ring_max: 1, ring_max_bytes: 1 << 30, slow_keep: 2, slow_min_us: 0 };
+    let l = Limits { ring_max: 1, ring_max_bytes: 1 << 30, slow_keep: 2, slow_max_bytes: 1 << 30, slow_min_us: 0 };
     for ms in [1u64, 6, 3, 9] {
         begin_if(true, Instant::now(), Duration::ZERO);
         set_event_in("T6", "s", &["T6"]);
@@ -141,16 +141,65 @@ fn disabled_records_nothing_and_an_unlisted_event_is_not_kept() {
 }
 
 #[test]
-fn kinds_resolve_by_longest_prefix_and_unlisted_names_are_not_timed() {
+fn kinds_resolve_by_exact_name_and_unlisted_names_are_not_timed() {
     let name = |n: &str| kind_of(n).map(kind_name);
     assert_eq!(name("stateRead"), Some("store"));
     assert_eq!(name("meshUnion"), Some("mesh"));
-    assert_eq!(name("meshAppBuilders"), Some("sqlite"), "the longer prefix wins");
+    assert_eq!(name("meshAppBuilders"), Some("sqlite"));
     assert_eq!(name("jevAskSpec"), Some("jev"));
     assert_eq!(name("fileExec"), Some("exec"));
     assert_eq!(name("fileSize"), Some("fs"));
-    assert_eq!(name("pathJoin"), None);
+    assert_eq!(name("sleep"), Some("sleep"));
+    assert_eq!(name("sessionBlocks"), Some("store"));
+    assert_eq!(name("trackedAgents"), Some("transcript"));
+    // what a prefix table misfiled: `pid` is not `piPid`, the cheap Jev switches are not the classifier
+    assert_eq!((name("pid"), name("jevMode"), name("jevEnabled"), name("pathJoin")), (None, None, None, None));
     assert!(defaults::list("spans.kinds").len() <= 8);
+}
+
+#[test]
+fn a_check_waits_off_cpu_only_and_the_host_split_adds_up() {
+    begin_if(true, Instant::now(), Duration::ZERO);
+    set_event_in("T8", "s", &["T8"]);
+    begin_check("c", "spans.phase_select");
+    std::thread::sleep(Duration::from_millis(5));
+    note_host(0, 5000, 0); // slept inside a host call: all wait
+    end_check("allow", "");
+    end_checks("spans.phase_post_checks");
+    finish_with("spans.phase_finish", "spans.outcome_delivered", false, lim()).unwrap();
+    let c = &find("T8")["checks"][0];
+    assert!(c["wait_us"].as_u64().unwrap() >= 4500, "{c}");
+    assert_eq!(c["host_wait_us"], 5000);
+    assert_eq!(c["other_wait_us"].as_u64().unwrap(), c["wait_us"].as_u64().unwrap().saturating_sub(5000));
+    // a CPU-bound host call (cpu == wall) is no host wait, and the check's wait is not reduced by it
+    begin_if(true, Instant::now(), Duration::ZERO);
+    set_event_in("T8", "s", &["T8"]);
+    begin_check("d", "spans.phase_select");
+    note_host(5, 9000, 9000);
+    end_check("allow", "");
+    end_checks("spans.phase_post_checks");
+    finish_with("spans.phase_finish", "spans.outcome_delivered", false, lim()).unwrap();
+    let v = snapshot("n=200 event=T8");
+    let d = v["requests"].as_array().unwrap().iter().find(|r| r["checks"][0]["check"] == "d").unwrap()["checks"][0].clone();
+    assert_eq!(d["host_wait_us"], 0);
+}
+
+#[test]
+fn the_slow_list_obeys_its_byte_bound_and_an_unrecorded_event_is_not_hashed() {
+    let l = Limits { ring_max: 1, ring_max_bytes: 1 << 30, slow_keep: 50, slow_max_bytes: 1, slow_min_us: 0 };
+    for _ in 0..4 {
+        begin_if(true, Instant::now(), Duration::ZERO);
+        set_event_in("T9", "s", &["T9"]);
+        finish_with("spans.phase_finish", "spans.outcome_delivered", false, l).unwrap();
+    }
+    let r = RING.lock().unwrap();
+    assert!(!r.slow.is_empty(), "a byte bound keeps at least the slowest span");
+    assert_eq!(r.slow_bytes, r.slow.iter().map(Rec::bytes).sum::<usize>(), "the slow byte account matches what is held");
+    drop(r);
+    begin_if(true, Instant::now(), Duration::ZERO);
+    set_event_in("Other", "session-x", &["T9"]);
+    LIVE.with(|l| assert!(l.borrow().as_ref().unwrap().rec.session.is_empty(), "no hash for an event that is not recorded"));
+    finish_with("spans.phase_finish", "spans.outcome_delivered", false, lim());
 }
 
 #[test]
@@ -178,7 +227,7 @@ fn spans_overhead() {
             note_acquire(3);
             for k in 0..4u8 {
                 if timing() {
-                    note_host(k % 3, 5);
+                    note_host(k % 3, 5, 4);
                 }
             }
             end_check("allow", "");

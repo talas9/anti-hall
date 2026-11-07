@@ -3,12 +3,13 @@
 //! The histograms the daemon already keeps say how long requests take in aggregate, never which step of one slow request took it.
 //! A span is the answer for one request: the time before its first check (queue wait, then the named phases of `serve_conn` and
 //! `dispatch`: config snapshot, read, ack, context, parse, plan, table select), then for each check in the order it ran its wall
-//! time, thread CPU, script-pool acquire time, time inside host functions by kind (`spans.kinds`) and the reason it was cut or
-//! deferred, then the reply tail (post-check work, encode, settle, write). Wall minus CPU minus host time is the check's wait on
-//! something that is not the engine's CPU.
+//! time, thread CPU, script-pool acquire time, time inside host functions by kind (`spans.kinds`: wall and thread CPU, so a host call that
+//! computes reads as CPU and one that sleeps or blocks reads as wait) and the reason it was cut or deferred, then the reply tail
+//! (post-check work, encode, settle, write). Wall minus CPU is the check's wait (off-CPU time); host CPU is part of the check's CPU,
+//! host wait part of its wait, and nothing is subtracted twice.
 //!
 //! Recording is per request thread (a thread-local, no lock on the hot path); a finished span goes into a bounded ring of the recent
-//! requests (`spans.ring_max`, `spans.ring_max_bytes`) and, if slow, into a small slow list (`spans.slow_keep`) so a rare multi-second
+//! requests (`spans.ring_max`, `spans.ring_max_bytes`) and, if slow, into a small slow list (`spans.slow_keep`, `spans.slow_max_bytes`) so a rare multi-second
 //! request is not pushed out by the fast ones after it. The query side is [`snapshot`] (`CTL spans`, `query stop_spans`). Every number is
 //! a `spans.*` setting; `spans.enabled = 0` records nothing and times no host function. A session is shown only as its short hash.
 use crate::defaults;
@@ -27,6 +28,24 @@ enum Stage {
     Post,
 }
 
+/// Time a check spent in the host functions of one kind.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct HostRec {
+    /// Index of the kind in `spans.kinds`.
+    kind: u8,
+    wall_us: u64,
+    /// Thread CPU inside the calls (already part of the check's `cpu_us`).
+    cpu_us: u64,
+    calls: u32,
+}
+
+impl HostRec {
+    /// Off-CPU part of the calls: sleeping, blocked on I/O or a lock, preempted.
+    fn wait_us(&self) -> u64 {
+        self.wall_us.saturating_sub(self.cpu_us)
+    }
+}
+
 /// One check of a span.
 #[derive(Clone, Default)]
 pub struct CheckRec {
@@ -39,8 +58,8 @@ pub struct CheckRec {
     acquire_us: u64,
     decision: &'static str,
     reason: &'static str,
-    /// `(kind index in spans.kinds, microseconds in host functions of the kind, calls)`; kinds never called are absent.
-    host: Vec<(u8, u64, u32)>,
+    /// Time in host functions of one kind; kinds never called are absent.
+    host: Vec<HostRec>,
 }
 
 /// One finished span.
@@ -64,8 +83,7 @@ pub struct Rec {
 impl Rec {
     /// A rough byte size, for the ring's byte bound.
     fn bytes(&self) -> usize {
-        let checks: usize =
-            self.checks.iter().map(|c| std::mem::size_of::<CheckRec>() + c.check.len() + c.host.len() * std::mem::size_of::<(u8, u64, u32)>()).sum();
+        let checks: usize = self.checks.iter().map(|c| std::mem::size_of::<CheckRec>() + c.check.len() + c.host.len() * std::mem::size_of::<HostRec>()).sum();
         std::mem::size_of::<Rec>() + self.event.len() + self.session.len() + (self.pre.len() + self.post.len()) * std::mem::size_of::<(&str, u64)>() + checks
     }
     fn gap_us(&self) -> u64 {
@@ -82,6 +100,8 @@ pub struct Limits {
     pub ring_max_bytes: usize,
     /// Slowest spans kept apart.
     pub slow_keep: usize,
+    /// Estimated bytes the slow list may hold.
+    pub slow_max_bytes: usize,
     /// Request total from which a span is a slow-list candidate.
     pub slow_min_us: u64,
 }
@@ -92,6 +112,7 @@ impl Limits {
             ring_max: defaults::num("spans.ring_max") as usize,
             ring_max_bytes: defaults::num("spans.ring_max_bytes") as usize,
             slow_keep: defaults::num("spans.slow_keep") as usize,
+            slow_max_bytes: defaults::num("spans.slow_max_bytes") as usize,
             slow_min_us: defaults::num("spans.slow_min_us"),
         }
     }
@@ -102,9 +123,10 @@ struct Ring {
     recent: VecDeque<Rec>,
     bytes: usize,
     slow: Vec<Rec>,
+    slow_bytes: usize,
 }
 
-static RING: Mutex<Ring> = Mutex::new(Ring { recent: VecDeque::new(), bytes: 0, slow: Vec::new() });
+static RING: Mutex<Ring> = Mutex::new(Ring { recent: VecDeque::new(), bytes: 0, slow: Vec::new(), slow_bytes: 0 });
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// What pushing one span did to the ring (the daemon turns it into counters).
@@ -123,11 +145,13 @@ fn push(rec: Rec, lim: Limits) -> Pushed {
     let mut out = Pushed::default();
     let mut r = RING.lock().unwrap_or_else(|e| e.into_inner());
     if lim.slow_keep > 0 && rec.total_us >= lim.slow_min_us {
+        r.slow_bytes += rec.bytes();
         r.slow.push(rec.clone());
         out.slow_added = true;
-        while r.slow.len() > lim.slow_keep {
+        while r.slow.len() > lim.slow_keep || (r.slow_bytes > lim.slow_max_bytes && r.slow.len() > 1) {
             let fastest = r.slow.iter().enumerate().min_by_key(|(_, s)| s.total_us).map(|(i, _)| i).unwrap_or(0);
-            r.slow.swap_remove(fastest);
+            let gone = r.slow.swap_remove(fastest);
+            r.slow_bytes = r.slow_bytes.saturating_sub(gone.bytes());
             out.slow_evicted += 1;
         }
     }
@@ -212,8 +236,10 @@ fn set_event_in(event: &str, session: &str, want: &[&str]) {
     LIVE.with(|l| {
         if let Some(live) = l.borrow_mut().as_mut() {
             live.on = want.is_empty() || want.contains(&event);
-            live.rec.event = event.to_string();
-            live.rec.session = crate::telemetry::project_hash(session);
+            if live.on {
+                live.rec.event = event.to_string();
+                live.rec.session = crate::telemetry::project_hash(session);
+            }
         }
     });
 }
@@ -263,16 +289,17 @@ pub fn note_acquire(us: u64) {
     });
 }
 
-/// A host function of kind index `kind` took `us`.
-pub fn note_host(kind: u8, us: u64) {
+/// A host function of kind index `kind` took `wall_us` of wall time, of which `cpu_us` was this thread's CPU.
+pub fn note_host(kind: u8, wall_us: u64, cpu_us: u64) {
     LIVE.with(|l| {
         if let Some(c) = l.borrow_mut().as_mut().and_then(|x| x.cur.as_mut()) {
-            match c.host.iter_mut().find(|h| h.0 == kind) {
+            match c.host.iter_mut().find(|h| h.kind == kind) {
                 Some(h) => {
-                    h.1 += us;
-                    h.2 += 1;
+                    h.wall_us += wall_us;
+                    h.cpu_us += cpu_us;
+                    h.calls += 1;
                 }
-                None => c.host.push((kind, us, 1)),
+                None => c.host.push(HostRec { kind, wall_us, cpu_us, calls: 1 }),
             }
         }
     });
@@ -325,8 +352,8 @@ pub struct Summary {
     pub event: String,
     /// Queue wait plus the pre-check phases.
     pub gap_us: u64,
-    /// `(kind index, microseconds)` summed over the checks.
-    pub host: Vec<(u8, u64)>,
+    /// `(kind index, wall microseconds, CPU microseconds)` summed over the checks.
+    pub host: Vec<(u8, u64, u64)>,
     /// What the ring did.
     pub pushed: Pushed,
 }
@@ -353,12 +380,15 @@ fn finish_with(tail: &'static str, outcome: &'static str, late: bool, lim: Limit
     rec.outcome = outcome;
     rec.late = late;
     rec.seq = SEQ.fetch_add(1, Relaxed) + 1;
-    let mut host: Vec<(u8, u64)> = Vec::new();
+    let mut host: Vec<(u8, u64, u64)> = Vec::new();
     for c in &rec.checks {
-        for (k, us, _) in &c.host {
-            match host.iter_mut().find(|h| h.0 == *k) {
-                Some(h) => h.1 += us,
-                None => host.push((*k, *us)),
+        for h in &c.host {
+            match host.iter_mut().find(|x| x.0 == h.kind) {
+                Some(x) => {
+                    x.1 += h.wall_us;
+                    x.2 += h.cpu_us;
+                }
+                None => host.push((h.kind, h.wall_us, h.cpu_us)),
             }
         }
     }
@@ -372,19 +402,12 @@ pub fn kind_name(k: u8) -> &'static str {
     defaults::list("spans.kinds").get(k as usize).copied().unwrap_or_default()
 }
 
-/// The kind index of host function `name`: the entry of `spans.kind_prefixes` with the longest prefix of the name.
+/// The kind index of host function `name`: the kind whose `spans.kind_functions` entry lists it (exact name; a function no kind lists
+/// is not timed).
 pub fn kind_of(name: &str) -> Option<u8> {
     let kinds = defaults::list("spans.kinds");
-    let table = defaults::raw("spans.kind_prefixes");
-    let mut best: Option<(usize, u8)> = None;
-    for (i, kind) in kinds.iter().enumerate() {
-        for p in table.get(kind).map(|v| v.strings()).unwrap_or_default() {
-            if name.starts_with(p) && best.is_none_or(|(len, _)| p.len() > len) {
-                best = Some((p.len(), i as u8));
-            }
-        }
-    }
-    best.map(|b| b.1)
+    let table = defaults::raw("spans.kind_functions");
+    kinds.iter().position(|kind| table.get(kind).map(|v| v.strings()).unwrap_or_default().contains(&name)).map(|i| i as u8)
 }
 
 /// The label of a phase key (`spans.phase_*`); a key the defaults do not know shows as itself.
@@ -397,12 +420,17 @@ fn phases_json(v: &[(&'static str, u64)]) -> Value {
 }
 
 fn check_json(c: &CheckRec) -> Value {
-    let host: serde_json::Map<String, Value> = c.host.iter().map(|(k, us, n)| (kind_name(*k).to_string(), json!({"us": us, "calls": n}))).collect();
-    let host_us: u64 = c.host.iter().map(|h| h.1).sum();
+    let host: serde_json::Map<String, Value> = c
+        .host
+        .iter()
+        .map(|h| (kind_name(h.kind).to_string(), json!({"us": h.wall_us, "cpu_us": h.cpu_us, "wait_us": h.wait_us(), "calls": h.calls})))
+        .collect();
+    let host_wait: u64 = c.host.iter().map(HostRec::wait_us).sum();
+    let wait = c.wall_us.saturating_sub(c.cpu_us);
     json!({
-        "check": c.check, "start_us": c.start_us, "wall_us": c.wall_us, "cpu_us": c.cpu_us,
-        "off_cpu_us": c.wall_us.saturating_sub(c.cpu_us), "acquire_us": c.acquire_us,
-        "wait_us": c.wall_us.saturating_sub(c.cpu_us).saturating_sub(host_us),
+        "check": c.check, "start_us": c.start_us, "wall_us": c.wall_us, "cpu_us": c.cpu_us, "acquire_us": c.acquire_us,
+        // off-CPU time of the check; host CPU is already inside cpu_us and host wait inside wait_us
+        "wait_us": wait, "host_wait_us": host_wait, "other_wait_us": wait.saturating_sub(host_wait),
         "decision": c.decision, "reason": if c.reason.is_empty() { defaults::text("spans.reason_ran") } else { c.reason }, "host": host,
     })
 }
@@ -449,7 +477,7 @@ pub fn snapshot(args: &str) -> Value {
     let rows: Vec<Value> = all.into_iter().take(n).map(rec_json).collect();
     json!({
         "enabled": defaults::num("spans.enabled") == 1,
-        "ring": {"recent": r.recent.len(), "recent_max": defaults::num("spans.ring_max"), "bytes": r.bytes, "bytes_max": defaults::num("spans.ring_max_bytes"), "slow": r.slow.len(), "slow_max": defaults::num("spans.slow_keep")},
+        "ring": {"recent": r.recent.len(), "recent_max": defaults::num("spans.ring_max"), "bytes": r.bytes, "bytes_max": defaults::num("spans.ring_max_bytes"), "slow": r.slow.len(), "slow_max": defaults::num("spans.slow_keep"), "slow_bytes": r.slow_bytes, "slow_bytes_max": defaults::num("spans.slow_max_bytes")},
         "requests": rows,
     })
 }

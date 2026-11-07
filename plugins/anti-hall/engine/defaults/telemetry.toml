@@ -782,7 +782,7 @@ doc = "Request spans recorded (spans.enabled; the events in spans.events), by ho
 value = { kind = "counter", unit = "requests", labels = ["event"] }
 
 [metric.span_dropped]
-doc = "Spans the ring let go, by reason: `evicted` (the oldest recent span, past spans.ring_max or spans.ring_max_bytes) or `slow_evicted` (the fastest of the slow list, past spans.slow_keep)."
+doc = "Spans the ring let go, by reason: `evicted` (the oldest recent span, past spans.ring_max or spans.ring_max_bytes) or `slow_evicted` (the fastest of the slow list, past spans.slow_keep or spans.slow_max_bytes)."
 value = { kind = "counter", unit = "spans", labels = ["reason"] }
 
 [metric.span_slow]
@@ -794,5 +794,9 @@ doc = "The time from the client's request to the start of its first check (queue
 value = { kind = "histogram", unit = "us", labels = ["event"] }
 
 [metric.span_host_us]
-doc = "Time one check spent inside host functions of one kind (spans.kinds: store, exec, mesh, sqlite, jev, fs, transcript), by kind; observed once per check that called any."
+doc = "Wall time one request spent inside host functions of one kind (spans.kinds: store, exec, mesh, sqlite, jev, fs, transcript, sleep), by kind, summed over its checks; observed once per request that called any."
+value = { kind = "histogram", unit = "us", labels = ["kind"] }
+
+[metric.span_host_wait_us]
+doc = "The off-CPU part of span_host_us (wall time minus the thread's CPU inside the calls: sleeping, blocked on I/O or a lock), by kind. A kind whose span_host_us is high and span_host_wait_us low is computing; the reverse is waiting."
 value = { kind = "histogram", unit = "us", labels = ["kind"] }

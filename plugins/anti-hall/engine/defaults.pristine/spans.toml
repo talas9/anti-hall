@@ -21,6 +21,11 @@ doc = "Estimated bytes the recent-span ring may hold; the oldest spans are dropp
 value = 1048576
 min = 4096
 
+[spans.slow_max_bytes]
+doc = "Estimated bytes the slow list may hold; its fastest spans are dropped past it (counted as span_dropped reason `slow_evicted`), so a few huge spans cannot grow it without bound."
+value = 1048576
+min = 4096
+
 [spans.slow_keep]
 doc = "Slowest spans (by request total) kept apart from the recent ring, so a rare multi-second request is not pushed out by the fast ones that follow. 0 keeps none."
 value = 64
@@ -42,12 +47,12 @@ value = 200
 min = 1
 
 [spans.kinds]
-doc = "The host-call kinds a span times, in report order (at most 8). A host function belongs to the kind whose spans.kind_prefixes entry holds its longest matching name prefix; a function no prefix matches is not timed."
-value = ["store", "exec", "mesh", "sqlite", "jev", "fs", "transcript"]
+doc = "The host-call kinds a span times, in report order (at most 8). A host function belongs to the kind whose spans.kind_functions entry lists its exact name; a function no kind lists is not timed. Per kind a span shows wall, thread CPU and off-CPU wait."
+value = ["store", "exec", "mesh", "sqlite", "jev", "fs", "transcript", "sleep"]
 
-[spans.kind_prefixes]
-doc = "Per kind (spans.kinds), the name prefixes of the `ahHost` functions that count toward it. store: the state/lock files; exec: child processes (git runs here); mesh: the mesh store; sqlite: the DevSwarm app and mesh databases; jev: the Jev classifier (its synchronous wait on a Stop); fs: plain file reads and stats; transcript: transcript scans."
-value = { store = ["state", "writeAtomic", "appendFile", "lock", "flock", "fence", "writeFenced", "prune"], exec = ["exec", "fileExec", "spawnProbe", "proc", "repo"], mesh = ["mesh", "ct"], sqlite = ["pi", "meshApp"], jev = ["jev", "judge"], fs = ["read", "tail", "range", "lstat", "file", "is", "realpath", "listDir", "mtime", "turnText", "sha1"], transcript = ["transcript", "agent", "reNumbers"] }
+[spans.kind_functions]
+doc = "Per kind (spans.kinds), the exact names of the `ahHost` functions that count toward it (a function is listed once; unlisted pure helpers are not timed). store: the state/lock files; exec: child processes (git runs here); mesh: the mesh store; sqlite: the DevSwarm app and mesh databases; jev: the Jev classifier (its synchronous wait on a Stop); fs: plain file reads and stats; transcript: transcript and agent scans; sleep: deliberate sleeps."
+value = { store = ["stateGet", "stateProbe", "stateRead", "stateRemove", "stateSweep", "stateUpdate", "stateHomeOk", "writeAtomic", "writeFenced", "appendFile", "lockAcquire", "lockRelease", "flockAcquire", "fenceSweep", "pruneState", "sessionBlocks"], exec = ["exec", "fileExec", "spawnProbe", "spawnProbeCached", "procAges", "procList", "procManaged", "procSignal", "repoContext", "repoRoot"], mesh = ["meshAdoptSeat", "meshCanonicalId", "meshChildBusy", "meshContextKey", "meshCountFor", "meshIdent", "meshMessageCount", "meshOwnReader", "meshPerformCache", "meshReaderNonce", "meshRegisteredKey", "meshRepoKey", "meshSeat", "meshSessionAlive", "meshUnion", "ctArchived", "ctFindPlan", "ctIngest", "ctPrepare", "ctReaders", "ctRegister"], sqlite = ["meshAppArchived", "meshAppBuilders", "piActivity", "piApp", "piAppChildren", "piAppDb", "piDerive", "piDrift", "piFinish", "piFold", "piIgnored", "piJev", "piMarker", "piMeshId", "piPid", "piRow", "piSessionPid", "piSnap", "piWs"], jev = ["jevAskSpec", "jevCacheHas", "jevCachePeek", "jevKeyNotice", "jevRecordOutcome", "jevReviewDue", "jevReviewShown", "jevWeeklyScorecard", "judgeCliCall"], fs = ["readText", "readEnd", "readTail", "readHeadHex", "readRangeHex", "readdir", "readlink", "lstat", "fileSize", "fileSha256", "fileOp", "isDir", "isFile", "isExecutable", "listDir", "mtimeMs", "realpath", "realpathEx", "rangeEntries", "rangeSha1Hex", "tailEntries", "tailHasAny", "tailLines", "tailLinesNewest", "pluginVersions"], transcript = ["turnText", "transcriptCodexAgents", "transcriptDedupeTail", "transcriptEvidence", "transcriptEvidenceWalk", "transcriptGrep", "transcriptTasks", "transcriptTeammates", "transcriptWalkHas", "transcriptWalkNumbers", "agentScan", "agents", "agentsWindow", "agentCountProof", "toolUseScan", "trackedAgents"], sleep = ["sleep"] }
 
 [spans.reason_ran]
 doc = "The reason a span shows for a check that ran and answered."

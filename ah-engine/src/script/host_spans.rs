@@ -1,8 +1,8 @@
 //! Times the host functions a check calls, by kind (`spans.kinds`), for the per-request spans (task #595, [`crate::obs::spans`]).
 //!
-//! After every `ahHost` function is installed, each one whose name has a `spans.kind_prefixes` match is replaced by a thin wrapper that
-//! calls the original with the same arguments and, only while a recorded request's check is running, books the elapsed time to its
-//! kind. A function no prefix matches is left alone (pure helpers cost nothing); with `spans.enabled = 0` at install nothing is
+//! After every `ahHost` function is installed, each one listed in `spans.kind_functions` is replaced by a thin wrapper that
+//! calls the original with the same arguments and, only while a recorded request's check is running, books the elapsed wall time and thread CPU to its
+//! kind. A function no kind lists is left alone (pure helpers cost nothing); with `spans.enabled = 0` at install nothing is
 //! wrapped.
 use crate::defaults;
 use crate::obs::spans;
@@ -22,9 +22,9 @@ fn wrap<'js>(c: &Ctx<'js>, h: &Object<'js>, raw: &Object<'js>, raw_global: &'sta
         if !spans::timing() {
             return f.call((args,));
         }
-        let t = Instant::now();
+        let (t, cpu0) = (Instant::now(), crate::limits::thread_cpu_us());
         let r = f.call((args,));
-        spans::note_host(kind, t.elapsed().as_micros() as u64);
+        spans::note_host(kind, t.elapsed().as_micros() as u64, crate::limits::thread_cpu_us().saturating_sub(cpu0));
         r
     })?;
     h.set(name, w)
