@@ -1299,7 +1299,7 @@ Planned, not shipped: the PreCompact snapshot will also write a "since the last 
 
 ### Every setting
 
-Generated from `settings-schema` (a hygiene test keeps this table and the schema in sync). "adv" = advanced (shown by `show --all`); "safety" = a risky `set`/`reset` needs `--confirmed` (see above).
+Derived from the settings schema; if a row disagrees with `settings show --all`, the CLI is authoritative. "adv" = advanced (shown by `show --all`); "safety" = a risky `set`/`reset` needs `--confirmed` (see above).
 
 | Setting | Default | Env | Notes |
 |---|---|---|---|

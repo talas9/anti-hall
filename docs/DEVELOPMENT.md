@@ -380,7 +380,7 @@ How parallel contributors or agents work on `dev` without blocking each other. L
 | `main` | `dev-only`, `tests-passed`, `privacy-scan`, plus a pull request (merge commits only) | ruleset "main protection" |
 
 - Every other job (`rust`, `ah-hook`, `doc-check`, `no-node`, `pr-title`, and so on) is **informational**: read it, but it does not block the merge.
-- `tests-passed` is currently a placeholder job in `.github/workflows/test.yml` that only prints a line (the Node suite it once gated is retired). The engine suite is the `rust` job in `.github/workflows/ah-engine.yml`. A green `tests-passed` therefore does not prove the engine tests passed: read `rust` too.
+- `tests-passed` is the always-running aggregator job of `.github/workflows/ah-engine.yml`: it fails unless every job of the full pack (including the engine suite in the `rust` job) succeeded.
 - Merge as soon as the required checks pass. Open a follow-up only when an informational job points at the pull request's own code.
 - Merge commits, never squash. `dev` reaches `main` by pull request only.
 
@@ -422,7 +422,7 @@ The CI quick profile and change-detection job are described in their own subsect
 
 The plugin and the engine have separate versions and separate release procedures. A release is a maintainer task.
 
-- **Plugin:** [RELEASING.md](../RELEASING.md). Bump `plugins/anti-hall/.claude-plugin/plugin.json` (the version authority; the Codex manifest, `package.json` and `package-lock.json` track it), add a `CHANGELOG.md` section, sweep the docs, run `node --test`, then a pull request `dev` to `main` and a tag after the merge. Check the GitHub Actions result before calling a release done. Before tagging, also run `claude plugin validate plugins/anti-hall` (Claude Code 2.1.290+; offline, no login). CI runs it in the non-required `plugin-validate` job of `.github/workflows/test.yml` with a pinned CLI version; it is not part of the required `tests-passed` check, so a CLI release that tightens validation cannot block unrelated merges. Re-run it locally after bumping the pin.
+- **Plugin:** [RELEASING.md](../RELEASING.md). Bump `plugins/anti-hall/.claude-plugin/plugin.json` (the version authority; the Codex manifest, `package.json` and `package-lock.json` track it), add a `CHANGELOG.md` section, sweep the docs, run the engine-native tests (there is no Node test suite), then a pull request `dev` to `main` and a tag after the merge. Check the GitHub Actions result before calling a release done. Before tagging, also run `claude plugin validate plugins/anti-hall` (Claude Code 2.1.290+; offline, no login). CI runs it in the non-required `plugin-validate` job of `.github/workflows/test.yml` with a pinned CLI version; it is not part of the required `tests-passed` check, so a CLI release that tightens validation cannot block unrelated merges. Re-run it locally after bumping the pin.
 - **Engine:** [`ah-engine/RELEASING.md`](../ah-engine/RELEASING.md). Bump `version` in `ah-engine/Cargo.toml`, run the prepare workflow, merge the pull request that updates `ah-engine.lock`, then push the tag `ah-engine-vX.Y.Z`.
 
 ## Repository layout

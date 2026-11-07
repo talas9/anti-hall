@@ -12,7 +12,7 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 - "Engine-only" means Rust primitives plus the QuickJS logic files in `plugins/anti-hall/engine/logic/` plus TOML values. Nothing tunable is compiled into the engine binary.
 - Branches proven merged are deleted at the end of R1. Old GitHub release pages are deleted at 1.0; git tags are always kept.
 
-## Status as of 2026-10-28
+## Status
 
 Engine **0.3.0** and plugin **0.302.0** are the next release; engine 0.2.1 and plugin 0.301.1 are the last tagged ones. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
 
