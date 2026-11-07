@@ -256,7 +256,7 @@ mod tests {
     fn the_loopback_resolver_returns_loopback_addresses_and_nothing_else() {
         use ureq::unversioned::transport::time::Duration as UDuration;
         let resolve = |url: &str| {
-            let timeout = NextTimeout { after: UDuration::NotHappening, reason: ureq::Timeout::Global };
+            let timeout = NextTimeout { after: UDuration::NotHappening, reason: ureq::Timeout::Global, ..Default::default() };
             LoopbackResolver::default().resolve(&url.parse::<Uri>().unwrap(), &ureq::config::Config::default(), timeout)
         };
         let ok = resolve("http://127.0.0.1:9/x").unwrap();
