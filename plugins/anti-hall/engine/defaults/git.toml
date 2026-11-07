@@ -1178,3 +1178,7 @@ unit = "chars"
 [git.block_reason_other]
 doc = "The reason label of the git_blocked counter for a block that has no message key."
 value = "other"
+
+[git_audit.event]
+doc = "The hook event name in the audit's output."
+value = "PostToolUse"

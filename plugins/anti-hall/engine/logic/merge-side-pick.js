@@ -11,7 +11,8 @@ function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray
 // argument) cannot be mistaken for a command. A body is text however many lines it spans, so its newlines stay and its characters
 // go; an unterminated heredoc runs to the end, as the shell reads it. The opener pattern is merge_side_pick.heredoc_open
 // (capture 1 = optional quote, 2 = the tag); a `<<<` here-string is not a heredoc.
-function blank(t) { return t.replace(/[^\n]/g, ' '); }
+// one allocation per line, not one match object per character
+function blank(t) { return t.split('\n').map(function (l) { return ' '.repeat(l.length); }).join('\n'); }
 function maskHeredocs(cmd) {
   var s = cmd, from = 0, open = new RegExp(ah.cfg('merge_side_pick.heredoc_open'), 'g');
   for (;;) {
