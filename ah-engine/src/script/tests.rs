@@ -5991,3 +5991,68 @@ fn range_sha1_hex_equals_sha1_of_range_hex() {
     assert_eq!(host::range_sha1_hex(&format!("{h}/absent"), 0.0, 1.0), None);
     assert_eq!(host::range_sha1_hex(&h, 0.0, 1.0), None, "a directory is not a file");
 }
+
+// ---- FW-1 (command-family misfires): the counters of the five guard changes ----
+
+mod fw1_counters {
+    use super::*;
+
+    fn env_of(h: &str) -> RequestEnv {
+        RequestEnv::from_pairs([
+            ("HOME", h),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("DEVSWARM_REPO_ID", "r1"),
+            ("DEVSWARM_SOURCE_BRANCH", "feat"),
+            ("ANTIHALL_INGEST_DRY_RUN", "1"),
+        ])
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn bash(cwd: &str, command: &str, sub: bool) -> Value {
+        let mut p = json!({"tool_name": "Bash", "session_id": "fw1", "cwd": cwd, "tool_input": {"command": command}});
+        if sub {
+            p["agent_id"] = json!("a1");
+            p["agent_type"] = json!("general-purpose");
+        }
+        p
+    }
+
+    #[test]
+    fn each_changed_guard_counts_what_it_decided() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("fw1-cnt");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git/refs/heads")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(format!("{proj}/heavy.sh"), "#!/bin/sh\ncargo build --release\n").unwrap();
+        std::fs::write(format!("{proj}/light.sh"), "#!/bin/sh\necho hi\n").unwrap();
+        let e = env_of(&h);
+        drained();
+        // #621: a lock-bound suite is blocked and counted with shared_lock true; a lock-free one is allowed and counted
+        run_forced("lane-test-guard", &bash(&proj, "cargo test", true), &e);
+        run_forced("lane-test-guard", &bash(&proj, "node --test", true), &e);
+        // #623: a depth-bounded home search is allowed and counted
+        run_forced("wide-search-guard", &bash(&proj, "find ~ -maxdepth 3 -name x", false), &e);
+        // #547: a wrapper whose body is heavy, then one whose body is light
+        run_forced("command", &bash(&proj, "bash heavy.sh", false), &e);
+        run_forced("command", &bash(&proj, "bash light.sh", false), &e);
+        // #620 and #336: an install brief on a flagship model, and a review seat that would have been hinted
+        let spawn = |model: &str, d: &str, pr: &str| json!({"tool_name": "Agent", "session_id": "fw1", "cwd": "/tmp", "tool_input": {"model": model, "description": d, "prompt": pr}});
+        run_forced("model-routing", &spawn("opus", "", "install the USB driver"), &e);
+        run_forced("model-routing", &spawn("sonnet", "code reviewer for the diff", "investigate the change and locate regressions"), &e);
+        let m = drained();
+        assert_eq!(m.counter("lane_test_block", &[("label", "cargo test"), ("shared_lock", "true")]), 1);
+        assert_eq!(m.counter("lane_test_lockfree_allowed", &[("label", "node --test")]), 1);
+        assert_eq!(m.counter("wide_search_depth_bounded", &[("cmd", "find")]), 1);
+        assert_eq!(m.counter("command_wrapper_resolved", &[("verdict", "differs")]), 1);
+        assert_eq!(m.counter("command_wrapper_resolved", &[("verdict", "same")]), 1);
+        assert_eq!(m.counter("model_routing_never_routine", &[]), 1);
+        assert_eq!(m.counter("model_routing_explore_hint_skipped", &[("reason", "reviewer")]), 1);
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+}

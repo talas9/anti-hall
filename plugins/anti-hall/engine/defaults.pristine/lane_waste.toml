@@ -199,7 +199,7 @@ value = "Full suites can queue behind a shared build lock and waste the work bud
 
 [lane_test.msg_instead]
 doc = "What to do instead."
-value = "Run a build check or one allowed module test, then report the result. The full suite runs in one place only: the integration or deploy gate, not in a lane."
+value = "Run a build check or one allowed module test, then report the result. The full suite: integration gate only."
 
 [lane_test.msg_override]
 doc = "How the user can lift the block (shown on the last line)."

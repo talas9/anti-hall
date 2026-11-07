@@ -440,7 +440,7 @@ value = "; or a read-only script in the scratchpad run in the background."
 
 [command.msg_heavy_suite_place]
 doc = "Added to the allowed text of a heavy-command block: the one place a full test suite may run (#621). Keep it the same place lane_test.msg_instead names."
-value = " A full test suite runs in one place only: the integration or deploy gate, not in a lane or the main thread."
+value = " A full test suite runs in one place only: the integration gate, not in a lane or the main thread."
 
 [command.msg_heavy_cd_hint]
 doc = "Added when the same command joined with && would qualify for the inline check."

@@ -54,13 +54,15 @@ fn a_review_seat_or_a_test_running_brief_gets_no_explore_hint() {
         assert!(!out.contains("Explore"), "{d} / {pr} must get no Explore hint: {out}");
     }
     // the switch restores the hint
-    let (_, out) = route(&spawn(Some("sonnet"), "code reviewer for the diff", "investigate the change and locate regressions"), &[("ANTIHALL_EXPLORE_HINT_SKIP", "0")]);
+    let (_, out) =
+        route(&spawn(Some("sonnet"), "code reviewer for the diff", "investigate the change and locate regressions"), &[("ANTIHALL_EXPLORE_HINT_SKIP", "0")]);
     assert!(out.contains("Explore"), "guards.exploreHintSkip off hints every research spawn: {out}");
 }
 
 fn scratch(tag: &str) -> PathBuf {
     let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("fw1-{tag}-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
+    std::fs::create_dir_all(d.join(".git/refs/heads")).unwrap();
+    std::fs::write(d.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     std::fs::canonicalize(&d).unwrap()
 }
 
@@ -68,8 +70,13 @@ fn main_bash(cmd: &str, cwd: &str) -> Value {
     json!({"session_id": "s1", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}})
 }
 
+/// The context in which the main-thread heavy-command gate blocks: a DevSwarm checkout (as the script counter tests set it up).
+const DEVSWARM: [(&str, &str); 4] =
+    [("CLAUDE_CODE_ENTRYPOINT", "cli"), ("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feat"), ("ANTIHALL_INGEST_DRY_RUN", "1")];
+
 fn guard(p: &Value, env: &[(&str, &str)]) -> i32 {
-    run(&["check", "command-guard"], env, &p.to_string()).0
+    let all: Vec<(&str, &str)> = DEVSWARM.iter().chain(env.iter()).copied().collect();
+    run(&["check", "command"], &all, &p.to_string()).0
 }
 
 #[test]
