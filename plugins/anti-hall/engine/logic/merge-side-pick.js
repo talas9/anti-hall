@@ -14,26 +14,35 @@ function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray
 // one allocation per line, not one match object per character
 function blank(t) { return t.split('\n').map(function (l) { return ' '.repeat(l.length); }).join('\n'); }
 function maskHeredocs(cmd) {
-  var s = cmd, from = 0, open = new RegExp(ah.cfg('merge_side_pick.heredoc_open'), 'g');
+  // works on the original text with a cursor: rewriting the whole string for every heredoc (and slicing the rest of it to find the
+  // terminator) made a command with many heredocs cost length x heredocs. A body is blanked in place, so every later position holds
+  // what it held before.
+  var parts = [], at = 0, from = 0, terms = {}, open = new RegExp(ah.cfg('merge_side_pick.heredoc_open'), 'g');
   for (;;) {
     open.lastIndex = from;
-    var m = open.exec(s);
-    if (!m) return s;
-    if (m.index > 0 && s.charAt(m.index - 1) === '<') { from = open.lastIndex; continue; }
-    var nl = s.indexOf('\n', open.lastIndex);
-    if (nl < 0) return s;
-    var end = new RegExp('\\n[ \\t]*' + m[2] + '[ \\t]*(?=\\n|$)').exec(s.slice(nl));
-    var stop = end ? nl + end.index : s.length;
-    s = s.slice(0, nl + 1) + blank(s.slice(nl + 1, stop)) + s.slice(stop);
+    var m = open.exec(cmd);
+    if (!m) break;
+    if (m.index > 0 && cmd.charAt(m.index - 1) === '<') { from = open.lastIndex; continue; }
+    var nl = cmd.indexOf('\n', open.lastIndex);
+    if (nl < 0) break;
+    var term = terms[m[2]] || (terms[m[2]] = new RegExp('\\n[ \\t]*' + m[2] + '[ \\t]*(?=\\n|$)', 'g'));
+    term.lastIndex = nl;
+    var end = term.exec(cmd);
+    var stop = end ? end.index : cmd.length;
+    parts.push(cmd.slice(at, nl + 1), blank(cmd.slice(nl + 1, stop)));
+    at = stop;
     from = stop;
   }
+  parts.push(cmd.slice(at));
+  return parts.join('');
 }
 function maskQuotes(cmd) {
   var s = maskHeredocs(cmd);
   ah.cfg('merge_side_pick.quote_masks').forEach(function (src) {
-    var hits = ah.re.findAll(src, '', s), out = '', at = 0;
-    hits.forEach(function (h) { out += s.slice(at, h[0]) + blank(s.slice(h[0], h[1])); at = h[1]; });
-    s = out + s.slice(at);
+    var hits = ah.re.findAll(src, '', s), out = [], at = 0;
+    hits.forEach(function (h) { out.push(s.slice(at, h[0]), blank(s.slice(h[0], h[1]))); at = h[1]; });
+    out.push(s.slice(at));
+    s = out.join('');
   });
   return s;
 }

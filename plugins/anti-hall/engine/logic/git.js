@@ -67,6 +67,8 @@ function gitBuildTables() {
   t.sessionKey = new RegExp('^[ \\t]*(?:' + c('credit_session_keys').map(gitEsc).join('|') + ')[ \\t]*[:=]', 'im');
   t.sessionUrl = new RegExp('^[ \\t]*(?:[A-Za-z][A-Za-z -]*[ \\t]*[:=][ \\t]*)?(?:https?://)?(?:' + c('credit_url_markers').map(gitEsc).join('|') + ')', 'im');
   t.expansionPatterns = c('commit_expansion_patterns').map((p) => new RegExp('^(?:' + p + ')'));
+  // the same patterns, sticky: "does one match AT index k of the whole text", without copying the rest of the text for every k
+  t.expansionSticky = c('commit_expansion_patterns').map((p) => new RegExp('(?:' + p + ')', 'y'));
   t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
   t.pushSkipOpts = set(c('push_skip_opts'));
   t.sameCallSubs = set(c('push_same_call_subs'));
@@ -651,6 +653,12 @@ function unresolvedExpansion(raw0) {
 
 function expansionShown(tail) { return tail.split(/\s/)[0].slice(0, ah.cfg('git.expansion_shown_chars')); }
 
+// true when a commit expansion pattern matches at index `k` of `s` (the text from `k` on starts with an expansion)
+function expansionAt(s, k) {
+  for (const re of TB.expansionSticky) { re.lastIndex = k; if (re.test(s)) return true; }
+  return false;
+}
+
 // the allowed form `tail` starts with (the matched text), or null
 function expansionAllowMatch(tail) {
   for (const re of TB.expansionAllow) { const m = re.exec(tail); if (m) return m[0]; }
@@ -670,8 +678,8 @@ function scanExpansionWord(s, i, mode, whole) {
     if (ch === '\\') { i++; continue; }
     if (ch === "'" && mode === 0) { mode = 1; continue; }
     if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
+    if (!expansionAt(s, i)) continue;
     const tail = s.slice(i);
-    if (!TB.expansionPatterns.some((re) => re.test(tail))) continue;
     const m = expansionAllowMatch(tail);
     if (m === null) {
       if (!whole && /^\$\([ \t]*$/.test(tail)) return { cut: true, end: s.length };
@@ -702,8 +710,7 @@ function heredocSubstClose(s, at, m) {
     const body = h.body;
     for (let k = 0; k < body.length && shown === null; k++) {
       if (body.charAt(k) === '\\') { k++; continue; }
-      const tail = body.slice(k);
-      if (TB.expansionPatterns.some((re) => re.test(tail))) shown = expansionShown(tail);
+      if (expansionAt(body, k)) shown = expansionShown(body.slice(k));
     }
   }
   let k = h.end;
