@@ -73,7 +73,9 @@ fn host_call_overhead() {
         )
     };
     let env = RequestEnv::from_pairs([("HOME", h.as_str())]);
-    for (name, target, recorded) in [("raw", "ahHostRaw.fileSize", false), ("wrapped_idle", "ahHost.fileSize", false), ("wrapped_timed", "ahHost.fileSize", true)] {
+    for (name, target, recorded) in
+        [("raw", "ahHostRaw.fileSize", false), ("wrapped_idle", "ahHost.fileSize", false), ("wrapped_timed", "ahHost.fileSize", true)]
+    {
         std::fs::write(format!("{h}/.anti-hall/logic/zz-oh-{name}.js"), body(target)).unwrap();
         if recorded {
             spans::begin_if(true, std::time::Instant::now(), std::time::Duration::ZERO);
