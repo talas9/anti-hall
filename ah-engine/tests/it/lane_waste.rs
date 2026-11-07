@@ -327,6 +327,11 @@ fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
         "rg -d 2 foo .",
         "fd -d 3 x .",
         "fd -d 1 -td x ~", // -td is --type d: the d is a value, the depth is 1
+        "rg -d 2 -n -i foo .",
+        "fd -d 3 -t f x .",
+        "find . -maxdepth 2 -name '*.rs'",
+        "rg -d 1 -ni -g '*.rs' -A 2 foo ~", // allow-listed flags with their values, and a cluster of value-less ones
+        "fd -d 1 -HI -e rs x ~",
     ];
     let block = [
         "find ~ -iname x",
@@ -359,6 +364,26 @@ fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
         "find / -maxdepth 3 -name x", // a lower limit applies from `/`
         "fd -d 1 x ~ -x grep -r foo",
         "find ~ -path '*/src/*' -prune -name x", // a -prune/-path limit is not a depth bound
+        // round 4: the bound is an allowlist, so a flag the guard does not know voids it
+        "rg --context-separator -d 1 foo ~",
+        "rg --field-match-separator -d 1 foo ~",
+        "rg --field-context-separator -d 1 foo ~",
+        "rg -d 1 --field-match-separator -d foo ~", // the separator swallows `-d`: foo is the pattern, ~ the path
+        "rg -d 1 --pre cat foo ~",
+        "fd -d 1 x ~ -xwc",
+        "fd -d 1 x ~ --exec=wc",
+        "fd -d 1 x ~ --exec wc",
+        "find ~ -fprintf -maxdepth 1",
+        "find ~ -maxdepth 1 -fprint out",
+        "rg -d 1 --glob=x foo ~",           // an `=` form that is not listed
+        "rg -d 1 -nZ foo ~",                // a cluster with an unknown letter
+        "find ~ -maxdepth 1 -name x stray", // a word after the expression that no flag takes
+        "fd --base-directory / x",
+        "fd --base-directory=/ x",
+        "fd --search-path / x",
+        "fd --search-path=/ x",
+        "fd -d 1 --search-path / x",
+        "fdfind --search-path / x",
     ];
     for who in ["main", "subagent", "codex"] {
         for cmd in allow {

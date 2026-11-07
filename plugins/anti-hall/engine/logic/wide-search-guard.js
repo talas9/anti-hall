@@ -47,11 +47,15 @@ function wsPaths(words, spec) {
   // pattern-first: flags, then a pattern (unless a flag supplied it), then paths
   var values = spec.value_flags || [], patFlags = spec.pattern_flags || [], noPat = spec.no_pattern_flags || [];
   var havePattern = false, recursive = !spec.needs_recursive, afterDash = false;
-  var recRe = spec.recursive_re;
+  var recRe = spec.recursive_re, roots = spec.root_flags || [];
   for (i = 0; i < args.length; i++) {
     var w = args[i];
     if (!afterDash && w === '--') { afterDash = true; continue; }
     if (!afterDash && w.charAt(0) === '-' && w.length > 1) {
+      for (var r = 0; r < roots.length; r++) {
+        if (w === roots[r] && i + 1 < args.length) out.push(args[i + 1]);
+        else if (w.indexOf(roots[r] + '=') === 0) out.push(w.slice(roots[r].length + 1));
+      }
       if (recRe && ah.re.test(recRe, 'r', w)) recursive = true;
       if (patFlags.indexOf(w) >= 0) { havePattern = true; i++; continue; }
       if (noPat.indexOf(w) >= 0) { havePattern = true; continue; }
@@ -64,52 +68,7 @@ function wsPaths(words, spec) {
   return recursive ? out : null;
 }
 
-// The depth limit (a number) the command `words` carries through one of spec.depth_flags (`-maxdepth 3`, `--max-depth=3`), or null when it
-// carries none. The LAST such flag wins, as the tools themselves do. Scanning stops at a spec.depth_stop_flags word (`--`); a
-// spec.depth_void_flags word (-exec, -x) means the command runs more than a bounded walk, so it carries no limit. A word matching spec.depth_like_re that is not parsed above voids the limit. A limit that is not a
-// plain non-negative number is no limit.
-// How word `w` takes a value-taking flag (spec.value_flags / spec.pattern_flags, minus the depth and void flags the depth walk parses itself):
-// 2 = the flag alone (the NEXT word is its value), 1 = the value is attached (`-e-d`, `-td`, `--regexp=-d`), 0 = not such a flag.
-// The same flags wsPaths walks, so a depth-looking word that is some flag's value is never read as a depth flag.
-function wsValueFlag(w, spec) {
-  var depth = (spec.depth_flags || []).concat(spec.depth_void_flags || []), k, c;
-  var vals = (spec.value_flags || []).concat(spec.pattern_flags || []);
-  if (w.charAt(0) !== '-' || w.length < 2) return 0;
-  if (depth.indexOf(w) < 0 && vals.indexOf(w) >= 0) return 2;
-  if (w.charAt(1) === '-') {
-    for (k = 0; k < vals.length; k++) if (vals[k].indexOf('--') === 0 && depth.indexOf(vals[k]) < 0 && w.indexOf(vals[k] + '=') === 0) return 1;
-    return 0;
-  }
-  // a short-flag cluster: scan to the first flag that takes a value; a depth flag reached first is left to the depth walk
-  for (c = 1; c < w.length; c++) {
-    var f = '-' + w.charAt(c);
-    if (depth.indexOf(f) >= 0) return 0;
-    if (vals.indexOf(f) >= 0) return c + 1 < w.length ? 1 : 2;
-  }
-  return 0;
-}
-
-function wsDepth(words, spec) {
-  var flags = spec.depth_flags || [], stop = spec.depth_stop_flags || [], voids = spec.depth_void_flags || [], last = null, i, j;
-  for (i = 1; i < words.length; i++) {
-    if (stop.indexOf(words[i]) >= 0) break;
-    var vf = wsValueFlag(words[i], spec);
-    if (vf === 2) { i++; continue; }
-    if (vf === 1) continue;
-    if (voids.indexOf(words[i]) >= 0) return null;
-    var like = spec.depth_like_re, matched = false;
-    for (j = 0; j < flags.length; j++) {
-      var v = null;
-      if (words[i] === flags[j]) v = i + 1 < words.length ? words[i + 1] : null;
-      else if (flags[j].indexOf('--') === 0 && words[i].indexOf(flags[j] + '=') === 0) v = words[i].slice(flags[j].length + 1);
-      if (v !== null) matched = true;
-      if (v !== null) last = ah.re.test(ah.cfg('wide_search.depth_value_re'), 'r', v) ? parseInt(v, 10) : null;
-    }
-    // a word the tool would read as a depth flag in a form not parsed above (attached, clustered, aliased): the bound is unknown
-    if (!matched && like && ah.re.test(like, 'r', words[i])) return null;
-  }
-  return last;
-}
+// The depth limit of a search command: wideWalk.depth (lib/54-wide-walk.js) reads it by allowlist (wide_search.commands.<name>.safe_flags).
 
 // The deepest limit allowed under `root`: wide_search.depth_allow_max_by_root names a lower one for a root such as `/`.
 function wsDepthMax(root) {
@@ -156,7 +115,7 @@ function decide(p, opts) {
       var root = wsResolve(paths[i], cwd, home);
       if (root === null || forbidden.indexOf(root) < 0 || allowed.indexOf(root) >= 0) continue;
       if (ah.settings.bool('wide_search.sw_depth_bound')) {
-        var depth = wsDepth(words, specs[base]);
+        var depth = wideWalk.depth(words, specs[base]);
         if (depth !== null && depth <= wsDepthMax(root)) {
           try { ah.metric('wide_search_depth_bounded', ['cmd', base]); } catch (e) { /* counting never fails a hook */ }
           continue;
