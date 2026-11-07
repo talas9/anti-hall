@@ -3610,6 +3610,29 @@ mod claim_evidence_guard {
         assert!(blocked(&stop_unlocked("ce-fig-spill", &spill, "34 tests passed.", &[], json!({})).0).is_some(), "a size is no count");
         let upper = after("git log HEAD --oneline", "57 tests passed", "57 tests passed.");
         assert!(blocked(&stop_unlocked("ce-fig-upper", &upper, "57 tests passed.", &[], json!({})).0).is_some(), "HEAD is not the read verb head");
+        // GH #376 fix round 2: pass and fail counts are told apart, runner formats read, listings and cross-line numbers back nothing
+        let cell0 = after("tail /tmp/t.log", "test result: FAILED. 0 passed; 57 failed", "57 tests passed.");
+        assert!(blocked(&stop_unlocked("ce-cell0", &cell0, "57 tests passed.", &[], json!({})).0).is_some(), "fail count does not back pass");
+        let cell3 = after("tail /tmp/t.log", "# tests 57\n# pass 57\n# fail 0", "57 tests passed.");
+        assert_eq!(stop_unlocked("ce-cell3", &cell3, "57 tests passed.", &[], json!({})).0, ALLOW, "node --test");
+        let cell4 = after("tail /tmp/t.log", "# tests 57\n# pass 50\n# fail 7", "57 tests passed.");
+        assert!(blocked(&stop_unlocked("ce-cell4", &cell4, "57 tests passed.", &[], json!({})).0).is_some(), "node --test with failures");
+        let cell5 = after("tail /tmp/t.log", "  57 passing (2s)", "57 tests passed.");
+        assert_eq!(stop_unlocked("ce-cell5", &cell5, "57 tests passed.", &[], json!({})).0, ALLOW, "mocha");
+        let cell6 = after("tail /tmp/t.log", "build passed\n57 files changed", "57 tests passed.");
+        assert!(blocked(&stop_unlocked("ce-cell6", &cell6, "57 tests passed.", &[], json!({})).0).is_some(), "no cross-line");
+        let cell7 = after("tail /tmp/t.log", "57 tests, 0 benchmarks", "57 tests passed.");
+        assert!(blocked(&stop_unlocked("ce-cell7", &cell7, "57 tests passed.", &[], json!({})).0).is_some(), "cargo --list");
+        let cell8 = after("tail /tmp/t.log", "1234 passed", "1,234 tests passed.");
+        assert_eq!(stop_unlocked("ce-cell8", &cell8, "1,234 tests passed.", &[], json!({})).0, ALLOW, "cross-format comma");
+        let cell9 = after("tail /tmp/t.log", "test result: ok. 57 passed; 0 failed", "57 tests passed.");
+        assert_eq!(stop_unlocked("ce-cell9", &cell9, "57 tests passed.", &[], json!({})).0, ALLOW, "cargo test");
+        let cell10 = after("tail /tmp/t.log", "57 passed in 1.2s", "57 tests passed.");
+        assert_eq!(stop_unlocked("ce-cell10", &cell10, "57 tests passed.", &[], json!({})).0, ALLOW, "pytest");
+        let cell11 = after("tail /tmp/t.log", "Tests: 57 passed, 57 total", "57 tests passed.");
+        assert_eq!(stop_unlocked("ce-cell11", &cell11, "57 tests passed.", &[], json!({})).0, ALLOW, "jest");
+        let cell12 = after("tail /tmp/t.log", "Summary [ 3.1s] 57 tests run: 57 passed, 0 skipped", "57 tests passed.");
+        assert_eq!(stop_unlocked("ce-cell12", &cell12, "57 tests passed.", &[], json!({})).0, ALLOW, "nextest");
         // negated and future-tense claims stay unheld even with a tool call this turn
         for r in ["Nothing is merged yet.", "Once PR #405 and #406 are merged the release can start."] {
             let lines = after("ls", "x", r);

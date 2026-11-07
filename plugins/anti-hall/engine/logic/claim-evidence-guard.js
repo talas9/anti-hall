@@ -234,29 +234,57 @@ function ceTurnCalls(tp, n) {
 
 // GH #376 (claim_evidence.log_read_counts): true when a read of a log or output file ran this turn (claim_evidence.log_read_res) and every
 // figure of the claim is a whole number the output of such reads spells next to a pass / fail / test / check word
-// (claim_evidence.output_figure_res: a line number, a version, a hash digit or a size is no count; 1 is not found inside 142; the figure in
+// (claim_evidence.output_pass_res, output_fail_res, output_bare_res: a line number, a version, a hash digit or a size is no count; 1 is not found inside 142; the figure in
 // the prompt, in a command or in an earlier turn does not count). The read verbs are matched case-sensitively (git's HEAD is not head). A claim with no figure is never backed by a read alone.
 function ceLogReadBacks(claim, tp, tools) {
   if (!ah.settings.bool('claim_evidence.log_read_counts')) return false;
   var re = ah.cfg('claim_evidence.figure_re'), figs = ah.re.findAll(re, 'i', claim.quote);
   if (!figs.length) return false;
-  var calls = ceTurnCalls(tp, tools), reads = ah.cfg('claim_evidence.log_read_res'), outRes = ah.cfg('claim_evidence.output_figure_res'), have = {};
+  var calls = ceTurnCalls(tp, tools), reads = ah.cfg('claim_evidence.log_read_res');
   if (calls === null) return false;
+  var passRes = ah.cfg('claim_evidence.output_pass_res'), failRes = ah.cfg('claim_evidence.output_fail_res');
+  var bareRes = ah.cfg('claim_evidence.output_bare_res'), listRes = ah.cfg('claim_evidence.output_listing_res');
+  var failClaim = ah.cfg('claim_evidence.fail_claim_re');
+  var passHave = {}, failHave = {};
   for (var i = 0; i < calls.length; i++) {
     if (calls[i][0] === '' || ceAny(reads, calls[i][0], '') === null) continue;
-    for (var j = 0; j < outRes.length; j++) {
-      var spans = ah.re.findAll(outRes[j], 'i', calls[i][1]);
-      for (var m = 0; m < spans.length; m++) {
-        var piece = calls[i][1].slice(spans[m][0], spans[m][1]), nums = ah.re.findAll(re, 'i', piece);
-        for (var k = 0; k < nums.length; k++) have[Number(piece.slice(nums[k][0], nums[k][1]).replace(/,/g, ''))] = true;
-      }
-    }
+    var out = calls[i][1], p = ceNums(passRes, re, out), f = ceNums(failRes, re, out), bare = ceNums(bareRes, re, out, ceSpans(listRes, out));
+    var failSeen = false, k;
+    for (k in f.map) if (Number(k) > 0) failSeen = true;
+    for (k in p.map) passHave[k] = true;
+    for (k in f.map) failHave[k] = true;
+    // a bare "N tests" count says nothing about pass or fail: it backs a pass claim only when this output shows no failure
+    if (!failSeen) for (k in bare.map) passHave[k] = true;
   }
-  for (var f = 0; f < figs.length; f++) {
-    var want = Number(claim.quote.slice(figs[f][0], figs[f][1]).replace(/,/g, ''));
-    if (!isFinite(want) || have[want] !== true) return false;
+  for (var q = 0; q < figs.length; q++) {
+    var want = Number(claim.quote.slice(figs[q][0], figs[q][1]).replace(/,/g, ''));
+    if (!isFinite(want)) return false;
+    var next = q + 1 < figs.length ? figs[q + 1][0] : claim.quote.length;
+    var after = claim.quote.slice(figs[q][1], next), before = claim.quote.slice(Math.max(0, figs[q][0] - 12), figs[q][0]);
+    var isFail = ah.re.findAll(failClaim, 'i', after).length > 0 || (ah.re.findAll(ah.cfg('claim_evidence.pass_claim_re'), 'i', after).length === 0 && ah.re.findAll(failClaim, 'i', before).length > 0);
+    if ((isFail ? failHave : passHave)[want] !== true) return false;
   }
   return true;
+}
+
+// spans of every pattern of a list in a text
+function ceSpans(res, text) {
+  var all = [];
+  for (var j = 0; j < res.length; j++) all = all.concat(ah.re.findAll(res[j], 'i', text));
+  return all;
+}
+
+// the whole numbers the spans of a pattern list spell in a text; a span starting where a skip span starts is left out
+function ceNums(res, re, text, skip) {
+  var map = {}, spans = ceSpans(res, text);
+  for (var m = 0; m < spans.length; m++) {
+    var gone = false;
+    for (var s = 0; skip && s < skip.length; s++) if (skip[s][0] === spans[m][0]) gone = true;
+    if (gone) continue;
+    var piece = text.slice(spans[m][0], spans[m][1]), nums = ah.re.findAll(re, 'i', piece);
+    for (var k = 0; k < nums.length; k++) map[Number(piece.slice(nums[k][0], nums[k][1]).replace(/,/g, ''))] = true;
+  }
+  return { map: map };
 }
 
 function ceAnyCmd(list, cmds) {
