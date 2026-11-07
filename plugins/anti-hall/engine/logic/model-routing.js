@@ -110,15 +110,15 @@ function mrTip(what, instead, why) {
 function mrPass(key, args) { return text.render(ah.cfg(key), args); }
 
 function mrBounded(s) {
-  var limit = ah.cfgNum('telemetry.token_max_len'), out = '', used = 0;
+  var limit = ah.cfgNum('telemetry.token_max_len'), out = [], used = 0;
   var cps = Array.from(s);
   for (var i = 0; i < cps.length; i++) {
     var n = jx.utf8Len(cps[i]);
     if (used + n > limit) break;
-    out += cps[i];
+    out.push(cps[i]);
     used += n;
   }
-  return out;
+  return out.join('');
 }
 
 // The spawn identity a retry keeps: the session, the parent agent, the subagent type and a hash of a bounded prefix of the prompt

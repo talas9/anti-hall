@@ -30,7 +30,7 @@ function isAsciiAlnum(c) {
 
 // Path-like tokens of a `files:` value: list dashes at line starts dropped, split on white space and separators.
 function extractPathTokens(t) {
-  var chars = Array.from(t), cleaned = '', i = 0;
+  var chars = Array.from(t), cleaned = [], i = 0;
   var lineStart = function (k) { if (k === 0) return true; var c = chars[k - 1]; return c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029'; };
   while (i < chars.length) {
     if (lineStart(i)) {
@@ -39,18 +39,18 @@ function extractPathTokens(t) {
       if (j < chars.length && chars[j] === '-') {
         j++;
         while (j < chars.length && (chars[j] === ' ' || chars[j] === '\t')) j++;
-        cleaned += ' ';
+        cleaned.push(' ');
         i = j;
         continue;
       }
     }
-    cleaned += chars[i];
+    cleaned.push(chars[i]);
     i++;
   }
   var seps = ah.cfg('ship_it.token_separators'), trim = ah.cfg('ship_it.token_trim'), extMax = ah.cfgNum('ship_it.token_ext_max');
   var out = [];
   var sep = sepRe(seps);
-  cleaned.split(sep).forEach(function (tok) {
+  cleaned.join('').split(sep).forEach(function (tok) {
     if (!tok) return;
     if (tok.charAt(0) === '.' && tok.charAt(1) === '/') tok = tok.slice(1).replace(/^\/+/, '');
     var e = tok.length;
