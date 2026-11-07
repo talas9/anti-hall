@@ -99,6 +99,81 @@ t_download_without_a_lock_changes_nothing() {
   [ "$rc" = 0 ] && [ ! -e "$st/bin/ah-engine" ] && logf | grep -q 'why=no_lock'
 }
 
+# a valid JSON check where python3 exists (else the shape checks above must do)
+isjson() { if command -v python3 >/dev/null 2>&1; then python3 -I -c 'import json,sys; json.loads(sys.stdin.read())' <"$1" 2>/dev/null; else grep -q '^{.*}$' "$1"; fi; }
+fake_client() { # fake_client OUTPUT: an installed client that prints OUTPUT for SessionStart
+  mkdir -p "$st/bin"
+  printf '#!/bin/sh\ncat >/dev/null\nprintf "%%s" %s\n' "'$1'" >"$st/bin/ah-hook"; chmod 755 "$st/bin/ah-hook"
+}
+t_sessionstart_not_installed_notice_is_json() {
+  newhome sj; write_lock "$good"
+  [ "$(hook s1 SessionStart)" != "0 0" ] || return 1
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the engine is not installed' "$tmp/out" && grep -q '"additionalContext"' "$tmp/out" && grep -q 'not installed' "$tmp/err" || return 1
+  [ "$(hook s1 SessionStart)" = "0 0" ] && [ "$(wc -l <"$tmp/out" | tr -d ' ')" = 0 ]   # same session: nothing more
+}
+t_sessionstart_engine_without_client_has_its_own_text() {
+  newhome nc; write_lock "$good"; mkdir -p "$st/bin"
+  printf '#!/bin/sh\necho 0.1.0\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q 'hook client (ah-hook) is missing' "$tmp/out"
+}
+t_stale_engine_notice_joins_the_clients_json() {
+  newhome st1; write_lock "$good"
+  fake_client '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"X"}}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine (9.1.0) is older' "$tmp/out" && grep -q '"additionalContext":"X"' "$tmp/out" || return 1
+  grep -q 'ah-hook install -v' "$tmp/out" && grep -q 'bootstrap.log' "$tmp/out" || return 1
+}
+t_stale_engine_notice_with_a_silent_client_is_the_notice_alone() {
+  newhome st2; write_lock "$good"; fake_client ''
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"hookEventName":"SessionStart"' "$tmp/out" && grep -q 'older than this plugin expects' "$tmp/out"
+}
+t_other_events_and_a_current_engine_leave_the_clients_output_alone() {
+  newhome st3; write_lock "$good"; fake_client '{"a":1}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 PreToolUse >/dev/null; [ "$(cat "$tmp/out")" = '{"a":1}' ] || return 1
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  hook s2 SessionStart >/dev/null; [ "$(cat "$tmp/out")" = '{"a":1}' ]
+}
+t_a_client_that_already_set_a_system_message_is_not_changed() {
+  newhome st4; write_lock "$good"; fake_client '{"systemMessage":"mine"}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null; [ "$(cat "$tmp/out")" = '{"systemMessage":"mine"}' ]
+}
+t_defaults_that_failed_to_load_say_the_guards_are_not_running() {
+  newhome df; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q 'guards are NOT running' "$tmp/out"
+}
+t_a_defaults_error_older_than_the_engine_is_ignored() {
+  newhome df2; write_lock "$good"
+  mkdir -p "$st"; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  sleep 1; fake_client ''; mkdir -p "$st/bin"; printf '#!/bin/sh\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null; [ ! -s "$tmp/out" ]
+}
+t_download_keeps_an_older_managed_engine_and_hands_over() {
+  newhome keep; write_lock "$good"; mkdir -p "$st/bin"
+  printf '#!/bin/sh\necho 0.1.0\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  esha=$(sha "$st/bin/ah-engine"); printf '0.1.0 %s\n' "$esha" >"$st/bootstrap.installed"
+  out=$(env_t sh "$plug/hooks/install.sh" --download 2>&1); rc=$?
+  [ "$rc" = 0 ] && ! printf '%s' "$out" | grep -q "installed ah-engine" || return 1
+  [ "$("$st/bin/ah-engine")" = 0.1.0 ] && [ -x "$st/bin/ah-hook" ] || return 1
+  set -- $(cat "$st/bootstrap.installed")
+  [ "$1 $2 $3" = "0.1.0 - $esha" ] && [ "$4" = "$(sha "$st/bin/ah-hook")" ] || return 1
+  grep -q "install --lock .*ah-engine.lock" "$HOME/hook-calls"   # the one implementation does the swap
+}
+t_download_creates_a_private_state_dir() {
+  newhome priv; write_lock "$good"
+  env_t sh "$plug/hooks/install.sh" --download >/dev/null 2>&1
+  [ "$(ls -ld "$st" | cut -c1-10)" = "drwx------" ]
+}
+
 check t_hook_mode_is_silent_and_notices_once_per_session t_hook_mode_is_silent_and_notices_once_per_session
 check t_hook_mode_downloads_nothing_without_opt_in t_hook_mode_downloads_nothing_without_opt_in
 check t_hook_mode_opt_in_installs_on_session_start t_hook_mode_opt_in_installs_on_session_start
@@ -109,6 +184,17 @@ check t_download_refuses_a_wrong_sha t_download_refuses_a_wrong_sha
 check t_download_leaves_an_unmanaged_engine_alone t_download_leaves_an_unmanaged_engine_alone
 check t_download_hands_over_to_an_installed_client t_download_hands_over_to_an_installed_client
 check t_download_without_a_lock_changes_nothing t_download_without_a_lock_changes_nothing
+
+check t_sessionstart_not_installed_notice_is_json t_sessionstart_not_installed_notice_is_json
+check t_sessionstart_engine_without_client_has_its_own_text t_sessionstart_engine_without_client_has_its_own_text
+check t_stale_engine_notice_joins_the_clients_json t_stale_engine_notice_joins_the_clients_json
+check t_stale_engine_notice_with_a_silent_client_is_the_notice_alone t_stale_engine_notice_with_a_silent_client_is_the_notice_alone
+check t_other_events_and_a_current_engine_leave_the_clients_output_alone t_other_events_and_a_current_engine_leave_the_clients_output_alone
+check t_a_client_that_already_set_a_system_message_is_not_changed t_a_client_that_already_set_a_system_message_is_not_changed
+check t_defaults_that_failed_to_load_say_the_guards_are_not_running t_defaults_that_failed_to_load_say_the_guards_are_not_running
+check t_a_defaults_error_older_than_the_engine_is_ignored t_a_defaults_error_older_than_the_engine_is_ignored
+check t_download_keeps_an_older_managed_engine_and_hands_over t_download_keeps_an_older_managed_engine_and_hands_over
+check t_download_creates_a_private_state_dir t_download_creates_a_private_state_dir
 
 printf 'install.sh: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

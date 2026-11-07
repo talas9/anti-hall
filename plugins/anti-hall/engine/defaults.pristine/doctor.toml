@@ -256,8 +256,8 @@ doc = "A live self-test the engine does not decide: the check defers this payloa
 value = "{check}: the engine does not decide this self-test, so it was not exercised here"
 
 [doctor_msg.statusline_installed]
-doc = "A legacy anti-hall statusLine is still configured. Placeholder: {label}."
-value = "legacy anti-hall statusLine still configured ({label}) -> uninstall-statusline can clean it up"
+doc = "A legacy anti-hall statusLine is still configured. Placeholder: {label}. The Node-era installer wrote a `node .../statusline.js` command; that script no longer ships, so the status line is blank until this is removed."
+value = "the anti-hall statusLine in {label} is the retired Node form: the script it runs no longer ships, so the status line is blank - Fix (main session): ~/.anti-hall/ah-engine/bin/ah-engine uninstall-statusline (it restores the settings backup the old installer kept)"
 
 [doctor_msg.statusline_set]
 doc = "A custom statusline is configured. Placeholders: {label}, {command}."
@@ -265,7 +265,7 @@ value = "statusline set ({label}) -> {command}…"
 
 [doctor_msg.statusline_none]
 doc = "No statusLine is configured."
-value = "no anti-hall statusLine configured (installer retired)"
+value = "no anti-hall statusLine is configured (the statusline is optional; nothing to fix)"
 
 [doctor_msg.workflow_found]
 doc = "Saved Workflow templates exist. Placeholder: {files}."
@@ -308,8 +308,8 @@ doc = "A repair row that did nothing. Placeholders: {id}, {msg}."
 value = "skipped [{id}] {msg}"
 
 [doctor_msg.unhandled_flag]
-doc = "A flag of the Node doctor that the engine doctor does not handle. Placeholder: {flag}."
-value = "{flag} is not handled by the engine doctor yet (D81); run the Node doctor for it"
+doc = "A flag of the retired Node doctor that the engine doctor does not handle. Placeholder: {flag}."
+value = "{flag} is not handled by the engine doctor; it was skipped"
 
 [doctor_msg.head_environment]
 doc = "The heading of the environment section."
@@ -767,7 +767,7 @@ value = "Node witness"
 
 [doctor_msg.bin_missing]
 doc = "BIN-01. Placeholders: {path}, {bootstrap}."
-value = "engine binary not installed at {path} (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh {bootstrap} --download -v"
+value = "engine binary not installed at {path}: hook calls pass through unchecked, so the guards are not running (an ah-engine on PATH, or the optional Node backup, is used when present) - Fix: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_not_file]
 doc = "BIN-02. Placeholders: {path}, {kind}, {bootstrap}."
@@ -827,7 +827,7 @@ value = "{path} differs from the build the bootstrap installed (sha256 {have}...
 
 [doctor_msg.bin_version_differs]
 doc = "BIN-09. Placeholders: {have}, {want}, {bootstrap}."
-value = "engine {have} is installed but the plugin pins {want} - Fix: it updates at the next session start, or run: sh {bootstrap} --download -v"
+value = "engine {have} is installed but the plugin pins {want}; it updates by itself at a session start only when the engine.bootstrap setting is on - Fix: run `ah-hook install -v`, or: sh {bootstrap} --download -v (a failure is logged in ~/.anti-hall/ah-engine/bootstrap.log)"
 
 [doctor_msg.bin_no_run]
 doc = "BIN-12. Placeholders: {path}, {why}, {bootstrap}."
@@ -851,7 +851,7 @@ value = "the lock has no version"
 
 [doctor_msg.lock_no_asset]
 doc = "BIN-10. Placeholder: {triple}."
-value = "the plugin's ah-engine.lock has no build for {triple}; the Node hooks stay in use - Fix: none, this platform is not released yet"
+value = "the plugin's ah-engine.lock has no build for {triple}, so no engine can be installed here and hook calls pass through unchecked (the optional Node backup, when installed, decides instead) - Fix: none, this platform is not released yet"
 
 [doctor_msg.why_signal]
 doc = "A program died of a signal. Placeholders: {sig}, {err}."
@@ -972,7 +972,7 @@ value = "daemon crash-looping: restarts halted for {secs}s more ({reason}) - Fix
 
 [doctor_msg.breaker]
 doc = "DMN-09. Placeholders: {secs}, {reason}."
-value = "client circuit breaker open for {secs}s more ({reason}); hooks use the Node fallback meanwhile - Fix: after fixing the cause: ah-engine reset"
+value = "client circuit breaker open for {secs}s more ({reason}); hook calls pass through unchecked meanwhile (the optional Node backup, when installed, decides instead) - Fix: after fixing the cause: ah-engine reset"
 
 [doctor_msg.failure_recorded]
 doc = "DMN-11. Placeholders: {class}, {reason}, {hint}."
@@ -1483,6 +1483,10 @@ value = "Codex hooks.json ({label}) has anti-hall hooks registered"
 [doctor_msg.codex_launcher_missing]
 doc = "A Codex registration still invokes the retired anti-hall shell launcher, and that launcher is missing. Placeholders: label, file."
 value = "Codex hooks point at a missing launcher ({label}: {file}) — run `ah-engine doctor --repair`"
+
+[doctor_msg.codex_node_entries]
+doc = "The Codex hooks file still runs Node-era anti-hall hooks (`node .../hooks/<name>.js`), whose scripts no longer ship. Placeholders: {label}, {file}, {n} (how many), {first} (the first command)."
+value = "Codex hooks.json ({label}: {file}) still runs {n} Node-era anti-hall hook(s) (first: {first}); they fail on every call because the scripts no longer ship, so no Codex guard runs - Fix: ah-engine install-codex --global (it replaces them and keeps a backup)"
 
 [doctor_msg.codex_unwired]
 doc = "The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}."
@@ -2458,7 +2462,7 @@ value = "the plugin ships no shell file besides hooks/install.sh"
 
 [doctor_l.msg_health_shim_bad]
 doc = "Placeholders: {path}, {first}."
-value = "{path} is not an sh shim for ah-hook (first line: {first}) - Fix: ah-engine doctor --repair regenerates it, or move it aside and the next session recreates it"
+value = "{path} is a retired Node launcher, not an sh shim for ah-hook (first line: {first}) - Fix: ah-engine doctor --repair moves it to <state>/retired/ (nothing is deleted)"
 
 [doctor_l.msg_health_shims_ok]
 doc = "Placeholders: {n}, {dir}."

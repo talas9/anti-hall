@@ -204,7 +204,7 @@ fn launcher_shims_must_be_sh_shims_without_node() {
         "#!/usr/bin/env node\nconsole.log(1)\n",
     );
     let (_, out) = k.doctor(&["--builtin"]);
-    assert!(out.contains("is not an sh shim for ah-hook"), "{out}");
+    assert!(out.contains("is a retired Node launcher, not an sh shim for ah-hook"), "{out}");
 }
 
 #[test]

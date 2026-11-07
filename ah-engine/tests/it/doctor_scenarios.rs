@@ -458,7 +458,7 @@ fn bin_07_08_09_marker_digest_and_versions() {
     sc2.stub_engine("0.0.9");
     sc2.marker("0.0.9");
     let d = sc2.doctor(&[]);
-    d.has("warn", &["engine 0.0.9 is installed but the plugin pins 0.1.0", "next session start"]);
+    d.has("warn", &["engine 0.0.9 is installed but the plugin pins 0.1.0", "only when the engine.bootstrap setting is on"]);
     assert_eq!(
         d.section("Engine install").into_iter().filter(|l| !l.contains("this doctor is engine")).collect::<Vec<_>>(),
         sc2.shell().section("Engine install")
@@ -472,7 +472,7 @@ fn bin_10_15_the_lock() {
     sc.stub_engine("0.1.0");
     sc.write_lock("0.1.0", &["riscv64-unknown-linux-gnu".to_string()]);
     let d = sc.doctor(&[]);
-    d.has("warn", &["the plugin's ah-engine.lock has no build for", "the Node hooks stay in use"]);
+    d.has("warn", &["the plugin's ah-engine.lock has no build for", "no engine can be installed here"]);
     fs::remove_file(sc.plugin.join("ah-engine.lock")).unwrap();
     let d = sc.doctor(&[]);
     d.has("warn", &["ah-engine.lock is missing or unreadable at", "No such file or directory (os error 2)"]);
@@ -784,7 +784,7 @@ fn dmn_08_09_crash_loop_and_breaker_with_the_recorded_failure() {
     fs::remove_file(state.join("crashloop.until")).unwrap();
     fs::write(state.join("breaker.until"), (now_ms() + 60_000).to_string()).unwrap();
     let d = sc.doctor(&[]);
-    d.has("warn", &["client circuit breaker open for", "hooks use the Node fallback meanwhile"]);
+    d.has("warn", &["client circuit breaker open for", "hook calls pass through unchecked meanwhile"]);
     assert_eq!(d.code, 0);
     // an expired cooldown is not reported
     fs::write(state.join("breaker.until"), (now_ms() - 1000).to_string()).unwrap();
