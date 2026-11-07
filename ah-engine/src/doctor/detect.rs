@@ -135,10 +135,10 @@ fn codex_node_entries(hooks_json: &Path) -> (usize, String) {
     for (_, groups) in as_obj(cfg.get("hooks")).into_iter().flatten() {
         for g in as_arr(Some(groups)) {
             for h in as_arr(g.get("hooks")) {
-                if let Some(J::Str(c)) = h.get("command") {
-                    if re.is_match(&c.replace('\\', "/")) {
-                        found.push(c.clone());
-                    }
+                if let Some(J::Str(c)) = h.get("command")
+                    && re.is_match(&c.replace('\\', "/"))
+                {
+                    found.push(c.clone());
                 }
             }
         }
