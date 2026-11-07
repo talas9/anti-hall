@@ -323,6 +323,9 @@ fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
         "fd -d 3 x ~",
         "fd --max-depth 1 x /Volumes",
         "find ~ -maxdepth 0 -name x",
+        "find /private -maxdepth 1 -name x",
+        "rg -d 2 foo .",
+        "fd -d 3 x .",
     ];
     let block = [
         "find ~ -iname x",
@@ -334,6 +337,16 @@ fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
         "find ~ -maxdepth abc -name x",
         "find / -maxdepth 1 -maxdepth 64 -name x", // the last depth flag wins
         "rg -d 1 -d 99 foo ~",
+        "rg -d 1 -d99 foo ~",
+        "rg -d 1 -d=99 foo ~",
+        "rg -d 1 -nd99 foo ~",
+        "rg -d 1 -nd 99 foo ~",
+        "rg -d 1 --maxdepth 99 foo ~",
+        "fd -d 1 -d9 x ~",
+        "fd -d 1 -Hd9 x ~",
+        "fd -d 1 --maxdepth 9 x ~",
+        "find /System/Volumes/Data -maxdepth 3 -name x",
+        "find /private -maxdepth 3 -name x",
         "find / -exec find {} -maxdepth 1 \\;",
         "find / -maxdepth 1 -exec grep -r foo {} +",
         "rg foo ~ -- -d 1",           // nothing after `--` is a flag

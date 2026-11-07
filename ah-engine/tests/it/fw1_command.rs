@@ -80,7 +80,7 @@ fn guard(p: &Value, env: &[(&str, &str)]) -> i32 {
 }
 
 #[test]
-fn gh_pr_ready_runs_inline_but_close_and_merge_stay_blocked() {
+fn gh_pr_ready_runs_inline_close_takes_the_unlisted_path_and_merge_stays_blocked() {
     // #547: a reversible PR state change (ready) is allowed in the main thread; close (it can carry --delete-branch) and merge are not
     let cwd = scratch("gh");
     let cwd = cwd.to_str().unwrap();

@@ -66,19 +66,23 @@ function wsPaths(words, spec) {
 
 // The depth limit (a number) the command `words` carries through one of spec.depth_flags (`-maxdepth 3`, `--max-depth=3`), or null when it
 // carries none. The LAST such flag wins, as the tools themselves do. Scanning stops at a spec.depth_stop_flags word (`--`); a
-// spec.depth_void_flags word (-exec, -x) means the command runs more than a bounded walk, so it carries no limit. A limit that is not a
+// spec.depth_void_flags word (-exec, -x) means the command runs more than a bounded walk, so it carries no limit. A word matching spec.depth_like_re that is not parsed above voids the limit. A limit that is not a
 // plain non-negative number is no limit.
 function wsDepth(words, spec) {
   var flags = spec.depth_flags || [], stop = spec.depth_stop_flags || [], voids = spec.depth_void_flags || [], last = null, i, j;
   for (i = 1; i < words.length; i++) {
     if (stop.indexOf(words[i]) >= 0) break;
     if (voids.indexOf(words[i]) >= 0) return null;
+    var like = spec.depth_like_re, matched = false;
     for (j = 0; j < flags.length; j++) {
       var v = null;
       if (words[i] === flags[j]) v = i + 1 < words.length ? words[i + 1] : null;
       else if (flags[j].indexOf('--') === 0 && words[i].indexOf(flags[j] + '=') === 0) v = words[i].slice(flags[j].length + 1);
+      if (v !== null) matched = true;
       if (v !== null) last = ah.re.test(ah.cfg('wide_search.depth_value_re'), 'r', v) ? parseInt(v, 10) : null;
     }
+    // a word the tool would read as a depth flag in a form not parsed above (attached, clustered, aliased): the bound is unknown
+    if (!matched && like && ah.re.test(like, 'r', words[i])) return null;
   }
   return last;
 }
