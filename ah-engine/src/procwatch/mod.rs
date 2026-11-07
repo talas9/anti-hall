@@ -215,7 +215,7 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
 fn census_scan(host: &mut dyn Host, sw: &mut Sweep, rows: &[host::ProcRow], state_dir: &Path) {
     let Some(cfg) = census::Cfg::load() else { return };
     // the sweep runs inside the daemon: the daemon is itself the one `serve` the census counts, so no pid is left out
-    let c = census::classify(host, rows, &cfg, &HashSet::new(), &|state| crate::doctor::runtime::live_state_dir(state));
+    let c = census::classify(host, rows, &cfg, &HashSet::new(), &|state| crate::doctor::runtime::live_state_key(state));
     if sw.census_alert.is_null() {
         sw.census_alert = std::fs::read_to_string(state_dir.join(defaults::text("procwatch.census_alert_file")))
             .ok()
@@ -227,11 +227,11 @@ fn census_scan(host: &mut dyn Host, sw: &mut Sweep, rows: &[host::ProcRow], stat
     if c.multi_instance() {
         crate::metrics::bump("engine_multi_instance", &[]);
         if !was_active {
-            let pids = c.serve.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+            let pids = c.serve_dup.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
             crate::health::log_event(
                 "census",
                 defaults::text("doctor.census_p0_kind"),
-                &defaults::render("doctor.census_event_detail", &[("n", &c.serve.len()), ("pids", &pids)]),
+                &defaults::render("doctor.census_event_detail", &[("n", &c.serve_dup.len()), ("pids", &pids)]),
             );
         }
     }

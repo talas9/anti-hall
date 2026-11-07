@@ -221,7 +221,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     canon(a) == canon(b)
 }
 
-fn real_home() -> Option<PathBuf> {
+pub(crate) fn real_home() -> Option<PathBuf> {
     // SAFETY: getpwuid reads the system passwd entry for this uid; a null result is handled below.
     let pwd = unsafe { libc::getpwuid(libc::getuid()) };
     if pwd.is_null() {
@@ -233,13 +233,21 @@ fn real_home() -> Option<PathBuf> {
 }
 
 pub(crate) fn live_state_dir(dir: &Path) -> bool {
-    let Some(home) = real_home() else { return false };
+    live_state_key(dir).is_some()
+}
+
+/// The canonical key of the installed live state directory `dir` is (the engine state or the live state, which are two directories of
+/// one install), `None` when it is neither. Two processes with the same key share a daemon lock.
+pub(crate) fn live_state_key(dir: &Path) -> Option<PathBuf> {
+    let home = real_home()?;
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     [
         home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")),
         home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.live_state_dir")),
     ]
     .iter()
-    .any(|p| same_path(dir, p))
+    .find(|p| same_path(dir, p))
+    .map(|p| canon(p))
 }
 
 pub(crate) fn state_from_env(env: &[(String, String)]) -> Option<PathBuf> {
@@ -293,9 +301,12 @@ pub fn census_lines(doc: &mut Doc, c: &crate::procwatch::census::Census) {
     let list = |v: &[u32]| v.iter().take(defaults::num("doctor.census_max_listed") as usize).map(u32::to_string).collect::<Vec<_>>().join(", ");
     doc.infol(c.line());
     if c.multi_instance() {
-        doc.bad(defaults::render("doctor.census_msg_p0", &[("n", &c.serve.len()), ("pids", &list(&c.serve))]));
-    } else if c.serve.is_empty() {
+        doc.bad(defaults::render("doctor.census_msg_p0", &[("n", &c.serve_dup.len()), ("pids", &list(&c.serve_dup))]));
+    } else if c.serve.is_empty() && c.serve_unknown.is_empty() {
         doc.infol(defaults::text("doctor.census_msg_no_serve").to_string());
+    }
+    if !c.serve_unknown.is_empty() {
+        doc.infol(defaults::render("doctor.census_msg_serve_unknown", &[("n", &c.serve_unknown.len()), ("pids", &list(&c.serve_unknown))]));
     }
     if !c.legacy.is_empty() {
         doc.warnl(defaults::render("doctor.census_msg_legacy", &[("n", &c.legacy.len()), ("pids", &list(&c.legacy))]));
@@ -427,6 +438,8 @@ mod tests {
     struct FakeHost {
         rows: Vec<ProcRow>,
         env: Vec<(String, String)>,
+        /// Pids whose environment cannot be read (the process exited during the scan).
+        env_missing: Vec<u32>,
     }
 
     impl Host for FakeHost {
@@ -439,8 +452,8 @@ mod tests {
         fn proc_row(&mut self, _: u32) -> Option<ProcRow> {
             None
         }
-        fn environ(&mut self, _: u32) -> Option<Vec<(String, String)>> {
-            Some(self.env.clone())
+        fn environ(&mut self, pid: u32) -> Option<Vec<(String, String)>> {
+            (!self.env_missing.contains(&pid)).then(|| self.env.clone())
         }
         fn cwd(&mut self, _: u32) -> Option<PathBuf> {
             None
@@ -468,6 +481,7 @@ mod tests {
         let mut host = FakeHost {
             rows: vec![ProcRow { pid: 4242, ppid: 1, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: format!("/x/{exe} {}", defaults::text("health.serve_arg")) }],
             env: vec![(defaults::env_name("dir").to_string(), state.to_string_lossy().into_owned())],
+            env_missing: Vec::new(),
         };
         let rows = non_live_serve_processes(&mut host);
         assert_eq!(rows, vec![(4242, paths::socket_in(&state))]);
@@ -489,8 +503,12 @@ mod tests {
                     cmd: "/h/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto".to_string(),
                 },
             ],
-            // an unreadable-or-live state: the fake environment names no state directory, so both count as live
-            env: Vec::new(),
+            // both daemons run on the one installed live state directory
+            env: vec![(
+                defaults::env_name("dir").to_string(),
+                real_home().unwrap().join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")).to_string_lossy().into_owned(),
+            )],
+            env_missing: Vec::new(),
         };
         let cfg = crate::procwatch::census::Cfg::load().expect("shipped census config");
         let c = crate::procwatch::census::take(&mut host, &cfg);
@@ -509,6 +527,15 @@ mod tests {
         ok.head("engine");
         census_lines(&mut ok, &crate::procwatch::census::take(&mut host, &cfg));
         assert_eq!(ok.fail, 0);
+        // a daemon whose environment cannot be read (it exited mid-scan) is shown as unknown and is never the P0
+        host.rows.push(ProcRow { pid: 13, ppid: 1, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: "/h/.anti-hall/ah-engine/bin/ah-engine serve".to_string() });
+        host.env_missing = vec![13];
+        let mut unk = Doc::default();
+        unk.head("engine");
+        census_lines(&mut unk, &crate::procwatch::census::take(&mut host, &cfg));
+        let body = unk.body();
+        assert_eq!(unk.fail, 0, "{body}");
+        assert!(body.contains("1 engine daemons with an unreadable state directory (pids 13)"), "{body}");
     }
 
     #[test]

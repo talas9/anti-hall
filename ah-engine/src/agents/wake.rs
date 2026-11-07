@@ -68,6 +68,32 @@ fn acquire(stamp: &Path) -> Option<std::fs::File> {
     crate::health::flock(&file, libc::LOCK_EX | libc::LOCK_NB).then_some(file)
 }
 
+/// The lease a predecessor of this process handed over across `exec` (see [`rebin_exec`]): the descriptor named by the successor
+/// environment variable, taken only when it is open, is the same file as this session's lease file, and holds the lock. The variable
+/// is removed and the descriptor is close-on-exec again, so nothing else inherits it. `None` for a watcher started the usual way.
+fn adopt_lease(stamp: &Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::io::FromRawFd;
+    let var = defaults::text("wake_watch.env_rebin_lease");
+    let fd: i32 = std::env::var(var).ok()?.trim().parse().ok().filter(|f| *f > 2)?;
+    // SAFETY: remove_var is only unsafe in a multi-threaded process; this runs once at startup before the watcher spawns any thread.
+    unsafe { std::env::remove_var(var) };
+    // SAFETY: fcntl(F_GETFD) only reads the flags of `fd`; an fd that is not open returns -1 and is refused below.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return None;
+    }
+    // SAFETY: `fd` is open (checked above) and was left for this process by the predecessor, which no longer uses it; the File owns it from here.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let (mine, theirs) = (file.metadata().ok()?, std::fs::metadata(crate::paths::lock_for(stamp)).ok()?);
+    if (mine.dev(), mine.ino()) != (theirs.dev(), theirs.ino()) {
+        return None; // not the lease file (dropping `file` closes the stray descriptor)
+    }
+    // SAFETY: fcntl(F_SETFD) on the owned open `fd` only sets its close-on-exec flag.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    // the lock came across the exec on the same open file description; re-taking it is a no-op for the holder and refuses a stray file
+    crate::health::flock(&file, libc::LOCK_EX | libc::LOCK_NB).then_some(file)
+}
+
 /// Another live watcher already holds a fresh stamp for this session.
 fn held_elsewhere(env: &Env, path: &Path) -> bool {
     let fresh = crate::checks::agent_scan::mtime_ms(path).is_some_and(|m| env.now_ms.saturating_sub(m as u64) <= lim("stale_lock_ms"));
@@ -125,7 +151,7 @@ pub(crate) fn run(p: &Parsed) -> i32 {
     let armed = WakeFeed::stamp(&env, &sid);
     // Hold a kernel lock for the whole watcher lifetime: the old check-then-stamp race let two starters both enter pump.
     // The separate stable inode stays locked while the JSON stamp is atomically replaced by each renewal.
-    let Some(lease) = acquire(&armed) else { return refuse(defaults::text("msg.agent_wake_reason_held")) };
+    let Some(lease) = adopt_lease(&armed).or_else(|| acquire(&armed)) else { return refuse(defaults::text("msg.agent_wake_reason_held")) };
     if held_elsewhere(&env, &armed) {
         return refuse(defaults::text("msg.agent_wake_reason_held"));
     }
@@ -177,19 +203,26 @@ impl Rebin {
     }
 }
 
-/// Replace this process with the engine binary now at `path`, same arguments, same stdio. The lease is released first (the successor
-/// takes it itself), and the rows the loop held were flushed before the loop returned. When the exec fails a line says so and the
+/// Replace this process with the engine binary now at `path`, same arguments, same stdio. The lease is handed to the successor: its
+/// descriptor is kept open across the exec (close-on-exec cleared) and named in the successor's environment, and the kernel lock on it
+/// survives the exec, so no other starter can take the session's lease in between. The rows the loop held were flushed before the loop
+/// returned. When the exec fails a line says so and the
 /// watcher ends: never a silent stale one.
 fn rebin_exec(lease: std::fs::File, path: &Path) -> i32 {
+    use std::os::unix::io::AsRawFd;
     use std::os::unix::process::CommandExt;
-    drop(lease);
+    let fd = lease.as_raw_fd();
+    // SAFETY: fcntl(F_SETFD, 0) on the open lease descriptor clears close-on-exec so the lock holder survives the exec.
+    let kept = unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } == 0;
     emit(&defaults::render("wake_watch.line_rebin", &[("path", &path.display())]));
     crate::metrics::bump_shared("wake_rebin", &[("result", "exec")]);
     crate::telemetry::emit::flush();
-    let err = std::process::Command::new(path)
-        .args(std::env::args().skip(1))
-        .env(defaults::text("wake_watch.env_rebin"), (crate::health::now_ms() / 1000).to_string())
-        .exec(); // only returns on failure
+    let mut cmd = std::process::Command::new(path);
+    cmd.args(std::env::args().skip(1)).env(defaults::text("wake_watch.env_rebin"), (crate::health::now_ms() / 1000).to_string());
+    if kept {
+        cmd.env(defaults::text("wake_watch.env_rebin_lease"), fd.to_string());
+    }
+    let err = cmd.exec(); // only returns on failure; `lease` is still open here and drops with this frame
     crate::metrics::bump_shared("wake_rebin", &[("result", "exec_failed")]);
     crate::telemetry::emit::flush();
     eprint!("{}", defaults::render("wake_watch.diag_rebin_failed", &[("path", &path.display()), ("why", &err)]));
@@ -297,7 +330,7 @@ fn drain_count(feed: &Path, offset: u64) -> u64 {
 }
 
 #[cfg(test)]
-mod rebin_tests {
+mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
@@ -358,5 +391,54 @@ mod rebin_tests {
         crate::defaults::init().unwrap();
         assert!(defaults::raw("agent_tracker.wake_rebin_enabled").get("default").and_then(|v| v.as_bool()).unwrap_or(false));
         assert!(defaults::num("agent_tracker.wake_rebin_check_ms") >= 1);
+    }
+
+    fn stamp_in(tag: &str) -> std::path::PathBuf {
+        crate::defaults::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("wake-lease-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("armed.json")
+    }
+
+    #[test]
+    fn the_lease_stays_held_by_the_successor_across_the_exec_and_is_adopted() {
+        use std::os::unix::io::AsRawFd;
+        let stamp = stamp_in("handover");
+        let lease = acquire(&stamp).expect("first lease");
+        assert!(acquire(&stamp).is_none(), "held");
+        let fd = lease.as_raw_fd();
+        // the hand-over: close-on-exec cleared, the descriptor inherited by the successor process
+        // SAFETY: fcntl(F_SETFD, 0) on the open descriptor of `lease`.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+        let mut successor = std::process::Command::new("sleep").arg("30").spawn().expect("sleep");
+        drop(lease); // the predecessor's copy is gone; only the successor's inherited descriptor holds the lock
+        assert!(acquire(&stamp).is_none(), "no gap: another starter cannot take the lease while the successor holds it");
+        // the successor adopts the descriptor it was handed (here: this process stands in for it)
+        let dup = std::fs::OpenOptions::new().read(true).write(true).open(crate::paths::lock_for(&stamp)).unwrap();
+        assert!(!crate::health::flock(&dup, libc::LOCK_EX | libc::LOCK_NB), "the lock is held by the child's descriptor");
+        successor.kill().unwrap();
+        successor.wait().unwrap();
+        assert!(acquire(&stamp).is_some(), "the lease frees when the successor ends");
+    }
+
+    #[test]
+    fn adopt_lease_takes_only_the_descriptor_of_the_sessions_own_lease_file() {
+        use std::os::unix::io::IntoRawFd;
+        let stamp = stamp_in("adopt");
+        assert!(adopt_lease(&stamp).is_none(), "no variable: a watcher started the usual way");
+        let other = std::fs::File::create(stamp.with_file_name("other.lock")).unwrap().into_raw_fd();
+        // SAFETY: single-threaded test process; sets the variable the successor reads.
+        unsafe { std::env::set_var(defaults::text("wake_watch.env_rebin_lease"), other.to_string()) };
+        assert!(adopt_lease(&stamp).is_none(), "a descriptor of another file is refused");
+        assert!(std::env::var(defaults::text("wake_watch.env_rebin_lease")).is_err(), "the variable is consumed");
+        let lease = acquire(&stamp).expect("lease");
+        let fd = std::os::unix::io::AsRawFd::as_raw_fd(&lease);
+        std::mem::forget(lease); // the predecessor's descriptor, now owned by the "successor"
+        // SAFETY: as above.
+        unsafe { std::env::set_var(defaults::text("wake_watch.env_rebin_lease"), fd.to_string()) };
+        let adopted = adopt_lease(&stamp).expect("adopted");
+        assert!(acquire(&stamp).is_none(), "still held");
+        drop(adopted);
+        assert!(acquire(&stamp).is_some());
     }
 }

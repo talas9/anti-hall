@@ -647,7 +647,7 @@ mod consistency_tests {
         let later = now + (defaults::num("statusline.census_max_age_s") as f64 + 60.0) * 1000.0;
         assert_eq!(census_chip_from(&f, later, &plain, " | "), "");
         assert_eq!(census_chip_from(&f.with_extension("gone"), now, &plain, " | "), "");
-        let two = crate::procwatch::census::Census { serve: vec![7, 8], legacy: vec![9], ..Default::default() };
+        let two = crate::procwatch::census::Census { serve: vec![7, 8], serve_dup: vec![7, 8], legacy: vec![9], ..Default::default() };
         let f2 = census_file("two", &two);
         assert!(census_chip_from(&f2, now, &plain, " | ").contains("serve=2 "));
     }

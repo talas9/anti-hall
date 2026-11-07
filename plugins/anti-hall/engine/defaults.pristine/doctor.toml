@@ -2532,13 +2532,13 @@ doc = "1: doctor, the process sweep and the statusline count the engine processe
 value = 1
 
 [doctor.census_classes]
-doc = "Census classes, first match wins; cmd_re is tested against the full command line, anchored at the program. name: the class; stale_check: also compare the running image with the current engine binary (a replaced image counts as stale). serve: the daemon (exactly 1 expected); legacy_watcher: the old per-session wake watchers (warn and count, never stopped); stub: a thin per-session stub (none ships, expected 0); job: a scheduled subprocess job (its parent is the daemon); hook_client: any other engine process (a hook or CLI call, short-lived)."
+doc = "Census classes, first match wins; cmd_re is tested against the full command line, anchored at the program; a directory in the path may hold single spaces. name: the class; stale_check: also compare the running image with the current engine binary (a replaced image counts as stale). serve: the daemon (exactly 1 expected); legacy_watcher: the old per-session wake watchers (warn and count, never stopped); stub: a thin per-session stub (none ships, expected 0); job: a scheduled subprocess job (its parent is the daemon); hook_client: any other engine process (a hook or CLI call, short-lived)."
 value = [
-  { name = "serve", cmd_re = '^(\S*/)?ah-engine\s+serve(\s|$)', stale_check = true },
-  { name = "legacy_watcher", cmd_re = '^(\S*/)?ah-engine\s+(agents|devswarm)\s+wake-watch(\s|$)', stale_check = true },
-  { name = "stub", cmd_re = '^(\S*/)?ah-hook\s+watch(\s|$)', stale_check = false },
-  { name = "job", cmd_re = '^(\S*/)?ah-engine\s+(maintain|backup|jev_sweep|jev\s+arrival|handovers\s+index|agent_tick|gh_poll|refresh|mcp-reaper\s+run|engine-update)(\s|$)', stale_check = true },
-  { name = "hook_client", cmd_re = '^(\S*/)?ah-engine(\s|$)', stale_check = true },
+  { name = "serve", cmd_re = '^(?:(?:/[^/\s]+(?: [^/\s-][^/\s]*)*)*/)?ah-engine\s+serve(\s|$)', stale_check = true },
+  { name = "legacy_watcher", cmd_re = '^(?:(?:/[^/\s]+(?: [^/\s-][^/\s]*)*)*/)?ah-engine\s+(agents|devswarm)\s+wake-watch(\s|$)', stale_check = true },
+  { name = "stub", cmd_re = '^(?:(?:/[^/\s]+(?: [^/\s-][^/\s]*)*)*/)?ah-hook\s+watch(\s|$)', stale_check = false },
+  { name = "job", cmd_re = '^(?:(?:/[^/\s]+(?: [^/\s-][^/\s]*)*)*/)?ah-engine\s+(maintain|backup|jev_sweep|jev\s+arrival|handovers\s+index|agent_tick|gh_poll|refresh|mcp-reaper\s+run|engine-update)(\s|$)', stale_check = true },
+  { name = "hook_client", cmd_re = '^(?:(?:/[^/\s]+(?: [^/\s-][^/\s]*)*)*/)?ah-engine(\s|$)', stale_check = true },
 ]
 
 [doctor.census_class_serve]
@@ -2593,6 +2593,10 @@ value = "engine: serve={serve} jobs={jobs} clients={clients} stubs={stubs}/{sess
 [doctor.census_msg_p0]
 doc = "P0: more than one live engine daemon. {n}, {pids}."
 value = "P0 engine_multi_instance: {n} engine daemons run for this state (exactly 1 is the design), pids {pids}. Nothing was stopped; check with `ah-hook doctor`, then end the extra ones by hand"
+
+[doctor.census_msg_serve_unknown]
+doc = "Engine daemons whose state directory could not be read (the process may have exited during the scan). {n}, {pids}. Shown, never part of the P0 condition."
+value = "{n} engine daemons with an unreadable state directory (pids {pids}); not counted as live, re-checked at the next scan"
 
 [doctor.census_msg_no_serve]
 doc = "No live engine daemon was found by the process list (it starts on the next hook call)."

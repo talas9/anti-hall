@@ -243,6 +243,11 @@ fn a_second_live_daemon_writes_one_p0_alert_that_aggregates_and_nothing_is_signa
         ],
         ..Fake::default()
     };
+    // both daemons run on the installed live state directory (the sweep tells it from the real home)
+    let live = crate::doctor::runtime::real_home().unwrap().join(crate::defaults::text("paths.base_dir")).join(crate::defaults::text("paths.state_dir"));
+    for pid in [500, 501] {
+        f.envs.insert(pid, vec![(crate::defaults::env_name("dir").to_string(), live.to_string_lossy().into_owned())]);
+    }
     let state = h.join("state");
     let mut sw = Sweep::default();
     let run = |f: &mut Fake, sw: &mut Sweep| run_with(f, sw, &state, &h.to_string_lossy(), &|_, _, _| {}).expect("sweep");

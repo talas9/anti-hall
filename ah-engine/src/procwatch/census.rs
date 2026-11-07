@@ -74,6 +74,12 @@ pub struct Census {
     pub serve: Vec<u32>,
     /// `ah-engine serve` processes of another state directory (a test run, a second setup).
     pub serve_nonlive: Vec<u32>,
+    /// `ah-engine serve` processes whose state directory could not be told (the environment is unreadable or names none, e.g. the process
+    /// exited mid-sweep). Counted and shown, never part of the P0 condition.
+    pub serve_unknown: Vec<u32>,
+    /// The live `serve` processes that share a state directory with another one (the P0 condition: one state directory, more than one
+    /// daemon). A live serve alone on its own state directory is not here.
+    pub serve_dup: Vec<u32>,
     /// Scheduled jobs the daemon started.
     pub jobs: Vec<u32>,
     /// Other `ah-engine` processes (hook calls, CLI calls), short-lived.
@@ -91,9 +97,9 @@ pub struct Census {
 }
 
 impl Census {
-    /// More than one long-lived `serve`: the P0 condition.
+    /// More than one long-lived `serve` on ONE state directory: the P0 condition.
     pub fn multi_instance(&self) -> bool {
-        self.serve.len() > 1
+        !self.serve_dup.is_empty()
     }
 
     /// The one census line every surface prints.
@@ -120,11 +126,13 @@ impl Census {
             "ts_s": self.ts_s,
             "line": self.line(),
             "counts": {
-                "serve": self.serve.len(), "serve_nonlive": self.serve_nonlive.len(), "job": self.jobs.len(), "hook_client": self.clients.len(),
+                "serve": self.serve.len(), "serve_nonlive": self.serve_nonlive.len(), "serve_unknown": self.serve_unknown.len(),
+                "serve_dup": self.serve_dup.len(), "job": self.jobs.len(), "hook_client": self.clients.len(),
                 "legacy_watcher": self.legacy.len(), "stub": self.stubs.len(), "stale_binary": self.stale.len(), "slow": self.slow.len(), "sessions": self.sessions,
             },
             "pids": {
-                "serve": pids(&self.serve), "serve_nonlive": pids(&self.serve_nonlive), "job": pids(&self.jobs), "hook_client": pids(&self.clients),
+                "serve": pids(&self.serve), "serve_nonlive": pids(&self.serve_nonlive), "serve_unknown": pids(&self.serve_unknown),
+                "serve_dup": pids(&self.serve_dup), "job": pids(&self.jobs), "hook_client": pids(&self.clients),
                 "legacy_watcher": pids(&self.legacy), "stub": pids(&self.stubs), "stale_binary": pids(&self.stale), "slow": pids(&self.slow),
             },
             "multi_instance": self.multi_instance(),
@@ -147,6 +155,8 @@ impl Census {
             ts_s: v["ts_s"].as_u64()?,
             serve: pad("serve"),
             serve_nonlive: pad("serve_nonlive"),
+            serve_unknown: pad("serve_unknown"),
+            serve_dup: pad("serve_dup"),
             jobs: pad("job"),
             clients: pad("hook_client"),
             legacy: pad("legacy_watcher"),
@@ -158,9 +168,15 @@ impl Census {
     }
 }
 
-/// Count the engine processes in `rows`. `is_live_state` says whether a state directory is the installed live one; `own` are the pids
-/// never counted (this process and its ancestors: the caller that asks is not a finding).
-pub fn classify(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, own: &HashSet<u32>, is_live_state: &dyn Fn(&Path) -> bool) -> Census {
+/// The state directory a process environment names: the explicit directory variable, else the one under its home.
+fn state_of(env: &[(String, String)]) -> Option<PathBuf> {
+    env_get(env, defaults::env_name("dir")).filter(|d| !d.is_empty()).map(PathBuf::from).or_else(|| crate::doctor::runtime::state_from_env(env))
+}
+
+/// Count the engine processes in `rows`. `live_key` maps a state directory to the canonical key of the installed live one it is (`None`
+/// when it is some other directory); `own` are the pids never counted (this process and its ancestors: the caller that asks is not a
+/// finding). A serve whose environment cannot be read is counted apart (`serve_unknown`), never as live.
+pub fn classify(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, own: &HashSet<u32>, live_key: &dyn Fn(&Path) -> Option<PathBuf>) -> Census {
     let now = host.now_s();
     let mut c = Census { ts_s: now, ..Census::default() };
     let current = crate::procid::file_ident(&cfg.current_bin);
@@ -168,29 +184,44 @@ pub fn classify(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, own: &HashSet<
     let is = |k: &Class, key: &str| k.name == defaults::text(key);
     // pass 1: the daemons, so a job can be told from a client by its parent
     let mut daemons: HashSet<u32> = HashSet::new();
+    // daemons of another state directory or of an unknown one: their children are not this install's jobs
+    let mut foreign: HashSet<u32> = HashSet::new();
+    let mut by_state: std::collections::BTreeMap<PathBuf, Vec<u32>> = std::collections::BTreeMap::new();
     for r in rows.iter().filter(|r| !own.contains(&r.pid)) {
         if class_of(&r.cmd).is_some_and(|k| is(k, "doctor.census_class_serve")) {
-            daemons.insert(r.pid);
-            let live = host
-                .environ(r.pid)
-                .and_then(|e| {
-                    env_get(&e, defaults::env_name("dir")).filter(|d| !d.is_empty()).map(PathBuf::from).or_else(|| crate::doctor::runtime::state_from_env(&e))
-                })
-                .is_none_or(|state| is_live_state(&state));
-            if live {
-                c.serve.push(r.pid);
-            } else {
-                c.serve_nonlive.push(r.pid);
+            match host.environ(r.pid).as_deref().and_then(state_of) {
+                None => {
+                    c.serve_unknown.push(r.pid);
+                    foreign.insert(r.pid);
+                }
+                Some(state) => match live_key(&state) {
+                    Some(key) => {
+                        daemons.insert(r.pid);
+                        c.serve.push(r.pid);
+                        by_state.entry(key).or_default().push(r.pid);
+                    }
+                    None => {
+                        c.serve_nonlive.push(r.pid);
+                        foreign.insert(r.pid);
+                    }
+                },
             }
         }
     }
+    c.serve_dup = by_state.into_values().filter(|v| v.len() > 1).flatten().collect();
     for r in rows.iter().filter(|r| !own.contains(&r.pid)) {
         if cfg.session_re.is_match(&r.cmd) {
             c.sessions += 1;
         }
         let Some(k) = class_of(&r.cmd) else { continue };
         let age = now.saturating_sub(r.start_s);
-        if is(k, "doctor.census_class_serve") {
+        let is_serve = is(k, "doctor.census_class_serve");
+        // a scratch or test tree (a child of a foreign daemon, or a process whose own state directory is not the live one) is not this
+        // install's: it makes no job, client, legacy watcher, stale image or slow process
+        if !is_serve && (foreign.contains(&r.ppid) || host.environ(r.pid).as_deref().and_then(state_of).is_some_and(|s| live_key(&s).is_none())) {
+            continue;
+        }
+        if is_serve {
             // counted in pass 1
         } else if is(k, "doctor.census_class_legacy") {
             c.legacy.push(r.pid);
@@ -208,13 +239,25 @@ pub fn classify(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, own: &HashSet<
             }
         }
         if k.stale_check
+            && !foreign.contains(&r.pid)
             && let (Some(now_id), Some(run_id)) = (current, host.exe_ident(r.pid))
             && now_id != run_id
         {
             c.stale.push(r.pid);
         }
     }
-    for v in [&mut c.serve, &mut c.serve_nonlive, &mut c.jobs, &mut c.clients, &mut c.legacy, &mut c.stubs, &mut c.stale, &mut c.slow] {
+    for v in [
+        &mut c.serve,
+        &mut c.serve_nonlive,
+        &mut c.serve_unknown,
+        &mut c.serve_dup,
+        &mut c.jobs,
+        &mut c.clients,
+        &mut c.legacy,
+        &mut c.stubs,
+        &mut c.stale,
+        &mut c.slow,
+    ] {
         v.sort_unstable();
         v.dedup();
     }
@@ -225,7 +268,7 @@ pub fn classify(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, own: &HashSet<
 pub fn take(host: &mut dyn Host, cfg: &Cfg) -> Census {
     let rows = host.procs();
     let own = super::own_pids(&rows);
-    classify(host, &rows, cfg, &own, &|state| crate::doctor::runtime::live_state_dir(state))
+    classify(host, &rows, cfg, &own, &|state| crate::doctor::runtime::live_state_key(state))
 }
 
 static LATEST: Mutex<Option<Census>> = Mutex::new(None);
@@ -254,7 +297,7 @@ pub fn alert_doc(prev: &Value, c: &Census) -> Value {
     let active = c.multi_instance();
     if active {
         count += 1;
-        occ.push(json!({"ts_s": c.ts_s, "serve": c.serve.len()}));
+        occ.push(json!({"ts_s": c.ts_s, "serve": c.serve_dup.len()}));
         if occ.len() > max_occ {
             occ.drain(..occ.len() - max_occ);
         }
@@ -262,7 +305,7 @@ pub fn alert_doc(prev: &Value, c: &Census) -> Value {
     json!({
         "kind": kind, "severity": defaults::text("doctor.census_p0_severity"), "active": active,
         "count": count, "first_ts_s": first, "last_ts_s": if active { c.ts_s } else { prev["last_ts_s"].as_u64().unwrap_or(0) },
-        "details": {"serve": c.serve.len(), "pids": c.serve.iter().take(max_listed).copied().collect::<Vec<u32>>()},
+        "details": {"serve": c.serve_dup.len(), "pids": c.serve_dup.iter().take(max_listed).copied().collect::<Vec<u32>>()},
         "occurrences": occ,
     })
 }
@@ -272,10 +315,14 @@ mod tests {
     use super::*;
     use crate::procwatch::host::{MemInfo, Pressure, Space};
 
+    type Env = Option<Vec<(String, String)>>;
+
     struct Fake {
         rows: Vec<ProcRow>,
         idents: Vec<(u32, (u64, u64))>,
         env: Vec<(String, String)>,
+        /// A per-pid environment that replaces `env`; `None` is an environment that cannot be read.
+        env_of: Vec<(u32, Env)>,
         signals: usize,
     }
 
@@ -289,8 +336,11 @@ mod tests {
         fn proc_row(&mut self, _: u32) -> Option<ProcRow> {
             None
         }
-        fn environ(&mut self, _: u32) -> Option<Vec<(String, String)>> {
-            Some(self.env.clone())
+        fn environ(&mut self, pid: u32) -> Option<Vec<(String, String)>> {
+            match self.env_of.iter().find(|(p, _)| *p == pid) {
+                Some((_, e)) => e.clone(),
+                None => Some(self.env.clone()),
+            }
         }
         fn cwd(&mut self, _: u32) -> Option<PathBuf> {
             None
@@ -337,12 +387,12 @@ mod tests {
     }
 
     fn fake(rows: Vec<ProcRow>) -> Fake {
-        Fake { rows, idents: Vec::new(), env: vec![(defaults::env_name("dir").to_string(), "/live".to_string())], signals: 0 }
+        Fake { rows, idents: Vec::new(), env: vec![(defaults::env_name("dir").to_string(), "/live".to_string())], env_of: Vec::new(), signals: 0 }
     }
 
     fn run(f: &mut Fake, cfg: &Cfg) -> Census {
         let rows = f.rows.clone();
-        classify(f, &rows, cfg, &HashSet::new(), &|s| s == Path::new("/live"))
+        classify(f, &rows, cfg, &HashSet::new(), &|s| (s == Path::new("/live") || s == Path::new("/live2")).then(|| s.to_path_buf()))
     }
 
     #[test]
@@ -379,7 +429,7 @@ mod tests {
         );
         assert_eq!(again["occurrences"].as_array().unwrap().len(), 2);
         // the condition clears: the document stays (history), inactive
-        let cleared = alert_doc(&again, &Census { serve: vec![100], ..c.clone() });
+        let cleared = alert_doc(&again, &Census { serve: vec![100], serve_dup: Vec::new(), ..c.clone() });
         assert_eq!((cleared["active"].clone(), cleared["count"].clone()), (json!(false), json!(2)));
         assert_eq!(f.signals, 0);
     }
@@ -390,7 +440,7 @@ mod tests {
         let cap = defaults::num("procwatch.census_max_occurrences") as usize;
         let mut doc = Value::Null;
         for i in 0..cap + 7 {
-            doc = alert_doc(&doc, &Census { ts_s: i as u64, serve: vec![1, 2], ..Census::default() });
+            doc = alert_doc(&doc, &Census { ts_s: i as u64, serve: vec![1, 2], serve_dup: vec![1, 2], ..Census::default() });
         }
         assert_eq!(doc["occurrences"].as_array().unwrap().len(), cap);
         assert_eq!(doc["count"], json!(cap + 7));
@@ -407,6 +457,80 @@ mod tests {
         let c = run(&mut f, &cfg);
         assert_eq!((c.serve.len(), c.serve_nonlive.len()), (0, 2));
         assert!(!c.multi_instance());
+    }
+
+    fn env_dir(d: &str) -> Env {
+        Some(vec![(defaults::env_name("dir").to_string(), d.to_string())])
+    }
+
+    #[test]
+    fn a_serve_whose_environment_cannot_be_read_is_unknown_and_never_the_p0() {
+        crate::defaults::init().unwrap();
+        let cfg = cfg_with_bin(&temp_bin("unknown"));
+        let mut f = fake(vec![row(100, 1, 5000, &format!("{BIN} serve")), row(101, 1, 40, &format!("{BIN} serve"))]);
+        // 101 exited mid-sweep (no environment), 102 has an environment that names no state directory
+        f.rows.push(row(102, 1, 40, &format!("{BIN} serve")));
+        f.env_of = vec![(101, None), (102, Some(vec![("PATH".to_string(), "/bin".to_string())]))];
+        let c = run(&mut f, &cfg);
+        assert_eq!((c.serve.clone(), c.serve_unknown.clone(), c.serve_nonlive.len()), (vec![100], vec![101, 102], 0));
+        assert!(!c.multi_instance(), "an unreadable serve is not a second live daemon");
+        assert_eq!(alert_doc(&Value::Null, &c)["active"], json!(false));
+        assert_eq!(c.to_json()["counts"]["serve_unknown"], 2);
+        assert_eq!(Census::from_json(&c.to_json()).unwrap().serve_unknown.len(), 2);
+    }
+
+    #[test]
+    fn the_p0_needs_two_serves_on_one_state_directory_not_one_on_each() {
+        crate::defaults::init().unwrap();
+        let cfg = cfg_with_bin(&temp_bin("states"));
+        let mut f = fake(vec![row(100, 1, 5000, &format!("{BIN} serve")), row(101, 1, 40, &format!("{BIN} serve"))]);
+        f.env_of = vec![(100, env_dir("/live")), (101, env_dir("/live2"))];
+        let c = run(&mut f, &cfg);
+        assert_eq!((c.serve.clone(), c.multi_instance()), (vec![100, 101], false), "one serve on each live state directory");
+        f.env_of = vec![(100, env_dir("/live2")), (101, env_dir("/live2"))];
+        let c = run(&mut f, &cfg);
+        assert!(c.multi_instance());
+        assert_eq!(c.serve_dup, vec![100, 101]);
+        // a third serve alone on the other directory is not part of the duplicate group
+        f.rows.push(row(102, 1, 40, &format!("{BIN} serve")));
+        f.env_of.push((102, env_dir("/live")));
+        let c = run(&mut f, &cfg);
+        assert_eq!((c.serve.len(), c.serve_dup.clone()), (3, vec![100, 101]));
+        assert_eq!(alert_doc(&Value::Null, &c)["details"]["pids"], json!([100, 101]));
+    }
+
+    #[test]
+    fn a_scratch_tree_makes_no_stale_slow_or_job() {
+        crate::defaults::init().unwrap();
+        let bin = temp_bin("scratch");
+        let cfg = cfg_with_bin(&bin);
+        let now = crate::procid::file_ident(&bin).unwrap();
+        let mut f = fake(vec![
+            row(100, 1, 5000, &format!("{BIN} serve")),
+            row(500, 1, 5000, "/scratch/h/.anti-hall/ah-engine/bin/ah-engine serve"),
+            row(501, 500, 5, "/scratch/h/.anti-hall/ah-engine/bin/ah-engine maintain --json"),
+            row(502, 500, defaults::num("doctor.census_job_max_age_s") + 5, "/scratch/h/.anti-hall/ah-engine/bin/ah-engine backup --json"),
+            row(503, 1, 100_000, "/scratch/h/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto"),
+        ]);
+        f.env_of = vec![(500, env_dir("/scratch")), (503, env_dir("/scratch"))];
+        // every scratch process runs an image that differs from the current binary
+        f.idents = vec![(100, now), (500, (now.0, now.1 + 1)), (501, (now.0, now.1 + 1)), (502, (now.0, now.1 + 1)), (503, (now.0, now.1 + 1))];
+        let c = run(&mut f, &cfg);
+        assert_eq!((c.serve.clone(), c.serve_nonlive.clone()), (vec![100], vec![500]));
+        assert!(c.jobs.is_empty() && c.clients.is_empty() && c.legacy.is_empty(), "{c:?}");
+        assert!(c.stale.is_empty() && c.slow.is_empty(), "scratch daemons make no stale or slow: {c:?}");
+    }
+
+    #[test]
+    fn the_class_patterns_match_a_path_with_spaces_and_not_an_argument_that_names_the_binary() {
+        crate::defaults::init().unwrap();
+        let cfg = cfg_with_bin(&temp_bin("spaces"));
+        let kind = |cmd: &str| cfg.classes.iter().find(|k| k.cmd.is_match(cmd)).map(|k| k.name.clone());
+        assert_eq!(kind("/Users/John Doe/.anti-hall/ah-engine/bin/ah-engine serve --start-reason x").as_deref(), Some("serve"));
+        assert_eq!(kind("/Users/John Doe/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto").as_deref(), Some("legacy_watcher"));
+        assert_eq!(kind("/Users/John Doe/.anti-hall/ah-engine/bin/ah-engine maintain --json").as_deref(), Some("job"));
+        assert_eq!(kind("ah-engine serve").as_deref(), Some("serve"));
+        assert_eq!(kind("/usr/bin/grep -r pattern /x/ah-engine serve"), None, "an argument that names the binary is not the binary");
     }
 
     #[test]
@@ -470,7 +594,16 @@ mod tests {
     #[test]
     fn the_census_round_trips_through_its_json() {
         crate::defaults::init().unwrap();
-        let c = Census { ts_s: 5, serve: vec![1], legacy: vec![2, 3], stale: vec![2], sessions: 4, ..Census::default() };
+        let c = Census {
+            ts_s: 5,
+            serve: vec![1],
+            serve_unknown: vec![9],
+            serve_dup: vec![1, 2],
+            legacy: vec![2, 3],
+            stale: vec![2],
+            sessions: 4,
+            ..Census::default()
+        };
         let back = Census::from_json(&c.to_json()).unwrap();
         assert_eq!((back.serve.clone(), back.legacy.len(), back.stale.clone(), back.sessions, back.line()), (vec![1], 2, vec![2], 4, c.line()));
     }
