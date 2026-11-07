@@ -4,7 +4,8 @@
 //! the same corpus against the Node hook, which is the oracle.
 //!
 //! Placeholders in every string of a case: `{HOME}` is the case's fresh home directory, `{HOMEREAL}` its canonical path,
-//! `{PLUGIN}` the canonical plugin root (for a check whose answer names it).
+//! `{PLUGIN}` the canonical plugin root (for a check whose answer names it), `{PLUGIN_VERSION}` the `version` of that root's
+//! `.claude-plugin/plugin.json` (a case that runs against the real plugin root, so its answer follows every release bump).
 //! `files` maps a path under the home to its text, or to `{"link": target}` (a symbolic link), `{"dir": true}` or
 //! `{"text": t, "age_ms": n, "mode": m}` (a file last modified `n` ms before the case's clock, with permission bits `m`: 493 is 0755).
 //!
@@ -34,6 +35,13 @@ fn plugin() -> String {
     let _ = defaults::text("script.ext"); // the root is known once the defaults are loaded
     let root = defaults::root().expect("plugin root");
     std::fs::canonicalize(root).unwrap().to_string_lossy().into_owned()
+}
+
+/// The version the plugin root declares (`{PLUGIN_VERSION}`); read from the shipped `plugin.json`, never written into the corpus.
+fn plugin_version() -> String {
+    let raw = std::fs::read_to_string(Path::new(&plugin()).join(".claude-plugin/plugin.json")).expect("plugin.json");
+    let v: Value = serde_json::from_str(&raw).expect("plugin.json parses");
+    v["version"].as_str().expect("plugin.json version").to_string()
 }
 
 /// The pinned clock a golden case with `{MS:..}`/`{ISO:..}`/`{HM:..}` tokens or an `age_ms` file runs at.
@@ -96,7 +104,17 @@ fn pinned(case: &Value) -> bool {
 fn fill(s: &str, home: &str, real: &str, now: f64) -> String {
     // `{HOMEENC}`: the real home path as the host names a project directory (`/`, `\\`, `:` and `.` become `-`)
     let enc: String = real.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '.') { '-' } else { c }).collect();
-    super::expand_now(&fill_time(&s.replace("{PLUGIN}", &plugin()).replace("{HOMEENC}", &enc).replace("{HOMEREAL}", real).replace("{HOME}", home), now), now)
+    super::expand_now(
+        &fill_time(
+            &s.replace("{PLUGIN_VERSION}", &plugin_version())
+                .replace("{PLUGIN}", &plugin())
+                .replace("{HOMEENC}", &enc)
+                .replace("{HOMEREAL}", real)
+                .replace("{HOME}", home),
+            now,
+        ),
+        now,
+    )
 }
 
 fn sub(v: &Value, home: &str, real: &str, now: f64) -> Value {
@@ -111,7 +129,13 @@ fn sub(v: &Value, home: &str, real: &str, now: f64) -> Value {
 /// The inverse of [`sub`] for an answer (canonical path first: it contains the plain one; then the time texts the case's
 /// tokens produced, longest first).
 fn unsub(s: &str, home: &str, real: &str, times: &[(String, String)]) -> String {
-    let mut out = s.replace(&plugin(), "{PLUGIN}").replace(real, "{HOMEREAL}").replace(home, "{HOME}");
+    let mut out = s
+        .replace(&plugin(), "{PLUGIN}")
+        .replace(&format!("v{}", plugin_version()), "v{PLUGIN_VERSION}")
+        .replace(&format!("\"{}\"", plugin_version()), "\"{PLUGIN_VERSION}\"")
+        .replace(&format!("\\\"{}\\\"", plugin_version()), "\\\"{PLUGIN_VERSION}\\\"")
+        .replace(real, "{HOMEREAL}")
+        .replace(home, "{HOME}");
     for (text, tok) in times {
         out = out.replace(text, tok);
     }
