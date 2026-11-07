@@ -2171,8 +2171,12 @@ fn io_code(e: &std::io::Error) -> String {
 pub fn serve(start_reason: &str) {
     crate::crash::mark_daemon(true);
     // SQLite takes its allocator when it first starts, so this comes before anything opens a database
-    if defaults::num("storage.sqlite_use_global_allocator") != 0 && !crate::sqlalloc::route_through_global_allocator() {
-        health::log_event("sqlite", "alloc", defaults::text("msg.log_sqlite_alloc_failed"));
+    if defaults::num("storage.sqlite_use_global_allocator") != 0 {
+        let routed = crate::sqlalloc::route_through_global_allocator();
+        crate::metrics::bump("sqlite_alloc_routing", &[("result", if routed { "routed" } else { "failed" })]);
+        if !routed {
+            health::log_event("sqlite", "alloc", defaults::text("msg.log_sqlite_alloc_failed"));
+        }
     }
     // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
     // launcher dies during config/defaults loading still knows which parent it was started by.

@@ -1674,8 +1674,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
             if !terminal.contains(&id) {
                 continue;
             }
-            let stands = w
-                .terminal_ev
+            let stands = terminal_ev
                 .get(&id)
                 .is_some_and(|evs| evs.iter().any(|(s, ts)| *s > r_seq && !(ts.is_finite() && r_ts.is_some_and(|r| r.is_finite() && *ts < r - slack))));
             if !stands {

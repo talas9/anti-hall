@@ -272,3 +272,7 @@ doc = "Whether SQLite allocates through the engine's own allocator (jemalloc, wh
 value = 1
 min = 0
 max = 1
+
+[metric.sqlite_alloc_routing]
+doc = "SQLite allocator routing attempts at daemon start (storage.sqlite_use_global_allocator on), by result: routed (SQLite now allocates through the engine's allocator) or failed (SQLite had already started; it stays on the C library's)."
+value = { kind = "counter", unit = "starts", labels = ["result"] }
