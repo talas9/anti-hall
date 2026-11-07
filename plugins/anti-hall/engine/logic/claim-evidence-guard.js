@@ -244,25 +244,20 @@ function ceLogReadBacks(claim, tp, tools) {
   if (calls === null) return false;
   var passRes = ah.cfg('claim_evidence.output_pass_res'), failRes = ah.cfg('claim_evidence.output_fail_res');
   var bareRes = ah.cfg('claim_evidence.output_bare_res'), listRes = ah.cfg('claim_evidence.output_listing_res');
-  var failClaim = ah.cfg('claim_evidence.fail_claim_re');
-  var passHave = {}, failHave = {};
+  var passHave = {};
   for (var i = 0; i < calls.length; i++) {
     if (calls[i][0] === '' || ceAny(reads, calls[i][0], '') === null) continue;
     var out = calls[i][1], p = ceNums(passRes, re, out), f = ceNums(failRes, re, out), bare = ceNums(bareRes, re, out, ceSpans(listRes, out));
     var failSeen = false, k;
     for (k in f.map) if (Number(k) > 0) failSeen = true;
     for (k in p.map) passHave[k] = true;
-    for (k in f.map) failHave[k] = true;
     // a bare "N tests" count says nothing about pass or fail: it backs a pass claim only when this output shows no failure
     if (!failSeen) for (k in bare.map) passHave[k] = true;
   }
   for (var q = 0; q < figs.length; q++) {
     var want = Number(claim.quote.slice(figs[q][0], figs[q][1]).replace(/,/g, ''));
     if (!isFinite(want)) return false;
-    var next = q + 1 < figs.length ? figs[q + 1][0] : claim.quote.length;
-    var after = claim.quote.slice(figs[q][1], next), before = claim.quote.slice(Math.max(0, figs[q][0] - 12), figs[q][0]);
-    var isFail = ah.re.findAll(failClaim, 'i', after).length > 0 || (ah.re.findAll(ah.cfg('claim_evidence.pass_claim_re'), 'i', after).length === 0 && ah.re.findAll(failClaim, 'i', before).length > 0);
-    if ((isFail ? failHave : passHave)[want] !== true) return false;
+    if (passHave[want] !== true) return false;
   }
   return true;
 }
@@ -274,12 +269,12 @@ function ceSpans(res, text) {
   return all;
 }
 
-// the whole numbers the spans of a pattern list spell in a text; a span starting where a skip span starts is left out
+// the whole numbers the spans of a pattern list spell in a text; a span starting inside a skip span is left out
 function ceNums(res, re, text, skip) {
   var map = {}, spans = ceSpans(res, text);
   for (var m = 0; m < spans.length; m++) {
     var gone = false;
-    for (var s = 0; skip && s < skip.length; s++) if (skip[s][0] === spans[m][0]) gone = true;
+    for (var s = 0; skip && s < skip.length; s++) if (spans[m][0] >= skip[s][0] && spans[m][0] < skip[s][1]) gone = true;
     if (gone) continue;
     var piece = text.slice(spans[m][0], spans[m][1]), nums = ah.re.findAll(re, 'i', piece);
     for (var k = 0; k < nums.length; k++) map[Number(piece.slice(nums[k][0], nums[k][1]).replace(/,/g, ''))] = true;

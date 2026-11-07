@@ -286,39 +286,40 @@ value = '\d[\d,]*'
 [claim_evidence.output_pass_res]
 doc = "Where a figure in tool output is a PASS count (Rust syntax, case-insensitive; whitespace on one line only): a whole number next to a pass word in either order ('57 passed', '57 passing', 'passed: 57', '# pass 57'). A pass claim is backed by these (claim_evidence.log_read_counts); each match is read for its number with claim_evidence.figure_re."
 value = [
-  '\b\d[\d,]*[ \t]+(?:passed|passing)\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:passed|passing)\b',
   '\b(?:passed|pass|passing)[:=]?[ \t]*\d[\d,]*\b',
   '#[ \t]*pass[ \t]+\d[\d,]*\b',
 ]
 
 [claim_evidence.output_fail_res]
-doc = "Where a figure in tool output is a FAIL count (Rust syntax, case-insensitive, one line): '3 failed', '3 failing', '3 failures', 'failed: 3', '# fail 3'. A fail claim is backed by these; any of them above 0 in an output stops a bare 'N tests' count in that output from backing a pass claim."
+doc = "Where a figure in tool output is a FAIL count (Rust syntax, case-insensitive, one line): '3 failed', '3 failing', '3 failures', 'failed: 3', '# fail 3', '3 tests failed', 'errors=2', '2 errors'. Any of them above 0 in an output stops a bare 'N tests' count in that output from backing a pass claim."
 value = [
-  '\b\d[\d,]*[ \t]+(?:failed|failing|failures?)\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:failed|failing|failures?)\b',
   '\b(?:failed|fail|failing|failures?)[:=]?[ \t]*\d[\d,]*\b',
   '#[ \t]*fail[ \t]+\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+tests?[ \t]+failed\b',
+  '\berrors?[:=]?[ \t]*\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+errors?\b',
 ]
 
 [claim_evidence.output_bare_res]
-doc = "Where a figure in tool output is a bare test or check count with no pass / fail word (Rust syntax, case-insensitive, one line): '57 tests', '3 checks', '# tests 57'. It backs a PASS claim only when the same output shows no fail count above 0."
+doc = "Where a figure in tool output is a bare test or check count with no pass / fail word (Rust syntax, case-insensitive, one line): '57 tests', '3 checks', '# tests 57', 'Tests run: 57' (Maven), '57 examples' (rspec), 'tests failed out of 57' (ctest). It backs a PASS claim only when the same output shows no fail count above 0."
 value = [
-  '\b\d[\d,]*[ \t]+(?:tests?|checks?)\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:tests?|checks?)\b',
   '#[ \t]*tests[ \t]+\d[\d,]*\b',
+  '\btests[ \t]+run:[ \t]*\d[\d,]*\b',
+  '\btests[ \t]+failed[ \t]+out[ \t]+of[ \t]+\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+examples?\b',
 ]
 
 [claim_evidence.output_listing_res]
-doc = "Output that lists tests without running them (Rust syntax, case-insensitive): 'cargo test -- --list' ends with '57 tests, 0 benchmarks'. A bare count (claim_evidence.output_bare_res) starting where one of these starts is not a run and backs nothing."
+doc = "Output that is not a finished passing run (a list of tests, a run header, a failed unittest run) (Rust syntax, case-insensitive): 'cargo test -- --list' ends with '57 tests, 0 benchmarks'. Also 'running 57 tests' and 'Starting 57 tests across' (a header before the results) and 'Ran 57 tests in 0.1s' followed by FAILED. A bare count (claim_evidence.output_bare_res) starting inside one of these is not a finished passing run and backs nothing."
 value = [
-  '\b\d[\d,]*[ \t]+tests?,[ \t]*\d[\d,]*[ \t]+benchmarks?\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+tests?,[ \t]*\d[\d,]*[ \t]+benchmarks?\b',
+  '\brunning[ \t]+\d[\d,]*[ \t]+tests?\b',
+  '\bstarting[ \t]+\d[\d,]*[ \t]+tests?\b',
+  '\bran[ \t]+\d[\d,]*[ \t]+tests?[ \t]+in\b[^\n]*\n\s*failed\b',
 ]
-
-[claim_evidence.fail_claim_re]
-doc = "A fail word in a claim (Rust syntax, case-insensitive): the figure before it is a fail count and must be backed by a fail count in the output (claim_evidence.output_fail_res), not a pass count."
-value = '\b(?:fail(?:ed|ing|s|ures?)?)\b'
-
-[claim_evidence.pass_claim_re]
-doc = "A pass word in a claim (Rust syntax, case-insensitive): a figure followed by one is a pass count even when a fail word stands before it."
-value = '\b(?:pass(?:ed|es|ing)?|ok|green)\b'
 
 # ---- rule 2: pushed is not done -----------------------------------------------------------------------------
 

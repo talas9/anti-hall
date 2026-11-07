@@ -3633,6 +3633,27 @@ mod claim_evidence_guard {
         assert_eq!(stop_unlocked("ce-cell11", &cell11, "57 tests passed.", &[], json!({})).0, ALLOW, "jest");
         let cell12 = after("tail /tmp/t.log", "Summary [ 3.1s] 57 tests run: 57 passed, 0 skipped", "57 tests passed.");
         assert_eq!(stop_unlocked("ce-cell12", &cell12, "57 tests passed.", &[], json!({})).0, ALLOW, "nextest");
+        // GH #376 fix round 3: run headers and failed unittest runs back nothing; real runner summaries still do
+        for (n, out) in [
+            "running 57 tests\ntest a ... ok",
+            "running 57 tests ... error: test failed",
+            "Starting 57 tests across 3 binaries",
+            "Ran 57 tests in 0.1s\n\nFAILED (errors=2)",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let c = after("tail /tmp/t.log", out, "57 tests passed.");
+            assert!(blocked(&stop_unlocked(&format!("ce-r3-block{n}"), &c, "57 tests passed.", &[], json!({})).0).is_some(), "not a passing run: {out}");
+        }
+        for (n, out) in
+            ["Ran 57 tests in 0.1s\n\nOK", "Tests run: 57, Failures: 0, Errors: 0", "100% tests passed, 0 tests failed out of 57", "57 examples, 0 failures"]
+                .iter()
+                .enumerate()
+        {
+            let c = after("tail /tmp/t.log", out, "57 tests passed.");
+            assert_eq!(stop_unlocked(&format!("ce-r3-allow{n}"), &c, "57 tests passed.", &[], json!({})).0, ALLOW, "real runner: {out}");
+        }
         // negated and future-tense claims stay unheld even with a tool call this turn
         for r in ["Nothing is merged yet.", "Once PR #405 and #406 are merged the release can start."] {
             let lines = after("ls", "x", r);
