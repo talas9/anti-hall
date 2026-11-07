@@ -95,6 +95,7 @@ What the automatic guards check and how to read a block.
 - `statusline.devswarm.format` = "ws {parts}": The segment text
 - `statusline.devswarm.max_chars` = 40: The segment is cut to this many characters (an ellipsis marks the cut)
 - `statusline.devswarm.stale_ms` = 180000: Data older than this shows as `?`, not a guess
+- `statusline.census` = true: Where the switch of the engine census chip is read from (statusline.census, default on): the...
 - `guards.handoverHygiene` = true: Where the on/off switch is read from (guards.handoverHygiene, default on)
 - `devswarm_sup.dryRun.retention` = false: Retention dry run (writes nothing)
 - `devswarm_sup.dryRun.verdicts` = false: Liveness sweep dry run (writes nothing)

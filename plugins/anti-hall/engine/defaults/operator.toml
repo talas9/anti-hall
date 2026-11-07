@@ -1773,8 +1773,8 @@ min = 8
 # ---- engine census chip (SE-A) ----
 
 [statusline.census_enabled]
-doc = "1: the status line shows the engine census chip (`engine: serve=1 jobs=0 ...`), read from the file the daemon's process sweep keeps (procwatch.census_file). 0: no chip."
-value = 1
+doc = "Where the switch of the engine census chip is read from (statusline.census, default on): the status line shows `engine: serve=1 jobs=0 ...`, read from the file the daemon's process sweep keeps (procwatch.census_file)."
+value = { section = "statusline", key = "census", env = "ANTIHALL_STATUSLINE_CENSUS", aliases = [], option = "", default = true }
 
 [statusline.census_mode]
 doc = "When the chip shows: `always`, or `anomaly` (only when something is off the one-daemon design: more than one daemon, a legacy watcher, a stale binary, a slow job)."

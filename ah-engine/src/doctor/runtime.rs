@@ -275,7 +275,12 @@ pub fn non_live_serve_processes(host: &mut dyn Host) -> Vec<(u32, PathBuf)> {
 /// The engine process census of this machine: `None` when the census is switched off (`doctor.census_enabled`) or its configuration
 /// does not load. Read-only: nothing is signalled.
 pub fn engine_census(host: &mut dyn Host) -> Option<crate::procwatch::census::Census> {
-    if defaults::num("doctor.census_enabled") == 0 {
+    if defaults::num("doctor.census_enabled") == 0
+        || !crate::ops::settings::effective_bool(
+            defaults::raw("procwatch.census_enabled").str_field("section"),
+            defaults::raw("procwatch.census_enabled").str_field("key"),
+        )
+    {
         return None;
     }
     let cfg = crate::procwatch::census::Cfg::load()?;
@@ -475,12 +480,20 @@ mod tests {
             rows: vec![
                 ProcRow { pid: 10, ppid: 1, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: "/h/.anti-hall/ah-engine/bin/ah-engine serve".to_string() },
                 ProcRow { pid: 11, ppid: 1, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: "/h/.anti-hall/ah-engine/bin/ah-engine serve".to_string() },
-                ProcRow { pid: 12, ppid: 7, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: "/h/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto".to_string() },
+                ProcRow {
+                    pid: 12,
+                    ppid: 7,
+                    start_s: 0,
+                    cpu_pct: 0.0,
+                    mem_bytes: 0,
+                    cmd: "/h/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto".to_string(),
+                },
             ],
             // an unreadable-or-live state: the fake environment names no state directory, so both count as live
             env: Vec::new(),
         };
-        let c = engine_census(&mut host).expect("census on by default");
+        let cfg = crate::procwatch::census::Cfg::load().expect("shipped census config");
+        let c = crate::procwatch::census::take(&mut host, &cfg);
         let mut doc = Doc::default();
         doc.head("engine");
         census_lines(&mut doc, &c);
@@ -494,7 +507,7 @@ mod tests {
         host.rows.remove(1);
         let mut ok = Doc::default();
         ok.head("engine");
-        census_lines(&mut ok, &engine_census(&mut host).unwrap());
+        census_lines(&mut ok, &crate::procwatch::census::take(&mut host, &cfg));
         assert_eq!(ok.fail, 0);
     }
 

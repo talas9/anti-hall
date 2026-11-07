@@ -253,8 +253,8 @@ value = "cwd"
 # ---- engine process census (SE-A) ----
 
 [procwatch.census_enabled]
-doc = "1: every orphan scan (procwatch.scan_every_s) also takes the engine process census (doctor.census.*): the counts go to the status, the statusline and the report file, and more than one live daemon writes the P0 alert document. 0: the sweep takes no census. Report only."
-value = 1
+doc = "Where the off switch of the engine process census is read from (procwatch.census, default on): every orphan scan (procwatch.scan_every_s) also takes the census (doctor.census_*): the counts go to the status, the statusline and the report file, and more than one live daemon writes the P0 alert document. Off: no census anywhere (doctor included). Report only."
+value = { section = "procwatch", key = "census", env = "ANTIHALL_PROCWATCH_CENSUS", aliases = [], option = "", default = true }
 
 [procwatch.census_file]
 doc = "The latest census, relative to the engine state directory (the statusline reads it; never scanned there)."

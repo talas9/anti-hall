@@ -3225,7 +3225,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
 | `guard_rules.enum_digest_tier` | `7 entries` |  |  | Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget. |
 | `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
-| `guard_rules.exempt` | `47 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry). |
+| `guard_rules.exempt` | `48 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry). |
 | `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
@@ -6220,7 +6220,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `416 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `419 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -6236,6 +6236,26 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.bin_label` | `ah-engine version` |  |  | The name a run of the installed engine is logged under. |
 | `doctor.bin_name` | `ah-engine` |  |  | The file name of the installed engine binary. |
 | `doctor.bootstrap_script` | `hooks/install.sh` |  |  | The engine installer (the plugin's one shell file), relative to the plugin root (shown in fixes). |
+| `doctor.census_class_job` | `job` |  |  | Name of the scheduled job class in doctor.census_classes. |
+| `doctor.census_class_legacy` | `legacy_watcher` |  |  | Name of the legacy per-session wake watcher class in doctor.census_classes. |
+| `doctor.census_class_serve` | `serve` |  |  | Name of the daemon class in doctor.census_classes. |
+| `doctor.census_class_stub` | `stub` |  |  | Name of the thin per-session stub class in doctor.census_classes. |
+| `doctor.census_classes` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | Census classes, first match wins; cmd_re is tested against the full command line, anchored at the program. name: the class; stale_check: also compare the running image with the current engine binary (a replaced image counts as stale). serve: the daemon (exactly 1 expected); legacy_watcher: the old per-session wake watchers (warn and count, never stopped); stub: a thin per-session stub (none ships, expected 0); job: a scheduled subprocess job (its parent is the daemon); hook_client: any other engine process (a hook or CLI call, short-lived). |
+| `doctor.census_client_age_mult` | `20` |  |  | A hook or CLI engine process older than client.deadline_ms times this is reported as slow (it should have answered long ago). |
+| `doctor.census_current_bin_rel` | `bin/ah-engine` |  |  | The current engine binary, relative to the engine state directory: an engine process whose running image differs from the file here is stale. |
+| `doctor.census_enabled` | `1` |  |  | 1: doctor, the process sweep and the statusline count the engine processes by class (serve, job, hook client, legacy wake watcher, stub, stale binary) and print one census line; more than one live `serve` is a P0 report. 0: the census is not taken anywhere. Report only: no process is ever stopped by it. |
+| `doctor.census_event_detail` | `{n} live daemons, pids {pids}` |  |  | The log detail written once when the multi-instance condition starts. {n}, {pids}. |
+| `doctor.census_job_max_age_s` | `3600` |  | s | A scheduled job older than this many seconds is reported as slow (the longest job timeout is far below it). |
+| `doctor.census_line` | `engine: serve={serve} jobs={jobs} clients={clients} stubs={stubs}/{sessions} ...` |  |  | The one census line (doctor, status, statusline). {serve} live daemons (1 expected), {jobs} scheduled jobs, {clients} hook or CLI calls, {stubs} per-session stubs of {sessions} live sessions, {legacy} legacy wake watchers, {stale} processes on a replaced binary. |
+| `doctor.census_max_listed` | `20` |  |  | The most pids one census line, doctor warning, alert document or status field lists (counts stay exact). |
+| `doctor.census_msg_legacy` | `{n} legacy per-session wake watchers run (pids {pids}); each ends with its se...` |  |  | Legacy per-session wake watchers are running. {n}, {pids}. |
+| `doctor.census_msg_no_serve` | `no engine daemon in the process list; the next hook call starts it` |  |  | No live engine daemon was found by the process list (it starts on the next hook call). |
+| `doctor.census_msg_p0` | `P0 engine_multi_instance: {n} engine daemons run for this state (exactly 1 is...` |  |  | P0: more than one live engine daemon. {n}, {pids}. |
+| `doctor.census_msg_slow` | `{n} engine jobs or calls have run far longer than expected (pids {pids}); `ah...` |  |  | Engine jobs or calls older than their limit. {n}, {pids}. |
+| `doctor.census_msg_stale` | `{n} engine processes run a replaced binary (pids {pids}); they take the new b...` |  |  | Engine processes run a replaced binary image. {n}, {pids}. |
+| `doctor.census_p0_kind` | `engine_multi_instance` |  |  | The stable kind of the multi-instance alert and its log code. Never holds a pid, uid or session id: a repeat of the condition must aggregate into the same alert, not add one. |
+| `doctor.census_p0_severity` | `P0` |  |  | The severity written into the multi-instance alert document. |
+| `doctor.census_region_walk_max` | `64` |  |  | macOS: the most memory regions walked to find the file behind a process's executable image (the first file-backed region is the executable, so a handful suffice). |
 | `doctor.class_duplicate` | `duplicate-label-same-project` |  |  | The class of two loaded units for one project. |
 | `doctor.class_healthy` | `healthy` |  |  | The class of a loaded unit that is in use. |
 | `doctor.class_no_plist` | `orphan-no-plist` |  |  | The class of a loaded unit with no unit file on disk (the only class that may be unloaded). |
@@ -8644,7 +8664,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `422 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `425 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -9032,6 +9052,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.branch_ab` | `# branch.ab ` |  |  | The git status line that counts commits ahead and behind. |
 | `statusline.branch_head` | `# branch.head ` |  |  | The git status line that names the branch. |
 | `statusline.branch_icon` | `🌿` |  |  | Before a branch. |
+| `statusline.census_enabled` | `6 entries` |  |  | Where the switch of the engine census chip is read from (statusline.census, default on): the status line shows `engine: serve=1 jobs=0 ...`, read from the file the daemon's process sweep keeps (procwatch.census_file). |
+| `statusline.census_max_age_s` | `900` |  | s | A census file older than this many seconds is not shown (it would claim a state that no longer holds). |
+| `statusline.census_mode` | `always` |  |  | When the chip shows: `always`, or `anomaly` (only when something is off the one-daemon design: more than one daemon, a legacy watcher, a stale binary, a slow job). |
+| `statusline.census_mode_anomaly` | `anomaly` |  |  | The statusline.census_mode value that means anomalies only. |
 | `statusline.chip_color_bad` | `red` |  |  | The color of the version chip when the engine version cannot be read, or a major update is available. |
 | `statusline.chip_color_ok` | `dim` |  |  | The color of the version chip when nothing is wrong. |
 | `statusline.chip_color_warn` | `yellow` |  |  | The color of the version chip when the engine is older than the plugin supports, or a minor update is available. |
@@ -9731,6 +9755,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `procwatch.advisory_events` | `SessionStart, UserPromptSubmit, PreToolUse` |  |  | The hook events the procwatch-advisory script answers. |
+| `procwatch.census_alert_file` | `engine-census-alerts.json` |  |  | The multi-instance alert document, relative to the engine state directory: ONE document with the stable kind doctor.census_p0_kind, the pids in its details and a bounded occurrences array. |
+| `procwatch.census_cooldown_s` | `1800` |  | s | Least time between two census P0 advisories to one session (the alert document itself is updated on every scan). |
+| `procwatch.census_enabled` | `6 entries` |  |  | Where the off switch of the engine process census is read from (procwatch.census, default on): every orphan scan (procwatch.scan_every_s) also takes the census (doctor.census_*): the counts go to the status, the statusline and the report file, and more than one live daemon writes the P0 alert document. Off: no census anywhere (doctor included). Report only. |
+| `procwatch.census_file` | `engine-census.json` |  |  | The latest census, relative to the engine state directory (the statusline reads it; never scanned there). |
+| `procwatch.census_max_occurrences` | `20` |  |  | The most occurrences the alert document keeps (the oldest are dropped; the count stays exact). |
 | `procwatch.classes` | `6 entries, 6 entries, 6 entries, 6 entries, 6 entries, 6 entries` |  |  | Orphan classes, first match wins. name: report name; mode_key: the defaults key of its mode setting (off \| report \| kill); cmd_re: matches the command line; exclude_re: a match is skipped ('' = none); min_age_s: how old a process must be; children: also list its descendants (they die with it). |
 | `procwatch.cmd_chars` | `160` |  |  | A command line in a report or advisory is cut to this many characters. |
 | `procwatch.extra_classes_file` | `procwatch-classes.toml` |  |  | The owner's own orphan classes: a TOML file with `[[classes]]` tables (name, mode = off \| report \| kill, cmd_re, exclude_re, min_age_s, children) in the engine state directory. Its classes are tried before the shipped ones. Example: engine/examples/procwatch-dev.toml. |
@@ -9753,6 +9782,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `procwatch.mode_shell_task` | `7 entries` |  |  | Mode of the shell_task class (background shell commands of ended sessions): off \| report \| kill. |
 | `procwatch.mode_test_runner` | `7 entries` |  |  | Mode of the test_runner class (test runners and their children): off \| report \| kill. |
 | `procwatch.msg_bad_config` | `process watch configuration is invalid (a pattern does not compile)` |  |  | The sweep's error when its configuration does not compile. |
+| `procwatch.msg_census_instead` | `run `ah-hook doctor` to list them, confirm which one the state directory's lo...` |  |  | What to do about the census P0. |
+| `procwatch.msg_census_what` | `P0 {kind}: {n} engine daemons are running for this state (pids {pids}); exact...` |  |  | The census P0 advisory: more than one live engine daemon. {kind}, {n}, {pids}. |
+| `procwatch.msg_census_why` | `two daemons can answer hooks with different rules and double every background...` |  |  | Why the census P0 matters. |
 | `procwatch.msg_killed` | `Stopped {n} leftover process(es) (their class is set to kill): {list}.` |  |  | Line added when a sweep stopped orphans; {n} count, {list} the stopped ones. |
 | `procwatch.msg_more` | ` and {m} more` |  |  | Remainder note; {m} more. |
 | `procwatch.msg_orphans_instead` | `check the process owners before stopping any.` |  |  | What to do about orphans. |
@@ -9935,6 +9967,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.wake_merge` | `2 entries` |  |  | Separators of a coalesced wake line: item_sep between agents, signal_sep between one agent's signals. |
 | `agent_tracker.wake_poll_ms` | `1000` |  | ms | How often the wake-watch looks at its session's wake feed (a size check of one file), in milliseconds. A quiet session costs no tokens. |
 | `agent_tracker.wake_prefix` | `anti-hall wake:` |  |  | The first words of the prompt `workspace reactivate-child` queues. DevSwarm stores that prompt as a direct mesh row from the parent, so the engine recognises a wake row by this prefix and never counts it as mail: not in a workspace's unread count, not in the direct total the wake-watch edge-triggers on. The wake prompt is built from it (`msg.native_wake_prompt`). |
+| `agent_tracker.wake_rebin_check_ms` | `5000` |  | ms | How often the wake watcher compares its binary on disk with the one it started from (a stat of one file). |
+| `agent_tracker.wake_rebin_enabled` | `6 entries` |  |  | Wake watcher hand-over to a replaced engine (agents.wakeRebin). |
 | `agent_tracker.wake_scope` | `6 entries` |  |  | Wake rows scoped to the session that owns them (switch agent_nudge.scope_setting). The telemetry class and event of a dropped row and its reason values: foreign_agent (a heartbeat whose writer is no session the tracker follows), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started). walk_max: most parent processes walked up from a lock holder to find its session. |
 | `agent_tracker.wake_session_env` | `CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, ANTIHALL_SESSION_ID` |  |  | The variables that name the session the wake-watch belongs to, in order; the first non-empty one is the key of its wake feed. |
 | `agent_tracker.wake_setting` | `6 entries` |  |  | Where the off switch of the session wake-watch is read from (agents.wakeWatch, default on): off, `agents wake-watch` arms nothing (the cron and ScheduleWakeup fallbacks are unaffected) and a main session is no longer reported as unarmed. |
@@ -14953,6 +14987,12 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `dispatch_checks` | counter | entries | event, check, answer | Built-in check entries the dispatcher sent to the daemon, by event, check and answer (decided, or defer = its Node hook ran instead) (D58). |
 | `dispatch_entries` | counter | entries | event, entry, outcome, cfg | What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry, outcome and the hash of the non-default hook configuration the plan was made under (`default` when none). |
 | `dispatch_overhead_us` | histogram | us | event | Wall time of a dispatched hook request that no built-in check accounts for (request wall minus the sum of the checks), by hook event: parsing, plan, locks, waits and queueing inside the daemon. |
+| `engine_census_hook_client` | gauge | processes |  | Short-lived hook or CLI engine processes counted by the last census. |
+| `engine_census_job` | gauge | processes |  | Scheduled engine jobs counted by the last census. |
+| `engine_census_serve` | gauge | processes |  | Live engine daemons counted by the last census (1 is the design). |
+| `engine_census_serve_nonlive` | gauge | processes |  | Engine daemons of another state directory counted by the last census (a test run, a second setup). |
+| `engine_census_stub` | gauge | processes |  | Thin per-session stubs counted by the last census (none ships, expected 0). |
+| `engine_multi_instance` | counter | events |  | Process sweeps that found more than one live engine daemon (the one-daemon design is broken). Target 0. |
 | `errors` | counter | requests |  | Requests answered ERR. |
 | `event_check_cpu_us` | counter | us | event | CPU time (microseconds, the worker thread's own) spent inside built-in checks while serving each hook event: the sum over every check call of that event (`status --json` `cpu.by_event`). |
 | `evidence_cache` | counter | lookups | result | Transcript evidence lookups (claim-ledger and other `ah.transcript.evidence` callers): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh). |
@@ -14972,6 +15012,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `inject_suppressed` | counter | blocks | cut | Gated hook blocks the model already held and the gate dropped, by cut. |
 | `inject_suppressed_bytes` | counter | bytes | cut | Bytes the gate kept out of the context (the dropped blocks, and what a keepalive form saved over the whole block), by cut. |
 | `launcher_counter` | counter | events | name | Counters the launcher reports with each call (soft and hard limit hits, retries, fallbacks, ...), summed by name. |
+| `legacy_watchers` | gauge | processes |  | Legacy per-session wake watcher processes counted by the last census (falls to 0 as sessions end). |
 | `maintain_last_ms` | gauge | ms |  | When the last maintenance run happened, in ms since the epoch (0: never). |
 | `maintain_runs` | gauge | runs |  | Maintenance runs recorded in hot.db (D26). |
 | `memory_leak_notices` | counter | notices | top | Memory-registry leak notices, by largest holder. |
@@ -14990,6 +15031,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `slow_replies` | counter | replies |  | Replies finished after their client's deadline had passed: slow but healthy (the client fell back to Node), counted apart from errors. |
 | `spool_applied` | counter | writes |  | Spooled writes the daemon applied (D24). |
 | `spool_quarantined` | counter | records |  | Spool records moved to quarantine: damaged, or refused for good by the store (D24). |
+| `stale_binary_procs` | gauge | processes |  | Engine processes running a replaced binary image, counted by the last census (falls to 0 after one rebin cycle). |
 | `stop_channel` | counter | stops | counter, check, model, project | Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, over_total, limit_clamped, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime. |
 | `tasks_cache` | counter | lookups | result | Task-line lookups of `ah.transcript.tasks` (task-guard, tasklist-guard, task-tracker): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh). |
 | `tasks_cache_rebuild` | counter | lookups | reason | Why a task-line lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place). |
@@ -15005,6 +15047,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tier_misses` | gauge | reads |  | Key-value reads that went to SQLite since the daemon started. |
 | `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
+| `wake_rebin` | counter | events | result | Per-session wake watcher hand-overs to a replaced engine binary, by result (exec, exec_failed). |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
 | `jev_asked_sync` | counter | calls | id | Stop/SubagentStop asks the gate let wait for Jev (the rule layer had flagged a likely unverified claim), by integration. |
 | `jev_calls` | counter | calls | backend, mode | Jev decisions asked for, by backend (jev, cache or baseline-only) and mode. |

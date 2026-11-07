@@ -19,6 +19,7 @@ Leftover processes, runaway CPU or memory and low disk space.
 
 ## Switches
 
+- `procwatch.census` = true: Where the off switch of the engine process census is read from (procwatch.census, default on):...
 - `procwatch.buildDaemonMode` = "report": Mode of the build_daemon class (build tool daemons): off | report | kill
 - `procwatch.devServerMode` = "report": Mode of the dev_server class (dev servers and watchers an agent started): off | report | kill
 - `procwatch.mcpServerMode` = "report": Mode of the mcp_server class (MCP servers of ended sessions): off | report | kill

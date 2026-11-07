@@ -134,7 +134,7 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
     }
 
     // ---- engine census (shares the orphan scan's cadence) ----
-    if scanned && defaults::num("procwatch.census_enabled") != 0 && defaults::num("doctor.census_enabled") != 0 {
+    if scanned && get_bool(&st, defaults::raw("procwatch.census_enabled")) && defaults::num("doctor.census_enabled") != 0 {
         census_scan(host, sw, &rows, state_dir);
     }
 

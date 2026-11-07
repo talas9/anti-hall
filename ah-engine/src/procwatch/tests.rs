@@ -254,7 +254,10 @@ fn a_second_live_daemon_writes_one_p0_alert_that_aggregates_and_nothing_is_signa
     assert!(census["line"].as_str().unwrap().starts_with("engine: serve=2 "));
     let alert = |p: &Path| -> Value { serde_json::from_str(&std::fs::read_to_string(p.join("engine-census-alerts.json")).expect("alert file")).expect("json") };
     let first = alert(&state);
-    assert_eq!((first["kind"].clone(), first["count"].clone(), first["details"]["pids"].clone()), (json!("engine_multi_instance"), json!(1), json!([500, 501])));
+    assert_eq!(
+        (first["kind"].clone(), first["count"].clone(), first["details"]["pids"].clone()),
+        (json!("engine_multi_instance"), json!(1), json!([500, 501]))
+    );
     // the same condition at the next scan aggregates into the same document: no new kind, a bounded occurrences array
     sw.last_orphan_s = 0;
     run(&mut f, &mut sw);
@@ -627,7 +630,11 @@ fn the_census_p0_alert_is_one_advisory_per_cooldown_and_an_inactive_alert_is_sil
     std::fs::create_dir_all(&dir).unwrap();
     let report = |active: bool| {
         let doc = json!({"kind": "engine_multi_instance", "severity": "P0", "active": active, "count": 3, "details": {"serve": 2, "pids": [500, 501]}, "occurrences": []});
-        std::fs::write(dir.join("procwatch-report.json"), json!({"ts_s": now, "modes": {}, "orphans": {"count": 0, "listed": []}, "census_alert": doc}).to_string()).unwrap();
+        std::fs::write(
+            dir.join("procwatch-report.json"),
+            json!({"ts_s": now, "modes": {}, "orphans": {"count": 0, "listed": []}, "census_alert": doc}).to_string(),
+        )
+        .unwrap();
     };
     report(false);
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "a cleared alert says nothing");

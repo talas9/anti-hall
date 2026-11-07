@@ -1133,8 +1133,8 @@ short-lived job or hook call. Every orphan scan (`procwatch.scan_every_s`) also 
 | `stale_binary` | any engine process whose running image is not the file now at `bin/ah-engine` | 0 | warn; read from the running image (Linux `/proc/<pid>/exe`, macOS the vnode of the executable region), so it holds after the file was replaced |
 
 The classes, patterns, ages and texts are plugin configuration (`doctor.toml`, keys `doctor.census_*`; `procwatch.census_*`,
-`statusline.census_*`); `doctor.census_enabled`, `procwatch.census_enabled` and `statusline.census_enabled` are the off switches
-(1 = on). The census only reports: it never signals a process. More than one live `serve` writes ONE alert document
+`statusline.census_*`); The off switches are settings: `procwatch.census` (the census everywhere), `statusline.census` (the chip) and `agents.wakeRebin`
+(the wake watcher's hand-over), all default on; `doctor.census_enabled` is the plugin-file master (1 = on). The census only reports: it never signals a process. More than one live `serve` writes ONE alert document
 (`engine-census-alerts.json`) with the stable kind `engine_multi_instance` (never a pid or session id in the kind), the pids in
 `details` and a bounded occurrences array (`procwatch.census_max_occurrences`), logs once to the event log when it starts, and the
 advisory names it once per `procwatch.census_cooldown_s`. A per-session wake watcher whose binary was replaced hands over to the new
@@ -1146,7 +1146,7 @@ starts. It never reads the top-level `restarts` of `status --json` (that is the 
 install) and never a raw process count.
 
 **Telemetry.** Impact kinds `orphan_candidate`, `orphan_kill`, `resource_warning`, `stuck_agent_warning`, `disk_warning` and the
-counter `procwatch_events` (labels kind and class). The sweep writes `procwatch-report.json` in the state directory (`cost_ms`, process
+counter `procwatch_events` (labels kind and class). The census adds the counters `engine_multi_instance` (sweeps that found more than one live daemon; target 0) and `wake_rebin` (label result: exec, exec_failed), and the gauges `engine_census_serve`, `engine_census_serve_nonlive`, `engine_census_job`, `engine_census_hook_client`, `engine_census_stub`, `legacy_watchers` and `stale_binary_procs` (the last two fall to 0 as old sessions end and after one rebin cycle). The sweep writes `procwatch-report.json` in the state directory (`cost_ms`, process
 count, candidates, kills, recent warnings) which the advisory reads; the sweep's own cost on this Mac is about 50 ms for 990
 processes with an orphan scan (release), and the resource-only sweep between scans reads the process table once.
 

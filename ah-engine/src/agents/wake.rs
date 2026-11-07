@@ -135,7 +135,7 @@ pub(crate) fn run(p: &Parsed) -> i32 {
     crate::web::actions::register(&format!("{}-{}", defaults::text("act.watcher_name"), super::sinks::key_of(&sid)), defaults::text("act.watcher_kind"), &[]);
     // The engine binary this watcher started from: when a deploy or an update replaces it, the watcher hands over to the new one (the
     // same module and semantics as the DevSwarm watcher), so a long session never pins an old build.
-    let rebin = Rebin::start(crate::health::now_ms());
+    let rebin = Rebin::start(crate::health::now_ms(), env.switch("agent_tracker.wake_rebin_enabled"));
     let stop = || parent_gone(start_ppid) || rebin.due_and_changed(crate::health::now_ms());
     pump(&env, &sid, poll, &mut |l| emit(l), &stop);
     if rebin.changed.get() && !parent_gone(start_ppid) {
@@ -155,11 +155,8 @@ struct Rebin {
 }
 
 impl Rebin {
-    fn start(now_ms: u64) -> Rebin {
-        let bin = (defaults::num("agent_tracker.wake_rebin_enabled") != 0)
-            .then(crate::wakew::rebin::watched_path)
-            .flatten()
-            .and_then(|path| crate::wakew::rebin::ident(&path).map(|i| (path, i)));
+    fn start(now_ms: u64, enabled: bool) -> Rebin {
+        let bin = enabled.then(crate::wakew::rebin::watched_path).flatten().and_then(|path| crate::wakew::rebin::ident(&path).map(|i| (path, i)));
         Rebin { bin, every_ms: setting_num("agent_tracker.wake_rebin_check_ms"), last_ms: std::cell::Cell::new(now_ms), changed: std::cell::Cell::new(false) }
     }
 
@@ -316,7 +313,7 @@ mod rebin_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("ah-engine");
         exe(&bin, b"one");
-        let mut r = Rebin::start(0);
+        let mut r = Rebin::start(0, true);
         // the unit under test is the check, so it is pointed at the temp binary instead of this test executable
         r.bin = crate::wakew::rebin::ident(&bin).map(|i| (bin.clone(), i)).filter(|_| enabled_every.is_some());
         r.every_ms = enabled_every.unwrap_or(1);
@@ -332,10 +329,10 @@ mod rebin_tests {
     #[test]
     fn a_stale_watcher_hands_over_and_a_current_one_keeps_running() {
         let (bin, r) = started("stale", Some(100));
-        assert!(!r.due_and_changed(1_000), "an untouched binary is no change");
+        assert!(!r.due_and_changed(1_000));
         assert!(!r.changed.get());
         replace(&bin);
-        assert!(r.due_and_changed(2_000), "a replaced binary is a hand-over");
+        assert!(r.due_and_changed(2_000));
         assert!(r.changed.get());
         assert_eq!(r.path(), bin);
     }
@@ -344,7 +341,7 @@ mod rebin_tests {
     fn the_check_runs_at_its_interval_only() {
         let (bin, r) = started("interval", Some(5_000));
         replace(&bin);
-        assert!(!r.due_and_changed(4_999), "not due yet: no stat, no hand-over");
+        assert!(!r.due_and_changed(4_999));
         assert!(r.due_and_changed(5_000));
     }
 
@@ -359,7 +356,7 @@ mod rebin_tests {
     #[test]
     fn the_shipped_switch_is_on_and_a_zero_turns_it_off() {
         crate::defaults::init().unwrap();
-        assert_eq!(defaults::num("agent_tracker.wake_rebin_enabled"), 1);
+        assert!(defaults::raw("agent_tracker.wake_rebin_enabled").get("default").and_then(|v| v.as_bool()).unwrap_or(false));
         assert!(defaults::num("agent_tracker.wake_rebin_check_ms") >= 1);
     }
 }

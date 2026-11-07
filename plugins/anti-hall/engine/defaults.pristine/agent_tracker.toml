@@ -493,8 +493,8 @@ value = { class = "wake_scope", dropped = "dropped", foreign_agent = "foreign_ag
 # ---- wake watcher rebin (SE-A, GH 610) ----
 
 [agent_tracker.wake_rebin_enabled]
-doc = "1: a per-session wake watcher whose engine binary on disk was replaced (a deploy or an update) hands over to the new binary (same arguments, same pid, same stdio), so a long session never pins an old build (the DevSwarm watcher does the same: wake_watch.rebin_enabled). 0: it keeps running the binary it started from."
-value = 1
+doc = "Wake watcher hand-over to a replaced engine (agents.wakeRebin)."
+value = { section = "agents", key = "wakeRebin", env = "ANTIHALL_AGENT_WAKE_REBIN", aliases = [], option = "", default = true }
 
 [agent_tracker.wake_rebin_check_ms]
 doc = "How often the wake watcher compares its binary on disk with the one it started from (a stat of one file)."
