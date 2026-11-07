@@ -3535,6 +3535,52 @@ mod claim_evidence_guard {
         }
     }
 
+    /// GH #376 (FW-2): a read of a log this turn backs a claim whose every figure is in the tool output; a bare claim, a figure the output
+    /// lacks, a non-read command and the switch off still hold it, and the hold names the check that would satisfy the claim.
+    #[test]
+    fn a_log_read_showing_the_claimed_figure_backs_the_claim_and_a_bare_claim_is_held_naming_the_check() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = |name: &str, labels: &[(&str, &str)]| {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter(name, labels)
+        };
+        let after = |cmd: &str, out: &str, reply: &str| {
+            [
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                assistant("m1", "", &[cmd]),
+                result(out),
+                assistant("m2", reply, &[]),
+            ]
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let reply = "142 tests passed.";
+        let ok = after("tail -20 /tmp/test.log", "test result: ok. 142 passed; 0 failed", reply);
+        assert_eq!(stop_unlocked("ce-log-ok", &ok, reply, &[], json!({})).0, ALLOW, "a log read showing the figure backs the claim");
+        assert_eq!(count("claim_evidence_log_read_ok", &[("claim", "tests pass")]), 1, "the pass is counted");
+        let comma = after("grep -c ok /tmp/t.log", "1234", "1,234 tests passed.");
+        assert_eq!(stop_unlocked("ce-log-comma", &comma, "1,234 tests passed.", &[], json!({})).0, ALLOW, "thousands commas are read as the number");
+        let lacks = after("tail /tmp/test.log", "test result: ok. 12 passed", reply);
+        assert!(blocked(&stop_unlocked("ce-log-lacks", &lacks, reply, &[], json!({})).0).is_some(), "a log without the figure does not back it");
+        let inside = after("tail /tmp/test.log", "test result: ok. 142 passed", "1 test passed.");
+        assert!(blocked(&stop_unlocked("ce-log-inside", &inside, "1 test passed.", &[], json!({})).0).is_some(), "1 is not found inside 142");
+        let bare = after("cat /tmp/test.log", "ok", "All tests pass.");
+        assert!(blocked(&stop_unlocked("ce-log-bare", &bare, "All tests pass.", &[], json!({})).0).is_some(), "a claim with no figure is not backed by a read");
+        let listing = after("ls /tmp", "142", reply);
+        assert!(blocked(&stop_unlocked("ce-log-ls", &listing, reply, &[], json!({})).0).is_some(), "a listing is not a read of a log");
+        let off = stop_unlocked("ce-log-off", &ok, reply, &[("ANTIHALL_CLAIM_EVIDENCE_LOG_READ", "0")], json!({})).0;
+        assert!(blocked(&off).is_some(), "the switch off restores the earlier reading");
+        // the hold names the check that would satisfy it, inside two lines and the advice cap (no details file)
+        let out = blocked(&off).unwrap_or_default();
+        let reason = serde_json::from_str::<Value>(out.trim()).unwrap()["reason"].as_str().unwrap().to_string();
+        assert!(reason.lines().count() <= 2 && reason.contains("a check that counts (") && reason.contains("cat/tail") && !reason.contains("details:"), "{reason}");
+        // negated and future-tense claims stay unheld even with a tool call this turn
+        for r in ["Nothing is merged yet.", "Once PR #405 and #406 are merged the release can start."] {
+            let lines = after("ls", "x", r);
+            assert_eq!(stop_unlocked("ce-log-tense", &lines, r, &[], json!({})).0, ALLOW, "{r}");
+        }
+    }
+
     /// The regression corpus (tests/fixtures/claim_evidence_corpus.ndjson): every row {text, expect: block|allow, source} must get its
     /// expected verdict. A suppressor covers a claim only when it is local to it (claim_evidence.suppress reach).
     #[test]

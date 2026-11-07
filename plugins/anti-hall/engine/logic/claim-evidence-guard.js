@@ -208,6 +208,21 @@ function ceCountFired(rule) {
   ah.advisory('claim_evidence', 'fired_' + rule);
 }
 
+// GH #376 (claim_evidence.log_read_counts): true when a read of a log or output file ran this turn and every figure of the claim is
+// one of the numbers the transcript's tool output spells (the evidence walk just taken; a whole number, so 1 is not found inside 142).
+// A claim with no figure is never backed by a read alone.
+function ceLogReadBacks(claim, cmds) {
+  if (!ah.settings.bool('claim_evidence.log_read_counts') || !ceAnyCmd(ah.cfg('claim_evidence.log_read_res'), cmds)) return false;
+  var re = ah.cfg('claim_evidence.figure_re'), figs = ah.re.findAll(re, 'i', claim.quote);
+  if (!figs.length) return false;
+  var nums = ah.transcript.walkNumbers('evidence', re, '', ',');
+  for (var i = 0; i < figs.length; i++) {
+    var want = Number(claim.quote.slice(figs[i][0], figs[i][1]).replace(/,/g, ''));
+    if (!isFinite(want) || nums.indexOf(want) < 0) return false;
+  }
+  return true;
+}
+
 function ceAnyCmd(list, cmds) {
   for (var i = 0; i < cmds.length; i++) if (cmds[i] !== '' && ceAny(list, cmds[i]) !== null) return true;
   return false;
@@ -276,11 +291,19 @@ function decide(p) {
     if (tools === 0) what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
     else if (needs.length > 0) {
       if (cmds === null) cmds = ceCommands(tpOpen, tools);
-      if (cmds !== null && !ceAnyCmd(needs, cmds)) what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
+      if (cmds !== null && !ceAnyCmd(needs, cmds)) {
+        if (ceLogReadBacks(claim, cmds)) {
+          if (ah.settings.bool('claim_evidence.sw_telemetry')) ah.metric('claim_evidence_log_read_ok', ['claim', claim.row.id]);
+        } else what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
+      }
     }
   }
   if (what === null) return 'allow';
   var instead = what === ah.cfg('claim_evidence.msg_pushed_what') ? ah.cfg('claim_evidence.msg_pushed_instead') : ah.cfg('claim_evidence.msg_claim_instead');
+  // rule 1 names the check that would satisfy the claim row (its `check` text), so the hold says what to run, not only that it failed
+  if (what !== ah.cfg('claim_evidence.msg_pushed_what') && claim !== null && typeof claim.row.check === 'string') {
+    instead = text.render(ah.cfg('claim_evidence.msg_satisfy'), { check: claim.row.check });
+  }
   ah.log(ah.cfg('claim_evidence.log_kind'), what);
   ceCountFired(what === ah.cfg('claim_evidence.msg_pushed_what') ? 'pushed' : 'claim');
   if (ah.cfg('claim_evidence.mode') !== 'block') return 'allow';
