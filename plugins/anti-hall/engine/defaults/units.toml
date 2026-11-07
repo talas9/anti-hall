@@ -202,7 +202,7 @@ doc = "Where launchd sends the unit's stdout and stderr (the daemon writes its o
 value = "/dev/null"
 
 [units.plist_template]
-doc = "The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {env} (the units.plist_env block, or nothing) {interval} {log}; every value is XML-escaped."
+doc = "The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {env} (the units.plist_env block, or nothing) {supervise} (the units.plist_supervise block, or nothing while maintenance.unitsSupervise is off) {interval} {log}; every value is XML-escaped."
 value = '''
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -216,7 +216,7 @@ value = '''
   </array>
 {env}  <key>RunAtLoad</key>
   <true/>
-  <key>StartInterval</key>
+{supervise}  <key>StartInterval</key>
   <integer>{interval}</integer>
   <key>StandardOutPath</key>
   <string>{log}</string>
@@ -225,6 +225,29 @@ value = '''
 </dict>
 </plist>
 '''
+
+[units.plist_supervise]
+doc = "The supervision keys of the LaunchAgent, written while maintenance.unitsSupervise is on: launchd starts the job again after any exit that is not 0 (a kill, a crash, exit 75 after an outside SIGTERM, a forced drain); exit 0 (stop, handoff, idle, another daemon already answers, crash-loop stop) is left alone and the StartInterval below picks it up. {throttle} is units.throttle_interval_s, {process_type} units.process_type."
+value = '''  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>{throttle}</integer>
+  <key>ProcessType</key>
+  <string>{process_type}</string>
+'''
+
+[units.throttle_interval_s]
+doc = "launchd ThrottleInterval of the engine unit: the least time between two starts of the job, so a daemon that dies at once is started again at most this often."
+value = 10
+min = 1
+unit = "s"
+
+[units.process_type]
+doc = "launchd ProcessType of the engine unit."
+value = "Background"
 
 [units.plist_arg]
 doc = "One ProgramArguments entry of the LaunchAgent. {arg}."
@@ -263,15 +286,46 @@ doc = "The file name suffix of a systemd timer."
 value = ".timer"
 
 [units.service_template]
-doc = "The systemd user service of the engine unit. {exec} is the quoted command line; {env} is one units.service_env line per variable, or nothing."
+doc = "The systemd user service of the engine unit. {exec} is the quoted command line; {env} is one units.service_env line per variable, or nothing; {supervise_unit} and {supervise_service} are the units.service_supervise_unit and units.service_supervise_service blocks, or nothing while maintenance.unitsSupervise is off."
 value = '''
 [Unit]
 Description=anti-hall engine daemon (starts it when none is running)
-
+{supervise_unit}
 [Service]
 Type=simple
 {env}ExecStart={exec}
-'''
+{supervise_service}'''
+
+[units.service_supervise_unit]
+doc = "The [Unit] lines of the supervised service: the start-rate limit. {interval} {burst}."
+value = """StartLimitIntervalSec={interval}
+StartLimitBurst={burst}
+"""
+
+[units.service_supervise_service]
+doc = "The [Service] lines of the supervised service: restart after every exit except 0 (RestartPreventExitStatus: stop, handoff, idle, another daemon answers, crash-loop stop), and count exit 75 (an outside SIGTERM or a forced drain, which the daemon exits with on purpose) as a success so `systemctl stop` does not leave the unit failed while Restart=always still starts it again. {restart_sec}."
+value = """Restart=always
+RestartSec={restart_sec}
+RestartPreventExitStatus=0
+SuccessExitStatus=75
+"""
+
+[units.restart_sec]
+doc = "systemd RestartSec of the engine unit: the wait before the service is started again."
+value = 10
+min = 1
+unit = "s"
+
+[units.start_limit_interval_s]
+doc = "systemd StartLimitIntervalSec of the engine unit."
+value = 300
+min = 1
+unit = "s"
+
+[units.start_limit_burst]
+doc = "systemd StartLimitBurst of the engine unit: starts allowed within the interval."
+value = 10
+min = 1
 
 [units.timer_template]
 doc = "The systemd user timer that starts the service on login and again after it has been inactive for the interval. {interval}."
@@ -442,3 +496,77 @@ value = "units-heal"
 [units.doctor_id]
 doc = "The id of the units heal row in the `doctor --repair` report."
 value = "units-heal"
+
+# ---- supervision (maintenance.unitsSupervise) ---------------------------------------------------------------------------------
+
+[units.supervise_setting]
+doc = "The switch of the supervised engine unit, maintenance.unitsSupervise: on (the default) writes the unit with launchd KeepAlive / systemd Restart=always so a killed daemon is started again, and lets a client with no daemon ask the service manager to start the unit; off writes the interval-only unit and the client starts the daemon itself."
+value = { section = "maintenance", key = "unitsSupervise", env = "ANTIHALL_UNITS_SUPERVISE", aliases = [], option = "", default = "on", values = ["on", "off"] }
+
+[units.supervise_word_off]
+doc = "The value of maintenance.unitsSupervise that switches the supervision off."
+value = "off"
+
+[units.bak_suffix]
+doc = "Appended to the engine unit's file name for the copy made before a unit that differs is rewritten (an upgrade from the interval-only unit). The copy is written once and never replaced."
+value = ".bak"
+
+[units.act_backup]
+doc = "Action: the engine unit file was copied to its backup before being rewritten."
+value = "backup"
+
+[units.kickstart_launchd]
+doc = "The command that starts the loaded engine unit now (launchd). {uid} {label}."
+value = ["launchctl", "kickstart", "gui/{uid}/{label}"]
+
+[units.kickstart_systemd]
+doc = "The command that starts the engine service now (systemd user manager). {unit} is the service name with its suffix."
+value = ["systemctl", "--user", "start", "{unit}"]
+
+[units.kickstart_timeout_ms]
+doc = "Longest the start command of a client with no daemon may run; the child process is killed at the limit and the client starts the daemon itself."
+value = 300
+min = 10
+unit = "ms"
+
+[units.kickstart_poll_ms]
+doc = "How often a client that asked the service manager for the daemon checks whether it answers (up to client.cold_start_wait_ms)."
+value = 2
+min = 1
+unit = "ms"
+
+[units.kickstart_env_prefix]
+doc = "Environment variables with this prefix change what a daemon is started with; a client that has one set (other than the units.kickstart_env_keep ones, which the unit carries) starts the daemon itself, because the service manager would not pass it on."
+value = "AH_ENGINE_"
+
+[units.kickstart_env_keep]
+doc = "Prefixed variables a client may have set and still use the unit: the ones the unit writes into its own environment."
+value = ["AH_ENGINE_ALLOCATOR"]
+
+[units.kickstart_log_kind]
+doc = "Event-log kind of a client's ask to the service manager; the code says how it went."
+value = "unit_kickstart"
+
+[units.kickstart_ok]
+doc = "Code of a unit_kickstart event: the daemon answered after the service manager started it."
+value = "ok"
+
+[units.kickstart_miss]
+doc = "Code of a unit_kickstart event: the command ran but no daemon answered in time; the client starts the daemon itself (the singleton lock keeps it single)."
+value = "miss"
+
+[units.kickstart_failed]
+doc = "Code of a unit_kickstart event: the command failed or timed out; the client starts the daemon itself."
+value = "failed"
+
+[units.finding_interval_only]
+doc = "Doctor finding: the engine unit on disk is not the supervised one. {path}."
+value = "the engine unit {path} has no supervision (a killed daemon is only started again by the next hook or the interval) - Fix: ah-engine doctor --repair (rewrites the unit, keeps a .bak)"
+
+[units.supervise_marker_launchd]
+doc = "The text that marks a LaunchAgent as supervised (doctor looks for it in the unit on disk)."
+value = "<key>KeepAlive</key>"
+
+[units.supervise_marker_systemd]
+doc = "The text that marks a systemd service as supervised (doctor looks for it in the unit on disk)."
+value = "Restart=always"

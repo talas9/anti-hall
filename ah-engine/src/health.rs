@@ -659,7 +659,7 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
     let n = count_recent_after_trip(&crashy(), cfg.crash_window);
     // a binary that exits at once leaves no crash event, so the starts themselves are counted too: this many in this window
     // is a loop whatever the daemon reported
-    let starts = count_recent_after_trip(&["client_spawn_attempt"], cfg.spawn_window);
+    let starts = count_recent_after_trip(&defaults::list("health.spawn_kinds"), cfg.spawn_window);
     if n < cfg.crash_n && starts < cfg.spawn_n {
         return false;
     }

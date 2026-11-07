@@ -35,6 +35,10 @@ use std::time::{Duration, Instant};
 static HUP: AtomicBool = AtomicBool::new(false);
 static TERM: AtomicBool = AtomicBool::new(false);
 static INT: AtomicBool = AtomicBool::new(false);
+/// The first drain was asked for by an outside SIGTERM (not by a stop request, a handoff or the idle timer).
+static TERM_DRAIN: AtomicBool = AtomicBool::new(false);
+/// The service manager started this daemon (start reason launchd or systemd): it exits the way its supervisor expects.
+static SUPERVISED: AtomicBool = AtomicBool::new(false);
 extern "C" fn on_hup(_: libc::c_int) {
     HUP.store(true, SeqCst);
 }
@@ -1808,8 +1812,19 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
         health::clear_marker();
         health::log_event("exit", code, &why);
         health::flush_log(); // the line is only queued for the log thread; process::exit below would drop it
-        std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
+        std::process::exit(if forced_exit { defaults::num("daemon.forced_exit_code") as i32 } else { clean_exit_code() });
     });
+}
+
+/// The exit status of a drain that was not forced: 0, except a daemon its supervisor started that an outside SIGTERM drained
+/// (`daemon.sigterm_exit_code`, so the supervisor starts it again), and a clean drain cut off by the timer
+/// (`daemon.drain_timeout_exit_code`).
+fn clean_exit_code() -> i32 {
+    drain_exit_code(SUPERVISED.load(SeqCst), TERM_DRAIN.load(SeqCst))
+}
+
+fn drain_exit_code(supervised: bool, by_term: bool) -> i32 {
+    if supervised && by_term { defaults::num("daemon.sigterm_exit_code") as i32 } else { defaults::num("daemon.drain_timeout_exit_code") as i32 }
 }
 
 /// The exit timer fired: when the database close is under way, wait for it to finish (at most `max`). True when it finished.
@@ -2167,7 +2182,7 @@ fn io_code(e: &std::io::Error) -> String {
 }
 
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
-pub fn serve(start_reason: &str) {
+pub fn serve(start_reason: &str) -> i32 {
     crate::crash::mark_daemon(true);
     // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
     // launcher dies during config/defaults loading still knows which parent it was started by.
@@ -2192,7 +2207,7 @@ pub fn serve(start_reason: &str) {
                     &[("path", &sock.display()), ("pid", &holder.pid), ("live_engine", &holder.live_engine), ("answers", &holder.answers)]
                 )
             );
-            return;
+            return 0;
         }
         Err(e) => start_fail(&io_code(&e), &defaults::render("msg.log_lock_fail", &[("path", &lock_path.display()), ("err", &e)])),
     };
@@ -2200,7 +2215,18 @@ pub fn serve(start_reason: &str) {
     // pid recorded in the lock file is still a live engine (flock not honoured here), do not steal.
     let prev: u32 = std::fs::read_to_string(&lock_path).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
     if prev != 0 && prev != std::process::id() && health::pid_is_engine(prev) && crate::client::ping(&sock).is_some() {
-        return;
+        return 0;
+    }
+    // A start by the service manager obeys the crash-loop rule the clients obey, and counts as a daemon start for its spawn-rate
+    // half: a binary that dies at once is started again at the manager's throttle, so without this nothing would ever stop that
+    // loop. Stopped, `serve` exits 0 (which the supervisor leaves alone) and the interval tick asks again after the cooldown.
+    let supervised = crate::setup::supervise::supervised_reason(start_reason);
+    SUPERVISED.store(supervised, SeqCst);
+    if supervised {
+        if health::crashloop_tripped(&crate::config::ClientConfig::from_env()) {
+            return 0;
+        }
+        health::log_event("supervised_start", start_reason, defaults::text("msg.log_supervised_start"));
     }
     crate::memdiag::apply_decay_if_untuned();
     crate::jev::shared::set_resident();
@@ -2331,10 +2357,12 @@ pub fn serve(start_reason: &str) {
     }
     crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
-    health::log_event("exit", "clean", "drained");
+    let by_term = TERM_DRAIN.load(SeqCst);
+    health::log_event("exit", if by_term { "sigterm" } else { "clean" }, if by_term { defaults::text("msg.exit_reason_sigterm") } else { "drained" });
     health::flush_log();
     // The socket was unlinked when the drain began (a successor may already own that path); the lock
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
+    if by_term && supervised { drain_exit_code(true, true) } else { 0 }
 }
 
 /// Start the DevSwarm wiring (lane dswire): nothing at all unless DevSwarm is detected and `devswarm_rt.mode` is not `off`.
@@ -2577,6 +2605,9 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             std::thread::sleep(Duration::from_millis(st)); // test hook: simulate a wedged loop
         }
         if TERM.swap(false, SeqCst) {
+            if !sh.draining.load(SeqCst) {
+                TERM_DRAIN.store(true, SeqCst);
+            }
             begin_drain(sh, defaults::text("msg.exit_reason_sigterm"), false);
         }
         if INT.swap(false, SeqCst) {
@@ -2718,6 +2749,14 @@ mod tests {
         assert!(loop_stalled(0, false, 61_000, 5_000, 60_000), "a start that never reaches the loop is still caught");
         assert!(loop_stalled(10_000, false, 15_001, 5_000, 60_000), "a running loop silent past stall_ms is a stall");
         assert!(!loop_stalled(10_000, false, 15_000, 5_000, 60_000));
+    }
+
+    #[test]
+    fn an_outside_sigterm_exits_non_zero_only_for_a_supervised_daemon_and_a_cut_off_clean_drain_exits_zero() {
+        assert_eq!(drain_exit_code(true, true), 75, "the supervisor starts it again");
+        assert_eq!(drain_exit_code(false, true), 0, "a daemon nobody supervises exits clean");
+        assert_eq!(drain_exit_code(true, false), 0, "a stop, handoff or idle drain that ran long is not restarted");
+        assert_ne!(defaults::num("daemon.sigterm_exit_code"), defaults::num("daemon.drain_timeout_exit_code"));
     }
 
     #[test]

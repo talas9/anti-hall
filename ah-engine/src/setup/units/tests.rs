@@ -58,7 +58,7 @@ fn exe(d: &Path) -> String {
 }
 
 fn run(sub: Sub, d: &Path, sys: &Fake, duty: &dyn Fn(&str) -> bool, dry: bool) -> Report {
-    let ctx = Ctx { home: d.join("home"), state: d.join("state"), exe: exe(d), dry, sys, duty, now_ms: 1_700_000_000_000 };
+    let ctx = Ctx { home: d.join("home"), state: d.join("state"), exe: exe(d), dry, sys, duty, now_ms: 1_700_000_000_000, supervise: true };
     execute(sub, &ctx)
 }
 
@@ -104,6 +104,15 @@ fn launchd_install_writes_an_escaped_agent_loads_it_and_a_rerun_changes_nothing(
     for var in defaults::list("daemon.malloc_conf_vars") {
         assert!(text.contains(&format!("<key>{var}</key>\n    <string>{conf}</string>")), "{var} missing from the agent's environment: {text}");
     }
+    assert!(
+        text.contains("<key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>"),
+        "launchd starts it again after any non-zero exit: {text}"
+    );
+    assert!(text.contains("<key>ThrottleInterval</key>\n  <integer>10</integer>") && text.contains("<string>Background</string>"), "{text}");
+    assert!(
+        text.contains(&format!("<key>{}</key>\n    <string>jemalloc</string>", defaults::text("diagnostics.allocator_env"))),
+        "the unit carries the allocator: {text}"
+    );
     assert!(text.contains("<key>EnvironmentVariables</key>") && text.find("</array>") < text.find("<key>EnvironmentVariables</key>"), "{text}");
     let p = plist(&d, "com.anti-hall.engine").display().to_string();
     assert_eq!(sys.calls(), vec![format!("launchctl unload {p}"), format!("launchctl load {p}")]);
@@ -134,6 +143,8 @@ fn systemd_install_writes_a_service_and_a_timer_with_quoted_exec_and_enables_the
         assert!(service.contains(&line), "{var} missing from the service environment: {service}");
         assert!(service.find(&line) < service.find("ExecStart="), "{service}");
     }
+    assert!(service.contains("Restart=always\nRestartSec=10\nRestartPreventExitStatus=0\nSuccessExitStatus=75\n"), "{service}");
+    assert!(service.contains("StartLimitIntervalSec=300\nStartLimitBurst=10\n") && service.find("StartLimit") < service.find("[Service]"), "{service}");
     let timer = std::fs::read_to_string(dir.join("anti-hall-engine.timer")).unwrap();
     assert!(timer.contains("OnUnitInactiveSec=300") && timer.contains("WantedBy=timers.target"), "{timer}");
     assert_eq!(sys.calls(), vec!["systemctl --user --version", "systemctl --user daemon-reload", "systemctl --user enable --now anti-hall-engine.timer"]);
@@ -308,7 +319,66 @@ fn an_os_without_a_service_manager_gets_a_note_and_nothing_else() {
 fn a_missing_engine_binary_writes_nothing() {
     let d = scratch("nobin");
     let sys = Fake::new("macos");
-    let ctx = Ctx { home: d.join("home"), state: d.join("state"), exe: d.join("none").display().to_string(), dry: false, sys: &sys, duty: &none, now_ms: 1 };
+    let ctx = Ctx {
+        home: d.join("home"),
+        state: d.join("state"),
+        exe: d.join("none").display().to_string(),
+        dry: false,
+        sys: &sys,
+        supervise: true,
+        duty: &none,
+        now_ms: 1,
+    };
     let r = execute(Sub::Install, &ctx);
     assert!(r.failed && !plist(&d, "com.anti-hall.engine").exists() && sys.calls().is_empty());
+}
+
+#[test]
+fn with_supervision_off_the_unit_is_the_interval_only_one() {
+    let d = scratch("unsup");
+    let exe = exe(&d);
+    let ld = engine_files_with(Manager::Launchd, &d.join("home"), &exe, false);
+    assert!(!ld[0].1.contains("KeepAlive") && !ld[0].1.contains("ThrottleInterval") && ld[0].1.contains("<key>StartInterval</key>"), "{}", ld[0].1);
+    let sd = engine_files_with(Manager::Systemd, &d.join("home"), &exe, false);
+    assert!(!sd[0].1.contains("Restart") && !sd[0].1.contains("StartLimit") && sd[0].1.contains("ExecStart="), "{}", sd[0].1);
+    // the supervised text is the interval-only text plus the supervision blocks, nothing else changes
+    let on = engine_files_with(Manager::Launchd, &d.join("home"), &exe, true);
+    assert_ne!(on[0].1, ld[0].1);
+    assert!(on[0].1.contains("<key>RunAtLoad</key>") && on[0].1.contains("<key>StartInterval</key>"));
+}
+
+#[test]
+fn an_older_interval_only_unit_is_rewritten_with_a_backup_kept_once_and_found_by_the_doctor_check() {
+    let d = scratch("upgrade");
+    let home = d.join("home");
+    let exe = exe(&d);
+    let p = plist(&d, "com.anti-hall.engine");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let old = engine_files_with(Manager::Launchd, &home, &exe, false)[0].1.clone();
+    std::fs::write(&p, &old).unwrap();
+    assert_eq!(crate::setup::supervise::unsupervised_file(Manager::Launchd, &home), Some(p.clone()), "found without running any command");
+    let sys = Fake::new("macos");
+    let r = run(Sub::Install, &d, &sys, &none, false);
+    assert!(!r.failed, "{:?}", r.to_json());
+    let bak = PathBuf::from(format!("{}.bak", p.display()));
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), old, "the older unit is kept");
+    assert!(std::fs::read_to_string(&p).unwrap().contains("<key>KeepAlive</key>"));
+    assert_eq!(crate::setup::supervise::unsupervised_file(Manager::Launchd, &home), None, "repaired");
+    assert!(r.rows.iter().any(|row| row.action == "backup"), "{:?}", r.to_json());
+    // a later rewrite never replaces the first backup
+    std::fs::write(&p, "changed by the owner").unwrap();
+    run(Sub::Install, &d, &Fake::new("macos"), &none, false);
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), old, "the backup is written once");
+    // a dry run changes nothing
+    std::fs::write(&p, &old).unwrap();
+    let before = std::fs::read(&p).unwrap();
+    run(Sub::Install, &d, &Fake::new("macos"), &none, true);
+    assert_eq!(std::fs::read(&p).unwrap(), before);
+}
+
+#[test]
+fn with_no_unit_file_there_is_nothing_to_repair() {
+    let d = scratch("nounit");
+    assert_eq!(crate::setup::supervise::unsupervised_file(Manager::Launchd, &d.join("home")), None);
+    assert_eq!(crate::setup::supervise::unsupervised_file(Manager::Systemd, &d.join("home")), None);
 }

@@ -584,6 +584,14 @@ unit = "ms"
 doc = "Exit status of a forced drain exit (sysexits EX_TEMPFAIL, 75); the next client call starts a fresh daemon."
 value = 75
 
+[daemon.sigterm_exit_code]
+doc = "Exit status of a daemon the service manager started (start reason launchd or systemd) that drained because an outside SIGTERM asked it to (a plain `kill`): non-zero, so the supervisor starts it again. The exit is logged as exit/sigterm, never as a crash. 75 = EX_TEMPFAIL, the same as a forced drain; systemd counts it as a success (SuccessExitStatus) so `systemctl stop` leaves the unit inactive, not failed."
+value = 75
+
+[daemon.drain_timeout_exit_code]
+doc = "Exit status of a clean drain (handoff, stop, idle, SIGTERM) that outlasted daemon.drain_max_ms and was cut off. 0, so a supervisor does not start the daemon again after an idle or stop that merely ran long; a forced drain keeps daemon.forced_exit_code."
+value = 0
+
 [daemon.thread_restart_max]
 doc = "Panics a daemon service thread may recover from before the daemon requests a clean restart."
 value = 3
@@ -849,6 +857,10 @@ value = 200
 doc = "Longest kind, code or detail written to one log line (newlines and tabs become spaces)."
 value = 300
 unit = "chars"
+
+[health.spawn_kinds]
+doc = "Event kinds that count as one daemon start for the crash-loop spawn-rate rule (client.spawn_n within client.spawn_window_s): a client's spawn attempt and a service-manager start that won the singleton lock."
+value = ["client_spawn_attempt", "supervised_start"]
 
 [health.judged_kinds]
 doc = "Event kinds that mark a crash-loop judgement (a trip, a reset by a new binary, an operator reset): crashes and daemon starts logged before the latest of them no longer count toward the next trip."

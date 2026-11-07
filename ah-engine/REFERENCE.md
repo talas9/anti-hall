@@ -202,6 +202,7 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 
 | Variable | Setting | What it does |
 |---|---|---|
+| `AH_ENGINE_` | `units.kickstart_env_prefix` | Environment variables with this prefix change what a daemon is started with; a client that has one set (other than the units.kickstart_env_keep ones, which the unit carries) starts the daemon itself, because the service manager would not pass it on. |
 | `AH_ENGINE_ACK_TIMEOUT_MS` | `storage.ack_timeout_ms` | How long a request waits for its write to commit before it is answered with an error (the client then retries or spools; the write id makes a late commit harmless); kept below client.ctl_timeout_ms so the client hears the error. |
 | `AH_ENGINE_AGENT_TICK_MS` | `schedule.agent_tick_ms` | Interval of the agent_tick job; 0 turns the tracker's ticks off. |
 | `AH_ENGINE_ALLOCATOR` |  | Selects the daemon's allocator: jemalloc (default) or system. The client sets it from `diagnostics.allocator` on the daemon it spawns, unless it is already set; the daemon reads it before its first allocation. Environment variable the client sets on the daemon it spawns to select the allocator (the daemon reads it before its first allocation). An existing value in the client's own environment wins. |
@@ -525,6 +526,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.drain_grace_ms` | `1000` |  | ms | After a drain starts, a worker or loop that has not finished in this long is cut off. |
 | `daemon.drain_max_ms` | `10000` |  | ms | Longest a clean drain (handoff, stop, idle exit, SIGTERM) may take before the daemon exits anyway, so a worker stuck while draining can never keep the process (and the singleton lock) alive with its socket already gone. Above daemon.stuck_ms, so the stuck-worker check normally ends such a drain first. |
 | `daemon.drain_poll_ms` | `20` |  | ms | Accept-loop poll interval while draining. |
+| `daemon.drain_timeout_exit_code` | `0` |  |  | Exit status of a clean drain (handoff, stop, idle, SIGTERM) that outlasted daemon.drain_max_ms and was cut off. 0, so a supervisor does not start the daemon again after an idle or stop that merely ran long; a forced drain keeps daemon.forced_exit_code. |
 | `daemon.eval_budget_us` | `1000000` | `AH_ENGINE_EVAL_BUDGET_US` | us | HARD thread CPU budget of ONE check: a check that used more than this alone loses its own answer (counted answers_dropped reason `cpu_budget`) and takes its failure policy; the checks after it still run and answer, and the request as a whole is bounded by daemon.request_hard_ms. The SOFT budget (a warning only) is daemon.eval_soft_us. 0 turns the hard budget off. |
 | `daemon.eval_soft_us` | `200000` |  | us | SOFT per-request thread CPU budget for rule evaluation: a request that used more is logged (budget_soft) and counted, and every check keeps its answer. The HARD budget is daemon.eval_budget_us. 0 turns the warning off. |
 | `daemon.forced_exit_code` | `75` |  |  | Exit status of a forced drain exit (sysexits EX_TEMPFAIL, 75); the next client call starts a fresh daemon. |
@@ -564,6 +566,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.shed_drain_bytes` | `4194304` |  | bytes | At most this many bytes of a refused connection's unread request are discarded before it is closed. |
 | `daemon.shed_drain_ms` | `200` |  | ms | How long a refused (BUSY) connection is kept open after the BUSY frame so the client can read it before the close; the unread request is discarded meanwhile. 0 closes at once. |
 | `daemon.shed_drain_threads` | `32` |  | count | At most this many refused connections are drained at once; beyond it the connection is closed immediately, as before. |
+| `daemon.sigterm_exit_code` | `75` |  |  | Exit status of a daemon the service manager started (start reason launchd or systemd) that drained because an outside SIGTERM asked it to (a plain `kill`): non-zero, so the supervisor starts it again. The exit is logged as exit/sigterm, never as a crash. 75 = EX_TEMPFAIL, the same as a forced drain; systemd counts it as a success (SuccessExitStatus) so `systemctl stop` leaves the unit inactive, not failed. |
 | `daemon.skip_when_client_gone` | `true` |  |  | Stop work on a request whose client has closed the connection and nobody reads the reply: the remaining checks of a request being served (an ack-mode client keeps it open until it has the verdict, so an end-of-stream means it gave up), and a request still queued when its client hung up (a legacy client that timed out and dropped its socket; counted in the daemon stats as gone_skipped). A client that is still waiting, including one waiting out client.slow_fallback_max_ms, is always served. Off runs them all. |
 | `daemon.spawn_cwd_fallback` | `/` |  |  | The working directory of a daemon whose starter has no usable home directory. Otherwise it starts in the home directory: the directory of the hook that spawned it can be a workspace's worktree that is archived and removed while the daemon, and every job it starts, keeps running. |
 | `daemon.spawn_env_allow` | `38 items` |  |  | The only environment variables the daemon (`ah-engine serve`) is started with; everything else of the hook that happened to start it is dropped. A daemon outlives the session that spawned it and serves every later one, so a per-session value left in its environment (the session id, the DevSwarm workspace and role variables, `CLAUDE_PROJECT_DIR`, the git object-store variables of the hook's repository) would be read for all of them: the first session to spawn it would own it. Per-session values reach the checks only with each request (`request_env.allow`). What is kept is what the daemon and the jobs and tools it starts need as the user: the account and search path (HOME, USER, LOGNAME, SHELL, PATH, the temp directory, locale, TZ, XDG_*), the user's git and GitHub credentials (SSH_AUTH_SOCK, GH_TOKEN, GITHUB_TOKEN, GH_HOST, GH_CONFIG_DIR), the engine's own tunables (AH_ENGINE_*, the allocator tuning variables), the plugin root the daemon loads its files from, the user's Jev settings and keys (ANTIHALL_JEV*, CLAUDE_PLUGIN_OPTION_JEV_*, the gateway keys), and the user-level DevSwarm and maintenance tunables. A trailing `*` matches a prefix. |
@@ -706,6 +709,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.rss_probe` | `ps, -o, rss=, -p, {pid}` |  |  | Command used to read this process's resident set where /proc is unavailable (macOS): the program, then its arguments with `{pid}` substituted. |
 | `health.scrub_patterns` | `7 items` |  |  | Patterns removed from anything that goes into a diagnostic: each item is [regex, replacement]. Order matters. |
 | `health.serve_arg` | `serve` |  |  | Subcommand a daemon is started with; also how a live engine is recognised in the process list. |
+| `health.spawn_kinds` | `client_spawn_attempt, supervised_start` |  |  | Event kinds that count as one daemon start for the crash-loop spawn-rate rule (client.spawn_n within client.spawn_window_s): a client's spawn attempt and a service-manager start that won the singleton lock. |
 | `health.start_crash_kinds` | `crash, panic` |  |  | Lifecycle event kinds proving the next actual start follows an unrecovered crash. Stale run-marker reaping writes crash, including when the hook client reaped it before serve. |
 | `health.start_doctor_line` | `daemon starts (retained): {counts}; last ts={timestamp} reason={reason}` |  |  | The doctor's one-line retained daemon-start summary. Placeholders: counts (JSON), timestamp (last start Unix milliseconds, 0 if none), reason. |
 | `health.start_fields` | `6 entries` |  |  | Field names of a start row and its health summary: timestamp is Unix milliseconds; counts cover the retained bounded ring. |
@@ -13342,6 +13346,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `units.act_backup` | `backup` |  |  | Action: the engine unit file was copied to its backup before being rewritten. |
 | `units.act_keep` | `keep` |  |  | Action: a Node unit was left in place (its duty is not the engine's yet). |
 | `units.act_load` | `run` |  |  | Action: a service-manager command was run. |
 | `units.act_mistake` | `mistake` |  |  | Action: a Node unit the engine retired earlier is back (the owner reinstalled it); it is left alone and recorded as a mistake signal of that retirement. |
@@ -13353,6 +13358,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.act_write` | `write` |  |  | Action: a unit file was written (new or changed). |
 | `units.allow_tmp_home_env` | `ANTIHALL_UNITS_ALLOW_TMP_HOME` |  |  | The environment variable that, set to 1, lets service-manager commands run although the home directory is under a temporary directory (a deliberate temporary-home install). |
 | `units.allow_tmp_home_word` | `1` |  |  | The value of units.allow_tmp_home_env that allows it. |
+| `units.bak_suffix` | `.bak` |  |  | Appended to the engine unit's file name for the copy made before a unit that differs is rewritten (an upgrade from the interval-only unit). The copy is written once and never replaced. |
 | `units.cmd_poll_ms` | `20` |  | ms | How often a running service-manager command is checked. |
 | `units.cmd_timeout_ms` | `15000` |  | ms | Longest one service-manager command may run before it is killed and counted as failed. |
 | `units.cmd_what` | `units` |  |  | The name of a service-manager command in a log line. |
@@ -13363,10 +13369,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.duty_supervisor` | `devswarm_sup` |  |  | The duty word of the DevSwarm supervisor: the engine runs it when devswarm_sup.mode is engine. |
 | `units.engine_bin_rel` | `.anti-hall/ah-engine/bin/ah-engine` |  |  | The engine binary the unit runs, relative to the home directory (where the installer puts it and the thin client finds it). |
 | `units.exec_arg` | `"{arg}"` |  |  | One argument of the ExecStart line: double-quoted, with the systemd escapes applied. {arg}. |
+| `units.finding_interval_only` | `the engine unit {path} has no supervision (a killed daemon is only started ag...` |  |  | Doctor finding: the engine unit on disk is not the supervised one. {path}. |
 | `units.flag_bin` | `--bin` |  |  | The option that names the engine binary the unit runs (default: units.engine_bin_rel under the home directory). |
 | `units.flag_dry` | `--dry-run` |  |  | The option that reports what would be done and changes nothing. |
 | `units.heal_setting` | `7 entries` |  |  | The switch of the units heal that update's post-pull stage and `doctor --repair` run, maintenance.unitsHeal: on (the default) writes the engine unit and moves the Node units aside whose duty the engine runs, off leaves the units alone. Idempotent; it never deletes. |
 | `units.heal_word_off` | `off` |  |  | The value of maintenance.unitsHeal that switches the heal off. |
+| `units.kickstart_env_keep` | `AH_ENGINE_ALLOCATOR` |  |  | Prefixed variables a client may have set and still use the unit: the ones the unit writes into its own environment. |
+| `units.kickstart_env_prefix` | `AH_ENGINE_` |  |  | Environment variables with this prefix change what a daemon is started with; a client that has one set (other than the units.kickstart_env_keep ones, which the unit carries) starts the daemon itself, because the service manager would not pass it on. |
+| `units.kickstart_failed` | `failed` |  |  | Code of a unit_kickstart event: the command failed or timed out; the client starts the daemon itself. |
+| `units.kickstart_launchd` | `launchctl, kickstart, gui/{uid}/{label}` |  |  | The command that starts the loaded engine unit now (launchd). {uid} {label}. |
+| `units.kickstart_log_kind` | `unit_kickstart` |  |  | Event-log kind of a client's ask to the service manager; the code says how it went. |
+| `units.kickstart_miss` | `miss` |  |  | Code of a unit_kickstart event: the command ran but no daemon answered in time; the client starts the daemon itself (the singleton lock keeps it single). |
+| `units.kickstart_ok` | `ok` |  |  | Code of a unit_kickstart event: the daemon answered after the service manager started it. |
+| `units.kickstart_poll_ms` | `2` |  | ms | How often a client that asked the service manager for the daemon checks whether it answers (up to client.cold_start_wait_ms). |
+| `units.kickstart_systemd` | `systemctl, --user, start, {unit}` |  |  | The command that starts the engine service now (systemd user manager). {unit} is the service name with its suffix. |
+| `units.kickstart_timeout_ms` | `300` |  | ms | Longest the start command of a client with no daemon may run; the child process is killed at the limit and the client starts the daemon itself. |
 | `units.label` | `com.anti-hall.engine` |  |  | The launchd label of the engine unit. |
 | `units.label_sep` | `.` |  |  | Between a family label and its per-project suffix. |
 | `units.launchd_dir` | `Library/LaunchAgents` |  |  | The LaunchAgents directory, relative to the home directory. |
@@ -13400,19 +13417,30 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.plist_env_entry` | `    <key>{name}</key>\n    <string>{value}</string>` |  |  | One variable of the LaunchAgent's EnvironmentVariables. {name} {value}, both XML-escaped. |
 | `units.plist_log` | `/dev/null` |  |  | Where launchd sends the unit's stdout and stderr (the daemon writes its own log). |
 | `units.plist_suffix` | `.plist` |  |  | The file name suffix of a launchd unit. |
-| `units.plist_template` | `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD...` |  |  | The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {env} (the units.plist_env block, or nothing) {interval} {log}; every value is XML-escaped. |
+| `units.plist_supervise` | `  <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>...` |  |  | The supervision keys of the LaunchAgent, written while maintenance.unitsSupervise is on: launchd starts the job again after any exit that is not 0 (a kill, a crash, exit 75 after an outside SIGTERM, a forced drain); exit 0 (stop, handoff, idle, another daemon already answers, crash-loop stop) is left alone and the StartInterval below picks it up. {throttle} is units.throttle_interval_s, {process_type} units.process_type. |
+| `units.plist_template` | `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD...` |  |  | The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {env} (the units.plist_env block, or nothing) {supervise} (the units.plist_supervise block, or nothing while maintenance.unitsSupervise is off) {interval} {log}; every value is XML-escaped. |
+| `units.process_type` | `Background` |  |  | launchd ProcessType of the engine unit. |
 | `units.reason_sep` | ` - ` |  |  | Between the outcome and the reason in a report line. |
+| `units.restart_sec` | `10` |  | s | systemd RestartSec of the engine unit: the wait before the service is started again. |
 | `units.retired_subdir` | `retired` |  |  | Where moved-aside unit files go, inside the units directory: `<file name>.<epoch ms>`. |
 | `units.serve_args` | `serve` |  |  | The arguments the unit gives the engine binary. |
 | `units.service_env` | `Environment="{name}={value}"` |  |  | One Environment line of the systemd service: the allocator tuning (`daemon.malloc_conf`) for the daemon the unit starts, double-quoted with the systemd escapes applied. {name} {value}. |
 | `units.service_suffix` | `.service` |  |  | The file name suffix of a systemd service. |
-| `units.service_template` | `[Unit]\nDescription=anti-hall engine daemon (starts it when none is running)\...` |  |  | The systemd user service of the engine unit. {exec} is the quoted command line; {env} is one units.service_env line per variable, or nothing. |
+| `units.service_supervise_service` | `Restart=always\nRestartSec={restart_sec}\nRestartPreventExitStatus=0\nSuccess...` |  |  | The [Service] lines of the supervised service: restart after every exit except 0 (RestartPreventExitStatus: stop, handoff, idle, another daemon answers, crash-loop stop), and count exit 75 (an outside SIGTERM or a forced drain, which the daemon exits with on purpose) as a success so `systemctl stop` does not leave the unit failed while Restart=always still starts it again. {restart_sec}. |
+| `units.service_supervise_unit` | `StartLimitIntervalSec={interval}\nStartLimitBurst={burst}\n` |  |  | The [Unit] lines of the supervised service: the start-rate limit. {interval} {burst}. |
+| `units.service_template` | `[Unit]\nDescription=anti-hall engine daemon (starts it when none is running)\...` |  |  | The systemd user service of the engine unit. {exec} is the quoted command line; {env} is one units.service_env line per variable, or nothing; {supervise_unit} and {supervise_service} are the units.service_supervise_unit and units.service_supervise_service blocks, or nothing while maintenance.unitsSupervise is off. |
 | `units.stage_name` | `units-heal` |  |  | The progress name of update's units heal stage. |
+| `units.start_limit_burst` | `10` |  |  | systemd StartLimitBurst of the engine unit: starts allowed within the interval. |
+| `units.start_limit_interval_s` | `300` |  | s | systemd StartLimitIntervalSec of the engine unit. |
 | `units.state_subdir` | `units` |  |  | The units directory inside the engine state directory (ledger, lock, retired files). The reaper opt-in marker is mcp_reaper.job_optin_rel. |
 | `units.sub_heal` | `heal` |  |  | The subcommand that installs the engine unit and retires the Node units whose duty the engine runs (what update and doctor --repair call). |
 | `units.sub_install` | `install` |  |  | The subcommand that writes and loads the engine unit. |
 | `units.sub_status` | `status` |  |  | The subcommand that reports and changes nothing. |
 | `units.sub_uninstall` | `uninstall` |  |  | The subcommand that unloads the engine unit and moves its files aside. |
+| `units.supervise_marker_launchd` | `<key>KeepAlive</key>` |  |  | The text that marks a LaunchAgent as supervised (doctor looks for it in the unit on disk). |
+| `units.supervise_marker_systemd` | `Restart=always` |  |  | The text that marks a systemd service as supervised (doctor looks for it in the unit on disk). |
+| `units.supervise_setting` | `7 entries` |  |  | The switch of the supervised engine unit, maintenance.unitsSupervise: on (the default) writes the unit with launchd KeepAlive / systemd Restart=always so a killed daemon is started again, and lets a client with no daemon ask the service manager to start the unit; off writes the interval-only unit and the client starts the daemon itself. |
+| `units.supervise_word_off` | `off` |  |  | The value of maintenance.unitsSupervise that switches the supervision off. |
 | `units.systemd_dir` | `.config/systemd/user` |  |  | The systemd user unit directory, relative to the home directory. |
 | `units.systemd_escapes` | `\, \\, ", \", $, $$, %, %%` |  |  | The escapes applied to an ExecStart argument, in order: backslash and double quote for the quoting, a dollar and a percent sign doubled so systemd expands neither a variable nor a specifier. |
 | `units.systemd_load` | `systemctl, --user, daemon-reload, systemctl, --user, enable, --now, {timer}` |  |  | The commands that load the engine unit: re-read the unit files, then enable and start the timer. |
@@ -13421,6 +13449,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.systemd_reload` | `systemctl, --user, daemon-reload` |  |  | The command that re-reads the unit files after files were moved aside. |
 | `units.systemd_unload` | `systemctl, --user, disable, --now, {unit}` |  |  | The command that disables and stops a unit (its failure is ignored: the unit may not be enabled). |
 | `units.test_markers` | `ANTIHALL_TEST_ISOLATION, NODE_TEST_CONTEXT` |  |  | Environment variables that mark a test run: while one is set (non-empty), no service-manager command runs (files are still written under the test's home). The same markers the Node installers honour. |
+| `units.throttle_interval_s` | `10` |  | s | launchd ThrottleInterval of the engine unit: the least time between two starts of the job, so a daemon that dies at once is started again at most this often. |
 | `units.timer_suffix` | `.timer` |  |  | The file name suffix of a systemd timer. |
 | `units.timer_template` | `[Unit]\nDescription=anti-hall engine daemon watch ({interval}s)\n\n[Timer]\nO...` |  |  | The systemd user timer that starts the service on login and again after it has been inactive for the interval. {interval}. |
 | `units.tmp_roots` | `/tmp/, /private/tmp/, /var/folders/, /private/var/folders/` |  |  | Directory prefixes that are temporary: a home under one of them is never a real operator home, so no service-manager command runs for it (the system temporary directory is checked too). |
@@ -14560,6 +14589,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_stall` | Log detail when the accept loop stalled. |
 | `msg.log_start` | Log detail for a daemon start. Placeholders: {version}, {pid}, {rlimit}. |
 | `msg.log_stuck` | Log detail when a worker is stuck. Placeholder: {i}. |
+| `msg.log_supervised_start` | Detail of a supervised_start event: the service manager started this daemon and it won the singleton lock. |
 | `msg.log_system_restart` | Log detail when a daemon is found gone without a clean exit AND the operating system booted after its last sign of life (a reboot, an OS update, a power loss): the machine stopped it, it did not crash. Placeholders: {pid}, {last_alive_ms}, {boot_ms}. |
 | `msg.metrics_quantile_note` | Printed with every latency histogram: how to read its percentiles. |
 | `msg.net_not_measured` | Listed in net.not_measured for a part of the NET figure that has no data in the window. Placeholder: {name}. |
