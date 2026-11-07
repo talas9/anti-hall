@@ -912,6 +912,7 @@ fn fixture(case: &Case, root: &Path, extra_rows: &[Value], agents: &[(&str, &str
     }
     let proj = root.join("proj");
     std::fs::create_dir_all(proj.join(".git")).unwrap();
+    std::fs::create_dir_all(root.join("tmp")).unwrap(); // the guard's temp root: pinned disjoint from proj so the verdict does not depend on where the runner puts its scratch
     if t.exists() {
         use std::io::Write;
         let mut rows = case.rows.clone();
@@ -921,7 +922,11 @@ fn fixture(case: &Case, root: &Path, extra_rows: &[Value], agents: &[(&str, &str
         f.write_all(rows.iter().map(line).collect::<String>().as_bytes()).unwrap();
     }
     probe(&home);
-    let mut pairs = vec![("HOME".to_string(), home.to_string_lossy().into_owned()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())];
+    let mut pairs = vec![
+        ("HOME".to_string(), home.to_string_lossy().into_owned()),
+        ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string()),
+        ("TMPDIR".to_string(), root.join("tmp").to_string_lossy().into_owned()),
+    ];
     if case.cell.named != Named::Unset {
         pairs.push(("CLAUDE_CODE_TASK_LIST_ID".to_string(), NAMED_LIST.to_string()));
     }
