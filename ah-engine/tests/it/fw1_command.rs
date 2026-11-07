@@ -80,12 +80,15 @@ fn guard(p: &Value, env: &[(&str, &str)]) -> i32 {
 }
 
 #[test]
-fn gh_pr_ready_and_close_run_inline_but_merge_stays_blocked() {
-    // #547: reversible PR state changes are allowed in the main thread; the irreversible merge is not
+fn gh_pr_ready_runs_inline_but_close_and_merge_stay_blocked() {
+    // #547: a reversible PR state change (ready) is allowed in the main thread; close (it can carry --delete-branch) and merge are not
     let cwd = scratch("gh");
     let cwd = cwd.to_str().unwrap();
     assert_eq!(guard(&main_bash("gh pr ready 12", cwd), &[]), 0, "gh pr ready");
-    assert_eq!(guard(&main_bash("gh pr close 12", cwd), &[]), 0, "gh pr close");
+    // close is no longer in remote_allow: it and its --delete-branch form take the same path as any unlisted gh mutation
+    let unlisted = guard(&main_bash("gh pr review 12", cwd), &[]);
+    assert_eq!(guard(&main_bash("gh pr close 12", cwd), &[]), unlisted, "gh pr close takes the old path");
+    assert_eq!(guard(&main_bash("gh pr close 12 --delete-branch", cwd), &[]), unlisted, "gh pr close --delete-branch takes the old path");
     assert_eq!(guard(&main_bash("gh pr merge 12", cwd), &[]), 2, "gh pr merge stays blocked");
 }
 

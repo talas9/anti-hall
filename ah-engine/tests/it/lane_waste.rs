@@ -313,7 +313,11 @@ fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
     let allow = [
         "find ~ -maxdepth 4 -iname x",
         "find ~ -iname x -maxdepth 2",
-        "bfs / -maxdepth 3 -name x",
+        "bfs / -maxdepth 1 -name x",
+        "bfs ~ -maxdepth 3 -name x",
+        "find . -maxdepth 4 -name x",
+        "find ~ -maxdepth 9 -maxdepth 2 -name x", // the last depth flag wins
+        "rg -d 9 -d 1 foo ~",
         "rg --max-depth=2 foo /Users",
         "rg --max-depth 2 foo ~",
         "fd -d 3 x ~",
@@ -328,6 +332,13 @@ fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
         "fd x ~",
         "fd -d 9 x ~",
         "find ~ -maxdepth abc -name x",
+        "find / -maxdepth 1 -maxdepth 64 -name x", // the last depth flag wins
+        "rg -d 1 -d 99 foo ~",
+        "find / -exec find {} -maxdepth 1 \\;",
+        "find / -maxdepth 1 -exec grep -r foo {} +",
+        "rg foo ~ -- -d 1",           // nothing after `--` is a flag
+        "find / -maxdepth 3 -name x", // a lower limit applies from `/`
+        "fd -d 1 x ~ -x grep -r foo",
         "find ~ -path '*/src/*' -prune -name x", // a -prune/-path limit is not a depth bound
     ];
     for who in ["main", "subagent", "codex"] {

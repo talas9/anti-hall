@@ -64,22 +64,29 @@ function wsPaths(words, spec) {
   return recursive ? out : null;
 }
 
-// The smallest depth limit (a number) the command `words` carries through one of spec.depth_flags (`-maxdepth 3`, `--max-depth=3`), or
-// null when it carries none. A limit that is not a plain non-negative number is no limit.
+// The depth limit (a number) the command `words` carries through one of spec.depth_flags (`-maxdepth 3`, `--max-depth=3`), or null when it
+// carries none. The LAST such flag wins, as the tools themselves do. Scanning stops at a spec.depth_stop_flags word (`--`); a
+// spec.depth_void_flags word (-exec, -x) means the command runs more than a bounded walk, so it carries no limit. A limit that is not a
+// plain non-negative number is no limit.
 function wsDepth(words, spec) {
-  var flags = spec.depth_flags || [], best = null, i, j;
+  var flags = spec.depth_flags || [], stop = spec.depth_stop_flags || [], voids = spec.depth_void_flags || [], last = null, i, j;
   for (i = 1; i < words.length; i++) {
+    if (stop.indexOf(words[i]) >= 0) break;
+    if (voids.indexOf(words[i]) >= 0) return null;
     for (j = 0; j < flags.length; j++) {
       var v = null;
       if (words[i] === flags[j]) v = i + 1 < words.length ? words[i + 1] : null;
       else if (flags[j].indexOf('--') === 0 && words[i].indexOf(flags[j] + '=') === 0) v = words[i].slice(flags[j].length + 1);
-      if (v !== null && ah.re.test(ah.cfg('wide_search.depth_value_re'), 'r', v)) {
-        var n = parseInt(v, 10);
-        if (best === null || n < best) best = n;
-      }
+      if (v !== null) last = ah.re.test(ah.cfg('wide_search.depth_value_re'), 'r', v) ? parseInt(v, 10) : null;
     }
   }
-  return best;
+  return last;
+}
+
+// The deepest limit allowed under `root`: wide_search.depth_allow_max_by_root names a lower one for a root such as `/`.
+function wsDepthMax(root) {
+  var by = ah.cfg('wide_search.depth_allow_max_by_root'), base = ah.cfg('wide_search.depth_allow_max');
+  return Object.prototype.hasOwnProperty.call(by, root) && by[root] < base ? by[root] : base;
 }
 
 function wsBlock(what, instead) {
@@ -122,7 +129,7 @@ function decide(p, opts) {
       if (root === null || forbidden.indexOf(root) < 0 || allowed.indexOf(root) >= 0) continue;
       if (ah.settings.bool('wide_search.sw_depth_bound')) {
         var depth = wsDepth(words, specs[base]);
-        if (depth !== null && depth <= ah.cfg('wide_search.depth_allow_max')) {
+        if (depth !== null && depth <= wsDepthMax(root)) {
           try { ah.metric('wide_search_depth_bounded', ['cmd', base]); } catch (e) { /* counting never fails a hook */ }
           continue;
         }
