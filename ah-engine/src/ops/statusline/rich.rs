@@ -606,7 +606,7 @@ mod consistency_tests {
         for k in ["usage_sep", "usage_ctx_gap"] {
             assert!(!toml.contains(&format!("[statusline.{k}]")), "{k} must be gone");
         }
-        let src = include_str!("rich.rs");
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ops/statusline/rich.rs")).unwrap();
         let prod = &src[..src.find("#[cfg(test)]").expect("test module marker")];
         for k in ["ctx_mark", "usage_sep", "usage_ctx_gap"] {
             assert!(!prod.contains(&format!("statusline.{k}")), "{k} read");
