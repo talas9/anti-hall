@@ -78,6 +78,16 @@ pub fn engine_cli(home: &str) -> String {
     fill_once(defaults::text("devswarm_role.engine_cli"), &[("home", home)])
 }
 
+/// The engine binary path alone (`devswarm_role.engine_bin`, home filled in): callers quote it, the verb stays outside the quotes.
+pub fn engine_bin(home: &str) -> String {
+    fill_once(defaults::text("devswarm_role.engine_bin"), &[("home", home)])
+}
+
+/// The verb after the engine binary for every DevSwarm CLI command (`devswarm_role.engine_verb`).
+pub fn engine_verb() -> &'static str {
+    defaults::text("devswarm_role.engine_verb")
+}
+
 /// The command agents arm with `Monitor` for the mailbox watcher: `devswarm_role.engine_watcher` with the home filled in.
 pub fn engine_watcher(home: &str) -> String {
     fill_once(defaults::text("devswarm_role.engine_watcher"), &[("home", home)])

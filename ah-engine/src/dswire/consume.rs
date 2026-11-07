@@ -6,8 +6,9 @@ use crate::checks::guardkit::msg::render_with;
 use crate::defaults;
 use crate::devswarm_rt::detect::Mode;
 use crate::devswarm_rt::reconcile::Rt;
-use crate::devswarm_rt::state::{Activity, Edge, Lifecycle};
+use crate::devswarm_rt::state::{Activity, Edge, EdgeKind, Lifecycle};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn list(k: &str) -> Vec<String> {
@@ -22,6 +23,55 @@ fn seen_path(state_dir: &Path, session: &str) -> Option<PathBuf> {
 
 fn read_seen(p: &Path) -> Option<u64> {
     serde_json::from_str::<Value>(&std::fs::read_to_string(p).ok()?).ok()?.get("gen")?.as_u64()
+}
+
+/// When each workspace's activity change was last put in front of this session (workspace -> the edge's `at_ms`), from its marker.
+fn read_advised(p: &Path) -> BTreeMap<String, i64> {
+    let v = std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null); // keep: a missing or bad marker is the empty map
+    v.get(defaults::text("devswarm_wire.advisory_act_key"))
+        .and_then(Value::as_object)
+        .map(|m| m.iter().filter_map(|(k, t)| Some((k.clone(), t.as_i64()?))).collect())
+        .unwrap_or_default()
+}
+
+/// Hysteresis for the activity edges (`devswarm_rt.activity_min_dwell_s`): per workspace the batch is folded to its net change (a flip
+/// and its flip back leave nothing), and a net change within `dwell_ms` of the one this session was last told about is silent. Returns
+/// the edges to advise, the activity edges dropped, and the updated told-at map (only workspaces whose change is advised move).
+fn settle_activity(edges: Vec<Edge>, told: &BTreeMap<String, i64>, dwell_ms: i64) -> (Vec<Edge>, u64, BTreeMap<String, i64>) {
+    let mut told = told.clone();
+    let (mut out, mut dropped) = (Vec::with_capacity(edges.len()), 0u64);
+    let is_act = |e: &Edge| e.kind == EdgeKind::Activity;
+    let mut net: BTreeMap<String, (String, String, i64, usize)> = BTreeMap::new(); // ws -> (first from, last to, last at_ms, count)
+    for e in edges.iter().filter(|e| is_act(e)) {
+        let slot = net.entry(e.ws.clone()).or_insert_with(|| (e.from.clone(), e.to.clone(), e.at_ms, 0));
+        slot.1 = e.to.clone();
+        slot.2 = e.at_ms;
+        slot.3 += 1;
+    }
+    let mut kept_ws: Vec<&String> = Vec::new();
+    for (ws, (from, to, at, count)) in &net {
+        let flipped_back = from == to;
+        let within_dwell = told.get(ws).is_some_and(|t| at.saturating_sub(*t) < dwell_ms);
+        if flipped_back || within_dwell {
+            dropped += *count as u64;
+        } else {
+            dropped += (*count as u64).saturating_sub(1);
+            kept_ws.push(ws);
+            told.insert(ws.clone(), *at);
+        }
+    }
+    let mut emitted: std::collections::BTreeSet<&String> = std::collections::BTreeSet::new();
+    for e in &edges {
+        if !is_act(e) {
+            out.push(e.clone());
+        } else if kept_ws.contains(&&e.ws) && !emitted.contains(&e.ws) {
+            // the net change, at the place of the workspace's first activity edge
+            let (from, to, at, _) = &net[&e.ws];
+            out.push(Edge { from: from.clone(), to: to.clone(), at_ms: *at, ..e.clone() });
+            emitted.insert(&e.ws);
+        }
+    }
+    (out, dropped, told)
 }
 
 fn prune_old(dir: &Path, now: i64) {
@@ -50,12 +100,17 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     let path = seen_path(state_dir, session);
     let gen_now = rt.current().generation;
     let seen = path.as_deref().and_then(read_seen);
-    let edges: Vec<Value> = seen
-        .map(|s| rt.edges_since(s))
-        .unwrap_or_default()
-        .iter()
-        .map(|e| json!({"ws": e.ws, "label": label(rt, &e.ws), "kind": e.kind.as_str(), "from": e.from, "to": e.to}))
-        .collect();
+    let dwell_ms = defaults::num("devswarm_rt.activity_min_dwell_s") as i64 * 1000;
+    let (edges, dropped, told) =
+        settle_activity(seen.map(|s| rt.edges_since(s)).unwrap_or_default(), &path.as_deref().map(read_advised).unwrap_or_default(), dwell_ms);
+    if dropped > 0 {
+        crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_suppressed"))], dropped);
+    }
+    let kept = edges.iter().filter(|e| e.kind == EdgeKind::Activity).count() as u64;
+    if kept > 0 {
+        crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_emitted"))], kept);
+    }
+    let edges: Vec<Value> = edges.iter().map(|e| json!({"ws": e.ws, "label": label(rt, &e.ws), "kind": e.kind.as_str(), "from": e.from, "to": e.to})).collect();
     let payload = json!({
         "enabled": rt.mode() == Mode::On && defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false),
         "sessionOk": path.is_some(), "seen": seen, "generation": gen_now, "edges": edges,
@@ -72,7 +127,7 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
         _ => return None,
     };
     if let Some(mark) = ans.get("mark").and_then(Value::as_u64) {
-        write_seen(path.as_deref()?, mark, now)?;
+        write_seen(path.as_deref()?, mark, &told, now)?;
     }
     let nag = crate::dsact::nag::take_pending(state_dir);
     let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
@@ -82,11 +137,11 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     }
 }
 
-fn write_seen(path: &Path, gen_now: u64, now: i64) -> Option<()> {
+fn write_seen(path: &Path, gen_now: u64, told: &BTreeMap<String, i64>, now: i64) -> Option<()> {
     let dir = path.parent()?;
     std::fs::create_dir_all(dir).ok()?;
     prune_old(dir, now);
-    crate::atomic::write(path, json!({"gen": gen_now}).to_string()).ok()
+    crate::atomic::write(path, json!({"gen": gen_now, defaults::text("devswarm_wire.advisory_act_key"): told}).to_string()).ok()
 }
 
 /// The statusline segment: workspaces in progress, stuck, unread mail.
@@ -239,5 +294,57 @@ impl crate::checks::Check for RtAdvisory {
             }
             None => Verdict::Allow,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn act(ws: &str, from: &str, to: &str, gen_: u64, at: i64) -> Edge {
+        Edge { ws: ws.into(), kind: EdgeKind::Activity, from: from.into(), to: to.into(), generation: gen_, at_ms: at, while_down: false, hold_until_ms: 0 }
+    }
+
+    const DWELL: i64 = 300_000;
+
+    #[test]
+    fn a_flip_and_its_flip_back_in_one_batch_are_silent_and_counted() {
+        let edges = vec![act("w1", "working", "stuck", 1, 1000), act("w1", "stuck", "working", 2, 2000)];
+        let (out, dropped, told) = settle_activity(edges, &BTreeMap::new(), DWELL);
+        assert!(out.is_empty());
+        assert_eq!(dropped, 2);
+        assert!(told.is_empty());
+    }
+
+    #[test]
+    fn a_net_change_is_told_once_and_remembered() {
+        let edges = vec![act("w1", "working", "stuck", 1, 1000), act("w1", "stuck", "working", 2, 2000), act("w1", "working", "stuck", 3, 3000)];
+        let (out, dropped, told) = settle_activity(edges, &BTreeMap::new(), DWELL);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].from.as_str(), out[0].to.as_str(), out[0].at_ms), ("working", "stuck", 3000));
+        assert_eq!(dropped, 2);
+        assert_eq!(told.get("w1"), Some(&3000));
+    }
+
+    #[test]
+    fn a_change_within_the_dwell_of_the_last_one_told_is_silent_and_one_after_it_is_told() {
+        let told = BTreeMap::from([("w1".to_string(), 1000i64)]);
+        let (out, dropped, kept) = settle_activity(vec![act("w1", "stuck", "working", 5, 1000 + DWELL - 1)], &told, DWELL);
+        assert!(out.is_empty());
+        assert_eq!(dropped, 1);
+        assert_eq!(kept.get("w1"), Some(&1000), "a silent change does not move the told time");
+        let (out, dropped, kept) = settle_activity(vec![act("w1", "stuck", "working", 6, 1000 + DWELL)], &told, DWELL);
+        assert_eq!((out.len(), dropped), (1, 0));
+        assert_eq!(kept.get("w1"), Some(&(1000 + DWELL)));
+    }
+
+    #[test]
+    fn other_kinds_and_other_workspaces_are_untouched_and_a_zero_dwell_tells_every_net_change() {
+        let mut life = act("w2", "active", "archived", 2, 10);
+        life.kind = EdgeKind::Lifecycle;
+        let told = BTreeMap::from([("w1".to_string(), 1000i64)]);
+        let (out, dropped, _) = settle_activity(vec![act("w1", "working", "stuck", 1, 1001), life.clone(), act("w3", "working", "stuck", 3, 20)], &told, 0);
+        assert_eq!(dropped, 0);
+        assert_eq!(out.iter().map(|e| e.ws.as_str()).collect::<Vec<_>>(), ["w1", "w2", "w3"]);
     }
 }

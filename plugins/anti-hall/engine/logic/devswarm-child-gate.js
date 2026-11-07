@@ -83,16 +83,16 @@ function cgShQuote(s) { return "'" + s.replace(/'/g, "'\\''") + "'"; }
 function cgWakeLine(l) {
   if (!cgClaude()) return '';
   var id = cgResolvedId();
-  var tick = text.render(ah.cfg('devswarm_gates.cg_wake_tick'), { id: id });
-  var watch = l.watcher ? text.render(ah.cfg('devswarm_role.pg_wake_watch'), { watcher: cgDq(l.watcher) }) : '';
-  return text.render(ah.cfg('devswarm_role.pg_wake_line'), { cli: cgDq(l.cli), cron: dwWakeCron(), tick: tick, watch: watch, id: id });
+  var tick = text.render(ah.cfg('devswarm_gates.cg_wake_tick'), { id: id, verb: l.verb });
+  var watch = l.watcher ? text.render(ah.cfg('devswarm_role.pg_wake_watch'), { watcher: cgDq(l.bin), wverb: l.wverb }) : '';
+  return text.render(ah.cfg('devswarm_role.pg_wake_line'), { cli: cgDq(l.bin), verb: l.verb, cron: dwWakeCron(), tick: tick, watch: watch, id: id });
 }
 
 // `frame({ guard, headline, why, override, body })` of hooks/lib/block-message.js with the gate's own texts and skip command.
 function cgFrame(body, ctx) {
   var guard = ah.cfg('devswarm_gates.child_gate_guard_name');
-  var cli = dwEngineCmd('devswarm_role.engine_cli', ah.env.get(ah.cfg('env.home')) || '');
-  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: cgShQuote(cli), guard: guard });
+  var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
+  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: cgShQuote(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: guard });
   var reason = text.message('block', guard, {
     what: ah.cfg('devswarm_gates.cg_headline'),
     instead: ah.cfg('devswarm_gates.cg_short_instead'),

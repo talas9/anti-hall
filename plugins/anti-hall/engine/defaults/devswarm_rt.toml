@@ -288,3 +288,21 @@ value = "…"
 [devswarm_rt.line_colors]
 doc = "The color (a name from statusline.rich_colors) of each part."
 value = { working = "brightGreen", stuck = "brightRed", ci = "brightYellow", done_open = "brightCyan", unknown = "dim" }
+
+[devswarm_rt.activity_min_dwell_s]
+doc = "Hysteresis of the workspace-activity line in the advisory: a workspace's activity change (working, stuck) is told to a session once; a change within this many seconds of the one the session was last told, and a flip that flips back inside one batch, are silent (counted as devswarm_rt_activity_line result=suppressed_flip). 0 turns the hysteresis off."
+value = 300
+min = 0
+max = 86400
+
+[devswarm_rt.activity_result_emitted]
+doc = "The `result` label of devswarm_rt_activity_line for an activity change that was put in the advisory."
+value = "emitted"
+
+[devswarm_rt.activity_result_suppressed]
+doc = "The `result` label of devswarm_rt_activity_line for an activity change held back by the hysteresis."
+value = "suppressed_flip"
+
+[metric.devswarm_rt_activity_line]
+doc = "Workspace-activity changes seen by the DevSwarm advisory, by result (emitted: told to the session; suppressed_flip: a flip back within the dwell, or a change inside the dwell of the last one told)."
+value = { kind = "counter", unit = "changes", labels = ["result"] }

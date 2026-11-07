@@ -553,3 +553,7 @@ value = "other"
 [devswarm_wire.probe_cause_default]
 doc = "The cause label of a probe read made outside any reconcile (work counter `probe_reads.<site>.<cause>`)."
 value = "none"
+
+[devswarm_wire.advisory_act_key]
+doc = "The key of the per-session advisory marker that holds, per workspace, when its activity change was last told (the activity hysteresis)."
+value = "act"

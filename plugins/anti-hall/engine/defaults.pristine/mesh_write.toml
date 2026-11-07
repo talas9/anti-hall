@@ -1606,8 +1606,8 @@ doc = "The `v` of a read receipt record."
 value = 1
 
 [mesh_write.ack_command]
-doc = "The `ackCommand` of a read-primary result: `{cli}` is the JSON-quoted stable launcher path, `{id}` the workspace id, `{rid}` the receipt id."
-value = "{cli} inbox ack-primary {id} --receipt {rid}"
+doc = "The `ackCommand` of a read-primary result: `{bin}` is the JSON-quoted engine binary path (the quotes wrap the path only), `{verb}` the engine verb after it, `{id}` the workspace id, `{rid}` the receipt id."
+value = "{bin} {verb} inbox ack-primary {id} --receipt {rid}"
 
 [mesh_write.ack_hint]
 doc = "The `ackHint` of a read-primary result."
@@ -3086,3 +3086,27 @@ value = ["count", "read", "ack", "pull", "tick", "messages", "read-primary", "ac
 [mesh_write.msg_inbox_needs_id]
 doc = "The error of an `inbox` subcommand given no workspace id by a caller that has none of its own. Placeholder: {sub}."
 value = "inbox {sub} needs a workspace id: `inbox {sub} <id>`. Run from a DevSwarm workspace session it reads the session's own id (DEVSWARM_BUILDER_ID), or the id of the checkout it is run in; this caller has neither."
+
+[metric.mesh_ack_command_rendered]
+doc = "ackCommand strings rendered by a read-primary (the quote wraps the engine binary path only; the verb follows it)."
+value = { kind = "counter", unit = "commands", labels = [] }
+
+[mesh_write.mm_reason_read]
+doc = "The `reason` label of mesh_read_peek_mismatch for a read-primary that printed no message while reporting a non-zero unread count."
+value = "read_empty_unread"
+
+[mesh_write.mm_reason_peek]
+doc = "The `reason` label of mesh_read_peek_mismatch for a peek-primary that listed no message while reporting a non-zero unread count."
+value = "peek_empty_unread"
+
+[mesh_write.mm_op]
+doc = "The op of the log entry written when a read or peek prints nothing but reports unread mail (#615)."
+value = "read-peek-mismatch"
+
+[mesh_write.mm_msg]
+doc = "The message of that log entry; the entry's context carries the id, the reason, the unread count, the printed count (0) and the time."
+value = "read printed no message but the unread count is not zero"
+
+[metric.mesh_read_peek_mismatch]
+doc = "Reads or peeks that returned no message while reporting a non-zero unread count (the #615 disagreement), by reason."
+value = { kind = "counter", unit = "reads", labels = ["reason"] }
