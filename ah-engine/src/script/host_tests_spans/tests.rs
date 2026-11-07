@@ -59,3 +59,33 @@ fn an_exception_from_a_wrapped_function_still_reaches_the_script() {
     spans::finish("spans.phase_finish", "spans.outcome_delivered", false);
     assert_eq!(v, Some(Some(Verdict::Allow)), "the wrapper rethrows what the host function threw");
 }
+
+/// What the wrapper adds to one host call: the original called directly, the wrapper outside a span, the wrapper inside one (ns per call).
+/// Run with `cargo test --release --lib host_call_overhead -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn host_call_overhead() {
+    let h = home("overhead");
+    std::fs::write(format!("{h}/f"), "abc").unwrap();
+    let body = |target: &str| {
+        format!(
+            "function decide(p){{ var f = {target}; var t = ahHost.now(); for (var i = 0; i < 200000; i++) f('{h}/f'); return {{block: String((ahHost.now() - t) * 1e6 / 200000)}}; }}"
+        )
+    };
+    let env = RequestEnv::from_pairs([("HOME", h.as_str())]);
+    for (name, target, recorded) in [("raw", "ahHostRaw.fileSize", false), ("wrapped_idle", "ahHost.fileSize", false), ("wrapped_timed", "ahHost.fileSize", true)] {
+        std::fs::write(format!("{h}/.anti-hall/logic/zz-oh-{name}.js"), body(target)).unwrap();
+        if recorded {
+            spans::begin_if(true, std::time::Instant::now(), std::time::Duration::ZERO);
+            spans::set_event("Stop", "s");
+            spans::begin_check("zz", "spans.phase_select");
+        }
+        let v = super::run_forced(&format!("zz-oh-{name}"), &json!({}), &Value::Null, "Stop", &env);
+        if recorded {
+            spans::end_check("allow", "");
+            spans::end_checks("spans.phase_post_checks");
+            spans::finish("spans.phase_finish", "spans.outcome_delivered", false);
+        }
+        eprintln!("{name}: {v:?} ns per call");
+    }
+}
