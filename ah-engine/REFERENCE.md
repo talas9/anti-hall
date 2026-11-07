@@ -8435,7 +8435,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `devswarm_rt.activity_min_dwell_s` | `300` |  |  | Hysteresis of the workspace-activity line in the advisory: a workspace's activity change (working, stuck) is told to a session once; a change within this many seconds of the one the session was last told, and a flip that flips back inside one batch, are silent (counted as devswarm_rt_activity_line result=suppressed_flip). 0 turns the hysteresis off. |
+| `devswarm_rt.activity_min_dwell_s` | `300` |  |  | Hysteresis of the workspace-activity line in the advisory: a workspace's activity change (working, stuck) is told to a session once; a change within this many seconds of the one the session was last told is held and told on the first prompt after the dwell, and a flip that flips back inside one batch is silent (counted as devswarm_rt_activity_line result=suppressed_flip). 0 turns the hysteresis off. |
 | `devswarm_rt.activity_result_emitted` | `emitted` |  |  | The `result` label of devswarm_rt_activity_line for an activity change that was put in the advisory. |
 | `devswarm_rt.activity_result_suppressed` | `suppressed_flip` |  |  | The `result` label of devswarm_rt_activity_line for an activity change held back by the hysteresis. |
 | `devswarm_rt.ci_failing` | `Failed, Failure, Error` |  |  | `pull_requests.checkStatus` values meaning CI failed (compared case-insensitively). Only `Failed` and `None` were seen in the live app database; the rest are candidates. |

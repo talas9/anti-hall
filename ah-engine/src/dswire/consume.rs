@@ -167,16 +167,15 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
         told.retain(|ws, _| snap.workspaces.contains_key(ws));
         held.retain(|ws, _| snap.workspaces.contains_key(ws));
     }
-    if dropped > 0 {
-        crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_suppressed"))], dropped);
-    }
     let kept = edges.iter().filter(|e| e.kind == EdgeKind::Activity).count() as u64;
-    if kept > 0 {
-        crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_emitted"))], kept);
+    let enabled = rt.mode() == Mode::On && defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false);
+    if !enabled {
+        // nothing is told, so nothing is recorded as told or held; the marker only moves to the current generation (below)
+        (told, held) = (marker.told.clone(), marker.held.clone());
     }
     let edges: Vec<Value> = edges.iter().map(|e| json!({"ws": e.ws, "label": label(rt, &e.ws), "kind": e.kind.as_str(), "from": e.from, "to": e.to})).collect();
     let payload = json!({
-        "enabled": rt.mode() == Mode::On && defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false),
+        "enabled": enabled,
         "sessionOk": path.is_some(), "seen": seen, "generation": gen_now, "edges": edges,
     });
     let env = crate::reqenv::RequestEnv::from_pairs([(defaults::env_name("home"), rt.detection().home.to_string_lossy().into_owned())]);
@@ -191,13 +190,24 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
         _ => return None,
     };
     // the marker is rewritten when the script moves the generation, and also when a held change was told or newly held with no
-    // new generation (otherwise a change told after its dwell would be told again at every prompt)
-    let mark = ans.get("mark").and_then(Value::as_u64).or_else(|| (told != marker.told || held != marker.held).then_some(seen).flatten());
+    // new generation (otherwise a change told after its dwell would be told again at every prompt). With the layer off the script
+    // never moves it, so the marker follows the state's generation: the edges it saw are not replayed at every prompt.
+    let mark = ans.get("mark").and_then(Value::as_u64).or_else(|| match enabled {
+        true => (told != marker.told || held != marker.held).then_some(seen).flatten(),
+        false => seen.filter(|s| *s != gen_now).map(|_| gen_now),
+    });
     if let Some(mark) = mark {
         write_seen(path.as_deref()?, mark, &told, &held, now)?;
+        // the counts follow the record: a look that is not recorded is replayed, and would count the same edges again
+        if enabled && dropped > 0 {
+            crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_suppressed"))], dropped);
+        }
+    }
+    let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
+    if advise.is_some() && mark.is_some() && kept > 0 {
+        crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_emitted"))], kept);
     }
     let nag = crate::dsact::nag::take_pending(state_dir);
-    let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
     match (advise, nag) {
         (Some(a), Some(n)) => Some(format!("{a}\n{n}")),
         (a, n) => a.or(n),

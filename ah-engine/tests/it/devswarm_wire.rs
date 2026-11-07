@@ -573,6 +573,56 @@ fn the_advisory_reaches_each_session_once() {
     assert!(consume::advisory(&rt, &w.state, "../etc", now()).is_none(), "an unsafe session id gets nothing");
 }
 
+/// The heartbeat of a workspace that went quiet two hours ago: with an open PR the state derives it as stuck.
+struct StaleProbe;
+impl Probe for StaleProbe {
+    fn heartbeat_ms(&self, _id: &str) -> Option<i64> {
+        Some(now() - 7_200_000)
+    }
+    fn plan_step(&self, _wt: &str) -> Option<String> {
+        None
+    }
+    fn unread(&self, _id: &str) -> Option<usize> {
+        Some(0)
+    }
+}
+
+/// What the activity-line counter holds now (the process-wide pending table is drained: one test per process under nextest).
+fn activity_line_counts() -> (u64, u64) {
+    let mut m = ah_engine::metrics::Metrics::default();
+    ah_engine::metrics::drain_pending(&mut m);
+    let one = |r: &str| m.counter("devswarm_rt_activity_line", &[("result", ah_engine::defaults::text(r))]);
+    (one("devswarm_rt.activity_result_emitted"), one("devswarm_rt.activity_result_suppressed"))
+}
+
+#[test]
+fn a_disabled_advisory_does_not_replay_the_edges_count_them_or_rewrite_the_marker_at_every_prompt() {
+    let w = world("adv-off");
+    let rt = rt(&w);
+    step(&rt, &w, Cause::Startup); // working (the probe beats now)
+    let s = "sess-off";
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "the first look records the generation");
+    let marker = w.state.join(ah_engine::defaults::text("devswarm_wire.advisory_dir")).join(format!("{s}.json"));
+    assert!(marker.exists());
+    // the workspace goes quiet while the advisory is turned off
+    ah_engine::defaults::set_overlay(&[("devswarm_wire.advisory_enabled", json!(false))]);
+    let app = sources::read_app(&w.db).unwrap();
+    let n = rt.run(Cause::Event, &Inputs { app: Some(&app), probe: &StaleProbe, gh: None, now: now() }, None).edges.len();
+    assert!(n > 0, "working -> stuck is an edge");
+    let _ = activity_line_counts();
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+    age(&marker, 1_000_000); // an old mtime: a later rewrite shows
+    let old = std::fs::metadata(&marker).unwrap().modified().unwrap();
+    for _ in 0..2 {
+        assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+    }
+    assert_eq!(std::fs::metadata(&marker).unwrap().modified().unwrap(), old, "the marker was written once, not at every prompt");
+    assert_eq!(activity_line_counts(), (0, 0), "nothing was shown, so nothing is counted, at any of the 3 prompts");
+    // turned back on, the edges are not told late: they were passed while it was off
+    ah_engine::defaults::set_overlay(&[]);
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+}
+
 #[test]
 fn the_advisory_is_capped() {
     let w = world("cap");

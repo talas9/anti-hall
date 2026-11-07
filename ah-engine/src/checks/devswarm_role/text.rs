@@ -109,7 +109,7 @@ pub fn engine_watcher(home: &str) -> String {
 }
 
 #[cfg(test)]
-mod quote_tests {
+mod tests {
     use super::*;
 
     fn init() {

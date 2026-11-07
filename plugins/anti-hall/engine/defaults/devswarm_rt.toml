@@ -290,7 +290,7 @@ doc = "The color (a name from statusline.rich_colors) of each part."
 value = { working = "brightGreen", stuck = "brightRed", ci = "brightYellow", done_open = "brightCyan", unknown = "dim" }
 
 [devswarm_rt.activity_min_dwell_s]
-doc = "Hysteresis of the workspace-activity line in the advisory: a workspace's activity change (working, stuck) is told to a session once; a change within this many seconds of the one the session was last told, and a flip that flips back inside one batch, are silent (counted as devswarm_rt_activity_line result=suppressed_flip). 0 turns the hysteresis off."
+doc = "Hysteresis of the workspace-activity line in the advisory: a workspace's activity change (working, stuck) is told to a session once; a change within this many seconds of the one the session was last told is held and told on the first prompt after the dwell, and a flip that flips back inside one batch is silent (counted as devswarm_rt_activity_line result=suppressed_flip). 0 turns the hysteresis off."
 value = 300
 min = 0
 max = 86400
