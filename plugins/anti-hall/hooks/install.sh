@@ -67,7 +67,7 @@ sha256_of() {
 # fills {text}.
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n\r\t' '   '; }
 json_notice() { # json_notice TEXT: the whole notice object
-  TPL=$(m msg.notice_json_template | sed 's/\\"/"/g') NOTICE=$(json_escape "$1") awk 'BEGIN {
+  TPL=$(m msg.install_notice_json_template | sed 's/\\"/"/g') NOTICE=$(json_escape "$1") awk 'BEGIN {
     t = ENVIRON["TPL"]; n = ENVIRON["NOTICE"]; o = ""
     while ((i = index(t, "{text}")) > 0) { o = o substr(t, 1, i - 1) n; t = substr(t, i + 6) }
     print o t }'
@@ -131,7 +131,7 @@ stale_notice() {
   [ "$older" = 1 ] || [ "$dfail" = 1 ] || return 0
   knob=$(c launcher.knob_stale_noticed)
   case "$knob" in ""|*[!A-Za-z0-9_]*) ;; *) eval "export $knob=1" ;; esac
-  if [ "$dfail" = 1 ]; then key=msg.launcher_defaults_failed; else key=msg.launcher_stale_engine; fi
+  if [ "$dfail" = 1 ]; then key=msg.install_defaults_failed; else key=msg.launcher_stale_engine; fi
   [ -n "$have" ] || have=unknown
   [ -n "$want" ] || want=unknown
   text=$(m "$key" | sed "s|{have}|$have|g; s|{want}|$want|g")

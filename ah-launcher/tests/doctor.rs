@@ -204,7 +204,10 @@ fn launcher_shims_must_be_sh_shims_without_node() {
         "#!/usr/bin/env node\nconsole.log(1)\n",
     );
     let (_, out) = k.doctor(&["--builtin"]);
-    assert!(out.contains("is a retired Node launcher, not an sh shim for ah-hook"), "{out}");
+    assert!(
+        out.contains("is a retired Node launcher, not an sh shim for ah-hook"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -349,4 +352,72 @@ fn a_statusline_that_runs_the_retired_wrapper_is_rewritten_to_the_thin_client_wi
         .filter(|e| e.file_name().to_string_lossy().contains(".bak-antihall-"))
         .count();
     assert_eq!(n, 1);
+}
+
+/// An engine that answers `version` but cannot load this plugin's defaults (the state of a 0.301.x install under a newer plugin).
+const BLIND_ENGINE: &str = "#!/bin/sh\n[ \"$1\" = version ] && { echo 0.2.1; exit 0; }\necho 'ah-engine: defaults unavailable: missing_key key=statusline.chip_label'\necho 'ah-engine: defaults unavailable: missing_key key=statusline.chip_label' >&2\nexit 70\n";
+
+#[test]
+fn an_engine_that_cannot_load_the_defaults_is_not_handed_the_doctor() {
+    let k = Kit::new("dr-blind");
+    k.engine(BLIND_ENGINE);
+    let (code, out) = k.doctor(&[]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("anti-hall doctor v9.9.9"),
+        "the built-in report ran: {out}"
+    );
+    assert!(
+        out.contains("cannot load this plugin's settings")
+            && out.contains("statusline.chip_label")
+            && out.contains("guards are NOT running")
+            && out.contains("ah-hook install -v"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("is installed but the plugin pins") || out.contains("cannot load"),
+        "{out}"
+    );
+    // a healthy engine is still handed the call, and the finding is absent
+    let ok = Kit::new("dr-blind-ok");
+    ok.engine(GOOD_ENGINE);
+    let (code, out) = ok.doctor(&["--check"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(!out.contains("cannot load this plugin's settings"), "{out}");
+}
+
+#[test]
+fn install_health_findings_are_shown_and_fail_the_run_even_when_the_engine_takes_over() {
+    let k = Kit::new("dr-health");
+    k.engine(GOOD_ENGINE);
+    exe(&k.e.state.join("bin/ah-hook"), "#!/bin/sh\nexit 0\n");
+    // a retired Node launcher in ~/.anti-hall/bin
+    exe(
+        &k.e.home.join(".anti-hall/bin/devswarm.js"),
+        "#!/usr/bin/env node\nconsole.log(1)\n",
+    );
+    let (code, out) = k.doctor(&["--check"]);
+    assert!(
+        out.contains("is a retired Node launcher") && out.contains("ENGINE doctor doctor --check"),
+        "{out}"
+    );
+    // the engine's own code was 3; the failure keeps the run non-zero either way
+    assert_ne!(code, 0, "{out}");
+    // nothing wrong: the engine's output alone, no install-health block
+    let k = Kit::new("dr-health-ok");
+    k.engine(GOOD_ENGINE);
+    exe(&k.e.state.join("bin/ah-hook"), "#!/bin/sh\nexit 0\n");
+    let (code, out) = k.doctor(&["--check"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(!out.contains("Install health"), "{out}");
+}
+
+#[test]
+fn a_repair_that_has_nothing_to_do_prints_no_block_before_the_engine_report() {
+    let k = Kit::new("dr-repair-quiet");
+    k.engine(GOOD_ENGINE);
+    exe(&k.e.state.join("bin/ah-hook"), "#!/bin/sh\nexit 0\n");
+    let (_, out) = k.doctor(&["--repair"]);
+    assert!(!out.contains("nothing to repair"), "{out}");
+    assert!(out.contains("ENGINE doctor"), "{out}");
 }

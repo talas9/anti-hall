@@ -43,6 +43,8 @@ struct Doc<'a> {
     test: bool,
     limit: Duration,
     engine_usable: bool,
+    /// First line of the error when the engine answers `--version` but cannot load this plugin's defaults (C3).
+    defaults_error: Option<String>,
     bin: PathBuf,
     client: PathBuf,
 }
@@ -615,6 +617,17 @@ impl Doc<'_> {
                 }
             }
             if !reported.is_empty() {
+                // it runs and reports a version, but cannot read this plugin's settings: every hook call is handed back unchecked
+                if let Some(detail) = self.defaults_error.clone() {
+                    self.bad(
+                        "x.engine_defaults_unloadable",
+                        &[
+                            ("have", &reported),
+                            ("detail", &detail),
+                            ("bootstrap", &install),
+                        ],
+                    );
+                }
                 if !pinned.is_empty()
                     && older_than(
                         &self.s.text("launcher.legacy_scheme_floor"),
@@ -630,7 +643,7 @@ impl Doc<'_> {
                             ("bootstrap", &install),
                         ],
                     );
-                } else {
+                } else if self.defaults_error.is_none() {
                     let triple = format!("{}-{}", self.host_arch, self.host_os);
                     self.ok(
                         "bin_ok",
@@ -1442,7 +1455,8 @@ impl Doc<'_> {
         true
     }
 
-    fn repair(&mut self, dry: bool) {
+    /// Returns whether anything was (or, with `dry`, would be) repaired.
+    fn repair(&mut self, dry: bool) -> bool {
         let heading = self.m(
             if dry {
                 "repair_heading_dry"
@@ -1544,6 +1558,7 @@ impl Doc<'_> {
             let none = self.m("repair_none", &[]);
             self.out.push_str(&format!("  {none}\n"));
         }
+        did
     }
 }
 
@@ -1635,10 +1650,12 @@ pub fn run(
         test,
         limit,
         engine_usable: false,
+        defaults_error: None,
         bin: bin.clone(),
         client,
     };
-    // the engine runs: its doctor has every check this one makes and more
+    // the engine runs: its doctor makes most of the checks this one does. A `--version` that answers does not prove it can load this
+    // plugin's defaults (it cannot after a plugin update it predates), so a defaults-loading verb is probed too.
     if !builtin {
         let ok = fs::metadata(&bin)
             .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -1656,11 +1673,42 @@ pub fn run(
                     Ran::Done(0)
                 )
             };
-        if ok {
+        let mut loads = true;
+        if ok && s.num("doctor_l.probe_defaults_load") == 1 {
+            let probe = s.list("doctor_l.defaults_probe_cmd");
+            if !probe.is_empty() {
+                let root_env = s.text("env.plugin_root");
+                let root = d.root.clone().unwrap_or_default();
+                let envs = [(root_env.as_str(), root.as_path())];
+                let mut argv = vec![bin.display().to_string()];
+                argv.extend(probe);
+                let (r, out) = d.run(&argv, &envs, limit);
+                if !matches!(r, Ran::Done(0)) {
+                    loads = false;
+                    d.defaults_error = Some(first_line(&out, d.line_chars()));
+                }
+            }
+        }
+        if ok && loads {
+            let mut code_floor = 0;
             if repair {
-                // the repairs only the thin client can make (its own files), then the engine's
-                d.repair(dry);
-                print_out(&d.out);
+                // the repairs only the thin client can make (its own files), then the engine's; the block is shown only when it did something
+                if d.repair(dry) {
+                    print_out(&d.out);
+                }
+                d.out.clear();
+            }
+            // the engine's doctor does not make the install-health checks (Node entries in the hooks files, Node launchers, the retired
+            // statusLine, the client itself): they run here, and are shown only when they find something
+            if s.num("doctor_l.launcher_health_with_engine") == 1 {
+                let before = d.fail + d.warn;
+                d.install_health();
+                if d.fail + d.warn > before {
+                    print_out(&d.out);
+                    if d.fail > 0 {
+                        code_floor = 1;
+                    }
+                }
                 d.out.clear();
             }
             let mut cmd = Command::new(&bin);
@@ -1668,11 +1716,21 @@ pub fn run(
                 cmd.env(s.text("env.plugin_root"), r);
             }
             crate::launcher::unblock_signals();
-            let err = std::os::unix::process::CommandExt::exec(
-                cmd.arg(s.text("doctor_l.cmd_word")).args(args),
-            );
-            crate::util::say(&err.to_string());
-            return 1;
+            if code_floor == 0 {
+                let err = std::os::unix::process::CommandExt::exec(
+                    cmd.arg(s.text("doctor_l.cmd_word")).args(args),
+                );
+                crate::util::say(&err.to_string());
+                return 1;
+            }
+            // a failing install-health check: the engine's doctor still runs, the exit code keeps the failure
+            return match cmd.arg(s.text("doctor_l.cmd_word")).args(args).status() {
+                Ok(st) => st.code().unwrap_or(1).max(code_floor),
+                Err(e) => {
+                    crate::util::say(&e.to_string());
+                    1
+                }
+            };
         }
     }
     let title = d.m("title", &[("version", &d.version())]);

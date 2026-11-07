@@ -377,11 +377,11 @@ value = "the engine daemon could not be reached"
 doc = "Printed once per session on stderr by the thin client (and by hooks/install.sh, whose SessionStart call also shows it as the JSON notice) when the installed engine is older than the version the plugin pins (ah-engine.lock): guards written for the newer engine may not run. Placeholders: {have} (installed), {want} (pinned)."
 value = "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install -v` (or the anti-hall setup skill) to update it; if the update fails, the reason is in ~/.anti-hall/ah-engine/bootstrap.log."
 
-[msg.launcher_defaults_failed]
+[msg.install_defaults_failed]
 doc = "Shown by hooks/install.sh at SessionStart (JSON notice, and once per host process on stderr) when the installed engine could not load this plugin's defaults (its defaults.error is newer than the plugin's defaults): every hook call is then handed back and passes UNCHECKED. Placeholders: {have} (installed engine version, or unknown), {want} (version the plugin pins)."
 value = "anti-hall: the installed engine ({have}) cannot load this plugin's settings (it expects {want}), so the guards are NOT running: every hook call passes through unchecked. Run `ah-hook install -v` to update the engine (or `sh <plugin>/hooks/install.sh --download -v`); the reason, if it fails, is in ~/.anti-hall/ah-engine/bootstrap.log."
 
-[msg.notice_json_template]
+[msg.install_notice_json_template]
 doc = "The JSON object hooks/install.sh prints on stdout for a SessionStart notice (the user sees systemMessage; the model gets additionalContext). {text} is the notice text, JSON-escaped by the script. The backslashes are TOML escapes: the script reads the raw line and removes them."
 value = "{\"systemMessage\":\"{text}\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"{text}\"}}"
 

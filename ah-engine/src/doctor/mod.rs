@@ -278,7 +278,8 @@ fn hooks_section(doc: &mut Doc, root: &Path) {
     }
 }
 
-fn statusline_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) {
+/// The Statusline section. Whether a statusLine that is not the retired Node form is configured (the render check follows only then).
+fn statusline_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) -> bool {
     doc.head(defaults::text("doctor_msg.head_statusline"));
     for scope in defaults::raw("doctor.statusline_scopes").as_array().unwrap_or_default() {
         let base = if scope.get("home").and_then(defaults::V::as_bool).unwrap_or(false) { home } else { cwd };
@@ -288,13 +289,14 @@ fn statusline_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) 
         let label = scope.str_field("label");
         if cmd.contains(defaults::text("doctor.statusline_marker")) {
             doc.warnl(defaults::render("doctor_msg.statusline_installed", &[("label", &label)]));
-        } else {
-            let shown = slice16_lossy(cmd, defaults::num("doctor.statusline_shown") as usize);
-            doc.ok(defaults::render("doctor_msg.statusline_set", &[("label", &label), ("command", &shown)]));
+            return false;
         }
-        return;
+        let shown = slice16_lossy(cmd, defaults::num("doctor.statusline_shown") as usize);
+        doc.ok(defaults::render("doctor_msg.statusline_set", &[("label", &label), ("command", &shown)]));
+        return true;
     }
-    doc.warnl(defaults::text("doctor_msg.statusline_none").to_string());
+    doc.infol(defaults::text("doctor_msg.statusline_none").to_string());
+    false
 }
 
 /// The action audit: what the acting features did, their failure and mistake rates, and ledger keys left in doubt. Shown only
@@ -538,8 +540,12 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     system::witness_section(&mut doc, &ctx);
     doc.head(defaults::text("doctor_msg.head_guards"));
     selftest::run(&mut doc, &ctx, root.as_deref(), &version);
-    statusline_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
-    render::statusline_render(&mut doc, &ctx, root_path);
+    // the render check needs a statusLine that runs `ah-hook statusline`; the installer is retired, so none configured is the normal state
+    if statusline_section(&mut doc, &ctx, &ctx.home, &ctx.cwd) {
+        render::statusline_render(&mut doc, &ctx, root_path);
+    } else {
+        crate::metrics::bump_shared("doctor_statusline_skipped", &[]);
+    }
     devswarm::section(&mut doc, &ctx, root_path);
     let absent: Vec<&str> = [detect::omc_section(&mut doc, &ctx), detect::codex_section(&mut doc, &ctx, root_path)].into_iter().flatten().collect();
     if !absent.is_empty() {

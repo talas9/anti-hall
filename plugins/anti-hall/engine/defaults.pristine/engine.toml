@@ -1429,6 +1429,12 @@ value = "defaults.error"
 doc = "Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory; the counters install_notice_json read it."
 value = "install-notices.log"
 
+[install.explicit_fail_exit]
+doc = "Exit code of an explicit `ah-hook install` (not --auto, with install.explicit_ignores_retry on) that did not install: a failure, or a skip other than 'already current'."
+value = 1
+min = 1
+max = 125
+
 [install.file_json_notice]
 doc = "Holds the process id of the host process that already got the SessionStart JSON notice of hooks/install.sh (inside the state directory), so the notice shows once per host process."
 value = "install-json.notice"
