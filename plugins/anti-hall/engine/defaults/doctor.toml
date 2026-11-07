@@ -1328,6 +1328,26 @@ value = "not a file"
 
 # ---- the statusline render check ----------------------------------------------------------------------------------------------------
 
+[doctor.statusline_dispatcher]
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
+value = "../anti-hall-node/statusline/statusline.js"
+
+[doctor.statusline_rich]
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
+value = "../anti-hall-node/statusline/statusline-rich.js"
+
+[doctor_msg.statusline_dispatcher_missing]
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
+value = "statusline.js dispatcher missing"
+
+[doctor_msg.statusline_rich_ok]
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
+value = "statusline-rich.js (line-1 renderer) present"
+
+[doctor_msg.statusline_rich_bad]
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
+value = "statusline-rich.js missing — line 1 falls back to the simple renderer"
+
 [doctor.statusline_sample]
 doc = "The session payload the render check pipes to the statusline; {cwd} is the working directory as a JSON string."
 value = "{\"workspace\":{\"current_dir\":{cwd}},\"cwd\":{cwd},\"model\":{\"display_name\":\"doctor-test\"},\"context_window\":{\"used_percentage\":50}}"
@@ -2461,7 +2481,7 @@ value = "{file} still runs {n} hook command(s) through the retired shell wrapper
 
 [doctor_l.msg_health_node_entry]
 doc = "Placeholders: {file}, {n}, {first}."
-value = "{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: update the plugin, or ah-engine doctor --repair"
+value = "{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: in a plugin hooks.json, update the plugin; in the Codex hooks file run `ah-engine install-codex --global` (it replaces the entries and keeps a backup; --repair does not rewrite them)"
 
 [doctor_l.msg_health_hooks_ok]
 doc = "Placeholder: {file}."

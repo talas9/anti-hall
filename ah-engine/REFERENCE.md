@@ -6455,8 +6455,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.start_pid_re` | `\bpid (\d+)` |  |  | Finds the daemon's pid in the detail of a start event (group 1). |
 | `doctor.stat_gnu_args` | `-c, %s, /` |  |  | Arguments that only GNU/busybox stat accepts, to tell the userland flavour. |
 | `doctor.statusline_check` | `statusline` |  |  | The name the statusline render check is reported under when the engine does not decide the render. |
+| `doctor.statusline_dispatcher` | `../anti-hall-node/statusline/statusline.js` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
 | `doctor.statusline_marker` | `statusline.js` |  |  | A statusLine command that contains this is the anti-hall dispatcher. |
 | `doctor.statusline_min_lines` | `2` |  |  | How many lines the statusline must print for the render check to pass (line 1 plus the context gauge on line 2). |
+| `doctor.statusline_rich` | `../anti-hall-node/statusline/statusline-rich.js` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
 | `doctor.statusline_sample` | `{"workspace":{"current_dir":{cwd}},"cwd":{cwd},"model":{"display_name":"docto...` |  |  | The session payload the render check pipes to the statusline; {cwd} is the working directory as a JSON string. |
 | `doctor.statusline_scopes` | `3 entries, 3 entries, 3 entries` |  |  | Where a statusLine command may be configured, in order: label and file relative to the project (a leading ~ means the home directory). |
 | `doctor.statusline_shown` | `48` |  |  | How many UTF-16 units of a custom statusLine command the doctor shows. |
@@ -6530,7 +6532,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.msg_health_client_ok` | `the thin client {path} is installed and executable` |  |  | Placeholder: {path}. |
 | `doctor_l.msg_health_hooks_ok` | `{file}: every hook command is the direct form` |  |  | Placeholder: {file}. |
 | `doctor_l.msg_health_hooks_old` | `{file} still runs {n} hook command(s) through the retired shell wrapper (firs...` |  |  | Placeholders: {file}, {n}, {first}. |
-| `doctor_l.msg_health_node_entry` | `{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: upd...` |  |  | Placeholders: {file}, {n}, {first}. |
+| `doctor_l.msg_health_node_entry` | `{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: in ...` |  |  | Placeholders: {file}, {n}, {first}. |
 | `doctor_l.msg_health_shim_bad` | `{path} is a retired Node launcher, not an sh shim for ah-hook (first line: {f...` |  |  | Placeholders: {path}, {first}. |
 | `doctor_l.msg_health_shims_ok` | `{n} launcher shim(s) in {dir} are sh shims` |  |  | Placeholders: {n}, {dir}. |
 | `doctor_l.msg_health_shipped_sh` | `the plugin ships {n} shell file(s) besides hooks/install.sh (first: {first}) ...` |  |  | Placeholders: {n}, {first}. |
@@ -6809,11 +6811,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.state_uncreatable` | `state directory {dir} cannot be created ({err}) - Fix: make the parent direct...` |  |  | ST-01b. Placeholders: {dir}, {err}. |
 | `doctor_msg.state_unwritable` | `state directory {dir} is not writable ({err}) - Fix: chmod u+w {dir}, or remo...` |  |  | ST-03. Placeholders: {dir}, {err}. |
 | `doctor_msg.state_windows_mount` | `{dir} is on a Windows drive ({mount}); file locks and sockets are unreliable ...` |  |  | ST-07. Placeholders: {dir}, {mount}. |
+| `doctor_msg.statusline_dispatcher_missing` | `statusline.js dispatcher missing` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
 | `doctor_msg.statusline_installed` | `the anti-hall statusLine in {label} is the retired Node form: the script it r...` |  |  | A legacy anti-hall statusLine is still configured. Placeholder: {label}. The Node-era installer wrote a `node .../statusline.js` command; that script no longer ships, so the status line is blank until this is removed. |
 | `doctor_msg.statusline_no_output` | `statusline.js produced no output (exit {code})` |  |  | The statusline printed nothing, or failed. Placeholder: {code}. |
 | `doctor_msg.statusline_none` | `no anti-hall statusLine is configured (the statusline is optional; nothing to...` |  |  | No statusLine is configured. |
 | `doctor_msg.statusline_one_line` | `statusline rendered only 1 line — line 2 (context gauge) did NOT render despi...` |  |  | The statusline printed only one line although the payload carried a context window. |
 | `doctor_msg.statusline_renders` | `statusline renders {n} lines (line 1 + live context gauge on line 2)` |  |  | The statusline printed both lines. Placeholder: {n}. |
+| `doctor_msg.statusline_rich_bad` | `statusline-rich.js missing — line 1 falls back to the simple renderer` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
+| `doctor_msg.statusline_rich_ok` | `statusline-rich.js (line-1 renderer) present` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
 | `doctor_msg.statusline_set` | `statusline set ({label}) -> {command}…` |  |  | A custom statusline is configured. Placeholders: {label}, {command}. |
 | `doctor_msg.stores_changed` | `no longer eligible at apply time (registry changed or worktree reappeared) — ...` |  |  | A store that no longer matches when the repair runs. |
 | `doctor_msg.stores_failed` | `failed to move {dir} aside — {error}` |  |  | A leaked store that could not be moved. Placeholders: {dir}, {error}. |
