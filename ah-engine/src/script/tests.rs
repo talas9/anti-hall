@@ -3546,7 +3546,8 @@ mod claim_evidence_guard {
             m.counter(name, labels)
         };
         // the result names the call it answers (the tool_use id `assistant` gives its first call)
-        let answer = |out: &str| json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "um10", "content": out}]}});
+        let answer =
+            |out: &str| json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "um10", "content": out}]}});
         let after = |cmd: &str, out: &str, reply: &str| {
             [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", "", &[cmd]), answer(out), assistant("m2", reply, &[])]
         };
@@ -3591,7 +3592,10 @@ mod claim_evidence_guard {
         // the hold names the check that would satisfy it, inside two lines and the advice cap (no details file)
         let out = blocked(&off).unwrap_or_default();
         let reason = serde_json::from_str::<Value>(out.trim()).unwrap()["reason"].as_str().unwrap().to_string();
-        assert!(reason.lines().count() <= 2 && reason.contains("a check that counts (") && reason.contains("a log read showing it") && !reason.contains("details:"), "{reason}");
+        assert!(
+            reason.lines().count() <= 2 && reason.contains("a check that counts (") && reason.contains("a log read showing it") && !reason.contains("details:"),
+            "{reason}"
+        );
         // negated and future-tense claims stay unheld even with a tool call this turn
         for r in ["Nothing is merged yet.", "Once PR #405 and #406 are merged the release can start."] {
             let lines = after("ls", "x", r);

@@ -1454,7 +1454,9 @@ fn cd_to_clean_absolute_target_from_credited_session_repo_is_allowed() {
 }
 
 /// GH #506 / PR #524 third review: a cd target or push word the guard cannot prove literal (a bare relative name, a quoted path)
-/// takes the whole-repository scan and is counted.
+/// takes the whole-repository scan and is counted. (GH #593: a path wholly inside one pair of quote marks, no expansion character, is
+/// literal and stays narrowed, see a_quoted_literal_directory_or_cd_dash_p_keeps_the_push_narrowed; a quote that closes before the path
+/// ends, as in `"dir"/`, is still not proven.)
 #[test]
 fn bare_relative_cd_and_tilde_user_and_quoted_c_path_take_the_wide_scan() {
     let e = Env::scoped("unproven");
@@ -1466,7 +1468,7 @@ fn bare_relative_cd_and_tilde_user_and_quoted_c_path_take_the_wide_scan() {
     // a bare relative cd name (CDPATH can redirect it) is not a literal target: refused with the literal-path text
     let (_, err, code) = e.hook_in(&format!("cd sub && git {P}"), w);
     assert!(code == 2 && err.contains("write the repository path literally"), "{code}: {err}");
-    for cmd in [format!("git -C '{w}' {P}"), format!("git -C \"{w}\" {P} origin main")] {
+    for cmd in [format!("git -C '{w}'/ {P}"), format!("git -C \"{w}\"/ {P} origin main")] {
         let (out, err, code) = e.hook_in(&cmd, w);
         if code != 2 || !err.contains("AI credit") {
             missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
