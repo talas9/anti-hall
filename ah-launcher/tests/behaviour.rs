@@ -1056,15 +1056,30 @@ fn an_unusable_home_without_tmpdir_keeps_the_slow_reply_and_done_mark() {
 fn the_cold_start_wait_also_runs_for_a_state_dir_with_a_long_socket_path() {
     let env = Env::new(&format!("long{}", "x".repeat(70)));
     std::fs::create_dir_all(&env.state).unwrap();
-    assert!(env.state.join("e.sock").as_os_str().len() > 100);
+    let shipped: toml::Table = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../plugins/anti-hall/engine/defaults/engine.toml"),
+    )
+    .unwrap()
+    .parse()
+    .unwrap();
+    let paths = |k: &str| shipped["paths"][k]["value"].clone();
+    let max = paths("socket_max_len").as_integer().unwrap() as usize;
+    let (prefix, ext) = (
+        paths("private_dir_prefix").as_str().unwrap().to_string(),
+        paths("short_socket_ext").as_str().unwrap().to_string(),
+    );
+    let fallback = paths("fallback_tmp").as_str().unwrap().to_string();
+    let sock_file = paths("socket_file").as_str().unwrap().to_string();
+    assert!(env.state.join(&sock_file).as_os_str().len() > max);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in env.state.as_os_str().as_encoded_bytes() {
+    for b in env.state.to_string_lossy().as_bytes() {
         h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
     }
     let uid = unsafe { libc::getuid() };
-    let pdir = std::path::PathBuf::from(format!("/tmp/anti-hall-{uid}"));
+    let pdir = std::path::PathBuf::from(format!("{fallback}/{prefix}{uid}"));
     std::fs::create_dir_all(&pdir).unwrap();
-    let sock = pdir.join(format!("{:012x}.sock", h & 0xffff_ffff_ffff));
+    let sock = pdir.join(format!("{:012x}{ext}", h & 0xffff_ffff_ffff));
     let _ = std::fs::remove_file(&sock);
     let kicks = env.path("kicks");
     let seen = env.path("seen");

@@ -95,7 +95,7 @@ pub fn engine_socket(s: &crate::cfg::Settings, dir: &Path) -> std::path::PathBuf
     }
     // FNV-1a 64: the hash the engine names the private socket by (ah-engine/src/health.rs); both must agree
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in dir.as_os_str().as_encoded_bytes() {
+    for b in dir.to_string_lossy().as_bytes() {
         h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
     }
     let name = format!(
@@ -103,16 +103,33 @@ pub fn engine_socket(s: &crate::cfg::Settings, dir: &Path) -> std::path::PathBuf
         h & 0xffff_ffff_ffff,
         s.text("paths.short_socket_ext")
     );
-    let tmp = env_nonempty(&s.text("env.tmpdir")).unwrap_or_else(|| s.text("paths.fallback_tmp"));
     let private = format!("{}{}", s.text("paths.private_dir_prefix"), uid());
-    let p = Path::new(&tmp).join(&private).join(&name);
-    if p.as_os_str().len() <= max {
-        p
-    } else {
-        Path::new(&s.text("paths.fallback_tmp"))
-            .join(private)
-            .join(name)
+    // like the engine (`defaults::env_var`): a set-but-empty TMPDIR is used as is, giving a relative path; both sides must agree
+    let tmpdir = std::env::var(s.text("env.tmpdir")).ok();
+    socket_under(
+        tmpdir.as_deref(),
+        &s.text("paths.fallback_tmp"),
+        &private,
+        &name,
+        max,
+    )
+}
+
+/// The engine's choice (`paths::socket_in`): under `tmpdir` when that path fits `max`, else under `fallback`.
+fn socket_under(
+    tmpdir: Option<&str>,
+    fallback: &str,
+    private: &str,
+    name: &str,
+    max: usize,
+) -> std::path::PathBuf {
+    if let Some(t) = tmpdir {
+        let p = Path::new(t).join(private).join(name);
+        if p.as_os_str().len() <= max {
+            return p;
+        }
     }
+    Path::new(fallback).join(private).join(name)
 }
 
 #[cfg(test)]
@@ -129,9 +146,13 @@ mod tests {
             engine_socket(&s, short),
             short.join(s.text("paths.socket_file"))
         );
-        let long = Path::new(
-            "/Users/talas9/.anti-hall/work/scratch/deploy-rehearsal-b6668649-133756/home/.anti-hall/ah-engine",
-        );
+        let long = std::env::temp_dir()
+            .join("a".repeat(30))
+            .join("b".repeat(30))
+            .join("c".repeat(30))
+            .join("d".repeat(30));
+        let long = long.as_path();
+        assert!(long.join(s.text("paths.socket_file")).as_os_str().len() > 100);
         let p = engine_socket(&s, long);
         assert!(
             p.as_os_str().len() as u64 <= s.num("paths.socket_max_len"),
@@ -143,6 +164,52 @@ mod tests {
             "{p:?}"
         );
         assert_ne!(p, long.join(s.text("paths.socket_file")));
+    }
+
+    #[test]
+    fn socket_under_uses_tmpdir_when_it_fits_else_the_fallback() {
+        assert_eq!(
+            socket_under(Some("/t"), "/fb", "p-1", "n.sock", 100),
+            Path::new("/t/p-1/n.sock")
+        );
+        assert_eq!(
+            socket_under(Some("/t"), "/fb", "p-1", "n.sock", 5),
+            Path::new("/fb/p-1/n.sock")
+        );
+        assert_eq!(
+            socket_under(None, "/fb", "p-1", "n.sock", 100),
+            Path::new("/fb/p-1/n.sock")
+        );
+    }
+
+    /// The engine does not filter an empty TMPDIR (`defaults::env_var`): it builds the relative `p-1/n.sock`; the launcher must
+    /// compute the same path (engine-side bug filed separately).
+    #[test]
+    fn socket_under_mirrors_the_engine_for_an_empty_tmpdir() {
+        assert_eq!(
+            socket_under(Some(""), "/fb", "p-1", "n.sock", 100),
+            Path::new("p-1/n.sock")
+        );
+    }
+
+    #[test]
+    fn the_hash_covers_the_lossy_bytes_like_the_engine() {
+        use std::os::unix::ffi::OsStrExt;
+        let s = crate::cfg::Settings::load(Path::new(""));
+        let bad = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+            &[b"/x/".as_slice(), &[0xff; 3], "q".repeat(120).as_bytes()].concat(),
+        ));
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in bad.to_string_lossy().as_bytes() {
+            h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        let want = format!(
+            "{:012x}{}",
+            h & 0xffff_ffff_ffff,
+            s.text("paths.short_socket_ext")
+        );
+        let p = engine_socket(&s, &bad);
+        assert_eq!(p.file_name().unwrap().to_string_lossy(), want);
     }
 
     #[test]
