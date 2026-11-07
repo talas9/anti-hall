@@ -35,6 +35,8 @@ use std::time::{Duration, Instant};
 static HUP: AtomicBool = AtomicBool::new(false);
 static TERM: AtomicBool = AtomicBool::new(false);
 static INT: AtomicBool = AtomicBool::new(false);
+/// A `stop` request asked for the exit that follows (a deliberate stop, not a version takeover).
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 extern "C" fn on_hup(_: libc::c_int) {
     HUP.store(true, SeqCst);
 }
@@ -43,6 +45,46 @@ extern "C" fn on_term(_: libc::c_int) {
 }
 extern "C" fn on_int(_: libc::c_int) {
     INT.store(true, SeqCst);
+}
+
+/// Install the HUP/TERM/INT handlers with `sigaction` (restartable syscalls, as the BSD `signal` gave) and unblock the three signals
+/// for this thread: a blocked-signal mask inherited from whatever started the daemon would otherwise hold them pending forever
+/// (handlers never run). Call it before any thread exists, so every thread inherits the unblocked mask.
+fn install_signals() {
+    // SAFETY: a zeroed `sigset_t`/`sigaction` is a valid starting value; the set is initialised with `sigemptyset` before use; the three
+    // handlers are `extern "C"` fns that only store to an atomic, which is async-signal-safe; every pointer passed is to a live local.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for (sig, handler) in [
+            (libc::SIGHUP, on_hup as extern "C" fn(libc::c_int)),
+            (libc::SIGTERM, on_term as extern "C" fn(libc::c_int)),
+            (libc::SIGINT, on_int as extern "C" fn(libc::c_int)),
+        ] {
+            libc::sigaddset(&mut set, sig);
+            let mut act: libc::sigaction = std::mem::zeroed();
+            act.sa_sigaction = handler as libc::sighandler_t;
+            libc::sigemptyset(&mut act.sa_mask);
+            act.sa_flags = libc::SA_RESTART;
+            libc::sigaction(sig, &act, std::ptr::null_mut());
+        }
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+/// Turn a pending SIGTERM/SIGINT into a graceful drain. Called from the accept loop and from the watchdog tick, so a loop parked
+/// in a long wait still ends the daemon; a second call during the same drain is harmless (`begin_drain` acts once).
+fn take_signals(sh: &Arc<Shared>) {
+    if TERM.swap(false, SeqCst) {
+        crate::metrics::bump("sigterm_drains", &[]);
+        begin_drain(sh, defaults::text("msg.exit_reason_sigterm"), false, "manual_kill");
+    }
+    if INT.swap(false, SeqCst) {
+        if crate::metrics::recent_on() {
+            sh.telemetry.with_metrics(|m| m.inc("sigint_drains", &[]));
+        }
+        begin_drain(sh, defaults::text("msg.exit_reason_sigint"), false, "manual_kill");
+    }
 }
 
 /// What to do after replying.
@@ -827,7 +869,10 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
             (Reply::Ok("ok".into()), After::Continue)
         }
         Some("config") => (Reply::Ok(sh.config.report().to_string()), After::Continue),
-        Some("stop") => (Reply::Ok("ok".into()), After::Exit),
+        Some("stop") => {
+            STOP_REQUESTED.store(true, SeqCst);
+            (Reply::Ok("ok".into()), After::Exit)
+        }
         Some("status") => (Reply::Ok(sh.status()), After::Continue),
         Some(v) if v == defaults::text("diagnostics.threads_ctl") => (Reply::Ok(crate::threads::snapshot_json().to_string()), After::Continue),
         Some(_) if cfg.test_hooks => test_verb(ctl.unwrap_or(""), sh),
@@ -1736,7 +1781,7 @@ fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send 
     let restart: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |thread| {
         let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
         health::record_failure("panic", "thread_panic", &why);
-        begin_drain(&s, &why, false);
+        begin_drain(&s, &why, false, "");
     });
     crate::crash::spawn_supervised(name, stop, restart, run);
 }
@@ -1776,7 +1821,7 @@ fn worker(sh: Arc<Shared>, idx: usize) {
         crate::script::maintain(false);
         crate::memdiag::worker_tick(idx);
         if after == After::Exit {
-            begin_drain(&sh, defaults::text("msg.exit_reason_handoff"), false);
+            begin_drain(&sh, defaults::text("msg.exit_reason_handoff"), false, if STOP_REQUESTED.load(SeqCst) { "manual_kill" } else { "takeover" });
         }
     }
 }
@@ -1786,9 +1831,10 @@ fn worker(sh: Arc<Shared>, idx: usize) {
 /// every new daemon would give up on the lock). A forced drain (stall, stuck worker, memory cap) is cut off after
 /// `daemon.drain_grace_ms`; any other drain (handoff, stop, idle, SIGTERM) after `daemon.drain_max_ms`. A forced drain
 /// that follows a clean one arms the shorter timer too.
-fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
+fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool, restart_reason: &str) {
     let first = !sh.draining.swap(true, SeqCst);
     if first {
+        health::log_restart_event(restart_reason, why); // an empty or unlisted reason (a panic restart, an orphan exit) logs nothing
         crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
         crate::wire::withdraw();
     }
@@ -1845,6 +1891,7 @@ fn watchdog(sh: Arc<Shared>) {
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
         health::heartbeat();
+        take_signals(&sh);
         // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
         // otherwise hold the process (and the singleton lock) until the drain timer. Once a forced exit is scheduled there
         // is nothing left to decide, and a check that kept firing would log the same failure every tick (each one counts
@@ -1871,16 +1918,18 @@ fn watchdog(sh: Arc<Shared>) {
         );
         if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, cfg.stall.as_millis() as u64, cfg.start_stall.as_millis() as u64) {
             health::log_event("watchdog", "stall", defaults::text("msg.log_stall"));
+            crate::metrics::bump("watchdog_trips", &[("kind", if sh.loop_beat.load(SeqCst) == 0 { "start_stall" } else { "stall" })]);
             health::record_failure("watchdog", "stall", defaults::text("msg.failure_stall"));
-            begin_drain(&sh, defaults::text("msg.exit_reason_stall"), true);
+            begin_drain(&sh, defaults::text("msg.exit_reason_stall"), true, "watchdog");
             continue;
         }
         for (i, b) in sh.busy_since.iter().enumerate() {
             let since = b.load(SeqCst);
             if since != 0 && now.saturating_sub(since - 1) > cfg.stuck.as_millis() as u64 {
                 health::log_event("watchdog", "stuck", &defaults::render("msg.log_stuck", &[("i", &i)]));
+                crate::metrics::bump("watchdog_trips", &[("kind", "stuck")]);
                 health::record_failure("watchdog", "stuck", defaults::text("msg.failure_stuck"));
-                begin_drain(&sh, defaults::text("msg.exit_reason_stuck"), true);
+                begin_drain(&sh, defaults::text("msg.exit_reason_stuck"), true, "watchdog");
                 break;
             }
         }
@@ -1942,7 +1991,7 @@ fn watchdog(sh: Arc<Shared>) {
             last_idle_check = Instant::now();
             let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0;
             if quiet && now.saturating_sub(sh.last_request.load(SeqCst)) > idle.as_millis() as u64 {
-                begin_drain(&sh, defaults::text("msg.exit_reason_idle"), false);
+                begin_drain(&sh, defaults::text("msg.exit_reason_idle"), false, "idle");
                 continue;
             }
         }
@@ -1961,7 +2010,7 @@ fn watchdog(sh: Arc<Shared>) {
             if let Some(r) = crate::mem::global().tick(mem.saturating_mul(1024), now) {
                 crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_mem"));
                 health::log_event("memory", "breakdown", &sh.memory_line());
-                begin_drain(&sh, &crate::mem::restart_reason(&r), true);
+                begin_drain(&sh, &crate::mem::restart_reason(&r), true, "rss_cap");
                 continue;
             }
             // the data segment (Linux VmData, what setrlimit caps): recycle before the ceiling, because past it an allocation
@@ -1975,7 +2024,7 @@ fn watchdog(sh: Arc<Shared>) {
                     defaults::render("msg.log_data", &[("data", &data_kb.unwrap_or(0)), ("limit", &(cfg.mem_mb * 1024)), ("pct", &cfg.mem_recycle_pct)]);
                 health::log_event("recycle", "data", &detail);
                 health::log_event("memory", "breakdown", &sh.memory_line());
-                begin_drain(&sh, defaults::text("msg.exit_reason_data"), false);
+                begin_drain(&sh, defaults::text("msg.exit_reason_data"), false, "recycle");
                 continue;
             }
             if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb && !sh.rss_tripped.swap(true, SeqCst) {
@@ -1990,11 +2039,11 @@ fn watchdog(sh: Arc<Shared>) {
                         let workers = cfg.workers;
                         std::thread::spawn(move || {
                             crate::memdiag::capture(s.memory(), workers, s.cfg().rss_cap_kb, s.started.elapsed().as_secs());
-                            begin_drain(&s, defaults::text("msg.exit_reason_rss"), true);
+                            begin_drain(&s, defaults::text("msg.exit_reason_rss"), true, "rss_cap");
                         });
                     }
                 } else {
-                    begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
+                    begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true, "rss_cap");
                 }
             }
         }
@@ -2150,7 +2199,7 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
         }
         if let Some(why) = footing.lost() {
             health::log_event("exit", "orphaned", why);
-            begin_drain(&sh, why, false);
+            begin_drain(&sh, why, false, "");
             return;
         }
     }
@@ -2182,17 +2231,29 @@ pub fn serve(start_reason: &str) {
             start_fail(&e.code(), &e.to_string());
         }
     }
+    let refused = |holder: &LockHolder| {
+        let reason = if holder.answers { "answers" } else { "silent" };
+        crate::metrics::bump_by_shared("serve_refused", &[("reason", reason)], 1);
+        health::log_event("serve_refused", reason, &defaults::render("msg.log_serve_refused", &[("pid", &holder.pid), ("reason", &reason)]));
+        eprintln!(
+            "{}",
+            defaults::render(
+                "msg.daemon_already_running",
+                &[("path", &sock.display()), ("pid", &holder.pid), ("live_engine", &holder.live_engine), ("answers", &holder.answers)]
+            )
+        );
+    };
     let lock = match acquire_lock(&lock_path, &sock) {
         Ok(Ok(l)) => l,
         Ok(Err(holder)) => {
-            eprintln!(
-                "{}",
-                defaults::render(
-                    "msg.daemon_already_running",
-                    &[("path", &sock.display()), ("pid", &holder.pid), ("live_engine", &holder.live_engine), ("answers", &holder.answers)]
-                )
-            );
-            return;
+            refused(&holder);
+            // a start by a service unit that finds a hook's fallback daemon silent and hung ends it (verified pid, confirmed stale
+            // heartbeat) and takes the lock; any other holder is left alone
+            let ended = !holder.answers && holder.live_engine && crate::client::supervisor_end_hung(&crate::config::ClientConfig::from_env());
+            match ended.then(|| acquire_lock(&lock_path, &sock)) {
+                Some(Ok(Ok(l))) => l,
+                _ => return,
+            }
         }
         Err(e) => start_fail(&io_code(&e), &defaults::render("msg.log_lock_fail", &[("path", &lock_path.display()), ("err", &e)])),
     };
@@ -2224,12 +2285,7 @@ pub fn serve(start_reason: &str) {
     };
     crate::discard::harmless(std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))); // keep: best effort, fail-open
     listener.set_nonblocking(true).ok_logged("daemon_listener_nonblocking");
-    // SAFETY: all three handlers are `extern "C"` fns that only store to an atomic, which is async-signal-safe.
-    unsafe {
-        libc::signal(libc::SIGHUP, on_hup as extern "C" fn(libc::c_int) as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
-        libc::signal(libc::SIGINT, on_int as extern "C" fn(libc::c_int) as libc::sighandler_t);
-    }
+    install_signals();
     // Config is read once the singleton lock is ours, so a refused second daemon never logs a config error twice.
     let store = crate::cfgstore::ConfigStore::load();
     let cfg = store.snapshot().config.clone();
@@ -2267,7 +2323,7 @@ pub fn serve(start_reason: &str) {
         let s = sh.clone();
         crate::db::set_panic_restart(Some(Arc::new(move |thread| {
             let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
-            begin_drain(&s, &why, false);
+            begin_drain(&s, &why, false, "");
         })));
     }
     // events from other processes (the hook dispatcher, one-shot commands) arrive through the inbox; events from inside
@@ -2358,7 +2414,7 @@ fn start_devswarm(sh: &Arc<Shared>) {
     let s = sh.clone();
     let restart: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |thread| {
         let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
-        begin_drain(&s, &why, false);
+        begin_drain(&s, &why, false, "");
     });
     crate::dssup::ingest::start(&home, &paths::dir(), stop, restart);
 }
@@ -2576,15 +2632,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         if st > 0 {
             std::thread::sleep(Duration::from_millis(st)); // test hook: simulate a wedged loop
         }
-        if TERM.swap(false, SeqCst) {
-            begin_drain(sh, defaults::text("msg.exit_reason_sigterm"), false);
-        }
-        if INT.swap(false, SeqCst) {
-            if crate::metrics::recent_on() {
-                sh.telemetry.with_metrics(|m| m.inc("sigint_drains", &[]));
-            }
-            begin_drain(sh, defaults::text("msg.exit_reason_sigint"), false);
-        }
+        take_signals(sh);
         let draining = sh.draining.load(SeqCst);
         let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
         let timeout = defaults::num(if draining { "daemon.drain_poll_ms" } else { "daemon.accept_poll_ms" }) as i32;

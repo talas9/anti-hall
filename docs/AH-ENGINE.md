@@ -1584,6 +1584,20 @@ A daemon found gone without a clean exit is logged as `crash` (counts toward the
 `system_restart` (a reboot, an OS update, a power loss), reported under `health.system_restarts` in `status --json` and counted
 nowhere else. `health.system_restart_slack_ms` is the margin.
 
+**Attributed restarts (SE-A2).** When the party that ends a daemon is known, the end is logged as `restart` with the reason
+(`health.restart_reasons`: `watchdog`, `takeover`, `rss_cap`, `manual_kill`, `idle`, `recycle`) and not as a `crash`; it is
+the *why the old process ended*, while `start_reason` says who started the next one. Two sources: the daemon's own drains
+(it logs the `restart` event when the drain begins; a stop request and SIGTERM/SIGINT are `manual_kill`, a newer client is
+`takeover`) and an ah-owned kill (the killer writes `restart.intent` right before the verified-pid signal and removes it when the
+target is spared; the next start's run-marker reaper turns a matching intent, written after that daemon started and younger than
+`health.restart_intent_ttl_ms`, into a `restart` instead of `crash`). A raw `kill -9` from outside writes no intent and cannot be told
+from an out-of-memory kill, so it still counts as a crash. `restart` events are not in `health.crashy_kinds`; a loop of them is
+stopped by `client.restart_loop_n` within `client.restart_loop_window_s` (the same `crashloop_until` halt). A crash or panic
+event is never reclassified. Counters: `restart{reason}`, `watchdog_trips{kind}`, `watchdog_kill{by,result}`, `serve_refused{reason}`,
+`sigterm_drains`. A supervisor-side start (the service unit's `serve`) that finds a hook-started fallback daemon silent and hung
+(heartbeat stale for `client.heartbeat_confirm_ms`) ends it by the same verified-pid rules and takes the lock
+(`watchdog.external_enabled`); a daemon the unit itself supervises is judged by the client path only.
+
 ## Scripted check logic and the host API (D88)
 
 A check whose decision logic is a rule, a pattern or a text does not live in the binary. It ships as an editable plugin script

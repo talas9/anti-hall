@@ -2028,6 +2028,10 @@ fn a_permanently_wedged_daemon_is_replaced_by_a_new_one() {
     assert!(!old_alive, "the wedged daemon must have been ended");
     e.warm();
     assert!(e.health_log().contains("\tclient_hung_kill\t"), "the recovery is logged: {}", e.health_log());
+    // SE-A2 (f): the kill is attributed, so the dead daemon is a restart (reason watchdog), not a crash toward the breaker
+    let log = e.health_log();
+    assert!(log.contains("\trestart\twatchdog\t"), "the ended daemon is logged as an attributed restart: {log}");
+    assert!(!log.contains("\tcrash\t"), "an attributed kill must not log a crash: {log}");
 }
 
 /// The heartbeat a fake daemon keeps (the file the real daemon's watchdog touches): `fresh` touches it every 100 ms, else it is
@@ -2459,4 +2463,169 @@ fn sigint_drains_and_exits_like_sigterm() {
     }
     assert!(gone, "SIGINT must end the daemon{}", e.diag());
     assert!(e.health_log().contains("\texit\tclean\t"), "the drain ends in a clean exit: {}", e.health_log());
+}
+
+// ---- SE-A2: one daemon, SIGTERM, attributed restarts -------------------------------------------------------------------------
+
+/// Children of `serve` that a test started: ended by literal pid at the end, also when an assertion fails.
+struct Serves(Vec<std::process::Child>);
+
+impl Drop for Serves {
+    fn drop(&mut self) {
+        for c in &mut self.0 {
+            ah_engine::discard::harmless(c.kill()); // keep: the test is over and the child is its own
+            ah_engine::discard::harmless(c.wait());
+        }
+    }
+}
+
+fn spawn_serve(e: &Env) -> std::process::Child {
+    e.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+}
+
+fn all_exit_within(kids: &mut [std::process::Child], secs: u64) -> bool {
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(secs) {
+        if kids.iter_mut().all(|k| k.try_wait().ok().flatten().is_some()) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
+/// SE-A2 (a): with one `serve` running, eight more concurrent starts all give up and the first stays the only daemon.
+#[test]
+fn concurrent_starts_beside_a_running_serve_leave_exactly_one() {
+    let e = Env::new("one-serve", &[]);
+    e.warm();
+    let first = e.pid().unwrap();
+    assert!(e.eng().starts_with("/tmp") && e.dir.join("home").starts_with("/tmp"), "the test runs in a scratch dir, not the real state");
+    let mut more = Serves((0..8).map(|_| spawn_serve(&e)).collect());
+    assert!(all_exit_within(&mut more.0, 20), "the extra starts must give up and exit{}", e.diag());
+    assert_eq!(e.pid(), Some(first), "the first daemon is still the one answering{}", e.diag());
+    assert!(alive(first));
+    let refused = e.health_log().lines().filter(|l| l.contains("\tserve_refused\t")).count();
+    assert_eq!(refused, 8, "each refused start is logged once: {}", e.health_log());
+}
+
+/// The children that have not exited yet (an exited child is collected by the check).
+fn still_running(kids: &mut [std::process::Child]) -> Vec<u32> {
+    kids.iter_mut().filter_map(|k| k.try_wait().ok().flatten().is_none().then(|| k.id())).collect()
+}
+
+/// SE-A2 (a): eight starts at once with no daemon: exactly one survives, the others give up.
+#[test]
+fn a_cold_burst_of_starts_leaves_exactly_one_serve() {
+    let e = Env::new_no_prime("cold-burst", &[]);
+    let mut burst = Serves((0..8).map(|_| spawn_serve(&e)).collect());
+    assert!(wait_for(|| e.pid().is_some()), "no daemon came up{}", e.diag());
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(20) && still_running(&mut burst.0).len() > 1 {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let running = still_running(&mut burst.0);
+    assert_eq!(running.len(), 1, "exactly one of the eight starts keeps running{}", e.diag());
+    assert_eq!(e.pid(), running.first().copied(), "the survivor is the daemon that answers{}", e.diag());
+}
+
+/// SE-A2 (L): SIGTERM to a daemon the CLIENT started drains it cleanly as a deliberate stop, not a crash.
+#[test]
+fn sigterm_drains_a_client_started_daemon_as_a_deliberate_stop() {
+    let e = Env::new("sigterm", &[]);
+    e.warm();
+    let pid = e.pid().unwrap();
+    signal(pid, libc::SIGTERM);
+    let gone = wait_for(|| !alive(pid));
+    if !gone {
+        signal(pid, libc::SIGKILL);
+    }
+    assert!(gone, "SIGTERM must end the daemon{}", e.diag());
+    let log = e.health_log();
+    assert!(log.contains("\texit\tclean\t"), "the drain ends in a clean exit: {log}");
+    assert!(log.contains("\trestart\tmanual_kill\t"), "the stop is attributed: {log}");
+    assert!(!log.contains("\tcrash\t"), "a SIGTERM is not a crash: {log}");
+}
+
+/// SE-A2 (f): a stop request is a deliberate stop (manual_kill), a version takeover is not.
+#[test]
+fn a_stop_request_is_attributed_as_manual_kill() {
+    let e = Env::new("stopreq", &[]);
+    e.warm();
+    let pid = e.pid().unwrap();
+    assert!(e.ctl("stop").is_some());
+    assert!(wait_for(|| !alive(pid)), "stop must end the daemon{}", e.diag());
+    assert!(e.health_log().contains("\trestart\tmanual_kill\t"), "{}", e.health_log());
+}
+
+/// SE-A2 (f): a death with a matching restart intent is logged as a restart; the same death without one is still a crash.
+#[test]
+fn a_killed_daemon_counts_as_a_crash_unless_an_intent_names_it() {
+    for with_intent in [true, false] {
+        let e = Env::new(if with_intent { "intent-yes" } else { "intent-no" }, &[]);
+        e.warm();
+        let old = e.pid().unwrap();
+        if with_intent {
+            std::fs::write(e.eng().join("restart.intent"), format!("{old}\n0\nwatchdog\ntest\n{}\n", ah_engine::health::now_ms())).unwrap();
+        }
+        signal(old, libc::SIGKILL);
+        assert!(wait_for(|| !alive(old)), "kill -9 did not end the daemon");
+        e.warm(); // the next client reaps the dead daemon's run marker and starts a new one
+        let log = e.health_log();
+        if with_intent {
+            assert!(log.contains("\trestart\twatchdog\t") && !log.contains("\tcrash\t"), "an attributed death is a restart: {log}");
+            assert!(!e.eng().join("restart.intent").exists(), "the intent is consumed");
+        } else {
+            assert!(log.contains("\tcrash\t") && !log.contains("\trestart\t"), "a raw kill -9 still counts as a crash: {log}");
+        }
+    }
+}
+
+/// SE-A2 (f): attributed restarts do not reach the crash threshold, but a loop of them stops respawning at client.restart_loop_n.
+#[test]
+fn a_loop_of_attributed_restarts_trips_the_crash_loop_halt() {
+    let e = Env::new("restart-loop", &[("AH_ENGINE_RESTART_LOOP_N", "3"), ("AH_ENGINE_CRASH_N", "50")]);
+    e.warm();
+    let old = e.pid().unwrap();
+    signal(old, libc::SIGKILL);
+    assert!(wait_for(|| !alive(old)));
+    let now = ah_engine::health::now_ms();
+    let lines: String = (0..3).map(|i| format!("{}\trestart\twatchdog\trestart (watchdog): test\n", now - 10 + i)).collect();
+    let log = e.eng().join("ah-engine.log");
+    let mut text = std::fs::read_to_string(&log).unwrap_or_default();
+    text.push_str(&lines);
+    std::fs::write(&log, text).unwrap();
+    let _ = e.hook(DENY_IN, false); // a client asks for a daemon: the loop rule judges before it spawns
+    assert!(e.eng().join("crashloop.until").exists(), "the restart loop must halt respawning{}", e.diag());
+}
+
+/// SE-A2 (L): the same through the real thin client (`ah-hook`), which is how the hosts start the daemon: a daemon it started
+/// must also drain on SIGTERM and SIGINT, with the signals unblocked and handled in the daemon.
+#[test]
+fn sigterm_drains_a_daemon_started_through_the_thin_client() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("sigterm-wrap", &[]);
+    let (_, code, _) = e.wrapper_hook(DENY_IN);
+    assert!(code == 0 || code == 2, "the wrapper call exited {code}");
+    assert!(wait_for(|| e.pid().is_some()), "the thin client did not start a daemon{}", e.diag());
+    let pid = e.pid().unwrap();
+    let ps = |field: &str| {
+        let o = Command::new("ps").args(["-o", &format!("{field}="), "-p", &pid.to_string()]).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    println!("SIGMASKS pid={pid} ignored={} blocked={} caught={}", ps("ignored"), ps("blocked"), ps("caught"));
+    signal(pid, libc::SIGTERM);
+    let gone = wait_for(|| !alive(pid));
+    if !gone {
+        signal(pid, libc::SIGKILL);
+    }
+    assert!(
+        gone,
+        "SIGTERM must end a daemon the thin client started (ignored={} blocked={} caught={}){}",
+        ps("ignored"),
+        ps("blocked"),
+        ps("caught"),
+        e.diag()
+    );
+    assert!(e.health_log().contains("\trestart\tmanual_kill\t"), "{}", e.health_log());
 }

@@ -267,6 +267,8 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 | `AH_ENGINE_REFRESH_MS` | `refresh.every_ms` | How often the refresh job looks for requests; a request waits at most this long (plus jitter). Cheap when there is none: it reads a few small files. 0 turns the job off. |
 | `AH_ENGINE_RELEASE_BASE` |  | Test-only: download base URL for the engine binary (http allowed). Honored by `ah-hook install` and hooks/install.sh only with AH_WRAPPER_TEST=1. |
 | `AH_ENGINE_REQUEST_PEER_PID` | `request_env.peer_pid_key` | The name under which a daemon request's sender pid (its socket peer; 0 when the socket did not say) reaches the checks. Not on the allowlist, so no client can set it; host functions that walk the process ancestry (the DevSwarm reader nonce) start there. Absent in a one-shot `ah-engine check`, which starts at itself. |
+| `AH_ENGINE_RESTART_LOOP_N` | `client.restart_loop_n` | Attributed restarts (health.restart_kind) within client.restart_loop_window_s that stop respawning: the same crashloop_until halt as client.crash_n. Attributed restarts do not count toward client.crash_n, so this is what stops a daemon that is ended again and again by the watchdog, a takeover or a stop. 0 disables the check (not recommended). |
+| `AH_ENGINE_RESTART_LOOP_WINDOW_S` | `client.restart_loop_window_s` | Window in which attributed restarts are counted against client.restart_loop_n. |
 | `AH_ENGINE_ROLLBACK_FAIL_N` | `rollback.fail_n` | Engine failures seen by the thin client (timeout, signal death, no answer) within rollback.fail_window_s that roll a never-healthy binary back. The thin client counts them because a hung binary cannot count its own. |
 | `AH_ENGINE_ROLLBACK_FAIL_WINDOW_S` | `rollback.fail_window_s` | Window in which the wrapper's engine failures are counted for rollback.fail_n. |
 | `AH_ENGINE_ROLLBACK_ON_MISMATCH` | `rollback.on_mismatch` | 1 = a binary whose sha256 differs from the one the installer recorded (swapped by hand) and that has never run healthy is rolled back to the known-good binary at the next check. 0 = never roll back on a mismatch alone (a local build you are developing). `accept` records the installed binary as the expected one. |
@@ -310,6 +312,7 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 | `AH_ENGINE_UPDATE_MS` | `engine_update.every_ms` | How often the job starts the updater's automatic check; the script's own daily limit decides whether it does any work. 0 turns the job off. |
 | `AH_ENGINE_VERSION` |  | Overrides the version this build reports and compares for handoff (the plugin version in production, arbitrary in tests). |
 | `AH_ENGINE_WAIT_FILE` |  | A file the client creates while it waits on the daemon and keeps when the daemon answered BUSY/ERR, so the call is handed to its Node hooks; it removes it when the daemon answered with nothing left for Node to decide (an OK reply whose entries defer to Node hooks keeps it until the call's final result is ready), gave no reply in the wait window, or none was there. The thin client sets it, so that its watchdog can tell a call that is still deciding (give it up to client.slow_fallback_max_ms) from a hung engine (kill at the normal budget). |
+| `AH_ENGINE_WATCHDOG_EXTERNAL` | `watchdog.external_enabled` | 1 = a supervisor-side start (a fallback daemon a hook started outside the service unit finds the singleton lock held by a daemon that does not answer) ends that daemon when its heartbeat has been stale for client.heartbeat_confirm_ms, with the same verified-pid rules as the client (client.heartbeat_stale_ms). 0 = never. A daemon the service unit supervises is judged by the client path only. |
 | `AH_ENGINE_WATCHDOG_TICK_MS` | `daemon.watchdog_tick_ms` | How often the watchdog thread wakes to look at heartbeats. |
 | `AH_ENGINE_WIRE_ACK` | `wire.ack` | 1 = the client asks the daemon for ACK(req)/ACK(res) (retry-safe requests, undelivered verdicts counted, per-phase latency); 0 = the original request/reply exchange, no acks. The client only opts in when the daemon has announced the protocol (wire.caps_file), so an older daemon is never sent an ack-mode request. |
 | `AH_ENGINE_WORKERS` | `daemon.workers` | Worker threads evaluating requests. |
@@ -473,6 +476,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `client.heartbeat_stale_ms` | `1500` | `AH_ENGINE_HEARTBEAT_STALE_MS` | ms | A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. 0 disables the check. |
 | `client.max_reply` | `2097152` |  | bytes | Largest reply the client reads. |
 | `client.max_stdin` | `8388608` |  | bytes | Largest hook payload the client reads from stdin. |
+| `client.restart_loop_n` | `12` | `AH_ENGINE_RESTART_LOOP_N` |  | Attributed restarts (health.restart_kind) within client.restart_loop_window_s that stop respawning: the same crashloop_until halt as client.crash_n. Attributed restarts do not count toward client.crash_n, so this is what stops a daemon that is ended again and again by the watchdog, a takeover or a stop. 0 disables the check (not recommended). |
+| `client.restart_loop_window_s` | `600` | `AH_ENGINE_RESTART_LOOP_WINDOW_S` | s | Window in which attributed restarts are counted against client.restart_loop_n. |
 | `client.slow_down_n` | `5` | `AH_ENGINE_SLOW_DOWN_N` |  | Consecutive slow (late) daemon replies within client.slow_window_ms after which the daemon is treated as wedged and marked down. A single call that gets no reply in the window never marks it down: it fails open and the next client asks the daemon again. |
 | `client.slow_fallback_max_ms` | `3000` | `AH_ENGINE_SLOW_FALLBACK_MAX_MS` | ms | How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then fails the call open and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension. |
 | `client.slow_wait_margin_ms` | `400` |  | ms | How much earlier than the wrapper's watchdog (client.slow_fallback_max_ms from the engine start) the client stops waiting for a late daemon reply, so the client fails open and counts the slow call itself instead of being killed by the watchdog first. Covers the client's own start-up before it begins to wait. |
@@ -657,6 +662,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `files.launcher_stale_notice` | `stale-engine.notice` |  |  | Holds the session id that already got the stale-engine notice (the installed engine is older than the plugin's pin), so the notice is shown once per session (the next session overwrites it). |
 | `files.log` | `ah-engine.log` |  |  | Event log file name (state directory). |
 | `files.reaped_prefix` | `daemon.run.reaped.` |  |  | Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended). |
+| `files.restart_intent` | `restart.intent` |  |  | The intent a killer writes right before it signals a daemon it verified (pid, process start time, restart reason, who): one field per line. Removed again when the target is spared. A raw `kill` from outside writes none, so that death still counts as a crash. |
 | `files.rollback_last` | `rollback.last` |  |  | One line the integrity check writes when it rolls the engine binary back (time, reason, which binary was set aside). Shown by status and doctor. |
 | `files.rollback_request` | `rollback.request` |  |  | Written when the crash-loop rule trips on a binary with no healthy history: asks the integrity check to restore the known-good binary. Holds the sha256 of the binary to replace. |
 | `files.run_marker` | `daemon.run` |  |  | Written while a daemon runs; a leftover one with a dead pid is logged as one crash. |
@@ -703,6 +709,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.probe_timeout_ms` | `1000` |  | ms | Longest a pid or memory probe command (health.pid_probe, health.rss_probe) may run; it runs on the hook path, so a wedged one is cut off and reads as no answer. |
 | `health.proc_cmdline` | `/proc/{pid}/cmdline` |  |  | Where Linux keeps a process's command line (NUL-separated); read instead of running the pid probe. `{pid}` is substituted. |
 | `health.resolved_by_start_kinds` | `defaults_fallback, defaults_heal_skipped` |  |  | Event kinds from `health.degraded_kinds` that a daemon start resolves: one logged before the latest `health.start_kind` event does not count toward degraded. |
+| `health.restart_intent_ttl_ms` | `120000` |  | ms | How long a restart intent (files.restart_intent) written before an ah-owned kill stays valid. The next start's reaper turns the dead daemon's run marker into a restart event instead of a crash only when the intent names that pid, was written after that daemon started, and is younger than this. |
+| `health.restart_kind` | `restart` |  |  | The event-log kind of a restart whose end was attributed (health.restart_reasons). It is not in health.crashy_kinds, so it never counts toward the crash-loop breaker; client.restart_loop_n bounds a loop of such restarts instead. |
+| `health.restart_reasons` | `watchdog, takeover, rss_cap, manual_kill, idle, recycle` |  |  | SE-A2: why the OLD daemon process ended, as a restart event carries it (the label of the restart counter; an unlisted word is never written). watchdog = the external watchdog ended a hung daemon or the daemon's own watchdog drained it; takeover = a newer client version took over; rss_cap = the memory cap drain; manual_kill = a deliberate stop (a stop request, SIGTERM/SIGINT/SIGHUP, an ah-owned kill); idle = the idle exit; recycle = the data-segment recycle or a thread-panic restart. Who STARTED the next process is start_reason (health.start_reasons), not this. |
 | `health.rss_probe` | `ps, -o, rss=, -p, {pid}` |  |  | Command used to read this process's resident set where /proc is unavailable (macOS): the program, then its arguments with `{pid}` substituted. |
 | `health.scrub_patterns` | `7 items` |  |  | Patterns removed from anything that goes into a diagnostic: each item is [regex, replacement]. Order matters. |
 | `health.serve_arg` | `serve` |  |  | Subcommand a daemon is started with; also how a live engine is recognised in the process list. |
@@ -1099,6 +1108,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `updater.tmp_prefix` | `update.tmp.` |  |  | Prefix of the updater's scratch directory inside the state directory; <prefix><pid>. |
 | `updater.wget_cmd` | `7 items` |  |  | The download command when curl is not installed. |
 | `updater.words_on` | `true, on, yes, 1` |  |  | Values of engine.autoUpdate that mean on with the default channel. |
+
+### engine.toml / watchdog
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `watchdog.external_enabled` | `1` | `AH_ENGINE_WATCHDOG_EXTERNAL` |  | 1 = a supervisor-side start (a fallback daemon a hook started outside the service unit finds the singleton lock held by a daemon that does not answer) ends that daemon when its heartbeat has been stale for client.heartbeat_confirm_ms, with the same verified-pid rules as the client (client.heartbeat_stale_ms). 0 = never. A daemon the service unit supervises is judged by the client path only. |
 
 ### git.toml / git
 
@@ -14554,9 +14569,13 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_proc_timeout` | Event-log detail (rate-limited, code proc_timeout) when a helper process ran past its timeout and its process group was killed. Placeholders: {what}, {ms}. |
 | `msg.log_proc_unread` | Event-log detail (rate-limited, code proc_unread) when a helper exited but its output did not reach end of file within proc.read_grace_ms (a process it left behind held a pipe); its group was killed. Placeholder: {what}. |
 | `msg.log_pruned` | Event-log detail when maintenance forgets old applied write ids. Placeholder: {n}. |
+| `msg.log_restart` | Log detail of an attributed restart. {reason} = the restart reason, {why} = the drain reason or the killer. |
+| `msg.log_restart_loop` | Reason recorded when attributed restarts trip the restart loop halt. {n} restarts in {secs} s. |
+| `msg.log_restart_reaped` | Log detail when a dead daemon's run marker was matched to a restart intent. {pid} = the dead daemon, {reason} = the intent's reason, {by} = who wrote it. |
 | `msg.log_restored` | Event-log detail of a restore. Placeholders: {from}, {kept}. |
 | `msg.log_rollback_request` | Log detail when the crash-loop rule asks for a roll-back. Placeholder: {sha}. |
 | `msg.log_rss` | Log detail when the daemon is over its memory cap. Placeholders: {rss}, {cap}. |
+| `msg.log_serve_refused` | Log detail when a start gives up because the singleton lock is held. {pid} = the holder, {reason} = answers or silent. |
 | `msg.log_stall` | Log detail when the accept loop stalled. |
 | `msg.log_start` | Log detail for a daemon start. Placeholders: {version}, {pid}, {rlimit}. |
 | `msg.log_stuck` | Log detail when a worker is stuck. Placeholder: {i}. |
@@ -14908,8 +14927,13 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 |---|---|---|---|---|
 | `cfg_cache` | counter | reads | result | ah.cfg / ah.settings reads of check scripts, by whether the per-call memo answered (hit) or the host did (miss). Counted per check call and folded into the next call's single cfgGen host call. |
 | `requests_served` | counter | requests |  | Requests the daemon ran checks for (not skipped because the client had already hung up: see client_gone_skipped). |
+| `restart` | counter | restarts | reason | Daemon restarts whose end was attributed, by reason (health.restart_reasons). |
+| `serve_refused` | counter | starts | reason | Daemon starts that exited because another daemon already holds the singleton lock, by reason (answers = the holder answers on the socket, silent = the holder does not answer). |
 | `sigint_drains` | counter | drains |  | Graceful drains started by SIGINT (the same drain as SIGTERM). |
+| `sigterm_drains` | counter | drains |  | Graceful drains started by SIGTERM (sigint_drains counts SIGINT). |
 | `tail_newest_reads` | counter | reads | mode | Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap). |
+| `watchdog_kill` | counter | kills | by, result | Hung-daemon kills decided by the external watchdog, by who decided (client, supervisor) and result (killed, spared). |
+| `watchdog_trips` | counter | trips | kind | Times the daemon's own watchdog forced an exit, by kind (stall = accept loop silent past daemon.stall_ms, stuck = a worker busy past daemon.stuck_ms). |
 | `git_audit_blocked` | counter | blocks |  | Bash calls the post-call commit check blocked because a commit git just wrote carries an AI credit (PR #469). |
 | `git_blocked` | counter | commands | reason | Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push). |
 | `git_push_ack_downgraded` | counter | pushes |  | Pushes the credit backstop let through as an advisory because the identical push had been blocked once and git.push_ack_max_shas acknowledges it (off by default). |

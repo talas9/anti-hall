@@ -2610,3 +2610,60 @@ value = { kind = "counter", unit = "requests", labels = [] }
 [metric.sigint_drains]
 doc = "Graceful drains started by SIGINT (the same drain as SIGTERM)."
 value = { kind = "counter", unit = "drains", labels = [] }
+
+[health.restart_reasons]
+doc = "SE-A2: why the OLD daemon process ended, as a restart event carries it (the label of the restart counter; an unlisted word is never written). watchdog = the external watchdog ended a hung daemon or the daemon's own watchdog drained it; takeover = a newer client version took over; rss_cap = the memory cap drain; manual_kill = a deliberate stop (a stop request, SIGTERM/SIGINT/SIGHUP, an ah-owned kill); idle = the idle exit; recycle = the data-segment recycle or a thread-panic restart. Who STARTED the next process is start_reason (health.start_reasons), not this."
+value = ["watchdog", "takeover", "rss_cap", "manual_kill", "idle", "recycle"]
+
+[health.restart_kind]
+doc = "The event-log kind of a restart whose end was attributed (health.restart_reasons). It is not in health.crashy_kinds, so it never counts toward the crash-loop breaker; client.restart_loop_n bounds a loop of such restarts instead."
+value = "restart"
+
+[health.restart_intent_ttl_ms]
+doc = "How long a restart intent (files.restart_intent) written before an ah-owned kill stays valid. The next start's reaper turns the dead daemon's run marker into a restart event instead of a crash only when the intent names that pid, was written after that daemon started, and is younger than this."
+value = 120000
+min = 1000
+unit = "ms"
+
+[files.restart_intent]
+doc = "The intent a killer writes right before it signals a daemon it verified (pid, process start time, restart reason, who): one field per line. Removed again when the target is spared. A raw `kill` from outside writes none, so that death still counts as a crash."
+value = "restart.intent"
+
+[client.restart_loop_n]
+doc = "Attributed restarts (health.restart_kind) within client.restart_loop_window_s that stop respawning: the same crashloop_until halt as client.crash_n. Attributed restarts do not count toward client.crash_n, so this is what stops a daemon that is ended again and again by the watchdog, a takeover or a stop. 0 disables the check (not recommended)."
+value = 12
+env = "AH_ENGINE_RESTART_LOOP_N"
+min = 0
+
+[client.restart_loop_window_s]
+doc = "Window in which attributed restarts are counted against client.restart_loop_n."
+value = 600
+env = "AH_ENGINE_RESTART_LOOP_WINDOW_S"
+min = 1
+unit = "s"
+
+[watchdog.external_enabled]
+doc = "1 = a supervisor-side start (a fallback daemon a hook started outside the service unit finds the singleton lock held by a daemon that does not answer) ends that daemon when its heartbeat has been stale for client.heartbeat_confirm_ms, with the same verified-pid rules as the client (client.heartbeat_stale_ms). 0 = never. A daemon the service unit supervises is judged by the client path only."
+value = 1
+env = "AH_ENGINE_WATCHDOG_EXTERNAL"
+min = 0
+
+[metric.restart]
+doc = "Daemon restarts whose end was attributed, by reason (health.restart_reasons)."
+value = { kind = "counter", unit = "restarts", labels = ["reason"] }
+
+[metric.watchdog_trips]
+doc = "Times the daemon's own watchdog forced an exit, by kind (stall = accept loop silent past daemon.stall_ms, stuck = a worker busy past daemon.stuck_ms)."
+value = { kind = "counter", unit = "trips", labels = ["kind"] }
+
+[metric.watchdog_kill]
+doc = "Hung-daemon kills decided by the external watchdog, by who decided (client, supervisor) and result (killed, spared)."
+value = { kind = "counter", unit = "kills", labels = ["by", "result"] }
+
+[metric.serve_refused]
+doc = "Daemon starts that exited because another daemon already holds the singleton lock, by reason (answers = the holder answers on the socket, silent = the holder does not answer)."
+value = { kind = "counter", unit = "starts", labels = ["reason"] }
+
+[metric.sigterm_drains]
+doc = "Graceful drains started by SIGTERM (sigint_drains counts SIGINT)."
+value = { kind = "counter", unit = "drains", labels = [] }

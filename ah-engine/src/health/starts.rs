@@ -35,6 +35,11 @@ fn rows() -> Vec<Value> {
         .collect()
 }
 
+/// The trigger (start reason) of the newest recorded daemon start: who started the daemon that is running now.
+pub fn last_trigger() -> Option<String> {
+    rows().last().and_then(|r| r.get(field("trigger"))).and_then(Value::as_str).map(str::to_string)
+}
+
 /// The explicit launcher's reason, or manual for an unlabelled `serve`. Unknown labels cannot grow the reason cardinality.
 pub fn requested(args: &[String]) -> String {
     let flag = defaults::text("health.start_reason_flag");

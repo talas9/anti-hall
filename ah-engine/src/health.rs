@@ -602,6 +602,11 @@ pub(crate) fn reap_marker_at(boot_ms: Option<u64>) {
     let claim = file(&format!("{}{}", defaults::text("files.reaped_prefix"), std::process::id()));
     if std::fs::rename(&m, &claim).is_ok() {
         crate::discard::harmless(std::fs::remove_file(&claim)); // keep: cleanup that raced; an absent file is the goal state
+        // an ah-owned kill left an intent naming this exact process: the death is attributed, so it is a restart, not a crash
+        if let Some(intent) = take_restart_intent(pid, started_ms, now_ms()) {
+            log_restart_event(&intent.reason, &defaults::render("msg.log_restart_reaped", &[("pid", &pid), ("reason", &intent.reason), ("by", &intent.by)]));
+            return;
+        }
         let breadcrumb = breadcrumb.unwrap_or_else(|| json!({"context": "unknown"}));
         if stopped_by_system(boot_ms, last_alive_ms) {
             let detail = defaults::render("msg.log_system_restart", &[("pid", &pid), ("last_alive_ms", &last_alive_ms), ("boot_ms", &boot_ms.unwrap_or(0))]);
@@ -614,6 +619,73 @@ pub(crate) fn reap_marker_at(boot_ms: Option<u64>) {
         log_event("crash", "unknown", &detail);
         record_failure("crash", "unknown", &detail);
     }
+}
+
+// ---- restart attribution (SE-A2) -----------------------------------------------------------------
+
+/// A killer's record that it is about to end one verified daemon process (`files.restart_intent`).
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct RestartIntent {
+    pub pid: u32,
+    /// The OS start time of the process (its generation), as the heartbeat recorded it.
+    pub start: u64,
+    pub reason: String,
+    pub by: String,
+    /// When it was written (ms since the epoch).
+    pub ts: u64,
+}
+
+/// `reason` when it is one of `health.restart_reasons` (the list bounds the label values the counter can take).
+pub(crate) fn known_restart_reason(reason: &str) -> Option<&'static str> {
+    defaults::list("health.restart_reasons").into_iter().find(|r| *r == reason)
+}
+
+/// Write the intent: call it immediately before the signal, and [`clear_restart_intent`] when the target was spared.
+pub(crate) fn write_restart_intent(pid: u32, start: u64, reason: &str, by: &str) {
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the write below reports failure by absence
+    let text = format!("{pid}\n{start}\n{reason}\n{by}\n{}\n", now_ms());
+    crate::discard::logged("restart_intent_write", crate::atomic::write(state_file("restart_intent"), text));
+}
+
+/// Remove the intent (the target was spared, or its death was matched).
+pub(crate) fn clear_restart_intent() {
+    crate::discard::harmless(std::fs::remove_file(state_file("restart_intent"))); // keep: an absent intent is the goal state
+}
+
+fn parse_restart_intent(text: &str) -> Option<RestartIntent> {
+    let mut f = text.lines();
+    Some(RestartIntent {
+        pid: f.next()?.trim().parse().ok()?,
+        start: f.next()?.trim().parse().ok()?,
+        reason: f.next()?.trim().to_string(),
+        by: f.next()?.trim().to_string(),
+        ts: f.next()?.trim().parse().ok()?,
+    })
+}
+
+/// The intent for the dead daemon `pid` (started at `started_ms`, the run marker's time), consumed: it must name that pid, have been
+/// written after that daemon started (so it is not an older generation's), name a listed reason, and be younger than
+/// `health.restart_intent_ttl_ms` at `now`. Anything else is left for the crash path.
+pub(crate) fn take_restart_intent(pid: u32, started_ms: u64, now: u64) -> Option<RestartIntent> {
+    let i = parse_restart_intent(&std::fs::read_to_string(state_file("restart_intent")).ok()?)?;
+    if !intent_matches(&i, pid, started_ms, now, defaults::num("health.restart_intent_ttl_ms"), known_restart_reason(&i.reason).is_some()) {
+        return None;
+    }
+    clear_restart_intent();
+    Some(i)
+}
+
+/// Whether `i` attributes the death of `pid` (started at `started_ms`) at `now`: same pid, written after that process started, not
+/// older than `ttl_ms`, and a listed reason (`listed`).
+pub(crate) fn intent_matches(i: &RestartIntent, pid: u32, started_ms: u64, now: u64, ttl_ms: u64, listed: bool) -> bool {
+    i.pid == pid && i.ts >= started_ms && now.saturating_sub(i.ts) <= ttl_ms && listed
+}
+
+/// Log one attributed restart (`health.restart_kind`, never crashy) and count it by reason.
+pub fn log_restart_event(reason: &str, why: &str) {
+    let Some(reason) = known_restart_reason(reason) else { return };
+    log_event(defaults::text("health.restart_kind"), reason, &defaults::render("msg.log_restart", &[("reason", &reason), ("why", &why)]));
+    crate::metrics::bump_by_shared("restart", &[("reason", reason)], 1);
 }
 
 // ---- crash-loop protection (daemon deaths) -------------------------------------------------------
@@ -660,16 +732,31 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
     // a binary that exits at once leaves no crash event, so the starts themselves are counted too: this many in this window
     // is a loop whatever the daemon reported
     let starts = count_recent_after_trip(&["client_spawn_attempt"], cfg.spawn_window);
-    if n < cfg.crash_n && starts < cfg.spawn_n {
+    // attributed restarts do not count as crashes; a loop of them is stopped by its own, higher threshold
+    let loop_n = defaults::num("client.restart_loop_n") as usize;
+    let loop_window = defaults::secs("client.restart_loop_window_s");
+    let restarts = if loop_n > 0 { count_recent_after_trip(&[defaults::text("health.restart_kind")], loop_window) } else { 0 };
+    let restart_loop = loop_n > 0 && restarts >= loop_n;
+    if n < cfg.crash_n && starts < cfg.spawn_n && !restart_loop {
         return false;
     }
     // say which rule fired: the crashes within their window, or the starts within theirs
-    let (n, window) = if starts >= cfg.spawn_n && starts >= n { (starts, cfg.spawn_window) } else { (n, cfg.crash_window) };
+    let restart_rule = restart_loop && restarts >= n && restarts >= starts;
+    let (n, window) = if restart_rule {
+        (restarts, loop_window)
+    } else if starts >= cfg.spawn_n && starts >= n {
+        (starts, cfg.spawn_window)
+    } else {
+        (n, cfg.crash_window)
+    };
     halt("crashloop_until", cfg.crash_cooldown);
     let rolled = crate::binguard::on_crashloop_trip();
     // a crash loop caused by the environment keeps that cause; otherwise it is a permanent failure
     let env_code = events().into_iter().rev().find(|e| crashy().contains(&e.kind.as_str())).filter(|e| classify(&e.code).0 == Class::Env).map(|e| e.code);
-    let reason = defaults::render("msg.reason_crashloop", &[("n", &n.to_string()), ("secs", &window.as_secs().to_string())]);
+    let reason = defaults::render(
+        if restart_rule { "msg.log_restart_loop" } else { "msg.reason_crashloop" },
+        &[("n", &n.to_string()), ("secs", &window.as_secs().to_string())],
+    );
     let (kind, code) = ("crashloop".to_string(), env_code.unwrap_or_else(|| "crashloop".to_string()));
     log_event("crashloop", &code, &reason);
     record_failure(&kind, &code, &reason);
@@ -1004,6 +1091,30 @@ mod tests {
     }
 
     use super::*;
+
+    fn intent(pid: u32, ts: u64) -> RestartIntent {
+        RestartIntent { pid, start: 7, reason: "watchdog".into(), by: "client".into(), ts }
+    }
+
+    /// SE-A2 (f): an intent attributes a death only for the same pid, written after that process started, still fresh and with a
+    /// listed reason; anything else leaves the death to the crash path.
+    #[test]
+    fn an_intent_attributes_only_its_own_fresh_death() {
+        let (started, now, ttl) = (1_000, 5_000, 120_000);
+        assert!(intent_matches(&intent(42, 4_000), 42, started, now, ttl, true));
+        assert!(!intent_matches(&intent(43, 4_000), 42, started, now, ttl, true), "another pid");
+        assert!(!intent_matches(&intent(42, 900), 42, started, now, ttl, true), "written before the process started: an older generation's");
+        assert!(!intent_matches(&intent(42, 4_000), 42, started, 4_000 + ttl + 1, ttl, true), "expired");
+        assert!(!intent_matches(&intent(42, 4_000), 42, started, now, ttl, false), "unlisted reason");
+    }
+
+    #[test]
+    fn an_intent_file_round_trips_and_a_damaged_one_is_ignored() {
+        let i = parse_restart_intent("42\n7\nwatchdog\nclient\n4000\n").unwrap();
+        assert_eq!(i, intent(42, 4_000));
+        assert!(parse_restart_intent("42\nnot-a-number\n").is_none());
+        assert!(parse_restart_intent("").is_none());
+    }
 
     fn ev(ts: u64, kind: &str, code: &str, detail: &str) -> Event {
         Event { ts, kind: kind.into(), code: code.into(), detail: detail.into() }

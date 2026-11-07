@@ -1521,3 +1521,19 @@ value = "ah-engine docs: nothing was generated for format '{what}' (is the plugi
 [msg.docs_write_failed]
 doc = "Printed to stderr when `docs --out` could not write its file. Placeholders: out, err."
 value = "ah-engine docs: could not write '{out}': {err}"
+
+[msg.log_restart]
+doc = "Log detail of an attributed restart. {reason} = the restart reason, {why} = the drain reason or the killer."
+value = "restart ({reason}): {why}"
+
+[msg.log_restart_reaped]
+doc = "Log detail when a dead daemon's run marker was matched to a restart intent. {pid} = the dead daemon, {reason} = the intent's reason, {by} = who wrote it."
+value = "daemon {pid} ended by {by} ({reason}); not a crash"
+
+[msg.log_serve_refused]
+doc = "Log detail when a start gives up because the singleton lock is held. {pid} = the holder, {reason} = answers or silent."
+value = "start refused: lock held by {pid} ({reason})"
+
+[msg.log_restart_loop]
+doc = "Reason recorded when attributed restarts trip the restart loop halt. {n} restarts in {secs} s."
+value = "daemon restarted {n} times in {secs} s (attributed restarts)"

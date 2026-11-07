@@ -470,7 +470,7 @@ fn clear_daemon_down_marker() {
     crate::discard::harmless(std::fs::remove_file(state_file("daemon_down_marker"))); // keep: absent marker is the desired state
 }
 
-struct SpawnLock {
+pub(crate) struct SpawnLock {
     path: PathBuf,
 }
 
@@ -877,13 +877,24 @@ fn absent_unguarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, answer_now:
 /// read again after the process probe, immediately before the signal ([`crate::procid::signal_verified`]: a pidfd on Linux).
 /// Anything else is spared and logged. SIGKILL, because a stopped process acts on nothing else.
 fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
+    let Some(_spawn_lock) = end_hung_daemon(cfg, why, "client") else { return false };
+    health::log_event("client_spawn_attempt", "singleflight", why);
+    spawn_daemon().is_some()
+}
+
+/// The ending half of [`replace_hung_daemon`], also used by a supervisor-side start (`by` = `supervisor`): `Some(lock)` once the
+/// hung daemon was ended (the single-flight spawn lock is handed back so the caller starts the replacement under it). The restart
+/// intent (reason `watchdog`) is written inside the verification closure, right before the signal, and removed again when the
+/// target is spared, so the dead daemon's run marker is reaped as an attributed restart and not as a crash. Counts
+/// `watchdog_kill{by,result}`.
+pub(crate) fn end_hung_daemon(cfg: &ClientConfig, why: &str, by: &str) -> Option<SpawnLock> {
     if health::crashloop_tripped(cfg) {
-        return false;
+        return None;
     }
-    let Some(_spawn_lock) = spawn_lock() else { return false };
+    let spawn_lock = spawn_lock()?;
     let stale = defaults::millis("client.heartbeat_stale_ms");
     let still_hung = |hb: &health::Heartbeat| hb.age > stale && health::hang_confirmed(hb);
-    let Some(hb) = health::heartbeat_of_lock_holder().filter(|hb| still_hung(hb)) else { return false };
+    let hb = health::heartbeat_of_lock_holder().filter(|hb| still_hung(hb))?;
     let pid = hb.pid;
     let unchanged = || health::heartbeat_of_lock_holder().is_some_and(|now| now.ident == hb.ident && now.mtime_ns == hb.mtime_ns && still_hung(&now));
     let killed = pid != std::process::id()
@@ -893,15 +904,39 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
         // cannot be made atomic (no handle ties a heartbeat read to a delivery); the residual is acceptable because a live daemon
         // that recovers from a confirmed stall of at least `client.heartbeat_confirm_ms` must beat again within microseconds of
         // running, and the client must be descheduled exactly across that moment.
-        && crate::procid::signal_verified(pid, libc::SIGKILL, || hb.names_running() && unchanged());
+        && crate::procid::signal_verified(pid, libc::SIGKILL, || {
+            let ok = hb.names_running() && unchanged();
+            if ok {
+                health::write_restart_intent(pid, hb.generation().unwrap_or(0), "watchdog", by);
+            }
+            ok
+        });
+    let result = if killed { "killed" } else { "spared" };
+    crate::metrics::bump_by_shared("watchdog_kill", &[("by", by), ("result", result)], 1);
     if !killed {
+        health::clear_restart_intent();
         health::log_event("client_hung_spared", "daemon", &defaults::render("msg.log_hung_spared", &[("pid", &pid), ("why", &why)]));
-        return false;
+        return None;
     }
     health::clear_hang_suspicion();
     health::log_event("client_hung_kill", "daemon", &defaults::render("msg.log_hung_kill", &[("pid", &pid), ("why", &why)]));
-    health::log_event("client_spawn_attempt", "singleflight", why);
-    spawn_daemon().is_some()
+    Some(spawn_lock)
+}
+
+/// A supervisor-side start found the singleton lock held by a daemon that does not answer. When that daemon is a fallback a hook
+/// started (not one a service unit supervises), `watchdog.external_enabled` is on, and its heartbeat has been stale for
+/// `client.heartbeat_confirm_ms` (first sight only raises the suspicion; the next tick confirms), end it with the client's verified-pid
+/// rules. True when it was ended and the lock can be taken.
+pub(crate) fn supervisor_end_hung(cfg: &ClientConfig) -> bool {
+    if defaults::num("watchdog.external_enabled") == 0 || defaults::millis("client.heartbeat_stale_ms").is_zero() {
+        return false;
+    }
+    let supervised = [health::starts::reason("launchd"), health::starts::reason("systemd")];
+    if health::starts::last_trigger().is_none_or(|t| supervised.contains(&t.as_str())) {
+        return false; // a supervised daemon is judged by the client path only
+    }
+    let Some((why, confirmed)) = stale_heartbeat() else { return false };
+    confirmed && end_hung_daemon(cfg, &why, "supervisor").is_some()
 }
 
 /// Log a client-side failure; the state dir may not exist yet (no daemon ever ran here), and the event must still be on record.

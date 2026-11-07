@@ -626,10 +626,13 @@ pub fn run_child(o: &Opts) -> Run {
     for (k, v) in o.envs {
         cmd.env(k, v);
     }
-    // SAFETY: the closure only calls setrlimit (async-signal-safe): the engine must not inherit the launcher's CPU limit.
+    // SAFETY: the closure only calls setrlimit and pthread_sigmask (both async-signal-safe): the engine must not inherit the
+    // launcher's CPU limit, nor its blocked HUP/INT/TERM (the launcher takes those with a sigwait thread; a blocked mask would pass
+    // through the engine client to the daemon it starts, which then ignores `kill`: SE-A2 finding L, shown with a probe child).
     unsafe {
         cmd.pre_exec(|| {
             limits::restore_cpu_limit();
+            crate::launcher::unblock_signals();
             Ok(())
         });
     }
@@ -905,5 +908,50 @@ mod loadable_tests {
         assert!(!loadable(&w("short", b"#")));
         assert!(!loadable(&d.join("missing").display().to_string()));
         assert!(loadable("ls"), "a bare name is left to PATH lookup");
+    }
+}
+
+#[cfg(test)]
+mod signal_mask_tests {
+    use super::*;
+
+    /// The child must start with HUP/INT/TERM deliverable even when the launcher has them blocked (it does, for its sigwait thread):
+    /// the child sends itself TERM and has a trap for it; a blocked mask would leave the signal pending and the trap would never run.
+    #[test]
+    fn a_child_does_not_inherit_the_launchers_blocked_signals() {
+        // the pre_exec hook restores the CPU limit the launcher recorded; record this process's, as the launcher does at start
+        assert!(limits::set_cpu_hard(3600));
+        // SAFETY: signal-set calls on local sets, on this test's own thread only (the child inherits the mask of the spawning thread).
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGTERM);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        }
+        let argv = vec!["/bin/sh".to_string(), "-c".to_string(), "trap 'exit 7' TERM; kill -TERM $$; sleep 1; exit 0".to_string()];
+        let r = run_child(&Opts {
+            argv: &argv,
+            envs: &[],
+            env_remove: &[],
+            feed: Feed::memory(b"", Duration::from_millis(500), 4096),
+            budget: Duration::from_secs(10),
+            wait_file: None,
+            done_file: None,
+            slow_max: Duration::ZERO,
+            grace: Duration::from_millis(100),
+            strict_group: true,
+            out_cap: 4096,
+            err_cap: 4096,
+            retry: Retry { max: 0, base_ms: 1, cap_ms: 1, jitter_pct: 0 },
+            drain: Duration::from_millis(200),
+            reaper: None,
+        });
+        let shown = match &r {
+            Run::Exited { code, .. } => format!("exited {code}"),
+            Run::TimedOut => "timed out".to_string(),
+            Run::GroupAlive => "group alive".to_string(),
+            Run::SpawnFailed { errno } => format!("spawn failed {errno:?}"),
+        };
+        assert!(matches!(r, Run::Exited { code: 7, .. }), "TERM must reach a child the launcher started: {shown}");
     }
 }
