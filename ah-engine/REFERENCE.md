@@ -762,6 +762,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `install.cpu_x86_name` | `x86_64` |  |  | The architecture part of the release triple for x86. |
 | `install.curl_cmd` | `14 items` |  |  | The download command. Placeholders: {connect}, {max_time}, {max_size}, {out}, {url}. |
 | `install.curl_cmd_test` | `9 items` |  |  | Test-only form of the download command (http and file URLs allowed); used only with the test flag. |
+| `install.defaults_probe_s` | `3` |  |  | Seconds the defaults probe may run. A probe that does not finish in time is not taken as a failure: the notice stays silent. |
+| `install.defaults_probe_verb` | `config` |  |  | The engine verb hooks/install.sh runs, before it tells the session that the guards are not running, when a defaults.error file is present: it loads this plugin's defaults, is read-only, and exits non-zero only when they cannot be loaded. A stale defaults.error (the engine rewrites it at every failure and never removes it) with a passing probe says nothing. |
 | `install.dir_lock` | `bootstrap.lock` |  |  | Directory (inside the state directory) that keeps two installers from downloading at once. |
 | `install.explicit_fail_exit` | `1` |  |  | Exit code of an explicit `ah-hook install` (not --auto, with install.explicit_ignores_retry on) that did not install: a failure, or a skip other than 'already current'. |
 | `install.explicit_ignores_retry` | `1` |  |  | 1 (default): an explicit `ah-hook install` (without --auto) ignores the retry window of the last failed automatic attempt, prints why it failed on stderr (msg.install_failed) and exits non-zero on a failure. 0: as before (silent, exit 0, skipped for install.retry_s after an attempt). |
@@ -771,7 +773,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `install.file_log` | `bootstrap.log` |  |  | Install log, inside the state directory. |
 | `install.file_marker` | `bootstrap.installed` |  |  | Marker of what the installer put in place: <version> <asset sha256> <engine sha256> [<ah-hook sha256>]. A binary that does not match it (a local build) is never overwritten. |
 | `install.file_notice` | `install.notice` |  |  | Holds the id of the session that already got the one notice of hooks/install.sh (inside the state directory). |
-| `install.file_notice_log` | `install-notices.log` |  |  | Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory; the counters install_notice_json read it. |
+| `install.file_notice_log` | `install-notices.log` |  |  | Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory. Nothing reads it yet (it is not ingested into the telemetry counters); it is a record for a person or a later change to read. |
 | `install.file_stale_notice` | `stale-engine-hook.notice` |  |  | Holds the process id of the host process that already got the stale-engine notice from hooks/install.sh (inside the state directory), so the notice shows once per host process, not at every session start event. |
 | `install.kill_grace_s` | `2` |  | s | How long a timed-out command gets after TERM before it is killed. |
 | `install.libc_default` | `gnu` |  |  | The libc part of the Linux triple when musl is not detected. |
@@ -6515,6 +6517,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.hook_files` | `7 items` |  |  | The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment. Relative paths cover the current project. |
 | `doctor_l.hooks_claude_rel` | `hooks/hooks.json` |  |  | Claude's hooks file, relative to the plugin root. |
 | `doctor_l.hooks_codex_rel` | `codex/hooks/hooks.json` |  |  | Codex's hooks file, relative to the plugin root. |
+| `doctor_l.host_cache_marks` | `/.claude/plugins/cache/` |  |  | A hooks file whose path holds one of these is a host cache copy: judged only when it is in a registered installPath or the running plugin root; any other is reported as information (an old version dir an upgrade left behind). |
 | `doctor_l.install_health_fail` | `1` |  |  | 1 = a failed install-health check (old-form hook commands, Node on an entry path, extra shell files, a bad launcher shim, a missing thin client) fails the doctor; 0 = it only warns. |
 | `doctor_l.kill_grace_s` | `1` |  | s | How long a timed-out command the doctor ran gets after TERM before it is killed. |
 | `doctor_l.launcher_health_with_engine` | `1` |  |  | 1 (default): when ah-hook doctor hands over to the engine's doctor it first runs its own install-health checks (Node entries in the hooks files, Node launchers in ~/.anti-hall/bin, the retired statusLine, the client binary) and shows them only when they find something; a failing check keeps the exit code at 1. 0: the engine's doctor alone. |
@@ -6533,6 +6536,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.msg_health_hooks_ok` | `{file}: every hook command is the direct form` |  |  | Placeholder: {file}. |
 | `doctor_l.msg_health_hooks_old` | `{file} still runs {n} hook command(s) through the retired shell wrapper (firs...` |  |  | Placeholders: {file}, {n}, {first}. |
 | `doctor_l.msg_health_node_entry` | `{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: in ...` |  |  | Placeholders: {file}, {n}, {first}. |
+| `doctor_l.msg_health_other_cache` | `{n} older anti-hall copy(ies) in the host's plugin cache are not the register...` |  |  | Information line. Placeholders: {n}, {first}. |
 | `doctor_l.msg_health_shim_bad` | `{path} is a retired Node launcher, not an sh shim for ah-hook (first line: {f...` |  |  | Placeholders: {path}, {first}. |
 | `doctor_l.msg_health_shims_ok` | `{n} launcher shim(s) in {dir} are sh shims` |  |  | Placeholders: {n}, {dir}. |
 | `doctor_l.msg_health_shipped_sh` | `the plugin ships {n} shell file(s) besides hooks/install.sh (first: {first}) ...` |  |  | Placeholders: {n}, {first}. |
@@ -6558,6 +6562,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.probe_defaults_load` | `1` |  |  | 1 (default): before ah-hook doctor hands over to the engine's doctor it also runs a verb that loads this plugin's defaults (doctor_l.defaults_probe_cmd): an engine that answers `version` but cannot load them (a plugin update it predates) is reported as such, and the built-in diagnosis runs instead. 0: only `version` is probed. |
 | `doctor_l.probe_prefix` | `.doctor-probe-` |  |  | Prefix of the scratch file the doctor creates (and removes) to test that a directory is writable. |
 | `doctor_l.ps_cmd` | `ps, -p, {pid}, -o, command=` |  |  | The command that prints the command line of one process. Placeholder: {pid}. |
+| `doctor_l.registry_key_prefix` | `anti-hall@` |  |  | The keys of the host's installed-plugins registry that are anti-hall's; only the installPath of those is judged for Node entry paths among the host's cache copies. |
 | `doctor_l.run_s` | `5` |  |  | Hard limit for one command the doctor runs (the engine's version, git). |
 | `doctor_l.scan_skip_dirs` | `.git, node_modules` |  |  | Directories the scan for shell files does not enter. |
 | `doctor_l.shell_ext` | `sh` |  |  | File extension of a shell file. |

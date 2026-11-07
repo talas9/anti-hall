@@ -35,6 +35,8 @@ struct Doc<'a> {
     pass: u32,
     fail: u32,
     warn: u32,
+    /// Information rows the install-health block made that are shown even when nothing failed.
+    notes: u32,
     host_os: String,
     host_arch: String,
     os_name: String,
@@ -1116,6 +1118,7 @@ impl Doc<'_> {
             }
         }
         if other_n > 0 {
+            self.notes += 1;
             self.infol(
                 "x.health_other_cache",
                 &[("n", &other_n.to_string()), ("first", &other_first)],
@@ -1695,6 +1698,7 @@ pub fn run(
         pass: 0,
         fail: 0,
         warn: 0,
+        notes: 0,
         host_os,
         host_arch,
         os_name,
@@ -1755,8 +1759,9 @@ pub fn run(
             // statusLine, the client itself): they run here, and are shown only when they find something
             if s.num("doctor_l.launcher_health_with_engine") == 1 {
                 let before = d.fail + d.warn;
+                let notes = d.notes;
                 d.install_health();
-                if d.fail + d.warn > before {
+                if d.fail + d.warn > before || d.notes > notes {
                     print_out(&d.out);
                     if d.fail > 0 {
                         code_floor = 1;
