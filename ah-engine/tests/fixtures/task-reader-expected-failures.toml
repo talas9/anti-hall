@@ -1,0 +1,72 @@
+# Staged expected failures of the task-reader gate (plan rule 14 (e)). Each entry is a hand-written obligation cell of
+# tests/task_reader_open_set.rs that the base c2ebe24d gets WRONG (the cell text is the spec and never changes; only its enforcement is
+# staged). Semantics: a failing cell not listed here = NEW failure; a listed cell that passes = STALE (remove the entry in the lane's own
+# diff and report `XF transferred: case, owning lane, why it passes`); a `case` that is no cell of the corpus is refused.
+# Owners: XF-D1, XF-D4 -> W1-4; XF-D2 -> W1-5; XF-D3 -> W1-3; XF-G -> W1-6. The last W1 code lane finds this list empty and adds the
+# empty-list assertion to the loader (the file stays).
+
+[[decision]]
+case = "open|d1|unreadable_record_keeps_todowrite_tasks"
+defect = "XF-D1"
+lane = "W1-4"
+reason = "a pending store task 1 next to a record the store cannot read: the store is unsure, so TodoWrite task 2 must join the open set (GH 606 shape 1); the base returns {1}"
+
+[[decision]]
+case = "open|d1|junk_record_keeps_todowrite_tasks"
+defect = "XF-D1"
+lane = "W1-4"
+reason = "a pending store task 1 next to a record that is not JSON reads as unsure the same way (GH 606 shape 1, plan row W1-4: an unreadable or invalid record); the base returns {1}"
+
+[[decision]]
+case = "open|d4|unreadable_store_dir_is_not_allow"
+defect = "XF-D4"
+lane = "W1-4"
+reason = "a store directory that cannot be listed may hold a pending task and the transcript has no task: the Stop must not allow (GH 606 shape 4, impact: Stop can allow with work pending); the base allows"
+
+[[decision]]
+case = "open|d2|todowrite_pending_over_completed_store_task"
+defect = "XF-D2"
+lane = "W1-5"
+reason = "TodoWrite task 1 pending while the store holds task 1 completed, and TodoWrite task 2 in progress with no store record: both stay open (GH 606 shape 2, loss-free union); the base returns {}"
+
+[[decision]]
+case = "open|d3|named_list_pending_task"
+defect = "XF-D3"
+lane = "W1-3"
+reason = "the named list selected through CLAUDE_CODE_TASK_LIST_ID holds pending task 9: it is read (GH 606 shape 3); the base ignores it and allows"
+
+[[decision]]
+case = "open|g|failed_create_is_not_a_task"
+defect = "XF-G"
+lane = "W1-6"
+reason = "a TaskCreate whose tool_result is an error made no task; the base keeps its provisional toolu_ id open and blocks (GH 599)"
+
+[[decision]]
+case = "oblig|d1|unreadable_record_keeps_the_todowrite_task"
+defect = "XF-D1"
+lane = "W1-4"
+reason = "store task 1 + an unreadable record: TodoWrite task 2 is open, so a by-id spawn #2 is proven, the tracker states 2 open tasks and tasklist-guard computes over {1,2}; the base drops task 2"
+
+[[decision]]
+case = "oblig|d1|junk_record_keeps_the_todowrite_task"
+defect = "XF-D1"
+lane = "W1-4"
+reason = "as the unreadable-record cell with a record that is not JSON"
+
+[[decision]]
+case = "oblig|d2|todowrite_pending_over_completed_store_task"
+defect = "XF-D2"
+lane = "W1-5"
+reason = "TodoWrite tasks 1 (pending, store says completed) and 2 (in progress) stay open: ladder blocks, by-id spawns #1 and #2 are proven, tracker states 2; the base lets the store override"
+
+[[decision]]
+case = "oblig|d3|named_list_pending_task"
+defect = "XF-D3"
+lane = "W1-3"
+reason = "named-list task 9 is open: ladder blocks, by-id spawn #9 is proven, tracker states 1, tasklist-guard computes over {9}; the base ignores the list"
+
+[[decision]]
+case = "oblig|g|failed_create_is_not_a_task"
+defect = "XF-G"
+lane = "W1-6"
+reason = "a failed TaskCreate is not a task: ladder allows, hygiene counts only the task being created; the base counts the ghost toolu_ id"

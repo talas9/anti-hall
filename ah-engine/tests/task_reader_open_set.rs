@@ -91,6 +91,8 @@ enum Store {
     DupIdWithJunk,
     /// Consumers axis only: a completed task 1 next to a record that is not JSON.
     CompletedWithJunk,
+    /// Hand-written obligation cells only (W1-1F): one completed task 1 and nothing else.
+    CompletedOnly,
 }
 const STORES: [Store; 8] = [
     Store::Absent,
@@ -112,6 +114,9 @@ enum Named {
     SetWithList,
     /// Set, and no such directory.
     SetNoDir,
+    /// Hand-written obligation cells only (W1-1F): set to `team-list` (which has no directory), and ANOTHER list `other-list/` holds
+    /// task 9 (pending): a task of a list this session did not select.
+    SetOtherList,
 }
 const NAMEDS: [Named; 3] = [Named::Unset, Named::SetWithList, Named::SetNoDir];
 
@@ -132,6 +137,8 @@ enum Trans {
     CreateThenTodo,
     /// A TodoWrite (ids 1 and x), then TaskCreate #1 (result seen).
     TodoThenCreate,
+    /// Hand-written obligation cells only (W1-1F): a TaskCreate whose result is an error (`is_error`): the create failed, no task exists.
+    FailedCreate,
 }
 const TRANS: [Trans; 7] =
     [Trans::Missing, Trans::NoTasks, Trans::TodoWrite, Trans::TaskCreate, Trans::Unanswered, Trans::CreateThenTodo, Trans::TodoThenCreate];
@@ -257,6 +264,10 @@ fn rows_of(trans: Trans, extra: Rows) -> Vec<Value> {
             rows.push(todo(&[("1", "tw one", "pending"), ("x", "tw x", "pending")]));
             rows.extend(create(1, "tc late"));
         }
+        Trans::FailedCreate => {
+            rows.push(tool_use("toolu_failed", "TaskCreate", json!({"subject": "a create that failed"})));
+            rows.push(json!({"type": "user", "timestamp": "2026-10-06T12:00:01.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_failed", "is_error": true, "content": "Error: the task could not be created"}]}}));
+        }
     }
     match extra {
         Rows::Conv => {}
@@ -332,9 +343,13 @@ fn build(cell: &Cell, root: &Path) -> (PathBuf, PathBuf) {
             store_file(&dir, "1.json", "1", "completed");
             std::fs::write(dir.join("c.json"), "{not json").unwrap();
         }
+        Store::CompletedOnly => store_file(&dir, "1.json", "1", "completed"),
     }
     if cell.named == Named::SetWithList {
         store_file(&tasks.join(NAMED_LIST), "9.json", "9", "pending");
+    }
+    if cell.named == Named::SetOtherList {
+        store_file(&tasks.join("other-list"), "9.json", "9", "pending");
     }
     let t = root.join("t.jsonl");
     if cell.trans != Trans::Missing {
@@ -697,6 +712,8 @@ struct Decision {
     count: Option<u64>,
     /// The ids could not be recovered (tasklist-guard only).
     undecoded: bool,
+    /// Every message string the consumer produced (whole, not cut), for the hand-written obligation cells; not part of the golden.
+    full: String,
 }
 
 /// One case: a cell, plus what the pair-guard needs on top of it.
@@ -787,8 +804,13 @@ fn pair_cases() -> Vec<Case> {
 fn stalled_cases() -> Vec<Case> {
     let base = |store, trans| Cell { store, named: Named::Unset, trans, snap: Snap::None, rows: Rows::Conv, knobs: Knobs::new() };
     let mk = |key: &str, cell: Cell| Case { key: format!("tasks|{key}"), pre_ids: vec!["1", "2", "3"], ..plain_case(cell) };
-    let two = || vec![("1.json", store_rec("1", "in_progress", None)), ("2.json", store_rec("2", "in_progress", None)), ("3.json", store_rec("3", "pending", None))];
-    let three_todo = || todo_raw(json!([{"id": "1", "content": "a", "status": "in_progress"}, {"id": "2", "content": "b", "status": "in_progress"}, {"id": "3", "content": "c", "status": "in_progress"}]));
+    let two =
+        || vec![("1.json", store_rec("1", "in_progress", None)), ("2.json", store_rec("2", "in_progress", None)), ("3.json", store_rec("3", "pending", None))];
+    let three_todo = || {
+        todo_raw(
+            json!([{"id": "1", "content": "a", "status": "in_progress"}, {"id": "2", "content": "b", "status": "in_progress"}, {"id": "3", "content": "c", "status": "in_progress"}]),
+        )
+    };
     let mut out = Vec::new();
     let mut c = mk("two_in_progress_store", base(Store::Empty, Trans::TaskCreate));
     c.store_files = two();
@@ -840,7 +862,9 @@ fn agent_rows(agents: &[(&str, &str)]) -> Vec<Value> {
         let agent = format!("a{:015x}", i + 1);
         let input = json!({"description": description, "name": name, "prompt": "p", "run_in_background": true});
         out.push(json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_ag{i}"), "name": "Agent", "input": input}]}, "timestamp": ts}));
-        let text = format!("Async agent launched successfully. (internal metadata)\nagentId: {agent} (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/{agent}.output\n");
+        let text = format!(
+            "Async agent launched successfully. (internal metadata)\nagentId: {agent} (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/{agent}.output\n"
+        );
         out.push(json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": format!("toolu_ag{i}"), "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts}));
     }
     out
@@ -994,7 +1018,7 @@ fn head_of(text: &str) -> String {
 fn decision(v: &Option<Option<Verdict>>, home: &Path) -> Decision {
     let (kind, text) = verdict_text(v);
     let ids = if kind == Kind::Allow { BTreeSet::new() } else { ids_in(&format!("{text}\n{}", saved_details(home))) };
-    Decision { kind, reason: head_of(&text), ids, count: None, undecoded: false }
+    Decision { kind, reason: head_of(&text), ids, count: None, undecoded: false, full: format!("{text}\n{}", saved_details(home)) }
 }
 
 fn hook(name: &str, payload: &Value, event: &str, fx: &Fx) -> Option<Option<Verdict>> {
@@ -1016,6 +1040,7 @@ fn consumer_ladder(case: &Case, root: &Path) -> Decision {
         ids: BTreeSet::new(),
         count: None,
         undecoded: false,
+        full: String::new(),
     }
 }
 
@@ -1137,7 +1162,14 @@ fn consumer_tracker(case: &Case, root: &Path) -> Decision {
         let d: String = joined[at + "open tasks:".len()..].trim_start().chars().take_while(char::is_ascii_digit).collect();
         d.parse().ok()
     });
-    let d = Decision { kind, reason: if joined.is_empty() { head_of(&text) } else { head_of(&joined) }, ids: ids_in(&joined), count, undecoded: false };
+    let d = Decision {
+        kind,
+        reason: if joined.is_empty() { head_of(&text) } else { head_of(&joined) },
+        ids: ids_in(&joined),
+        count,
+        undecoded: false,
+        full: text.clone(),
+    };
     unlock(&fx.home);
     d
 }
@@ -1283,7 +1315,15 @@ fn the_consumers_of_the_task_reader_never_decide_less_than_the_base() {
     if std::env::var("AH_CONSUMERS_DUMP").is_ok() {
         for (case, ds) in &observed {
             for (name, d) in ds {
-                eprintln!("DUMP {} | {name} | {} | {:?} | {:?} | {:?}{}", case.key, d.kind.name(), d.reason, d.ids, d.count, if d.undecoded { " | UNDECODED" } else { "" });
+                eprintln!(
+                    "DUMP {} | {name} | {} | {:?} | {:?} | {:?}{}",
+                    case.key,
+                    d.kind.name(),
+                    d.reason,
+                    d.ids,
+                    d.count,
+                    if d.undecoded { " | UNDECODED" } else { "" }
+                );
             }
         }
     }
@@ -1320,7 +1360,9 @@ fn the_consumers_of_the_task_reader_never_decide_less_than_the_base() {
             let gd = g.get(name).unwrap_or_else(|| panic!("no golden decision {} / {name}", case.key));
             checked += 1;
             found.extend(violations(case, name, gd, got, &ghosts, &golden_open));
-            if got.kind.name() == gd["kind"].as_str().unwrap() && got.ids == gd["ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect() {
+            if got.kind.name() == gd["kind"].as_str().unwrap()
+                && got.ids == gd["ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect()
+            {
                 equal += 1;
             } else if got.kind > Kind::parse(gd["kind"].as_str().unwrap()) {
                 stricter += 1;
@@ -1336,4 +1378,454 @@ fn the_consumers_of_the_task_reader_never_decide_less_than_the_base() {
     assert!(found.is_empty(), "{} violation(s):\n{}", found.len(), found.join("\n"));
     let golden_total: usize = cells.values().map(|c| c.as_object().unwrap().len()).sum();
     assert_eq!(checked, golden_total, "the golden holds decisions the cases no longer produce");
+}
+
+// ===============================================================================================================================
+// ---- HAND-WRITTEN OBLIGATIONS (W1-1F, rule 14 (b)-(e)) -----------------------------------------------------------------------
+//
+// The two goldens above are CAPTURED on the base `c2ebe24d`, so they record the base's defects as the expected answer and can only be
+// held to a DIRECTION (never less blocking than the base). The cells below are the other half: each one is written by hand from the
+// spec (GH 606 shapes 1-4, GH 599, the pair-guard contract) and asserts the EXACT answer, whatever any build says.
+//
+//   * ALLOW cells (`*|allow|*`, rule 14 (b)): the correct answer is allow; a reader that blocks them has a false positive.
+//   * obligation cells (rule 14 (c)): the correct answer is a block (or an allow only a correct reader can prove), and a cell names the
+//     task ids and the message words that show the block is for the right reason (the task id, the agent that owns no task, ...).
+//   * XF cells (rule 14 (e)): cells the base gets wrong. Each is listed in `tests/fixtures/task-reader-expected-failures.toml` with the
+//     defect and the lane that removes the entry. A listed cell that fails is expected; a listed cell that PASSES is STALE (the entry
+//     must go); a cell that fails and is not listed is a NEW failure. A listed `case` that no cell has is refused.
+//   * ratchet (rule 14 (d)): a cell, once merged, is never removed or weakened.
+//
+// Two groups, one per axis: `open|...` (the reader's open set, the Rust ladder and the task-guard Stop) and `oblig|...` (the consumers).
+
+/// The expected-failure list.
+const XF_LIST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/task-reader-expected-failures.toml");
+
+#[derive(serde::Deserialize, Debug)]
+struct XfEntry {
+    case: String,
+    defect: String,
+    lane: String,
+    reason: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct XfList {
+    #[serde(default)]
+    decision: Vec<XfEntry>,
+}
+
+/// Which lane removes the entries of a defect (plan rule 14 (e) owners).
+const XF_OWNERS: [(&str, &str); 5] = [("XF-D1", "W1-4"), ("XF-D4", "W1-4"), ("XF-D2", "W1-5"), ("XF-D3", "W1-3"), ("XF-G", "W1-6")];
+
+/// Load the list and refuse a malformed or mistyped entry: a `case` that is no cell of the obligation corpus, a defect nobody owns, a
+/// lane that is not the defect's owner, a missing reason.
+fn load_xf() -> XfList {
+    let list: XfList =
+        toml::from_str(&std::fs::read_to_string(XF_LIST).expect("the expected-failure list")).expect("task-reader-expected-failures.toml parses");
+    let known = known_obligations();
+    let mut seen = BTreeSet::new();
+    for d in &list.decision {
+        assert!(known.contains(&d.case), "expected-failure list: `{}` is not a cell of the obligation corpus (a mistyped entry)", d.case);
+        assert!(seen.insert(d.case.clone()), "expected-failure list: `{}` is listed twice", d.case);
+        let owner =
+            XF_OWNERS.iter().find(|(def, _)| *def == d.defect).unwrap_or_else(|| panic!("expected-failure list: `{}`: unknown defect `{}`", d.case, d.defect));
+        assert_eq!(owner.1, d.lane, "expected-failure list: `{}`: defect {} belongs to lane {}", d.case, d.defect, owner.1);
+        assert!(!d.reason.trim().is_empty(), "expected-failure list: `{}` has no reason", d.case);
+    }
+    list
+}
+
+/// `compare_decisions` of `tests/no_node/expected.rs` (the same semantics, not shared: that file is the no_node binary's): a mismatching
+/// cell that is not listed is a NEW failure, a listed cell of this axis that matches is STALE.
+fn xf_problems(list: &XfList, prefix: &str, mismatched: &[(String, String)], checked: &[String]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (case, why) in mismatched {
+        if !list.decision.iter().any(|d| &d.case == case) {
+            problems.push(format!("NEW failure (not listed): `{case}`: {why}"));
+        }
+    }
+    for d in &list.decision {
+        if d.case.starts_with(prefix) && checked.contains(&d.case) && !mismatched.iter().any(|(c, _)| c == &d.case) {
+            problems.push(format!(
+                "STALE expected failure (the cell passes now, remove the entry and report `XF transferred`): `{}` ({} -> {})",
+                d.case, d.defect, d.lane
+            ));
+        }
+    }
+    problems
+}
+
+fn known_obligations() -> BTreeSet<String> {
+    open_obligations().into_iter().map(|o| o.name.to_string()).chain(consumer_obligations().into_iter().map(|(c, _)| c.key)).collect()
+}
+
+// ---- axis 1: the open set, the Rust ladder and the task-guard Stop ---------------------------------------------------------------
+
+struct OpenOblig {
+    name: &'static str,
+    cell: Cell,
+    /// The exact open set; `None`: the spec does not fix it.
+    open: Option<&'static [&'static str]>,
+    /// The task-guard Stop verdict: "block" or "allow".
+    stop: &'static str,
+    /// The Rust ladder, exactly; `None`: the spec does not fix it.
+    ladder: Option<bool>,
+}
+
+fn open_obligations() -> Vec<OpenOblig> {
+    let cell = |store, named, trans| Cell { store, named, trans, snap: Snap::None, rows: Rows::Conv, knobs: Knobs::new() };
+    let o = |name, cell, open, stop, ladder| OpenOblig { name, cell, open, stop, ladder };
+    vec![
+        // ---- ALLOW (rule 14 (b)): nothing is open, so nothing may block
+        o("open|allow|no_tasks_anywhere", cell(Store::Absent, Named::Unset, Trans::NoTasks), Some(&[]), "allow", Some(false)),
+        o("open|allow|only_a_completed_store_task", cell(Store::CompletedOnly, Named::Unset, Trans::NoTasks), Some(&[]), "allow", Some(false)),
+        o("open|allow|a_task_of_another_list_is_not_ours", cell(Store::Empty, Named::SetOtherList, Trans::NoTasks), Some(&[]), "allow", Some(false)),
+        o("open|hard|transcript_create_one_open_one_completed", cell(Store::Absent, Named::Unset, Trans::TaskCreate), Some(&["1"]), "block", Some(true)),
+        // ---- obligations that hold on the base (hard)
+        o("open|hard|store_tasks_pending_and_in_progress", cell(Store::NonEmpty, Named::Unset, Trans::NoTasks), Some(&["1", "3"]), "block", Some(true)),
+        o("open|hard|todowrite_without_a_store", cell(Store::Absent, Named::Unset, Trans::TodoWrite), Some(&["1", "2"]), "block", Some(true)),
+        // ---- XF-D1: a record the store could not read or parse makes the store UNSURE: the transcript's tasks join the open set
+        o(
+            "open|d1|unreadable_record_keeps_todowrite_tasks",
+            cell(Store::OneUnreadableRecord, Named::Unset, Trans::TodoWrite),
+            Some(&["1", "2"]),
+            "block",
+            Some(true),
+        ),
+        o("open|d1|junk_record_keeps_todowrite_tasks", cell(Store::OneJunkRecord, Named::Unset, Trans::TodoWrite), Some(&["1", "2"]), "block", Some(true)),
+        // ---- XF-D4: a store directory that cannot be listed may hold open work: the Stop must not allow (GH 606 shape 4)
+        o("open|d4|unreadable_store_dir_is_not_allow", cell(Store::UnreadableDir, Named::Unset, Trans::NoTasks), None, "block", None),
+        // ---- XF-D2: a pending TodoWrite task stays open when a store answers, also over a completed store task with the same id
+        o(
+            "open|d2|todowrite_pending_over_completed_store_task",
+            cell(Store::CompletedOnly, Named::Unset, Trans::TodoWrite),
+            Some(&["1", "2"]),
+            "block",
+            Some(true),
+        ),
+        // ---- XF-D3: the named list selected through the environment is read
+        o("open|d3|named_list_pending_task", cell(Store::Empty, Named::SetWithList, Trans::NoTasks), Some(&["9"]), "block", Some(true)),
+        // ---- XF-G: a TaskCreate whose result is an error made no task
+        o("open|g|failed_create_is_not_a_task", cell(Store::Absent, Named::Unset, Trans::FailedCreate), Some(&[]), "allow", Some(false)),
+    ]
+}
+
+#[test]
+fn the_reader_meets_the_hand_written_open_set_obligations() {
+    let list = load_xf();
+    let base = scratch("open-oblig");
+    let obligations = open_obligations();
+    let mut mismatched: Vec<(String, String)> = Vec::new();
+    for (i, ob) in obligations.iter().enumerate() {
+        let root = base.join(i.to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        let got = read_cell(&ob.cell, &root);
+        if std::env::var("AH_OBL_DUMP").is_ok() {
+            eprintln!("OBL-DUMP {} | open={:?} stop={} ladder={:?} unsure={} store={}", ob.name, got.open, got.stop, got.ladder, got.unsure, got.store);
+        }
+        let mut why = Vec::new();
+        if let Some(want) = ob.open {
+            let want: BTreeSet<String> = want.iter().map(|s| s.to_string()).collect();
+            if got.open != want {
+                why.push(format!("open set {:?}, wanted {want:?}", got.open));
+            }
+        }
+        if got.stop != ob.stop {
+            why.push(format!("task-guard Stop is `{}`, wanted `{}`", got.stop, ob.stop));
+        }
+        if let Some(l) = ob.ladder
+            && got.ladder != Some(l)
+        {
+            why.push(format!("ladder is {:?}, wanted {:?}", got.ladder, Some(l)));
+        }
+        if !why.is_empty() {
+            mismatched.push((ob.name.to_string(), why.join("; ")));
+        }
+    }
+    std::fs::remove_dir_all(&base).ok();
+    let checked: Vec<String> = obligations.iter().map(|o| o.name.to_string()).collect();
+    eprintln!("open-set obligations: {} cells, {} failing as listed or not", checked.len(), mismatched.len());
+    let problems = xf_problems(&list, "open|", &mismatched, &checked);
+    assert!(problems.is_empty(), "{} problem(s):\n{}", problems.len(), problems.join("\n"));
+}
+
+// ---- axis 2: the consumers ---------------------------------------------------------------------------------------------------
+
+/// What one consumer must answer in an obligation cell.
+struct Want {
+    /// `ladder`, `pair_stop`, `pair_post`, `pair_pre:<id>`, `tasklist_stop`, `tracker_prompt`, `hygiene_post`, `compact_advice`.
+    consumer: &'static str,
+    kind: Kind,
+    /// The exact task ids the decision names; `None`: not fixed by the spec.
+    ids: Option<&'static [&'static str]>,
+    /// The exact count the decision states; `None`: not fixed.
+    count: Option<u64>,
+    /// Words the whole message must carry (the agent that owns no task, the reason a spawn cannot be paired).
+    says: &'static [&'static str],
+}
+
+fn want(consumer: &'static str, kind: Kind) -> Want {
+    Want { consumer, kind, ids: None, count: None, says: &[] }
+}
+
+impl Want {
+    fn ids(mut self, ids: &'static [&'static str]) -> Self {
+        self.ids = Some(ids);
+        self
+    }
+    fn count(mut self, n: u64) -> Self {
+        self.count = Some(n);
+        self
+    }
+    fn says(mut self, words: &'static [&'static str]) -> Self {
+        self.says = words;
+        self
+    }
+}
+
+/// An obligation case: the cell, the files and agents it needs, and the consumers it asks.
+fn oblig(
+    name: &str,
+    cell: Cell,
+    agents: Vec<(&'static str, &'static str)>,
+    store_files: Vec<(&'static str, String)>,
+    rows: Vec<Value>,
+    wants: Vec<Want>,
+) -> (Case, Vec<Want>) {
+    let mut groups: Vec<&'static str> = Vec::new();
+    let mut pre_ids: Vec<&'static str> = Vec::new();
+    for w in &wants {
+        let group = match w.consumer.split(':').next().unwrap() {
+            "ladder" => "ladder",
+            "pair_stop" => "pair_stop",
+            "pair_post" => "pair_post",
+            "pair_pre" => {
+                pre_ids.push(w.consumer.split(':').nth(1).unwrap());
+                "pair_pre"
+            }
+            "tasklist_stop" => "tasklist",
+            "tracker_prompt" => "tracker",
+            "hygiene_post" => "hygiene",
+            "compact_advice" => "compact",
+            other => panic!("unknown consumer {other}"),
+        };
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    (Case { key: name.to_string(), cell, groups, agents, store_files, unreadable: Vec::new(), rows, pre_ids }, wants)
+}
+
+fn consumer_obligations() -> Vec<(Case, Vec<Want>)> {
+    let cell = |store, named, trans| Cell { store, named, trans, snap: Snap::None, rows: Rows::Conv, knobs: Knobs::new() };
+    let owned = |id: &str, status: &str, owner: &str| store_rec(id, status, Some(owner));
+    let status_123 = || vec![todo_raw(json!([{"id": "1", "content": "odd status", "status": 123}, {"id": "2", "content": "fine", "status": "pending"}]))];
+    vec![
+        // ---- ALLOW (rule 14 (b))
+        oblig(
+            "oblig|allow|nothing_open_nothing_running",
+            cell(Store::CompletedOnly, Named::Unset, Trans::NoTasks),
+            vec![],
+            vec![],
+            vec![],
+            vec![want("ladder", Kind::Allow), want("pair_stop", Kind::Allow), want("hygiene_post", Kind::Allow)],
+        ),
+        oblig(
+            "oblig|allow|the_running_agent_owns_an_open_task",
+            cell(Store::Empty, Named::Unset, Trans::NoTasks),
+            vec![AGENT],
+            vec![("1.json", owned("1", "pending", AGENT.1))],
+            vec![],
+            vec![
+                want("ladder", Kind::Block),
+                want("pair_stop", Kind::Allow),
+                want("pair_post", Kind::Allow),
+                want("pair_pre:1", Kind::Block).ids(&["1"]).says(&["no name"]),
+            ],
+        ),
+        oblig(
+            "oblig|allow|a_task_of_another_list_is_not_ours",
+            cell(Store::Empty, Named::SetOtherList, Trans::NoTasks),
+            vec![],
+            vec![],
+            vec![],
+            vec![want("ladder", Kind::Allow), want("pair_stop", Kind::Allow), want("hygiene_post", Kind::Allow)],
+        ),
+        oblig(
+            "oblig|allow|an_open_ownerless_task_proves_the_by_id_spawn",
+            cell(Store::Empty, Named::Unset, Trans::NoTasks),
+            vec![],
+            vec![("1.json", store_rec("1", "pending", None))],
+            vec![],
+            vec![want("pair_pre:1", Kind::Allow).ids(&[])],
+        ),
+        // ---- obligations that hold on the base (hard): the block names the right task / agent
+        oblig(
+            "oblig|hard|an_agent_with_no_task_blocks_the_stop",
+            cell(Store::Empty, Named::Unset, Trans::NoTasks),
+            vec![("job b", "worker-b")],
+            vec![("1.json", owned("1", "pending", "worker-a"))],
+            vec![],
+            vec![
+                want("pair_stop", Kind::Block).says(&["worker-b", "owns no task"]),
+                want("pair_post", Kind::Nudge).says(&["worker-b", "no open task names it"]),
+                want("pair_pre:1", Kind::Block).ids(&["1"]).says(&["no name"]),
+            ],
+        ),
+        // every consumer reads the same list: store tasks 1 (pending), 2 (completed), 3 (in progress); worker-alpha is running and owns none
+        oblig(
+            "oblig|hard|every_consumer_reads_the_store_list",
+            cell(Store::NonEmpty, Named::Unset, Trans::NoTasks),
+            vec![AGENT],
+            vec![],
+            vec![],
+            vec![
+                want("ladder", Kind::Block),
+                want("pair_stop", Kind::Block).says(&["worker-alpha", "owns no task"]),
+                want("pair_post", Kind::Nudge).says(&["worker-alpha", "no open task names it"]),
+                want("pair_pre:1", Kind::Allow),
+                want("pair_pre:2", Kind::Block),
+                want("pair_pre:3", Kind::Allow),
+                want("tasklist_stop", Kind::Block).ids(&["1", "3"]),
+                want("tracker_prompt", Kind::Nudge).count(2),
+                // 1 pending + 3 in progress + the task just created
+                want("hygiene_post", Kind::Nudge).count(3),
+                // task 2 is finished and still in the list
+                want("compact_advice", Kind::Block).count(1),
+            ],
+        ),
+        // The #445 stage A acceptance shape (GH 606 / W1-4, M5): a worker-owned pending task, one malformed store record and a TodoWrite
+        // item with `status: 123`. The store-derived pairing facts (task 1 is owned by worker-a, worker-b owns none) must survive the
+        // uncertain transcript: the base blocks and names them; stage A (369edde3) threw the whole set away and allowed.
+        oblig(
+            "oblig|hard|pairing_facts_survive_an_uncertain_transcript",
+            cell(Store::Empty, Named::Unset, Trans::NoTasks),
+            vec![("job b", "worker-b"), ("job a", "worker-a")],
+            vec![("1.json", owned("1", "pending", "worker-a")), ("2.json", "{not json".to_string())],
+            status_123(),
+            vec![
+                want("pair_stop", Kind::Block).says(&["worker-b", "owns no task"]),
+                want("pair_post", Kind::Nudge).says(&["worker-b", "no open task names it"]),
+                want("pair_pre:1", Kind::Block).ids(&["1"]).says(&["no name"]),
+            ],
+        ),
+        // ---- XF-D1: an unreadable / malformed record makes the store UNSURE: the transcript's open tasks join (task 2 is a TodoWrite task)
+        oblig(
+            "oblig|d1|unreadable_record_keeps_the_todowrite_task",
+            cell(Store::OneUnreadableRecord, Named::Unset, Trans::TodoWrite),
+            vec![],
+            vec![],
+            vec![],
+            vec![want("pair_pre:2", Kind::Allow), want("tracker_prompt", Kind::Nudge).count(2), want("tasklist_stop", Kind::Block).ids(&["1", "2"])],
+        ),
+        oblig(
+            "oblig|d1|junk_record_keeps_the_todowrite_task",
+            cell(Store::OneJunkRecord, Named::Unset, Trans::TodoWrite),
+            vec![],
+            vec![],
+            vec![],
+            vec![want("pair_pre:2", Kind::Allow), want("tracker_prompt", Kind::Nudge).count(2), want("tasklist_stop", Kind::Block).ids(&["1", "2"])],
+        ),
+        // ---- XF-D2: a pending TodoWrite task stays open next to a store that answers, also over a completed store task of the same id
+        oblig(
+            "oblig|d2|todowrite_pending_over_completed_store_task",
+            cell(Store::CompletedOnly, Named::Unset, Trans::TodoWrite),
+            vec![],
+            vec![],
+            vec![],
+            vec![
+                want("ladder", Kind::Block),
+                want("pair_pre:1", Kind::Allow),
+                want("pair_pre:2", Kind::Allow),
+                want("tracker_prompt", Kind::Nudge).count(2),
+                want("tasklist_stop", Kind::Block).ids(&["1", "2"]),
+            ],
+        ),
+        // ---- XF-D3: the named list selected through the environment holds task 9, pending
+        oblig(
+            "oblig|d3|named_list_pending_task",
+            cell(Store::Empty, Named::SetWithList, Trans::NoTasks),
+            vec![],
+            vec![],
+            vec![],
+            vec![
+                want("ladder", Kind::Block),
+                want("pair_pre:9", Kind::Allow),
+                want("tracker_prompt", Kind::Nudge).count(1),
+                want("tasklist_stop", Kind::Block).ids(&["9"]),
+            ],
+        ),
+        // ---- XF-G: a TaskCreate whose result is an error made no task: nothing is open
+        oblig(
+            "oblig|g|failed_create_is_not_a_task",
+            cell(Store::Absent, Named::Unset, Trans::FailedCreate),
+            vec![],
+            vec![],
+            vec![],
+            vec![want("ladder", Kind::Allow), want("pair_stop", Kind::Allow), want("hygiene_post", Kind::Allow)],
+        ),
+    ]
+}
+
+fn check_want(w: &Want, got: &Decision) -> Vec<String> {
+    let mut why = Vec::new();
+    if got.kind != w.kind {
+        why.push(format!("{}: `{}` (\"{}\"), wanted `{}`", w.consumer, got.kind.name(), got.reason, w.kind.name()));
+        return why;
+    }
+    if let Some(ids) = w.ids {
+        let ids: BTreeSet<String> = ids.iter().map(|s| s.to_string()).collect();
+        if got.ids != ids {
+            why.push(format!("{}: names {:?}, wanted {ids:?}", w.consumer, got.ids));
+        }
+    }
+    if let Some(n) = w.count
+        && got.count != Some(n)
+    {
+        why.push(format!("{}: states {:?} task(s), wanted {n}", w.consumer, got.count));
+    }
+    for word in w.says {
+        if !got.full.contains(word) {
+            why.push(format!("{}: the message lacks \"{word}\" (\"{}\")", w.consumer, got.reason));
+        }
+    }
+    why
+}
+
+#[test]
+fn the_consumers_meet_the_hand_written_obligations() {
+    let list = load_xf();
+    let base = scratch("consumers-oblig");
+    let obligations = consumer_obligations();
+    let mut mismatched: Vec<(String, String)> = Vec::new();
+    for (i, (case, wants)) in obligations.iter().enumerate() {
+        let root = base.join(i.to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        let got = run_case(case, &root);
+        let mut why = Vec::new();
+        for w in wants {
+            let d = got.get(w.consumer).unwrap_or_else(|| panic!("{}: consumer {} was not run", case.key, w.consumer));
+            if std::env::var("AH_OBL_DUMP").is_ok() {
+                eprintln!("OBL-DUMP {} | {} | {} | {:?} | {:?} | {:?}", case.key, w.consumer, d.kind.name(), d.reason, d.ids, d.count);
+            }
+            why.extend(check_want(w, d));
+        }
+        if !why.is_empty() {
+            mismatched.push((case.key.clone(), why.join("; ")));
+        }
+    }
+    std::fs::remove_dir_all(&base).ok();
+    let checked: Vec<String> = obligations.iter().map(|(c, _)| c.key.clone()).collect();
+    eprintln!("consumer obligations: {} cells, {} failing as listed or not", checked.len(), mismatched.len());
+    let problems = xf_problems(&list, "oblig|", &mismatched, &checked);
+    assert!(problems.is_empty(), "{} problem(s):\n{}", problems.len(), problems.join("\n"));
+}
+
+/// The list itself: it is loaded by both tests above, and this one pins what it must be.
+#[test]
+fn the_expected_failure_list_is_well_formed() {
+    let list = load_xf();
+    assert!(!list.decision.is_empty(), "the list holds the staged cells (the empty-list assertion belongs to the last W1 code lane)");
+    let owners: BTreeSet<&str> = list.decision.iter().map(|d| d.defect.as_str()).collect();
+    assert!(owners.iter().all(|d| XF_OWNERS.iter().any(|(x, _)| x == d)));
 }
