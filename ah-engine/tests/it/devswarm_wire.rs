@@ -618,9 +618,12 @@ fn a_disabled_advisory_does_not_replay_the_edges_count_them_or_rewrite_the_marke
     }
     assert_eq!(std::fs::metadata(&marker).unwrap().modified().unwrap(), old, "the marker was written once, not at every prompt");
     assert_eq!(activity_line_counts(), (0, 0), "nothing was shown, so nothing is counted, at any of the 3 prompts");
-    // turned back on, the edges are not told late: they were passed while it was off
+    // turned back on, the edges are not replayed: the net change (working -> stuck) was folded into the held map while it was off
+    // and is told once, not once per prompt
     ah_engine::defaults::set_overlay(&[]);
-    assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+    let t = consume::advisory(&rt, &w.state, s, now()).expect("the net change that happened while it was off is told once");
+    assert!(t.contains("stuck"), "{t}");
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "and only once");
 }
 
 /// The marker file of `session` in a world.
@@ -638,8 +641,8 @@ fn a_change_held_before_the_switch_went_off_is_not_told_stale_when_it_is_back_on
     // the session was told stuck, then the workspace went working and that change is held (the dwell); the dwell is long past
     let g = rt.current().generation;
     let (act, pend) = (ah_engine::defaults::text("devswarm_wire.advisory_act_key"), ah_engine::defaults::text("devswarm_wire.advisory_pending_key"));
-    let held = json!({"ws-1": {"from": "stuck", "to": "working", "at": now() - 2_000_000, "n": 1}});
-    write(&marker_path(&w, s), &json!({"gen": g, act: {"ws-1": now() - 3_000_000}, pend: held}));
+    let held = json!({"prim": {"from": "stuck", "to": "working", "at": now() - 2_000_000, "n": 1}});
+    write(&marker_path(&w, s), &json!({"gen": g, act: {"prim": now() - 3_000_000}, pend: held}));
     // while the advisory is off the workspace goes stuck again (working -> stuck is passed, not told)
     ah_engine::defaults::set_overlay(&[("devswarm_wire.advisory_enabled", json!(false))]);
     let app = sources::read_app(&w.db).unwrap();
@@ -648,7 +651,32 @@ fn a_change_held_before_the_switch_went_off_is_not_told_stale_when_it_is_back_on
     // back on, the dwell long over: the workspace IS stuck, so nothing may say "stuck -> working"
     ah_engine::defaults::set_overlay(&[]);
     let t = consume::advisory(&rt, &w.state, s, now());
-    assert!(t.is_none(), "a stale held change was replayed: {t:?}");
+    // the held "stuck -> working" folded with "working -> stuck" is nothing; the other workspace's own net change is told
+    assert!(t.as_deref().is_some_and(|x| !x.contains("Primary") && !x.contains("stuck -> working")), "a stale held change was replayed: {t:?}");
+}
+
+#[test]
+fn a_net_change_held_across_an_off_on_switch_is_still_told() {
+    let w = world("adv-net-held");
+    let rt = rt(&w);
+    step(&rt, &w, Cause::Startup); // working
+    let s = "sess-net";
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "the first look records the generation");
+    // the workspace goes stuck; the session was told "working" long ago and the working -> stuck change is held (dwell)
+    let app = sources::read_app(&w.db).unwrap();
+    assert!(!rt.run(Cause::Event, &Inputs { app: Some(&app), probe: &StaleProbe, gh: None, now: now() }, None).edges.is_empty());
+    let g = rt.current().generation;
+    let (act, pend) = (ah_engine::defaults::text("devswarm_wire.advisory_act_key"), ah_engine::defaults::text("devswarm_wire.advisory_pending_key"));
+    let held = json!({"prim": {"from": "working", "to": "stuck", "at": now() - 2_000_000, "n": 1}});
+    write(&marker_path(&w, s), &json!({"gen": g, act: {"prim": now() - 3_000_000}, pend: held}));
+    // off: nothing is told and the held change is kept, not dropped
+    ah_engine::defaults::set_overlay(&[("devswarm_wire.advisory_enabled", json!(false))]);
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+    // back on, the dwell over: the user hears the net change
+    ah_engine::defaults::set_overlay(&[]);
+    let t = consume::advisory(&rt, &w.state, s, now()).expect("the held net change survived the off/on switch");
+    assert!(t.contains("stuck"), "{t}");
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "and is told once");
 }
 
 #[test]

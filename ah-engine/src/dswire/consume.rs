@@ -132,6 +132,20 @@ fn settle_activity(
     (out, dropped, told, held_now)
 }
 
+/// The held map after `edges` are folded in without telling anything: per workspace the first `from` and the last `to`; a net
+/// no-change leaves nothing held.
+fn fold_held(edges: &[Edge], held: &BTreeMap<String, Held>) -> BTreeMap<String, Held> {
+    let mut net = held.clone();
+    for e in edges.iter().filter(|e| e.kind == EdgeKind::Activity) {
+        let slot = net.entry(e.ws.clone()).or_insert_with(|| Held { from: e.from.clone(), to: e.to.clone(), at_ms: e.at_ms, count: 0 });
+        slot.to = e.to.clone();
+        slot.at_ms = e.at_ms;
+        slot.count += 1;
+    }
+    net.retain(|_, h| h.from != h.to);
+    net
+}
+
 fn prune_old(dir: &Path, now: i64) {
     let age = defaults::num("devswarm_wire.advisory_prune_ms");
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -160,7 +174,8 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     let marker = path.as_deref().map(read_marker).unwrap_or_default();
     let seen = marker.gen_seen.filter(|_| path.is_some());
     let dwell_ms = defaults::num("devswarm_rt.activity_min_dwell_s") as i64 * 1000;
-    let (edges, dropped, mut told, mut held) = settle_activity(seen.map(|s| rt.edges_since(s)).unwrap_or_default(), &marker.told, &marker.held, now, dwell_ms);
+    let raw_edges = seen.map(|s| rt.edges_since(s)).unwrap_or_default();
+    let (edges, dropped, mut told, mut held) = settle_activity(raw_edges.clone(), &marker.told, &marker.held, now, dwell_ms);
     // per-workspace pruning: a workspace the (readable) state no longer knows keeps no told time and nothing held
     let snap = rt.current();
     if snap.app_readable {
@@ -169,10 +184,14 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     }
     let enabled = rt.mode() == Mode::On && defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false);
     if !enabled {
-        // nothing is told, so nothing is recorded as told or held; the marker only moves to the current generation (below)
-        // (a change held before the switch went off is stale by the time it is back on: it is not carried over, or it would be told
-        // after the dwell as a change the workspace has since undone)
-        (told, held) = (marker.told.clone(), BTreeMap::new());
+        // nothing is told, so no told time moves; the activity edges seen meanwhile are FOLDED into what is held (not dropped, not
+        // told), so flips cancel (stuck -> working -> stuck = nothing) and a net change survives to be told after the dwell once the
+        // advisory is back on, versus what the session was last told
+        told = marker.told.clone();
+        held = fold_held(&raw_edges, &marker.held);
+        if snap.app_readable {
+            held.retain(|ws, _| snap.workspaces.contains_key(ws));
+        }
     }
     let edges: Vec<Value> = edges.iter().map(|e| json!({"ws": e.ws, "label": label(rt, &e.ws), "kind": e.kind.as_str(), "from": e.from, "to": e.to})).collect();
     let payload = json!({
@@ -195,7 +214,7 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     // never moves it, so the marker follows the state's generation: the edges it saw are not replayed at every prompt.
     let mark = ans.get("mark").and_then(Value::as_u64).or_else(|| match enabled {
         true => (told != marker.told || held != marker.held).then_some(seen).flatten(),
-        false => seen.filter(|s| *s != gen_now || !marker.held.is_empty()).map(|_| gen_now),
+        false => seen.filter(|s| *s != gen_now || held != marker.held).map(|_| gen_now),
     });
     if let Some(mark) = mark {
         write_seen(path.as_deref()?, mark, &told, &held, now)?;
