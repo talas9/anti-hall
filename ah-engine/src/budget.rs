@@ -219,6 +219,8 @@ impl State {
             "cpu_over_windows": self.over_windows,
             "mem_mb": self.mem_kb / 1024,
             "mem_budget_mb": mem_budget_mb,
+            "mem_target_mb": crate::defaults::num("diagnostics.mem_target_mb"),
+            "over_target": crate::defaults::num("diagnostics.mem_target_mb") > 0 && self.mem_kb / 1024 > crate::defaults::num("diagnostics.mem_target_mb"),
             "breached": breached,
             "breaches": self.breaches,
             "cpu_hard_budget_pct": self.hard_limit_pct,

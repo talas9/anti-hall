@@ -1977,7 +1977,11 @@ atomic load and its arguments are not evaluated.
 `daemon.cpu_check_ms` windows) and `diagnostics.budget_mem_mb` (100 MB, the figure `daemon.mem_metric` selects) are the daemon's
 resource budgets; 0 turns one off. The daemon reports a breach when it begins and when it ends in the health log (kind
 `budget`, code `cpu` or `mem`), in `status --json` (`budget`: the readings, the budgets, `breached`, `breaches`), and in every
-`daemon` health event (`cpu_permille`, `budget_breach`: bit 0 CPU, bit 1 memory). Reporting only: a breach changes nothing else.
+`daemon` health event (`cpu_permille`, `budget_breach`: bit 0 CPU, bit 1 memory). Reporting only: a breach changes nothing else. `diagnostics.mem_target_mb` (100 MB) is the
+memory target the footprint is read against: `status --json` shows it as `budget.mem_target_mb` with `budget.over_target`; nothing
+is enforced at it. SQLite allocates through the engine's own allocator (`storage.sqlite_use_global_allocator`, read at daemon
+start; `status --memory` shows `sqlite_global_allocator`), so a database burst's pages go back to the OS as they are freed instead
+of staying in the C library's zones.
 
 **Memory.** `ah-engine status --memory` gives the heap against RSS, the allocator's own figures, the memory budgets of every
 long-lived cache, and `components`: the sizes of the in-memory structures per subsystem (guard state, session counters, rate

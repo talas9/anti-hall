@@ -266,3 +266,9 @@ value = "pre-restore-"
 doc = "How long a restore waits for the daemon to stop and release its lock before it gives up without changing anything."
 value = 5000
 unit = "ms"
+
+[storage.sqlite_use_global_allocator]
+doc = "Whether SQLite allocates through the engine's own allocator (jemalloc, which gives freed pages back as they are freed) instead of the C library's, whose zones kept about 8 MB of freed pages after a SQLite burst. Read once at daemon start, before the first database opens; 0 leaves SQLite on the C library."
+value = 1
+min = 0
+max = 1
