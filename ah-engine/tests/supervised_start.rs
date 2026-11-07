@@ -96,3 +96,39 @@ fn an_unsupervised_daemon_exits_0_on_sigterm() {
     assert_eq!(wait_exit(&mut c), 0);
     ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
 }
+
+/// Make the start fail the same way every time: a regular file where the socket belongs ("unsafe_dir").
+fn poison_socket(r: &Path) {
+    std::fs::write(ah_engine::paths::socket_in(&r.join("eng")), b"not a socket").unwrap();
+}
+
+#[test]
+fn a_supervised_start_that_keeps_failing_is_stopped_by_the_crash_loop_rule_with_exit_0() {
+    let r = root("failloop");
+    poison_socket(&r);
+    let mut codes = Vec::new();
+    for _ in 0..8 {
+        let mut c = cmd(&r);
+        c.env("AH_ENGINE_CRASH_N", "3").args(["serve", "--start-reason", "launchd"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        codes.push(wait_exit(&mut c.spawn().unwrap()));
+        if codes.last() == Some(&0) {
+            break;
+        }
+    }
+    assert_eq!(codes.first(), Some(&78), "below the threshold a failed start is exit 78: {codes:?}");
+    assert_eq!(codes.last(), Some(&0), "once the rule trips the start exits 0, which launchd does not restart: {codes:?}");
+    assert!(logged(&r, "crashloop"), "the trip is logged");
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
+}
+
+#[test]
+fn an_unsupervised_start_that_fails_is_still_exit_78() {
+    let r = root("failmanual");
+    poison_socket(&r);
+    for _ in 0..4 {
+        let mut c = cmd(&r);
+        c.env("AH_ENGINE_CRASH_N", "2").args(["serve", "--start-reason", "manual"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        assert_eq!(wait_exit(&mut c.spawn().unwrap()), 78);
+    }
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
+}

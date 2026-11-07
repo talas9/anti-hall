@@ -276,9 +276,11 @@ pub fn non_live_serve_processes(host: &mut dyn Host) -> Vec<(u32, PathBuf)> {
 pub fn daemon_section(doc: &mut Doc) {
     doc.head(defaults::text("doctor_msg.head_engine"));
     doc.ok(defaults::render("doctor_msg.engine_version", &[("version", &crate::version())]));
-    // an interval-only engine unit (written before the unit supervised the daemon): `doctor --repair` rewrites it, keeping a .bak
-    if let Some(path) = defaults::env_var("home").filter(|h| !h.is_empty()).and_then(|h| crate::setup::supervise::unsupervised_unit(std::path::Path::new(&h))) {
-        doc.warnl(defaults::render("units.finding_interval_only", &[("path", &path.display())]));
+    // the engine unit: interval-only (written before the unit supervised the daemon), differing from what this engine writes, or not loaded
+    if let Some(home) = defaults::env_var("home").filter(|h| !h.is_empty()) {
+        for finding in crate::setup::supervise::doctor_findings(std::path::Path::new(&home)) {
+            doc.warnl(finding);
+        }
     }
     let sock = paths::socket();
     let lock = paths::lock_for(&sock);

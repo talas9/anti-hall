@@ -215,7 +215,7 @@ fn plist_path(home: &Path, label: &str) -> PathBuf {
     launchd_dir(home).join(format!("{label}{}", defaults::text("units.plist_suffix")))
 }
 
-fn timer_name(unit: &str) -> String {
+pub(super) fn timer_name(unit: &str) -> String {
     format!("{unit}{}", defaults::text("units.timer_suffix"))
 }
 
@@ -451,10 +451,13 @@ fn install_into(run: &mut Run<'_, '_>) {
             run.row(defaults::text("units.act_write"), &shown, defaults::text("units.out_dry"), "");
             continue;
         }
-        // a unit that differs is the owner's older copy of ours (an interval-only unit): keep it once next to the new one
-        let bak = PathBuf::from(format!("{shown}{}", defaults::text("units.bak_suffix")));
+        // a unit that differs is the owner's older copy of ours (an interval-only unit): keep it once in the retired directory, never
+        // next to the new one (a second file with the same Label in the LaunchAgents directory is one launchd may load)
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let bak_dir = run.units_dir().join(defaults::text("units.retired_subdir"));
+        let bak = bak_dir.join(format!("{name}{}", defaults::text("units.bak_suffix")));
         if path.is_file() && !bak.exists() {
-            let ok = std::fs::copy(&path, &bak).is_ok();
+            let ok = std::fs::create_dir_all(&bak_dir).is_ok() && std::fs::copy(&path, &bak).is_ok();
             run.row(
                 defaults::text("units.act_backup"),
                 &bak.display().to_string(),

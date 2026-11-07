@@ -524,13 +524,19 @@ doc = "The command that starts the engine service now (systemd user manager). {u
 value = ["systemctl", "--user", "start", "{unit}"]
 
 [units.kickstart_timeout_ms]
-doc = "Longest the start command of a client with no daemon may run; the child process is killed at the limit and the client starts the daemon itself."
+doc = "Longest the start command of a client with no daemon may run (within units.kickstart_budget_ms); the child process is killed at the limit and the client starts the daemon itself."
 value = 300
 min = 10
 unit = "ms"
 
+[units.kickstart_budget_ms]
+doc = "Longest a client with no daemon spends on the whole ask to the service manager (the start command and the wait for a daemon to answer together). A miss costs the hook this much at most before the client starts the daemon itself; it must fit the hook timeout. Measured cold start of the supervised daemon: see docs/engine/SUPERVISOR.md."
+value = 600
+min = 10
+unit = "ms"
+
 [units.kickstart_poll_ms]
-doc = "How often a client that asked the service manager for the daemon checks whether it answers (up to client.cold_start_wait_ms)."
+doc = "How often a client that asked the service manager for the daemon checks whether it answers (up to units.kickstart_budget_ms)."
 value = 2
 min = 1
 unit = "ms"
@@ -561,7 +567,23 @@ value = "failed"
 
 [units.finding_interval_only]
 doc = "Doctor finding: the engine unit on disk is not the supervised one. {path}."
-value = "the engine unit {path} has no supervision (a killed daemon is only started again by the next hook or the interval) - Fix: ah-engine doctor --repair (rewrites the unit, keeps a .bak)"
+value = "the engine unit {path} has no supervision (a killed daemon is only started again by the next hook or the interval) - Fix: ah-engine doctor --repair (rewrites the unit, keeps a .bak in the units retired directory)"
+
+[units.finding_unit_differs]
+doc = "Doctor finding: the engine unit on disk is supervised but is not what this engine would write now, so a client does not ask the service manager for the daemon (it starts the daemon itself). {path}."
+value = "the engine unit {path} differs from what this engine writes (a client starts the daemon itself instead of asking the service manager) - Fix: ah-engine doctor --repair (rewrites the unit)"
+
+[units.finding_not_loaded]
+doc = "Doctor finding: the engine unit file is there but the service manager has not loaded it, so nothing restarts a killed daemon. {path}."
+value = "the engine unit {path} is not loaded by the service manager (a killed daemon is not restarted) - Fix: ah-engine units install"
+
+[units.loaded_launchd]
+doc = "The command that exits 0 when the engine unit is loaded (launchd). {uid} {label}."
+value = ["launchctl", "print", "gui/{uid}/{label}"]
+
+[units.loaded_systemd]
+doc = "The command that exits 0 when the engine timer is enabled (systemd user manager). {timer} is the timer name with its suffix."
+value = ["systemctl", "--user", "is-enabled", "{timer}"]
 
 [units.supervise_marker_launchd]
 doc = "The text that marks a LaunchAgent as supervised (doctor looks for it in the unit on disk)."

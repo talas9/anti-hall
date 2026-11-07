@@ -569,7 +569,7 @@ pub fn ctl_json(verb: &str) -> Option<serde_json::Value> {
 /// Start the daemon for a client that found none: through the service manager when the supervised unit is installed and matches
 /// this client (the daemon is then the unit's child and its supervisor starts it again after a kill), else detached by the client.
 /// `None` = it could not be started; `Some(None)` = the service manager started it and it answers; `Some(Some(child))` = started here.
-fn start_daemon() -> Option<Option<std::process::Child>> {
+pub(crate) fn start_daemon() -> Option<Option<std::process::Child>> {
     if crate::setup::supervise::kickstart(&paths::socket()) {
         return Some(None);
     }

@@ -101,7 +101,6 @@ What the automatic guards check and how to read a block.
 - `devswarm_sup_env.retention_budget_ms` = 5000: Time budget of one store's tombstoning batches (environment only, as in Node:...
 - `devswarm_sup.retention.capAlone` = false: Owner-gated (OFF by default)
 - `devswarm_sup.retention.foldAlone` = false: Owner-gated (OFF by default)
-- `maintenance.unitsSupervise` = "on": The switch of the supervised engine unit, maintenance.unitsSupervise: on (the default) writes...
 - `devswarm.inlineWorkNudge` = true: Where the inline-work advisory's switch is read from
 - `devswarm.inlineWorkNudgeThreshold` = 5: Where the inline-work advisory's call threshold is read from
 - `guards.repeatHint` = true: Switch for the repeated-block hint

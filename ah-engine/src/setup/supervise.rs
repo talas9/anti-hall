@@ -49,7 +49,8 @@ fn unit_matches_client(home: &Path, m: Manager) -> bool {
     !files.is_empty() && files.iter().all(|(p, text)| std::fs::read(p).is_ok_and(|b| b == text.as_bytes()))
 }
 
-/// Ask the service manager to start the engine unit and wait up to `client.cold_start_wait_ms` for a daemon to answer on `sock`.
+/// Ask the service manager to start the engine unit and wait for a daemon to answer on `sock`, all within `units.kickstart_budget_ms`
+/// (the command and the wait together, so a miss costs the hook no more than that).
 /// True when one answered. False means the caller starts the daemon itself (the singleton lock keeps it single); every false
 /// is also false when nothing was asked (switch off, no unit, a mismatch, a test home).
 pub fn kickstart(sock: &Path) -> bool {
@@ -62,26 +63,32 @@ pub fn kickstart(sock: &Path) -> bool {
     if units::RealSys::new(&home, &env).guarded() || !unit_matches_client(&home, m) {
         return false;
     }
+    let began = Instant::now();
+    let budget = defaults::millis("units.kickstart_budget_ms");
     let argv = kickstart_argv(m);
     let Some((prog, rest)) = argv.split_first() else { return false };
     let mut cmd = std::process::Command::new(prog);
     cmd.args(rest);
     let kind = defaults::text("units.kickstart_log_kind");
-    let ran =
-        crate::proc::run(cmd, defaults::text("units.cmd_what"), defaults::millis("units.kickstart_timeout_ms"), defaults::millis("units.kickstart_poll_ms"))
-            .ok()
-            .is_some_and(|o| o.status.code() == Some(0));
+    let ran = crate::proc::run(
+        cmd,
+        defaults::text("units.cmd_what"),
+        defaults::millis("units.kickstart_timeout_ms").min(budget),
+        defaults::millis("units.kickstart_poll_ms"),
+    )
+    .ok()
+    .is_some_and(|o| o.status.code() == Some(0));
     if !ran {
         crate::health::log_event(kind, defaults::text("units.kickstart_failed"), &argv.join(" "));
         return false;
     }
-    let (start, wait, poll) = (Instant::now(), defaults::millis("client.cold_start_wait_ms"), defaults::millis("units.kickstart_poll_ms"));
+    let poll = defaults::millis("units.kickstart_poll_ms");
     loop {
         if crate::client::ping(sock).is_some() {
             crate::health::log_event(kind, defaults::text("units.kickstart_ok"), &argv.join(" "));
             return true;
         }
-        if start.elapsed() >= wait {
+        if began.elapsed() >= budget {
             crate::health::log_event(kind, defaults::text("units.kickstart_miss"), &argv.join(" "));
             return false;
         }
@@ -107,6 +114,67 @@ pub(super) fn unsupervised_file(m: Manager, home: &Path) -> Option<PathBuf> {
     let (path, _) = units::engine_files_with(m, home, &engine_exe(home), true).into_iter().next()?;
     let text = std::fs::read_to_string(&path).ok()?;
     (!text.contains(marker)).then_some(path)
+}
+
+/// The supervised engine unit on disk that is not what this engine would write now (a client then starts the daemon itself).
+fn unit_differs(m: Manager, home: &Path) -> Option<PathBuf> {
+    if unsupervised_file(m, home).is_some() {
+        return None; // the interval-only unit has its own finding
+    }
+    units::engine_files_with(m, home, &engine_exe(home), true)
+        .into_iter()
+        .find(|(p, text)| p.exists() && std::fs::read(p).is_ok_and(|b| b != text.as_bytes()))
+        .map(|(p, _)| p)
+}
+
+#[cfg(test)]
+pub(super) fn unit_differs_for_tests(m: Manager, home: &Path) -> Option<PathBuf> {
+    unit_differs(m, home)
+}
+
+#[cfg(test)]
+pub(super) fn engine_exe_for_tests(home: &Path) -> String {
+    engine_exe(home)
+}
+
+/// Whether the service manager has the engine unit loaded: `None` when that cannot be asked (a test or temporary home, no manager here,
+/// the command did not run).
+fn unit_loaded(m: Manager, home: &Path) -> Option<bool> {
+    let env = crate::reqenv::RequestEnv::capture();
+    if units::RealSys::new(home, &env).guarded() {
+        return None;
+    }
+    let uid = crate::limits::uid().to_string();
+    let timer = units::timer_name(defaults::text("units.unit_name"));
+    let argv = match m {
+        Manager::Launchd => units::argv("units.loaded_launchd", &[("uid", &uid), ("label", defaults::text("units.label"))]),
+        Manager::Systemd => units::argv("units.loaded_systemd", &[("timer", &timer)]),
+    };
+    let (prog, rest) = argv.split_first()?;
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(rest);
+    let out = crate::proc::run(cmd, defaults::text("units.cmd_what"), defaults::millis("units.cmd_timeout_ms"), defaults::millis("units.cmd_poll_ms")).ok()?;
+    Some(out.status.code() == Some(0))
+}
+
+/// The doctor's findings about the engine unit under `home`: an interval-only unit, a supervised unit that differs from what this
+/// engine writes, a unit file the service manager has not loaded. Empty when supervision is off or there is no unit.
+pub fn doctor_findings(home: &Path) -> Vec<String> {
+    let Some(m) = (enabled()).then(|| units::manager(std::env::consts::OS)).flatten() else { return Vec::new() };
+    let shown = |p: &Path| p.display().to_string();
+    if let Some(p) = unsupervised_file(m, home) {
+        return vec![defaults::render("units.finding_interval_only", &[("path", &shown(&p))])];
+    }
+    let mut out = Vec::new();
+    if let Some(p) = unit_differs(m, home) {
+        out.push(defaults::render("units.finding_unit_differs", &[("path", &shown(&p))]));
+    }
+    if let Some((p, _)) = units::engine_files_with(m, home, &engine_exe(home), true).into_iter().next().filter(|(p, _)| p.exists())
+        && unit_loaded(m, home) == Some(false)
+    {
+        out.push(defaults::render("units.finding_not_loaded", &[("path", &shown(&p))]));
+    }
+    out
 }
 
 #[cfg(test)]

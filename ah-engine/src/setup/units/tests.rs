@@ -360,8 +360,9 @@ fn an_older_interval_only_unit_is_rewritten_with_a_backup_kept_once_and_found_by
     let sys = Fake::new("macos");
     let r = run(Sub::Install, &d, &sys, &none, false);
     assert!(!r.failed, "{:?}", r.to_json());
-    let bak = PathBuf::from(format!("{}.bak", p.display()));
-    assert_eq!(std::fs::read_to_string(&bak).unwrap(), old, "the older unit is kept");
+    let bak = d.join("state/units/retired/com.anti-hall.engine.plist.bak");
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), old, "the older unit is kept in the retired directory");
+    assert!(!PathBuf::from(format!("{}.bak", p.display())).exists(), "no second plist with the same Label is left in LaunchAgents");
     assert!(std::fs::read_to_string(&p).unwrap().contains("<key>KeepAlive</key>"));
     assert_eq!(crate::setup::supervise::unsupervised_file(Manager::Launchd, &home), None, "repaired");
     assert!(r.rows.iter().any(|row| row.action == "backup"), "{:?}", r.to_json());
@@ -374,6 +375,22 @@ fn an_older_interval_only_unit_is_rewritten_with_a_backup_kept_once_and_found_by
     let before = std::fs::read(&p).unwrap();
     run(Sub::Install, &d, &Fake::new("macos"), &none, true);
     assert_eq!(std::fs::read(&p).unwrap(), before);
+}
+
+#[test]
+fn a_supervised_unit_that_differs_from_what_the_engine_writes_is_found_and_a_current_one_is_not() {
+    let d = scratch("differs");
+    let home = d.join("home");
+    let exe = crate::setup::supervise::engine_exe_for_tests(&home);
+    let p = plist(&d, "com.anti-hall.engine");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let current = engine_files_with(Manager::Launchd, &home, &exe, true)[0].1.clone();
+    std::fs::write(&p, &current).unwrap();
+    assert_eq!(crate::setup::supervise::unit_differs_for_tests(Manager::Launchd, &home), None, "a current unit is not reported");
+    std::fs::write(&p, current.replace("</dict>\n</plist>", "<key>X</key><string>y</string></dict>\n</plist>")).unwrap();
+    assert_eq!(crate::setup::supervise::unit_differs_for_tests(Manager::Launchd, &home), Some(p.clone()), "a changed supervised unit is reported");
+    std::fs::write(&p, engine_files_with(Manager::Launchd, &home, &exe, false)[0].1.clone()).unwrap();
+    assert_eq!(crate::setup::supervise::unit_differs_for_tests(Manager::Launchd, &home), None, "the interval-only unit has its own finding");
 }
 
 #[test]

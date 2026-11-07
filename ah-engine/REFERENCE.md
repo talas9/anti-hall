@@ -202,7 +202,6 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 
 | Variable | Setting | What it does |
 |---|---|---|
-| `AH_ENGINE_` | `units.kickstart_env_prefix` | Environment variables with this prefix change what a daemon is started with; a client that has one set (other than the units.kickstart_env_keep ones, which the unit carries) starts the daemon itself, because the service manager would not pass it on. |
 | `AH_ENGINE_ACK_TIMEOUT_MS` | `storage.ack_timeout_ms` | How long a request waits for its write to commit before it is answered with an error (the client then retries or spools; the write id makes a late commit harmless); kept below client.ctl_timeout_ms so the client hears the error. |
 | `AH_ENGINE_AGENT_TICK_MS` | `schedule.agent_tick_ms` | Interval of the agent_tick job; 0 turns the tracker's ticks off. |
 | `AH_ENGINE_ALLOCATOR` |  | Selects the daemon's allocator: jemalloc (default) or system. The client sets it from `diagnostics.allocator` on the daemon it spawns, unless it is already set; the daemon reads it before its first allocation. Environment variable the client sets on the daemon it spawns to select the allocator (the daemon reads it before its first allocation). An existing value in the client's own environment wins. |
@@ -13377,10 +13376,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.engine_bin_rel` | `.anti-hall/ah-engine/bin/ah-engine` |  |  | The engine binary the unit runs, relative to the home directory (where the installer puts it and the thin client finds it). |
 | `units.exec_arg` | `"{arg}"` |  |  | One argument of the ExecStart line: double-quoted, with the systemd escapes applied. {arg}. |
 | `units.finding_interval_only` | `the engine unit {path} has no supervision (a killed daemon is only started ag...` |  |  | Doctor finding: the engine unit on disk is not the supervised one. {path}. |
+| `units.finding_not_loaded` | `the engine unit {path} is not loaded by the service manager (a killed daemon ...` |  |  | Doctor finding: the engine unit file is there but the service manager has not loaded it, so nothing restarts a killed daemon. {path}. |
+| `units.finding_unit_differs` | `the engine unit {path} differs from what this engine writes (a client starts ...` |  |  | Doctor finding: the engine unit on disk is supervised but is not what this engine would write now, so a client does not ask the service manager for the daemon (it starts the daemon itself). {path}. |
 | `units.flag_bin` | `--bin` |  |  | The option that names the engine binary the unit runs (default: units.engine_bin_rel under the home directory). |
 | `units.flag_dry` | `--dry-run` |  |  | The option that reports what would be done and changes nothing. |
 | `units.heal_setting` | `7 entries` |  |  | The switch of the units heal that update's post-pull stage and `doctor --repair` run, maintenance.unitsHeal: on (the default) writes the engine unit and moves the Node units aside whose duty the engine runs, off leaves the units alone. Idempotent; it never deletes. |
 | `units.heal_word_off` | `off` |  |  | The value of maintenance.unitsHeal that switches the heal off. |
+| `units.kickstart_budget_ms` | `600` |  | ms | Longest a client with no daemon spends on the whole ask to the service manager (the start command and the wait for a daemon to answer together). A miss costs the hook this much at most before the client starts the daemon itself; it must fit the hook timeout. Measured cold start of the supervised daemon: see docs/engine/SUPERVISOR.md. |
 | `units.kickstart_env_keep` | `AH_ENGINE_ALLOCATOR` |  |  | Prefixed variables a client may have set and still use the unit: the ones the unit writes into its own environment. |
 | `units.kickstart_env_prefix` | `AH_ENGINE_` |  |  | Environment variables with this prefix change what a daemon is started with; a client that has one set (other than the units.kickstart_env_keep ones, which the unit carries) starts the daemon itself, because the service manager would not pass it on. |
 | `units.kickstart_failed` | `failed` |  |  | Code of a unit_kickstart event: the command failed or timed out; the client starts the daemon itself. |
@@ -13388,9 +13390,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.kickstart_log_kind` | `unit_kickstart` |  |  | Event-log kind of a client's ask to the service manager; the code says how it went. |
 | `units.kickstart_miss` | `miss` |  |  | Code of a unit_kickstart event: the command ran but no daemon answered in time; the client starts the daemon itself (the singleton lock keeps it single). |
 | `units.kickstart_ok` | `ok` |  |  | Code of a unit_kickstart event: the daemon answered after the service manager started it. |
-| `units.kickstart_poll_ms` | `2` |  | ms | How often a client that asked the service manager for the daemon checks whether it answers (up to client.cold_start_wait_ms). |
+| `units.kickstart_poll_ms` | `2` |  | ms | How often a client that asked the service manager for the daemon checks whether it answers (up to units.kickstart_budget_ms). |
 | `units.kickstart_systemd` | `systemctl, --user, start, {unit}` |  |  | The command that starts the engine service now (systemd user manager). {unit} is the service name with its suffix. |
-| `units.kickstart_timeout_ms` | `300` |  | ms | Longest the start command of a client with no daemon may run; the child process is killed at the limit and the client starts the daemon itself. |
+| `units.kickstart_timeout_ms` | `300` |  | ms | Longest the start command of a client with no daemon may run (within units.kickstart_budget_ms); the child process is killed at the limit and the client starts the daemon itself. |
 | `units.label` | `com.anti-hall.engine` |  |  | The launchd label of the engine unit. |
 | `units.label_sep` | `.` |  |  | Between a family label and its per-project suffix. |
 | `units.launchd_dir` | `Library/LaunchAgents` |  |  | The LaunchAgents directory, relative to the home directory. |
@@ -13400,6 +13402,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.ledger_file` | `ledger.jsonl` |  |  | The append-only ledger of every action a non-dry run took (one JSON line each: ts, action_id, action, target, outcome, reason, latency_ms). |
 | `units.line_action` | `{action} {target}: {outcome}{reason}` |  |  | One line of the human report. {action} {target} {outcome} {reason} (the reason with its leading separator, or nothing). |
 | `units.line_note` | `note: {note}` |  |  | One note line of the human report. {note}. |
+| `units.loaded_launchd` | `launchctl, print, gui/{uid}/{label}` |  |  | The command that exits 0 when the engine unit is loaded (launchd). {uid} {label}. |
+| `units.loaded_systemd` | `systemctl, --user, is-enabled, {timer}` |  |  | The command that exits 0 when the engine timer is enabled (systemd user manager). {timer} is the timer name with its suffix. |
 | `units.lock_file` | `units.lock` |  |  | The lock a run holds, so two runs never act at once. |
 | `units.log_detail` | `{target} {outcome} {reason}` |  |  | The detail of the engine log line of a units action; {target}, {outcome} and {reason} are filled in. |
 | `units.log_kind` | `units` |  |  | The engine event log kind of a units action. |
@@ -15028,6 +15032,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `spool_applied` | counter | writes |  | Spooled writes the daemon applied (D24). |
 | `spool_quarantined` | counter | records |  | Spool records moved to quarantine: damaged, or refused for good by the store (D24). |
 | `stop_channel` | counter | stops | counter, check, model, project | Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, over_total, limit_clamped, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime. |
+| `supervised_start` | counter | starts | reason | Daemon starts by the service manager (launchd or systemd) that won the singleton lock, by start reason. |
 | `tasks_cache` | counter | lookups | result | Task-line lookups of `ah.transcript.tasks` (task-guard, tasklist-guard, task-tracker): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh). |
 | `tasks_cache_rebuild` | counter | lookups | reason | Why a task-line lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place). |
 | `tel_child_counts` | counter | series | result | Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table), bad (a line that was not valid UTF-8 or not a valid counter for a registered metric) or overflow (lines past telemetry.inbox_max_bytes, not read). |
@@ -15041,6 +15046,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tier_items` | gauge | items |  | Active key-value items held in memory (D22). |
 | `tier_misses` | gauge | reads |  | Key-value reads that went to SQLite since the daemon started. |
 | `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there. |
+| `unit_kickstart` | counter | asks | code | Asks of a hook client with no daemon to the service manager to start the engine unit, by outcome code (ok, miss, failed); counted by the daemon that starts next, from the event log. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
 | `jev_asked_sync` | counter | calls | id | Stop/SubagentStop asks the gate let wait for Jev (the rule layer had flagged a likely unverified claim), by integration. |

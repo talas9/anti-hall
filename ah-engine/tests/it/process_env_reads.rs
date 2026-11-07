@@ -21,6 +21,10 @@ const ALLOW: &[(&str, &str)] = &[
         "the daemon's start-up sanitising (`sanitize`): it lists the process environment once, before any thread exists, only to REMOVE every variable that is not on `daemon.spawn_env_allow`, so no request is ever answered from the starting session's values",
     ),
     ("src/memdiag.rs", "the daemon's own environment, once at start: whether the allocator already got its tuning from the variables a starter set"),
+    (
+        "src/setup/supervise.rs",
+        "`unit_matches_client`, run in the hook client process before it asks the service manager for the daemon: it looks for `AH_ENGINE_*` overrides this client would pass to a daemon it started itself, which the unit cannot carry. Its environment IS the host's; no request is answered from it",
+    ),
     ("src/client.rs", "the hook client process: its environment IS the host's; reads the Node path and the fallback command"),
     (
         "src/checks/mcp_reaper/sys.rs",

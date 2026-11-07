@@ -272,6 +272,14 @@ value = "snapshot"
 doc = "Requests the daemon handled, any type."
 value = { kind = "counter", unit = "requests", labels = [] }
 
+[metric.supervised_start]
+doc = "Daemon starts by the service manager (launchd or systemd) that won the singleton lock, by start reason."
+value = { kind = "counter", unit = "starts", labels = ["reason"] }
+
+[metric.unit_kickstart]
+doc = "Asks of a hook client with no daemon to the service manager to start the engine unit, by outcome code (ok, miss, failed); counted by the daemon that starts next, from the event log."
+value = { kind = "counter", unit = "asks", labels = ["code"] }
+
 [metric.busy_replies]
 doc = "Requests answered BUSY (queue full or rate limited), which made the client fall back."
 value = { kind = "counter", unit = "requests", labels = [] }

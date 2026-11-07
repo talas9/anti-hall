@@ -2174,6 +2174,12 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
 fn start_fail(code: &str, detail: &str) -> ! {
     health::log_event("start_fail", code, detail);
     health::record_failure("start_fail", code, detail);
+    // A start by the service manager that keeps failing obeys the same crash-loop rule: the failure above counts (start_fail is a
+    // crashy kind), and once the rule trips this exits 0, which launchd (KeepAlive SuccessfulExit=false, no start limit) leaves alone
+    // until the interval tick asks again after the cooldown. Below the threshold it exits 78 and the manager starts it again.
+    if SUPERVISED.load(SeqCst) && health::crashloop_tripped(&crate::config::ClientConfig::from_env()) {
+        std::process::exit(defaults::num("daemon.drain_timeout_exit_code") as i32);
+    }
     std::process::exit(defaults::num("daemon.start_fail_exit_code") as i32);
 }
 
@@ -2181,9 +2187,27 @@ fn io_code(e: &std::io::Error) -> String {
     format!("os{}", e.raw_os_error().unwrap_or(0))
 }
 
+/// The supervision counters of this start: `supervised_start` (by start reason) when the service manager started this daemon, and
+/// `unit_kickstart` (by code) for the clients' asks to the service manager since the previous daemon started. Those asks are
+/// logged by the hook client process, which has no metrics, so the daemon counts them from the event log when it starts.
+fn count_supervision(sh: &Shared, supervised: bool, start_reason: &str) {
+    if supervised {
+        sh.telemetry.with_metrics(|m| m.inc("supervised_start", &[("reason", start_reason)]));
+    }
+    let events = health::events();
+    let (start, ask) = (defaults::text("health.start_kind"), defaults::text("units.kickstart_log_kind"));
+    // the current start is already logged; the one before it bounds the asks that led to this daemon
+    let since = events.iter().rev().filter(|e| e.kind == start).nth(1).map_or(0, |e| e.ts);
+    for e in events.iter().filter(|e| e.kind == ask && e.ts > since) {
+        sh.telemetry.with_metrics(|m| m.inc("unit_kickstart", &[("code", e.code.as_str())]));
+    }
+}
+
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
 pub fn serve(start_reason: &str) -> i32 {
     crate::crash::mark_daemon(true);
+    // set before the first thing that can fail, so a failed start by the service manager is recognised as one (see `start_fail`)
+    SUPERVISED.store(crate::setup::supervise::supervised_reason(start_reason), SeqCst);
     // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
     // launcher dies during config/defaults loading still knows which parent it was started by.
     let initial_parent = unsafe { libc::getppid() };
@@ -2220,8 +2244,7 @@ pub fn serve(start_reason: &str) -> i32 {
     // A start by the service manager obeys the crash-loop rule the clients obey, and counts as a daemon start for its spawn-rate
     // half: a binary that dies at once is started again at the manager's throttle, so without this nothing would ever stop that
     // loop. Stopped, `serve` exits 0 (which the supervisor leaves alone) and the interval tick asks again after the cooldown.
-    let supervised = crate::setup::supervise::supervised_reason(start_reason);
-    SUPERVISED.store(supervised, SeqCst);
+    let supervised = SUPERVISED.load(SeqCst);
     if supervised {
         if health::crashloop_tripped(&crate::config::ClientConfig::from_env()) {
             return 0;
@@ -2289,6 +2312,7 @@ pub fn serve(start_reason: &str) -> i32 {
     drain_spool(&sh); // writes spooled while the engine was down, before any new one
     crate::memstat::configure_measure_from_defaults(); // the per-call memory knobs, from the defaults the owner's files overlay
     let sh = Arc::new(sh);
+    count_supervision(&sh, supervised, start_reason);
     {
         let s = sh.clone();
         crate::db::set_panic_restart(Some(Arc::new(move |thread| {
