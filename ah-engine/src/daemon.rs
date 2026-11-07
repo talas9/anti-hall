@@ -2217,6 +2217,9 @@ fn io_code(e: &std::io::Error) -> String {
 
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
 pub fn serve(start_reason: &str) {
+    // first thing: a TERM/INT/HUP that arrives during startup is held as a flag and honoured by the first loop pass, and a mask
+    // inherited from the starter never keeps them pending
+    install_signals();
     crate::crash::mark_daemon(true);
     // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
     // launcher dies during config/defaults loading still knows which parent it was started by.
@@ -2285,7 +2288,6 @@ pub fn serve(start_reason: &str) {
     };
     crate::discard::harmless(std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))); // keep: best effort, fail-open
     listener.set_nonblocking(true).ok_logged("daemon_listener_nonblocking");
-    install_signals();
     // Config is read once the singleton lock is ours, so a refused second daemon never logs a config error twice.
     let store = crate::cfgstore::ConfigStore::load();
     let cfg = store.snapshot().config.clone();
