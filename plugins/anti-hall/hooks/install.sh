@@ -100,6 +100,12 @@ json_merge() { # json_merge TEXT OUT: the client's own SessionStart output with 
           if (index(r, "\"additionalContext\"")) { x = app(r, "additionalContext", n); if (x != "") r = x }
           else if (!index(r, "\"hookSpecificOutput\"")) {
             h = head(r); r = substr(r, 1, h) "\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"" n "\"}," substr(r, h + 1)
+          } else {
+            # a hookSpecificOutput object without additionalContext: add the key at its start; any other shape cannot take it
+            p = index(r, "\"hookSpecificOutput\""); rest = substr(r, p + 20)
+            if (!match(rest, /^ *: *\{ */)) exit 3
+            at = p + 20 + RLENGTH - 1
+            r = substr(r, 1, at) "\"additionalContext\":\"" n "\"," substr(r, at + 1)
           }
           print r
         }') || { printf '%s\n' "$2"; return 1; }
@@ -130,12 +136,17 @@ stale_notice() {
   if [ "$dfail" = 1 ] && [ -x "$bindir/$engine_name" ]; then
     env "$(c env.plugin_root)=$root" "$bindir/$engine_name" "$(c install.defaults_probe_verb)" >/dev/null 2>&1 </dev/null &
     pp=$!
-    ( sleep "$(c install.defaults_probe_s)"; kill "$pp" ) >/dev/null 2>&1 </dev/null &
+    # watchdog: TERM after defaults_probe_s, KILL after a further defaults_probe_grace_s (an engine that ignores TERM must not hold
+    # SessionStart); the whole probe is bounded by the two settings
+    ( sleep "$(c install.defaults_probe_s)"; kill "$pp"; sleep "$(c install.defaults_probe_grace_s)"; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
     wd=$!
     wait "$pp" 2>/dev/null; prc=$?
+    # stop the watchdog and its sleep helper (the helper is read first: once the subshell is gone it has no parent to ask for)
+    kids=$(pgrep -P "$wd" 2>/dev/null)
     kill "$wd" 2>/dev/null
-    # exit 0 = loads fine; 143 = our own time limit (not proof of failure); anything else = it cannot load them now
-    if [ "$prc" -eq 0 ] || [ "$prc" -eq 143 ]; then dfail=0; fi
+    [ -n "$kids" ] && kill $kids 2>/dev/null
+    # exit 0 = loads fine; 143 / 137 = our own TERM / KILL (not proof of failure); anything else = it cannot load them now
+    if [ "$prc" -eq 0 ] || [ "$prc" -eq 143 ] || [ "$prc" -eq 137 ]; then dfail=0; fi
   fi
   older=
   if [ -n "$want" ] && [ -n "$have" ]; then

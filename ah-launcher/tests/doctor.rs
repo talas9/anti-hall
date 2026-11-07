@@ -229,6 +229,42 @@ fn an_old_cache_version_dir_is_information_only_and_the_registered_install_is_ju
 }
 
 #[test]
+fn only_the_newest_codex_cache_version_dir_is_judged() {
+    const NODE_HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hooks/x.js\""}]}]}}"#;
+    const DIRECT_HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop"}]}]}}"#;
+    let k = Kit::new("dr-codexcache");
+    k.engine(GOOD_ENGINE);
+    exe(&k.e.state.join("bin/ah-hook"), "#!/bin/sh\nexit 0\n");
+    let cache = k.e.home.join(".codex/plugins/cache/m/anti-hall");
+    // 0.9.0 sorts after 0.10.0 as text: the newest is chosen by number
+    let (old, cur) = (cache.join("0.9.0"), cache.join("0.10.0"));
+    for (d, body) in [(&old, NODE_HOOKS), (&cur, DIRECT_HOOKS)] {
+        std::fs::create_dir_all(d.join("hooks")).unwrap();
+        std::fs::write(d.join("hooks/hooks.json"), body).unwrap();
+    }
+    let (_, out) = k.doctor(&[]);
+    assert!(!out.contains("runs Node on an entry path"), "{out}");
+    assert!(out.contains("in the Codex plugin cache are not judged"), "{out}");
+    // the newest version dir running Node is still a failure
+    std::fs::write(cur.join("hooks/hooks.json"), NODE_HOOKS).unwrap();
+    let (_, out) = k.doctor(&[]);
+    assert!(out.contains("runs Node on an entry path"), "{out}");
+}
+
+#[test]
+fn without_a_registry_a_cache_copy_is_not_called_unused() {
+    const NODE_HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hooks/x.js\""}]}]}}"#;
+    let k = Kit::new("dr-noreg");
+    k.engine(GOOD_ENGINE);
+    let d = k.e.home.join(".claude/plugins/cache/m/anti-hall/0.302.0");
+    std::fs::create_dir_all(d.join("hooks")).unwrap();
+    std::fs::write(d.join("hooks/hooks.json"), NODE_HOOKS).unwrap();
+    let (_, out) = k.doctor(&[]);
+    assert!(out.contains("no registered install was found"), "{out}");
+    assert!(!out.contains("unused"), "{out}");
+}
+
+#[test]
 fn launcher_shims_must_be_sh_shims_without_node() {
     let k = Kit::new("dr-shims");
     k.engine(GOOD_ENGINE);

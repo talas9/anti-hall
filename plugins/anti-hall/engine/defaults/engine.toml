@@ -1426,7 +1426,7 @@ doc = "The note the engine writes (in the state directory) when it could not loa
 value = "defaults.error"
 
 [install.defaults_probe_verb]
-doc = "The engine verb hooks/install.sh runs, before it tells the session that the guards are not running, when a defaults.error file is present: it loads this plugin's defaults, is read-only, and exits non-zero only when they cannot be loaded. A stale defaults.error (the engine rewrites it at every failure and never removes it) with a passing probe says nothing."
+doc = "The engine verb hooks/install.sh runs, before it tells the session that the guards are not running, when a defaults.error file is present: it loads this plugin's defaults and exits non-zero only when they cannot be loaded. It is not read-only: a load that fails rewrites defaults.error (the note it reads). A stale defaults.error (the engine rewrites it at every failure and never removes it) with a passing probe says nothing."
 value = "config"
 
 [install.defaults_probe_s]
@@ -1434,6 +1434,12 @@ doc = "Seconds the defaults probe may run. A probe that does not finish in time 
 value = 3
 min = 1
 max = 30
+
+[install.defaults_probe_grace_s]
+doc = "Seconds the defaults probe gets, after the TERM sent at defaults_probe_s, before it is killed (KILL). The probe is bounded by defaults_probe_s plus this, so an engine that ignores TERM cannot hold SessionStart."
+value = 1
+min = 0
+max = 10
 
 [install.file_notice_log]
 doc = "Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory. Nothing reads it yet (it is not ingested into the telemetry counters); it is a record for a person or a later change to read."

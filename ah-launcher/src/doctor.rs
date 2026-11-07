@@ -1019,6 +1019,53 @@ impl Doc<'_> {
         out
     }
 
+    /// Whether the hooks file `f` sits in the newest version dir (by semver) of its plugin in a Codex cache
+    /// (`<mark><marketplace>/<plugin>/<version>/...`). A path of any other shape counts as newest (judged).
+    fn newest_cache_version(f: &Path, marks: &[String]) -> bool {
+        let full = f.display().to_string();
+        let Some((m, at)) = marks
+            .iter()
+            .filter_map(|m| full.find(m.as_str()).map(|i| (m, i)))
+            .next()
+        else {
+            return true;
+        };
+        let rest = &full[at + m.len()..];
+        let segs: Vec<&str> = rest.split('/').collect();
+        if segs.len() < 4 {
+            return true;
+        }
+        let plugin_dir = PathBuf::from(&full[..at + m.len()])
+            .join(segs[0])
+            .join(segs[1]);
+        let mine = segs[2];
+        let Ok(rd) = fs::read_dir(&plugin_dir) else {
+            return true;
+        };
+        rd.flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .all(|v| Self::semver_cmp(&v, mine) != std::cmp::Ordering::Greater)
+    }
+
+    /// Orders two version names by their dotted numeric parts (a pre-release/build suffix is dropped; a missing part is 0).
+    fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+        let parts = |v: &str| -> Vec<u64> {
+            v.trim_start_matches('v')
+                .split(['-', '+'])
+                .next()
+                .unwrap_or("")
+                .split('.')
+                .map(|p| p.parse::<u64>().unwrap_or(0))
+                .collect()
+        };
+        let (mut x, mut y) = (parts(a), parts(b));
+        let n = x.len().max(y.len());
+        x.resize(n, 0);
+        y.resize(n, 0);
+        x.cmp(&y)
+    }
+
     fn install_health(&mut self) {
         self.head("x.head_health");
         let install = self.install_cmd();
@@ -1060,20 +1107,39 @@ impl Doc<'_> {
         // the hooks files
         let files = self.hook_files();
         let cache_marks = self.s.list("doctor_l.host_cache_marks");
+        let codex_marks = self.s.list("doctor_l.codex_cache_marks");
         let registered = self.registered_paths();
         let (mut other_n, mut other_first) = (0usize, String::new());
+        let (mut codex_n, mut codex_first) = (0usize, String::new());
+        let root_in_cache = self.root.as_ref().is_some_and(|r| {
+            let rs = r.display().to_string();
+            cache_marks.iter().any(|m| rs.contains(m.as_str()))
+        });
         for f in &files {
-            let in_cache = cache_marks
-                .iter()
-                .any(|m| f.display().to_string().contains(m.as_str()));
-            let judged = !in_cache
-                || self.root.as_ref().is_some_and(|r| f.starts_with(r))
-                || registered.iter().any(|p| f.starts_with(p));
+            let shown_path = f.display().to_string();
+            let in_cache = cache_marks.iter().any(|m| shown_path.contains(m.as_str()));
+            let from_root = self.root.as_ref().is_some_and(|r| f.starts_with(r));
+            let codex_cache = codex_marks.iter().any(|m| shown_path.contains(m.as_str()));
+            let judged = if !in_cache || from_root {
+                true
+            } else if codex_cache {
+                // Codex keeps no install path: only the newest version dir of a plugin is the one it loads
+                Self::newest_cache_version(f, &codex_marks)
+            } else {
+                registered.iter().any(|p| f.starts_with(p))
+            };
             if !judged {
-                if other_n == 0 {
-                    other_first = f.display().to_string();
+                if codex_cache {
+                    if codex_n == 0 {
+                        codex_first = shown_path;
+                    }
+                    codex_n += 1;
+                } else {
+                    if other_n == 0 {
+                        other_first = shown_path;
+                    }
+                    other_n += 1;
                 }
-                other_n += 1;
                 continue;
             }
             let Some(v) = fs::read_to_string(f)
@@ -1119,9 +1185,19 @@ impl Doc<'_> {
         }
         if other_n > 0 {
             self.notes += 1;
+            // with no registry entry and a run that did not start from a cache root, nothing says which copy is the install
+            let key = if registered.is_empty() && !root_in_cache {
+                "x.health_other_cache_unmatched"
+            } else {
+                "x.health_other_cache"
+            };
+            self.infol(key, &[("n", &other_n.to_string()), ("first", &other_first)]);
+        }
+        if codex_n > 0 {
+            self.notes += 1;
             self.infol(
-                "x.health_other_cache",
-                &[("n", &other_n.to_string()), ("first", &other_first)],
+                "x.health_other_cache_codex",
+                &[("n", &codex_n.to_string()), ("first", &codex_first)],
             );
         }
         // the shell files the plugin ships

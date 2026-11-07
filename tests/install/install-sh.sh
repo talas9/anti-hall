@@ -52,14 +52,14 @@ t_hook_mode_downloads_nothing_without_opt_in() {
 t_hook_mode_opt_in_installs_on_session_start() {
   newhome optin; write_lock "$good"
   AH_ENGINE_BOOTSTRAP=1 env_t sh -c 'printf "{\"session_id\":\"s\"}" | sh "$1" SessionStart' _ "$plug/hooks/install.sh" >/dev/null 2>&1
-  n=0; while [ ! -x "$st/bin/ah-engine" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+  w=0; while { [ ! -x "$st/bin/ah-engine" ] || [ ! -x "$st/bin/ah-hook" ]; } && [ "$w" -lt 100 ]; do sleep 0.1; w=$((w + 1)); done
   [ -x "$st/bin/ah-engine" ] && [ -x "$st/bin/ah-hook" ]
 }
 t_hook_mode_setting_opt_in() {
   newhome setting; write_lock "$good"; mkdir -p "$HOME/.anti-hall"
   printf '{"engine":{"bootstrap":true}}' >"$HOME/.anti-hall/settings.json"
   env_t sh -c 'printf "{\"session_id\":\"s\"}" | sh "$1" SessionStart' _ "$plug/hooks/install.sh" >/dev/null 2>&1
-  n=0; while [ ! -x "$st/bin/ah-engine" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+  w=0; while { [ ! -x "$st/bin/ah-engine" ] || [ ! -x "$st/bin/ah-hook" ]; } && [ "$w" -lt 100 ]; do sleep 0.1; w=$((w + 1)); done
   [ -x "$st/bin/ah-engine" ]
 }
 t_hook_mode_hands_the_call_to_an_installed_client() {
@@ -144,6 +144,22 @@ t_a_client_that_already_set_a_system_message_gets_the_notice_appended() {
   hook s1 SessionStart >/dev/null
   isjson "$tmp/out" && grep -q '"systemMessage":"mine anti-hall: the installed engine' "$tmp/out" && grep -q '"additionalContext":"anti-hall' "$tmp/out" || return 1
   [ -s "$st/install-json.notice" ]   # shown, so marked
+}
+t_a_client_object_without_additional_context_gets_it_added() {
+  newhome st6; write_lock "$good"; fake_client '{"hookSpecificOutput":{"hookEventName":"SessionStart"}}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine' "$tmp/out" && grep -q '"additionalContext":"anti-hall' "$tmp/out" && grep -q '"hookEventName":"SessionStart"' "$tmp/out" || return 1
+  [ -s "$st/install-json.notice" ]
+}
+t_a_probe_that_ignores_term_is_killed_after_the_grace() {
+  newhome kill1; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  mkdir -p "$st/bin"; printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 1; done\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  t0=$(date +%s); hook s1 SessionStart >/dev/null; t1=$(date +%s)
+  # bounded by defaults_probe_s + defaults_probe_grace_s (3 + 1), not by the engine; a probe cut off by us is not a failure
+  [ $((t1 - t0)) -le 7 ] && [ ! -s "$tmp/out" ]
 }
 t_a_client_with_leading_whitespace_json_still_gets_the_notice() {
   newhome st5; write_lock "$good"; fake_client '
@@ -232,6 +248,8 @@ check t_stale_engine_notice_joins_the_clients_json t_stale_engine_notice_joins_t
 check t_stale_engine_notice_with_a_silent_client_is_the_notice_alone t_stale_engine_notice_with_a_silent_client_is_the_notice_alone
 check t_other_events_and_a_current_engine_leave_the_clients_output_alone t_other_events_and_a_current_engine_leave_the_clients_output_alone
 check t_a_client_that_already_set_a_system_message_gets_the_notice_appended t_a_client_that_already_set_a_system_message_gets_the_notice_appended
+check t_a_client_object_without_additional_context_gets_it_added t_a_client_object_without_additional_context_gets_it_added
+check t_a_probe_that_ignores_term_is_killed_after_the_grace t_a_probe_that_ignores_term_is_killed_after_the_grace
 check t_a_client_with_leading_whitespace_json_still_gets_the_notice t_a_client_with_leading_whitespace_json_still_gets_the_notice
 check t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown
 check t_codex_keeps_stdout_clean t_codex_keeps_stdout_clean

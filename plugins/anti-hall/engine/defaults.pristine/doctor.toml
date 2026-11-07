@@ -2392,7 +2392,7 @@ doc = "Engine doctor runs that skipped the statusline render check because no st
 value = { kind = "counter", unit = "runs", labels = [] }
 
 [doctor_l.defaults_probe_cmd]
-doc = "The engine arguments ah-hook doctor runs (after the binary) to prove the engine can load this plugin's defaults: the verb must read them and exit 0 when it can, and exit non-zero when it cannot. Read-only."
+doc = "The engine arguments ah-hook doctor runs (after the binary) to prove the engine can load this plugin's defaults: the verb must read them and exit 0 when it can, and exit non-zero when it cannot. Not read-only: a failed load rewrites the engine's defaults.error note."
 value = ["config"]
 
 [doctor_l.run_s]
@@ -2441,11 +2441,23 @@ value = "anti-hall@"
 
 [doctor_l.host_cache_marks]
 doc = "A hooks file whose path holds one of these is a host cache copy: judged only when it is in a registered installPath or the running plugin root; any other is reported as information (an old version dir an upgrade left behind)."
-value = ["/.claude/plugins/cache/"]
+value = ["/.claude/plugins/cache/", "/.codex/plugins/cache/"]
+
+[doctor_l.codex_cache_marks]
+doc = "The subset of the host cache marks that belong to Codex. Codex records no install path (its config.toml holds only an enabled flag per plugin), so in these caches only the newest version dir (by semver) of a plugin is judged; older version dirs an upgrade left behind are reported as information. Layout under the mark: <marketplace>/<plugin>/<version>/."
+value = ["/.codex/plugins/cache/"]
 
 [doctor_l.msg_health_other_cache]
 doc = "Information line. Placeholders: {n}, {first}."
-value = "{n} older anti-hall copy(ies) in the host's plugin cache are not the registered install and are not judged (first: {first}); they are unused"
+value = "{n} older anti-hall copy(ies) in the host's plugin cache are not the registered install and are not judged (first: {first})"
+
+[doctor_l.msg_health_other_cache_unmatched]
+doc = "Information line when the host's registry has no anti-hall entry and the run did not start from a cache copy, so no copy can be told apart as the install. Placeholders: {n}, {first}."
+value = "{n} anti-hall copy(ies) in the host's plugin cache were not judged because no registered install was found to match them against (first: {first}); one of them may be the install in use"
+
+[doctor_l.msg_health_other_cache_codex]
+doc = "Information line for Codex cache version dirs older than the newest. Placeholders: {n}, {first}."
+value = "{n} older anti-hall version dir(s) in the Codex plugin cache are not judged (first: {first}); Codex records no install path, so only the newest version dir of the plugin is judged"
 
 [doctor_l.msg_builtin_daemon_note]
 doc = "Informational line of the built-in doctor."
