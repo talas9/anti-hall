@@ -2676,20 +2676,7 @@ function extractEvalPayloadRaw(segment) {
 // RECURSION: also evaluates commands hidden in command substitution `$(...)` /
 // backticks and in `bash -c '...'` payloads, so `echo "$(npm run build)"` and
 // `bash -c "npm run build"` are caught. Depth-bounded to avoid pathological input.
-// #547: `sh|bash <script>` is judged by the body of the script, so a wrapper and its raw command get the same verdict (the host reads the
-// script as git-guard does, up to script.read_max_bytes). null when the call is no literal shell-script run, the setting is off, or the
-// script cannot be read (the wrapper is then judged as written). The path resolves against the session's working directory.
-function wrapperScriptBody(seg) {
-  if (!S || !S.wrapCwd || !ah.settings.bool('command.sw_resolve_wrapper_scripts')) return null;
-  let run = null, verb = '';
-  try { run = scriptRunToken(seg); verb = effectiveVerb(seg).replace(/["']/g, ''); } catch (_) { return null; }
-  if (!run || run.direct || !T.scriptShells.has(verb)) return null;
-  const r = resolveScriptPath(run.token, { cwd: S.wrapCwd, cwdUnknown: false });
-  if (!r || r.unresolvable) return null;
-  const size = ah.fs.size(r.real), cap = ah.cfgNum('script.read_max_bytes');
-  if (size === null || size > cap) return null;
-  return ah.fs.readText(r.real, cap);
-}
+function wrapperScriptBody(seg) { return wrapScript.body(seg, S, scriptRunToken, effectiveVerb, resolveScriptPath, T); }
 
 function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
@@ -2708,12 +2695,8 @@ function isHeavyCommand(command, depth) {
       // (c) eval payload: unwrap eval's argument(s) and evaluate as command(s).
       const evalPayload = extractEvalPayload(seg);
       if (evalPayload && isHeavyCommand(evalPayload, d + 1)) return true;
-      const body = wrapperScriptBody(seg);
-      if (body !== null) {
-        const heavy = isHeavyCommand(body, d + 1);
-        if (S && S.wrapResolved !== 'differs') S.wrapResolved = heavy ? 'differs' : 'same';
-        if (heavy) return true;
-      }
+      const wb = wrapperScriptBody(seg);
+      if (wb !== null && wrapScript.note(S, isHeavyCommand(wb, d + 1))) return true;
     }
   }
   // (a) command substitution: scan the WHOLE command (substitutions can span
@@ -2769,11 +2752,8 @@ function classifyHeavy(command, depth) {
         const inner = classifyHeavy(evalPayload, d + 1);
         if (inner) return inner;
       }
-      const body = wrapperScriptBody(seg);
-      if (body !== null) {
-        const inner = classifyHeavy(body, d + 1);
-        if (inner) return inner;
-      }
+      const wb = wrapperScriptBody(seg), wi = wb !== null && classifyHeavy(wb, d + 1);
+      if (wi) return wi;
     }
   }
   if (d < T.maxDepth) {
@@ -5128,9 +5108,9 @@ function mainFlow(payload) {
   });
   if (hit) return hit;
   S.light = T.light.concat(launcherRegexes(command));
-  S.wrapCwd = (payload && typeof payload.cwd === 'string' && payload.cwd.charAt(0) === '/') ? payload.cwd : '';
+  S.wrapCwd = wrapScript.cwd(payload);
   const heavyNow = isHeavyCommand(command);
-  if (S.wrapResolved) { try { ah.metric('command_wrapper_resolved', ['verdict', S.wrapResolved]); } catch (e) { /* counting never fails a hook */ } }
+  wrapScript.count(S);
   if (!heavyNow) return 'allow';
   if (guarded(() => settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command, { payload: payload }))) return 'allow';
   if (guarded(() => {
