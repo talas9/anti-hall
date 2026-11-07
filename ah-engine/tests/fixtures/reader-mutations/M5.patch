@@ -1,0 +1,17 @@
+diff --git a/plugins/anti-hall/engine/logic/lib/69-tasks.js b/plugins/anti-hall/engine/logic/lib/69-tasks.js
+index 09333c98..2e0d46bf 100644
+--- a/plugins/anti-hall/engine/logic/lib/69-tasks.js
++++ b/plugins/anti-hall/engine/logic/lib/69-tasks.js
+@@ -20,7 +20,11 @@ var tk = {
+   // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
+   tasksOf: function (home, sid, path, variant) {
+     var st = tk.storeTasks(home, sid);
+-    if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
++    if (st !== null) {
++      // M5: the transcript's uncertainty is carried next to the store's list (the stage A shape): a consumer that discards the whole set on `unsure` loses the store's tasks
++      var tr = typeof path === 'string' ? ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid) : null;
++      return { tasks: tk.withStore([], st), unsure: tr !== null && !!tr.unsure, unreadable: false, store: true };
++    }
+     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
+     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
+     r.store = false;

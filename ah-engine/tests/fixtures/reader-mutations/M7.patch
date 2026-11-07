@@ -1,0 +1,13 @@
+diff --git a/ah-engine/src/checks/taskstate/store.rs b/ah-engine/src/checks/taskstate/store.rs
+index 0052d2d8..94a2de4a 100644
+--- a/ah-engine/src/checks/taskstate/store.rs
++++ b/ah-engine/src/checks/taskstate/store.rs
+@@ -70,7 +70,7 @@ pub fn has_open(home: &str, session: &str) -> Option<bool> {
+ /// guard also leaves undecided).
+ pub fn session_has_open(home: &str, session: Option<&str>, transcript: Option<&str>) -> Option<bool> {
+     if let Some(open) = session.and_then(|sid| has_open(home, sid)) {
+-        return Some(open);
++        return Some(false);
+     }
+     let path = transcript.filter(|t| !t.is_empty())?;
+     crate::script::host_d::guard_open_tasks(path, defaults::num("taskstate.tail_bytes"))

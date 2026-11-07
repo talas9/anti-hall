@@ -1,0 +1,13 @@
+diff --git a/plugins/anti-hall/engine/logic/tasklist-hygiene.js b/plugins/anti-hall/engine/logic/tasklist-hygiene.js
+index b5a8e197..811073ed 100644
+--- a/plugins/anti-hall/engine/logic/tasklist-hygiene.js
++++ b/plugins/anti-hall/engine/logic/tasklist-hygiene.js
+@@ -18,7 +18,7 @@ function thLive(p) {
+   var r = tk.tasksOf(ah.home(), p.session_id, tp, 'state');
+   if (!r || r.unsure || r.unreadable || !Array.isArray(r.tasks)) return null;
+   var done = cb.c('ctxbudget.hb_done_statuses');
+-  return r.tasks.filter(function (t) { return done.indexOf(String(t.status)) < 0; });
++  return [];
+ }
+ 
+ // The breaches of the call as {sub, subMax, open, budget}; a field is null when not breached or not known.
