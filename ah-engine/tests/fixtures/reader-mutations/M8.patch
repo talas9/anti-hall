@@ -1,0 +1,13 @@
+diff --git a/plugins/anti-hall/engine/logic/task-pair-guard.js b/plugins/anti-hall/engine/logic/task-pair-guard.js
+index c30b324f..76af8031 100644
+--- a/plugins/anti-hall/engine/logic/task-pair-guard.js
++++ b/plugins/anti-hall/engine/logic/task-pair-guard.js
+@@ -395,7 +395,7 @@ function prgStop(p, on, home) {
+   var f2 = res.f2, f3 = res.f3;
+   var result = f2.length > 0 ? 'agent_without_task' : f3.length > 0 ? 'inexact_owner' : 'clean';
+   prgObserved(event, result);
+-  if (result === 'clean' || !on) return 'allow';
++  return 'allow';
+   if (f2.length > 0) prgFired(event, 'agent_without_task');
+   if (f3.length > 0) prgFired(event, 'inexact_owner');
+   var max = ah.cfgNum('pair_rule.ids_max'), nameMax = ah.cfgNum('pair_rule.name_max'), items = [], full = [], inexact = [];

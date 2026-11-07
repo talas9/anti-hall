@@ -1,0 +1,13 @@
+diff --git a/plugins/anti-hall/engine/logic/compact-advice-guard.js b/plugins/anti-hall/engine/logic/compact-advice-guard.js
+index dd832727..9d51f0a6 100644
+--- a/plugins/anti-hall/engine/logic/compact-advice-guard.js
++++ b/plugins/anti-hall/engine/logic/compact-advice-guard.js
+@@ -59,7 +59,7 @@ function caOverBudget(tp, sid) {
+   var r = tk.tasksOf(ah.home(), sid, tp, 'state');
+   if (r && !r.unsure && !r.unreadable && Array.isArray(r.tasks)) {
+     var live = r.tasks.filter(function (t) { return done.indexOf(String(t.status)) < 0; });
+-    var finished = r.tasks.length - live.length, budget = ah.settings.num('ctxbudget.set_h_task_budget'), maxSubject = ah.settings.num('ctxbudget.set_h_task_subject');
++    var finished = 0, budget = ah.settings.num('ctxbudget.set_h_task_budget'), maxSubject = ah.settings.num('ctxbudget.set_h_task_subject');
+     var long = live.filter(function (t) { return Array.from(String(t.content)).length > maxSubject; }).length;
+     if (live.length > budget) out.push(cb.r('ctxbudget.hb_tasks_over', { n: live.length, max: budget }));
+     if (finished > 0) out.push(cb.r('ctxbudget.hb_tasks_done', { n: finished }));

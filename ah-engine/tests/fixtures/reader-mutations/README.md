@@ -92,3 +92,35 @@ Run as above, with the file `task_reader_open_set.rs` and both goldens copied in
 | M6 | FAIL | 244 | 7700 | `tasklist_stop` in every cell whose store holds open tasks: the block no longer names ids 1, 3 (and 7, 8, ...) |
 
 The open-set gate (`the_reader_keeps_every_open_task...`) stays green under M6 (the reader is untouched) and is the one M1-M4 target.
+
+# Hand-written obligations (W1-1F)
+
+The two goldens are CAPTURED on `c2ebe24d` and hold the base's defects as the expected answer, so they are only held to a direction. The
+cells added by W1-1F in `task_reader_open_set.rs` are written by hand from the spec and assert the EXACT answer:
+
+| group | test | prefix | what |
+|---|---|---|---|
+| open set | `the_reader_meets_the_hand_written_open_set_obligations` | `open|` | exact open set, task-guard Stop and Rust ladder (12 cells) |
+| consumers | `the_consumers_meet_the_hand_written_obligations` | `oblig|` | exact kind, named task ids, count and message words of each of the 8 consumers (12 cells) |
+
+Cell kinds: `*|allow|*` exact ALLOW (rule 14 (b)); `*|hard|*` obligations the base meets (rule 14 (c), they name the blocking task id and
+the agent that owns no task); `*|d1|*`, `*|d2|*`, `*|d3|*`, `*|d4|*`, `*|g|*` obligations the base gets wrong, staged in
+`../task-reader-expected-failures.toml` (XF-D1/D4 -> W1-4, XF-D2 -> W1-5, XF-D3 -> W1-3, XF-G -> W1-6). A failing cell that is not listed is a
+NEW failure; a listed cell that passes is STALE (remove the entry, report `XF transferred`); a listed `case` that is no cell is refused.
+
+One mutation per consumer kind (apply as above; the obligation tests alone catch each one, `-- obligations`):
+
+| patch | consumer | mutation | first cell that fails |
+|---|---|---|---|
+| M7 | `ladder` | `session_has_open` answers `Some(false)` when the store answers | `oblig|hard|every_consumer_reads_the_store_list`, `open|hard|store_tasks_pending_and_in_progress` |
+| M8 | `pair_stop` | the Stop never blocks | `oblig|hard|an_agent_with_no_task_blocks_the_stop` |
+| M9 | `pair_post` | the spawn nudge never fires | `oblig|hard|an_agent_with_no_task_blocks_the_stop` |
+| M10 | `pair_pre` | a task owned by another agent counts as paired | `oblig|allow|the_running_agent_owns_an_open_task` |
+| M6 | `tasklist_stop` | (above) | `oblig|hard|every_consumer_reads_the_store_list` |
+| M11 | `tracker_prompt` | the tracker ignores the store's tasks | `oblig|hard|every_consumer_reads_the_store_list` |
+| M12 | `hygiene_post` | the hygiene check sees no open tasks | `oblig|hard|every_consumer_reads_the_store_list` |
+| M13 | `compact_advice` | finished tasks are not counted | `oblig|hard|every_consumer_reads_the_store_list` |
+| M5 | pair guard (stage A shape) | (above) | `oblig|hard|pairing_facts_survive_an_uncertain_transcript` |
+
+Against `369edde3` (stage A) the same files fail: NEW failure `oblig|hard|pairing_facts_survive_an_uncertain_transcript` (`pair_stop` and
+`pair_post` allow), and two STALE entries (`open|d1|*`: stage A does fix those open sets).
