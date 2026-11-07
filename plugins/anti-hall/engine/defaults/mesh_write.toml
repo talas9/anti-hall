@@ -3107,6 +3107,17 @@ value = "read-peek-mismatch"
 doc = "The message of that log entry; the entry's context carries the id, the reason, the unread count, the printed count (0) and the time."
 value = "read printed no message but the unread count is not zero"
 
+[mesh_write.mm_log_interval_ms]
+doc = "The least time between two log lines of the read/peek mismatch (#615), per reason: a loop that keeps reading an empty mailbox that reports unread mail logs one line per interval; the counter mesh_read_peek_mismatch still counts every one. 0 logs every one."
+value = 60000
+min = 0
+max = 86400000
+unit = "ms"
+
+[mesh_write.mm_stamp_prefix]
+doc = "The prefix of the stamp file (in the log directory, the reason after it) that holds the time of the last mismatch log line, so the interval holds across mesh processes."
+value = "mm-warn-"
+
 [metric.mesh_read_peek_mismatch]
 doc = "Reads or peeks that returned no message while reporting a non-zero unread count (the #615 disagreement), by reason."
 value = { kind = "counter", unit = "reads", labels = ["reason"] }

@@ -21,57 +21,115 @@ fn seen_path(state_dir: &Path, session: &str) -> Option<PathBuf> {
     ok.then(|| state_dir.join(defaults::text("devswarm_wire.advisory_dir")).join(format!("{session}{}", defaults::text("mesh_write.json_suffix"))))
 }
 
-fn read_seen(p: &Path) -> Option<u64> {
-    serde_json::from_str::<Value>(&std::fs::read_to_string(p).ok()?).ok()?.get("gen")?.as_u64()
+/// The marker of a session: the generation it was told up to, when each workspace's activity change was last told, and the net
+/// changes the hysteresis is still holding back.
+#[derive(Default)]
+struct Marker {
+    gen_seen: Option<u64>,
+    told: BTreeMap<String, i64>,
+    held: BTreeMap<String, Held>,
 }
 
-/// When each workspace's activity change was last put in front of this session (workspace -> the edge's `at_ms`), from its marker.
-fn read_advised(p: &Path) -> BTreeMap<String, i64> {
-    let v = std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null); // keep: a missing or bad marker is the empty map
-    v.get(defaults::text("devswarm_wire.advisory_act_key"))
+/// A net activity change held back by the dwell: the state the session was last told, the state now, when it happened, and how many
+/// raw changes it folds.
+#[derive(Clone, Debug, PartialEq)]
+struct Held {
+    from: String,
+    to: String,
+    at_ms: i64,
+    count: u64,
+}
+
+fn read_marker(p: &Path) -> Marker {
+    let v = std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null); // keep: a missing or bad marker is the empty one
+    let told = v
+        .get(defaults::text("devswarm_wire.advisory_act_key"))
         .and_then(Value::as_object)
         .map(|m| m.iter().filter_map(|(k, t)| Some((k.clone(), t.as_i64()?))).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let held = v
+        .get(defaults::text("devswarm_wire.advisory_pending_key"))
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, h)| {
+                    let s = |f: &str| h.get(f).and_then(Value::as_str).map(str::to_string);
+                    Some((k.clone(), Held { from: s("from")?, to: s("to")?, at_ms: h.get("at")?.as_i64()?, count: h.get("n")?.as_u64()? }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Marker { gen_seen: v.get("gen").and_then(Value::as_u64), told, held }
 }
 
-/// Hysteresis for the activity edges (`devswarm_rt.activity_min_dwell_s`): per workspace the batch is folded to its net change (a flip
-/// and its flip back leave nothing), and a net change within `dwell_ms` of the one this session was last told about is silent. Returns
-/// the edges to advise, the activity edges dropped, and the updated told-at map (only workspaces whose change is advised move).
-fn settle_activity(edges: Vec<Edge>, told: &BTreeMap<String, i64>, dwell_ms: i64) -> (Vec<Edge>, u64, BTreeMap<String, i64>) {
+/// Hysteresis for the activity edges (`devswarm_rt.activity_min_dwell_s`): per workspace the batch (and what an earlier batch held
+/// back) is folded to its net change (a flip and its flip back leave nothing), and a net change within `dwell_ms` of the one this
+/// session was last told about is HELD, not dropped: it is told on the first look after the dwell (the net state stays pending, so a
+/// workspace that changes once and stays changed is still reported). `now` is the clock the dwell is measured on; a clock that went
+/// back (`now` or the told time ahead of it) counts as the dwell passed. Returns the edges to advise, the activity edges dropped, and
+/// the updated told-at and held maps (only workspaces whose change is advised move the told time).
+fn settle_activity(
+    edges: Vec<Edge>,
+    told: &BTreeMap<String, i64>,
+    held: &BTreeMap<String, Held>,
+    now: i64,
+    dwell_ms: i64,
+) -> (Vec<Edge>, u64, BTreeMap<String, i64>, BTreeMap<String, Held>) {
     let mut told = told.clone();
     let (mut out, mut dropped) = (Vec::with_capacity(edges.len()), 0u64);
     let is_act = |e: &Edge| e.kind == EdgeKind::Activity;
-    let mut net: BTreeMap<String, (String, String, i64, usize)> = BTreeMap::new(); // ws -> (first from, last to, last at_ms, count)
+    let mut net: BTreeMap<String, Held> = held.clone();
     for e in edges.iter().filter(|e| is_act(e)) {
-        let slot = net.entry(e.ws.clone()).or_insert_with(|| (e.from.clone(), e.to.clone(), e.at_ms, 0));
-        slot.1 = e.to.clone();
-        slot.2 = e.at_ms;
-        slot.3 += 1;
+        let slot = net.entry(e.ws.clone()).or_insert_with(|| Held { from: e.from.clone(), to: e.to.clone(), at_ms: e.at_ms, count: 0 });
+        slot.to = e.to.clone();
+        slot.at_ms = e.at_ms;
+        slot.count += 1;
     }
+    let mut held_now: BTreeMap<String, Held> = BTreeMap::new();
     let mut kept_ws: Vec<&String> = Vec::new();
-    for (ws, (from, to, at, count)) in &net {
-        let flipped_back = from == to;
-        let within_dwell = told.get(ws).is_some_and(|t| at.saturating_sub(*t) < dwell_ms);
-        if flipped_back || within_dwell {
-            dropped += *count as u64;
+    for (ws, h) in &net {
+        // the dwell runs from the telling to now; a told time ahead of now (the clock went back) is no evidence of a recent telling
+        let within_dwell = told.get(ws).is_some_and(|t| *t <= now && now.saturating_sub(*t) < dwell_ms);
+        if h.from == h.to {
+            dropped += h.count;
+        } else if within_dwell {
+            held_now.insert(ws.clone(), h.clone());
         } else {
-            dropped += (*count as u64).saturating_sub(1);
+            dropped += h.count.saturating_sub(1);
             kept_ws.push(ws);
-            told.insert(ws.clone(), *at);
+            told.insert(ws.clone(), now.max(h.at_ms));
         }
     }
     let mut emitted: std::collections::BTreeSet<&String> = std::collections::BTreeSet::new();
+    let net_edge = |ws: &String, base: Edge| {
+        let h = &net[ws];
+        Edge { from: h.from.clone(), to: h.to.clone(), at_ms: h.at_ms, ..base }
+    };
     for e in &edges {
         if !is_act(e) {
             out.push(e.clone());
-        } else if kept_ws.contains(&&e.ws) && !emitted.contains(&e.ws) {
+        } else if kept_ws.contains(&&e.ws) && emitted.insert(&e.ws) {
             // the net change, at the place of the workspace's first activity edge
-            let (from, to, at, _) = &net[&e.ws];
-            out.push(Edge { from: from.clone(), to: to.clone(), at_ms: *at, ..e.clone() });
-            emitted.insert(&e.ws);
+            out.push(net_edge(&e.ws, e.clone()));
         }
     }
-    (out, dropped, told)
+    // a change held by an earlier batch that is now due and had no edge in this one
+    for ws in kept_ws {
+        if emitted.insert(ws) {
+            let base = Edge {
+                ws: ws.clone(),
+                kind: EdgeKind::Activity,
+                from: String::new(),
+                to: String::new(),
+                generation: 0,
+                at_ms: 0,
+                while_down: false,
+                hold_until_ms: 0,
+            };
+            out.push(net_edge(ws, base));
+        }
+    }
+    (out, dropped, told, held_now)
 }
 
 fn prune_old(dir: &Path, now: i64) {
@@ -99,10 +157,16 @@ fn label(rt: &Rt, ws: &str) -> String {
 pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<String> {
     let path = seen_path(state_dir, session);
     let gen_now = rt.current().generation;
-    let seen = path.as_deref().and_then(read_seen);
+    let marker = path.as_deref().map(read_marker).unwrap_or_default();
+    let seen = marker.gen_seen.filter(|_| path.is_some());
     let dwell_ms = defaults::num("devswarm_rt.activity_min_dwell_s") as i64 * 1000;
-    let (edges, dropped, told) =
-        settle_activity(seen.map(|s| rt.edges_since(s)).unwrap_or_default(), &path.as_deref().map(read_advised).unwrap_or_default(), dwell_ms);
+    let (edges, dropped, mut told, mut held) = settle_activity(seen.map(|s| rt.edges_since(s)).unwrap_or_default(), &marker.told, &marker.held, now, dwell_ms);
+    // per-workspace pruning: a workspace the (readable) state no longer knows keeps no told time and nothing held
+    let snap = rt.current();
+    if snap.app_readable {
+        told.retain(|ws, _| snap.workspaces.contains_key(ws));
+        held.retain(|ws, _| snap.workspaces.contains_key(ws));
+    }
     if dropped > 0 {
         crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_suppressed"))], dropped);
     }
@@ -126,8 +190,11 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
         Some(Some(crate::checks::Verdict::Exact(x))) => serde_json::from_str::<Value>(&x.out).ok()?,
         _ => return None,
     };
-    if let Some(mark) = ans.get("mark").and_then(Value::as_u64) {
-        write_seen(path.as_deref()?, mark, &told, now)?;
+    // the marker is rewritten when the script moves the generation, and also when a held change was told or newly held with no
+    // new generation (otherwise a change told after its dwell would be told again at every prompt)
+    let mark = ans.get("mark").and_then(Value::as_u64).or_else(|| (told != marker.told || held != marker.held).then_some(seen).flatten());
+    if let Some(mark) = mark {
+        write_seen(path.as_deref()?, mark, &told, &held, now)?;
     }
     let nag = crate::dsact::nag::take_pending(state_dir);
     let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
@@ -137,11 +204,17 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     }
 }
 
-fn write_seen(path: &Path, gen_now: u64, told: &BTreeMap<String, i64>, now: i64) -> Option<()> {
+fn write_seen(path: &Path, gen_now: u64, told: &BTreeMap<String, i64>, held: &BTreeMap<String, Held>, now: i64) -> Option<()> {
     let dir = path.parent()?;
     std::fs::create_dir_all(dir).ok()?;
     prune_old(dir, now);
-    crate::atomic::write(path, json!({"gen": gen_now, defaults::text("devswarm_wire.advisory_act_key"): told}).to_string()).ok()
+    let held: serde_json::Map<String, Value> =
+        held.iter().map(|(k, h)| (k.clone(), json!({"from": h.from, "to": h.to, "at": h.at_ms, "n": h.count}))).collect();
+    crate::atomic::write(
+        path,
+        json!({"gen": gen_now, defaults::text("devswarm_wire.advisory_act_key"): told, defaults::text("devswarm_wire.advisory_pending_key"): held}).to_string(),
+    )
+    .ok()
 }
 
 /// The statusline segment: workspaces in progress, stuck, unread mail.
@@ -307,35 +380,100 @@ mod tests {
 
     const DWELL: i64 = 300_000;
 
+    fn settle(
+        edges: Vec<Edge>,
+        told: &BTreeMap<String, i64>,
+        held: &BTreeMap<String, Held>,
+        now: i64,
+    ) -> (Vec<Edge>, u64, BTreeMap<String, i64>, BTreeMap<String, Held>) {
+        settle_activity(edges, told, held, now, DWELL)
+    }
+
     #[test]
     fn a_flip_and_its_flip_back_in_one_batch_are_silent_and_counted() {
         let edges = vec![act("w1", "working", "stuck", 1, 1000), act("w1", "stuck", "working", 2, 2000)];
-        let (out, dropped, told) = settle_activity(edges, &BTreeMap::new(), DWELL);
+        let (out, dropped, told, held) = settle(edges, &BTreeMap::new(), &BTreeMap::new(), 2000);
         assert!(out.is_empty());
         assert_eq!(dropped, 2);
-        assert!(told.is_empty());
+        assert!(told.is_empty() && held.is_empty());
     }
 
     #[test]
     fn a_net_change_is_told_once_and_remembered() {
         let edges = vec![act("w1", "working", "stuck", 1, 1000), act("w1", "stuck", "working", 2, 2000), act("w1", "working", "stuck", 3, 3000)];
-        let (out, dropped, told) = settle_activity(edges, &BTreeMap::new(), DWELL);
+        let (out, dropped, told, held) = settle(edges, &BTreeMap::new(), &BTreeMap::new(), 3000);
         assert_eq!(out.len(), 1);
         assert_eq!((out[0].from.as_str(), out[0].to.as_str(), out[0].at_ms), ("working", "stuck", 3000));
         assert_eq!(dropped, 2);
         assert_eq!(told.get("w1"), Some(&3000));
+        assert!(held.is_empty());
     }
 
     #[test]
-    fn a_change_within_the_dwell_of_the_last_one_told_is_silent_and_one_after_it_is_told() {
+    fn a_change_within_the_dwell_is_held_and_one_after_it_is_told() {
         let told = BTreeMap::from([("w1".to_string(), 1000i64)]);
-        let (out, dropped, kept) = settle_activity(vec![act("w1", "stuck", "working", 5, 1000 + DWELL - 1)], &told, DWELL);
+        let (out, dropped, kept, held) = settle(vec![act("w1", "stuck", "working", 5, 1000 + DWELL - 1)], &told, &BTreeMap::new(), 1000 + DWELL - 1);
         assert!(out.is_empty());
-        assert_eq!(dropped, 1);
-        assert_eq!(kept.get("w1"), Some(&1000), "a silent change does not move the told time");
-        let (out, dropped, kept) = settle_activity(vec![act("w1", "stuck", "working", 6, 1000 + DWELL)], &told, DWELL);
+        assert_eq!(dropped, 0, "held, not dropped");
+        assert_eq!(kept.get("w1"), Some(&1000), "a held change does not move the told time");
+        assert_eq!(held.get("w1").map(|h| (h.from.as_str(), h.to.as_str(), h.count)), Some(("stuck", "working", 1)));
+        let (out, dropped, kept, held) = settle(vec![act("w1", "stuck", "working", 6, 1000 + DWELL)], &told, &BTreeMap::new(), 1000 + DWELL);
         assert_eq!((out.len(), dropped), (1, 0));
         assert_eq!(kept.get("w1"), Some(&(1000 + DWELL)));
+        assert!(held.is_empty());
+    }
+
+    /// The reported case: told stuck -> working at t=0, working -> stuck at t=60 s, then no further change. The session must be told
+    /// it is stuck once the dwell has passed, from the held net state alone (no new edge).
+    #[test]
+    fn a_change_inside_the_dwell_that_never_changes_again_is_told_after_the_dwell() {
+        let told = BTreeMap::from([("w1".to_string(), 0i64)]);
+        let (out, _, told, held) = settle(vec![act("w1", "working", "stuck", 2, 60_000)], &told, &BTreeMap::new(), 60_000);
+        assert!(out.is_empty());
+        assert_eq!(told.get("w1"), Some(&0));
+        assert_eq!(held.len(), 1);
+        // still inside the dwell at a later look, no edges: still held
+        let (out, _, told, held) = settle(Vec::new(), &told, &held, DWELL - 1);
+        assert!(out.is_empty());
+        assert_eq!(held.len(), 1);
+        // after the dwell, with no edge at all: told, and nothing is held afterwards
+        let (out, dropped, told, held) = settle(Vec::new(), &told, &held, DWELL);
+        assert_eq!((out.len(), dropped), (1, 0));
+        assert_eq!((out[0].ws.as_str(), out[0].from.as_str(), out[0].to.as_str()), ("w1", "working", "stuck"));
+        assert_eq!(told.get("w1"), Some(&DWELL));
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn a_held_change_that_flips_back_is_dropped_and_counted_with_what_it_folded() {
+        let told = BTreeMap::from([("w1".to_string(), 0i64)]);
+        let (_, _, told, held) = settle(vec![act("w1", "working", "stuck", 2, 60_000)], &told, &BTreeMap::new(), 60_000);
+        let (out, dropped, _, held) = settle(vec![act("w1", "stuck", "working", 3, 90_000)], &told, &held, 90_000);
+        assert!(out.is_empty() && held.is_empty());
+        assert_eq!(dropped, 2);
+    }
+
+    #[test]
+    fn the_marker_keeps_the_told_times_and_the_held_changes_between_looks() {
+        defaults::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("ah-advisory-marker-{}", std::process::id()));
+        let path = dir.join("s1.json");
+        let told = BTreeMap::from([("w1".to_string(), 7i64)]);
+        let held = BTreeMap::from([("w1".to_string(), Held { from: "working".into(), to: "stuck".into(), at_ms: 60_000, count: 2 })]);
+        write_seen(&path, 9, &told, &held, 0).unwrap();
+        let m = read_marker(&path);
+        assert_eq!((m.gen_seen, m.told, m.held), (Some(9), told, held));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_clock_that_went_back_does_not_silence_a_workspace_for_ever() {
+        // told at 10 s ahead of now: the dwell cannot be measured, so the change is told (and the told time is reset to now)
+        let told = BTreeMap::from([("w1".to_string(), 10_000_000i64)]);
+        let (out, _, kept, held) = settle(vec![act("w1", "working", "stuck", 2, 500)], &told, &BTreeMap::new(), 500);
+        assert_eq!(out.len(), 1);
+        assert_eq!(kept.get("w1"), Some(&500));
+        assert!(held.is_empty());
     }
 
     #[test]
@@ -343,7 +481,8 @@ mod tests {
         let mut life = act("w2", "active", "archived", 2, 10);
         life.kind = EdgeKind::Lifecycle;
         let told = BTreeMap::from([("w1".to_string(), 1000i64)]);
-        let (out, dropped, _) = settle_activity(vec![act("w1", "working", "stuck", 1, 1001), life.clone(), act("w3", "working", "stuck", 3, 20)], &told, 0);
+        let (out, dropped, _, _) =
+            settle_activity(vec![act("w1", "working", "stuck", 1, 1001), life.clone(), act("w3", "working", "stuck", 3, 20)], &told, &BTreeMap::new(), 1001, 0);
         assert_eq!(dropped, 0);
         assert_eq!(out.iter().map(|e| e.ws.as_str()).collect::<Vec<_>>(), ["w1", "w2", "w3"]);
     }

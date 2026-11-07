@@ -557,3 +557,7 @@ value = "none"
 [devswarm_wire.advisory_act_key]
 doc = "The key of the per-session advisory marker that holds, per workspace, when its activity change was last told (the activity hysteresis)."
 value = "act"
+
+[devswarm_wire.advisory_pending_key]
+doc = "The key of the per-session advisory marker that holds, per workspace, the net activity change (from, to, at_ms, count) the hysteresis held back: it is told once the dwell since the last telling has passed, even if no later change arrives."
+value = "pend"

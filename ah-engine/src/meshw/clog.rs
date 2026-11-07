@@ -39,6 +39,25 @@ fn dir_of(inv: &Inv) -> Option<PathBuf> {
     Some(inv.write_home.join(defaults::text("mesh_write.dir_anti_hall")).join(defaults::text("mesh_write.dir_logs")))
 }
 
+/// Whether a warning named `name` may be logged now: at most one per `interval_ms`, counted from the last time this returned `true`
+/// (a stamp file of that name in the log directory, so it holds across the short-lived `mesh` processes). `interval_ms` 0, no log
+/// directory, an unreadable stamp or a clock that went back all allow it; an unwritable stamp allows it too (a repeated line is
+/// better than a lost one).
+pub fn warn_due(inv: &Inv, name: &str, interval_ms: i64) -> bool {
+    let Some(dir) = dir_of(inv) else { return true };
+    if interval_ms <= 0 {
+        return true;
+    }
+    let stamp = dir.join(name);
+    let last = std::fs::read_to_string(&stamp).ok().and_then(|t| t.trim().parse::<i64>().ok()); // keep: no stamp is the first warning
+    if last.is_some_and(|l| l <= inv.now && inv.now - l < interval_ms) {
+        return false;
+    }
+    crate::discard::harmless(std::fs::create_dir_all(&dir)); // keep: the write below fails the same way and the warning goes out
+    crate::discard::harmless(crate::atomic::write(&stamp, inv.now.to_string())); // keep: an unwritten stamp only lets the next warning through
+    true
+}
+
 /// Always ready: Node's `writeEntry` (anti-hall-log.js:213-248) never refuses the verb when it has no log directory (a test
 /// context without one); it drops the line and says why once on stderr, which `write_entry` does. Kept for the callers'
 /// signature.
@@ -220,6 +239,22 @@ mod tests {
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap_or_default();
         d
+    }
+
+    #[test]
+    fn a_warning_is_due_once_per_interval_and_again_after_it_or_when_the_clock_went_back() {
+        let home = scratch("due");
+        let mut i = inv(&home, &[]);
+        i.now = 1_000_000;
+        assert!(warn_due(&i, "mm-warn-x", 60_000), "the first one goes out");
+        i.now = 1_030_000;
+        assert!(!warn_due(&i, "mm-warn-x", 60_000), "inside the interval: silent");
+        assert!(warn_due(&i, "mm-warn-y", 60_000), "another reason has its own stamp");
+        i.now = 1_060_000;
+        assert!(warn_due(&i, "mm-warn-x", 60_000), "after the interval");
+        i.now = 500;
+        assert!(warn_due(&i, "mm-warn-x", 60_000), "a clock that went back is no evidence of a recent line");
+        assert!(warn_due(&i, "mm-warn-x", 0), "0 logs every one");
     }
 
     #[test]

@@ -7595,10 +7595,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.mesh_never_read_read_sep` | ` ; ` |  |  | The separator of the direct-read commands in the never-read hint. |
 | `mesh_write.messages_added_columns` | `9 items` |  |  | The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`. |
 | `mesh_write.min_plausible_start_ms` | `1000000000000` |  |  | A recorded reader start time below this is not an epoch-milliseconds value, so no pid-reuse conclusion is drawn from it. |
+| `mesh_write.mm_log_interval_ms` | `60000` |  | ms | The least time between two log lines of the read/peek mismatch (#615), per reason: a loop that keeps reading an empty mailbox that reports unread mail logs one line per interval; the counter mesh_read_peek_mismatch still counts every one. 0 logs every one. |
 | `mesh_write.mm_msg` | `read printed no message but the unread count is not zero` |  |  | The message of that log entry; the entry's context carries the id, the reason, the unread count, the printed count (0) and the time. |
 | `mesh_write.mm_op` | `read-peek-mismatch` |  |  | The op of the log entry written when a read or peek prints nothing but reports unread mail (#615). |
 | `mesh_write.mm_reason_peek` | `peek_empty_unread` |  |  | The `reason` label of mesh_read_peek_mismatch for a peek-primary that listed no message while reporting a non-zero unread count. |
 | `mesh_write.mm_reason_read` | `read_empty_unread` |  |  | The `reason` label of mesh_read_peek_mismatch for a read-primary that printed no message while reporting a non-zero unread count. |
+| `mesh_write.mm_stamp_prefix` | `mm-warn-` |  |  | The prefix of the stamp file (in the log directory, the reason after it) that holds the time of the last mismatch log line, so the interval holds across mesh processes. |
 | `mesh_write.mode_on` | `on` |  |  | The `mode` of an on-mode record in the shadow log. |
 | `mesh_write.monitor_failure_threshold` | `3` |  |  | Consecutive monitor failures that make a live ingest daemon FAILING. |
 | `mesh_write.month_names` | `12 items` |  |  | Month abbreviations of that start time, January first (what Date.parse reads). |
@@ -10208,6 +10210,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_wire.advisory_kinds` | `lifecycle, paused, activity, pr, checks` |  |  | The kinds of change an advisory mentions (lifecycle, paused, activity, unread, plan_step, pr, checks). |
 | `devswarm_wire.advisory_max_chars` | `600` |  |  | Most characters of one advisory; older changes are summarised as a count when it would be longer. |
 | `devswarm_wire.advisory_max_edges` | `8` |  |  | Most changes listed by name in one advisory. |
+| `devswarm_wire.advisory_pending_key` | `pend` |  |  | The key of the per-session advisory marker that holds, per workspace, the net activity change (from, to, at_ms, count) the hysteresis held back: it is told once the dwell since the last telling has passed, even if no later change arrives. |
 | `devswarm_wire.advisory_prune_ms` | `604800000` |  | ms | A session's seen-generation file untouched for this long is removed when the next advisory is written. |
 | `devswarm_wire.advisory_session_max` | `128` |  |  | Longest session id (characters) used as a file name; a longer or unsafe id gets no advisory. |
 | `devswarm_wire.archive_log_name` | `.anti-hall/logs/devswarm-auto-archive.ndjson` |  |  | Node's auto-archive log under the home directory's logs directory; the newest ok line for a workspace dates its archive. |

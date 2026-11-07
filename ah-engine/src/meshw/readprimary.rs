@@ -247,13 +247,13 @@ fn text_lines(rows: &[OVal]) -> String {
         .join(defaults::text("mesh_write.text_row_sep"))
 }
 
-/// The `ackCommand` of a read: the JSON-quoted binary path (the quotes wrap the path only) then the verb, the ack verb and the ids,
+/// The `ackCommand` of a read: the single-quoted binary path (`sh` expands nothing inside; the quotes wrap the path only) then the verb, the ack verb and the ids,
 /// so `sh -c` runs it as printed.
 fn ack_command(bin: &str, id: &str, rid: &str) -> String {
     fill_once(
         defaults::text("mesh_write.ack_command"),
         &[
-            ("bin", OVal::Str(bin.to_string()).stringify()),
+            ("bin", crate::checks::devswarm_role::text::sh_quote(bin)),
             ("verb", crate::checks::devswarm_role::text::engine_verb().to_string()),
             ("id", id.to_string()),
             ("rid", rid.to_string()),
@@ -1919,7 +1919,9 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     if rows.is_empty() && unread_count > 0.0 && !hist {
         let reason = defaults::text(if peek { "mesh_write.mm_reason_peek" } else { "mesh_write.mm_reason_read" });
         crate::metrics::bump("mesh_read_peek_mismatch", &[("reason", reason)]);
-        if crate::meshw::clog::ready(inv).is_ok() {
+        // the counter counts every one; the log line goes out at most once per mesh_write.mm_log_interval_ms per reason
+        let stamp = format!("{}{reason}", defaults::text("mesh_write.mm_stamp_prefix"));
+        if crate::meshw::clog::ready(inv).is_ok() && crate::meshw::clog::warn_due(inv, &stamp, defaults::num("mesh_write.mm_log_interval_ms") as i64) {
             crate::meshw::clog::warn_event(
                 inv,
                 defaults::text("mesh_write.mm_op"),
@@ -2176,16 +2178,19 @@ mod tests {
     }
 
     #[test]
-    fn the_ack_command_runs_as_printed_even_with_a_space_in_the_path() {
-        for dir in ["plain", "with space"] {
-            let base = scratch_inv(&format!("ack-{}", dir.len())).home;
+    fn the_ack_command_runs_as_printed_even_with_a_space_dollar_or_backtick_in_the_path() {
+        for (i, dir) in ["plain", "with space", "a$b", "a`b", "it's"].into_iter().enumerate() {
+            let base = scratch_inv(&format!("ack-{i}")).home;
             let home = base.join(dir);
             let bin = stub_engine(&home);
             let cmd = ack_command(&bin, "w1", "r1");
-            assert!(cmd.starts_with(&format!("\"{bin}\" mesh inbox ack-primary w1")), "quote wraps the path only: {cmd}");
+            assert!(
+                cmd.starts_with(&format!("{} mesh inbox ack-primary w1", crate::checks::devswarm_role::text::sh_quote(&bin))),
+                "quote wraps the path only: {cmd}"
+            );
             let (ok, out) = sh(&cmd);
             assert!(ok, "exit 0 for {cmd}");
-            assert_eq!(out, "mesh inbox ack-primary w1 --receipt r1");
+            assert_eq!(out, "mesh inbox ack-primary w1 --receipt r1", "`$` and a backtick in {dir:?} are not expanded");
         }
     }
 
