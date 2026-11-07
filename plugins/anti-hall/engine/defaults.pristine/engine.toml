@@ -1425,8 +1425,18 @@ value = "install.notice"
 doc = "The note the engine writes (in the state directory) when it could not load the plugin's defaults; hooks/install.sh reads it to tell the session that the guards are not running."
 value = "defaults.error"
 
+[install.defaults_probe_verb]
+doc = "The engine verb hooks/install.sh runs, before it tells the session that the guards are not running, when a defaults.error file is present: it loads this plugin's defaults, is read-only, and exits non-zero only when they cannot be loaded. A stale defaults.error (the engine rewrites it at every failure and never removes it) with a passing probe says nothing."
+value = "config"
+
+[install.defaults_probe_s]
+doc = "Seconds the defaults probe may run. A probe that does not finish in time is not taken as a failure: the notice stays silent."
+value = 3
+min = 1
+max = 30
+
 [install.file_notice_log]
-doc = "Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory; the counters install_notice_json read it."
+doc = "Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory. Nothing reads it yet (it is not ingested into the telemetry counters); it is a record for a person or a later change to read."
 value = "install-notices.log"
 
 [install.explicit_fail_exit]

@@ -72,20 +72,39 @@ json_notice() { # json_notice TEXT: the whole notice object
     while ((i = index(t, "{text}")) > 0) { o = o substr(t, 1, i - 1) n; t = substr(t, i + 6) }
     print o t }'
 }
-json_merge() { # json_merge TEXT OUT: the client's own SessionStart output with the notice added (never a second JSON object)
-  case "$2" in
-    "") json_notice "$1" ;;
+json_merge() { # json_merge TEXT OUT: the client's own SessionStart output with the notice added (never a second JSON object).
+  # Exit 0 only when the notice is in the printed output; 1 when it could not be added (plain text, no JSON object, a systemMessage
+  # that is not a string), so the caller marks it shown only when it was. An existing systemMessage / additionalContext string gets
+  # the notice appended; a missing one is added.
+  _o=$(printf '%s' "$2" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')
+  case "$_o" in
+    "") json_notice "$1"; return 0 ;;
     "{"*"}")
-      case "$2" in
-        *'"systemMessage"'*) printf '%s\n' "$2" ;;
-        *)
-          if [ "$(printf '%s' "$2" | tr -d ' \t\r\n')" = '{}' ]; then json_notice "$1"
-          else printf '%s\n' "$2" | NOTICE=$(json_escape "$1") awk 'NR == 1 {
-              match($0, /^\{[ \t]*/); printf "{\"systemMessage\":\"%s\",%s\n", ENVIRON["NOTICE"], substr($0, RLENGTH + 1); next }
-              { print }'
-          fi ;;
-      esac ;;
-    *) printf '%s\n' "$2" ;;
+      if [ "$(printf '%s' "$_o" | tr -d ' ')" = '{}' ]; then json_notice "$1"; return 0; fi
+      _r=$(printf '%s\n' "$_o" | NOTICE=$(json_escape "$1") awk '
+        function app(s, key, add,   p, rest, off, i, c) {
+          p = index(s, "\"" key "\"")
+          if (!p) return ""
+          rest = substr(s, p + length(key) + 2)
+          if (!match(rest, /^ *: *"/)) return ""
+          off = p + length(key) + 2 + RLENGTH
+          for (i = off; i <= length(s); i++) { c = substr(s, i, 1); if (c == "\\") { i++; continue } if (c == "\"") break }
+          if (i > length(s)) return ""
+          return substr(s, 1, i - 1) (i > off ? " " : "") add substr(s, i)
+        }
+        function head(s) { match(s, /^\{ */); return RLENGTH }
+        {
+          n = ENVIRON["NOTICE"]; r = $0
+          if (index(r, "\"systemMessage\"")) { r = app(r, "systemMessage", n); if (r == "") exit 3 }
+          else { h = head(r); r = substr(r, 1, h) "\"systemMessage\":\"" n "\"," substr(r, h + 1) }
+          if (index(r, "\"additionalContext\"")) { x = app(r, "additionalContext", n); if (x != "") r = x }
+          else if (!index(r, "\"hookSpecificOutput\"")) {
+            h = head(r); r = substr(r, 1, h) "\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"" n "\"}," substr(r, h + 1)
+          }
+          print r
+        }') || { printf '%s\n' "$2"; return 1; }
+      printf '%s\n' "$_r"; return 0 ;;
+    *) printf '%s\n' "$2"; return 1 ;;
   esac
 }
 
@@ -97,6 +116,7 @@ json_merge() { # json_merge TEXT OUT: the client's own SessionStart output with 
 # unreadable or odd version text) says nothing. Versions compare by their numbers, with the old plugin-numbering floor
 # (launcher.legacy_scheme_floor) counting as older, exactly as the thin client compares them.
 notice_text=
+notice_kind=
 stale_notice() {
   notice_text=
   want=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$root/$(c launcher.engine_lock_file)" 2>/dev/null | head -n 1)
@@ -106,6 +126,17 @@ stale_notice() {
   derr=$state/$(c install.file_defaults_error)
   if [ -f "$derr" ] && [ -n "$(find "$derr" -newer "$cfg" 2>/dev/null)" ] \
     && { [ ! -e "$bindir/$engine_name" ] || [ -n "$(find "$derr" -newer "$bindir/$engine_name" 2>/dev/null)" ]; }; then dfail=1; fi
+  # defaults.error is never removed: only an engine that fails to load the defaults NOW makes the "guards are NOT running" notice true
+  if [ "$dfail" = 1 ] && [ -x "$bindir/$engine_name" ]; then
+    env "$(c env.plugin_root)=$root" "$bindir/$engine_name" "$(c install.defaults_probe_verb)" >/dev/null 2>&1 </dev/null &
+    pp=$!
+    ( sleep "$(c install.defaults_probe_s)"; kill "$pp" ) >/dev/null 2>&1 </dev/null &
+    wd=$!
+    wait "$pp" 2>/dev/null; prc=$?
+    kill "$wd" 2>/dev/null
+    # exit 0 = loads fine; 143 = our own time limit (not proof of failure); anything else = it cannot load them now
+    if [ "$prc" -eq 0 ] || [ "$prc" -eq 143 ]; then dfail=0; fi
+  fi
   older=
   if [ -n "$want" ] && [ -n "$have" ]; then
     older=$(awk -v a="$have" -v b="$want" -v f="$(c launcher.legacy_scheme_floor)" '
@@ -140,11 +171,11 @@ stale_notice() {
     printf '%s\n' "$PPID" >"$seen" 2>/dev/null
     printf '%s\n' "$text" >&2
   fi
+  # marked as shown by the caller, only once the notice is really in the output
   jseen=$state/$(c install.file_json_notice)
-  if [ "$(c install.sessionstart_json_notice)" = 1 ] && [ "$(cat "$jseen" 2>/dev/null)" != "$PPID" ]; then
-    printf '%s\n' "$PPID" >"$jseen" 2>/dev/null
+  if [ "${host:-claude}" = claude ] && [ "$(c install.sessionstart_json_notice)" = 1 ] && [ "$(cat "$jseen" 2>/dev/null)" != "$PPID" ]; then
     notice_text=$text
-    say_notice "notice_json kind=$([ "$dfail" = 1 ] && echo defaults_failed || echo stale_engine)"
+    notice_kind=$([ "$dfail" = 1 ] && echo defaults_failed || echo stale_engine)
   fi
 }
 # one record per JSON notice for the counters (hook mode has no -v and no `say`)
@@ -153,6 +184,10 @@ say_notice() { mkdir -p "$state" 2>/dev/null; printf '%s event=%s\n' "$(date -u 
 # ---- hook mode ------------------------------------------------------------------------------------------------------------------
 if [ "$mode" = hook ]; then
   event=${1:-}
+  # the JSON notice is for Claude Code only: Codex's SessionStart output schema is not verified to take systemMessage (the notice
+  # stays on stderr there, stdout stays empty). Claude's hooks.json passes no --host; Codex's passes `--host codex`.
+  host=claude; prev=
+  for a in "$@"; do [ "$prev" = --host ] && host=$a; prev=$a; done
   # installed: this call is the thin client's. SessionStart comes here FIRST (hooks_form.installer_first_events), so an install whose
   # client predates the stale-engine notice still hears it; the notice never stops the hook from running.
   if [ -x "$bindir/$hook_name" ]; then
@@ -161,7 +196,13 @@ if [ "$mode" = hook ]; then
     if [ -n "$notice_text" ]; then
       # the client still runs (its SessionStart work is kept); its stdout is captured so the notice joins it as ONE JSON object
       out=$("$bindir/$hook_name" "$@"); rc=$?
-      if [ "$rc" -eq 0 ]; then json_merge "$notice_text" "$out"; else printf '%s\n' "$out"; fi
+      if [ "$rc" -eq 0 ]; then
+        merged=$(json_merge "$notice_text" "$out") && {
+          printf '%s\n' "$PPID" >"$state/$(c install.file_json_notice)" 2>/dev/null
+          say_notice "notice_json kind=$notice_kind"
+        }
+        printf '%s\n' "$merged"
+      else printf '%s\n' "$out"; fi
       exit "$rc"
     fi
     exec "$bindir/$hook_name" "$@"
@@ -198,7 +239,7 @@ if [ "$mode" = hook ]; then
   fi
   # stderr of an exit-0 hook is not shown: SessionStart also gets the notice as JSON, once per session (every other event: stdout stays empty)
   jseen=$state/$(c install.file_json_notice)
-  if [ "$event" = SessionStart ] && [ "$(c install.sessionstart_json_notice)" = 1 ] && [ "$(cat "$jseen" 2>/dev/null)" != "$sid" ]; then
+  if [ "$event" = SessionStart ] && [ "$host" = claude ] && [ "$(c install.sessionstart_json_notice)" = 1 ] && [ "$(cat "$jseen" 2>/dev/null)" != "$sid" ]; then
     printf '%s\n' "$sid" >"$jseen" 2>/dev/null
     say_notice "notice_json kind=not_installed"
     json_notice "$text"
@@ -318,6 +359,7 @@ if [ "$kept" -eq 1 ]; then
   if [ "$have_hook" -eq 1 ] && [ -x "$bindir/$hook_name" ] && [ -n "$oldver" ]; then
     printf '%s %s %s %s\n' "$oldver" "$oldasset" "$oldesha" "$hsha" >"$marker"
     say "engine_kept version=$oldver handover=ah-hook"
+    rm -rf "$tmp" # exec skips the EXIT trap
     if [ "$verbose" -eq 1 ]; then exec "$bindir/$hook_name" --plugin-root "$root" install --lock "$lock" -v; fi
     exec "$bindir/$hook_name" --plugin-root "$root" install --lock "$lock"
   fi

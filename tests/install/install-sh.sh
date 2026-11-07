@@ -122,7 +122,7 @@ t_stale_engine_notice_joins_the_clients_json() {
   fake_client '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"X"}}'
   printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
   hook s1 SessionStart >/dev/null
-  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine (9.1.0) is older' "$tmp/out" && grep -q '"additionalContext":"X"' "$tmp/out" || return 1
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine (9.1.0) is older' "$tmp/out" && grep -q '"additionalContext":"X anti-hall' "$tmp/out" || return 1
   grep -q 'ah-hook install -v' "$tmp/out" && grep -q 'bootstrap.log' "$tmp/out" || return 1
 }
 t_stale_engine_notice_with_a_silent_client_is_the_notice_alone() {
@@ -138,10 +138,35 @@ t_other_events_and_a_current_engine_leave_the_clients_output_alone() {
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
   hook s2 SessionStart >/dev/null; [ "$(cat "$tmp/out")" = '{"a":1}' ]
 }
-t_a_client_that_already_set_a_system_message_is_not_changed() {
+t_a_client_that_already_set_a_system_message_gets_the_notice_appended() {
   newhome st4; write_lock "$good"; fake_client '{"systemMessage":"mine"}'
   printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
-  hook s1 SessionStart >/dev/null; [ "$(cat "$tmp/out")" = '{"systemMessage":"mine"}' ]
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"systemMessage":"mine anti-hall: the installed engine' "$tmp/out" && grep -q '"additionalContext":"anti-hall' "$tmp/out" || return 1
+  [ -s "$st/install-json.notice" ]   # shown, so marked
+}
+t_a_client_with_leading_whitespace_json_still_gets_the_notice() {
+  newhome st5; write_lock "$good"; fake_client '
+   {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"X"}}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine' "$tmp/out" && grep -q '"additionalContext":"X anti-hall' "$tmp/out"
+}
+t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown() {
+  newhome st6; write_lock "$good"; fake_client 'plain context line'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  [ "$(cat "$tmp/out")" = 'plain context line' ] && [ ! -e "$st/install-json.notice" ] || return 1
+  fake_client '{}'; hook s1 SessionStart >/dev/null   # the same host process: the notice was never delivered, so it comes now
+  isjson "$tmp/out" && grep -q 'older than this plugin expects' "$tmp/out"
+}
+t_codex_keeps_stdout_clean() {
+  newhome cx; write_lock "$good"
+  printf '{"session_id":"s1"}' | sh "$plug/hooks/install.sh" SessionStart --host codex >"$tmp/out" 2>"$tmp/err"
+  [ ! -s "$tmp/out" ] && grep -q 'not installed' "$tmp/err" || return 1
+  fake_client '{"a":1}'; printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  printf '{"session_id":"s1"}' | sh "$plug/hooks/install.sh" SessionStart --host codex >"$tmp/out" 2>"$tmp/err"
+  [ "$(cat "$tmp/out")" = '{"a":1}' ]
 }
 t_defaults_that_failed_to_load_say_the_guards_are_not_running() {
   newhome df; write_lock "$good"; fake_client ''
@@ -149,6 +174,21 @@ t_defaults_that_failed_to_load_say_the_guards_are_not_running() {
   sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
   hook s1 SessionStart >/dev/null
   isjson "$tmp/out" && grep -q 'guards are NOT running' "$tmp/out"
+}
+fake_engine() { # fake_engine EXIT: an engine whose `config` probe exits EXIT
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nexit %s\n' "$1" >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+}
+t_a_stale_defaults_error_with_a_healthy_engine_says_nothing() {
+  newhome df3; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  fake_engine 0; sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  hook s1 SessionStart >/dev/null; [ ! -s "$tmp/out" ]
+}
+t_a_defaults_error_with_a_failing_engine_still_warns() {
+  newhome df4; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  fake_engine 1; sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  hook s1 SessionStart >/dev/null; isjson "$tmp/out" && grep -q 'guards are NOT running' "$tmp/out"
 }
 t_a_defaults_error_older_than_the_engine_is_ignored() {
   newhome df2; write_lock "$good"
@@ -166,7 +206,8 @@ t_download_keeps_an_older_managed_engine_and_hands_over() {
   [ "$("$st/bin/ah-engine")" = 0.1.0 ] && [ -x "$st/bin/ah-hook" ] || return 1
   set -- $(cat "$st/bootstrap.installed")
   [ "$1 $2 $3" = "0.1.0 - $esha" ] && [ "$4" = "$(sha "$st/bin/ah-hook")" ] || return 1
-  grep -q "install --lock .*ah-engine.lock" "$HOME/hook-calls"   # the one implementation does the swap
+  grep -q "install --lock .*ah-engine.lock" "$HOME/hook-calls" || return 1   # the one implementation does the swap
+  [ -z "$(ls "$st" | grep -i tmp)" ]   # the scratch dir is gone although the hand-over exec skips the EXIT trap
 }
 t_download_creates_a_private_state_dir() {
   newhome priv; write_lock "$good"
@@ -190,7 +231,12 @@ check t_sessionstart_engine_without_client_has_its_own_text t_sessionstart_engin
 check t_stale_engine_notice_joins_the_clients_json t_stale_engine_notice_joins_the_clients_json
 check t_stale_engine_notice_with_a_silent_client_is_the_notice_alone t_stale_engine_notice_with_a_silent_client_is_the_notice_alone
 check t_other_events_and_a_current_engine_leave_the_clients_output_alone t_other_events_and_a_current_engine_leave_the_clients_output_alone
-check t_a_client_that_already_set_a_system_message_is_not_changed t_a_client_that_already_set_a_system_message_is_not_changed
+check t_a_client_that_already_set_a_system_message_gets_the_notice_appended t_a_client_that_already_set_a_system_message_gets_the_notice_appended
+check t_a_client_with_leading_whitespace_json_still_gets_the_notice t_a_client_with_leading_whitespace_json_still_gets_the_notice
+check t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown
+check t_codex_keeps_stdout_clean t_codex_keeps_stdout_clean
+check t_a_stale_defaults_error_with_a_healthy_engine_says_nothing t_a_stale_defaults_error_with_a_healthy_engine_says_nothing
+check t_a_defaults_error_with_a_failing_engine_still_warns t_a_defaults_error_with_a_failing_engine_still_warns
 check t_defaults_that_failed_to_load_say_the_guards_are_not_running t_defaults_that_failed_to_load_say_the_guards_are_not_running
 check t_a_defaults_error_older_than_the_engine_is_ignored t_a_defaults_error_older_than_the_engine_is_ignored
 check t_download_keeps_an_older_managed_engine_and_hands_over t_download_keeps_an_older_managed_engine_and_hands_over

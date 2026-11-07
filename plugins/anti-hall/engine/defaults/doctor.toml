@@ -2435,6 +2435,18 @@ value = ["ps", "-p", "{pid}", "-o", "command="]
 doc = "The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment. Relative paths cover the current project."
 value = ["{root}/hooks/hooks.json", "{root}/codex/hooks/hooks.json", "{home}/.codex/hooks.json", ".codex/hooks.json", "{home}/.claude/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/codex/hooks/hooks.json"]
 
+[doctor_l.registry_key_prefix]
+doc = "The keys of the host's installed-plugins registry that are anti-hall's; only the installPath of those is judged for Node entry paths among the host's cache copies."
+value = "anti-hall@"
+
+[doctor_l.host_cache_marks]
+doc = "A hooks file whose path holds one of these is a host cache copy: judged only when it is in a registered installPath or the running plugin root; any other is reported as information (an old version dir an upgrade left behind)."
+value = ["/.claude/plugins/cache/"]
+
+[doctor_l.msg_health_other_cache]
+doc = "Information line. Placeholders: {n}, {first}."
+value = "{n} older anti-hall copy(ies) in the host's plugin cache are not the registered install and are not judged (first: {first}); they are unused"
+
 [doctor_l.msg_builtin_daemon_note]
 doc = "Informational line of the built-in doctor."
 value = "the built-in doctor reads the daemon's files only; it never contacts or signals a process"

@@ -187,6 +187,48 @@ fn node_on_an_entry_path_and_extra_shell_files_are_flagged() {
 }
 
 #[test]
+fn an_old_cache_version_dir_is_information_only_and_the_registered_install_is_judged() {
+    const NODE_HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hooks/x.js\""}]}]}}"#;
+    const DIRECT_HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop"}]}]}}"#;
+    let k = Kit::new("dr-oldcache");
+    k.engine(GOOD_ENGINE);
+    exe(&k.e.state.join("bin/ah-hook"), "#!/bin/sh\nexit 0\n");
+    let cache = k.e.home.join(".claude/plugins/cache/m/anti-hall");
+    let (old, cur) = (cache.join("0.203.3"), cache.join("0.302.0"));
+    for (d, body) in [(&old, NODE_HOOKS), (&cur, DIRECT_HOOKS)] {
+        std::fs::create_dir_all(d.join("hooks")).unwrap();
+        std::fs::write(d.join("hooks/hooks.json"), body).unwrap();
+    }
+    let reg = k.e.home.join(".claude/plugins/installed_plugins.json");
+    std::fs::write(
+        &reg,
+        format!(
+            r#"{{"version":2,"plugins":{{"anti-hall@m":[{{"scope":"user","installPath":"{}"}}]}}}}"#,
+            cur.display()
+        ),
+    )
+    .unwrap();
+    let (code, out) = k.doctor(&[]);
+    assert!(!out.contains("runs Node on an entry path"), "{out}");
+    assert!(out.contains("older anti-hall copy"), "{out}");
+    assert_eq!(
+        code, 3,
+        "the engine's own code, no failure from the leftover: {out}"
+    );
+    // the registered install itself running Node is still a failure
+    std::fs::write(
+        &reg,
+        format!(
+            r#"{{"version":2,"plugins":{{"anti-hall@m":[{{"scope":"user","installPath":"{}"}}]}}}}"#,
+            old.display()
+        ),
+    )
+    .unwrap();
+    let (_, out) = k.doctor(&[]);
+    assert!(out.contains("runs Node on an entry path"), "{out}");
+}
+
+#[test]
 fn launcher_shims_must_be_sh_shims_without_node() {
     let k = Kit::new("dr-shims");
     k.engine(GOOD_ENGINE);

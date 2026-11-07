@@ -986,6 +986,37 @@ impl Doc<'_> {
             .any(|t| t == w || t.ends_with(&format!("/{w}")))
     }
 
+    /// The install paths the host's registry holds for anti-hall (`doctor.installed_plugins_rel`, keys starting with
+    /// `doctor_l.registry_key_prefix`). A hooks file under a host cache directory is judged only when it is in one of them (or in the
+    /// plugin root this run was started from); an old cache version dir an upgrade left behind is not what the host loads.
+    fn registered_paths(&self) -> Vec<PathBuf> {
+        let reg = Path::new(&self.home).join(self.s.text("doctor.installed_plugins_rel"));
+        let prefix = self.s.text("doctor_l.registry_key_prefix");
+        let Some(v) = fs::read_to_string(reg)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (k, ents) in v
+            .get("plugins")
+            .and_then(|p| p.as_object())
+            .into_iter()
+            .flatten()
+        {
+            if prefix.is_empty() || !k.starts_with(&prefix) {
+                continue;
+            }
+            for e in ents.as_array().into_iter().flatten() {
+                if let Some(p) = e.get("installPath").and_then(|x| x.as_str()) {
+                    out.push(PathBuf::from(p));
+                }
+            }
+        }
+        out
+    }
+
     fn install_health(&mut self) {
         self.head("x.head_health");
         let install = self.install_cmd();
@@ -1026,7 +1057,23 @@ impl Doc<'_> {
         }
         // the hooks files
         let files = self.hook_files();
+        let cache_marks = self.s.list("doctor_l.host_cache_marks");
+        let registered = self.registered_paths();
+        let (mut other_n, mut other_first) = (0usize, String::new());
         for f in &files {
+            let in_cache = cache_marks
+                .iter()
+                .any(|m| f.display().to_string().contains(m.as_str()));
+            let judged = !in_cache
+                || self.root.as_ref().is_some_and(|r| f.starts_with(r))
+                || registered.iter().any(|p| f.starts_with(p));
+            if !judged {
+                if other_n == 0 {
+                    other_first = f.display().to_string();
+                }
+                other_n += 1;
+                continue;
+            }
             let Some(v) = fs::read_to_string(f)
                 .ok()
                 .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
@@ -1067,6 +1114,12 @@ impl Doc<'_> {
             if old.is_empty() && node.is_empty() {
                 self.ok("x.health_hooks_ok", &[("file", &shown)]);
             }
+        }
+        if other_n > 0 {
+            self.infol(
+                "x.health_other_cache",
+                &[("n", &other_n.to_string()), ("first", &other_first)],
+            );
         }
         // the shell files the plugin ships
         if let Some(root) = self.root.clone() {
