@@ -29,9 +29,9 @@ var laneWaste = {
   },
   // `cmd` cut at ; & | newline and braces into { words, inLoop }. A word keeps its quotes removed; a $( ... ) stays in its word.
   split: function (cmd) {
-    var segs = [], words = [], cur = '', has = false, i = 0, n = cmd.length, loops = 0;
+    var segs = [], words = [], cur = [], has = false, i = 0, n = cmd.length, loops = 0;
     var openers = ah.cfg('lane_waste.loop_openers'), closer = ah.cfg('lane_waste.loop_closer');
-    function endWord() { if (has) words.push(cur); cur = ''; has = false; }
+    function endWord() { if (has) words.push(cur.join('')); cur = []; has = false; }
     function endSeg() {
       endWord();
       if (words.length > 0) {
@@ -50,9 +50,9 @@ var laneWaste = {
     }
     while (i < n) {
       var c = cmd[i];
-      if (c === '\\') { if (i + 1 < n) { cur += cmd[i + 1]; has = true; } i += 2; continue; }
-      if (c === "'") { var e1 = skipQuote(i, "'"); cur += cmd.slice(i + 1, e1); has = true; i = e1 + 1; continue; }
-      if (c === '"') { var e2 = skipQuote(i, '"'); cur += cmd.slice(i + 1, e2); has = true; i = e2 + 1; continue; }
+      if (c === '\\') { if (i + 1 < n) { cur.push(cmd[i + 1]); has = true; } i += 2; continue; }
+      if (c === "'") { var e1 = skipQuote(i, "'"); cur.push(cmd.slice(i + 1, e1)); has = true; i = e1 + 1; continue; }
+      if (c === '"') { var e2 = skipQuote(i, '"'); cur.push(cmd.slice(i + 1, e2)); has = true; i = e2 + 1; continue; }
       if (c === '$' && cmd[i + 1] === '(') {
         var depth = 0, k2 = i + 1;
         while (k2 < n) {
@@ -60,17 +60,17 @@ var laneWaste = {
           else if (cmd[k2] === ')') { depth--; if (depth === 0) break; }
           k2++;
         }
-        cur += cmd.slice(i, Math.min(k2 + 1, n)); has = true; i = k2 + 1; continue;
+        cur.push(cmd.slice(i, Math.min(k2 + 1, n))); has = true; i = k2 + 1; continue;
       }
       if (c === '#' && !has) { var nl = cmd.indexOf('\n', i); i = nl < 0 ? n : nl; continue; }
       if (c === ';' || c === '\n' || c === '(' || c === ')') { endSeg(); i++; continue; }
       if (c === '&') {
-        if (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>') { cur += c; has = true; i++; continue; }
+        if (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>') { cur.push(c); has = true; i++; continue; }
         endSeg(); i += cmd[i + 1] === '&' ? 2 : 1; continue;
       }
       if (c === '|') { endSeg(); i += cmd[i + 1] === '|' || cmd[i + 1] === '&' ? 2 : 1; continue; }
       if (c === ' ' || c === '\t' || c === '\r') { endWord(); i++; continue; }
-      cur += c; has = true; i++;
+      cur.push(c); has = true; i++;
     }
     endSeg();
     return segs;

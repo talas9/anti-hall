@@ -1,0 +1,42 @@
+# Source rules the scripted-check logic (plugins/anti-hall/engine/logic/**/*.js) must keep. Local tooling thresholds: they are
+# not settings of the shipped plugin (tests/logic_charwise_concat.rs and tests/logic_alloc_budget.rs read this file).
+
+[charwise_concat]
+# Why: QuickJS reallocates the whole string on every `s += x`, so a scanner that appends one character at a time to a growing
+# string allocates in proportion to (length x characters). One 15 KB command made the `git`, `command` and `coordinator-work-guard`
+# checks allocate 38-42 MB each per call (measured 2026-11-07). Build such text in an array and `.join('')` it, or slice the source.
+# A line matches when it has `<identifier> += <a single character expression>;` (or `}`), the RHS forms below.
+rhs = [
+  "c",
+  "ch",
+  "c2",
+  "d",
+  "c \\+ c2",
+  "(?:cmd|s|segment|text|raw|cs|chars|cps|glob|t|body|str|src)\\[[a-z]( [+-] 1)?\\]",
+  "[a-z]+\\.charAt\\([a-z]( [+-] 1)?\\)",
+  "' '",
+  "'  '",
+]
+# Lines to leave alone, as "file:substring of the line" with the reason next to it. None today.
+allow = []
+
+[logic_alloc]
+# tests/logic_alloc_budget.rs: bytes ONE call of a check may allocate (total, the counting allocator's `alloc`) on a PreToolUse Bash
+# payload whose command is `echo ` followed by 3000 words (15 KB), or a 15 KB quoted-heredoc commit. In-process, before the fix
+# (origin/dev logic): git 37 MiB, compact-declaration-guard 37 MiB; heredoc commit: git 69 MiB, merge-side-pick 17 MiB. After: git 5.7,
+# compact 4.4; heredoc git 7.1, merge-side-pick 0.8. Budgets sit between the two so the regression fails and noise does not.
+command_len_words = 3000
+heredoc_lines = 160
+# per check, MiB
+[logic_alloc.echo_mib]
+git = 12
+command = 4
+compact-declaration-guard = 8
+api-guard = 4
+ship-it-guard = 4
+scan-throttle = 4
+broad-kill-guard = 4
+[logic_alloc.heredoc_mib]
+merge-side-pick = 4
+git = 14
+command = 6
